@@ -9,7 +9,7 @@
 > proposed change that would break a guard test or remove a contract must
 > be raised as a question before touching code.
 
-**Module:** `internal/tracks/` + `internal/db/tracks.go` + `WatchtowerDesktop/Sources/Views/Tracks/`
+**Module:** `internal/tracks/` + `internal/db/tracks.go` + `WatchtowerDesktop/Sources/Views/Tracks/` + `internal/automations/builtin/threads.go` (the `tracks.extract` primitive) + `internal/daemon/builtin_slots.go` (its slot)
 **Last full audit:** 2026-04-28
 
 ## What a track is and what it's built from
@@ -104,7 +104,7 @@ Scoring (additive, all must be visible to LLM only when score ≥ 1):
 
 **Status:** Enforced
 
-**Observable:** When I open a track:
+**Observable:** When I mark a track read — its Inbox card's **Done** (opening the card writes nothing; amended 2026-10-22, C1, **approved by the owner in ask #509**):
 - Its source digests are also marked read (cascade through `related_digest_ids`). I never see a digest light up as unread for content I already saw via its track.
 - `has_updates` clears on read.
 
@@ -188,6 +188,9 @@ When the AI re-extracts a track I've already read and there's actually new conte
 
 ## Changelog
 
+- 2026-10-23 (board #801, C3 Task 9): the tracks pipeline runs as the Track my threads built-in automation at its slot (`phaseTrackMyThreads`, replacing the tracks half of `phaseTracksAndRollups`; due only with new or retry digests, so a quiet cycle writes no `tracks` row). Contracts unchanged; enforced by the `tracks.extract` primitive over the same Go pipeline; guards unchanged, no guard relaxed.
+- 2026-10-23 (board #801, C3 Tasks 1, 6, 8, 12): a custom track can be bound to a watch recipe (`tracks.automation_id`, migration 00151; `tracks.enabled` mirrored from the recipe's `enabled` by a SQL trigger). A bound track is scanned by the watch slot through `customtracks.ScanBound` (the same scan path, watermark, cap and summary dedup as `Run`), and `GetCustomTracksDueForScan` skips it, so the legacy scan and a recipe never both scan a track. Dismissed custom tracks stay unbound and scan nothing. TRACKS-04/06/07 and every other guard are unchanged; no guard relaxed.
+- 2026-10-22 (C1 — One Inbox, spec 2026-10-22 §6/§9, approved in ask #500): **TRACKS-04 wording amended, approved by the owner in ask #509:** the Tracks screen is gone and a track is an Inbox card (`InboxTrackPane`/`TrackDetailView` over `TracksViewModel`). Opening the card writes nothing; its **Done** (`ActionStripViewModel.markTrackDone`) is the read: `TrackQueries.markRead` — the same `has_updates` clear and `related_digest_ids` cascade — plus `TrackEventQueries.markAllRead` for the track's events. So the Observable's "When I open a track" now reads "When I mark a track read — its Inbox card's Done"; the cascade, the clear and the conditional re-surface are unchanged. **TRACKS-07:** **Stop watching** (the card's ⋯) is `TrackQueries.dismiss`; a custom track goes through `CustomTrackControlling.stopWatching` (dismiss + `enabled = 0`), and the Tracks filter's folded **Stopped · N** lists dismissed tracks with **Restore** (`TrackQueries.restore`; a custom track also resumes collecting). `TrackQueries.fetchInboxCards` excludes dismissed tracks from every other list (guard `InboxFeedQueriesTests::testTrackCardsCountUnreadEventsAndExcludeDismissed`). Only the Desktop call sites moved; the Go guards and their assertions are unchanged, and no guard was relaxed, renamed or split. New Desktop tests: `ActionStripAllKindsTests::testOpeningATrackWritesNothing`, `::testTrackDoneMarksTrackAndEventsRead`, `::testStopWatchingACustomTrackPausesIt`.
 - 2026-10-18 (Linear Plan 2 lane 2, board #688/#689, spec `docs/superpowers/specs/2026-10-15-linear-integration-design.md` §6/§8): no contract changed: `jira_slack_links` became `issue_slack_links` (migration 00144, `tracker` column) and the key detector moved to `internal/issuekey` (a prefix that is a known Jira project key or Linear team key links, one link per tracker). `TrackFilter.HasJira` now means "has an issue link of either tracker"; `GetJiraIssuesFor*` read only Jira links. The tracks CLI lists linked Linear issues under `track_linking`, which governs both trackers.
 - 2026-04-28: file created with 7 contracts (TRACKS-01..07). Three are Enforced (01, 02, 04), four are Partial with explicit tracked gaps (03 watching-lane filter has no unit test, 05 cross-user gate has no unit test, 06 channel/digest part Enforced but per-track state history Aspirational, 07 dismissed-exclusion has only implicit tests). Existing tests are referenced under their current names; renaming to `TestTracks0N_…` convention is a follow-up so the four soft-protection layers all engage.
 - 2026-04-28: TRACKS-06 expanded — added "track state history" as Aspirational sub-contract. The pre-v43 `track_history` table was dropped during chains→tracks v3 refactor; `UpdateTrackFromExtraction` currently overwrites narrative fields in place. Status demoted Enforced → Partial; channel/digest merge guarantees remain fully Enforced under the same ID.

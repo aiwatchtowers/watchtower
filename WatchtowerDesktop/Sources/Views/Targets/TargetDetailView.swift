@@ -1047,8 +1047,9 @@ struct TargetDetailView: View {
             target: target,
             dbManager: db,
             scanService: TrackScanService(runner: runner),
-            targetsViewModel: viewModel,
-            scanCenter: appState.trackScanCenter
+            actionRunner: runner,
+            scanCenter: appState.trackScanCenter,
+            trackControls: appState.customTrackControls
         )
         vm.start()
         watchesVM = vm

@@ -51,6 +51,14 @@ var backfillMaxCycles = 50
 // nor pays its stage-1 calls again; the material the run did apply is
 // already in the registry (IDEA-05 dedups a later re-mine).
 func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress func(cycle int)) (result BackfillResult, err error) {
+	return p.BackfillWith(ctx, from, to, progress, RunOptions{})
+}
+
+// BackfillWith is Backfill with run options: opts.Prompt reaches every
+// consolidate cycle of the drain.
+func (p *Pipeline) BackfillWith(ctx context.Context, from, to time.Time, progress func(cycle int), opts RunOptions) (result BackfillResult, err error) {
+	p.lastPromptNote = ""
+
 	// A bounded backfill's stream listing is capped on the row's OWN content
 	// window (period_to <= to), so it can skip going-forward rows the
 	// consolidator then advances the stream floor past — capture the bound now,
@@ -64,9 +72,13 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 		to = time.Now()
 	}
 
-	savedDigest, savedStream, savedTranscript, err := p.db.GetIdeasFloors()
+	var saved workspaceFloors
+	saved.topic, saved.stream, saved.transcript, err = p.db.GetIdeasFloors()
 	if err != nil {
 		return BackfillResult{}, fmt.Errorf("backfill: reading ideas floors: %w", err)
+	}
+	if saved.chat, err = p.db.GetIdeasChatFloor(); err != nil {
+		return BackfillResult{}, fmt.Errorf("backfill: reading ideas chat floor: %w", err)
 	}
 	boxes, err := p.mailboxes()
 	if err != nil {
@@ -77,12 +89,12 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 		return BackfillResult{}, fmt.Errorf("backfill: listing jira accounts: %w", err)
 	}
 
-	floors, err := p.backfillStartFloors(from, to, savedStream, boxes, jiraAccounts)
+	floors, err := p.backfillStartFloors(from, to, saved, boxes, jiraAccounts)
 	if err != nil {
 		return result, err
 	}
 	defer func() {
-		p.raiseBackfillFloors(savedDigest, savedStream, savedTranscript, floors, streamCapISO)
+		p.raiseBackfillFloors(saved, floors, streamCapISO)
 	}()
 
 	// Phase 1: drain the email/Jira stage-1 pre-digests until a full cycle
@@ -112,7 +124,7 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 	// capped out never starves the consolidator of its turn. softErr threads
 	// phase 1's error through so the "first error across BOTH phases wins"
 	// rule holds even though the two phases are now two functions.
-	cycles, proposed, mentionsDeduped, capped2, err := p.drainConsolidate(ctx, from, to, &floors.ws, cycles, progress, softErr)
+	cycles, proposed, mentionsDeduped, capped2, err := p.drainConsolidate(ctx, from, to, &floors.ws, cycles, progress, softErr, opts.Prompt)
 	result.Cycles = cycles
 	result.Proposed = proposed
 	result.MentionsDeduped = mentionsDeduped
@@ -215,7 +227,7 @@ func (p *Pipeline) runStage1Passes(ctx context.Context, to time.Time, boxes []ma
 // error-break path, since an erroring pass says nothing about whether the
 // phase would have converged given more cycles. priorErr is phase 1's
 // already-accumulated error, if any.
-func (p *Pipeline) drainConsolidate(ctx context.Context, from, to time.Time, ws *workspaceFloors, startCycles int, progress func(cycle int), priorErr error) (cycles, proposed, mentionsDeduped int, capped bool, err error) {
+func (p *Pipeline) drainConsolidate(ctx context.Context, from, to time.Time, ws *workspaceFloors, startCycles int, progress func(cycle int), priorErr error, prompt string) (cycles, proposed, mentionsDeduped int, capped bool, err error) {
 	cycles = startCycles
 	firstErr := priorErr
 	converged := false
@@ -226,7 +238,7 @@ func (p *Pipeline) drainConsolidate(ctx context.Context, from, to time.Time, ws 
 			progress(cycles)
 		}
 
-		cProposed, cDeduped, floorsMoved, softErr := p.consolidateCycle(ctx, from, to, ws)
+		cProposed, cDeduped, floorsMoved, softErr := p.consolidateCycle(ctx, from, to, ws, prompt)
 		if softErr != nil {
 			p.logf("ideas: backfill consolidate pass: %v", softErr)
 			if firstErr == nil {
@@ -261,9 +273,9 @@ func consolidateConverged(proposed, mentionsDeduped int, floorsMoved bool) bool 
 // drainConsolidate's single-cycle unit. softErr is an ordinary consolidate
 // failure, which the caller folds into its own "first error wins"
 // accumulator.
-func (p *Pipeline) consolidateCycle(ctx context.Context, from, to time.Time, ws *workspaceFloors) (proposed, mentionsDeduped int, floorsMoved bool, softErr error) {
+func (p *Pipeline) consolidateCycle(ctx context.Context, from, to time.Time, ws *workspaceFloors, prompt string) (proposed, mentionsDeduped int, floorsMoved bool, softErr error) {
 	before := *ws
-	proposed, mentionsDeduped, err := p.consolidate(ctx, from, to, ws)
+	proposed, mentionsDeduped, err := p.consolidate(ctx, from, to, ws, prompt)
 	if err != nil {
 		return 0, 0, false, err
 	}
@@ -285,7 +297,7 @@ func SetBackfillMaxCyclesForTest(n int) (restore func()) {
 }
 
 // backfillFloors is the floor set one Backfill run works from, kept in
-// memory: the three workspace floors and the per-account stage-1 floors of
+// memory: the four workspace floors and the per-account stage-1 floors of
 // every account the run lowered. Nothing here is written to the DB until the
 // final raise (raiseBackfillFloors), which only ever moves a stored floor up.
 type backfillFloors struct {
@@ -294,15 +306,17 @@ type backfillFloors struct {
 	jira  map[int64]string
 }
 
-// backfillStartFloors is Backfill's step 2 (spec §3): the three workspace
-// floors lowered to the window start (the stream floor stays at savedStream,
-// since stream_digests rows are only ever created going forward), and every
+// backfillStartFloors is Backfill's step 2 (spec §3): the digest and
+// transcript floors lowered to the window start (the stream and chat floors
+// stay where they were saved: stream_digests rows are only ever created going
+// forward, and chat history before the chat floor is not mined — the run only
+// reaches further up to its `to` bound), and every
 // mailbox's (Gmail-enabled Google account or IMAP/Outlook mailbox) / enabled
 // Jira account's stage-1 floor lowered to from —
 // skipping (spec §4 layer 2, cost not correctness) any account
 // HasStreamDigestCovering already reports fully covered; a skipped account
 // keeps running its ordinary stored-floor pass.
-func (p *Pipeline) backfillStartFloors(from, to time.Time, savedStream int64, boxes []mailbox, jiraAccounts []db.JiraAccount) (*backfillFloors, error) {
+func (p *Pipeline) backfillStartFloors(from, to time.Time, saved workspaceFloors, boxes []mailbox, jiraAccounts []db.JiraAccount) (*backfillFloors, error) {
 	fromUnix := from.Unix()
 	fromISO := from.UTC().Format(time.RFC3339)
 	toISO := to.UTC().Format(time.RFC3339)
@@ -316,7 +330,7 @@ func (p *Pipeline) backfillStartFloors(from, to time.Time, savedStream int64, bo
 		return nil, fmt.Errorf("backfill: computing transcript floor: %w", err)
 	}
 	floors := &backfillFloors{
-		ws:    workspaceFloors{topic: newDigestFloor, stream: savedStream, transcript: newTranscriptFloor},
+		ws:    workspaceFloors{topic: newDigestFloor, stream: saved.stream, transcript: newTranscriptFloor, chat: saved.chat},
 		email: map[mailbox]float64{},
 		jira:  map[int64]string{},
 	}
@@ -352,8 +366,8 @@ func (p *Pipeline) backfillStartFloors(from, to time.Time, savedStream int64, bo
 // defer, after Backfill has already decided its own return value, and a
 // write failure must not mask whatever real error (or success) the run
 // produced.
-func (p *Pipeline) raiseBackfillFloors(savedDigest, savedStream, savedTranscript int64, floors *backfillFloors, streamCapISO string) {
-	p.raiseWorkspaceFloors(savedDigest, savedStream, savedTranscript, floors.ws, streamCapISO)
+func (p *Pipeline) raiseBackfillFloors(saved workspaceFloors, floors *backfillFloors, streamCapISO string) {
+	p.raiseWorkspaceFloors(saved, floors.ws, streamCapISO)
 	for mb, reached := range floors.email {
 		p.raiseEmailFloor(mb, reached)
 	}
@@ -370,22 +384,26 @@ func (p *Pipeline) raiseBackfillFloors(savedDigest, savedStream, savedTranscript
 // not be stranded below the floor — capping it back keeps it minable on the next
 // incremental pass. Re-mining the already-consolidated rows above the cap is
 // harmless (IDEA-05). The unbounded/default path (streamCapISO == "") writes
-// exactly max(saved, reached).
-func (p *Pipeline) raiseWorkspaceFloors(savedDigest, savedStream, savedTranscript int64, reached workspaceFloors, streamCapISO string) {
-	streamFloor := max(savedStream, reached.stream)
+// exactly max(saved, reached). The chat floor needs no such cap: its listing
+// stops below the first turn past `to`, so it never passes an unread turn.
+func (p *Pipeline) raiseWorkspaceFloors(saved, reached workspaceFloors, streamCapISO string) {
+	streamFloor := max(saved.stream, reached.stream)
 	if streamCapISO != "" {
-		if pending, perr := p.db.LowestPendingStreamDigestID(savedStream, streamCapISO); perr != nil {
+		if pending, perr := p.db.LowestPendingStreamDigestID(saved.stream, streamCapISO); perr != nil {
 			p.logf("ideas: backfill: finding lowest pending stream digest: %v", perr)
 		} else if pending > 0 && pending-1 < streamFloor {
 			streamFloor = pending - 1
 		}
 	}
 	if err := p.db.SetIdeasFloors(
-		max(savedDigest, reached.topic),
+		max(saved.topic, reached.topic),
 		streamFloor,
-		max(savedTranscript, reached.transcript),
+		max(saved.transcript, reached.transcript),
 	); err != nil {
 		p.logf("ideas: backfill: raising ideas floors: %v", err)
+	}
+	if err := p.db.SetIdeasChatFloor(max(saved.chat, reached.chat)); err != nil {
+		p.logf("ideas: backfill: raising ideas chat floor: %v", err)
 	}
 }
 

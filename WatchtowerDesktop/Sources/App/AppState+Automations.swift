@@ -7,20 +7,38 @@ private let automationsLog = Logger(subsystem: Constants.bundleID, category: "au
 
 /// Navigation into the Automations tab, and quick run's entry point (spec
 /// §12.7): the "Run Automation…" menu item (⌃⌘R) opens the palette here.
+/// Every entry that opens something in the panel also switches to the tab
+/// (`navigateToAutomations`), so the panel is seen.
 extension AppState {
     /// Opens an automation's card, with one run's steps open when given
     /// (a run notification, an Inbox card's label).
     func openAutomationRun(automationID: Int64, runID: Int64?) {
-        selectedDestination = .automations
+        navigateToAutomations()
         automationsViewModel?.open(automationID: automationID, runID: runID)
     }
 
     /// **New Automation…** in a workbench's header menu: the Automations
-    /// tab opens the New automation sheet with that workbench picked.
-    func newAutomation(forWorkbench id: Int64) {
+    /// tab opens the New automation panel for that workbench (its scope
+    /// fixed, so "What is it for?" is skipped).
+    func newAutomation(forWorkbench workbench: Workbench) {
         guard let automationsViewModel else { return }
-        automationsViewModel.pendingNewWorkbenchID = id
-        selectedDestination = .automations
+        automationsViewModel.showNew(AutomationNewFlow(fixedScope: .forWorkbench(workbench)))
+        navigateToAutomations()
+    }
+
+    /// Opens the Automations tab's editor panel on `target` (an edit, or a
+    /// new draft with its start text).
+    func openAutomationEditor(_ target: AutomationEditorTarget) {
+        guard let automationsViewModel else { return }
+        automationsViewModel.showEditor(target)
+        navigateToAutomations()
+    }
+
+    /// Opens the editor panel on a fresh new draft in `scope` that starts
+    /// from `text` (a recipe proposed elsewhere, e.g. an Inbox card): its
+    /// column shows every hashed field, and only the owner's press saves.
+    func openAutomationDraft(text: String, scope: AutomationScopeChoice) {
+        openAutomationEditor(.newDraft(contextID: draftContextID(for: scope), scope: scope, startText: text))
     }
 
     /// An Inbox proposal card's automation label: opens the run's
@@ -152,9 +170,9 @@ extension AppState {
             center.cancelConfirm()
             alerts.showRefusal(message)
         case .openedConfirmation, .openedCard, .openedRun:
-            // `activate` already opened the card, run or sheet in the view model.
+            // `activate` already opened the card or run in the view model.
             bringMainWindowForward()
-            selectedDestination = .automations
+            navigateToAutomations()
         case let .refused(message):
             alerts.showRefusal(message)
         }
@@ -164,5 +182,50 @@ extension AppState {
     func openAutomationsFromTray() {
         bringMainWindowForward()
         selectedDestination = .automations
+    }
+}
+
+// MARK: - New automation chat
+
+extension AppState {
+    /// The panel's chat for a new automation, keyed by an explicit context id
+    /// (`draftContextID(for:)`), so each draft keeps its own conversation. A
+    /// workbench that is gone opens nothing (never a personal chat in its place).
+    func newAutomationEditorChat(contextID: String, scope: AutomationScopeChoice) async throws -> AutomationEditorChat? {
+        guard let pool = databaseManager?.dbPool else { return nil }
+        var workbench: AutomationEditorChatSurface.NewWorkbench?
+        if case let .workbench(id, _, _) = scope {
+            guard let project = workbenchesViewModel?.summaries.first(where: { $0.project.id == id })?.project
+            else { return nil }
+            workbench = (id, project.name, project.folderURL.lastPathComponent)
+        }
+        let provider = Constants.aiProviderID()
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool)
+        let box = PanelDraftBox()
+        return makeAutomationEditorChat(
+            conversationID: conversationID, pool: pool, provider: provider, panelDraftBox: box,
+            onSaved: { [weak self] savedID in
+                self?.newDraftSavedFromChat(savedID, contextID: contextID, conversationID: conversationID)
+            },
+            makeSpec: { outcomes in
+                AutomationEditorChatSurface.newSpec(
+                    provider: provider, contextID: contextID, workbench: workbench, conversationID: conversationID,
+                    dbPool: pool, outcomes: outcomes, panelDraft: box.read)
+            }
+        )
+    }
+
+    /// A new draft chat's approved `save_automation` landed: the list is
+    /// re-read; a new recipe (`savedID`) unlists the draft, its chat becoming
+    /// the automation's (`draftSaved`), and opens its card while the panel
+    /// still shows that draft (spec 2026-10-24 §4).
+    private func newDraftSavedFromChat(_ savedID: Int64?, contextID: String, conversationID: Int64) {
+        guard let vm = automationsViewModel else { return }
+        vm.refresh()
+        guard let savedID else { return }
+        Task {
+            await vm.draftSaved(contextID: contextID, conversationID: conversationID, automationID: savedID)
+            if case let .editor(.newDraft(current, _, _)) = vm.panel, current == contextID { vm.showCard(savedID) }
+        }
     }
 }

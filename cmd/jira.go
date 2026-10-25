@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/logredact"
 	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
@@ -574,6 +575,10 @@ func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 		}
 	}
 
+	if err := refuseLoginDuringPurge(database, "jira", accountID); err != nil {
+		rollback()
+		return jira.CloudResource{}, err
+	}
 	if err := database.UpdateJiraAccountConnection(accountID, site.ID, site.URL, site.Name); err != nil {
 		rollback()
 		return jira.CloudResource{}, fmt.Errorf("recording site: %w", err)
@@ -1821,7 +1826,7 @@ func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
 	if runID > 0 {
 		errMsg := ""
 		if analyzeErr != nil {
-			errMsg = analyzeErr.Error()
+			errMsg = logredact.Full(analyzeErr)
 		}
 		inTok, outTok, totalAPI := analyzer.AccumulatedUsage()
 		_ = database.CompletePipelineRun(runID, analyzed, inTok, outTok, 0, totalAPI, nil, nil, errMsg)

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -222,7 +223,7 @@ func TestCompact_InterruptLeavesDBIntact(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	prev := compactVacuumHook
-	compactVacuumHook = cancel
+	compactVacuumHook = func(*sql.Conn) { cancel() }
 	t.Cleanup(func() { compactVacuumHook = prev })
 
 	res, err := Compact(ctx, path, CompactOptions{Version: "1.0.0"})
@@ -245,6 +246,28 @@ func TestCompact_InterruptLeavesDBIntact(t *testing.T) {
 		if v, ok := keys[k]; ok {
 			t.Fatalf("%s = %q written on an interrupt", k, v)
 		}
+	}
+}
+
+// The engine keeps temporary data in memory (SQLITE_TEMP_STORE=2); the
+// compaction's VACUUM runs on a connection set to temp_store = FILE, so its
+// temporary copy of the file never sits in RAM.
+func TestCompact_VacuumRunsWithTempStoreFile(t *testing.T) {
+	path := compactFixture(t)
+	prev := compactVacuumHook
+	got := int64(-1)
+	compactVacuumHook = func(conn *sql.Conn) {
+		if err := conn.QueryRowContext(context.Background(), `PRAGMA temp_store`).Scan(&got); err != nil {
+			t.Errorf("reading temp_store: %v", err)
+		}
+	}
+	t.Cleanup(func() { compactVacuumHook = prev })
+
+	if res, err := Compact(context.Background(), path, CompactOptions{Version: "1.0.0"}); err != nil || !res.Compacted {
+		t.Fatalf("got (%+v, %v), want compacted", res, err)
+	}
+	if got != 1 {
+		t.Fatalf("temp_store on the VACUUM connection = %d, want 1 (FILE)", got)
 	}
 }
 
@@ -414,5 +437,34 @@ func TestCompact_PathWithSpacesAndUnicode(t *testing.T) {
 	}
 	if c := checkCompaction(t, path, "1.0.0"); c.Due || c.DBBytes != res.BytesAfter {
 		t.Fatalf("check after compacting: %+v (bytes_after %d)", c, res.BytesAfter)
+	}
+}
+
+// A compaction that runs while the messages search fill is pending records
+// no completed compaction — the migration stays due for the compaction after
+// the fill — but still clears the failure counter.
+func TestCompact_NoRecordWhileFTSRebuildPending(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	for key, value := range map[string]string{maintCompactFailures: "2", maintCompactFailuresVersion: "1.0.0"} {
+		if _, err := d.Exec(`INSERT INTO db_maintenance (key, value) VALUES (?, ?)`, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Compact(context.Background(), path, CompactOptions{Force: true, Reason: "manual", Version: "1.0.0"})
+	if err != nil || !res.Compacted {
+		t.Fatalf("Compact = %+v, %v; want compacted", res, err)
+	}
+	keys := maintenanceKeys(t, path)
+	for _, key := range []string{maintLastCompactedVersion, maintCompactedAt, maintCompactFailures, maintCompactFailuresVersion} {
+		if _, ok := keys[key]; ok {
+			t.Errorf("db_maintenance %s = %q while the fill is pending, want absent", key, keys[key])
+		}
+	}
+	if keys[maintFTSRebuildPending] != "1" {
+		t.Errorf("fts_rebuild_pending = %q, want 1", keys[maintFTSRebuildPending])
 	}
 }

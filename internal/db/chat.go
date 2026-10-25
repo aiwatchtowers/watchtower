@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ChatTurn is one message of a Desktop assistant conversation, projected for
@@ -74,6 +75,47 @@ func (db *DB) ListRecentChatTurns(contextType, contextID string, limit int) ([]C
 		return nil, nil
 	}
 	return out, nil
+}
+
+// ChatOwnerTurn is one owner message of an AI chat, for the instruction miner.
+type ChatOwnerTurn struct {
+	ConversationID int64
+	Text           string
+	At             time.Time
+}
+
+// ListOwnerChatTurnsSince returns the owner's turns (role='user') on the
+// active branch of every conversation with created_at (REAL unix seconds) at
+// or after since, oldest first. The Swift-owned chat tables may be absent on a
+// CLI-only install: that reads (nil, nil).
+func (db *DB) ListOwnerChatTurnsSince(since time.Time) ([]ChatOwnerTurn, error) {
+	present, err := db.ChatTablesPresent()
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, nil
+	}
+	rows, err := db.Query(activeBranchCTE+`SELECT m.conversation_id, m.text, m.created_at
+		FROM chat_messages m
+		JOIN chat_conversations c ON c.id = m.conversation_id
+		WHERE m.role = 'user' AND m.created_at >= ? AND `+onActiveBranch+`
+		ORDER BY m.created_at, m.id`, float64(since.Unix()))
+	if err != nil {
+		return nil, fmt.Errorf("listing owner chat turns since: %w", err)
+	}
+	defer rows.Close()
+	var out []ChatOwnerTurn
+	for rows.Next() {
+		var t ChatOwnerTurn
+		var at float64
+		if err := rows.Scan(&t.ConversationID, &t.Text, &at); err != nil {
+			return nil, fmt.Errorf("scanning owner chat turn: %w", err)
+		}
+		t.At = time.Unix(int64(at), 0).UTC()
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // activeBranchCTE yields active_path(id, parent_id): every message on its

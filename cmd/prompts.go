@@ -8,6 +8,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
 
@@ -131,6 +132,9 @@ func runPromptsShow(cmd *cobra.Command, args []string) error {
 	if version > 0 {
 		versionStr = fmt.Sprintf("v%d (customized)", version)
 	}
+	if _, moved := prompts.MovedToBuiltin[id]; moved {
+		fmt.Fprintln(out, "Used by the Morning brief built-in — change it in Automations → Built in.")
+	}
 	fmt.Fprintf(out, "Prompt: %s\n", id)
 	fmt.Fprintf(out, "Description: %s\n", desc)
 	fmt.Fprintf(out, "Version: %s\n", versionStr)
@@ -240,7 +244,7 @@ func runTune(cmd *cobra.Command, args []string) error {
 	defer func() {
 		errMsg := ""
 		if tuneErr != nil {
-			errMsg = tuneErr.Error()
+			errMsg = logredact.Full(tuneErr)
 		}
 		if runID > 0 {
 			_ = database.CompletePipelineRun(runID, itemsFound, totalInTok, totalOutTok, 0, totalAPITok, nil, nil, errMsg)

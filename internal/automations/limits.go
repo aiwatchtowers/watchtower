@@ -8,9 +8,10 @@ import (
 	"watchtower/internal/tools"
 )
 
-// Every exact value of the spec's limits lives here — except the list limits
-// and the get_email body clip (tools.MaxEmailBodyBytes), which the tools
-// package owns; do not change one without the spec changing first.
+// Every exact value of the spec's limits lives here — except the list limits,
+// the SDK result cap (tools.MaxReadResultBytes) and the get_email body clip
+// (tools.MaxEmailBodyBytes), which the tools package owns; do not change one
+// without the spec changing first.
 
 // Recipe file.
 const (
@@ -21,8 +22,9 @@ const (
 // Sandbox limits (spec §4, §5).
 const (
 	// MaxSDKResultBytes caps one SDK call's serialised result; a larger result
-	// is a ResultTooLarge error, never truncated.
-	MaxSDKResultBytes = 256 * 1024
+	// is a ResultTooLarge error, never truncated. The value is the tools
+	// package's read result cap, so the registry and the sandbox agree.
+	MaxSDKResultBytes = tools.MaxReadResultBytes
 	// DefaultListLimit is injected into a list tool call without a limit; the
 	// value is the tools package's, so the registry and the sandbox agree.
 	DefaultListLimit = tools.DefaultListLimit
@@ -60,6 +62,23 @@ const (
 	SummaryClipBytes = 1024
 	// MaxEventsPerRun caps the events carried by one event run (spec §8).
 	MaxEventsPerRun = 100
+)
+
+// Inbox card fields of output.inbox (panel and Inbox spec B2).
+const (
+	// MaxInboxActions caps a card's actions.
+	MaxInboxActions = 4
+	// MaxInboxActionLabelChars caps an action's label, in characters.
+	MaxInboxActionLabelChars = 40
+	// MaxInboxActionTextBytes caps a chat action's first message and an
+	// agent action's task.
+	MaxInboxActionTextBytes = 4 * 1024
+	// MaxInboxActionDataBytes caps a reply action's data, as canonical JSON.
+	MaxInboxActionDataBytes = 8 * 1024
+	// MaxInboxLinkBytes caps a card's link and a link action's open.
+	MaxInboxLinkBytes = 2048
+	// MaxInboxReplyValueChars caps a reply action's value, in characters.
+	MaxInboxReplyValueChars = 100
 )
 
 // Executor and scheduler (spec §7).

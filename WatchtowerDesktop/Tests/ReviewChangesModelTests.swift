@@ -1,4 +1,6 @@
 import GRDB
+import SwiftUI
+import ViewInspector
 import WatchtowerCore
 import WatchtowerTestSupport
 import XCTest
@@ -6,9 +8,10 @@ import XCTest
 
 /// Answers `workbench review <sub> …` from a script keyed by the subcommand
 /// (`args[2]`): one answer per call, the last repeating. A served `start`
-/// makes the round row exist, and a served `send` that sent closes the round
-/// and its drafts, as Go's do.
-private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
+/// makes the round row exist, a served `send` that sent closes the round
+/// and its drafts, and a served `approve` that sent closes the round as
+/// approved (resolving carried/outdated rows with `--resolve-open`), as Go's do.
+final class ReviewScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var script: [String: [String]] = [:]
     private var served: [String: Int] = [:]
@@ -77,6 +80,9 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
         if sub == "send", answer.contains(#""sent":true"#), let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
             try markSent(id)
         }
+        if sub == "approve", answer.contains(#""sent":true"#), let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
+            try markApproved(id, resolveOpen: args.contains("--resolve-open"))
+        }
         return Data(answer.utf8)
     }
 
@@ -85,6 +91,16 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
             try db.execute(sql: "UPDATE review_rounds SET status = 'sent' WHERE id = ?", arguments: [id])
             try db.execute(sql: "UPDATE review_comments SET status = 'sent' WHERE round_id = ? AND status IN ('draft','carried')",
                            arguments: [id])
+        }
+    }
+
+    private func markApproved(_ id: Int64, resolveOpen: Bool) throws {
+        try db.write { db in
+            try db.execute(sql: "UPDATE review_rounds SET status = 'sent', outcome = 'approved' WHERE id = ?", arguments: [id])
+            if resolveOpen {
+                try db.execute(sql: "UPDATE review_comments SET status = 'resolved' WHERE round_id = ? AND status IN ('carried','outdated')",
+                               arguments: [id])
+            }
         }
     }
 
@@ -108,7 +124,7 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
 }
 
 @MainActor
-private final class RecordingSink: ReviewLineSink {
+final class ReviewRecordingSink: ReviewLineSink {
     struct Line: Equatable {
         let text: String
         let key: SessionLineDelivery.LineKey
@@ -126,19 +142,19 @@ private final class RecordingSink: ReviewLineSink {
 
 /// Whether the session's agent works, as the pane's state center reports it.
 @MainActor
-private final class AgentFlag {
+final class ReviewAgentFlag {
     var working = false
 }
 
 @MainActor
-private struct Harness {
+struct ReviewModelHarness {
     let db: DatabasePool
     let path: String
     let projectID: Int64
     let sessionID: Int64
-    let cli: ScriptedRunner
-    let sink = RecordingSink()
-    let agent = AgentFlag()
+    let cli: ReviewScriptedRunner
+    let sink = ReviewRecordingSink()
+    let agent = ReviewAgentFlag()
     let model: ReviewChangesModel
 
     init() throws {
@@ -153,7 +169,7 @@ private struct Harness {
         self.path = path
         projectID = ids.0
         sessionID = ids.1
-        cli = ScriptedRunner(db: pool, projectID: ids.0, sessionID: ids.1)
+        cli = ReviewScriptedRunner(db: pool, projectID: ids.0, sessionID: ids.1)
         let agent = agent
         model = ReviewChangesModel(projectID: ids.0, sessionID: ids.1, cli: WorkbenchCLI(runner: cli), db: pool,
                                    lineDelivery: sink) { agent.working }
@@ -168,7 +184,7 @@ private struct Harness {
     }
 }
 
-private func startJSON(id: Int64, prev: Int64, tree: String = "t") -> String {
+func startJSON(id: Int64, prev: Int64, tree: String = "t") -> String {
     """
     {"ok":true,"round":{"id":\(id),"status":"open","mode":"quick","folder_root":"/r","base_sha":"b","base_label":"main",
      "tree_sha":"\(tree)\(id)","prev_round_id":\(prev),"prev_tree_sha":"","prev_tree_lost":false}}
@@ -177,7 +193,7 @@ private func startJSON(id: Int64, prev: Int64, tree: String = "t") -> String {
 
 /// One modified file per path; its new blob follows the hunk name, so a
 /// changed `hunk` is changed content.
-private func diffJSON(_ paths: [String], hunk: String = "h") -> String {
+func diffJSON(_ paths: [String], hunk: String = "h") -> String {
     let hunkFields = #""header":"@@ -1 +1 @@","old_start":1,"old_lines":1,"new_start":1,"new_lines":1,"lines":["-a","+b"]"#
     let entries: [String] = paths.map { path in
         """
@@ -189,9 +205,9 @@ private func diffJSON(_ paths: [String], hunk: String = "h") -> String {
     return #"{"ok":true,"diff":{"files":[\#(files)],"truncated":false},"from":"b","to":"t"}"#
 }
 
-private func diffJSON(path: String) -> String { diffJSON([path]) }
+func diffJSON(path: String) -> String { diffJSON([path]) }
 
-private func fileJSON(old: String, new: String) -> String {
+func fileJSON(old: String, new: String) -> String {
     func side(_ text: String) -> String {
         let escaped = text.replacingOccurrences(of: "\n", with: "\\n")
         return #"{"exists":true,"text":"\#(escaped)","binary":false,"too_large":false}"#
@@ -213,8 +229,8 @@ final class ReviewChangesModelTests: XCTestCase {
         super.tearDown()
     }
 
-    private func harness() throws -> Harness {
-        let h = try Harness()
+    func harness() throws -> ReviewModelHarness {
+        let h = try ReviewModelHarness()
         paths.append(h.path)
         return h
     }
@@ -290,6 +306,8 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await h.model.select("a.go")
         try await h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "why two?")
+        let stored = try await h.comments()
+        XCTAssertEqual(stored.map(\.lens), [""], "a comment without a lens stores an empty lens")
         try await h.model.toggleViewed("a.go")
         await h.model.send()
         XCTAssertEqual(h.model.round?.status, "sent")
@@ -367,6 +385,204 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.send()
         XCTAssertTrue(h.sink.lines.isEmpty)
         XCTAssertEqual(h.model.lastError, "nothing to send")
+    }
+
+    // MARK: - Approve (#964)
+
+    private static let approvedJSON = #"{"ok":true,"sent":true,"line":"Review round #7 approved — approved line"}"#
+
+    /// REVIEW-04 for Approve: Go closes the round first, then exactly one
+    /// line goes through `LineKey.review`; a second call types nothing.
+    func testReview04_ApproveTypesOnce() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        async let a: Void = h.model.approve(resolveOpen: false)
+        async let b: Void = h.model.approve(resolveOpen: false)
+        _ = await (a, b)
+        await h.model.approve(resolveOpen: false)
+        XCTAssertEqual(h.sink.lines, [.init(text: "Review round #7 approved — approved line", key: .review(7), sessionID: h.sessionID)])
+        XCTAssertEqual(h.cli.calls("approve").count, 1)
+        XCTAssertEqual(h.cli.calls("approve").first, ["workbench", "review", "approve", "--workbench", String(h.projectID),
+                                                      "--round", "7", "--json"])
+        XCTAssertEqual(h.model.round?.status, "sent")
+        XCTAssertEqual(h.model.round?.outcome, "approved")
+        XCTAssertNotNil(h.model.approvedAt)
+        XCTAssertEqual(h.model.lastSend, .submitted)
+        XCTAssertNil(h.model.lastError)
+        XCTAssertFalse(h.model.sending)
+        let stored = try await h.db.read { try String.fetchOne($0, sql: "SELECT outcome FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(stored, "approved")
+    }
+
+    /// Go refuses and the round is already closed (behind the model): it
+    /// shows closed with its stored outcome; nothing is typed.
+    func testApproveRefusedTypesNothing() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": #"{"ok":true,"sent":false}"#])
+        await h.model.open()
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent', outcome = 'changes' WHERE id = 7") }
+        await h.model.approve(resolveOpen: false)
+        XCTAssertTrue(h.sink.lines.isEmpty)
+        XCTAssertNil(h.model.lastSend)
+        XCTAssertNil(h.model.approvedAt)
+        XCTAssertEqual(h.model.lastError, ReviewChangesModel.alreadySentMessage)
+        XCTAssertEqual(h.model.round?.status, "sent", "a round Go closed is not open here either")
+        XCTAssertEqual(h.model.round?.outcome, "changes", "the stored outcome, not an assumed one")
+    }
+
+    /// Go refuses a round that is still open (open comments without
+    /// --resolve-open): it stays open and the message is not "already sent".
+    func testApproveRefusedOnAnOpenRoundKeepsItOpen() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": #"{"ok":true,"sent":false}"#])
+        await h.model.open()
+        await h.model.approve(resolveOpen: false)
+        XCTAssertTrue(h.sink.lines.isEmpty)
+        XCTAssertNil(h.model.approvedAt)
+        XCTAssertEqual(h.model.round?.status, "open")
+        XCTAssertEqual(h.model.round?.outcome, "")
+        XCTAssertEqual(h.model.lastError, ReviewChangesModel.approveRefusedMessage)
+        XCTAssertTrue(ReviewToolbar.canApprove(h.model), "the owner can try again")
+    }
+
+    /// Go refuses because the session went away under the model: the round
+    /// stays open and the blocker says why.
+    func testApproveRefusedWhenTheSessionIsGoneSaysSo() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": #"{"ok":true,"sent":false}"#])
+        await h.model.open()
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET session_id = NULL WHERE id = 7") }
+        await h.model.approve(resolveOpen: false)
+        XCTAssertTrue(h.sink.lines.isEmpty)
+        XCTAssertEqual(h.model.round?.status, "open")
+        XCTAssertEqual(h.model.lastError, "The session is gone")
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model))
+    }
+
+    func testApproveDuringARefreshTypesNothing() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        h.cli.hold("start")
+        let refresh = Task { await h.model.refresh() }
+        await h.cli.waitPending("start")
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model), "off while refreshing")
+        await h.model.approve(resolveOpen: false)
+        XCTAssertEqual(h.cli.calls("approve"), [])
+        XCTAssertEqual(h.sink.lines, [])
+        h.cli.release("start")
+        await refresh.value
+    }
+
+    func testApproveIsOffWhileItRuns() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        XCTAssertTrue(ReviewToolbar.canApprove(h.model))
+        h.cli.hold("approve")
+        let approving = Task { await h.model.approve(resolveOpen: false) }
+        await h.cli.waitPending("approve")
+        XCTAssertTrue(h.model.sending)
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model))
+        h.cli.release("approve")
+        await approving.value
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model), "off on the closed round")
+    }
+
+    func testSendSetsTheChangesOutcome() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["send": #"{"ok":true,"sent":true,"comments":1,"line":"review 7"}"#])
+        await h.model.open()
+        try await addDraft(h)
+        await h.model.send()
+        XCTAssertEqual(h.model.round?.outcome, "changes")
+    }
+
+    func testApprovalBlockerWithDrafts() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        XCTAssertNil(h.model.approvalBlocker)
+        try await addDraft(h)
+        await h.model.refresh()
+        XCTAssertEqual(h.model.approvalBlocker, "Send or delete the draft first")
+        try await addDraft(h)
+        await h.model.refresh()
+        XCTAssertEqual(h.model.approvalBlocker, "Send or delete the 2 drafts first")
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model))
+    }
+
+    func testApprovalBlockerNoSession() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        XCTAssertFalse(h.model.sessionGone)
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET session_id = NULL WHERE id = 7") }
+        await h.model.refresh()
+        XCTAssertTrue(h.model.sessionGone)
+        XCTAssertEqual(h.model.approvalBlocker, "The session is gone")
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model))
+    }
+
+    func testOpenEarlierCommentsListsCarriedAndOutdated() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        let (carried, outdated) = try await h.db.write { db -> (Int64, Int64) in
+            let anchor = CommentAnchor(quote: "q", prefix: "", suffix: "", heading: "")
+            let ids = try (1...3).map { n in
+                try ReviewQueries.addDraft(db, roundID: 7, path: "a.go", side: "new", startLine: n, endLine: n,
+                                           anchor: anchor, treeSHA: "t7", body: "c\(n)")
+            }
+            try db.execute(sql: "UPDATE review_comments SET status = 'carried' WHERE id = ?", arguments: [ids[0]])
+            try ReviewQueries.markOutdated(db, id: ids[1])
+            try db.execute(sql: "UPDATE review_comments SET status = 'sent' WHERE id = ?", arguments: [ids[2]])
+            return (ids[0], ids[1])
+        }
+        await h.model.refresh()
+        XCTAssertEqual(h.model.openEarlierComments.map(\.id), [carried, outdated])
+        XCTAssertNil(h.model.approvalBlocker, "earlier comments do not block; the popover resolves them")
+        await h.model.approve(resolveOpen: true)
+        XCTAssertEqual(h.cli.calls("approve").first?.contains("--resolve-open"), true)
+        XCTAssertEqual(h.model.openEarlierComments, [], "resolved with the approval, not dropped")
+        let statuses = try await h.comments().filter { [carried, outdated].contains($0.id) }.map(\.status)
+        XCTAssertEqual(statuses, [.resolved, .resolved])
+    }
+
+    func testToolbarShowsTheVerdictThenTheOutcome() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        try await addDraft(h)
+        await h.model.refresh()
+        let open = ReviewToolbar(model: h.model, inline: .constant(false)) {}
+        XCTAssertNoThrow(try open.inspect().find(button: "Request changes (1)"))
+        XCTAssertNoThrow(try open.inspect().find(button: "Approve"))
+        try await h.db.write { try $0.execute(sql: "DELETE FROM review_comments WHERE round_id = 7") }
+        await h.model.refresh()
+        await h.model.approve(resolveOpen: false)
+        let closed = ReviewToolbar(model: h.model, inline: .constant(false)) {}
+        XCTAssertNoThrow(try closed.inspect().find(text: "Approved"))
+        XCTAssertNoThrow(try closed.inspect().find(button: "Start next round"))
+        XCTAssertThrowsError(try closed.inspect().find(button: "Approve"))
+        XCTAssertThrowsError(try closed.inspect().find(button: "Request changes (0)"))
+    }
+
+    private func addDraft(_ h: ReviewModelHarness) async throws {
+        try await h.db.write { db in
+            _ = try ReviewQueries.addDraft(db, roundID: 7, path: "a.go", side: "new", startLine: 1, endLine: 1,
+                                           anchor: CommentAnchor(quote: "x", prefix: "", suffix: "", heading: ""), treeSHA: "t7", body: "x")
+        }
     }
 
     func testNewRoundCarriesPreviousComments() async throws {
@@ -658,7 +874,7 @@ final class ReviewChangesModelTests: XCTestCase {
 
     // MARK: - Deep mode
 
-    private func deepStartJSON(status: String = "open", chapterKey: String = "dir:cmd", tree: String = "t7") -> String {
+    func deepStartJSON(status: String = "open", chapterKey: String = "dir:cmd", tree: String = "t7") -> String {
         """
         {"ok":true,"round":{"id":7,"status":"\(status)","mode":"deep","phase":"chapters","chapter_key":"\(chapterKey)",
          "active_seconds":90,"folder_root":"/r","base_sha":"b","base_label":"main","tree_sha":"\(tree)","prev_round_id":0,
@@ -666,12 +882,12 @@ final class ReviewChangesModelTests: XCTestCase {
         """
     }
 
-    private func deepContextJSON() -> String {
+    func deepContextJSON() -> String {
         let lens = #"{"id":"correctness","name":"Correctness","builtin":true,"items":[{"key":"k1","text":"Edge cases?"}]}"#
         return #"{"ok":true,"items":[{"target_id":5,"text":"Ship it","intent":""}],"lenses":[\#(lens)],"lens_notes":["note"]}"#
     }
 
-    private func openDeep(_ h: Harness, paths: [String] = ["cmd/x.go", "pkg/y.go"]) async {
+    func openDeep(_ h: ReviewModelHarness, paths: [String] = ["cmd/x.go", "pkg/y.go"]) async {
         h.cli.script(["start": deepStartJSON(), "context": deepContextJSON(), "diff": diffJSON(paths)])
         await h.model.open()
     }
@@ -935,7 +1151,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(row?["phase"] as String?, "wrapup", "the newer pick lands last")
     }
 
-    private func activeSeconds(_ h: Harness) async throws -> Int? {
+    private func activeSeconds(_ h: ReviewModelHarness) async throws -> Int? {
         try await h.db.read { try Int.fetchOne($0, sql: "SELECT active_seconds FROM review_rounds WHERE id = 7") }
     }
 
@@ -985,16 +1201,17 @@ final class ReviewChangesModelTests: XCTestCase {
 
     // MARK: - Overview, agent notes, undo, the agent's answers (Plan 3)
 
-    private func overviewJSON(chapters: String = #"[{"title":"Core","paths":["pkg/y.go"],"core":true,"lenses":["correctness"]}]"#,
-                              coverage: String = "[]") -> String {
+    func overviewJSON(chapters: String = #"[{"title":"Core","paths":["pkg/y.go"],"core":true,"lenses":["correctness"]}]"#,
+                      coverage: String = "[]",
+                      risk: String = #"[{"path":"pkg/y.go","level":"high","why":"locks"}]"#) -> String {
         """
         {"ok":true,"overview":{"summary":"Adds y.","coverage":\(coverage),"out_of_scope":["cmd/x.go"],
-         "risk":[{"path":"pkg/y.go","level":"high","why":"locks"}],"chapters":\(chapters)},"overview_cached":false}
+         "risk":\(risk),"chapters":\(chapters)},"overview_cached":false}
         """
     }
 
     /// Awaits the overview's load and any follow-up it started.
-    private func awaitOverview(_ h: Harness) async {
+    func awaitOverview(_ h: ReviewModelHarness) async {
         var last: Task<Void, Never>?
         while let task = h.model.overviewTask, task != last {
             last = task
@@ -1003,13 +1220,13 @@ final class ReviewChangesModelTests: XCTestCase {
     }
 
     /// Deep mode on `a.go`, with these trees answered by `start` in turn.
-    private func scriptDeepUndo(_ h: Harness, trees: [String]) {
+    private func scriptDeepUndo(_ h: ReviewModelHarness, trees: [String]) {
         h.cli.script(["context": deepContextJSON(), "diff": diffJSON(["a.go"])])
         h.cli.script("start", trees.map { deepStartJSON(tree: $0) })
     }
 
     private func insertNote(
-        _ h: Harness,
+        _ h: ReviewModelHarness,
         kind: String,
         ord: Int = 1,
         path: String = "",
@@ -1031,7 +1248,7 @@ final class ReviewChangesModelTests: XCTestCase {
 
     // MARK: - Empty diff, busy retry, quiet state writes, next unviewed (#712)
 
-    private func overviewCalls(_ h: Harness) -> Int { h.cli.calls("overview").count }
+    private func overviewCalls(_ h: ReviewModelHarness) -> Int { h.cli.calls("overview").count }
 
     func testEmptyDiffStartsNoOverview() async throws {
         let quick = try harness()
@@ -1059,6 +1276,9 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script("diff", [diffJSON(["cmd/x.go"]), diffJSON([]), diffJSON(["cmd/x.go"])])
         h.cli.script("overview", [overviewJSON(), #"{"ok":true}"#])
         await h.model.open()
+        // The open's cached read lands first: switching to Deep during it
+        // would make the overview anew (on the second, empty answer).
+        await awaitOverview(h)
         try await h.model.setMode(.deep)
         await awaitOverview(h)
         guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
@@ -1191,8 +1411,8 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
         XCTAssertEqual(h.model.chapters.first?.source, .ai)
         XCTAssertFalse(h.model.aiChaptersPending)
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
-        XCTAssertNil(h.model.risk(for: "cmd/x.go"))
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
+        XCTAssertNil(h.model.highestRisk(for: "cmd/x.go"))
         XCTAssertEqual(h.model.estimateMinutes, ReviewChapters.estimateMinutes(changedLines: 4))
         let args = try XCTUnwrap(h.cli.calls("overview").first)
         XCTAssertEqual(args, ["workbench", "review", "overview", "--workbench", String(h.projectID), "--round", "7", "--json"])
@@ -1223,17 +1443,17 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertFalse(h.model.aiChaptersPending)
     }
 
-    func testAIChaptersDoNotReplaceChaptersWithChecks() async throws {
+    func testAIChaptersHeldBackOnceAChapterFileIsViewed() async throws {
         let h = try harness()
         h.cli.script(["overview": overviewJSON()])
         h.cli.hold("overview")
         await openDeep(h)
         XCTAssertEqual(h.model.phase, .chapters)
-        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setViewed(["cmd/x.go"], on: true)
         await h.cli.waitPending("overview")
         h.cli.release("overview")
         await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "not swapped under the owner's checks")
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "not swapped under the owner's progress")
         XCTAssertTrue(h.model.aiChaptersPending)
         h.model.useAIChapters()
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
@@ -1241,12 +1461,59 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.currentChapterKey, "dir:cmd")
     }
 
+    func testAIChaptersHeldBackOnceAChapterHasAComment() async throws {
+        let h = try harness()
+        h.cli.script(["overview": overviewJSON(), "file": fileJSON(old: "x\n", new: "one\ntwo\n")])
+        h.cli.hold("overview")
+        await openDeep(h)
+        await h.model.select("cmd/x.go")
+        try await h.model.addComment(path: "cmd/x.go", side: "new", startLine: 1, endLine: 1, body: "why?")
+        await h.cli.waitPending("overview")
+        h.cli.release("overview")
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertTrue(h.model.aiChaptersPending)
+    }
+
+    func testAIChaptersAppliedWhenNothingStarted() async throws {
+        let h = try harness()
+        h.cli.script(["overview": overviewJSON()])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertFalse(h.model.aiChaptersPending)
+    }
+
+    func testChapterRisksListsEveryRiskOfItsFiles() async throws {
+        let h = try harness()
+        let risks = #"[{"path":"pkg/y.go","level":"low","why":"naming"},{"path":"pkg/y.go","level":"high","why":"locks"},"#
+            + #"{"path":"cmd/x.go","level":"medium","why":"flags"}]"#
+        h.cli.script(["overview": overviewJSON(risk: risks)])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapterRisks("ai:1").map(\.why), ["locks", "naming"], "most serious first, only its files")
+        XCTAssertEqual(h.model.chapterRisks("dir:cmd").map(\.why), ["flags"])
+        XCTAssertEqual(h.model.risks(for: "pkg/y.go").count, 2)
+        XCTAssertEqual(h.model.chapterRisks("nope"), [])
+    }
+
+    func testHighestRiskPicksHighLevel() async throws {
+        let h = try harness()
+        let risks = #"[{"path":"pkg/y.go","level":"low","why":"naming"},{"path":"pkg/y.go","level":"high","why":"locks"},"#
+            + #"{"path":"pkg/y.go","level":"medium","why":"flags"}]"#
+        h.cli.script(["overview": overviewJSON(risk: risks)])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.why, "locks")
+        XCTAssertNil(h.model.highestRisk(for: "cmd/x.go"))
+    }
+
     func testAIChaptersSwitchOutsideTheChaptersPhase() async throws {
         let h = try harness()
         h.cli.script(["overview": overviewJSON()])
         h.cli.hold("overview")
         await openDeep(h)
-        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setViewed(["cmd/x.go"], on: true)
         try await h.model.setPhase(.meaning)
         await h.cli.waitPending("overview")
         h.cli.release("overview")
@@ -1389,11 +1656,11 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await awaitOverview(h)
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
         await h.model.refresh()
         await awaitOverview(h)
         XCTAssertEqual(h.model.overview, .onRequest)
-        XCTAssertNil(h.model.risk(for: "pkg/y.go"))
+        XCTAssertNil(h.model.highestRisk(for: "pkg/y.go"))
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, true])
     }
@@ -1418,7 +1685,10 @@ final class ReviewChangesModelTests: XCTestCase {
         await awaitOverview(h)
         guard case .outdated(let earlier) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
         XCTAssertEqual(earlier.summary, "Adds y.")
-        XCTAssertNil(h.model.risk(for: "pkg/y.go"))
+        XCTAssertNil(h.model.highestRisk(for: "pkg/y.go"))
+        let outdated = try XCTUnwrap(h.model.chapterRiskList("dir:pkg"), "an earlier version's risks still show")
+        XCTAssertEqual(outdated.risks.map(\.why), ["locks"])
+        XCTAssertTrue(outdated.outOfDate)
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false, true])
     }
@@ -1622,7 +1892,7 @@ final class ReviewChangesModelTests: XCTestCase {
     }
 
     /// Round 6 sent with one comment; opening round 7 carries it.
-    private func carriedFixture(_ h: Harness) async throws -> (source: Int64, copy: Int64) {
+    private func carriedFixture(_ h: ReviewModelHarness) async throws -> (source: Int64, copy: Int64) {
         let r6 = try await h.db.write { db -> Int64 in
             try db.execute(sql: Self.sentRoundSQL, arguments: [h.projectID, h.sessionID])
             return db.lastInsertedRowID
@@ -1787,7 +2057,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.round?.treeSha, "u7")
         XCTAssertEqual(h.model.overview, .loading)
         XCTAssertEqual(h.model.intentItems, items, "the Wrap-up marks keep their items")
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
         h.cli.release("overview")
         await awaitOverview(h)
     }

@@ -92,7 +92,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// action-bearing branch, before dispatch — `handleMeetingReminderAction` takes no
     /// `forwarded` flag of its own — so widening the wire payload cannot re-open it.
     ///
-    /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`, `transcriptID`,
+    /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`, `trackId`, `transcriptID`,
     /// `projectId`, `pane`, `subjectId`, `askId`, `automationId`, `runId`) must stay in sync with
     /// `NotificationForwarding.routedKeys`, the allowlist of what crosses the boundary.
     /// The self-received branches legitimately read more (`eventId`, `conferenceUrl`):
@@ -116,8 +116,11 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             } else {
                 appState?.selectedDestination = .digests
             }
-        case "track", "track_update", "task_overdue", "target_extract", "daily_summary", "update", "agent_action", "plan_usage":
-            routeNavigation(userInfo["type"] as? String, appState: appState)
+        case "track", "track_update", "briefing", "task_overdue", "target_extract", "daily_summary", "update",
+             "agent_action", "plan_usage":
+            routeNavigation(userInfo["type"] as? String, userInfo: userInfo, appState: appState)
+        case "account_purge":
+            appState?.openAccountConnection(source: userInfo["source"] as? String ?? "")
         case "voice_label":
             if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
                 await appState?.voiceRegistryCenter.open(.queue(transcriptID: id))
@@ -167,10 +170,19 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// Pushes whose click only moves the UI — no `forwarded` gate needed.
     /// Split out of `route` to keep its complexity in bounds.
     @MainActor
-    static func routeNavigation(_ type: String?, appState: AppState?) {
+    static func routeNavigation(_ type: String?, userInfo: [AnyHashable: Any] = [:], appState: AppState?) {
         switch type {
         case "track", "track_update":
-            appState?.selectedDestination = .tracks
+            // The Inbox's Tracks filter, on the updated track's card when the
+            // push names it (an Int, restored as one when forwarded).
+            if type == "track_update", let id = userInfo[NotificationForwarding.trackIDKey] as? Int {
+                appState?.navigateToTrack(id)
+            } else {
+                appState?.openInbox(InboxRoute(filter: .tracks))
+            }
+        case "briefing":
+            // The morning briefing push: today's day card.
+            appState?.navigateToDayPlan()
         case "task_overdue", "target_extract":
             appState?.selectedDestination = .targets
         case "daily_summary":

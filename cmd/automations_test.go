@@ -454,7 +454,8 @@ func TestAutomationsCLI_ShowJSONKeys(t *testing.T) {
 		"budget_tokens", "budget_minutes", "concurrency", "missed_policy", "pause_timeout_hours", "enabled",
 		"disabled_reason", "disabled_at",
 		"runnable", "needs_confirmation", "parse_error", "content_hash", "approval_hash", "confirmed_hash", "widening", "grants",
-		"changes", "changes_known", "changed_by", "changed_at", "auto_tools", "llm_auto_writes", "feeds_sources_to_llm")
+		"changes", "changes_known", "changed_by", "changed_at", "auto_tools", "llm_auto_writes", "feeds_sources_to_llm",
+		"builtin", "watch", "policy_blocked")
 }
 
 func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
@@ -462,7 +463,7 @@ func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
 	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
 		path := writeRecipe(t, t.TempDir(), "digest", text)
 		wantKeys(t, runAutomationsJSON(t, "validate", path), "ok", "errors", "slug", "name", "scope",
-			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm")
+			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm", "changes", "changes_known", "fields")
 	}
 }
 
@@ -578,7 +579,7 @@ func TestAutomationsCLI_RunsStepsOutputsJSONKeys(t *testing.T) {
 	outs := runAutomationsJSONList(t, "outputs")
 	require.Len(t, outs, 1)
 	wantKeys(t, outs[0], "id", "automation_id", "run_id", "kind", "title", "body", "priority", "created_at",
-		"read_at", "dismissed_at")
+		"read_at", "dismissed_at", "link", "actions", "done_at", "press")
 
 	fresh := c.indexRecipe(t, "fresh", autoCLIRecipeText(`return 1`))
 	for _, args := range [][]string{{"runs", idArg(fresh.ID)}, {"steps", idArg(committed)}} {
@@ -791,6 +792,52 @@ func TestAutomationsCLI_ValidateAgainstComputesWidening(t *testing.T) {
 	require.ErrorIs(t, err, db.ErrAutomationNotFound)
 }
 
+func TestAutomationsCLI_ValidateAgainstReportsChangesSinceConfirmed(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
+	a := c.confirmedRecipe(t, "pay", text)
+	c.runOnce(t, a, a.ApprovalHash) // the confirmed text is known from the run snapshot
+
+	src := writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "0 9 * * 1-5", "0 16 * * 1-5", 1))
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	require.Equal(t, true, v["ok"], v["errors"])
+	assert.Equal(t, true, v["changes_known"])
+	changes, ok := v["changes"].([]any)
+	require.True(t, ok)
+	require.Len(t, changes, 1)
+	ch := changes[0].(map[string]any)
+	assert.Equal(t, "trigger", ch["field"])
+	assert.Contains(t, ch["old"], "0 9 * * 1-5")
+	assert.Contains(t, ch["new"], "0 16 * * 1-5")
+
+	src = writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "return 1", "return 2", 1))
+	v = runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	assert.Equal(t, []any{map[string]any{"field": "script", "old": "", "new": ""}}, v["changes"])
+}
+
+func TestAutomationsCLI_ValidateAgainstUnchangedHasEmptyChanges(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
+	a := c.confirmedRecipe(t, "pay", text)
+	c.runOnce(t, a, a.ApprovalHash)
+	src := writeRecipe(t, t.TempDir(), "pay", text)
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	assert.Equal(t, []any{}, v["changes"])
+	assert.Equal(t, true, v["changes_known"])
+}
+
+func TestAutomationsCLI_ValidateChangesUnknownWithoutAgainst(t *testing.T) {
+	newAutoCLI(t)
+	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
+		path := writeRecipe(t, t.TempDir(), "digest", text)
+		out, err := runAutomations(t, "validate", path, "--json")
+		require.NoError(t, err, out)
+		compact := strings.Join(strings.Fields(out), "")
+		assert.Contains(t, compact, `"changes":[]`)
+		assert.Contains(t, compact, `"changes_known":false`)
+	}
+}
+
 func TestAutomationsCLI_ValidateAgainstEmptyWideningIsArray(t *testing.T) {
 	c := newAutoCLI(t)
 	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
@@ -950,7 +997,7 @@ func (c *autoCLI) assistantSave(t *testing.T, slug, text string) {
 	t.Helper()
 	cfg, err := loadAutomationsConfig()
 	require.NoError(t, err)
-	deps := automationAuthoringDeps(cfg, c.d)
+	deps := automationAuthoringDeps(cfg, c.d, nil)
 	reg := tools.New(c.d)
 	require.NoError(t, reg.Register(authoring.NewSaveAutomation(deps)))
 	raw, err := json.Marshal(map[string]any{"recipe_text": text, "slug": slug, "reason": "the owner asked"})
@@ -1043,4 +1090,120 @@ func TestAutomationsCLI_ShowChangesIgnoresButtonLabel(t *testing.T) {
 	changes, known, _, _ = showChanges(t, a.ID)
 	assert.Equal(t, []any{change("budget_tokens", "40000", "30000")}, changes, "no trigger entry for the label")
 	assert.True(t, known)
+}
+
+func TestAutomationsCLI_ValidateJSONFields(t *testing.T) {
+	newAutoCLI(t)
+	recipe := func(trigger string) string {
+		return "---\nname: Acme\n" + trigger + "missed: skip\nconcurrency: 2\nbudget:\n  tokens: 50000\n  minutes: 3\n---\n```js\nreturn 1\n```\n"
+	}
+	cases := []struct{ name, trigger, want string }{
+		{"schedule", "trigger:\n  schedule: \"0 9 * * 1-5\"\n", "schedule: 0 9 * * 1-5"},
+		{"event", "trigger:\n  event:\n    type: slack.new_messages\n    where:\n      channel: acme-*\n      account: acme\n", `event: slack.new_messages where account="acme", channel="acme-*"`},
+		{"manual", "trigger:\n  manual: true\n", "manual"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeRecipe(t, t.TempDir(), "acme", recipe(c.trigger))
+			v := runAutomationsJSON(t, "validate", path)
+			require.Equal(t, true, v["ok"], "%v", v["errors"])
+			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2",
+				"budget": map[string]any{"tokens": float64(50000), "minutes": float64(3)}}, v["fields"])
+		})
+	}
+	bad := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", "broken"))
+	assert.Equal(t, map[string]any{}, bad["fields"])
+}
+
+func TestAutomationsRun_WatchSinceQueues(t *testing.T) {
+	c := newC3CLI(t)
+	_, a := c.watchedTrack(t, "watch the refund decision")
+	signals := 0
+	orig := builtinRunSignal
+	builtinRunSignal = func(*config.Config) (int, error) { signals++; return 4242, nil }
+	t.Cleanup(func() { builtinRunSignal = orig })
+
+	m := runAutomationsJSON(t, "run", idArg(a.ID), "--since", "2026-01-01T02:00:00+02:00")
+	assert.Equal(t, true, m["at_next_sync"])
+	assert.Equal(t, true, m["daemon_running"])
+	assert.Equal(t, 1, signals)
+	runs := c.runs(t, a.ID)
+	require.Len(t, runs, 1)
+	assert.Equal(t, db.RunQueued, runs[0].Status, "only queued: the watch slot runs it")
+	assert.Equal(t, db.TriggerManual, runs[0].Trigger)
+	assert.JSONEq(t, `{"builtin":{"since":"2026-01-01T00:00:00Z"}}`, runs[0].EventJSON)
+	assert.Zero(t, c.gen.CallCount())
+
+	_, err := runAutomations(t, "run", idArg(a.ID), "--since", "2026-02-01T00:00:00Z")
+	require.Error(t, err, "another Scan from is queued already")
+	assert.Len(t, c.runs(t, a.ID), 1)
+
+	owner := (&autoCLI{d: c.d, personal: c.personal}).confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+	tmt := c.builtinRow(t, trackMyThreadsID)
+	for _, id := range []int64{owner.ID, tmt.ID} {
+		_, err := runAutomations(t, "run", idArg(id), "--since", "2026-01-01T00:00:00Z")
+		require.Error(t, err)
+		assert.Equal(t, "--since is only for a watch", err.Error())
+		assert.Empty(t, c.runs(t, id))
+	}
+}
+
+// TestAutomationsRun_WatchRefusedWithTracksOrDigestsOff: the watch slot
+// does not run with Track my threads or Slack Digests off, so a run would
+// wait forever; it is refused and nothing is queued.
+func TestAutomationsRun_WatchRefusedWithTracksOrDigestsOff(t *testing.T) {
+	for name, key := range map[string]string{"tracks_off": "tracks:\n  enabled: true", "digests_off": "digest:\n  enabled: true"} {
+		t.Run(name, func(t *testing.T) {
+			c := newC3CLI(t)
+			_, a := c.watchedTrack(t, "watch the refund decision")
+			raw, err := os.ReadFile(flagConfig)
+			require.NoError(t, err)
+			off := strings.Replace(string(raw), key, strings.Replace(key, "true", "false", 1), 1)
+			require.NotEqual(t, string(raw), off)
+			require.NoError(t, os.WriteFile(flagConfig, []byte(off), 0o600))
+			_, err = runAutomations(t, "run", idArg(a.ID))
+			require.Error(t, err)
+			assert.Equal(t, "Watches need Track my threads and Slack Digests on", err.Error())
+			assert.Empty(t, c.runs(t, a.ID))
+		})
+	}
+}
+
+func TestAutomationsRun_ReactionsRefused(t *testing.T) {
+	c := newC3CLI(t)
+	c.moved(t, reactionsID)
+	a := c.builtinRow(t, reactionsID)
+	_, err := runAutomations(t, "run", idArg(a.ID))
+	require.Error(t, err)
+	assert.Equal(t, "Reactions run for each reaction you place", err.Error())
+	assert.Empty(t, c.runs(t, a.ID))
+}
+
+func TestAutomationsShow_WatchBlock(t *testing.T) {
+	c := newC3CLI(t)
+	id, a := c.watchedTrack(t, "watch the refund decision")
+	show := runAutomationsJSON(t, "show", idArg(a.ID))
+	block, ok := show["watch"].(map[string]any)
+	require.True(t, ok, "show of a watch recipe has a watch block: %v", show["watch"])
+	wantKeys(t, block, "track_id", "instruction", "template_shaped")
+	assert.Equal(t, float64(id), block["track_id"])
+	assert.Equal(t, "watch the refund decision", block["instruction"])
+	assert.Equal(t, true, block["template_shaped"])
+
+	owner := (&autoCLI{d: c.d, personal: c.personal}).indexRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+	ownerShow := runAutomationsJSON(t, "show", idArg(owner.ID))
+	v, present := ownerShow["watch"]
+	assert.True(t, present)
+	assert.Nil(t, v, "any other automation's watch block is null")
+
+	list, err := runAutomations(t, "list", "--json")
+	require.NoError(t, err)
+	var items []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(list), &items))
+	byID := map[float64]float64{}
+	for _, it := range items {
+		byID[it["id"].(float64)] = it["track_id"].(float64)
+	}
+	assert.Equal(t, float64(id), byID[float64(a.ID)])
+	assert.Zero(t, byID[float64(owner.ID)])
 }

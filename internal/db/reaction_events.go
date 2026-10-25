@@ -129,3 +129,34 @@ func (db *DB) ResetReactionEventsSeeded() error {
 	}
 	return nil
 }
+
+// pruneReactionEventsWhere matches accountID's ledger rows whose message was
+// posted before the given unix second — the rows postedSince drops before the
+// ledger is consulted, so they can never stop or fire an event. CAST takes the
+// "<unix seconds>" part of a "<seconds>.<micros>" ts; one that does not parse
+// casts to 0, as postedSince drops it too.
+const pruneReactionEventsWhere = `account_id = ? AND CAST(message_ts AS INTEGER) < ?`
+
+// PruneReactionEventsBefore deletes accountID's ledger rows for messages
+// posted before the given time (the account's seed stamp) and returns how many went.
+// It reads first and writes only when such a row exists, so a steady-state
+// poll takes no write lock; in practice it deletes once after each seed.
+func (db *DB) PruneReactionEventsBefore(accountID int64, before time.Time) (int64, error) {
+	var exists bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM reaction_events WHERE `+pruneReactionEventsWhere+`)`,
+		accountID, before.Unix()).Scan(&exists); err != nil {
+		return 0, fmt.Errorf("reading old reaction events: %w", err)
+	}
+	if !exists {
+		return 0, nil
+	}
+	res, err := db.Exec(`DELETE FROM reaction_events WHERE `+pruneReactionEventsWhere, accountID, before.Unix())
+	if err != nil {
+		return 0, fmt.Errorf("pruning old reaction events: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("pruning old reaction events: %w", err)
+	}
+	return n, nil
+}

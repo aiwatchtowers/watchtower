@@ -41,8 +41,8 @@ until the next morning's hour.
      zone open (`GettingReadyPolicy.entries`);
   3b. `needsDigests` (#575, after 3a; the two never meet: their features are disjoint) — no content, the feature `runsOnlyWithDigests`
      (tracks, people cards) and `slack-digests` is in `disabledFeatureIDs`.
-     Dual path with the daemon's compound gates (`phaseTracksAndRollups`,
-     `phaseCustomTrackScan`, `phasePeopleCards` in `internal/daemon/daemon.go`,
+     Dual path with the daemon's compound gates (`phaseTrackMyThreads`,
+     `phaseWatchSlot`, `phasePeopleCards` in `internal/daemon/daemon.go`,
      the people backfill hook in `history_backfill.go`); the Go guard rows
      `tracks_starved_without_digest` / `people_starved_without_digest` pin the
      gates, and `FeatureReadinessTests.testRunsOnlyWithDigestsMatchesTheDaemonGates`
@@ -283,10 +283,28 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   action. Keyed by `SidebarDestination.rawValue` because `SidebarDestination`
   lives in the Desktop target (plan correction 5); Workbench's key is
   `"projects"`, its persisted raw value (R1). `{hour}` is filled from
-  `briefing.hour`/`day_plan.hour`. Exempt tabs, which keep their own states:
+  `briefing.hour` (the day plan has no hour of its own since C2, 2026-10-22:
+  it is made with the brief by the Morning brief built-in). Exempt tabs, which keep their own states:
   `search`, `usage`, `mcpServer`, `chat` (`EmptyStateCopy.swift:61`).
   `EmptyStateCopyCoverageTests` sweeps `SidebarDestination.allCases`: every tab
   has copy XOR is exempt, and the icon matches the sidebar's.
+- **C1, the one Inbox (2026-10-22, board #861):** the `briefings`, `dayPlan`,
+  `tracks` and `ideas` destinations are gone. The table is now keyed by a
+  `SidebarDestination.rawValue` or an Inbox filter's `InboxFilter.emptyCopyKey`:
+  All → `inbox`, Day → `briefings` (the `{hour}` row, **Change the hour**),
+  Messages → `inboxMessages`, Tracks → `tracks`, Ideas → `ideas`, Automations →
+  `inboxAutomations` (no feature, no status line). `TabEmptyState(copyKey:)`
+  draws a filter's empty list; the empty All and Day lists show
+  `NoOwnerEmptyState` while the owner is unknown, and All keeps the reaction
+  cheat sheet. The `dayPlan` row stays for `featureCard` (Getting ready).
+  Generate Briefing, the Day Plan screen's empty state and Ideas' Create /
+  Find Ideas left with their screens: the day card's **Make today's brief and
+  plan** (today's placeholder), **Make today's brief** (a plan-only today, or
+  the placeholder with Day Plan off), **Make today's plan** (a brief-only
+  today, or the placeholder with Daily Briefing off) and the Ideas filter's
+  `+` and ⋯ → **Find Ideas in Past Messages…** replace them. With both
+  features off no filter lists the placeholder (`InboxFeedSnapshot.briefingOn`
+  / `dayPlanOn`, from the disabled feature ids passed to `InboxFeedQueries.read`).
 - **Views.** `FeatureEmptyState` (`WatchtowerDesktop/Sources/Views/Components/FeatureEmptyState.swift`) is
   values and closures only (ViewInspector-driven, no `@Environment(AppState)`);
   `TabEmptyState` (`WatchtowerDesktop/Sources/Views/Components/TabEmptyState.swift`) binds it to one tab
@@ -304,8 +322,9 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
 - **The one button** (`FeatureEmptyState.visibleAction`, `:103`): Turn on while
   `off` — for **any** off feature with a registry id, hiding the tab's own
   action while off (R13); Connect <source> while `needsSource`; otherwise the
-  table's action ("Change the hour" for the hours, which opens Settings →
-  Features — owner, ask #299 —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
+  table's action ("Change the hour" for the hours, which since C2 opens
+  Automations on the Morning brief row, `EmptyStateAction.openBuiltin` —
+  Settings → Features until then, owner, ask #299 —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
   never show in a state that doesn't call for them.
 - **Turn on** goes through `AppState.turnOnFeatureFromEmptyState`
   (`WatchtowerDesktop/Sources/App/AppState.swift:1215`, plan correction 6): `FeatureManagerService.enableNow`
@@ -318,13 +337,24 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   as **Try again** and only restarts. An error recorded while the feature was
   off goes stale once it is on another way (`emptyStateTurnOnError`, `:1201`).
 - **Day Plan, established install** (owner, ask #299): with day-plan rows
-  (`.dayPlan` ready) but no plan for the date, `DayPlanView.emptyState` shows
+  (`.dayPlan` ready) but no plan for the date, `DayPlanView.emptyState` showed
   only "Today's plan at or after HH:00" (`todaysPlanLine`, the day-plan hour)
-  instead of the first-run screen; a fresh install keeps the shared empty state.
+  instead of the first-run screen. Moved with the Day Plan screen in C1
+  (2026-10-22, T11b) to today's placeholder day card (`InboxDayNothingReady`:
+  `todaysPlanLine` and its brief twin `todaysBriefLine` while the feature is
+  `.ready`, the first-run copy otherwise, no time with no owner; test
+  `InboxDayPaneTests.testDayPlanEstablishedWithoutTodaysPlanSaysWhen`), which
+  offers **Make today's brief and plan** (`briefing generate`, then
+  `day-plan generate --date <today>`). A brief-only today says "No plan for
+  this day yet." and offers **Make today's plan** (`InboxDayPlanBlock`); a
+  plan-only today offers **Make today's brief**. A half whose feature is off
+  is never offered: the placeholder says and makes only the other one.
 - **Catch Up** reads the readiness of `.digests` only (R10; the spec said digests
   + inbox, the component takes one feature).
 - **Spec §1.5 deviation as built:** the Inbox row has no button — the reaction
-  cheat sheet is inline (spec row updated).
+  cheat sheet is inline (spec row updated). Since C1 T11b the All filter
+  lists today's day card once the owner is known, so the cheat sheet then
+  sits behind `?`; with no owner All stays empty, with OWNER-02 and the sheet.
 
 ## Fresh-install first cycle (Go daemon, P4)
 
@@ -337,7 +367,7 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   (`internal/daemon/daemon.go:1213`) asks `Pipeline.HasData`
   (`internal/guide/pipeline.go:189`, the negation of `OutcomeNoData`) **before**
   `trackedPipelineRun` (`daemon.go:1235`), so a workspace without data writes no
-  empty `people` row in `pipeline_runs` every cycle (the `phaseCustomTrackScan`
+  empty `people` row in `pipeline_runs` every cycle (the `phaseWatchSlot`
   precedent). A failed check logs and runs anyway, so the error lands in a
   tracked row. `LastOutcome() == OutcomeNoData` after the run (`daemon.go:1250`)
   is the backstop for a window that moved between the check and the run: no
@@ -364,6 +394,14 @@ zone while the install is still filling up, then (since 2026-10-19, #717) the
 feed, Workbench, links and numbers — what needs the owner now. It composes
 nothing: no AI call, no DB write; every zone reads existing tables (the feed's
 Done/Hide is the one writer), and Getting ready reads P1's readiness.
+
+### Purge banner (2026-10-21, #601)
+
+`AccountPurgeBanner` (`Views/Home/AccountPurgeBanner.swift`) sits above
+Getting ready while `AccountPurgeCenter.openRows` is non-empty: one red line
+per account whose data is scheduled for deletion or being deleted
+(`AccountPurgeNoticePolicy.line`), **Reconnect** only while `state =
+'scheduled'`. See [revoke-purge.md](revoke-purge.md).
 
 ### Destination and landing
 
@@ -510,7 +548,10 @@ content width). No migration, no AI, no daemon phase.
     `MAX(created_at, mentioned_at)` within 72 h (`windowHours`), not snoozed
     (`snooze_until = ''` or elapsed), newest first, `LIMIT 200` (`rowLimit`).
     `read_at` never hides a row: a read row stays and renders secondary;
-    `priority` is not used.
+    `priority` is not used. A `jira_*` row whose key has no live
+    `jira_issues` row (`is_deleted = 0`) is left out (2026-10-22): an issue
+    deleted at the source (`db.DeleteJiraIssues`, SRCDEL) leaves its inbox
+    item pending with blank text, and its link would lead nowhere.
   - Due reminders (`ReminderQueries.fetchDue`), proposals/failed actions
     (`AgentActionQueries.awaitingOwner`, workbench rows excluded there), and
     own targets overdue or due today (`dueTargets`: `project_id IS NULL` —
@@ -525,9 +566,11 @@ content width). No migration, no AI, no daemon phase.
     `LIMIT 200`. Source `.automations`, tables `automation_outputs` +
     `automations`. A row shows the output's title (or "Automation output"),
     the automation's name as the place, the body, chip "Automation"; a click
-    opens its run in the Automations tab (`HomeLink.automationRun`) — always
-    visible, unlike Inbox, which hides with no message, tracker or calendar
-    source.
+    opens its Inbox card with its buttons (`HomeLink.inboxOutput` →
+    `ActionStripViewModel.select(.output)`, which marks it read, so it leaves
+    the feed), or its run in the Automations tab (`openAutomationRun`) while
+    the Inbox's view model is not built yet (the Inbox has no source gate
+    since C1) — since #449 (2026-10-22). `includeRead: false`: an opened note is not shown.
   - Calendar (`events`): today and the next 4 days through
     `isShownEvent` — no all-day, no `cancelled`, none the owner
     declined (attendee email equal to the event's `accountEmail`,
@@ -570,7 +613,7 @@ content width). No migration, no AI, no daemon phase.
   target stores it as a UTC `yyyy-MM-ddTHH:mm` minute, the form Go's
   `UnsnoozeExpiredTargets` compares against (a bare date would come back at
   00:00 UTC, the same evening west of UTC). Automation outputs through
-  `AutomationQueries.markOutputRead` (Done) / `dismissOutput` (Hide — no
+  `AutomationQueries.markOutputDone` (Done, writes `done_at`) / `dismissOutput` (Hide — no
   snooze, the output is dismissed as in Inbox); an output closed elsewhere
   matches no row, which is success. Proposals and events have no
   action: `HomeCenter.act` ignores them (`FeedRef.hasActions`). A failure un-hides the
@@ -636,7 +679,10 @@ log.") and never reads as empty.
   briefing's weekday), Catch-Up ("new recap", highlighted), Day plan
   ("N of M done"), Digests. Each row only while its tab is visible
   (`AppState.homeLinksAllowed`, `AppState+Home.swift:32`). View:
-  `LinksZoneView.swift`.
+  `LinksZoneView.swift`. Since C1 (2026-10-22) Briefing and Day plan are
+  allowed while their feature is on (`.inbox` has no gate), and open today's
+  day card (`InboxRoute.forFeature`); Getting ready's lines for the briefing,
+  day plan, tracks and ideas open the Inbox on the matching filter.
 - **Numbers** — `HomeNumbersQueries.read` (`HomeNumbersQueries.swift:31`), a
   read of its own in `HomeCenter` (own observation task and token, so a slow
   count never blocks the feed), one independent group per source; a throw marks

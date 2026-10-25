@@ -154,15 +154,10 @@ func (db *DB) SetSlackAccountEnabled(id int64, enabled bool) error {
 
 // SetSlackAccountAuthState updates status/error telemetry for accountID.
 // status is one of "ok", "error", "revoked", "removed".
+// It also keeps the access facts (revoked_at, access_ok_at) and never writes
+// over a purged row except with "ok", which re-enables it (account_access.go).
 func (db *DB) SetSlackAccountAuthState(id int64, status, errMsg string) error {
-	res, err := db.Exec(`UPDATE slack_accounts SET status = ?, error = ? WHERE id = ?`, status, errMsg, id)
-	if err != nil {
-		return fmt.Errorf("setting auth state for slack account %d: %w", id, err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("setting auth state: no slack_accounts row %d", id)
-	}
-	return nil
+	return db.setAccountAuthState("slack_accounts", reenableOnLoginSQL, id, status, errMsg)
 }
 
 // SetSlackAccountError records errMsg on accountID's error column without

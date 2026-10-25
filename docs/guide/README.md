@@ -17,6 +17,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Turning features on and off](concepts/features-on-and-off.md) — the switches, what feeds what, and how to read an empty tab's status line
 - [AI providers, models and cost](concepts/ai-providers-and-cost.md) — Claude, Codex or Ollama, light and strong models, what costs tokens, and your Claude plan limits
 - [Privacy](concepts/privacy.md) — what stays on your Mac, what goes to your AI provider, and what goes to iCloud
+- [Revoked access deletes an account's data](concepts/revoked-access.md) — when a revoked or long-unreached account's synced data is deleted, what is kept, and how to stop it
+- [Managed by your organization](concepts/managed-by-your-organization.md) — what a locked control means, what your company can decide, and that your data stays
 
 ## Troubleshooting
 
@@ -38,16 +40,16 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [Home](features/home.md) — what needs you right now, setup progress, and how the menu works
 - [Catch Up](features/catch-up.md) — a recap of a stretch of time you were away: what happened and what needs you
-- [Briefings](features/briefings.md) — one morning read of your attention items, day, channels and people
-- [Day Plan](features/day-plan.md) — today as time blocks plus a backlog, with calendar conflicts flagged
-- [Inbox](features/inbox.md) — reminders, proposals to approve, Slack reaction commands and attention detection
-- [Ideas & Decisions](features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage
+- [Briefings](features/briefings.md) — one morning read of your attention items, day, channels and people, on the Inbox's Your day card
+- [Day Plan](features/day-plan.md) — today as time blocks plus a backlog on the Inbox's Your day card, with calendar conflicts flagged
+- [Inbox](features/inbox.md) — one list of your day, messages, tracks, ideas, proposals, reminders and automation cards, plus Slack reaction commands
+- [Ideas & Decisions](features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage in the Inbox
 - [Mail](features/mail.md) — what Gmail, Outlook and IMAP mail feeds into Catch Up, briefings, meeting prep and Ideas
 
 ## Execution
 
 - [Targets](features/targets.md) — your own to-do list, with a next step per target and an assistant that breaks work down on your instruction
-- [Tracks](features/tracks.md) — the requests and decisions waiting on you, pulled out of Slack digests, plus custom watches on topics you describe
+- [Tracks](features/tracks.md) — the requests and decisions waiting on you, pulled out of Slack digests, plus custom watches on topics you describe, as Inbox cards
 - [Jira and Linear](features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards and Linear teams
 - [Linear](features/linear.md) — connect Linear workspaces, pick teams, and let the assistant read and change Linear issues
 
@@ -70,6 +72,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Code viewer](features/workbench/code-viewer.md) — read and edit the folder's files, jump to definitions with Open Quickly, and ask about code
 - [Switching branches](features/workbench/branches.md) — switch, create, fetch and check out branches from a workbench page without losing work
 - [Worktrees and cleanup](features/workbench/worktrees-and-cleanup.md) — an own git worktree per parallel session, and safe removal of what a session leaves behind
+- [Reviewing a spec or plan](features/workbench/spec-review.md) — an independent reviewer checks the document against your idea; mark its findings and send the round
 - [Branch review](features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
 - [Methodology](features/workbench/methodology.md) — the workflow file, **Agent Settings…** and the ask guard that shape how agents work
 - [Your instructions](features/workbench/instructions.md) — standing directions for every agent, a target procedure, and suggestions from what you repeat
@@ -84,8 +87,10 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Quick Connections](features/quick-connections.md) — plug other tools' MCP servers into the chat as read-only sources
 - [Memory](features/memory.md) — the assistant's long-term notebook of people, projects and beliefs, in plain files you can edit
 - [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants
+- [Built-in automations](features/automations-built-in.md) — Morning brief, Track my threads, Idea finder and Reactions: when they run, on and off, editing and reset
 - [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe, event triggers and the five ready-made templates
-- [Reactions and tracks in Automations](features/automations-rules.md) — the Reactions and Tracks sections, reaction-triggered recipes and the dictionary editor
+- [Buttons on automation cards](features/automations-inbox-buttons.md) — Open, Chat, Agent and Reply buttons on an automation's Inbox card, and what a press does
+- [Reactions and tracks in Automations](features/automations-rules.md) — the Reactions card and its dictionary, reaction-triggered recipes, and custom tracks as watches
 - [Automations: confirmation, budgets and writes](features/automations-safety.md) — what you confirm, the per-run budget, how writes wait for you and auto grants
 
 ## Meetings & calendar
@@ -107,3 +112,4 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Keyboard shortcuts](reference/keyboard-shortcuts.md) — every key equivalent, by area
 - [Command line](reference/cli.md) — the `watchtower` commands, grouped
 - [Glossary](reference/glossary.md) — the terms the guide uses, one line each
+- [Organization policy for admins](reference/organization-policy.md) — the configuration profile keys an MDM can force, what each does, and how to check a Mac

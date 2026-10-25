@@ -10,6 +10,7 @@ import (
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/devpack"
+	"watchtower/internal/providers"
 )
 
 // codexFindBinary looks codex up when config has no codex_path. A seam so no
@@ -32,6 +33,10 @@ var workbenchLaunchArgsCmd = &cobra.Command{
 	Args:              cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if err := checkLaunchArgsFlags(); err != nil {
+			return err
+		}
+		// The agent kind is its provider: a forbidden one is refused (#608).
+		if err := providers.Allowed(launchArgsFlagAgent); err != nil {
 			return err
 		}
 		cfg, err := config.Load(flagConfig)

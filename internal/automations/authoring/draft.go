@@ -10,6 +10,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
@@ -39,6 +40,7 @@ type draftArgs struct {
 	RecipeText  string `json:"recipe_text" jsonschema:"the whole recipe file: frontmatter, description and one js block"`
 	Slug        string `json:"slug,omitempty" jsonschema:"the slug of the saved automation this draft edits; omit for a new recipe"`
 	WorkbenchID int64  `json:"workbench_id,omitempty" jsonschema:"the workbench the recipe belongs to; omit for a personal recipe"`
+	BuiltinID   string `json:"builtin_id,omitempty" jsonschema:"the built-in this draft edits"`
 }
 
 // DraftResult is draft_automation's result. Every slice is [] when empty,
@@ -141,7 +143,7 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	if err := json.Unmarshal(call.Args, &a); err != nil {
 		return nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
-	res, err := evaluate(ctx, d, a)
+	res, err := evaluate(ctx, d, a, call.Binding.ConversationID)
 	d.cacheDraft(call.Binding, a.RecipeText, res, err)
 	if err != nil {
 		return nil, err
@@ -149,8 +151,9 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	return res, nil
 }
 
-// evaluate validates a draft, computes its widening and dry-runs it.
-func evaluate(ctx context.Context, d Deps, a draftArgs) (*DraftResult, error) {
+// evaluate validates a draft, computes its widening and dry-runs it; the dry
+// run's reads spend conversation's read budget (READ-01).
+func evaluate(ctx context.Context, d Deps, a draftArgs, conversation int64) (*DraftResult, error) {
 	if strings.TrimSpace(a.RecipeText) == "" {
 		return nil, &tools.ValidationError{Msg: "recipe_text is required"}
 	}
@@ -160,6 +163,12 @@ func evaluate(ctx context.Context, d Deps, a draftArgs) (*DraftResult, error) {
 	scope := automations.Scope{Kind: automations.ScopePersonal}
 	if a.WorkbenchID > 0 {
 		scope = automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: a.WorkbenchID}
+	}
+	if a.BuiltinID != "" {
+		if err := checkBuiltinDraft(a); err != nil {
+			return nil, err
+		}
+		scope.BuiltinID, a.Slug = a.BuiltinID, a.BuiltinID
 	}
 	res := &DraftResult{
 		Errors: []string{}, Widening: []string{},
@@ -181,7 +190,7 @@ func evaluate(ctx context.Context, d Deps, a draftArgs) (*DraftResult, error) {
 	}
 	res.OK = true
 	res.Manifest = manifestOf(r, m, a.Slug)
-	if res.Widening, err = widening(d.DB, scope, a.Slug, res.Manifest.Permissions); err != nil {
+	if res.Widening, err = draftWidening(d.DB, scope, a.Slug, res.Manifest.Permissions); err != nil {
 		return nil, err
 	}
 	refused, err := isUnconfirmedRecipe(d.DB, scope, res.Manifest.ApprovalHash)
@@ -192,7 +201,11 @@ func evaluate(ctx context.Context, d Deps, a draftArgs) (*DraftResult, error) {
 		res.DryRun = &DraftDryRun{Steps: []DraftStep{}, Outputs: []DraftOutput{}, Status: dryRunRefused, Error: msgUnconfirmedRecipe}
 		return res, nil
 	}
-	rep, err := automations.DryRunInMemory(ctx, d.backends(), r, automations.DryRunOptions{Budget: draftBudget(r.Budget)})
+	b := d.backends()
+	if scope.BuiltinID != "" && b.DefaultPrompt == nil {
+		b.DefaultPrompt = builtin.DefaultPromptFunc // builtin.defaultPrompt(name) in the dry run
+	}
+	rep, err := automations.DryRunInMemory(ctx, b, r, automations.DryRunOptions{Budget: draftBudget(r.Budget), ConversationID: conversation})
 	if err != nil {
 		return nil, fmt.Errorf("draft_automation: %w", err)
 	}
@@ -228,6 +241,36 @@ func triggerText(t automations.Trigger) string {
 	return string(t.Kind)
 }
 
+// checkBuiltinDraft refuses a built-in draft that names no known built-in,
+// a workbench, or another slug.
+func checkBuiltinDraft(a draftArgs) error {
+	switch _, ok := builtin.Lookup(a.BuiltinID); {
+	case !ok:
+		return &tools.ValidationError{Msg: fmt.Sprintf("there is no built-in %q", a.BuiltinID)}
+	case a.WorkbenchID != 0:
+		return &tools.ValidationError{Msg: "a built-in is personal: omit workbench_id"}
+	case a.Slug != "" && a.Slug != a.BuiltinID:
+		return &tools.ValidationError{Msg: "a built-in's slug is its builtin_id: omit slug"}
+	}
+	return nil
+}
+
+// draftWidening is widening, over the built-in's row for a built-in draft
+// (its confirmed text: the shipped one, or the owner's confirmed copy).
+func draftWidening(d *db.DB, scope automations.Scope, slug string, perms []string) ([]string, error) {
+	if scope.BuiltinID == "" {
+		return widening(d, scope, slug, perms)
+	}
+	saved, err := d.GetBuiltinAutomation(scope.BuiltinID)
+	if errors.Is(err, db.ErrAutomationNotFound) {
+		return automations.Covers(nil, perms), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading built-in %s: %w", scope.BuiltinID, err)
+	}
+	return wideningFrom(d, saved, perms)
+}
+
 // widening is what perms add over the permissions the owner last confirmed
 // for the saved automation at (scope, slug) (R-P3-1,
 // automations.ConfirmedRecipe) — never over an unconfirmed edit's. With no
@@ -248,6 +291,12 @@ func widening(d *db.DB, scope automations.Scope, slug string, perms []string) ([
 	if saved.RemovedAt != nil {
 		return automations.Covers(nil, perms), nil
 	}
+	return wideningFrom(d, saved, perms)
+}
+
+// wideningFrom is what perms add over the permissions the owner last
+// confirmed for saved (every permission when that text is unknown).
+func wideningFrom(d *db.DB, saved *db.Automation, perms []string) ([]string, error) {
 	confirmed, err := automations.ConfirmedRecipe(d, saved)
 	if err != nil {
 		return nil, fmt.Errorf("reading the confirmed text of automation %d: %w", saved.ID, err)

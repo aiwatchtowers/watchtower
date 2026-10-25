@@ -2,21 +2,21 @@ package lockmetrics
 
 import (
 	"context"
-	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"io"
 	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
+	"watchtower/internal/sqlcipher"
 )
 
-// DriverName is the database/sql driver internal/db opens: modernc's
-// "sqlite" driver wrapped to time write locks. Every DSN, pragma, error and
+// Wrap returns a connector over base that times write locks on every
+// connection it opens; dsn is the DSN base opens (what is measured is read
+// from it: memory, query_only, busy_timeout). Every DSN, pragma, error and
 // transaction mode passes through unchanged; the wrapper only measures.
 //
 // What it measures, on a file database (":memory:" is never measured):
@@ -38,7 +38,14 @@ import (
 // write lock: only its busy errors are recorded. Not seen: a busy error
 // from a later rows.Next (a WAL read step) and a prepared statement's Exec
 // (the repo prepares only inside transactions, which the tx event covers).
-const DriverName = "sqlite+metrics"
+func Wrap(base driver.Connector, dsn string) driver.Connector {
+	return &connector{
+		base:          base,
+		measured:      !isMemoryDSN(dsn),
+		queryOnly:     dsnQueryOnly(dsn),
+		busyTimeoutMS: dsnBusyTimeoutMS(dsn),
+	}
+}
 
 // siteDepth bounds the stack captured for a transaction's site; frames past
 // it are database/sql's and the driver's own far below the caller.
@@ -48,11 +55,11 @@ const siteDepth = 32
 const modulePrefix = "watchtower/"
 
 // siteSkipPrefixes are the frames a site never names: the runtime,
-// database/sql, the driver and this package (the wrapper itself).
+// database/sql, the engine and this package (the wrapper itself).
 var siteSkipPrefixes = []string{
 	"runtime.",
 	"database/sql.",
-	"modernc.org/",
+	modulePrefix + "internal/sqlcipher.",
 	modulePrefix + "internal/db/lockmetrics.",
 }
 
@@ -62,24 +69,19 @@ var genericHelpers = map[string]bool{
 	modulePrefix + "internal/db.(*DB).WithTx":          true,
 	modulePrefix + "internal/kb.withTx":                true,
 	modulePrefix + "internal/extsync.(*Engine).withTx": true,
+	// A pool connection's open, where a busy error on open is raised.
+	modulePrefix + "internal/db.(*pragmaConnector).Connect": true,
 }
 
-func init() {
-	// The registered modernc driver, not a fresh sqlite.Driver: functions,
-	// collations and hooks registered on it apply to wrapped connections too.
-	probe, err := sql.Open("sqlite", "")
-	if err != nil {
-		panic("lockmetrics: modernc sqlite driver not registered: " + err.Error())
-	}
-	base := probe.Driver()
-	_ = probe.Close() // never connected; Close only drops the handle
-	sql.Register(DriverName, metricsDriver{base: base})
+type connector struct {
+	base          driver.Connector
+	measured      bool
+	queryOnly     bool
+	busyTimeoutMS int64
 }
 
-type metricsDriver struct{ base driver.Driver }
-
-// baseConn is the set of driver interfaces modernc's connection implements
-// and database/sql uses; the wrapper forwards every one of them.
+// baseConn is the set of driver interfaces the engine's connection
+// implements and database/sql uses; the wrapper forwards every one of them.
 type baseConn interface {
 	driver.Conn
 	driver.ConnBeginTx
@@ -91,25 +93,38 @@ type baseConn interface {
 	driver.Validator
 }
 
-// Open opens the modernc connection and wraps it. A connection that lacks
-// one of baseConn's interfaces (a different modernc version) goes back
-// unwrapped, so the database keeps working, unmeasured.
-func (d metricsDriver) Open(name string) (driver.Conn, error) {
-	c, err := d.base.Open(name)
+// errUnmeasurable: the engine's connection lacks one of baseConn's
+// interfaces (an engine upgrade dropped one). It fails the open instead of
+// handing back an unwrapped, silently unmeasured connection.
+var errUnmeasurable = errors.New("lockmetrics: the SQLite connection lacks a driver interface the lock metrics wrap")
+
+// Connect opens the engine's connection and wraps it. The engine runs its
+// connection pragmas on open, and one of them (synchronous) reads the
+// schema, so an open can fail busy under another connection's exclusive
+// lock: that busy error is recorded like a statement's.
+func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
+	start := time.Now()
+	dc, err := c.base.Connect(ctx)
 	if err != nil {
+		if c.measured {
+			(&conn{busyTimeoutMS: c.busyTimeoutMS}).recordBusy(err, time.Since(start), 0, nil)
+		}
 		return nil, err
 	}
-	bc, ok := c.(baseConn)
+	bc, ok := dc.(baseConn)
 	if !ok {
-		return c, nil
+		_ = dc.Close()
+		return nil, errUnmeasurable
 	}
 	return &conn{
 		base:          bc,
-		measured:      !isMemoryDSN(name),
-		queryOnly:     dsnQueryOnly(name),
-		busyTimeoutMS: dsnBusyTimeoutMS(name),
+		measured:      c.measured,
+		queryOnly:     c.queryOnly,
+		busyTimeoutMS: c.busyTimeoutMS,
 	}, nil
 }
+
+func (c *connector) Driver() driver.Driver { return c.base.Driver() }
 
 // conn is one wrapped connection. database/sql uses a connection from one
 // goroutine at a time, so its fields need no lock.
@@ -120,7 +135,7 @@ type conn struct {
 	// its transactions and statements are not timed, only busy errors.
 	queryOnly bool
 	// busyTimeoutMS mirrors the connection's busy_timeout: the DSN's
-	// _pragma=busy_timeout(N), then every successful PRAGMA busy_timeout=N.
+	// _busy_timeout=N, then every successful PRAGMA busy_timeout=N.
 	busyTimeoutMS int64
 	inTx          bool
 	tx            tx // the open transaction; one per connection at a time
@@ -128,13 +143,16 @@ type conn struct {
 
 var (
 	_ baseConn  = (*conn)(nil)
+	_ baseConn  = (*sqlcipher.SQLiteConn)(nil)
+	_ baseRows  = (*sqlcipher.SQLiteRows)(nil)
 	_ driver.Tx = (*tx)(nil)
 )
 
 func (c *conn) Prepare(query string) (driver.Stmt, error) { return c.base.Prepare(query) }
 func (c *conn) Close() error                              { return c.base.Close() }
 func (c *conn) Ping(ctx context.Context) error            { return c.base.Ping(ctx) }
-func (c *conn) IsValid() bool                             { return c.base.IsValid() }
+
+func (c *conn) IsValid() bool { return c.base.IsValid() }
 
 func (c *conn) ResetSession(ctx context.Context) error { return c.base.ResetSession(ctx) }
 
@@ -204,8 +222,9 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 
 // QueryContext records a busy error from the statement's first step, and
 // times an autocommit write run as a query (UPDATE … RETURNING) up to that
-// first step: the driver steps the first row here, and SQLite does the whole
-// write on it, so the lock wait falls inside this call. The autocommit
+// first step, where SQLite does the whole write, so the lock wait falls
+// inside it. The engine steps the first row on the first rows.Next, so the
+// rows are wrapped to see that step (firstStepRows). The autocommit
 // transaction then stays open until rows.Close, which is not timed.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if !c.measured {
@@ -213,15 +232,55 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	}
 	start := time.Now()
 	rows, err := c.base.QueryContext(ctx, query, args)
-	took := time.Since(start)
-	switch {
-	case err != nil:
-		c.recordBusy(err, took, 0, nil)
-	case c.inTx || c.queryOnly:
-	case Slow(0, took) && isWrite(query):
-		c.record(Event{Kind: KindExec, HoldMS: took.Milliseconds()}, nil)
+	if err != nil {
+		c.recordBusy(err, time.Since(start), 0, nil)
+		return nil, err
 	}
-	return rows, err
+	br, ok := rows.(baseRows)
+	if !ok {
+		_ = rows.Close()
+		return nil, errUnmeasurable
+	}
+	timed := !c.inTx && !c.queryOnly && isWrite(query)
+	return &firstStepRows{baseRows: br, c: c, start: start, timed: timed}, nil
+}
+
+// baseRows is the set of driver rows interfaces the engine's rows implement
+// and database/sql uses; firstStepRows forwards every one of them. The engine
+// has no RowsColumnTypeLength or RowsColumnTypePrecisionScale (mattn leaves
+// both commented out), so there is nothing more to forward.
+type baseRows interface {
+	driver.Rows
+	driver.RowsColumnTypeDatabaseTypeName
+	driver.RowsColumnTypeNullable
+	driver.RowsColumnTypeScanType
+}
+
+// firstStepRows watches the first Next — the statement's first step: a busy
+// error there is recorded, and a write run as a query (timed) is recorded
+// as a KindExec event from QueryContext's start to that step's end.
+type firstStepRows struct {
+	baseRows
+	c     *conn
+	start time.Time
+	timed bool
+	done  bool // the first step was seen
+}
+
+func (r *firstStepRows) Next(dest []driver.Value) error {
+	err := r.baseRows.Next(dest)
+	if r.done {
+		return err
+	}
+	r.done = true
+	took := time.Since(r.start)
+	switch {
+	case err != nil && !errors.Is(err, io.EOF):
+		r.c.recordBusy(err, took, 0, nil)
+	case r.timed && Slow(0, took):
+		r.c.record(Event{Kind: KindExec, HoldMS: took.Milliseconds()}, nil)
+	}
+	return err
 }
 
 // tx wraps the driver's transaction to time its hold.
@@ -283,35 +342,41 @@ func (c *conn) record(e Event, pcs []uintptr) {
 // busyName names a SQLITE_BUSY/SQLITE_LOCKED error by its primary code,
 // with the extended code when it differs ("SQLITE_BUSY_SNAPSHOT").
 func busyName(err error) (string, bool) {
-	var se *sqlite.Error
+	var se sqlcipher.Error
 	if err == nil || !errors.As(err, &se) {
 		return "", false
 	}
-	code := se.Code()
 	var primary string
-	switch code & 0xff {
-	case sqlite3.SQLITE_BUSY:
+	switch se.Code {
+	case sqlcipher.ErrBusy:
 		primary = "SQLITE_BUSY"
-	case sqlite3.SQLITE_LOCKED:
+	case sqlcipher.ErrLocked:
 		primary = "SQLITE_LOCKED"
 	default:
 		return "", false
 	}
-	if code == code&0xff {
+	ext := int(se.ExtendedCode)
+	if ext == 0 || ext == int(se.Code) {
 		return primary, true
 	}
-	if ext, ok := extendedBusyNames[code]; ok {
-		return ext, true
+	if name, ok := extendedBusyNames[ext]; ok {
+		return name, true
 	}
-	return primary + "/" + strconv.Itoa(code), true
+	return primary + "/" + strconv.Itoa(ext), true
 }
 
+// The extended codes the engine package has no constant for.
+const (
+	sqliteBusyTimeout = 773 // SQLITE_BUSY | 3<<8
+	sqliteLockedVTab  = 518 // SQLITE_LOCKED | 2<<8
+)
+
 var extendedBusyNames = map[int]string{
-	sqlite3.SQLITE_BUSY_RECOVERY:      "SQLITE_BUSY_RECOVERY",
-	sqlite3.SQLITE_BUSY_SNAPSHOT:      "SQLITE_BUSY_SNAPSHOT",
-	sqlite3.SQLITE_BUSY_TIMEOUT:       "SQLITE_BUSY_TIMEOUT",
-	sqlite3.SQLITE_LOCKED_SHAREDCACHE: "SQLITE_LOCKED_SHAREDCACHE",
-	sqlite3.SQLITE_LOCKED_VTAB:        "SQLITE_LOCKED_VTAB",
+	int(sqlcipher.ErrBusyRecovery):      "SQLITE_BUSY_RECOVERY",
+	int(sqlcipher.ErrBusySnapshot):      "SQLITE_BUSY_SNAPSHOT",
+	sqliteBusyTimeout:                   "SQLITE_BUSY_TIMEOUT",
+	int(sqlcipher.ErrLockedSharedCache): "SQLITE_LOCKED_SHAREDCACHE",
+	sqliteLockedVTab:                    "SQLITE_LOCKED_VTAB",
 }
 
 // siteOf names the first frame outside the runtime, database/sql, the
@@ -411,7 +476,7 @@ func pragmaBusyTimeoutMS(query string) (int64, bool) {
 }
 
 // busyTimeoutValue parses "busy_timeout=N" or "busy_timeout(N)", the form
-// both a PRAGMA statement and the DSN's _pragma value use.
+// a PRAGMA statement uses.
 func busyTimeoutValue(s string) (int64, bool) {
 	rest, ok := strings.CutPrefix(strings.TrimSpace(s), "busy_timeout")
 	if !ok {
@@ -434,46 +499,53 @@ func busyTimeoutValue(s string) (int64, bool) {
 	return ms, true
 }
 
-// dsnBusyTimeoutMS is the busy timeout a DSN's _pragma=busy_timeout(N) sets
-// on every connection; 0 (SQLite's default) when it sets none.
+// engineDefaultBusyTimeoutMS is the busy_timeout the engine sets on every
+// connection whose DSN names none (mattn's default).
+const engineDefaultBusyTimeoutMS = 5000
+
+// dsnBusyTimeoutMS is the busy timeout a DSN's _busy_timeout=N (or its
+// _timeout alias) sets on every connection; the engine's default when it
+// sets none.
 func dsnBusyTimeoutMS(dsn string) int64 {
-	_, query, ok := strings.Cut(dsn, "?")
+	vals, ok := dsnParams(dsn)
 	if !ok {
-		return 0
+		return engineDefaultBusyTimeoutMS
 	}
-	vals, err := url.ParseQuery(query)
-	if err != nil {
-		return 0
-	}
-	var ms int64
-	for _, p := range vals["_pragma"] {
-		if v, ok := busyTimeoutValue(strings.ToLower(p)); ok {
-			ms = v
+	for _, key := range []string{"_busy_timeout", "_timeout"} {
+		if v := vals.Get(key); v != "" {
+			if ms, err := strconv.ParseInt(v, 10, 64); err == nil {
+				return ms
+			}
 		}
 	}
-	return ms
+	return engineDefaultBusyTimeoutMS
 }
 
-// dsnQueryOnly reports whether a DSN's _pragma=query_only(…) turns
-// query_only on for every connection.
+// dsnQueryOnly reports whether a DSN's _query_only turns query_only on for
+// every connection.
 func dsnQueryOnly(dsn string) bool {
-	_, query, ok := strings.Cut(dsn, "?")
+	vals, ok := dsnParams(dsn)
 	if !ok {
 		return false
 	}
+	switch strings.ToLower(vals.Get("_query_only")) {
+	case "1", "yes", "true", "on":
+		return true
+	}
+	return false
+}
+
+// dsnParams is a DSN's query params, as the engine reads them.
+func dsnParams(dsn string) (url.Values, bool) {
+	_, query, ok := strings.Cut(dsn, "?")
+	if !ok {
+		return nil, false
+	}
 	vals, err := url.ParseQuery(query)
 	if err != nil {
-		return false
+		return nil, false
 	}
-	on := false
-	for _, p := range vals["_pragma"] {
-		p = strings.ToLower(strings.ReplaceAll(p, " ", ""))
-		if v, ok := strings.CutPrefix(p, "query_only"); ok {
-			v = strings.Trim(v, "=()")
-			on = v == "1" || v == "on" || v == "true" || v == "yes"
-		}
-	}
-	return on
+	return vals, true
 }
 
 // isMemoryDSN reports an in-memory database: ":memory:", "file::memory:",

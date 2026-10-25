@@ -10,6 +10,13 @@ func DeliveryLine(roundID int64, comments int) string {
 		roundID, CommentCount(comments), roundID)
 }
 
+// ApprovedLine is the line typed into the session after Approve: the round
+// closed with no changes requested. Pinned by testdata/lines (kind "approved").
+func ApprovedLine(roundID int64) string {
+	return fmt.Sprintf("Review round #%d approved — the owner approved this branch; finish it the way your methodology says (read get_review %d using the watchtower-workbench skill).",
+		roundID, roundID)
+}
+
 // CommentCount renders "1 comment", "N comments" (the delivery line and the brief).
 func CommentCount(n int) string {
 	if n == 1 {

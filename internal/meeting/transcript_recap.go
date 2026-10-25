@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 )
 
@@ -53,7 +54,7 @@ func (p *Pipeline) GenerateTranscriptRecap(ctx context.Context, eventID, transcr
 	}
 	var raw RecapResult
 	if err := json.Unmarshal([]byte(cleanJSON(aiResponse)), &raw); err != nil {
-		return nil, nil, fmt.Errorf("parsing AI response: %w (raw: %.300s)", err, aiResponse)
+		return nil, nil, fmt.Errorf("parsing AI response: %w (%s)", err, logredact.Body([]byte(aiResponse)))
 	}
 	raw.Summary = strings.TrimSpace(raw.Summary)
 	raw.KeyDecisions = trimNonEmpty(raw.KeyDecisions)

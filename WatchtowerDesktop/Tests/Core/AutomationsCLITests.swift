@@ -17,6 +17,15 @@ final class AutomationsCLITests: XCTestCase {
         XCTAssertFalse(result.daemonRunning)
     }
 
+    func testReplyArgs() async throws {
+        let (cli, runner) = cli(#"{"run_id":7,"daemon_running":false}"#)
+        let result = try await cli.reply(outputID: 5, action: 1)
+        XCTAssertEqual(runner.invocations, [["automations", "reply", "--output", "5", "--action", "1", "--json"]])
+        XCTAssertEqual(AutomationsCLI.args(.reply(outputID: 5, action: 1)),
+                       ["automations", "reply", "--output", "5", "--action", "1", "--json"])
+        XCTAssertEqual(result, AutomationsCLI.ReplyResult(runID: 7, daemonRunning: false))
+    }
+
     func testRerunArgs() async throws {
         let (cli, runner) = cli(#"{"run_id":13,"coalesced":false,"daemon_running":true}"#)
         let result = try await cli.run(7, rerunOf: 3)
@@ -36,12 +45,12 @@ final class AutomationsCLITests: XCTestCase {
 
     func testSaveArgs() async throws {
         let (cli, runner) = cli(#"{"automation_id":4,"path":"/tmp/acme/digest.md","approval_hash":"abc","confirmed":true}"#)
-        let file = URL(fileURLWithPath: "/tmp/acme/draft.md")
-        let result = try await cli.save(file: file, path: "/tmp/acme/digest.md", confirmHash: "abc",
+        let result = try await cli.save(text: "RECIPE", path: "/tmp/acme/digest.md", confirmHash: "abc",
                                         expectContentHash: "")
-        XCTAssertEqual(runner.invocations, [["automations", "save", "--file", "/tmp/acme/draft.md", "--path",
+        XCTAssertEqual(runner.invocations, [["automations", "save", "--file", "-", "--path",
                                              "/tmp/acme/digest.md", "--confirm-hash", "abc",
                                              "--expect-content-hash", "", "--json"]])
+        XCTAssertEqual(runner.stdinInputs, [Data("RECIPE".utf8)], "the recipe travels on stdin")
         XCTAssertEqual(result.automationID, 4)
         XCTAssertTrue(result.confirmed)
     }
@@ -64,15 +73,79 @@ final class AutomationsCLITests: XCTestCase {
             + #""approval_hash":"a","content_hash":"c","permissions":["llm:light"],"outputs":["inbox"],"#
             + #""widening":["llm:light"]}"#
         let (cli, runner) = cli(payload)
-        let file = URL(fileURLWithPath: "/tmp/acme/draft.md")
-        let result = try await cli.validate(file: file, against: 7)
-        _ = try await cli.validate(file: file, against: nil)
+        let result = try await cli.validate(text: "RECIPE", slug: "draft", against: 7)
+        _ = try await cli.validate(text: "RECIPE", slug: "draft", against: nil)
         XCTAssertEqual(runner.invocations, [
-            ["automations", "validate", "/tmp/acme/draft.md", "--against", "7", "--json"],
-            ["automations", "validate", "/tmp/acme/draft.md", "--json"]
+            ["automations", "validate", "-", "--slug", "draft", "--against", "7", "--json"],
+            ["automations", "validate", "-", "--slug", "draft", "--json"]
         ])
+        XCTAssertEqual(runner.stdinInputs, [Data("RECIPE".utf8), Data("RECIPE".utf8)])
         XCTAssertEqual(result.widening, ["llm:light"])
         XCTAssertEqual(result.approvalHash, "a")
+    }
+
+    func testValidateWorkbenchArgs() {
+        XCTAssertEqual(AutomationsCLI.args(.validate(slug: "a", against: nil, workbench: 3)),
+                       ["automations", "validate", "-", "--slug", "a", "--workbench", "3", "--json"])
+    }
+
+    func testValidateDecodesChanges() async throws {
+        let body = #"{"ok":true,"changes":[{"field":"trigger","old":"a","new":"b"}],"changes_known":true}"#
+        let v = try await cli(body).0.validate(text: "x", slug: "x", against: 7)
+        XCTAssertEqual(v.changes, [AutomationChange(field: "trigger", old: "a", new: "b")])
+        XCTAssertTrue(v.changesKnown)
+        let bare = try await cli(#"{"ok":true}"#).0.validate(text: "x", slug: "x", against: nil)
+        XCTAssertEqual(bare.changes, [])
+        XCTAssertFalse(bare.changesKnown)
+    }
+
+    /// `fields`: the hashed non-manifest fields; `{}` on a parse error, absent
+    /// from an older CLI — neither shows every field.
+    func testValidateDecodesFields() async throws {
+        let body = #"{"ok":true,"fields":{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"2","#
+            + #""budget":{"tokens":40000,"minutes":5}}}"#
+        let v = try await cli(body).0.validate(text: "x", slug: "x", against: nil)
+        let fields = try XCTUnwrap(v.fields)
+        XCTAssertEqual(fields.trigger, "schedule: 0 9 * * 1-5")
+        XCTAssertEqual(fields.missed, "skip")
+        XCTAssertEqual(fields.concurrency, "2")
+        XCTAssertEqual(fields.budget, .init(tokens: 40000, minutes: 5))
+        XCTAssertTrue(v.showsAllFields)
+
+        let empty = try await cli(#"{"ok":false,"fields":{}}"#).0.validate(text: "x", slug: "x", against: nil)
+        XCTAssertEqual(empty.fields?.isComplete, false)
+        XCTAssertFalse(empty.showsAllFields)
+        let bare = try await cli(#"{"ok":true}"#).0.validate(text: "x", slug: "x", against: nil)
+        XCTAssertNil(bare.fields)
+        XCTAssertFalse(bare.showsAllFields)
+    }
+
+    func testRenderTemplateArgsAndDecode() async throws {
+        XCTAssertEqual(
+            AutomationsCLI.args(.renderTemplate(name: "jira-state-report", workbenchID: nil,
+                                                params: ["PROJECT": "PAY", "EMPTY": ""])),
+            ["automations", "install-template", "jira-state-report", "--param", "PROJECT=PAY", "--render", "--json"])
+        let body = #"{"name":"jira-state-report","scope":"personal","params":{"PROJECT":["PAY"]},"files":["#
+            + #"{"slug":"a","text":"t1","validate":{"ok":true,"approval_hash":"h0"}},"#
+            + #"{"slug":"b","text":"t2","validate":{"ok":true,"approval_hash":"h1"}}]}"#
+        let (cli, runner) = cli(body)
+        let r = try await cli.renderTemplate("jira-state-report", workbenchID: 2, params: ["PROJECT": "PAY"])
+        XCTAssertEqual(runner.invocations,
+                       [["automations", "install-template", "jira-state-report", "--workbench", "2",
+                         "--param", "PROJECT=PAY", "--render", "--json"]])
+        XCTAssertEqual(r.files.count, 2)
+        XCTAssertEqual(r.files[1].validate.approvalHash, "h1")
+        XCTAssertEqual(r.params, ["PROJECT": ["PAY"]])
+    }
+
+    func testInstallResultDecodesInstalledCopies() async throws {
+        let body = #"{"automation_id":9,"path":"/x/a.md","installed":["#
+            + #"{"automation_id":9,"slug":"a","path":"/x/a.md","approval_hash":"h1"}]}"#
+        let r = try await cli(body).0.installTemplate("a", workbenchID: nil)
+        XCTAssertEqual(r.installed.first?.approvalHash, "h1")
+        XCTAssertEqual(r.installed.first?.parseError, "")
+        let none = try await cli(#"{"automation_id":9,"path":"/x/a.md"}"#).0.installTemplate("a", workbenchID: nil)
+        XCTAssertEqual(none.installed, [])
     }
 
     func testOtherArgs() {
@@ -110,7 +183,7 @@ final class AutomationsCLITests: XCTestCase {
 
         let validate = #"{"ok":false,"errors":[],"slug":"","name":"","scope":"","approval_hash":"","#
             + #""content_hash":"","permissions":[],"outputs":[],"widening":[]}"#
-        let v = try await cli(validate).0.validate(file: URL(fileURLWithPath: "/tmp/x.md"), against: nil)
+        let v = try await cli(validate).0.validate(text: "x", slug: "x", against: nil)
         XCTAssertEqual(v.errors, [])
         XCTAssertEqual(v.permissions, [])
 
@@ -153,7 +226,7 @@ final class AutomationsCLITests: XCTestCase {
         XCTAssertEqual(detail.autoTools, [AutomationAutoTool(tool: "send_slack_message", alwaysAsks: false, external: true)])
 
         let validate = #"{"ok":true,"feeds_sources_to_llm":true}"#
-        let v = try await cli(validate).0.validate(file: URL(fileURLWithPath: "/tmp/x.md"), against: nil)
+        let v = try await cli(validate).0.validate(text: "x", slug: "x", against: nil)
         XCTAssertTrue(v.feedsSourcesToLLM)
     }
 
@@ -167,7 +240,8 @@ final class AutomationsCLITests: XCTestCase {
         let decoded = try await cli(templates).0.templates()
         XCTAssertEqual(decoded.map(\.name), ["new-mail-summary"])
         XCTAssertEqual(decoded.first?.triggerText, "Weekdays 09:00")
-        let install = #"{"automation_id":9,"path":"/tmp/acme/new-mail-summary.md","installed":["x"]}"#
+        let install = #"{"automation_id":9,"path":"/tmp/acme/new-mail-summary.md","#
+            + #""installed":[{"automation_id":9,"slug":"a","path":"/x/a.md","approval_hash":"h1"}]}"#
         let installed = try await cli(install).0.installTemplate("new-mail-summary", workbenchID: nil)
         XCTAssertEqual(installed.automationID, 9)
     }

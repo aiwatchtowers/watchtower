@@ -3,7 +3,8 @@ import Foundation
 /// A recipe's trigger in words for the list and the card ("Weekdays 09:00",
 /// "Button: Release", "On new Gmail (work)"). `specJSON` is the
 /// `trigger_spec` column: `{"schedule":…}`, `{"button":{"label":…}}`,
-/// `{"event":{"type":…,"where":{…}}}` or `{"manual":true}`.
+/// `{"event":{"type":…,"where":{…}}}`, `{"manual":true}` or a built-in's
+/// `{"sync":"<slot>"}` (twin: Go `db.TriggerKindSync`).
 package enum AutomationTriggerText {
     private struct Spec: Decodable {
         struct Button: Decodable { let label: String? }
@@ -15,7 +16,18 @@ package enum AutomationTriggerText {
         let schedule: String?
         let button: Button?
         let event: Event?
+        let sync: String?
     }
+
+    /// A built-in's (or the watch recipes') sync slot in words, twin of Go
+    /// `builtin` slot names; the hour or the number of hours is the card's `when`.
+    private static let syncWords: [String: String] = [
+        "morning_brief": "Every morning, at the first sync after its time",
+        "tracks": "After every sync",
+        "ideas": "Every few hours",
+        "reactions": "When you react in Slack",
+        "custom_tracks": "After every sync"
+    ]
 
     private static let eventWords: [String: String] = [
         "gmail.new_messages": "On new Gmail",
@@ -55,6 +67,8 @@ package enum AutomationTriggerText {
             return filter.isEmpty ? base : "\(base) (\(filter))"
         case "manual":
             return "Manual"
+        case "sync":
+            return spec?.sync.flatMap { syncWords[$0] } ?? "In every sync cycle"
         default:
             return "—"
         }

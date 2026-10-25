@@ -55,7 +55,6 @@ final class ConfigService {
     /// Display-only — `save()` never writes `day_plan.enabled`. See
     /// `digestEnabled`.
     var dayPlanEnabled: Bool = true
-    var dayPlanHour: Int = 8
     var workingHoursStart: String = "09:00"
     var workingHoursEnd: String = "19:00"
     var maxTimeblocks: Int = 3
@@ -66,6 +65,14 @@ final class ConfigService {
     /// `digestEnabled`.
     var ideasEnabled: Bool = true
     var ideasMineIntervalHours: Int = 6
+    /// `privacy.purge_revoked_data` (board #601): nil = absent, the build
+    /// default applies. Written only once the owner sets it; the effective
+    /// value (policy > this > build default) comes from Go,
+    /// `watchtower accounts purges --json`.
+    var purgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The last `save()` wrote a new purge setting. The daemon reads the
+    /// config only at startup, so Settings restarts it after such a Save.
+    private(set) var lastSaveChangedPurge = false
     var parseError: String?
 
     private let configPath: String
@@ -78,6 +85,8 @@ final class ConfigService {
     /// unrelated Save (#740) — nor materialize `false` on a fresh install.
     private var diskCalendarEnabled = true
     private var diskGmailEnabled = true
+    /// `privacy.purge_revoked_data` as last read from or written to disk.
+    private var diskPurgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     convenience init() {
         self.init(configPath: Constants.configPath)
@@ -187,13 +196,15 @@ final class ConfigService {
 
             if let dayPlan = yaml["day_plan"] as? [String: Any] {
                 dayPlanEnabled = (dayPlan["enabled"] as? Bool) ?? true
-                dayPlanHour = (dayPlan["hour"] as? Int) ?? 8
                 workingHoursStart = (dayPlan["working_hours_start"] as? String) ?? "09:00"
                 workingHoursEnd = (dayPlan["working_hours_end"] as? String) ?? "19:00"
                 maxTimeblocks = (dayPlan["max_timeblocks"] as? Int) ?? 3
                 minBacklog = (dayPlan["min_backlog"] as? Int) ?? 3
                 maxBacklog = (dayPlan["max_backlog"] as? Int) ?? 8
             }
+
+            purgeRevokedData = (yaml["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool
+            diskPurgeRevokedData = purgeRevokedData
 
             parseError = nil
         } catch {
@@ -259,6 +270,80 @@ final class ConfigService {
         yaml["workbench"] = workbench
     }
 
+    /// A built-in card's When field was refused: an unknown key or a value
+    /// the key cannot hold.
+    struct BuiltinParameterError: LocalizedError {
+        let key: String
+        var errorDescription: String? { "This setting can't be saved here: \(key)" }
+    }
+
+    /// A built-in card's When **Save** (`show`'s `builtin.parameters[].key`,
+    /// twin: Go `builtin.Param` keys): the only writer of `briefing.hour`,
+    /// `day_plan.working_hours_start/end`, `day_plan.max_timeblocks`,
+    /// `day_plan.min_backlog/max_backlog` (Morning brief) and
+    /// `ideas.mine_interval_hours` (Idea finder).
+    /// Re-reads the file and writes just these keys, so nothing else this
+    /// instance holds is written. Every value is checked before anything is.
+    func saveBuiltinParameters(_ values: [String: String]) throws {
+        var yaml = currentYAMLOnDisk() ?? rawYAML
+        for (key, value) in values.sorted(by: { $0.key < $1.key }) {
+            let (section, field, stored) = try Self.builtinParameter(key: key, value: value)
+            var dict = (yaml[section] as? [String: Any]) ?? [:]
+            dict[field] = stored
+            yaml[section] = dict
+        }
+        // The backlog's at-least never above its at-most, as the file will hold them.
+        let planned = (yaml["day_plan"] as? [String: Any]) ?? [:]
+        // Absent keys read as Go's defaults (3 and 8), as `reload()` does.
+        if (planned["min_backlog"] as? Int ?? 3) > (planned["max_backlog"] as? Int ?? 8) {
+            throw BuiltinParameterError(key: BuiltinAutomationCardModel.minBacklogKey)
+        }
+        try write(yaml)
+        rawYAML = yaml
+        if let hour = (yaml["briefing"] as? [String: Any])?["hour"] as? Int { briefingHour = hour }
+        let dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
+        if let start = dayPlan["working_hours_start"] as? String { workingHoursStart = start }
+        if let end = dayPlan["working_hours_end"] as? String { workingHoursEnd = end }
+        if let count = dayPlan["max_timeblocks"] as? Int { maxTimeblocks = count }
+        if let count = dayPlan["min_backlog"] as? Int { minBacklog = count }
+        if let count = dayPlan["max_backlog"] as? Int { maxBacklog = count }
+        if let hours = (yaml["ideas"] as? [String: Any])?["mine_interval_hours"] as? Int { ideasMineIntervalHours = hours }
+    }
+
+    /// Where a built-in parameter lives in the file and its checked value.
+    private static func builtinParameter(key: String, value: String) throws -> (String, String, Any) {
+        switch key {
+        case "briefing.hour":
+            guard let hour = Int(value), (0...23).contains(hour) else { throw BuiltinParameterError(key: key) }
+            return ("briefing", "hour", hour)
+        case "day_plan.working_hours_start", "day_plan.working_hours_end":
+            guard BuiltinAutomationCardModel.isClock(value) else { throw BuiltinParameterError(key: key) }
+            return ("day_plan", String(key.dropFirst("day_plan.".count)), value)
+        case "day_plan.max_timeblocks", BuiltinAutomationCardModel.minBacklogKey,
+             BuiltinAutomationCardModel.maxBacklogKey:
+            guard BuiltinAutomationCardModel.isCount(value), let count = Int(value) else {
+                throw BuiltinParameterError(key: key)
+            }
+            return ("day_plan", String(key.dropFirst("day_plan.".count)), count)
+        case BuiltinAutomationCardModel.ideasIntervalKey:
+            guard BuiltinAutomationCardModel.isInterval(value), let hours = Int(value) else {
+                throw BuiltinParameterError(key: key)
+            }
+            return ("ideas", "mine_interval_hours", hours)
+        default:
+            throw BuiltinParameterError(key: key)
+        }
+    }
+
+    /// Writes the whole file, owner-only (it holds tokens).
+    private func write(_ yaml: [String: Any]) throws {
+        let output = try Yams.dump(object: yaml, allowUnicode: true)
+        let dir = (configPath as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try output.write(toFile: configPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+    }
+
     func save() throws {
         // Re-read the config file right before writing instead of using the
         // in-memory `rawYAML` snapshot captured at the last reload(). Between
@@ -292,10 +377,12 @@ final class ConfigService {
         if let val = digestLanguage, !val.isEmpty { digest["language"] = val } else { digest.removeValue(forKey: "language") }
         if !digest.isEmpty { yaml["digest"] = digest } else { yaml.removeValue(forKey: "digest") }
 
-        // Briefing section
-        var briefing = (yaml["briefing"] as? [String: Any]) ?? [:]
-        briefing["hour"] = briefingHour
-        yaml["briefing"] = briefing
+        // `briefing.hour`, the day plan's keys and `ideas.mine_interval_hours`
+        // are not written here: the Morning brief and Idea finder cards
+        // (`saveBuiltinParameters`) are their only writer, and a Settings
+        // window's snapshot would revert their saves (C2, C3). Nothing else
+        // of `ideas` is written: `enabled` is the Feature Manager's (see the
+        // `ideasEnabled` property).
 
         // AI section
         applyAISection(to: &yaml)
@@ -313,23 +400,6 @@ final class ConfigService {
             yaml["gmail"] = gmailDict
         }
 
-        // Ideas section — `enabled` is deliberately not written, see the
-        // `ideasEnabled` property.
-        var ideas = (yaml["ideas"] as? [String: Any]) ?? [:]
-        ideas["mine_interval_hours"] = ideasMineIntervalHours
-        yaml["ideas"] = ideas
-
-        // Day Plan section — `enabled` is deliberately not written, see the
-        // `dayPlanEnabled` property.
-        var dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
-        dayPlan["hour"] = dayPlanHour
-        dayPlan["working_hours_start"] = workingHoursStart
-        dayPlan["working_hours_end"] = workingHoursEnd
-        dayPlan["max_timeblocks"] = maxTimeblocks
-        dayPlan["min_backlog"] = minBacklog
-        dayPlan["max_backlog"] = maxBacklog
-        yaml["day_plan"] = dayPlan
-
         // Transcripts section
         var transcripts = (yaml["transcripts"] as? [String: Any]) ?? [:]
         transcripts["audio_retention_days"] = transcriptAudioRetentionDays
@@ -343,15 +413,19 @@ final class ConfigService {
 
         applyWorkbenchSection(to: &yaml)
 
-        let output = try Yams.dump(object: yaml, allowUnicode: true)
+        // Privacy section: absent stays absent until the owner sets it.
+        let purgeChanged = purgeRevokedData != nil && purgeRevokedData != diskPurgeRevokedData
+        if let purgeRevokedData {
+            var privacy = (yaml["privacy"] as? [String: Any]) ?? [:]
+            privacy["purge_revoked_data"] = purgeRevokedData
+            yaml["privacy"] = privacy
+        }
 
-        let dir = (configPath as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        try output.write(toFile: configPath, atomically: true, encoding: .utf8)
-        // Restrict permissions to owner-only (config contains Slack token)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+        try write(yaml)
 
         rawYAML = yaml
+        lastSaveChangedPurge = purgeChanged
+        diskPurgeRevokedData = purgeRevokedData
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
         adoptGoogleSyncSwitches(from: yaml)

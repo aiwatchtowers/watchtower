@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	goslack "github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -396,8 +395,7 @@ func newBackfillOrchestrator(t *testing.T, database *db.DB, cfg *config.Config) 
 	require.NoError(t, err)
 	srv := httptest.NewServer(testMux())
 	t.Cleanup(srv.Close)
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	o := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), cfg, 1)
+	o := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"), cfg, 1)
 	o.SetLogger(log.New(io.Discard, "", 0))
 	return o
 }
@@ -1080,4 +1078,112 @@ func TestHistoryBackfill_AccountStateJira(t *testing.T) {
 
 	d.config.Jira.Enabled = false
 	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", ok), "jira.enabled=false: never wired")
+}
+
+// A sleep cancelling the Step mid-chunk (runSync passes the cycle's fetch
+// context) is no strike and no hold, even when the source reports the cut as
+// a network error, and leaves no error on the history-backfill row.
+func TestPhaseHistoryBackfill_SleepCancelIsNoFailure(t *testing.T) {
+	d, database, logs := newBackfillDaemon(t)
+	acct, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
+		Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
+	require.NoError(t, err)
+	now := time.Now()
+	_, err = database.StartHistoryBackfill("imap", acct, float64(now.AddDate(0, 0, -30).Unix()),
+		float64(now.AddDate(0, 0, -3).Unix()), now)
+	require.NoError(t, err)
+
+	fetchCtx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	probe := newCycleProbe()
+	probe.fetchRange = func(context.Context) error {
+		cancel(errCycleSlept)
+		return &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	}
+	d.imapSyncers = []mailSyncer{probe}
+
+	d.phaseHistoryBackfill(fetchCtx)
+
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Zero(t, rows[0].ChunkFailures, "a cancelled chunk is no strike")
+	assert.Nil(t, rows[0].HeldSince, "a cancelled chunk is no hold")
+	assert.Empty(t, rows[0].LastError)
+	var status, errMsg string
+	require.NoError(t, database.QueryRow(`SELECT status, COALESCE(error_msg, '') FROM pipeline_runs
+		WHERE pipeline = 'history-backfill'`).Scan(&status, &errMsg))
+	assert.Empty(t, errMsg, "cancelled, not failed")
+	assert.Contains(t, logs.String(), "history backfill: stopped by sleep")
+}
+
+// cutGenerator is a people-card generator whose call waits until its ctx is
+// done, after running cut (nil = nothing): a cut the test makes, or the
+// ctx's own deadline.
+type cutGenerator struct{ cut func() }
+
+func (g *cutGenerator) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+	if g.cut != nil {
+		g.cut()
+	}
+	<-ctx.Done()
+	return "", nil, "", ctx.Err()
+}
+
+// The Slack-done hook's people run: a cut by the loop (a sleep, here) or the
+// shutdown is cancelled, not failed — no error on the people-backfill row —,
+// while the backfill budget's own deadline is a failure recorded as before.
+// Neither writes the stamp.
+func TestOnSlackBackfillDone_PeopleRowLoopCancelVsBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		hookCtx func(t *testing.T, gen *cutGenerator) context.Context
+		wantErr bool
+	}{
+		{"sleep", func(t *testing.T, gen *cutGenerator) context.Context {
+			fetchCtx, cancel := context.WithCancelCause(context.Background())
+			t.Cleanup(func() { cancel(nil) })
+			bctx, cancelBudget := context.WithTimeout(fetchCtx, time.Hour) // as Runner.Step does
+			t.Cleanup(cancelBudget)
+			gen.cut = func() { cancel(errCycleSlept) }
+			return bctx
+		}, false},
+		{"shutdown", func(t *testing.T, gen *cutGenerator) context.Context {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			fetchCtx, cancelFetch := context.WithCancelCause(ctx)
+			t.Cleanup(func() { cancelFetch(nil) })
+			bctx, cancelBudget := context.WithTimeout(fetchCtx, time.Hour)
+			t.Cleanup(cancelBudget)
+			gen.cut = cancel
+			return bctx
+		}, false},
+		{"budget", func(t *testing.T, _ *cutGenerator) context.Context {
+			fetchCtx, cancel := context.WithCancelCause(context.Background())
+			t.Cleanup(func() { cancel(nil) })
+			bctx, cancelBudget := context.WithTimeout(fetchCtx, 20*time.Millisecond)
+			t.Cleanup(cancelBudget)
+			return bctx
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, database := firstRunTestSetup(t)
+			seedFirstRunMessages(t, database)
+			seedFirstRunSituation(t, database)
+			gen := &cutGenerator{}
+			d.SetPeoplePipeline(guide.New(database, d.config, gen, d.logger))
+			ctx := tc.hookCtx(t, gen)
+
+			require.Error(t, d.onSlackBackfillDone(ctx, firstRunDayStart().AddDate(0, 0, -30)))
+			var errMsg string
+			require.NoError(t, database.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs
+				WHERE pipeline = 'people-backfill'`).Scan(&errMsg))
+			if tc.wantErr {
+				assert.Contains(t, errMsg, context.DeadlineExceeded.Error(), "the budget's deadline is a failure")
+			} else {
+				assert.Empty(t, errMsg, "cancelled, not failed")
+			}
+			assert.NoFileExists(t, d.historyBackfillHooksStampPath(), "no stamp: retried on a later Step")
+		})
+	}
 }

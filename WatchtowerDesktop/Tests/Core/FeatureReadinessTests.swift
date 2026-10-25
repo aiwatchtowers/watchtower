@@ -66,8 +66,8 @@ final class FeatureReadinessTests: XCTestCase {
     }
 
     /// #575: the daemon runs tracks and people cards only while Slack
-    /// Digests is on (dual path with `phaseTracksAndRollups`,
-    /// `phaseCustomTrackScan` and `phasePeopleCards`), so with Digests off
+    /// Digests is on (dual path with `phaseTrackMyThreads`,
+    /// `phaseWatchSlot` and `phasePeopleCards`), so with Digests off
     /// they say so instead of promising the next cycle for ever.
     func testTracksAndPeopleNeedDigestsWhileDigestsOff() {
         let now = today(10)
@@ -602,5 +602,21 @@ final class FeatureReadinessTests: XCTestCase {
         // Both connected, neither with content: Jira first.
         XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: soon, linear: .waitingForSync(detail: nil)), soon)
         XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: nil), .needsSource(.jira))
+    }
+
+    // MARK: - Day plan on the briefing hour (twin of TestMorningBrief_PlanWaitsForBriefingHour)
+
+    /// `day_plan.hour` is retired: the plan is made with the brief. Before any
+    /// plan exists the hour gate is bypassed (Go's fresh install,
+    /// `TestMorningBrief_FreshInstallBypassesHour`); the hour the day plan's
+    /// copy names is the briefing hour.
+    func testDayPlanReadinessUsesBriefingHour() {
+        var input = inputs(now: today(8, 30))
+        input.briefingHour = 9
+        XCTAssertEqual(evaluate(.dayPlan, input), .scheduled(.nextCycle(minutes: 15)))
+        let copy = EmptyStateCopyTable.featureCard(.dayPlan, briefingHour: input.briefingHour)
+        XCTAssertTrue(copy.whatItIs.contains("09:00"), copy.whatItIs)
+        input.contentPresent = [.dayPlan]
+        XCTAssertEqual(evaluate(.dayPlan, input), .ready)
     }
 }

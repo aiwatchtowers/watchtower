@@ -193,20 +193,21 @@ func TestAllTablesExist(t *testing.T) {
 		"doc_links", "ext_link_state",
 		"chat_conversations", "chat_messages", "chat_turn_steps", "chat_attachments",
 		"chat_artifacts", "chat_projects", "chat_project_sources", "chat_fts", "chat_title_fts",
-		"chat_artifact_comments",
+		"chat_artifact_comments", "chat_knowledge_artifacts", "media_state", "media_items",
+		"automation_draft_cache", "pending_transcripts", "chat_queued_drafts",
 		"projects", "project_sources", "project_comments", "project_target_images",
 		"terminal_sessions", "target_status_history", "owner_asks", "workbench_board_columns",
 		"terminal_session_targets", "workbench_pr_states", "owner_presence",
 		"review_rounds", "review_comments", "review_viewed", "review_checks",
-		"review_notes", "review_overviews", "review_reverts", "review_lessons", "permission_requests", "owner_instructions", "instruction_suggestions",
+		"review_notes", "review_overviews", "review_reverts", "review_lessons", "permission_requests", "owner_instructions", "instruction_suggestions", "instruction_chat_lines",
 		"terminal_session_worktrees", "terminal_session_agent_sessions",
 		"automations", "automation_runs", "automation_run_steps", "automation_run_replay", "automation_state", "automation_outputs",
 		"plan_usage_samples", "plan_usage_status",
 		"linear_accounts", "linear_teams", "linear_sync_state", "linear_issues", "linear_comments",
 		"linear_issue_history", "linear_cycles", "linear_projects", "linear_relations", "linear_user_map",
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
-		"automation_tool_grants", "linear_workflow_states", "linear_labels",
-		"db_maintenance",
+		"automation_tool_grants", "linear_workflow_states", "linear_labels", "builtin_migrations",
+		"db_maintenance", "account_purges", "spec_reviews", "spec_review_marks",
 	}
 
 	for _, table := range expectedTables {
@@ -1107,9 +1108,10 @@ func TestMessageUpsert(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Upsert via INSERT OR REPLACE
+	// Upsert the way production does: ON CONFLICT keeps the rowid (SEARCHIDX-01)
 	_, err = db.Exec(
-		"INSERT OR REPLACE INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000000000.000001', 'U1', 'v2')",
+		"INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000000000.000001', 'U1', 'v2') " +
+			"ON CONFLICT(channel_id, ts) DO UPDATE SET text = excluded.text",
 	)
 	require.NoError(t, err)
 

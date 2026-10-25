@@ -86,6 +86,9 @@ final class WorkbenchesViewModel {
     /// Reads `workbench.default_agent`; AppState wires the config file. A
     /// test VM launches Claude Code unless it sets this.
     @ObservationIgnored var readDefaultAgent: @MainActor () -> AgentKind = { .claude }
+    /// The organization policy (#608); AppState wires its center. An agent
+    /// whose provider it forbids is neither offered nor started.
+    @ObservationIgnored var managedPolicy: @MainActor () -> ManagedPolicy = { .none }
     /// The Codex home a relaunch looks for rollouts in: the login shell's
     /// CODEX_HOME (spec 2026-10-12 §7), resolved off the main thread; nil when
     /// the login shell did not answer (asked again on the next relaunch) —
@@ -189,6 +192,9 @@ final class WorkbenchesViewModel {
     /// it was worked out from (`codeRoot(sessionID:project:)`): view bodies
     /// read it without touching the disk again.
     @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
+    /// Per workbench: the panes besides Files a code jump can land in
+    /// (Branch review, board #960), asked while one is key.
+    @ObservationIgnored var codeDestinations: [Int64: [WeakCodeLocationDestination]] = [:]
     /// The ask link clicked last per workbench, while it runs
     /// (`clickAskLink`): a newer click cancels it, and so does its view
     /// (`owner`) going away.
@@ -294,6 +300,10 @@ final class WorkbenchesViewModel {
     /// Rows a start inserted whose launch has not returned yet, by id: they
     /// count as live for the next start's decision.
     @ObservationIgnored var startingRows: [Int64: TerminalSession] = [:]
+    /// New agent rows on screen while their start decides the place and
+    /// makes the worktree: the pane shows "Starting…" instead of a Resume
+    /// button until the launch.
+    var preparingSessions: Set<Int64> = []
     /// Per workbench, the ticket of the session switch the owner asked for
     /// last (`beginSwitch`); only that switch may still move the layout.
     @ObservationIgnored var latestSwitch: [Int64: Int] = [:]
@@ -489,6 +499,8 @@ final class WorkbenchesViewModel {
     /// lines survive pane switches; dropped with the session
     /// (`forgetProcessState`). Created during a view's body, hence not observed.
     @ObservationIgnored var workchatModels: [Int64: WorkchatModel] = [:]
+    /// `<workspace>/workchat-attachments`, next to the open database.
+    @ObservationIgnored var attachmentStore: WorkchatAttachmentStore?
     /// Find Repeats' model per workbench, made on first use.
     @ObservationIgnored var reviewLessonModels: [Int64: ReviewLessonsModel] = [:]
 
@@ -570,8 +582,8 @@ final class WorkbenchesViewModel {
         asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
         asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
         asks.onLoaded = { [weak self] projectID in self?.openNewAsk(projectID: projectID) }
-        asks.onDelivered = { [weak self] projectID, sessionID in
-            self?.showAnsweredSession(sessionID, projectID: projectID)
+        asks.onDelivered = { [weak self] projectID, sessionID, delivery in
+            self?.showAnsweredSession(sessionID, projectID: projectID, delivery: delivery)
         }
         // A closed session's ring follows its open asks without a poll.
         asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
@@ -784,11 +796,17 @@ final class WorkbenchesViewModel {
     /// Return. Keyed by the ask's own workbench, never the selection. Takes
     /// a switch ticket: a slower session switch still pending must not land
     /// afterwards and move the keyboard off the line (board #187).
-    func showAnsweredSession(_ sessionID: Int64, projectID: Int64) {
+    /// A line the owner must still press or paste (`typed`, `copied`) needs
+    /// the terminal; a submitted, held or queued one shows the session in
+    /// the mode it was last shown in, and only a terminal takes the keyboard.
+    func showAnsweredSession(_ sessionID: Int64, projectID: Int64, delivery: SessionLineDelivery.Delivery) {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
-        updated.show(.session(sessionID))
+        let ownerActs = delivery == .typed || delivery == .copied
+        let pane: WorkspacePane = ownerActs ? .session(sessionID) : updated.pane(forSession: sessionID)
+        updated.show(pane)
         setLayout(updated, projectID: projectID)
+        guard pane == .session(sessionID) else { return }
         terminalCenter?.focus(sessionID)
         terminalCenter?.requestKeyboardFocus(sessionID)
     }

@@ -118,6 +118,10 @@ linters:
         - "-QF*"   # quick-fix suggestions are too noisy
 
   exclusions:
+    # internal/sqlcipher's vendored upstream files (mattn/go-sqlite3, kept as
+    # upstream wrote them); only our wt_*.go files there are linted.
+    paths:
+      - internal/sqlcipher/(backup|callback|convert|doc|error|sqlite3)[^/]*\.go$
     rules:
       # MCP handlers deliberately return tool-level errors (errResult content
       # with IsError=true) and a nil Go error: a non-nil error is a

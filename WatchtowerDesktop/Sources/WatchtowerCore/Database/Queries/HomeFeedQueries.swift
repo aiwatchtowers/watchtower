@@ -10,6 +10,9 @@ package struct HomeFeedInboxRow: Equatable, Sendable {
     package let who: String
     /// "#eng", the mail subject, or the Jira reason; nil when there is none.
     package let whereText: String?
+    /// The display names of an accumulated item's senders, keyed by their
+    /// namespaced id; a sender with no name is left out.
+    package var senderNames: [String: String] = [:]
 }
 
 /// Every feed source as one read (`HomeFeedQueries.read`) left it.
@@ -48,7 +51,8 @@ package enum HomeFeedQueries {
     private static let rowLimit = 200
     private static let calendarDays = 4
     private static let nextDayHorizon = 3
-    private static let feedTriggers = [
+    /// The triggers of a Messages row; the Inbox's Messages filter reads the same set.
+    package static let feedTriggers = [
         "mention", "dm", "thread_reply", "reaction",
         "jira_assigned", "jira_comment_mention", "linear_assigned", "linear_comment_mention",
         "email_received"
@@ -63,7 +67,7 @@ package enum HomeFeedQueries {
         let today = HomeFeedBuilder.dayString(now, calendar: calendar)
         let startOfDay = calendar.startOfDay(for: now)
 
-        data.inbox = readSource(.inbox, db, tables: ["inbox_items", "users", "channels"], failed: &data.failed) {
+        data.inbox = readSource(.inbox, db, tables: ["inbox_items", "users", "channels", "jira_issues"], failed: &data.failed) {
             try inboxRows(db, now: now)
         } ?? []
         if let value = readSource(.reminders, db, tables: ["reminders"], failed: &data.failed, {
@@ -79,7 +83,7 @@ package enum HomeFeedQueries {
         } ?? []
         let cutoff = now.addingTimeInterval(-windowHours * 3600)
         data.outputs = readSource(.automations, db, tables: ["automation_outputs", "automations"], failed: &data.failed) {
-            try AutomationQueries.fetchInboxOutputs(db, since: cutoff, limit: rowLimit)
+            try AutomationQueries.fetchInboxOutputs(db, since: cutoff, limit: rowLimit, includeRead: false)
         } ?? []
         data.targets = readSource(.targets, db, tables: ["targets"], failed: &data.failed) {
             try dueTargets(db, today: today)
@@ -95,28 +99,54 @@ package enum HomeFeedQueries {
 
     // MARK: - Inbox
 
+    /// A Jira row whose issue was deleted at the source (no live
+    /// `jira_issues` row under its key, SRCDEL) leaves the feed: its text is
+    /// blanked and its link leads nowhere.
     private static func inboxRows(_ db: Database, now: Date) throws -> [HomeFeedInboxRow] {
         let formatter = ISO8601DateFormatter()
         let cutoff = formatter.string(from: now.addingTimeInterval(-windowHours * 3600))
-        let marks = feedTriggers.map { _ in "?" }.joined(separator: ", ")
-        let arguments: [any DatabaseValueConvertible] = feedTriggers + [cutoff, formatter.string(from: now), rowLimit]
+        return try openMessageRows(db, now: now, since: cutoff, limit: rowLimit)
+    }
+
+    /// The open messages clause every Messages read shares (Home's feed, the
+    /// Inbox's Messages filter and its badge): pending actionable rows of the
+    /// feed triggers that are not archived or snoozed. One `?`: the current time.
+    package static let openMessageClause = """
+        status = 'pending' AND item_class = 'actionable' AND archived_at IS NULL
+        AND trigger_type IN (\(feedTriggers.map { "'\($0)'" }.joined(separator: ", ")))
+        AND (snooze_until = '' OR snooze_until <= ?)
+        AND (substr(trigger_type, 1, 5) != 'jira_' OR EXISTS (
+          SELECT 1 FROM jira_issues j WHERE j.key = inbox_items.channel_id AND j.is_deleted = 0))
+        """
+
+    /// The open messages, newest first by `MAX(created_at, mentioned_at)`,
+    /// optionally only those at or after `since` (RFC 3339 UTC).
+    package static func openMessageRows(
+        _ db: Database, now: Date, since: String?, limit: Int
+    ) throws -> [HomeFeedInboxRow] {
+        var arguments: [any DatabaseValueConvertible] = [ISO8601DateFormatter().string(from: now)]
+        var sinceClause = ""
+        if let since {
+            sinceClause = " AND MAX(created_at, mentioned_at) >= ?"
+            arguments.append(since)
+        }
+        arguments.append(limit)
         let rows = try Row.fetchAll(db, sql: """
             SELECT *, MAX(created_at, mentioned_at) AS stamp FROM inbox_items
-            WHERE status = 'pending' AND item_class = 'actionable' AND archived_at IS NULL
-              AND trigger_type IN (\(marks))
-              AND MAX(created_at, mentioned_at) >= ?
-              AND (snooze_until = '' OR snooze_until <= ?)
+            WHERE \(openMessageClause)\(sinceClause)
             ORDER BY stamp DESC, id DESC
             LIMIT ?
             """, arguments: StatementArguments(arguments))
         return try rows.map { row in
             let item = InboxItem(row: row)
             let stamp: String = row["stamp"] ?? ""
+            let names = try senderNames(db, item)
             return HomeFeedInboxRow(
                 item: item,
                 stamp: parse(stamp) ?? now,
-                who: try who(db, item),
-                whereText: try whereText(db, item)
+                who: try who(db, item, senderNames: names),
+                whereText: try whereText(db, item),
+                senderNames: names
             )
         }
     }
@@ -125,23 +155,30 @@ package enum HomeFeedQueries {
         ["mention", "dm", "thread_reply", "reaction"].contains(item.triggerType)
     }
 
-    private static func who(_ db: Database, _ item: InboxItem) throws -> String {
+    /// The sender; an accumulated item's from its `senderNames`.
+    package static func who(_ db: Database, _ item: InboxItem, senderNames: [String: String]) throws -> String {
         if item.triggerType.hasPrefix("jira_") || item.triggerType.hasPrefix("linear_") { return item.channelID }
         if item.triggerType == "email_received" { return item.senderUserID }
         if item.isAccumulated {
-            var names: [String: String] = [:]
-            for id in Set(item.mentionList.map(\.sender)) {
-                if let name = try UserQueries.fetchByID(db, id: id)?.bestName, !name.isEmpty {
-                    names[id] = name
-                }
-            }
-            return item.mentionSendersLabel(names: names)
+            return item.mentionSendersLabel(names: senderNames)
         }
         // fetchByID, not fetchDisplayName: a raw id would read as noise.
         return try UserQueries.fetchByID(db, id: item.senderUserID)?.bestName ?? ""
     }
 
-    private static func whereText(_ db: Database, _ item: InboxItem) throws -> String? {
+    /// An accumulated item's sender names (`who`'s and the message card's).
+    package static func senderNames(_ db: Database, _ item: InboxItem) throws -> [String: String] {
+        guard item.isAccumulated else { return [:] }
+        var names: [String: String] = [:]
+        for id in Set(item.mentionList.map(\.sender)) {
+            if let name = try UserQueries.fetchByID(db, id: id)?.bestName, !name.isEmpty {
+                names[id] = name
+            }
+        }
+        return names
+    }
+
+    package static func whereText(_ db: Database, _ item: InboxItem) throws -> String? {
         switch item.triggerType {
         case "jira_assigned", "linear_assigned": return "assigned to you"
         case "jira_comment_mention", "linear_comment_mention": return "mentioned you"
@@ -157,7 +194,7 @@ package enum HomeFeedQueries {
         }
     }
 
-    private static func parse(_ stamp: String) -> Date? {
+    package static func parse(_ stamp: String) -> Date? {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fractional.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp)

@@ -26,8 +26,8 @@ The other two messages come from the database. If Watchtower cannot write a step
 
 ## How to check
 
-Use **Run now** on the card. The new run in **History** ends without the message.
+Use **Run Now** on the card. The new run in **History** ends without the message.
 
 ## If it didn't help
 
-Ask the assistant to change the recipe with **Change in words**, and name the message. If "could not be finished" keeps coming back, run `watchtower db lockstats` and `watchtower logs` in a terminal ([Command line](../reference/cli.md)) to see what holds the database.
+Ask the assistant to change the recipe in the **Chat** of its **Edit** panel, and name the message. If "could not be finished" keeps coming back, run `watchtower db lockstats` and `watchtower logs` in a terminal ([Command line](../reference/cli.md)) to see what holds the database.

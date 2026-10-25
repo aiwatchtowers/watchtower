@@ -37,6 +37,7 @@ func TestIdeas_CreateGetListRoundTrip(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("GetIdea returned nil for a created idea")
+		return // staticcheck SA5011 on CI does not always see t.Fatal as terminating
 	}
 	if got.Title != "Ship dark mode" || got.Kind != "idea" || got.Status != "proposed" || got.Source != "mined" {
 		t.Errorf("round-trip mismatch: %+v", got)
@@ -1460,4 +1461,49 @@ func TestReplaceJiraIssueComments_RemovesAbsentAndEmptyClears(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "c3", got[0].ID)
+}
+
+func TestListIdeas_HidesUnapprovedChatBorn(t *testing.T) {
+	d := openTestDB(t)
+	mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Pending chat", Essence: "e", Status: "proposed", ChatBorn: true})
+	mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Approved chat", Essence: "e", Status: "active", ChatBorn: true})
+	ideas, err := d.ListIdeas(IdeaFilter{})
+	if err != nil {
+		t.Fatalf("ListIdeas: %v", err)
+	}
+	if len(ideas) != 1 || ideas[0].Title != "Approved chat" {
+		t.Errorf("ListIdeas = %+v, want only the approved chat item", ideas)
+	}
+}
+
+func TestCountIdeasForReview_CountsChatBornDecisions(t *testing.T) {
+	d := openTestDB(t)
+	mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Pending chat", Essence: "e", Status: "proposed", ChatBorn: true})
+	mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Mined decision", Essence: "e", Status: "active", NeedsReview: true})
+	count, err := d.CountIdeasForReview()
+	if err != nil {
+		t.Fatalf("CountIdeasForReview: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("CountIdeasForReview = %d, want 1 (chat-born decision only)", count)
+	}
+}
+
+func TestListIdeasByMentionRef_HidesUnapprovedChatBorn(t *testing.T) {
+	d := openTestDB(t)
+	for _, c := range []struct {
+		title, status string
+	}{{"Pending chat", "proposed"}, {"Approved chat", "active"}} {
+		id := mustCreateIdea(t, d, Idea{Kind: "decision", Title: c.title, Essence: "e", Status: c.status, ChatBorn: true})
+		if _, err := d.Exec(`INSERT INTO idea_mentions (idea_id, source, ref, quote) VALUES (?, 'jira', 'PROJ-1', 'q')`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := d.ListIdeasByMentionRef("jira", "PROJ-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Title != "Approved chat" {
+		t.Errorf("got %+v, want only the approved chat item", got)
+	}
 }

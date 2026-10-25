@@ -4,7 +4,7 @@ Every background output has its own switch in **Settings → Features**, and a t
 
 ## What the switches do
 
-Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch. Automations are not in the list: they are always there and spend nothing until you confirm a recipe (see [Automations](../features/automations.md)).
+Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch. Automations are not in the list: they are always there and spend nothing until you confirm a recipe (see [Automations](../features/automations.md)). Daily Briefing, Day Plan, Tracks, Ideas & Decisions and Reaction Commands are not in it either: their switch is **Turn On** / **Turn Off** on the **Morning brief**, **Track my threads**, **Idea finder** and **Reactions** cards in Automations → **Built in**, and Settings → Features shows "These now live in Automations → Built in" with **Open Automations** (see [Built-in automations](../features/automations-built-in.md)).
 
 - **Off means no work, not no data.** An off feature makes no AI calls and writes nothing new. What it already produced stays and stays readable.
 - **On resumes from now.** Turning a feature back on does not process the time it was off, so there is a gap. It is the same for a feature you never turned on before.
@@ -18,7 +18,7 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Feature | Cost | Feeds into |
 |---|---|---|
 | Attention detection (no AI) | None | Briefing |
-| Knowledge search (no AI) | None | |
+| Knowledge search | Medium (images and links) | |
 | Confluence in search (no AI) | None | Knowledge search |
 | Slack Digests | Heavy | Tracks, People Cards, Ideas, Briefing |
 | Stream Digests (mail and Jira) | Medium | Ideas, Attention detection |
@@ -32,7 +32,9 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Next Step Suggestions | Medium | |
 | Claude plan limits (no AI) | None | |
 
-Tracks and People Cards read what Slack Digests writes, so they run only while Slack Digests is on too. With Slack Digests off, their empty tabs and Home cards say **Needs Slack Digests** with a **Turn on Slack Digests** button, and onboarding's **Customize** screen shows **Needs Slack Digests** with a **Turn on Slack Digests** button under them. Memory has an **Advanced** section with switches for each source and each place memory is used.
+The Tracks, Ideas & Decisions, Reaction Commands, Daily Briefing and Day Plan rows are switched on their built-in cards. Turning **Track my threads** off also pauses your custom-track watches.
+
+Tracks and People Cards read what Slack Digests writes, so they run only while Slack Digests is on too. With Slack Digests off, the empty Tracks filter, the People tab and their Home lines say **Needs Slack Digests** with a **Turn on Slack Digests** button, and onboarding's **Customize** screen shows **Needs Slack Digests** with a **Turn on Slack Digests** button under them. Memory has an **Advanced** section with switches for each source and each place memory is used.
 
 ## Why a tab is empty and what its status line means
 
@@ -60,9 +62,9 @@ Which source each feature waits for:
 - Briefing, Day Plan, Memory and Attention detection accept any connected source.
 - Calendar needs a calendar.
 
-Briefings, Day Plan and Inbox also need Watchtower to know who you are. Until a source supplies your identity they show no time at all; see [Sources and accounts](sources-and-accounts.md#why-watchtower-needs-to-know-who-you-are).
+The brief, the plan and the Inbox's messages also need Watchtower to know who you are. Until a source supplies your identity they show no time at all; see [Sources and accounts](sources-and-accounts.md#why-watchtower-needs-to-know-who-you-are).
 
-Briefings and Day Plan offer **Change the hour**, which opens Settings → Features, where the hours are **Briefing Hour** and **Generate at hour**. Before that hour the status reads "Today at 08:00" (your hour). On a brand-new install the first briefing and first day plan do not wait for it.
+The Inbox's empty **Day** filter offers **Change the hour**, which opens the **Morning brief** card in Automations, where **Time** sets the hour of both the brief and the plan. Before that hour the status reads "Today at 08:00" (your hour). On a brand-new install the first briefing and first day plan do not wait for it.
 
 ## After you connect a source
 

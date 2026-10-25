@@ -37,8 +37,13 @@ func TestMigrationsDownAllUpAllRoundTrip(t *testing.T) {
 		t.Fatalf("goose version after down-all = %d (err %v), want 0", v, err)
 	}
 
-	if err := gooseUp(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down-all: %v", err)
+	// Up through migrate, as Open does, not bare gooseUp: the fresh schema
+	// above came from Open, whose migrate runs a post-goose step (00147's
+	// legacy cleanup). Bare goose would leave messages_fts_legacy on this
+	// empty database and the round trip would differ for a reason that is
+	// not a broken Down.
+	if err := d.migrate(); err != nil {
+		t.Fatalf("migrate after down-all: %v", err)
 	}
 	if v, err := goose.GetDBVersion(d.DB); err != nil || v != latest {
 		t.Fatalf("goose version after up-all = %d (err %v), want %d", v, err, latest)

@@ -9,6 +9,10 @@ struct WorkchatComposer: View {
     @Bindable var model: WorkchatModel
     /// `SessionControl.isWorking` for the session's status.
     let working: Bool
+    /// The field takes the keyboard as it is made.
+    var autoFocus = false
+    /// Each new value puts the keyboard in the field, caret at the end.
+    var focusRequest: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,7 +29,15 @@ struct WorkchatComposer: View {
                 onSend: send,
                 onStop: stop,
                 placeholder: "Message the agent… (/ for commands)",
-                onEscape: escape
+                onEscape: escape,
+                attachments: model.attachments,
+                attachmentError: model.attachmentError,
+                onAttachFiles: { model.attach(files: $0) },
+                onPasteData: { await model.attach(data: $0, name: $1) },
+                onRemoveAttachment: { model.removeAttachment($0) },
+                hasPendingContent: !model.attachments.isEmpty,
+                autoFocus: autoFocus,
+                focusRequest: focusRequest
             )
         }
     }
@@ -49,6 +61,10 @@ struct WorkchatComposer: View {
 /// a line the terminal still holds or that never went.
 struct WorkchatOutgoingBubble: View {
     let line: WorkchatOutgoing
+    /// The session's agent works now.
+    var working = false
+    /// The line waits for the agent to stop (`WorkchatModel.holdsUntilIdle`).
+    var holdsUntilIdle = false
     let onCancel: () -> Void
     let onShowTerminal: () -> Void
 
@@ -67,6 +83,12 @@ struct WorkchatOutgoingBubble: View {
             }
             .opacity(isPending ? 0.65 : 1)
         }
+    }
+
+    /// A Claude line is held only for a prompt, the owner's typing or the
+    /// settle after the previous line; Codex waits for the agent to stop.
+    static func queuedCaption(holdsUntilIdle: Bool) -> String {
+        holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
     }
 
     private var isPending: Bool {
@@ -90,7 +112,7 @@ struct WorkchatOutgoingBubble: View {
             Text("Sending…")
         case .queued:
             HStack(spacing: Spacing.small) {
-                Text("Queued · sends when the agent stops ·")
+                Text(Self.queuedCaption(holdsUntilIdle: holdsUntilIdle))
                 Button("Cancel", action: onCancel).buttonStyle(.link)
             }
         case .typed:
@@ -106,7 +128,11 @@ struct WorkchatOutgoingBubble: View {
         case .notSent:
             Text("Not sent: the session ended")
         case .sent:
-            Text(line.sentAt, format: .dateTime.hour().minute())
+            if line.sentWhileBusy && working {
+                Text("Queued · the agent reads it at its next step")
+            } else {
+                Text(line.sentAt, format: .dateTime.hour().minute())
+            }
         }
     }
 }

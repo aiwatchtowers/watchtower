@@ -17,6 +17,8 @@ struct SearchView: View {
         .onAppear {
             if let db = appState.databaseManager, viewModel == nil {
                 viewModel = SearchViewModel(dbManager: db)
+            } else {
+                viewModel?.refreshIndexRebuildPending()
             }
         }
     }
@@ -41,6 +43,8 @@ struct SearchView: View {
             .background(Color(nsColor: .windowBackgroundColor))
 
             Divider()
+
+            SearchIndexRebuildNotice(isPending: vm.indexRebuildPending)
 
             if !vm.guideHits.isEmpty {
                 helpSection(vm)
@@ -107,5 +111,24 @@ struct SearchView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The one line shown above the results while the messages search index is
+/// still being rebuilt after the #872 upgrade; nothing otherwise.
+struct SearchIndexRebuildNotice: View {
+    static let text = "Search index is still being updated — older Slack messages may be missing."
+
+    let isPending: Bool
+
+    var body: some View {
+        if isPending {
+            Label(Self.text, systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.compact)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }

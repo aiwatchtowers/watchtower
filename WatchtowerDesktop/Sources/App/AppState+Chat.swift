@@ -15,8 +15,9 @@ extension AppState {
     /// It also re-reads when a turn starts waiting on a connector call, so
     /// the call can be approved from the strip while the chat waits.
     func wireActionStripRefresh(_ cvm: ChatViewModel) {
-        cvm.onTurnFinished = { [weak self] _ in self?.actionStripViewModel?.refresh() }
-        cvm.onActionAwaited = { [weak self] _ in self?.actionStripViewModel?.refresh() }
+        cvm.onTurnFinished = { [weak self] _ in Task { await self?.actionStripViewModel?.refresh() } }
+        cvm.onActionAwaited = { [weak self] _ in Task { await self?.actionStripViewModel?.refresh() } }
+        wireRemember(cvm)
     }
 
     /// The claude.ai list is beside the database (Go: the db path's

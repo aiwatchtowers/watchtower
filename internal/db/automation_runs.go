@@ -30,6 +30,11 @@ const (
 	TriggerEvent    = "event"
 	TriggerManual   = "manual"
 	TriggerDryRun   = "dry_run"
+	// TriggerReply is one owner press of an Inbox card's Reply button
+	// (00149): never coalesced with another run; event_json is a ReplyPayload.
+	TriggerReply = "reply"
+	// TriggerSync is one in-cycle run of a built-in at its slot (00150).
+	TriggerSync = "sync"
 )
 
 // Waiting reasons (automation_runs.waiting_reason).
@@ -305,15 +310,17 @@ func enqueueRunTx(tx *sql.Tx, r EnqueueRequest) (int64, bool, error) {
 		}
 	}
 	var id int64
-	err := tx.QueryRow(`SELECT id FROM automation_runs WHERE automation_id = ? AND trigger = ? AND status = 'queued'`,
-		r.AutomationID, r.Trigger).Scan(&id)
-	if err == nil {
-		return id, true, nil
+	if r.Trigger != TriggerReply { // one press = one run
+		err := tx.QueryRow(`SELECT id FROM automation_runs WHERE automation_id = ? AND trigger = ? AND status = 'queued'`,
+			r.AutomationID, r.Trigger).Scan(&id)
+		if err == nil {
+			return id, true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, false, fmt.Errorf("looking up a queued %s run of automation %d: %w", r.Trigger, r.AutomationID, err)
+		}
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, false, fmt.Errorf("looking up a queued %s run of automation %d: %w", r.Trigger, r.AutomationID, err)
-	}
-	err = tx.QueryRow(`INSERT INTO automation_runs
+	err := tx.QueryRow(`INSERT INTO automation_runs
 		(automation_id, trigger, scheduled_for, event_cycle, event_json, rerun_of, status, queued_at)
 		VALUES (?, ?, ?, ?, ?, ?, 'queued', ?) RETURNING id`,
 		r.AutomationID, r.Trigger, nullAutomationTime(r.ScheduledFor), nullRunText(r.EventCycle), r.EventJSON,
@@ -579,6 +586,25 @@ func requireRunTransition(q interface {
 	return fmt.Errorf("automation run %d: %w", runID, notMatched)
 }
 
+// CancelQueuedAutomationRun cancels run runID (error_kind='cancelled') only
+// while it is still queued; it returns false when the run has moved on
+// (claimed, or already ended) and leaves it alone. A queued run has no steps.
+func (db *DB) CancelQueuedAutomationRun(runID int64, now time.Time) (bool, error) {
+	if err := requireRunTime(now, fmt.Sprintf("cancelling queued automation run %d", runID)); err != nil {
+		return false, err
+	}
+	res, err := db.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'cancelled', finished_at = ?
+		WHERE id = ? AND status = 'queued'`, formatAutomationTime(now), runID)
+	if err != nil {
+		return false, fmt.Errorf("cancelling queued automation run %d: %w", runID, err)
+	}
+	err = requireRunTransition(db, res, runID, ErrRunNotQueued)
+	if errors.Is(err, ErrRunNotQueued) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // CancelAutomationRun ends a queued, running or waiting run as cancelled with
 // error_kind='cancelled' and closes its open steps in the same transaction.
 // It returns false when the run is already terminal.
@@ -801,8 +827,18 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 		if priority == "" {
 			priority = "medium"
 		}
-		if _, err := tx.Exec(`INSERT INTO automation_outputs (automation_id, run_id, kind, title, body, priority, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, automationID, runID, o.Kind, o.Title, o.Body, priority, stamp); err != nil {
+		actions := o.Actions
+		if actions == nil {
+			actions = []InboxAction{}
+		}
+		actionsJSON, err := json.Marshal(actions)
+		if err != nil {
+			return fmt.Errorf("committing output %d of automation run %d: encoding actions: %w", i, runID, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO automation_outputs
+			(automation_id, run_id, kind, title, body, priority, created_at, link, actions_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, automationID, runID, o.Kind, o.Title, o.Body, priority, stamp,
+			o.Link, string(actionsJSON)); err != nil {
 			return fmt.Errorf("committing output %d of automation run %d: %w", i, runID, err)
 		}
 	}
@@ -813,8 +849,12 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 // budget minutes (the run's snapshot, else the automation's) + a 1-minute
 // grace is after now. Such a dry run belongs to a live CLI process
 // (ExecuteInline), not to a previous daemon. The one argument is now.
-const liveDryRunSQL = `trigger = 'dry_run'
-	AND started_at IS NOT NULL
+const liveDryRunSQL = `trigger = 'dry_run' AND ` + inDeadlineSQL
+
+// inDeadlineSQL matches a run whose started_at + budget minutes (the run's
+// snapshot, else the automation's) + a 1-minute grace is after now. The one
+// argument is now.
+const inDeadlineSQL = `started_at IS NOT NULL
 	AND julianday(started_at) + (COALESCE(NULLIF(budget_minutes, 0),
 		(SELECT a.budget_minutes FROM automations a WHERE a.id = automation_runs.automation_id)) + 1) / 1440.0
 	    > julianday(?)`
@@ -829,15 +869,92 @@ const interruptedRunSQL = `status IN ('running','waiting') AND NOT (` + liveDryR
 // one argument is now.
 const staleDryRunSQL = `status IN ('running','waiting') AND trigger = 'dry_run' AND NOT (` + liveDryRunSQL + `)`
 
-// MarkInterruptedAutomationRuns is the daemon start's sweep (AUTO-08): in one
-// transaction it keeps every resumable waiting run (resumableRunSQL) for a
-// resume — resume_pending = 1, status still waiting — and ends every other
-// running/waiting run as failed with error_kind='interrupted', closing their
-// open steps. It returns how many runs it ended. Queued runs are untouched,
-// and so is a dry run still within its deadline (see liveDryRunSQL).
+// slotAutomationSQL is Automation.RunsAtSlot() over automations a: a
+// built-in, or a Personal recipe with a sync trigger (a custom_tracks watch
+// recipe). The two must agree (TestAutomation_RunsAtSlotMatchesSlotSQL).
+const slotAutomationSQL = `a.origin = 'builtin' OR (a.scope = 'personal' AND a.trigger_kind = 'sync')`
+
+// slotRunSQL matches the runs of a slot automation (RunsAtSlot: they run
+// only at their slot, inline in the daemon's sync cycle).
+const slotRunSQL = `automation_id IN (SELECT a.id FROM automations a WHERE ` + slotAutomationSQL + `)`
+
+// MarkInterruptedAutomationRuns is the owner-recipe executor's start sweep
+// (AUTO-08): in one transaction it keeps every resumable waiting run
+// (resumableRunSQL) for a resume — resume_pending = 1, status still waiting —
+// and ends every other running/waiting run as failed with
+// error_kind='interrupted', closing their open steps. It returns how many runs
+// it ended. Queued runs are untouched, and so is a dry run still within its
+// deadline (see liveDryRunSQL). A slot automation's runs (a built-in's or a
+// watch recipe's, slotRunSQL) are never touched: the daemon sweeps them
+// itself before its first slot (MarkInterruptedBuiltinRuns), so a retried
+// executor sweep cannot end a slot run that is live.
 func (db *DB) MarkInterruptedAutomationRuns(now time.Time) (int, error) {
-	return db.endRunsInterruptedTx(now, interruptedRunSQL+` AND NOT (`+resumableRunSQL+`)`,
+	return db.endRunsInterruptedTx(now, interruptedRunSQL+` AND NOT (`+slotRunSQL+`) AND NOT (`+resumableRunSQL+`)`,
 		"interrupted by a daemon restart", "marking interrupted automation runs", markResumableTx)
+}
+
+// interruptedBuiltinRunSQL selects the slot runs (a built-in's or a watch
+// recipe's, slotRunSQL) a daemon start ends: every running/waiting slot run
+// except one an inline CLI process may still hold — a dry run, or a running
+// manual run (`briefing generate`), inside its deadline (inDeadlineSQL). A waiting run and a sync run are
+// always ended. The one argument is now.
+const interruptedBuiltinRunSQL = `status IN ('running','waiting') AND ` + slotRunSQL + `
+	AND NOT ((trigger = 'dry_run' OR (trigger = 'manual' AND status = 'running')) AND ` + inDeadlineSQL + `)`
+
+// MarkInterruptedBuiltinRuns is the daemon's start sweep of the slot
+// automations' runs (the built-ins' and the watch recipes', slotRunSQL):
+// every running/waiting slot run (a previous daemon's, or a CLI's that
+// died) ends as failed with error_kind='interrupted' and its open steps
+// closed. A dry run, and a running manual run (a CLI's inline run), still
+// within its deadline are untouched (interruptedBuiltinRunSQL); the stale-run
+// guard ends one past it (MarkStaleBuiltinRuns). It returns how many runs it
+// ended.
+func (db *DB) MarkInterruptedBuiltinRuns(now time.Time) (int, error) {
+	return db.endRunsInterrupted(now, interruptedBuiltinRunSQL,
+		"interrupted by a daemon restart", "marking interrupted built-in runs")
+}
+
+// staleBuiltinRunSQL selects the running slot runs (slotRunSQL) past their
+// deadline (started_at + budget minutes + the 1-minute grace, as
+// liveDryRunSQL) that never waited: the CLI process that ran one inline (`briefing generate`)
+// was killed before it could finish the row. The deadline holds only for a
+// run that never paused — a wait moves the meter's deadline by the pause —
+// so a waiting run, one kept for a resume, one with a replay call pending,
+// and one with any step that waited (an ask or session step, or a
+// non-auto write step that went past proposed: a {wait} write) are never
+// selected. The one argument is now.
+const staleBuiltinRunSQL = `status = 'running' AND resume_pending = 0 AND ` + slotRunSQL + `
+	AND started_at IS NOT NULL
+	AND NOT EXISTS (SELECT 1 FROM automation_run_steps s WHERE s.run_id = automation_runs.id
+		AND (s.kind IN ('ask','session') OR s.status = 'waiting' OR s.ask_id IS NOT NULL OR s.session_id IS NOT NULL
+		     OR (s.action_id IS NOT NULL AND s.auto = 0 AND s.status != 'proposed')))
+	AND NOT EXISTS (SELECT 1 FROM automation_run_replay r WHERE r.run_id = automation_runs.id AND r.pending = 1)
+	AND julianday(started_at) + (COALESCE(NULLIF(budget_minutes, 0),
+		(SELECT a.budget_minutes FROM automations a WHERE a.id = automation_runs.automation_id)) + 1) / 1440.0
+	    <= julianday(?)`
+
+// MarkStaleBuiltinRuns ends every running slot run (a built-in's or a watch
+// recipe's, slotRunSQL) that never waited and is past its deadline
+// (staleBuiltinRunSQL) as failed with error_kind='interrupted' and closes
+// its open steps; it returns how many it ended. The slot runner calls it
+// before each slot and Run Now: a run a killed CLI left running would
+// otherwise hold its automation's one concurrency slot until the next daemon
+// start.
+func (db *DB) MarkStaleBuiltinRuns(now time.Time) (int, error) {
+	if err := requireRunTime(now, "ending stale built-in runs"); err != nil {
+		return 0, err
+	}
+	var found bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM automation_runs WHERE `+staleBuiltinRunSQL+`)`,
+		formatAutomationTime(now)).Scan(&found)
+	if err != nil {
+		return 0, fmt.Errorf("ending stale built-in runs: %w", err)
+	}
+	if !found {
+		return 0, nil
+	}
+	return db.endRunsInterrupted(now, staleBuiltinRunSQL, "the process running it stopped before it finished the run",
+		"ending stale built-in runs")
 }
 
 // MarkStaleDryRuns ends every running/waiting dry run past its deadline as
@@ -1041,10 +1158,22 @@ func requireOpenStep(db *DB, res sql.Result, id int64) error {
 
 // ListAutomationRunSteps returns the run's steps in seq order (never nil).
 func (db *DB) ListAutomationRunSteps(runID int64) ([]AutomationRunStep, error) {
-	rows, err := db.Query(`SELECT id, run_id, seq, kind, name, args_json, result_summary, status, auto, permission,
+	return db.ListAutomationRunStepsLimit(runID, 0)
+}
+
+// ListAutomationRunStepsLimit is ListAutomationRunSteps cut in SQL to the
+// first limit steps; limit ≤ 0 returns all of them.
+func (db *DB) ListAutomationRunStepsLimit(runID int64, limit int) ([]AutomationRunStep, error) {
+	q := `SELECT id, run_id, seq, kind, name, args_json, result_summary, status, auto, permission,
 		action_id, ask_id, session_id, input_tokens, output_tokens, tokens_estimated, reported_cost_usd,
 		duration_ms, error, started_at, finished_at
-		FROM automation_run_steps WHERE run_id = ? ORDER BY seq`, runID)
+		FROM automation_run_steps WHERE run_id = ? ORDER BY seq`
+	args := []any{runID}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing steps of automation run %d: %w", runID, err)
 	}
@@ -1101,6 +1230,43 @@ type AutomationOutput struct {
 	Priority                string // '' stores medium
 	CreatedAt               time.Time
 	ReadAt, DismissedAt     *time.Time
+	// Link is the card's source link ('' = none) and Actions its buttons
+	// (00149); never nil when read back.
+	Link    string
+	Actions []InboxAction
+	// DoneAt is the Desktop's Done; PressedAction/PressedRunID/PressedAt
+	// record the one Reply press (`automations reply`): nil/0 until then.
+	DoneAt        *time.Time
+	PressedAction *int
+	PressedRunID  int64
+	PressedAt     *time.Time
+}
+
+// Inbox card action kinds (automation_outputs.actions_json).
+const (
+	InboxActionLink  = "link"
+	InboxActionChat  = "chat"
+	InboxActionAgent = "agent"
+	InboxActionReply = "reply"
+)
+
+// InboxAction is one button of an Inbox card. Kind names the one payload
+// field set: Open (link), Chat (chat), Agent (agent) or Reply + Data (reply).
+type InboxAction struct {
+	Label   string            `json:"label"`
+	Kind    string            `json:"kind"`
+	Open    string            `json:"open,omitempty"`
+	Chat    string            `json:"chat,omitempty"`
+	Agent   *InboxAgentAction `json:"agent,omitempty"`
+	Reply   string            `json:"reply,omitempty"`
+	Data    json.RawMessage   `json:"data,omitempty"`
+	Primary bool              `json:"primary,omitempty"`
+}
+
+// InboxAgentAction is an agent action's task and its optional workbench.
+type InboxAgentAction struct {
+	Task      string          `json:"task"`
+	Workbench json.RawMessage `json:"workbench,omitempty"`
 }
 
 // ListAutomationOutputs returns up to limit outputs of kind (” = every
@@ -1132,6 +1298,56 @@ func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput,
 	return out, nil
 }
 
+// ListAutomationOutputsForRun returns the first limit outputs a run wrote,
+// oldest first (never nil); limit ≤ 0 returns all of them.
+func (db *DB) ListAutomationOutputsForRun(runID int64, limit int) ([]AutomationOutput, error) {
+	q := `SELECT ` + automationOutputCols + `
+		FROM automation_outputs WHERE run_id = ? ORDER BY id`
+	args := []any{runID}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing outputs of automation run %d: %w", runID, err)
+	}
+	defer rows.Close()
+	out := []AutomationOutput{}
+	for rows.Next() {
+		o, err := scanAutomationOutput(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing outputs of automation run %d: %w", runID, err)
+	}
+	return out, nil
+}
+
+// GetAutomationOutput returns one output by id; a miss wraps
+// ErrOutputNotFound.
+func (db *DB) GetAutomationOutput(id int64) (*AutomationOutput, error) {
+	rows, err := db.Query(`SELECT `+automationOutputCols+` FROM automation_outputs WHERE id = ?`, id)
+	if err != nil {
+		return nil, fmt.Errorf("reading automation output %d: %w", id, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("reading automation output %d: %w", id, err)
+		}
+		return nil, fmt.Errorf("automation output %d: %w", id, ErrOutputNotFound)
+	}
+	o, err := scanAutomationOutput(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
 // NamedAutomationOutput is an automation output with the name of the
 // automation that wrote it (its slug when the recipe has no name).
 type NamedAutomationOutput struct {
@@ -1145,7 +1361,8 @@ type NamedAutomationOutput struct {
 // (so a caller can say how many it left out). Never nil.
 func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, maxBodyChars int) ([]NamedAutomationOutput, int, error) {
 	rows, err := db.Query(`SELECT o.id, o.automation_id, o.run_id, o.kind, o.title, substr(o.body, 1, ?), o.priority,
-			o.created_at, o.read_at, o.dismissed_at, COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
+			o.created_at, o.read_at, o.dismissed_at, o.link, o.actions_json, o.done_at, o.pressed_action,
+			o.pressed_run_id, o.pressed_at, COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
 		WHERE o.kind = ? AND o.created_at >= ? ORDER BY o.created_at DESC, o.id DESC LIMIT ?`,
 		maxBodyChars, kind, formatAutomationTime(since), limit)
@@ -1168,18 +1385,20 @@ func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, ma
 	return out, total, nil
 }
 
-const automationOutputCols = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at`
+const automationOutputCols = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at,
+	link, actions_json, done_at, pressed_action, pressed_run_id, pressed_at`
 
 // scanAutomationOutput scans one automationOutputCols row; extra receives any
 // columns the query selects after them.
 func scanAutomationOutput(rows *sql.Rows, extra ...any) (AutomationOutput, error) {
 	var (
-		o               AutomationOutput
-		created         string
-		read, dismissed sql.NullString
+		o                           AutomationOutput
+		created, actions            string
+		read, dismissed, done, prAt sql.NullString
+		prAction, prRun             sql.NullInt64
 	)
 	dest := append([]any{&o.ID, &o.AutomationID, &o.RunID, &o.Kind, &o.Title, &o.Body, &o.Priority, &created,
-		&read, &dismissed}, extra...)
+		&read, &dismissed, &o.Link, &actions, &done, &prAction, &prRun, &prAt}, extra...)
 	if err := rows.Scan(dest...); err != nil {
 		return o, fmt.Errorf("scanning automation output: %w", err)
 	}
@@ -1192,6 +1411,20 @@ func scanAutomationOutput(rows *sql.Rows, extra ...any) (AutomationOutput, error
 	}
 	if o.DismissedAt, err = parseAutomationTime(dismissed, "dismissed_at"); err != nil {
 		return o, err
+	}
+	if o.DoneAt, err = parseAutomationTime(done, "done_at"); err != nil {
+		return o, err
+	}
+	if o.PressedAt, err = parseAutomationTime(prAt, "pressed_at"); err != nil {
+		return o, err
+	}
+	if prAction.Valid {
+		n := int(prAction.Int64)
+		o.PressedAction = &n
+	}
+	o.PressedRunID = prRun.Int64
+	if o.Actions, err = decodeInboxActions(actions); err != nil {
+		return o, fmt.Errorf("automation output %d: %w", o.ID, err)
 	}
 	return o, nil
 }

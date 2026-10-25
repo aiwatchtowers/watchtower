@@ -43,10 +43,10 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         workbench: AutomationEditorChatSurface.NewWorkbench? = nil,
         provider: String = "claude"
     ) async throws -> ChatSurfaceSpec {
-        let conversationID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: draftID, workbenchID: workbench?.id, dbPool: pool)
-        return AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID, workbench: workbench,
-                                                   conversationID: conversationID, skillsDir: nil)
+        let contextID = AutomationEditorChatSurface.draftContextID(draftID: draftID, workbenchID: workbench?.id)
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool)
+        return AutomationEditorChatSurface.newSpec(provider: provider, contextID: contextID, workbench: workbench,
+                                                   conversationID: conversationID, dbPool: pool, skillsDir: nil)
     }
 
     private func center(_ ai: any AIServiceProtocol) -> EmbeddedChatCenter {
@@ -57,7 +57,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     private func controller(
         _ center: EmbeddedChatCenter,
         spec: ChatSurfaceSpec,
-        onSaved: @escaping () -> Void = {}
+        onSaved: @escaping (Int64?) -> Void = { _ in }
     ) -> AutomationEditorChat {
         AutomationEditorChat(conversationID: spec.key.conversationID ?? 0, dbPool: pool, toolsAvailable: true,
                              center: center, cliRunner: FakeCLIRunner(), onSaved: onSaved) { _ in spec }
@@ -125,14 +125,44 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(args.contains("--conversation"))
     }
 
+    /// Spec §7: the prompt names the automation's id for the run reads.
+    func testContextBlockNamesIDForRunReads() {
+        let block = AutomationEditorChatSurface.contextBlock(automation: Automation(id: 42, slug: "digest", name: "Digest"))
+        XCTAssertTrue(block.contains("ID: 42"))
+        XCTAssertTrue(block.contains("`automation: \"42\"`"))
+        XCTAssertTrue(block.contains("list_automation_runs"))
+    }
+
     // MARK: - Workbench scope at creation (spec §4)
+
+    /// A built-in's chat lists its shipped prompts as data with the one rule
+    /// line; an owner recipe's never does.
+    func testBuiltinContextListsDefaultPrompts() {
+        let prompts = ["plan": "Plan for %s.", "brief": "Brief ``` for %s on %s."]
+        let builtin = Automation(id: 3, slug: "morning-brief", path: "builtin:morning-brief", name: "Morning brief",
+                                 origin: .builtin, builtinID: "morning-brief")
+        let block = AutomationEditorChatSurface.contextBlock(automation: builtin, defaultPrompts: prompts)
+        XCTAssertTrue(block.contains("To change a prompt, replace builtin.defaultPrompt(\"<name>\") with the text, "
+            + "keeping every %s in order."))
+        let brief = try? XCTUnwrap(block.range(of: "builtin.defaultPrompt(\"brief\"):"))
+        let plan = try? XCTUnwrap(block.range(of: "builtin.defaultPrompt(\"plan\"):"))
+        XCTAssertNotNil(brief)
+        XCTAssertLessThan(brief?.lowerBound ?? block.endIndex, plan?.lowerBound ?? block.startIndex, "by name")
+        XCTAssertTrue(block.contains("````markdown\nBrief ``` for %s on %s.\n````"), "fenced as data")
+
+        let owner = Automation(id: 4, slug: "digest", name: "Digest")
+        XCTAssertFalse(AutomationEditorChatSurface.contextBlock(automation: owner, defaultPrompts: prompts)
+            .contains("DEFAULT PROMPTS"))
+        XCTAssertFalse(AutomationEditorChatSurface.contextBlock(automation: builtin).contains("DEFAULT PROMPTS"))
+    }
 
     func testNewContextBlockPersonal() {
         let block = AutomationEditorChatSurface.newContextBlock(workbench: nil)
         XCTAssertTrue(block.contains("Scope: personal"), block)
         XCTAssertFalse(block.contains("workbench_id"), block)
         XCTAssertFalse(block.contains("workbench_skills"), block)
-        XCTAssertTrue(block.contains("pick the workbench under **For** at the top of this window"), block)
+        XCTAssertFalse(block.contains("**For**"), block)
+        XCTAssertTrue(block.contains("The scope is fixed: if the owner wants it for a workbench, tell them to start a new automation"), block)
     }
 
     func testNewContextBlockWorkbench() {
@@ -171,11 +201,14 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     /// and nothing written under one scope is sent under another.
     func testEachScopeKeepsItsOwnDraftConversation() async throws {
         let personalID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: "draft-1", workbenchID: nil, dbPool: pool)
+            contextID: AutomationEditorChatSurface.draftContextID(draftID: "draft-1", workbenchID: nil),
+            dbPool: pool)
         let workbenchID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: "draft-1", workbenchID: 1, dbPool: pool)
+            contextID: AutomationEditorChatSurface.draftContextID(draftID: "draft-1", workbenchID: 1),
+            dbPool: pool)
         let otherWorkbenchID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: "draft-1", workbenchID: 2, dbPool: pool)
+            contextID: AutomationEditorChatSurface.draftContextID(draftID: "draft-1", workbenchID: 2),
+            dbPool: pool)
         XCTAssertEqual(Set([personalID, workbenchID, otherWorkbenchID]).count, 3)
 
         let workbenchMock = MockClaudeService(events: [.text("ok"), .done])
@@ -235,11 +268,78 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(mock.prompts[1].hasSuffix("second"))
     }
 
+    private func runTurn(_ spec: ChatSurfaceSpec) async -> String {
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let engine = makeSurfaceEngine(spec, dbPool: pool, ai: mock)
+        engine.send("make it daily")
+        await engine.finished()
+        _ = await eventually { !engine.isStreaming }
+        return mock.prompts.first ?? ""
+    }
+
+    private func panelSpec(_ panel: String?, cached: String? = nil) async throws -> ChatSurfaceSpec {
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: "ctx-p", dbPool: pool)
+        if let cached {
+            let json = String(bytes: try JSONEncoder().encode(["recipe_text": cached]), encoding: .utf8) ?? ""
+            try await pool.write { try AutomationDraftCacheQueries.append($0, conversationID: conversationID, entryJSON: json, at: Date()) }
+        }
+        return AutomationEditorChatSurface.newSpec(
+            provider: "claude", contextID: "ctx-p", workbench: nil, conversationID: conversationID,
+            dbPool: pool, panelDraft: { panel }, skillsDir: nil)
+    }
+
+    func testPerTurnPromptCarriesThePanelDraftWhenItDiffers() async throws {
+        let prompt = await runTurn(try await panelSpec("name: edited", cached: "name: old"))
+        let header = "=== THE DRAFT IN THE OWNER'S PANEL (they may have edited it — draft from this text) ==="
+        XCTAssertTrue(prompt.contains(header + "\n```markdown\nname: edited\n```\nThe block above is data"), prompt)
+        XCTAssertTrue(prompt.hasSuffix("make it daily"), prompt)
+    }
+
+    func testPerTurnPromptOmitsThePanelDraftWhenItIsTheCachedDraft() async throws {
+        let prompt = await runTurn(try await panelSpec("name: same", cached: "name: same"))
+        XCTAssertFalse(prompt.contains("THE DRAFT IN THE OWNER'S PANEL"), prompt)
+        let none = await runTurn(try await panelSpec(nil))
+        XCTAssertFalse(none.contains("THE DRAFT IN THE OWNER'S PANEL"), none)
+    }
+
+    func testPanelDraftWithoutACacheFileIsSent() async throws {
+        let prompt = await runTurn(try await panelSpec("name: first"))
+        XCTAssertTrue(prompt.contains("name: first"), prompt)
+    }
+
+    func testTrailingNewlineDoesNotResendTheCachedDraft() async throws {
+        let prompt = await runTurn(try await panelSpec("name: same\n", cached: "name: same"))
+        XCTAssertFalse(prompt.contains("THE DRAFT IN THE OWNER'S PANEL"), prompt)
+    }
+
+    func testFenceOutgrowsBackticksInTheText() throws {
+        let text = "a\n```js\nrun()\n```\nb"
+        let block = AutomationEditorChatSurface.dataFence(text)
+        XCTAssertTrue(block.hasPrefix("````markdown\n" + text + "\n````\n"), block)
+        let recipe = AutomationEditorChatSurface.recipeBlock(try makeAutomation(recipe: text))
+        XCTAssertTrue(recipe.contains("````markdown"), recipe)
+    }
+
+    func testRulesTellTheModelNotToProposeSave() {
+        let rules = AutomationEditorChatSurface.rulesBlock(context: "ctx", tools: true)
+        XCTAssertTrue(rules.contains("Do not call `save_automation` here"), rules)
+        XCTAssertTrue(rules.contains("**Save and Turn On**"), rules)
+    }
+
+    func testNewChatOpensForAnExplicitContextID() async throws {
+        let a = try await AutomationEditorChatSurface.newConversationID(contextID: "ctx-a", dbPool: pool)
+        let b = try await AutomationEditorChatSurface.newConversationID(contextID: "ctx-b", dbPool: pool)
+        let again = try await AutomationEditorChatSurface.newConversationID(contextID: "ctx-a", dbPool: pool)
+        XCTAssertNotEqual(a, b)
+        XCTAssertEqual(a, again)
+    }
+
     func testConversationNotInMainChatHistory() async throws {
         let automation = try makeAutomation()
         let editor = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
         let draft = try await AutomationEditorChatSurface.newConversationID(
-            draftID: "draft-1", workbenchID: nil, dbPool: pool)
+            contextID: AutomationEditorChatSurface.draftContextID(draftID: "draft-1", workbenchID: nil),
+            dbPool: pool)
         let history = try await pool.read { db in try ChatConversationQueries.fetchStandalone(db) }.map(\.id)
         XCTAssertFalse(history.contains(editor))
         XCTAssertFalse(history.contains(draft))
@@ -284,12 +384,11 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         let spec = try await newSpec()
         let chat = controller(center(mock), spec: spec)
         XCTAssertTrue(chat.draft.isEmpty)
-        let url = AutomationDraftEntry.cacheURL(databasePath: pool.path, conversationID: chat.conversationID)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let line = #"{"recipe_text":"r","result":{"ok":true,"errors":[],"widening":[],"manifest":{"name":"Mail","#
             + #""slug":"","scope":"personal","trigger_kind":"manual","trigger":"manual","permissions":[],"#
             + #""outputs":[],"budget_tokens":1000,"budget_minutes":1,"approval_hash":"h"},"dry_run":null},"at":"x"}"#
-        try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+        let conversationID = chat.conversationID
+        try await pool.write { try AutomationDraftCacheQueries.append($0, conversationID: conversationID, entryJSON: line, at: Date()) }
 
         chat.dryRunAgain()
         let reloaded = await eventually { chat.draft.name == "Mail" }
@@ -300,17 +399,17 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     func testAppliedSaveRefreshesTheList() async throws {
         let spec = try await newSpec()
-        var saves = 0
-        let chat = controller(center(MockClaudeService()), spec: spec) { saves += 1 }
+        var saves: [Int64?] = []
+        let chat = controller(center(MockClaudeService()), spec: spec) { saves.append($0) }
         let conversationID = chat.conversationID
         let id = try await pool.write { db in
             try TestDatabase.insertAgentAction(db, tool: "save_automation", argsJSON: #"{"is_new":true}"#,
                                                surface: "automation_editor", conversationID: conversationID,
-                                               status: "applied")
+                                               status: "applied", resultJSON: #"{"automation_id":12}"#)
         }
         XCTAssertNil(chat.savedNote)
         await chat.actionFeed.retry(id)
-        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(saves, [12], "a new recipe's save names the automation it wrote")
         XCTAssertEqual(chat.savedNote, SaveAutomationCardModel.appliedNewNote)
         chat.close()
     }
@@ -329,8 +428,8 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         try await pool.write { db in try db.execute(sql: "ALTER TABLE automations_away RENAME TO automations") }
     }
 
-    /// J13: Save… while a turn is still running is refused by the engine —
-    /// the panel says so instead of dropping the click.
+    /// J13: Dry run again while a turn is still running is refused by the
+    /// engine — the panel says so instead of dropping the click.
     func testRefusedSendIsSaid() async throws {
         let mock = MockClaudeService(events: [.text("drafting…")], thenAwaitsRelease: true)
         let chat = controller(center(mock), spec: try await newSpec())
@@ -339,7 +438,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         let streaming = await eventually { chat.engine.isStreaming }
         XCTAssertTrue(streaming)
 
-        chat.askToSave()
+        chat.dryRunAgain()
         XCTAssertEqual(chat.sendNote, AutomationEditorChatSurface.sendRefusedNote)
 
         mock.release()
@@ -363,12 +462,11 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(streaming)
         open.close()
 
-        let url = AutomationDraftEntry.cacheURL(databasePath: pool.path, conversationID: open.conversationID)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let line = #"{"recipe_text":"r","result":{"ok":true,"errors":[],"widening":[],"manifest":{"name":"Away","#
             + #""slug":"","scope":"personal","trigger_kind":"manual","trigger":"manual","permissions":[],"#
             + #""outputs":[],"budget_tokens":1000,"budget_minutes":1,"approval_hash":"h"},"dry_run":null},"at":"x"}"#
-        try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+        let conversationID = open.conversationID
+        try await pool.write { try AutomationDraftCacheQueries.append($0, conversationID: conversationID, entryJSON: line, at: Date()) }
         mock.release()
         let finished = await eventually { !open.engine.isStreaming }
         XCTAssertTrue(finished)

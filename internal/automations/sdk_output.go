@@ -28,8 +28,8 @@ const (
 // output.report registered.
 func OutputModule() *OutputMod {
 	m := &OutputMod{kinds: map[string]SDKFunc{}}
-	m.RegisterOutputKind(outputKindInbox, bufferedOutput(outputKindInbox, true))
-	m.RegisterOutputKind(outputKindReport, bufferedOutput(outputKindReport, false))
+	m.RegisterOutputKind(outputKindInbox, bufferedOutput(outputKindInbox, outputOpts{priority: true, card: true}))
+	m.RegisterOutputKind(outputKindReport, bufferedOutput(outputKindReport, outputOpts{}))
 	return m
 }
 
@@ -49,12 +49,21 @@ func (m *OutputMod) Install(def Definer) {
 
 var outputPriorities = []string{"high", "medium", "low"}
 
-// bufferedOutput is output.<kind>({title, body, priority?}) for a kind the
-// commit buffer holds until the run succeeds (spec §5). outputs: [<kind>]
-// gates it; the body is capped at MaxOutputBodyBytes. In a dry run the
-// output is buffered (it is what the dry run would have written), the step
-// is dry_run and the call returns {status:"dry_run"}.
-func bufferedOutput(kind string, withPriority bool) SDKFunc {
+// outputOpts are the optional fields an output kind takes: priority, and
+// the Inbox card's link and actions (card).
+type outputOpts struct {
+	priority, card bool
+}
+
+// bufferedOutput is output.<kind>({title, body, priority?, link?, actions?})
+// for a kind the commit buffer holds until the run succeeds (spec §5);
+// opts names the optional fields the kind takes. outputs: [<kind>] gates
+// it; a Reply action also needs inbox:reply. The body is capped at
+// MaxOutputBodyBytes. In a dry run the output is buffered (it is what the
+// dry run would have written), the step is dry_run and the call returns
+// {status:"dry_run"}. A resumed run's replay runs it again (CallBuffered),
+// so the rebuilt buffer carries the same card.
+func bufferedOutput(kind string, opts outputOpts) SDKFunc {
 	return func(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 		fn := "output." + kind
 		arg, _, argErr := argAt(env, rt, call, 0)
@@ -73,7 +82,7 @@ func bufferedOutput(kind string, withPriority bool) SDKFunc {
 					fmt.Sprintf("%s(): the argument is larger than %d bytes; a body may be at most %d bytes",
 						fn, maxSDKArgBytes, MaxOutputBodyBytes))
 			}
-			o, err := outputRow(env, fn, kind, arg, withPriority)
+			o, err := outputRow(env, fn, kind, arg, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -88,8 +97,9 @@ func bufferedOutput(kind string, withPriority bool) SDKFunc {
 	}
 }
 
-// outputRow validates {title, body, priority?} into a buffered output.
-func outputRow(env *Env, fn, kind string, arg any, withPriority bool) (db.AutomationOutput, error) {
+// outputRow validates {title, body, priority?, link?, actions?} into a
+// buffered output.
+func outputRow(env *Env, fn, kind string, arg any, opts outputOpts) (db.AutomationOutput, error) {
 	o := db.AutomationOutput{Kind: kind}
 	if env.Automation != nil {
 		o.AutomationID = env.Automation.ID
@@ -101,7 +111,7 @@ func outputRow(env *Env, fn, kind string, arg any, withPriority bool) (db.Automa
 	if !ok {
 		return o, validationf("%s() takes an object {title, body}", fn)
 	}
-	if err := checkOutputFields(fn, fields, withPriority); err != nil {
+	if err := checkOutputFields(fn, fields, opts); err != nil {
 		return o, err
 	}
 	if o.Title, ok = fields["title"].(string); !ok || o.Title == "" {
@@ -119,14 +129,23 @@ func outputRow(env *Env, fn, kind string, arg any, withPriority bool) (db.Automa
 			return o, validationf("%s(): priority must be one of high, medium, low", fn)
 		}
 	}
+	if opts.card {
+		var err error
+		if o.Link, o.Actions, err = inboxCard(env, fn, fields); err != nil {
+			return o, err
+		}
+	}
 	return o, nil
 }
 
 // checkOutputFields refuses a field output.<kind> does not take.
-func checkOutputFields(fn string, fields map[string]any, withPriority bool) error {
+func checkOutputFields(fn string, fields map[string]any, opts outputOpts) error {
 	allowed := []string{"title", "body"}
-	if withPriority {
+	if opts.priority {
 		allowed = append(allowed, "priority")
+	}
+	if opts.card {
+		allowed = append(allowed, "link", "actions")
 	}
 	for k := range fields {
 		if !slices.Contains(allowed, k) {

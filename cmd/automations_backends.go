@@ -60,6 +60,11 @@ func (m *automationMCPCaller) Call(ctx context.Context, server, tool string, arg
 		return nil, fmt.Errorf("%w: no enabled connection named %q", automations.ErrMCPNotAvailable, server)
 	}
 	c := conns[i]
+	// The organization's policy (#608): refused before tools, credentials or
+	// any process; the SDK turns it into a PolicyError.
+	if err := connectionPolicyError(c.Name, c.Kind, c.URL, c.Command); err != nil {
+		return nil, err
+	}
 	if externalmcp.ReservedName(c.Name) {
 		recordReservedName(m.database, c)
 		return nil, fmt.Errorf("%w: %q: %w", automations.ErrMCPNotAvailable, server, errReservedName)
@@ -163,6 +168,9 @@ type cliAgentRunner struct {
 func (r *cliAgentRunner) Name() string { return r.provider }
 
 func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	if err := providers.Allowed(r.provider); err != nil {
+		return automations.AgentResult{}, automations.PolicyError(err) // #608: nothing spawned, nothing metered
+	}
 	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
 	defer cancel()
 	model := tierModel(r.cfg, r.provider, req.Tier)
@@ -339,6 +347,9 @@ type runtimeBAgentRunner struct {
 func (r *runtimeBAgentRunner) Name() string { return "runtime-b" }
 
 func (r *runtimeBAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	if err := providers.Allowed(r.cfg.AI.Provider); err != nil {
+		return automations.AgentResult{}, automations.PolicyError(err) // #608
+	}
 	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
 	defer cancel()
 	allowed := req.Tools

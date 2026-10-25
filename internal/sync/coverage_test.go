@@ -244,26 +244,6 @@ func TestEnsureWorkspaceCached(t *testing.T) {
 	assert.Equal(t, "T024BE7LD", acct.TeamID)
 }
 
-// --- channelName ---
-
-func TestChannelNameWithMap(t *testing.T) {
-	ts := newTestSetup(t, defaultMux())
-	ts.orch.channelNames = map[string]string{
-		"C001": "general",
-		"C002": "",
-	}
-
-	assert.Equal(t, "#general (C001)", ts.orch.channelName("C001"))
-	assert.Equal(t, "C002", ts.orch.channelName("C002")) // empty name
-	assert.Equal(t, "C999", ts.orch.channelName("C999")) // not in map
-}
-
-func TestChannelNameNilMap(t *testing.T) {
-	ts := newTestSetup(t, defaultMux())
-	ts.orch.channelNames = nil
-	assert.Equal(t, "C001", ts.orch.channelName("C001"))
-}
-
 // --- saveSyncError ---
 
 func TestSaveSyncErrorWithExistingState(t *testing.T) {

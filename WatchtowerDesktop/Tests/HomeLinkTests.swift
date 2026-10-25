@@ -13,7 +13,6 @@ final class HomeLinkTests: XCTestCase {
     private struct Landing: Equatable {
         var destination: SidebarDestination
         var targetID: Int?
-        var briefingID: Int?
         var workbenchRoute: WorkbenchRoute?
         var calendarEventID: String?
     }
@@ -22,7 +21,6 @@ final class HomeLinkTests: XCTestCase {
         Landing(
             destination: appState.selectedDestination,
             targetID: appState.pendingTargetID,
-            briefingID: appState.pendingBriefingID,
             workbenchRoute: appState.pendingWorkbenchRoute,
             calendarEventID: appState.pendingCalendarEventID
         )
@@ -34,13 +32,15 @@ final class HomeLinkTests: XCTestCase {
             (.inbox, Landing(destination: .inbox)),
             (.automationRun(automationID: 1, runID: 2), Landing(destination: .automations)),
             (.calendarEvent(id: "evt-acme"), Landing(destination: .calendar, calendarEventID: "evt-acme")),
-            (.briefing(id: 7), Landing(destination: .briefings, briefingID: 7)),
+            // The brief's and the four Inbox features' cards (InboxRouteTests).
+            (.briefing(id: 7), Landing(destination: .inbox)),
             (.targets, Landing(destination: .targets)),
             (.target(id: 11), Landing(destination: .targets, targetID: 11)),
             (.workbench(route), Landing(destination: .workbench, workbenchRoute: route)),
             (.workbenches, Landing(destination: .workbench)),
             (.catchUp, Landing(destination: .catchUp)),
-            (.feature(.tracks), Landing(destination: .tracks)),
+            (.feature(.tracks), Landing(destination: .inbox)),
+            (.feature(.dayPlan), Landing(destination: .inbox)),
             (.feature(.jira), Landing(destination: .boards)),
             (.turnOn(featureID: "slack-digests"), Landing(destination: .home))
         ]
@@ -50,6 +50,29 @@ final class HomeLinkTests: XCTestCase {
             appState.openHomeLink(link)
             XCTAssertEqual(landing(appState), expected, "\(link)")
         }
+    }
+
+    /// An automation note opens its Inbox card (with its buttons); before
+    /// the Inbox exists it falls back to the run.
+    func testInboxOutputOpensItsCardOrTheRun() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let (output, automation, run) = try await pool.write { db -> (Int64, Int64, Int64) in
+            let automation = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return (try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run), automation, run)
+        }
+        let appState = AppState.isolated()
+        appState.initActionStrip(dbPool: pool)
+        appState.openHomeLink(.inboxOutput(id: output, automationID: automation, runID: run))
+        XCTAssertEqual(appState.selectedDestination, .inbox)
+        for _ in 0..<2000 where appState.actionStripViewModel?.selection == nil { await Task.yield() }
+        XCTAssertEqual(appState.actionStripViewModel?.selection, .output(output))
+
+        let early = AppState.isolated()
+        early.selectedDestination = .home
+        early.openHomeLink(.inboxOutput(id: output, automationID: automation, runID: run))
+        XCTAssertEqual(early.selectedDestination, .automations)
     }
 
     func testAskLinkCarriesTheRoute() {
@@ -104,21 +127,27 @@ final class HomeLinkTests: XCTestCase {
         XCTAssertEqual(opened, 0)
     }
 
-    /// Each feature opens a tab whose empty state is about that feature (or
-    /// its sibling: stream digests on Digests, Linear on Blockers, whose row
-    /// speaks for both trackers, Jira on its views); Knowledge
+    /// Each feature opens a tab — or an Inbox filter — whose empty state is
+    /// about that feature (or its sibling: stream digests on Digests, Linear
+    /// on Blockers, whose row speaks for both trackers, Jira on its views,
+    /// the day plan on the Day filter, which speaks for the brief); Knowledge
     /// search opens Search, which keeps its own empty state.
-    func testEveryFeatureHasADestination() {
-        let siblings: [ReadinessFeature: ReadinessFeature] = [.streamDigests: .digests, .linear: .jira]
+    func testEveryFeatureHasADestination() throws {
+        let siblings: [ReadinessFeature: ReadinessFeature] = [.streamDigests: .digests, .linear: .jira, .dayPlan: .briefing]
         for feature in ReadinessFeature.allCases {
-            let destination = AppState.homeDestination(for: feature)
-            guard let copy = EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 9),
+            let key: String
+            if let route = InboxRoute.forFeature(feature, today: "2026-10-22") {
+                key = route.filter.emptyCopyKey
+            } else {
+                key = try XCTUnwrap(AppState.homeDestination(for: feature), "\(feature)").rawValue
+            }
+            guard let copy = EmptyStateCopyTable.copy(for: key, briefingHour: 8),
                   let copyFeature = copy.feature else {
-                XCTAssertEqual(feature, .knowledgeIndex, "\(feature) → \(destination) has no empty state")
-                XCTAssertEqual(destination, .search)
+                XCTAssertEqual(feature, .knowledgeIndex, "\(feature) → \(key) has no empty state")
+                XCTAssertEqual(key, SidebarDestination.search.rawValue)
                 continue
             }
-            XCTAssertEqual(copyFeature, siblings[feature] ?? feature, "\(feature) → \(destination)")
+            XCTAssertEqual(copyFeature, siblings[feature] ?? feature, "\(feature) → \(key)")
         }
     }
 

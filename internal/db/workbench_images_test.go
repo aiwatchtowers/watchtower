@@ -91,3 +91,22 @@ func TestProjectTargetImages_GoWithTheirTarget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, keep)
 }
+
+func TestListWorkbenchTargetImages_Description(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	tid := insertWorkbenchTargetRow(t, d, pid, "a")
+	id, err := attachImage(d, pid, tid, "aa")
+	require.NoError(t, err)
+
+	got, err := d.ListWorkbenchTargetImages(tid)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].Description, "pending: no description")
+
+	_, err = d.Exec(`UPDATE media_items SET status = 'ok', title = 'Login screen', body = 'a form with two fields' WHERE target_image_id = ?`, id)
+	require.NoError(t, err)
+	got, err = d.ListWorkbenchTargetImages(tid)
+	require.NoError(t, err)
+	assert.Equal(t, "Login screen — a form with two fields", got[0].Description)
+}

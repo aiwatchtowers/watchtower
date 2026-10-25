@@ -37,6 +37,7 @@ func NewListMessages() *Tool {
 			"questions they handed over). At least one of person/channel/query is required. Newest first.",
 		InputSchema: mustSchema[listMessagesArgs]("list_messages"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listMessagesArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {

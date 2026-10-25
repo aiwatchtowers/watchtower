@@ -9,23 +9,8 @@ protocol HomeFeedPerforming {
     func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws
 }
 
-/// Why a feed action could not run at all.
-enum HomeFeedActionError: LocalizedError, Equatable {
-    /// The `watchtower` binary was not found: inbox rows are written by the CLI.
-    case cliUnavailable
-    /// No database is open yet.
-    case databaseUnavailable
-
-    var errorDescription: String? {
-        switch self {
-        case .cliUnavailable: "The command line is not available."
-        case .databaseUnavailable: "The database is not open."
-        }
-    }
-}
-
 /// The production writes: inbox rows through the Go CLI (`inbox resolve` /
-/// `inbox dismiss`), reminders, automation outputs (Done = read, Hide =
+/// `inbox dismiss`), reminders, automation outputs (Done = `done_at`, Hide =
 /// dismissed) and targets through GRDB, the same writes the Inbox, the
 /// action strip and Targets make. Proposals and events have no
 /// action on Home; a call for one does nothing.
@@ -50,7 +35,7 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
         case .inbox(let id):
             guard let runner else { throw HomeFeedActionError.cliUnavailable }
             _ = try await runner.run(
-                args: ["inbox", action == .done ? "resolve" : "dismiss", "\(id)"], timeout: Self.cliTimeout)
+                args: ["inbox", action == .done ? "resolve" : "dismiss", "\(id)"], timeout: HomeFeedActionError.cliTimeout)
         case .reminder(let id):
             let until = ISO8601DateFormatter().string(from: Self.tomorrowNine(now: now, calendar: calendar))
             try await quietIfGone {
@@ -72,10 +57,10 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
                 }
             }
         case .output(let id):
-            // Already read or dismissed elsewhere: the update changes nothing, which is success.
+            // Already done or dismissed elsewhere: the update changes nothing, which is success.
             try await pool.write { db in
                 switch action {
-                case .done: try AutomationQueries.markOutputRead(db, id: id, now: now)
+                case .done: try AutomationQueries.markOutputDone(db, id: id, now: now)
                 case .hide: try AutomationQueries.dismissOutput(db, id: id, now: now)
                 }
             }
@@ -83,10 +68,6 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
             return
         }
     }
-
-    /// How long an inbox CLI call may run; past it the call throws and the
-    /// row comes back with the error.
-    static let cliTimeout: TimeInterval = 30
 
     /// Tomorrow 09:00 in `calendar`'s time zone: where a hidden reminder or
     /// target comes back.

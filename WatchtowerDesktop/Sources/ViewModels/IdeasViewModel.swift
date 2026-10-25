@@ -39,13 +39,6 @@ final class IdeasViewModel {
     /// review queue included, so a flagged note is reviewed under Notes.
     var kindMode: String = "idea"
 
-    /// Registry browse filters. The status filter is ignored by the review
-    /// queue (its items are proposed/flagged by definition); the search text
-    /// narrows BOTH sections — review items that don't match a search staying
-    /// on screen read as a broken search.
-    var statusFilter: String?
-    var searchText: String = ""
-
     /// Ideas + notes across BOTH segments: what the full-screen empty state
     /// keys off, so an empty Notes segment doesn't take the segmented control
     /// off screen while ideas exist.
@@ -64,13 +57,6 @@ final class IdeasViewModel {
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending create or conversion (board #670).
     let pendingWrites = PendingWrites()
-    private var observationTask: Task<Void, Never>?
-    private var pollTask: Task<Void, Never>?
-    private var refreshGate = ForegroundRefreshGate()
-    /// The load `setOnScreen` started — held so tests can await it.
-    private(set) var onScreenRefresh: Task<Void, Never>?
-    private var loadsStarted = 0
-    private var loadApplied = 0
     /// SB4: retained so cancelBackfill() has something to cancel — started
     /// and cleared by startBackfillTask, the sheet's Start-button entry point.
     private var backfillTask: Task<Void, Never>?
@@ -78,12 +64,6 @@ final class IdeasViewModel {
     /// Overrides CLI resolution for tests; production falls back to
     /// `ProcessCLIRunner.makeDefault()` (mirrors `TargetsViewModel`).
     private let cliRunner: CLIRunnerProtocol?
-
-    /// Interval for the safety-net poll. GRDB ValueObservation cannot see writes
-    /// from the Go daemon (separate process, separate SQLite update hooks), so
-    /// the registry needs a periodic reload to surface daemon-mined ideas —
-    /// only while the UI is on screen (`refreshGate`, board #731).
-    private let pollInterval: Duration = .seconds(30)
 
     /// SB1: pinned to UTC so the `--from`/`--to` calendar day the CLI parses
     /// matches what the owner picked, regardless of the machine's local time
@@ -111,107 +91,15 @@ final class IdeasViewModel {
         selectedID = id
     }
 
-    /// Selects `id` and clears whatever browse state would hide it — the
-    /// segment is switched to the idea's own kind, the status filter and
-    /// search are dropped — so a link from elsewhere (an Inbox strip card)
-    /// lands on the row instead of `reconcileSelection()` silently moving the
-    /// selection off it. The same reveal `createManual` does for a new row.
-    func reveal(_ id: Int) {
-        do {
-            let idea = try dbManager.dbPool.read { db in try IdeaQueries.fetchOne(db, id: id) }
-            // A deleted idea still switches to the Ideas segment; the reload
-            // then falls back to the first row, as for any vanished selection.
-            if let kind = idea?.kind, kind == .idea || kind == .note {
-                kindMode = kind.rawValue
-            } else {
-                kindMode = Idea.Kind.idea.rawValue
-            }
-        } catch {
-            errorMessage = "Failed to open idea: \(error.localizedDescription)"
-            return
-        }
-        statusFilter = nil
-        searchText = ""
-        selectedID = id
-        load()
-    }
-
-    func startObserving() {
-        guard observationTask == nil else { return }
-        load()
-        let dbPool = dbManager.dbPool
-        observationTask = Task { [weak self] in
-            let observation = ValueObservation.tracking { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ideas") ?? 0
-            }
-            .removeDuplicates()
-            do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled else { break }
-                    self?.load()
-                }
-            } catch {}
-        }
-        startPolling()
-    }
-
-    /// Force an immediate reload from disk. Called on tab-appear so daemon-mined
-    /// ideas surface even when the user takes no action while away.
-    func refresh() {
-        load()
-    }
-
-    private func startPolling() {
-        guard pollTask == nil else { return }
-        let interval = pollInterval
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
-                guard !Task.isCancelled, let self else { break }
-                await self.pollTick()
-            }
-        }
-    }
-
     func load() {
         isLoading = true
-        let token = beginLoad()
         let query = currentQuery()
-        apply(Result { try dbManager.dbPool.read { try Self.read($0, query) } }, token: token)
+        apply(Result { try dbManager.dbPool.read { try Self.read($0, query) } })
         isLoading = false
-    }
-
-    /// The same load, its read off the main actor (the poll and the return
-    /// on screen, board #731).
-    func reload() async {
-        let token = beginLoad()
-        let query = currentQuery()
-        let pool = dbManager.dbPool
-        let result: Result<Loaded, Error>
-        do {
-            result = .success(try await pool.read { try Self.read($0, query) })
-        } catch {
-            result = .failure(error)
-        }
-        apply(result, token: token)
-    }
-
-    /// The UI went on or off screen (board #731): off screen the poll skips
-    /// its loads; back on screen after a skipped one, it loads at once.
-    func setOnScreen(_ onScreen: Bool) {
-        guard refreshGate.setOnScreen(onScreen) else { return }
-        onScreenRefresh = Task { await reload() }
-    }
-
-    /// One tick of the 30 s poll (its loop's body; tests call it directly).
-    func pollTick() async {
-        if refreshGate.tick() { await reload() }
     }
 
     private struct Query {
         let kind: String
-        let status: String?
-        let text: String?
         let limit: Int
     }
 
@@ -223,25 +111,15 @@ final class IdeasViewModel {
     }
 
     private func currentQuery() -> Query {
-        Query(kind: kindMode, status: statusFilter, text: searchText.isEmpty ? nil : searchText, limit: registryLimit)
-    }
-
-    /// Loads overlap (a poll, an action's synchronous one): only one started
-    /// after the last applied load lands, so a slow older read never undoes
-    /// a newer one.
-    private func beginLoad() -> Int {
-        loadsStarted += 1
-        return loadsStarted
+        Query(kind: kindMode, limit: registryLimit)
     }
 
     nonisolated private static func read(_ db: Database, _ query: Query) throws -> Loaded {
         Loaded(
-            review: try IdeaQueries.fetchForReview(db, kind: query.kind, query: query.text),
+            review: try IdeaQueries.fetchForReview(db, kind: query.kind),
             registry: try IdeaQueries.fetchList(
                 db,
                 kind: query.kind,
-                status: query.status,
-                query: query.text,
                 limit: query.limit,
                 excludingReviewQueue: true
             ),
@@ -250,9 +128,7 @@ final class IdeasViewModel {
         )
     }
 
-    private func apply(_ result: Result<Loaded, Error>, token: Int) {
-        guard token > loadApplied else { return }
-        loadApplied = token
+    private func apply(_ result: Result<Loaded, Error>) {
         switch result {
         case let .success(loaded):
             reviewItems = loaded.review
@@ -307,6 +183,16 @@ final class IdeasViewModel {
         await write("merge idea") { db in try IdeaQueries.merge(db, id: idea.id, into: targetID) }
     }
 
+    /// A decision's Supersede (no replacing idea named).
+    func supersede(_ idea: Idea) async {
+        await write("supersede decision") { db in try IdeaQueries.supersede(db, id: idea.id, by: nil) }
+    }
+
+    /// A decision's Reverse.
+    func reverse(_ idea: Idea) async {
+        await write("reverse decision") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "reversed") }
+    }
+
     /// Hard delete — the row, its mentions, and its Discuss chat. The reload's
     /// `reconcileSelection()` moves the selection off the vanished id.
     @discardableResult
@@ -336,15 +222,10 @@ final class IdeasViewModel {
             let newID = try await chained { db in
                 try IdeaQueries.createManual(db, kind: kind, title: title, essence: essence)
             }
-            // Show what was just created: switch to its segment, clear the
-            // browse filters that could hide it (it is born active, so a
-            // "Proposed" filter or a stale search would swallow it silently),
-            // and select it. The Decisions ledger creates through this same VM
+            // Show what was just created: switch to its segment and select it. The Decisions ledger creates through this same VM
             // and has no segment here, so a decision leaves the tab as it was.
             if kind == "idea" || kind == "note" {
                 kindMode = kind
-                statusFilter = nil
-                searchText = ""
                 selectedID = Int(newID)
             }
             load()

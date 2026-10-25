@@ -170,6 +170,17 @@ func firstChatExchange(path []db.ChatMessage) (owner, assistant string) {
 // quotes of any script, emphasis and a trailing period; then caps it at
 // chatTitleMaxRunes runes.
 func cleanChatTitle(reply string) string {
+	s := titleLine(reply)
+	if r := []rune(s); len(r) > chatTitleMaxRunes {
+		s = strings.TrimSpace(string(r[:chatTitleMaxRunes-1])) + "…"
+	}
+	return s
+}
+
+// titleLine is the reply's first line that still has text once markdown
+// markers, a "Title:" prefix, quotes and a trailing period are stripped;
+// not yet capped at chatTitleMaxRunes.
+func titleLine(reply string) string {
 	for line := range strings.SplitSeq(reply, "\n") {
 		s := strings.TrimSpace(line)
 		s = strings.TrimLeft(s, "#>-* ")
@@ -178,13 +189,9 @@ func cleanChatTitle(reply string) string {
 		}
 		s = strings.Trim(s, "\"'`“”«»*_ ")
 		s = strings.TrimSpace(strings.TrimSuffix(s, "."))
-		if s == "" {
-			continue
+		if s != "" {
+			return s
 		}
-		if r := []rune(s); len(r) > chatTitleMaxRunes {
-			s = strings.TrimSpace(string(r[:chatTitleMaxRunes-1])) + "…"
-		}
-		return s
 	}
 	return ""
 }

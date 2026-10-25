@@ -58,7 +58,7 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
 
     /// Whether the daemon runs the feature only while Slack Digests is on too.
     /// Dual path with the compound gates in `internal/daemon/daemon.go`
-    /// (`phaseTracksAndRollups`, `phaseCustomTrackScan`, `phasePeopleCards`:
+    /// (`phaseTrackMyThreads`, `phaseWatchSlot`, `phasePeopleCards`:
     /// `Tracks.Enabled && Digest.Enabled`, `People.Enabled && Digest.Enabled`) —
     /// tracks and people cards mine what the digests produce (#575).
     package var runsOnlyWithDigests: Bool { self == .tracks || self == .peopleCards }
@@ -214,7 +214,6 @@ package struct ReadinessInputs: Equatable {
     package var contentPresent: Set<ReadinessFeature>
     package var stamps: ReadinessStamps
     package var briefingHour: Int
-    package var dayPlanHour: Int
     package var pollIntervalMinutes: Int
     /// `started_at` of every `history_backfill` row with status `running`
     /// (a held row included), for memory's backfill wait (#578).
@@ -241,7 +240,6 @@ package struct ReadinessInputs: Equatable {
         contentPresent: Set<ReadinessFeature> = [],
         stamps: ReadinessStamps = ReadinessStamps(),
         briefingHour: Int = 8,
-        dayPlanHour: Int = 8,
         pollIntervalMinutes: Int = 15,
         runningBackfillStarts: [Date] = [],
         memoryHasRun: Bool = false,
@@ -259,7 +257,6 @@ package struct ReadinessInputs: Equatable {
         self.contentPresent = contentPresent
         self.stamps = stamps
         self.briefingHour = briefingHour
-        self.dayPlanHour = dayPlanHour
         self.pollIntervalMinutes = pollIntervalMinutes
         self.runningBackfillStarts = runningBackfillStarts
         self.memoryHasRun = memoryHasRun

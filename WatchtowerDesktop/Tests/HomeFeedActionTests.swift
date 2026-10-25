@@ -458,9 +458,9 @@ final class HomeFeedActionTests: XCTestCase {
 
     // MARK: - LiveHomeFeedPerformer
 
-    /// Done marks an automation output read, Hide dismisses it, both through
+    /// Done marks an automation output done, Hide dismisses it, both through
     /// GRDB; a second press on a closed output is quiet.
-    func testAutomationOutputDoneReadsAndHideDismisses() async throws {
+    func testAutomationOutputDoneMarksDoneAndHideDismisses() async throws {
         let pool = try makePool()
         let (done, hidden) = try await pool.write { db -> (Int64, Int64) in
             let id = try TestDatabase.insertAutomation(db)
@@ -474,10 +474,12 @@ final class HomeFeedActionTests: XCTestCase {
         try await performer.perform(.hide, on: .output(hidden), now: Date(), calendar: .current)
         try await performer.perform(.hide, on: .output(done), now: Date(), calendar: .current)
         let rows = try await pool.read { db in
-            try Row.fetchAll(db, sql: "SELECT id, read_at, dismissed_at FROM automation_outputs ORDER BY id")
+            try Row.fetchAll(db, sql: "SELECT id, read_at, done_at, dismissed_at FROM automation_outputs ORDER BY id")
         }
-        XCTAssertNotNil(rows[0]["read_at"] as String?)
+        XCTAssertNotNil(rows[0]["done_at"] as String?)
+        XCTAssertNil(rows[0]["read_at"] as String?)
         XCTAssertNil(rows[0]["dismissed_at"] as String?)
+        XCTAssertNil(rows[1]["done_at"] as String?)
         XCTAssertNil(rows[1]["read_at"] as String?)
         XCTAssertNotNil(rows[1]["dismissed_at"] as String?)
         XCTAssertTrue(runner.calls.isEmpty)

@@ -1,7 +1,7 @@
 import Foundation
 
 /// The Desktop's write path for automations: every write but an inbox
-/// output's read/dismiss marks goes through `watchtower automations …`
+/// output's read/done/dismiss marks goes through `watchtower automations …`
 /// (spec §9.6). Result structs decode the pinned `--json` keys of
 /// cmd/automations*.go; arrays default to `[]` and unknown keys are ignored.
 /// A non-zero exit surfaces as the runner's `CLIRunnerError.nonZeroExit`
@@ -12,8 +12,10 @@ package struct AutomationsCLI {
         case run(Int64, rerunOf: Int64? = nil)
         case dryRun(Int64)
         case show(Int64)
-        case validate(file: String, against: Int64?)
-        case save(file: String, path: String, confirmHash: String, expectContentHash: String)
+        /// The recipe text travels on stdin (`validate -`, #604 S6).
+        case validate(slug: String, against: Int64?, workbench: Int64? = nil)
+        /// The recipe text travels on stdin (`--file -`).
+        case save(path: String, confirmHash: String, expectContentHash: String)
         case confirm(Int64, hash: String)
         case setEnabled(Int64, Bool)
         case auto(Int64, tool: String, on: Bool, hash: String?)
@@ -21,10 +23,26 @@ package struct AutomationsCLI {
         case cancel(runID: Int64)
         case wake
         case templates
-        case installTemplate(name: String, workbenchID: Int64?)
+        case installTemplate(name: String, workbenchID: Int64?, params: [String: String] = [:])
+        case renderTemplate(name: String, workbenchID: Int64?, params: [String: String])
         case sessionLaunched(step: Int64, session: Int64)
         case sessionEnded(step: Int64, status: SessionEnd, error: String?)
         case rescan(workbenchID: Int64)
+        /// The owner's press of Reply action `action` of Inbox card `outputID`.
+        case reply(outputID: Int64, action: Int)
+        /// Deletes a built-in's owner copy: the shipped text runs again.
+        case reset(Int64)
+        /// Retries the one-time move of the built-ins' old settings.
+        case upgradeBuiltins
+        /// Queues a watch recipe's run for the next sync, scanning from
+        /// `since` (nil = from its own watermark, "Since last check").
+        case runSince(Int64, since: Date?)
+        /// `show --json` read for its `watch` block only.
+        case showWatch(Int64)
+        /// Binds an unbound custom track to a new watch recipe (owner only).
+        case trackStart(Int)
+        /// Rewrites a bound watch's instruction line from stdin (owner only).
+        case trackInstruction(Int)
     }
 
     /// How a `session()` step's session ended, as `session-ended --status`
@@ -51,13 +69,15 @@ package struct AutomationsCLI {
             return ["automations", "dry-run", String(id), "--json"]
         case let .show(id):
             return ["automations", "show", String(id), "--json"]
-        case let .validate(file, against):
-            var out = ["automations", "validate", file]
+        case let .validate(slug, against, workbench):
+            precondition(against == nil || workbench == nil, "validate takes --against or --workbench, not both")
+            var out = ["automations", "validate", "-", "--slug", slug]
             if let against { out += ["--against", String(against)] }
+            if let workbench { out += ["--workbench", String(workbench)] }
             return out + ["--json"]
-        case let .save(file, path, confirmHash, expectContentHash):
+        case let .save(path, confirmHash, expectContentHash):
             // --expect-content-hash is always passed: "" means the file must not exist.
-            return ["automations", "save", "--file", file, "--path", path, "--confirm-hash", confirmHash,
+            return ["automations", "save", "--file", "-", "--path", path, "--confirm-hash", confirmHash,
                     "--expect-content-hash", expectContentHash, "--json"]
         case let .confirm(id, hash):
             return ["automations", "confirm", String(id), "--hash", hash]
@@ -75,10 +95,10 @@ package struct AutomationsCLI {
             return ["automations", "wake"]
         case .templates:
             return ["automations", "templates", "--json"]
-        case let .installTemplate(name, workbenchID):
-            var out = ["automations", "install-template", name]
-            if let workbenchID { out += ["--workbench", String(workbenchID)] }
-            return out + ["--json"]
+        case let .installTemplate(name, workbenchID, params):
+            return templateArgs(name: name, workbenchID: workbenchID, params: params) + ["--json"]
+        case let .renderTemplate(name, workbenchID, params):
+            return templateArgs(name: name, workbenchID: workbenchID, params: params) + ["--render", "--json"]
         case let .sessionLaunched(step, session):
             return ["automations", "session-launched", "--step", String(step), "--session", String(session), "--json"]
         case let .sessionEnded(step, status, error):
@@ -88,7 +108,35 @@ package struct AutomationsCLI {
         case let .rescan(workbenchID):
             // The personal folder and this workbench's (spec §13.4).
             return ["automations", "rescan", "--workbench", String(workbenchID)]
+        case let .reply(outputID, action):
+            return ["automations", "reply", "--output", String(outputID), "--action", String(action), "--json"]
+        case let .reset(id):
+            return ["automations", "reset", String(id), "--json"]
+        case .upgradeBuiltins:
+            return ["automations", "upgrade-builtins", "--json"]
+        case let .runSince(id, since):
+            var out = ["automations", "run", String(id)]
+            if let since { out += ["--since", AutomationDates.format(since)] }
+            return out + ["--json"]
+        case let .showWatch(id):
+            return ["automations", "show", String(id), "--json"]
+        case let .trackStart(trackID):
+            return ["tracks", "start", String(trackID), "--json"]
+        case let .trackInstruction(trackID):
+            return ["tracks", "instruction", String(trackID), "--text-file", "-"]
         }
+    }
+
+    /// `install-template NAME [--workbench ID] [--param KEY=VALUE]…`, params
+    /// sorted by key, empty values omitted.
+    private static func templateArgs(name: String, workbenchID: Int64?, params: [String: String]) -> [String] {
+        var out = ["automations", "install-template", name]
+        if let workbenchID { out += ["--workbench", String(workbenchID)] }
+        for key in params.keys.sorted() {
+            guard let value = params[key], !value.isEmpty else { continue }
+            out += ["--param", "\(key)=\(value)"]
+        }
+        return out
     }
 
     /// `rerunOf` repeats one failed (or interrupted) run of `id`.
@@ -104,14 +152,16 @@ package struct AutomationsCLI {
         try await decode(.show(id))
     }
 
-    package func validate(file: URL, against: Int64?) async throws -> ValidateResult {
-        try await decode(.validate(file: file.path, against: against))
+    /// Validates `text` as the recipe `slug` (the name its file would have).
+    package func validate(text: String, slug: String, against: Int64?, workbench: Int64? = nil) async throws
+        -> ValidateResult {
+        try await decode(.validate(slug: slug, against: against, workbench: workbench), stdin: Data(text.utf8))
     }
 
-    package func save(file: URL, path: String, confirmHash: String, expectContentHash: String) async throws
+    package func save(text: String, path: String, confirmHash: String, expectContentHash: String) async throws
         -> SaveResult {
-        try await decode(.save(file: file.path, path: path, confirmHash: confirmHash,
-                               expectContentHash: expectContentHash))
+        try await decode(.save(path: path, confirmHash: confirmHash, expectContentHash: expectContentHash),
+                         stdin: Data(text.utf8))
     }
 
     package func confirm(_ id: Int64, hash: String) async throws {
@@ -142,8 +192,15 @@ package struct AutomationsCLI {
         try await decode(.templates)
     }
 
-    package func installTemplate(_ name: String, workbenchID: Int64?) async throws -> InstallResult {
-        try await decode(.installTemplate(name: name, workbenchID: workbenchID))
+    package func installTemplate(_ name: String, workbenchID: Int64?, params: [String: String] = [:])
+        async throws -> InstallResult {
+        try await decode(.installTemplate(name: name, workbenchID: workbenchID, params: params))
+    }
+
+    /// The template's recipe files rendered and validated, nothing written.
+    package func renderTemplate(_ name: String, workbenchID: Int64?, params: [String: String])
+        async throws -> RenderResult {
+        try await decode(.renderTemplate(name: name, workbenchID: workbenchID, params: params))
     }
 
     /// Attaches the session the app launched to its waiting step; false when
@@ -166,8 +223,54 @@ package struct AutomationsCLI {
         _ = try await runner.run(args: Self.args(.rescan(workbenchID: workbenchID)))
     }
 
+    /// Records the press of a card's Reply action and queues one
+    /// `trigger='reply'` run (AUTO-09); the CLI wakes the daemon itself.
+    package func reply(outputID: Int64, action: Int) async throws -> ReplyResult {
+        try await decode(.reply(outputID: outputID, action: action))
+    }
+
+    /// Resets built-in `id` to its shipped text (runnable at once, AUTO-06
+    /// amendment); a `builtin:<id>` save is how its owner copy is written.
+    package func reset(_ id: Int64) async throws -> ResetResult {
+        try await decode(.reset(id))
+    }
+
+    /// Runs the built-ins' settings move again; one result per built-in.
+    package func upgradeBuiltins() async throws -> [UpgradeBuiltinResult] {
+        let result: UpgradeBuiltinsResult = try await decode(.upgradeBuiltins)
+        return result.results
+    }
+
+    /// Queues watch `id`'s run for the next sync (`at_next_sync`), from
+    /// `since` or, nil, from the watch's own watermark.
+    package func runSince(_ id: Int64, since: Date?) async throws -> RunResult {
+        try await decode(.runSince(id, since: since))
+    }
+
+    /// Watch `id`'s `watch` block of `show --json`; nil for any other automation.
+    package func showWatch(_ id: Int64) async throws -> AutomationWatch? {
+        let result: ShowWatch = try await decode(.showWatch(id))
+        return result.watch
+    }
+
+    /// Binds custom track `trackID` to a new, confirmed watch recipe.
+    package func trackStart(_ trackID: Int) async throws -> TrackStartResult {
+        try await decode(.trackStart(trackID))
+    }
+
+    /// Rewrites bound track `trackID`'s watch instruction and confirms the new
+    /// text; refused (stderr) for a recipe changed in the chat.
+    package func trackInstruction(_ trackID: Int, text: String) async throws {
+        _ = try await runner.run(args: Self.args(.trackInstruction(trackID)), stdin: Data(text.utf8))
+    }
+
     private func decode<T: Decodable>(_ op: Op) async throws -> T {
         let data = try await runner.run(args: Self.args(op))
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func decode<T: Decodable>(_ op: Op, stdin: Data) async throws -> T {
+        let data = try await runner.run(args: Self.args(op), stdin: stdin)
         return try JSONDecoder().decode(T.self, from: data)
     }
 }
@@ -179,14 +282,47 @@ extension AutomationsCLI {
     private struct Attached: Decodable { let attached: Bool }
     private struct Ended: Decodable { let ended: Bool }
 
-    /// `run --json`.
+    /// `run --json`; `at_next_sync` (a watch's run queued for the next sync)
+    /// is false when absent.
     package struct RunResult: Decodable, Equatable, Sendable {
         package let runID: Int64
         package let coalesced: Bool
         package let daemonRunning: Bool
+        package let atNextSync: Bool
 
         enum CodingKeys: String, CodingKey {
-            case runID = "run_id", coalesced, daemonRunning = "daemon_running"
+            case runID = "run_id", coalesced, daemonRunning = "daemon_running", atNextSync = "at_next_sync"
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            runID = try c.decode(Int64.self, forKey: .runID)
+            coalesced = try c.decode(Bool.self, forKey: .coalesced)
+            daemonRunning = try c.decode(Bool.self, forKey: .daemonRunning)
+            atNextSync = try c.decodeIfPresent(Bool.self, forKey: .atNextSync) ?? false
+        }
+    }
+
+    /// `show --json` read for its `watch` block (`null` for a non-watch).
+    private struct ShowWatch: Decodable { let watch: AutomationWatch? }
+
+    /// `tracks start --json`.
+    package struct TrackStartResult: Decodable, Equatable, Sendable {
+        package let trackID: Int
+        package let automationID: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case trackID = "track_id", automationID = "automation_id"
+        }
+    }
+
+    /// `reply --json`.
+    package struct ReplyResult: Decodable, Equatable, Sendable {
+        package let runID: Int64
+        package let daemonRunning: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case runID = "run_id", daemonRunning = "daemon_running"
         }
     }
 
@@ -218,9 +354,53 @@ extension AutomationsCLI {
         /// Whether the validated text feeds its sources to `llm()`
         /// (`feeds_sources_to_llm`, #559); false from an older CLI.
         package let feedsSourcesToLLM: Bool
+        /// Hashed fields that differ from the confirmed recipe (`changes`);
+        /// `[]` from an older CLI.
+        package let changes: [AutomationChange]
+        /// Whether `changes` is a real comparison (`changes_known`).
+        package let changesKnown: Bool
+        /// The hashed fields the manifest keys do not carry (`fields`): `{}`
+        /// when the text does not parse, nil from an older CLI.
+        package let fields: Fields?
+
+        /// `fields`: the trigger in one line ("schedule: 0 9 * * 1-5",
+        /// "event: slack.new_messages where account=\"a\"", "button", "button
+        /// (asks before running)", "manual"), `missed` ("run_once"/"skip"),
+        /// the concurrency in decimal and the budget.
+        package struct Fields: Decodable, Equatable, Sendable {
+            package struct Budget: Decodable, Equatable, Sendable {
+                package let tokens: Int
+                package let minutes: Int
+            }
+
+            package let trigger: String
+            package let missed: String
+            package let concurrency: String
+            package let budget: Budget?
+
+            /// Every field present: what the column needs to show them all.
+            package var isComplete: Bool {
+                !trigger.isEmpty && !missed.isEmpty && Int(concurrency) != nil && budget != nil
+            }
+
+            package init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                trigger = try c.decodeIfPresent(String.self, forKey: .trigger) ?? ""
+                missed = try c.decodeIfPresent(String.self, forKey: .missed) ?? ""
+                concurrency = try c.decodeIfPresent(String.self, forKey: .concurrency) ?? ""
+                budget = try c.decodeIfPresent(Budget.self, forKey: .budget)
+            }
+
+            private enum CodingKeys: String, CodingKey { case trigger, missed, concurrency, budget }
+        }
+
+        /// The validated text is `ok` and every hashed field can be shown
+        /// (AUTO-06: only a screen showing every hashed field confirms).
+        package var showsAllFields: Bool { ok && fields?.isComplete == true }
 
         enum CodingKeys: String, CodingKey {
-            case ok, errors, slug, name, scope, permissions, outputs, widening
+            case ok, errors, slug, name, scope, permissions, outputs, widening, changes, fields
+            case changesKnown = "changes_known"
             case approvalHash = "approval_hash", contentHash = "content_hash"
             case feedsSourcesToLLM = "feeds_sources_to_llm"
         }
@@ -238,6 +418,9 @@ extension AutomationsCLI {
             outputs = try c.decodeIfPresent([String].self, forKey: .outputs) ?? []
             widening = try c.decodeIfPresent([String].self, forKey: .widening) ?? []
             feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
+            changes = try c.decodeIfPresent([AutomationChange].self, forKey: .changes) ?? []
+            changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
+            fields = try c.decodeIfPresent(Fields.self, forKey: .fields)
         }
     }
 
@@ -253,6 +436,48 @@ extension AutomationsCLI {
         }
     }
 
+    /// `reset --json`.
+    package struct ResetResult: Decodable, Equatable, Sendable {
+        package let automationID: Int64
+        package let overridden: Bool
+        package let approvalHash: String
+
+        enum CodingKeys: String, CodingKey {
+            case automationID = "automation_id", overridden, approvalHash = "approval_hash"
+        }
+    }
+
+    /// `upgrade-builtins --json`: `{"results":[…]}`.
+    private struct UpgradeBuiltinsResult: Decodable {
+        let results: [UpgradeBuiltinResult]
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            results = try c.decodeIfPresent([UpgradeBuiltinResult].self, forKey: .results) ?? []
+        }
+
+        private enum CodingKeys: String, CodingKey { case results }
+    }
+
+    /// One built-in's settings move: `status` "done" or "failed" (twin:
+    /// Go `db.RecordBuiltinMigration`), `error` "" when done.
+    package struct UpgradeBuiltinResult: Decodable, Equatable, Sendable {
+        package let builtinID: String
+        package let status: String
+        package let error: String
+
+        enum CodingKeys: String, CodingKey {
+            case builtinID = "builtin_id", status, error
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            builtinID = try c.decode(String.self, forKey: .builtinID)
+            status = try c.decode(String.self, forKey: .status)
+            error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
+        }
+    }
+
     /// `install-template --json` (P6's contract, plan Task 13).
     package struct InstallResult: Decodable, Equatable, Sendable {
         package let automationID: Int64
@@ -260,9 +485,11 @@ extension AutomationsCLI {
         /// Each param's values as installed, given or chosen by the CLI
         /// (#582); empty from an older CLI.
         package let params: [String: [String]]
+        /// The installed copies with their approval hashes; `[]` from an older CLI.
+        package let installed: [InstalledRecipe]
 
         enum CodingKeys: String, CodingKey {
-            case automationID = "automation_id", path, params
+            case automationID = "automation_id", path, params, installed
         }
 
         package init(from decoder: Decoder) throws {
@@ -270,7 +497,77 @@ extension AutomationsCLI {
             automationID = try c.decode(Int64.self, forKey: .automationID)
             path = try c.decode(String.self, forKey: .path)
             params = try c.decodeIfPresent([String: [String]].self, forKey: .params) ?? [:]
+            installed = try c.decodeIfPresent([InstalledRecipe].self, forKey: .installed) ?? []
         }
+    }
+
+    /// One installed copy in `install-template --json` `installed`.
+    package struct InstalledRecipe: Decodable, Equatable, Sendable {
+        package let automationID: Int64
+        package let slug: String
+        package let path: String
+        package let parseError: String
+        package let approvalHash: String
+
+        enum CodingKeys: String, CodingKey {
+            case automationID = "automation_id", slug, path
+            case parseError = "parse_error", approvalHash = "approval_hash"
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            automationID = try c.decode(Int64.self, forKey: .automationID)
+            slug = try c.decodeIfPresent(String.self, forKey: .slug) ?? ""
+            path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+            parseError = try c.decodeIfPresent(String.self, forKey: .parseError) ?? ""
+            approvalHash = try c.decodeIfPresent(String.self, forKey: .approvalHash) ?? ""
+        }
+    }
+
+    /// `install-template --render --json`: nothing is written.
+    package struct RenderResult: Decodable, Equatable, Sendable {
+        package let name: String
+        package let scope: String
+        package let params: [String: [String]]
+        package let files: [RenderedFile]
+
+        enum CodingKeys: String, CodingKey { case name, scope, params, files }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+            scope = try c.decodeIfPresent(String.self, forKey: .scope) ?? ""
+            params = try c.decodeIfPresent([String: [String]].self, forKey: .params) ?? [:]
+            files = try c.decodeIfPresent([RenderedFile].self, forKey: .files) ?? []
+        }
+    }
+
+    /// One rendered recipe file with its validation.
+    package struct RenderedFile: Decodable, Equatable, Sendable {
+        package let slug: String
+        package let text: String
+        package let validate: ValidateResult
+    }
+}
+
+/// A watch recipe's `watch` block of `show --json` (twin: cmd
+/// `automations show`): its bound track, the instruction (the track's mirror
+/// when the recipe is not template-shaped) and whether the card may rewrite
+/// the instruction (`template_shaped`; false = changed in the chat).
+package struct AutomationWatch: Decodable, Equatable, Sendable {
+    package let trackID: Int
+    package let instruction: String
+    package let templateShaped: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case trackID = "track_id", instruction, templateShaped = "template_shaped"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        trackID = try c.decode(Int.self, forKey: .trackID)
+        instruction = try c.decodeIfPresent(String.self, forKey: .instruction) ?? ""
+        templateShaped = try c.decodeIfPresent(Bool.self, forKey: .templateShaped) ?? false
     }
 }
 
@@ -355,10 +652,12 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
     /// Whether the indexed recipe feeds its sources to `llm()`
     /// (`feeds_sources_to_llm`, #559): the edit form's Auto warning.
     package let feedsSourcesToLLM: Bool
+    /// A built-in's card (`builtin`); nil for an owner recipe or from an older CLI.
+    package let builtin: BuiltinAutomationDetail?
 
     enum CodingKeys: String, CodingKey {
         case id, slug, scope, path, name, description, script, permissions, outputs, concurrency, enabled
-        case runnable, widening, changes
+        case runnable, widening, changes, builtin
         case projectID = "project_id", recipeText = "recipe_text", triggerKind = "trigger_kind"
         case triggerSpec = "trigger_spec", budgetTokens = "budget_tokens", budgetMinutes = "budget_minutes"
         case missedPolicy = "missed_policy", pauseTimeoutHours = "pause_timeout_hours"
@@ -402,6 +701,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         autoTools = try c.decodeIfPresent([AutomationAutoTool].self, forKey: .autoTools) ?? []
         llmAutoWrites = try c.decodeIfPresent([String].self, forKey: .llmAutoWrites) ?? []
         feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
+        builtin = try c.decodeIfPresent(BuiltinAutomationDetail.self, forKey: .builtin)
         if let text = try c.decodeIfPresent(String.self, forKey: .changedAt) {
             guard let date = AutomationDates.parse(text) else {
                 throw DecodingError.dataCorruptedError(forKey: .changedAt, in: c,
@@ -411,5 +711,113 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         } else {
             changedAt = nil
         }
+    }
+}
+
+/// A built-in's card: the `builtin` block of `show --json`. Twin of Go
+/// `builtin.CardInfo` (internal/automations/builtin/card.go); its keys are
+/// pinned by `internal/automations/builtin/testdata/show_morning_brief.json`,
+/// which `BuiltinAutomationDetailDecodingTests` decodes too. Lists and maps
+/// default to empty.
+package struct BuiltinAutomationDetail: Decodable, Equatable, Sendable {
+    /// One When field with its current config value (twin: Go
+    /// `builtin.ParameterValue`); `value` is always text.
+    package struct Parameter: Decodable, Equatable, Sendable {
+        /// Twin: Go `builtin.ParamKind`.
+        package enum Kind: String, Decodable, Sendable {
+            /// 0–23 (`builtin.ParamHour`); "HH:MM" (`ParamClock`); a whole
+            /// number of items, 0 or more (`ParamCount`); a whole number of
+            /// hours, 1 or more, as text such as "6" (`ParamInterval`); a table
+            /// the Desktop reads and edits itself, `key` is its name and the
+            /// value "[]" (`ParamDictionary`).
+            case hour, clock, count, interval, dictionary
+        }
+
+        package let key: String
+        package let label: String
+        package let kind: Kind
+        package let value: String
+    }
+
+    /// The last `days` days' AI cost; `reported` is false when no run or
+    /// pipeline row of the window reported one; `tokens` is the same runs'
+    /// input plus output tokens, reported or not (twin: Go `builtin.Costs`).
+    package struct Costs: Decodable, Equatable, Sendable {
+        package let usd: Double
+        package let days: Int
+        package let reported: Bool
+        package let tokens: Int64
+
+        package init(usd: Double, days: Int, reported: Bool, tokens: Int64 = 0) {
+            self.usd = usd
+            self.days = days
+            self.reported = reported
+            self.tokens = tokens
+        }
+
+        enum CodingKeys: String, CodingKey { case usd, days, reported, tokens }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            usd = try c.decodeIfPresent(Double.self, forKey: .usd) ?? 0
+            days = try c.decodeIfPresent(Int.self, forKey: .days) ?? 0
+            reported = try c.decodeIfPresent(Bool.self, forKey: .reported) ?? false
+            tokens = try c.decodeIfPresent(Int64.self, forKey: .tokens) ?? 0
+        }
+    }
+
+    package let id: String
+    package let slot: String
+    package let overridden: Bool
+    package let shippedHash: String
+    package let baseHash: String
+    package let updateAvailable: Bool
+    package let shippedText: String
+    package let defaultPrompts: [String: String]
+    package let when: String
+    package let reads: [String]
+    package let sends: [String]
+    /// What the run does, one line each (the card's Does box).
+    package let does: [String]
+    /// The Inbox filter the result lands in; nil for an unknown string (the link is hidden).
+    package let resultFilter: InboxFilter?
+    package let parameters: [Parameter]
+    package let featureIDs: [String]
+    package let enabled: Bool
+    /// The card shows Run Now (twin: Go `builtin.Entry.RunNow`).
+    package let runNow: Bool
+    /// Why the owner's copy file is not used ("" when it is, or there is none).
+    package let copyError: String
+    package let costs: Costs
+
+    enum CodingKeys: String, CodingKey {
+        case id, slot, overridden, when, reads, sends, does, parameters, enabled, costs
+        case resultFilter = "result_filter"
+        case shippedHash = "shipped_hash", baseHash = "base_hash", updateAvailable = "update_available"
+        case shippedText = "shipped_text", defaultPrompts = "default_prompts", featureIDs = "feature_ids"
+        case runNow = "run_now", copyError = "copy_error"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        slot = try c.decodeIfPresent(String.self, forKey: .slot) ?? ""
+        overridden = try c.decodeIfPresent(Bool.self, forKey: .overridden) ?? false
+        shippedHash = try c.decodeIfPresent(String.self, forKey: .shippedHash) ?? ""
+        baseHash = try c.decodeIfPresent(String.self, forKey: .baseHash) ?? ""
+        updateAvailable = try c.decodeIfPresent(Bool.self, forKey: .updateAvailable) ?? false
+        shippedText = try c.decodeIfPresent(String.self, forKey: .shippedText) ?? ""
+        defaultPrompts = try c.decodeIfPresent([String: String].self, forKey: .defaultPrompts) ?? [:]
+        when = try c.decodeIfPresent(String.self, forKey: .when) ?? ""
+        reads = try c.decodeIfPresent([String].self, forKey: .reads) ?? []
+        sends = try c.decodeIfPresent([String].self, forKey: .sends) ?? []
+        does = try c.decodeIfPresent([String].self, forKey: .does) ?? []
+        resultFilter = (try c.decodeIfPresent(String.self, forKey: .resultFilter)).flatMap(InboxFilter.init(rawValue:))
+        parameters = try c.decodeIfPresent([Parameter].self, forKey: .parameters) ?? []
+        featureIDs = try c.decodeIfPresent([String].self, forKey: .featureIDs) ?? []
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        runNow = try c.decodeIfPresent(Bool.self, forKey: .runNow) ?? false
+        copyError = try c.decodeIfPresent(String.self, forKey: .copyError) ?? ""
+        costs = try c.decodeIfPresent(Costs.self, forKey: .costs) ?? Costs(usd: 0, days: 0, reported: false)
     }
 }

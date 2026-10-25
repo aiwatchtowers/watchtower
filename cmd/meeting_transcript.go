@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/meeting"
 	"watchtower/internal/prompts"
 
@@ -31,6 +33,7 @@ var (
 	transcriptSaveFlagTitle     string
 	transcriptSaveFlagLangStats string
 	transcriptSaveFlagDuration  int
+	transcriptSaveFlagStdin     bool
 	transcriptListFlagEventID   string
 	transcriptFollowupChapter   int
 )
@@ -44,7 +47,7 @@ var (
 const minRecapTranscriptChars = 200
 
 // transcriptGeneratorFactory is the seam tests override to inject a mock
-// generator (same pattern as newDayPlanPipelineFactory).
+// generator (same pattern as cliBuiltinGenerator).
 var transcriptGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	return cliGenerator(cfg)
 }
@@ -64,7 +67,7 @@ var meetingTranscriptCmd = &cobra.Command{
 var transcriptSaveCmd = &cobra.Command{
 	Use:   "save",
 	Short: "Save a transcript and generate its recap",
-	Long: "Reads the transcript text from --transcript-file, persists a meeting_transcripts row, then generates the AI recap. " +
+	Long: "Reads the transcript text from --transcript-file (or, with --stdin, one JSON object holding the transcript, segments and speakers), persists a meeting_transcripts row, then generates the AI recap. " +
 		"Exits 0 whenever the transcript row was saved — even if the recap failed (recap_ok=false, recap_error set in the JSON envelope); exits 1 only when nothing was persisted.",
 	RunE: runTranscriptSave,
 }
@@ -123,9 +126,14 @@ func init() {
 
 	transcriptFollowupCmd.Flags().IntVar(&transcriptFollowupChapter, "chapter", -1, "0-based chapter index to draft for (omit for a whole-meeting draft)")
 
-	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagFile, "transcript-file", "", "path to the transcript text file (required)")
+	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagFile, "transcript-file", "", "path to the transcript text file (required unless --stdin)")
+	transcriptSaveCmd.Flags().BoolVar(&transcriptSaveFlagStdin, "stdin", false,
+		`read {"transcript": string, "segments": [...]|null, "speakers": [...]|null} from stdin instead of the --*-file flags`)
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagSegments, "segments-file", "", "path to the per-utterance segments JSON file (optional)")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagSpeakers, "speakers-file", "", "path to the per-cluster speaker embeddings JSON file (optional)")
+	transcriptSaveCmd.MarkFlagsMutuallyExclusive("stdin", "transcript-file")
+	transcriptSaveCmd.MarkFlagsMutuallyExclusive("stdin", "segments-file")
+	transcriptSaveCmd.MarkFlagsMutuallyExclusive("stdin", "speakers-file")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagAudio, "audio", "", "path to the recorded audio file")
 	transcriptSaveCmd.Flags().IntVar(&transcriptSaveFlagDuration, "duration", 0, "recording duration in seconds")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagEventID, "event-id", "", "calendar event id to link the transcript to")
@@ -154,18 +162,77 @@ func transcriptEnv() (*config.Config, *db.DB, error) {
 	return cfg, database, nil
 }
 
-func runTranscriptSave(cmd *cobra.Command, _ []string) error {
+// transcriptSaveInput is what save persists: the transcript text and the
+// optional segments and speakers JSON (nil = not given), each with the error
+// reading it hit (reported through the envelope, as for a bad file).
+type transcriptSaveInput struct {
+	text                    string
+	segments, speakers      []byte
+	segmentsErr, speakerErr error
+}
+
+// transcriptStdinPayload is `save --stdin`'s one JSON object (#604 S7: the
+// Desktop pipes it, no temp file holds the transcript).
+type transcriptStdinPayload struct {
+	Transcript string          `json:"transcript"`
+	Segments   json.RawMessage `json:"segments"`
+	Speakers   json.RawMessage `json:"speakers"`
+}
+
+// readTranscriptSaveInput reads save's input from stdin (--stdin) or from
+// the --*-file flags.
+func readTranscriptSaveInput(in io.Reader) (transcriptSaveInput, error) {
+	var input transcriptSaveInput
+	if transcriptSaveFlagStdin {
+		var p transcriptStdinPayload
+		if err := json.NewDecoder(in).Decode(&p); err != nil {
+			return input, fmt.Errorf("reading the transcript from stdin: %w", err)
+		}
+		input.text = strings.TrimSpace(p.Transcript)
+		if input.text == "" {
+			return input, fmt.Errorf("transcript is empty")
+		}
+		input.segments, input.speakers = nonNullJSON(p.Segments), nonNullJSON(p.Speakers)
+		return input, nil
+	}
 	if transcriptSaveFlagFile == "" {
-		return fmt.Errorf("--transcript-file is required")
+		return input, fmt.Errorf("--transcript-file or --stdin is required")
 	}
 	raw, err := os.ReadFile(transcriptSaveFlagFile)
 	if err != nil {
-		return fmt.Errorf("reading transcript file: %w", err)
+		return input, fmt.Errorf("reading transcript file: %w", err)
 	}
-	text := strings.TrimSpace(string(raw))
-	if text == "" {
-		return fmt.Errorf("transcript file is empty")
+	input.text = strings.TrimSpace(string(raw))
+	if input.text == "" {
+		return input, fmt.Errorf("transcript file is empty")
 	}
+	if transcriptSaveFlagSegments != "" {
+		if input.segments, err = os.ReadFile(transcriptSaveFlagSegments); err != nil {
+			input.segments, input.segmentsErr = nil, fmt.Errorf("reading segments file: %w", err)
+		}
+	}
+	if transcriptSaveFlagSpeakers != "" {
+		if input.speakers, err = os.ReadFile(transcriptSaveFlagSpeakers); err != nil {
+			input.speakers, input.speakerErr = nil, fmt.Errorf("reading speakers file: %w", err)
+		}
+	}
+	return input, nil
+}
+
+// nonNullJSON is raw, or nil when it is absent or JSON null.
+func nonNullJSON(raw json.RawMessage) []byte {
+	if t := bytes.TrimSpace(raw); len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return nil
+	}
+	return raw
+}
+
+func runTranscriptSave(cmd *cobra.Command, _ []string) error {
+	input, err := readTranscriptSaveInput(cmd.InOrStdin())
+	if err != nil {
+		return err
+	}
+	text := input.text
 
 	cfg, database, err := transcriptEnv()
 	if err != nil {
@@ -178,8 +245,8 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	segments, segmentsErr := loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr())
-	speakers, speakersErr := loadTranscriptSpeakers(transcriptSaveFlagSpeakers, segments, cmd.ErrOrStderr())
+	segments, segmentsErr := loadTranscriptSegments(input.segments, input.segmentsErr, text, cmd.ErrOrStderr())
+	speakers, speakersErr := loadTranscriptSpeakers(input.speakers, input.speakerErr, segments, cmd.ErrOrStderr())
 	tr := db.MeetingTranscript{
 		Title:          title,
 		DurationSec:    transcriptSaveFlagDuration,
@@ -284,15 +351,13 @@ func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config
 // invisibly). A missing flag (old callers, batch fallback failures) is not an
 // error — nothing was attempted. The transcript save itself always succeeds
 // (exit-0 envelope semantics are preserved).
-func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) (sql.NullString, error) {
-	if path == "" {
-		return sql.NullString{}, nil
+func loadTranscriptSegments(raw []byte, readErr error, transcriptText string, errOut io.Writer) (sql.NullString, error) {
+	if readErr != nil {
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", readErr)
+		return sql.NullString{}, readErr
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		err = fmt.Errorf("reading segments file: %w", err)
-		fmt.Fprintf(errOut, "warning: %v (saving transcript without segments)\n", err)
-		return sql.NullString{}, err
+	if raw == nil {
+		return sql.NullString{}, nil
 	}
 	utterances, err := meeting.ParseTranscriptSegments(raw)
 	if err != nil {
@@ -320,8 +385,8 @@ func loadTranscriptSegments(path, transcriptText string, errOut io.Writer) (sql.
 // missing flag (non-FluidAudio diarizers, old callers) is not an error —
 // nothing was attempted. The transcript save itself always succeeds (the
 // loadTranscriptSegments contract).
-func loadTranscriptSpeakers(path string, segmentsJSON sql.NullString, errOut io.Writer) (sql.NullString, error) {
-	if path == "" {
+func loadTranscriptSpeakers(raw []byte, readErr error, segmentsJSON sql.NullString, errOut io.Writer) (sql.NullString, error) {
+	if raw == nil && readErr == nil {
 		return sql.NullString{}, nil
 	}
 	if !segmentsJSON.Valid {
@@ -329,11 +394,9 @@ func loadTranscriptSpeakers(path string, segmentsJSON sql.NullString, errOut io.
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
 		return sql.NullString{}, err
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		err = fmt.Errorf("reading speakers file: %w", err)
-		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
-		return sql.NullString{}, err
+	if readErr != nil {
+		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", readErr)
+		return sql.NullString{}, readErr
 	}
 	speakers, rawEntries, err := meeting.ParseSpeakerEmbeddingsRaw(raw)
 	if err != nil {
@@ -436,13 +499,13 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 	}
 	res, usage, err := pipe.GenerateTranscriptRecap(ctx, eventID, tr.TranscriptText)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return err
 	}
 
 	recapJSON, err := json.Marshal(res)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return fmt.Errorf("marshalling recap: %w", err)
 	}
 	err = storeTranscriptRecap(database, tr, eventID, string(recapJSON), errOut)
@@ -453,7 +516,7 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 	}
 	storeErrMsg := ""
 	if err != nil {
-		storeErrMsg = err.Error()
+		storeErrMsg = logredact.Full(err)
 	}
 	completeRun(1, in, out, api, storeErrMsg)
 	return err
@@ -710,11 +773,11 @@ func runTranscriptNotes(cmd *cobra.Command, args []string) error {
 	}
 	notes, usage, err := pipe.GenerateTranscriptNotes(ctx, eventID, tr.TranscriptText)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return err
 	}
 	if err := database.SetMeetingTranscriptNotes(id, notes); err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return err
 	}
 
@@ -769,7 +832,7 @@ func generateAndStoreTranscriptChapters(ctx context.Context, database *db.DB, cf
 	}
 	res, usage, err := pipe.GenerateTranscriptChapters(ctx, eventID, utterances, tr.DurationSec)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return "", err
 	}
 	// Regeneration must not silently wipe Action-item→Target links: stamps
@@ -782,11 +845,11 @@ func generateAndStoreTranscriptChapters(ctx context.Context, database *db.DB, cf
 	}
 	chaptersJSON, err := json.Marshal(res)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return "", fmt.Errorf("marshalling chapters: %w", err)
 	}
 	if err := database.SetMeetingTranscriptChapters(id, string(chaptersJSON)); err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return "", err
 	}
 
@@ -878,7 +941,7 @@ func runTranscriptFollowup(cmd *cobra.Command, args []string) error {
 	}
 	draft, usage, err := pipe.GenerateFollowupDraft(ctx, input)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return err
 	}
 	in, out, api := 0, 0, 0

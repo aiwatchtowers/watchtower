@@ -125,6 +125,7 @@ final class HubSyncState: Sendable {
                 """)
             try Self.createLinkTables(db)
             try Self.createKeyTables(db)
+            try Self.createSliceAssetTable(db)
             // A sidecar created before the ledger kept echoes and buffer
             // marks gains the columns; its old `done` rows hold neither (no
             // echo: skipped as before; no mark: the pre-mark behaviour).

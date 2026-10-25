@@ -17,15 +17,22 @@ package struct AgentChoice: Identifiable, Equatable, Sendable {
 /// agent; Work on It runs the default agent and its menu offers the others.
 /// Standalone terminals are not covered: Codex needs a workbench.
 package enum AgentChoicePresentation {
-    /// "New Claude Code session", "New Codex session", in a fixed order.
-    package static func newSessionAgentChoices(available: (AgentKind) -> Bool) -> [AgentChoice] {
-        AgentKind.allCases.map { choice($0, title: "New \($0.displayName) session", available: available($0)) }
+    /// "New Claude Code session", "New Codex session", in a fixed order; an
+    /// agent whose provider the organization's policy forbids (#608) is not
+    /// listed.
+    package static func newSessionAgentChoices(
+        policy: ManagedPolicy = .none, available: (AgentKind) -> Bool
+    ) -> [AgentChoice] {
+        AgentKind.allCases.filter { policy.providerAllowed($0.rawValue) }
+            .map { choice($0, title: "New \($0.displayName) session", available: available($0)) }
     }
 
     /// Work on It's menu: "Work on It with …" for every agent but the
     /// default, which the button itself runs.
-    package static func workOnOthers(defaultAgent: AgentKind, available: (AgentKind) -> Bool) -> [AgentChoice] {
-        AgentKind.allCases.filter { $0 != defaultAgent }.map {
+    package static func workOnOthers(
+        defaultAgent: AgentKind, policy: ManagedPolicy = .none, available: (AgentKind) -> Bool
+    ) -> [AgentChoice] {
+        AgentKind.allCases.filter { $0 != defaultAgent && policy.providerAllowed($0.rawValue) }.map {
             choice($0, title: "Work on It with \($0.displayName)", available: available($0))
         }
     }

@@ -26,6 +26,8 @@ struct OwnerAskSlice: SliceSource {
     static let maxSnapshotBytes = 256 * 1024
 
     let now: @Sendable () -> Date
+    /// The spec reviewer's lines, kept across ticks (F9).
+    let specReviewLines = SpecReviewLines()
 
     init(now: @escaping @Sendable () -> Date = { Date() }) {
         self.now = now
@@ -44,6 +46,12 @@ struct OwnerAskSlice: SliceSource {
             case questionID = "question_id"
             case options
         }
+    }
+
+    /// The spec reviewer's state on a review ask; older phones ignore it.
+    struct SpecReviewLine: Encodable, Equatable {
+        let status: String
+        let line: String
     }
 
     struct Payload: Encodable, Equatable {
@@ -74,6 +82,7 @@ struct OwnerAskSlice: SliceSource {
         let docBytes: Int?
         let answer: JSONValue?
         let quick: Quick?
+        let specReview: SpecReviewLine?
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -85,6 +94,7 @@ struct OwnerAskSlice: SliceSource {
             case previousAskID = "previous_ask_id"
             case createdAt, answeredAt, deliveredAt, title, titleClipped, summary, summaryClipped, changes, changesClipped
             case payload, payloadClipped, docPath, docPathClipped, docSnapshot, docClipped, docBytes, answer, quick
+            case specReview = "spec_review"
         }
     }
 
@@ -106,15 +116,20 @@ struct OwnerAskSlice: SliceSource {
             ORDER BY id
             """, arguments: [stamp.addingTimeInterval(-Self.closedWindow), Self.maxClosedPerWorkbench])
         let encoder = RelayCoder.makeEncoder()
+        let reviewAskIDs = rows.compactMap { row -> Int64? in
+            let askKind: String = row["kind"] ?? ""
+            return askKind == "review" ? row["id"] : nil
+        }
+        let reviewLines = try specReviewLines.lines(db, askIDs: reviewAskIDs)
         return try rows.compactMap { row in
             let project: Int64 = row["project_id"]
             guard let name = names[project] else { return nil }
-            let payload = makePayload(row, workbenchName: name)
+            let payload = makePayload(row, workbenchName: name, specReview: reviewLines[row["id"]])
             return SliceRecord(kind: kind, id: String(payload.id), modifiedAt: stamp, payload: try encoder.encode(payload))
         }
     }
 
-    private func makePayload(_ row: Row, workbenchName: String) -> Payload {
+    private func makePayload(_ row: Row, workbenchName: String, specReview: SpecReviewLine?) -> Payload {
         let id: Int64 = row["id"]
         let record = kind.recordName(id: String(id))
         let status: String = row["status"] ?? ""
@@ -151,7 +166,8 @@ struct OwnerAskSlice: SliceSource {
             docSnapshot: snapshot?.text, docClipped: snapshot?.clipped, docBytes: snapshot?.bytes,
             answer: answer.value,
             // The phone offers only "Open the ask on the Mac" without the payload.
-            quick: payload.value.flatMap { askKind == "question" ? Self.quick($0) : nil }
+            quick: payload.value.flatMap { askKind == "question" ? Self.quick($0) : nil },
+            specReview: specReview
         )
     }
 
@@ -244,4 +260,68 @@ struct OwnerAskSlice: SliceSource {
     }
 
     private static let logger = Logger(subsystem: Constants.bundleID, category: "OwnerAskSlice")
+}
+
+/// The spec reviewer's line of each review ask in the `owner_ask` slice
+/// (F9): one query for every ask's row, without its result; a done
+/// review's counts are decoded from its result once per finish
+/// (`finished_at`), the result read only for those not yet seen. Asks that
+/// left the slice leave the cache on the next read.
+final class SpecReviewLines: Sendable {
+    private let doneLines = OSAllocatedUnfairLock(initialState: [Int64: (finishedAt: String, line: String)]())
+
+    func lines(_ db: Database, askIDs: [Int64]) throws -> [Int64: OwnerAskSlice.SpecReviewLine] {
+        guard !askIDs.isEmpty else {
+            doneLines.withLock { $0 = [:] }
+            return [:]
+        }
+        let marks = Array(repeating: "?", count: askIDs.count).joined(separator: ",")
+        let rows = try Row.fetchAll(
+            db,
+            sql: "SELECT ask_id, status, reason, finished_at FROM spec_reviews WHERE ask_id IN (\(marks))",
+            arguments: StatementArguments(askIDs)
+        )
+        let known = doneLines.withLock { $0 }
+        var kept: [Int64: (finishedAt: String, line: String)] = [:]
+        var out: [Int64: OwnerAskSlice.SpecReviewLine] = [:]
+        var misses: [Int64: String] = [:]
+        for row in rows {
+            let id: Int64 = row["ask_id"]
+            let raw: String = row["status"]
+            let status = SpecReviewRow.Status(rawValue: raw) ?? .unknown
+            if status == .done {
+                let finishedAt: String = row["finished_at"] ?? ""
+                if let hit = known[id], hit.finishedAt == finishedAt {
+                    kept[id] = hit
+                    out[id] = Self.line("done", hit.line)
+                } else {
+                    misses[id] = finishedAt
+                }
+            } else if let line = SpecReviewSummary.phoneLine(status: status, reason: row["reason"] ?? "", result: { nil }) {
+                out[id] = Self.line(line.status, line.line)
+            }
+        }
+        if !misses.isEmpty {
+            let ids = Array(misses.keys)
+            let results = try Row.fetchAll(
+                db,
+                sql: "SELECT ask_id, result FROM spec_reviews WHERE ask_id IN (\(Array(repeating: "?", count: ids.count).joined(separator: ",")))",
+                arguments: StatementArguments(ids)
+            )
+            for row in results {
+                let id: Int64 = row["ask_id"]
+                let json: String = row["result"] ?? ""
+                let result = json.isEmpty ? nil : try? JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8))
+                guard let line = SpecReviewSummary.phoneLine(status: .done, reason: "", result: { result }) else { continue }
+                kept[id] = (misses[id] ?? "", line.line)
+                out[id] = Self.line("done", line.line)
+            }
+        }
+        doneLines.withLock { $0 = kept }
+        return out
+    }
+
+    private static func line(_ status: String, _ text: String) -> OwnerAskSlice.SpecReviewLine {
+        OwnerAskSlice.SpecReviewLine(status: status, line: SliceClip.text(text, limit: 300).text)
+    }
 }

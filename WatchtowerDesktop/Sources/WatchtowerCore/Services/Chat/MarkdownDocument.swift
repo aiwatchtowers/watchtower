@@ -1,11 +1,11 @@
 import Foundation
 import Markdown
 
-package enum MarkdownTaskState: Equatable, Sendable { case none, checked, unchecked }
+package enum MarkdownTaskState: Hashable, Sendable { case none, checked, unchecked }
 
-package enum MarkdownAlignment: Equatable, Sendable { case leading, center, trailing }
+package enum MarkdownAlignment: Hashable, Sendable { case leading, center, trailing }
 
-package struct MarkdownListItem: Equatable, Sendable {
+package struct MarkdownListItem: Hashable, Sendable {
     package let task: MarkdownTaskState
     package let blocks: [MarkdownBlock]
 
@@ -15,7 +15,7 @@ package struct MarkdownListItem: Equatable, Sendable {
     }
 }
 
-package struct MarkdownList: Equatable, Sendable {
+package struct MarkdownList: Hashable, Sendable {
     package let ordered: Bool
     package let start: Int
     package let items: [MarkdownListItem]
@@ -27,7 +27,7 @@ package struct MarkdownList: Equatable, Sendable {
     }
 }
 
-package struct MarkdownTable: Equatable, Sendable {
+package struct MarkdownTable: Hashable, Sendable {
     package let header: [[MarkdownInline]]
     package let rows: [[[MarkdownInline]]]
     package let alignments: [MarkdownAlignment]
@@ -39,7 +39,7 @@ package struct MarkdownTable: Equatable, Sendable {
     }
 }
 
-package indirect enum MarkdownBlock: Equatable, Sendable {
+package indirect enum MarkdownBlock: Hashable, Sendable {
     case heading(level: Int, inlines: [MarkdownInline])
     case paragraph([MarkdownInline])
     case code(language: String?, code: String)
@@ -49,7 +49,7 @@ package indirect enum MarkdownBlock: Equatable, Sendable {
     case rule
 }
 
-package indirect enum MarkdownInline: Equatable, Sendable {
+package indirect enum MarkdownInline: Hashable, Sendable {
     case text(String)
     case emphasis([Self])
     case strong([Self])
@@ -187,6 +187,32 @@ package enum MarkdownDocument {
 package enum MarkdownInlineRenderer {
     package static func attributed(_ inlines: [MarkdownInline]) -> AttributedString {
         inlines.reduce(into: AttributedString()) { $0 += render($1, intent: [], link: nil) }
+    }
+
+    private struct Key: Hashable {
+        let inlines: [MarkdownInline]
+        let context: AnyHashable
+    }
+
+    /// Cost = the text's length, as `MarkdownDocument`'s parse memo; a
+    /// streamed row's growing last paragraph adds an entry per delta, so
+    /// the limit bounds memory, not the count of rows.
+    private static let cache = MarkdownMemo<Key, AttributedString>(totalCostLimit: 4 << 20)
+
+    /// `build(inlines)` memoised by the inline run and `context` (whatever
+    /// else the result depends on — the link rules of the surface), beside
+    /// `MarkdownDocument.parse`'s memo. Building an `AttributedString` per
+    /// paragraph and table cell is the cost of a chat row's body pass; a
+    /// LazyVStack row that scrolls back in, or an unchanged row re-rendered,
+    /// hits the memo instead (spec 2026-10-24 §5, measured in
+    /// `ChatScrollBenchmarkTests`). `build` must be pure.
+    package static func memoized(
+        _ inlines: [MarkdownInline],
+        context: some Hashable & Sendable,
+        _ build: ([MarkdownInline]) -> AttributedString
+    ) -> AttributedString {
+        cache.value(for: Key(inlines: inlines, context: AnyHashable(context)), cost: { $0.characters.count },
+                    build: { build(inlines) })
     }
 
     private static func render(_ inline: MarkdownInline, intent: InlinePresentationIntent, link: URL?) -> AttributedString {

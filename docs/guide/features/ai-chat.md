@@ -16,11 +16,11 @@ You ask "what did we decide about the payments rollout?" and get an answer drawn
 
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 
-**Other assistant chats.** The same chat component appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Change in words**, and the setup assistant in Settings. They have no attachments, @-mentions or branches.
+**Other assistant chats.** The same chat component appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Chat** in the Automations panel, and the setup assistant in Settings. They have no attachments, @-mentions or branches.
 
 Only the main chat, the target chat and the automation editor can act, through proposals. The meeting, track, idea and setup chats are draft-only: they discuss and draft but never act. At most three replies across all of them run at once; a fourth shows **Queued**.
 
-**Questions about Watchtower itself.** The assistant searches this guide (built into the app, so it matches your version) and links the section it used; if the guide has nothing on it, it says so. An answer can also link a screen, such as **Briefings**: the link opens that tab, and only screens shown in your sidebar become links.
+**Questions about Watchtower itself.** The assistant searches this guide (built into the app, so it matches your version) and links the section it used; if the guide has nothing on it, it says so. An answer can also link a screen, such as **Inbox**: the link opens that tab, and only screens shown in your sidebar become links.
 
 Messages sent from the panel (**⌘/**) also tell the assistant which tab you are on, what status line an empty tab shows and which item is selected. That note goes to your AI provider but is never stored, so the history shows only what you typed.
 
@@ -49,7 +49,7 @@ Documents, tables, drafts, events, code and HTML pages open in the artifact pane
 
 Select a passage of a finished answer right in the chat, then click **Ask about this** next to it. The passage joins the quotes above the message box and the cursor moves there, so you type your follow-up. Quotes go out together with your next message, each with an optional comment.
 
-A selection stays within one paragraph, list item or table cell. ⌘C and the right-click menu copy it as usual. Your own messages can be selected and copied, not quoted. The chats inside other tabs offer selection and copy only.
+A selection can run across the paragraphs, headings and lists of an answer, up to the next code block or table. A table is selected whole, across cells and rows, with tabs between cells; one inside a list or quote, cell by cell. ⌘C and the right-click menu copy it as plain text. Your own messages can be copied, not quoted. The chats inside other tabs offer selection and copy only.
 
 ### Projects
 

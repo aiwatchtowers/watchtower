@@ -41,6 +41,7 @@ func TestInsertAndGetMeetingTranscript(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected transcript, got nil")
+		return // staticcheck SA5011 on CI does not always see t.Fatal as terminating
 	}
 	if got.ID != id {
 		t.Errorf("id = %d, want %d", got.ID, id)
@@ -293,6 +294,7 @@ func TestTranscriptSurvivesEventDeletion(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("transcript must survive event deletion")
+		return // staticcheck SA5011 on CI does not always see t.Fatal as terminating
 	}
 	if got.EventID.Valid {
 		t.Errorf("event_id should be NULL after event deletion, got %+v", got.EventID)

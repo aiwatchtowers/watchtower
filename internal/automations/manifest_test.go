@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -684,4 +685,102 @@ func TestManifest_AdmitsWrite(t *testing.T) {
 		{"write tool not admitted", []string{"targets:read"}, nil, autoWriteTool("create_target"), false},
 	}
 	runAdmitsCases(t, cases, (*Manifest).AdmitsWrite)
+}
+
+// TestManifest_InboxReplyCapability: inbox:reply is an unscoped capability
+// that needs outputs: [inbox], in both scopes; AllowInboxReply admits it.
+func TestManifest_InboxReplyCapability(t *testing.T) {
+	for _, scope := range []Scope{personalScope, workbenchScope} {
+		m, err := ParseManifest([]string{"Inbox:Reply"}, []string{"inbox"}, scope)
+		if err != nil {
+			t.Fatalf("scope %v: ParseManifest: %v", scope.Kind, err)
+		}
+		if got := m.Normalized(); !reflect.DeepEqual(got, []string{"inbox:reply"}) {
+			t.Fatalf("Normalized = %v; want [inbox:reply]", got)
+		}
+		if e, err := m.AllowInboxReply(); err != nil || e != "inbox:reply" {
+			t.Fatalf("AllowInboxReply = %q, %v; want inbox:reply", e, err)
+		}
+	}
+	m := mustManifest(t, []string{"llm:light"}, "inbox")
+	_, err := m.AllowInboxReply()
+	var pd *PermissionDenied
+	if !errors.As(err, &pd) || pd.Needed != "inbox:reply" {
+		t.Fatalf("AllowInboxReply without the entry = %v; want denied inbox:reply", err)
+	}
+	for entry, want := range map[string]string{"inbox:reply@x": "inbox takes no @scope", "inbox:read": "has no verb"} {
+		if _, err := ParseManifest([]string{entry}, []string{"inbox"}, personalScope); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v; want %q", entry, err, want)
+		}
+	}
+	_, err = ParseManifest([]string{"llm:light", "inbox:reply"}, []string{"report"}, personalScope)
+	var me *ManifestError
+	if !errors.As(err, &me) || me.Field != "permissions" || me.Index != 1 || !strings.Contains(me.Msg, "needs outputs: [inbox]") {
+		t.Fatalf("inbox:reply without outputs: [inbox] = %#v; want a permissions ManifestError at 1", err)
+	}
+}
+
+func TestAuto06_PersonalRecipeCannotDeclareSyncOrBuiltinCapability(t *testing.T) {
+	builtin := Scope{Kind: ScopePersonal, BuiltinID: "morning-brief"}
+	for _, s := range []Scope{personalScope, workbenchScope} {
+		_, err := ParseManifest([]string{"llm:light", "builtin:brief.compose"}, nil, s)
+		var me *ManifestError
+		if !errors.As(err, &me) || me.Index != 1 || !strings.Contains(me.Msg, "is allowed only in a built-in automation") {
+			t.Errorf("builtin:brief.compose in %s: want ManifestError, got %v", s, err)
+		}
+	}
+	m, err := ParseManifest([]string{"BUILTIN:Brief.Compose"}, nil, builtin)
+	if err != nil {
+		t.Fatalf("builtin:brief.compose in a built-in scope: %v", err)
+	}
+	if got := m.Normalized(); !slices.Equal(got, []string{"builtin:brief.compose"}) {
+		t.Errorf("normalised = %v", got)
+	}
+	if _, err := ParseManifest([]string{"builtin:nope"}, nil, builtin); err == nil {
+		t.Error("builtin:nope accepted")
+	}
+	// A personal recipe cannot carry a sync trigger either (the parser's rule).
+	data := recipeWith("name: A\ntrigger:\n  sync: morning_brief\n", "log(1);\n")
+	if _, err := ParseRecipe("ok", data, personalScope); err == nil || !strings.Contains(err.Error(), "only for built-in automations") {
+		t.Errorf("sync trigger in a personal recipe: got %v", err)
+	}
+}
+
+func TestCapabilityForPrimitive_DefaultsToBuiltinPrefix(t *testing.T) {
+	if got := CapabilityForPrimitive("brief.compose"); got != "builtin:brief.compose" {
+		t.Errorf("CapabilityForPrimitive = %q", got)
+	}
+	builtin := Scope{Kind: ScopePersonal, BuiltinID: "morning-brief"}
+	m, err := ParseManifest([]string{"builtin:plan.compose"}, nil, builtin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.AllowPrimitive("plan.compose"); err != nil || got != "builtin:plan.compose" {
+		t.Errorf("AllowPrimitive(plan.compose) = %q, %v", got, err)
+	}
+	_, err = m.AllowPrimitive("brief.compose")
+	var pd *PermissionDenied
+	if !errors.As(err, &pd) || pd.Needed != "builtin:brief.compose" {
+		t.Errorf("AllowPrimitive(brief.compose) = %v; want PermissionDenied needing builtin:brief.compose", err)
+	}
+}
+
+func TestCapabilityForPrimitive_TrackScanIsPersonal(t *testing.T) {
+	if got := CapabilityForPrimitive("track.scan"); got != "track:scan" {
+		t.Errorf("CapabilityForPrimitive(track.scan) = %q", got)
+	}
+	m, err := ParseManifest([]string{"track:scan"}, nil, personalScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.AllowPrimitive("track.scan"); err != nil || got != "track:scan" {
+		t.Errorf("AllowPrimitive(track.scan) = %q, %v", got, err)
+	}
+	for _, s := range []Scope{workbenchScope, {Kind: ScopePersonal, BuiltinID: "tracks"}} {
+		_, err := ParseManifest([]string{"llm:light", "track:scan"}, nil, s)
+		var me *ManifestError
+		if !errors.As(err, &me) || me.Index != 1 || me.Msg != `"track:scan" is allowed only in a personal automation` {
+			t.Errorf("track:scan in %s: want the personal-only refusal, got %v", s, err)
+		}
+	}
 }

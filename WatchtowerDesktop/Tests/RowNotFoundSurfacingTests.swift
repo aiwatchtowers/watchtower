@@ -48,8 +48,8 @@ final class RowNotFoundSurfacingTests: XCTestCase {
     }
 
     /// The event's watch was deleted elsewhere (the delete cascades to its
-    /// events): Apply must fail BEFORE touching the target, or the action
-    /// would land and still be reported as failed — and re-land on a retry.
+    /// events): the CLI refuses the press (Go finds no event), the refusal is
+    /// shown, and the vanished event leaves the feed.
     func testWatchApply_OfAnEventDeletedElsewhere_LeavesTheTargetAlone() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -80,7 +80,7 @@ final class RowNotFoundSurfacingTests: XCTestCase {
             target: target,
             dbManager: manager,
             scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
-            targetsViewModel: TargetsViewModel(dbManager: manager),
+            actionRunner: FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "track event not found")),
             scanCenter: TrackScanCenter()
         )
         vm.events = [event]
@@ -90,7 +90,7 @@ final class RowNotFoundSurfacingTests: XCTestCase {
 
         XCTAssertEqual(
             vm.errorMessage,
-            "Failed to apply: \(RowNotFoundError(kind: "track event", id: eventID).localizedDescription)"
+            "Failed to apply: track event not found"
         )
         XCTAssertTrue(vm.events.isEmpty, "the vanished event leaves the feed")
         let status = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID)?.status }

@@ -56,6 +56,13 @@ const (
 // draft_automation, save_automation and the read tools.
 const AutomationEditorSurface = "automation_editor"
 
+// InboxSurface is the owner's own press in the Desktop's Inbox (spec
+// 2026-10-22-inbox-built-in-automations-design §6.2, gap 17): no MCP server,
+// chat or tool loop mounts it, and like the workbench it is no trust place —
+// its one tool is AlwaysAsk, proposed and approved by the same press
+// (`actions propose --approve`).
+const InboxSurface = "inbox"
+
 // Binding is where a proposal came from: the chat surface, conversation and
 // turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
 // read at propose time and wins over TurnID — a warm `ai session` spans many
@@ -130,6 +137,13 @@ type Tool struct {
 	// External marks writes that leave this machine (Jira). Such a tool can
 	// never be granted execute trust (AGENT-03).
 	External bool
+	// CompanyData marks a read tool that returns synced source content —
+	// messages, email, calendar, Jira, Linear, Confluence/knowledge,
+	// transcripts and recaps, digests, tracks, people cards, memory, ideas,
+	// briefings, day plans, inbox, task context, experts. CallRead gates such
+	// a call by the session's read budget and writes one audit line for it
+	// (READ-01..02). The owner's own board, asks and skills stay unmarked.
+	CompanyData bool
 	// AlwaysAsk marks a local write too broad to ever run without the
 	// owner's per-call Approve (dismiss_tracks: hundreds of rows at once).
 	// Like External it can never be granted execute trust and is never
@@ -272,11 +286,13 @@ type Registry struct {
 	db    *db.DB
 	tools map[string]*Tool
 	order []string
+	// reads is the per-session company-data read budget (READ-01).
+	reads *readBudget
 }
 
 // New creates a registry backed by d.
 func New(d *db.DB) *Registry {
-	return &Registry{db: d, tools: map[string]*Tool{}}
+	return &Registry{db: d, tools: map[string]*Tool{}, reads: newReadBudget()}
 }
 
 // Register adds a tool; names are unique and write tools need a schema.
@@ -405,13 +421,15 @@ func CheckTrustable(t *Tool) error {
 }
 
 // trustSurfaceErr refuses a surface that is no trust place for t: one t is
-// not on, and the workbench (DEV-06). The automation surface is a trust place
+// not on, the workbench (DEV-06) and the inbox (the owner's own press). The automation surface is a trust place
 // like main (spec 2026-10-14-automations-design §6.2 step 4); its auto grants
 // are a separate table the registry reads first.
 func trustSurfaceErr(t *Tool, surface string) error {
 	switch {
 	case surface == WorkbenchSurface:
 		return fmt.Errorf("%w: workbench tools always apply in their own workbench", ErrSurfaceNotOffered)
+	case surface == InboxSurface:
+		return fmt.Errorf("%w: inbox tools run only on the owner's press, which is the approval", ErrSurfaceNotOffered)
 	case strings.TrimSpace(surface) == "" || !visibleOn(t, surface):
 		return fmt.Errorf("%w: %s is not on the %q surface", ErrSurfaceNotOffered, t.Name, surface)
 	}
@@ -421,14 +439,15 @@ func trustSurfaceErr(t *Tool, surface string) error {
 // TrustSurfaces is the surfaces of t a trust level is kept for: none for a
 // read tool, and for a write tool every surface but the workbench, whose
 // write tools apply under DirectApply and never read trust (DEV-06, target
-// 167). The automation surface is one (spec §6.2 step 4).
+// 167), and the inbox, whose press is the owner's approval. The automation
+// surface is one (spec §6.2 step 4).
 func TrustSurfaces(t *Tool) []string {
 	out := make([]string, 0, len(t.Surfaces))
 	if t.Access != AccessWrite {
 		return out
 	}
 	for _, s := range t.Surfaces {
-		if s != WorkbenchSurface {
+		if s != WorkbenchSurface && s != InboxSurface {
 			out = append(out, s)
 		}
 	}
@@ -926,6 +945,8 @@ func (r *Registry) applyTrusted(ctx context.Context, id int64, live Binding) (Re
 // tool is refused with ErrNotReadable, so the proposal flow can never be
 // bypassed by calling a write through the read path. b reaches Execute as
 // Call.Binding, so a read can scope itself (list_targets in a workbench session).
+// A CompanyData tool also passes the session's read budget and writes one
+// audit line (callCompanyRead, READ-01..02).
 func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessage, b Binding) (any, error) {
 	t, ok := r.Get(name)
 	if !ok {
@@ -946,6 +967,9 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 	}
 	if !json.Valid(args) {
 		return nil, &ValidationError{Msg: "arguments are not valid JSON"}
+	}
+	if t.CompanyData {
+		return r.callCompanyRead(ctx, t, args, b)
 	}
 	if err := t.validateSchema(args); err != nil {
 		return nil, err

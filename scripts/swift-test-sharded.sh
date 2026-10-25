@@ -18,7 +18,9 @@
 #
 # Usage: scripts/swift-test-sharded.sh [SHARDS]   (default 3; build first with
 # `swift build --build-tests`). Each process's log is printed in full
-# afterwards; the exit status is non-zero when any of them fails.
+# afterwards, then a summary of what failed (failing tests, or the last test
+# a crashed lane started, and xctest crash reports); the exit status is
+# non-zero when any of them fails.
 #
 # Compatible with bash 3.2 (macOS).
 
@@ -87,6 +89,8 @@ set -m
 names=()
 pids=()
 status=0
+# 1 once a lane ended on a signal: the summary then gives ReportCrash time.
+signalled=0
 # A cancelled run (Ctrl-C, a CI cancel or step timeout) takes its lanes with
 # it: in their own process groups they would not get the signal.
 kill_lanes() {
@@ -123,6 +127,7 @@ supervise() {
             for ((i = first; i < ${#pids[@]}; i++)); do
                 if kill -0 "${pids[$i]}" 2>/dev/null; then
                     echo "swift-test-sharded: ${names[$i]} still running after ${LANE_TIMEOUT}s — killing it" >&2
+                    : > "$WORK/killed$i"
                     kill -TERM -- "-${pids[$i]}" 2>/dev/null || true
                 fi
             done
@@ -145,9 +150,58 @@ supervise() {
         else
             cat "$WORK/log$i"
             echo "swift-test-sharded: ${names[$i]} failed (exit $rc)" >&2
+            if ((rc > 128)); then signalled=1; fi
+            summarize_failure "$i" "$rc" >> "$WORK/summary"
             status=$rc
         fi
     done
+}
+
+# Appends what failed in lane $1 (exit $2) to the end-of-run summary: its
+# failing test lines, how it ended (the watchdog, a signal), and the last test
+# it started — or, when it never started one, its last lines. The CI log shows
+# this script's stderr out of order with the lane logs, so the summary goes to
+# stdout, after every log. scripts/tests/test-swift-test-sharded-summary.sh
+# runs it on fixture logs.
+summarize_failure() {
+    local log="$WORK/log$1" rc="$2" failed last
+    echo "${names[$1]} (exit $rc):"
+    # XCTest's assertion and "failed (" lines; Swift Testing's ✘ lines.
+    failed="$(grep -aE ": error: -\[|^Test Case '.*' failed \(|✘ " "$log" || true)"
+    if [[ -n $failed ]]; then
+        printf '%s\n' "$failed" | sed 's/^/  /'
+    fi
+    if [[ -e "$WORK/killed$1" ]]; then
+        echo "  hung past ${LANE_TIMEOUT}s, killed by the watchdog"
+    elif ((rc > 128)); then
+        echo "  killed by signal $((rc - 128))"
+    fi
+    # XCTest's "Test Case/Suite … started", Swift Testing's "◇ Test … started"
+    # (not its "◇ Test run started." banner, which names no test).
+    last="$(grep -aE "^Test Case '.*' started|^Test Suite '.*' started|◇ Test .* started" "$log" |
+        grep -av '◇ Test run started' | tail -n 1 || true)"
+    if [[ -n $last ]]; then
+        echo "  last started: $last"
+    else
+        echo "  no test started; the lane's last lines:"
+        tail -n 10 "$log" | sed 's/^/    /' || true
+    fi
+}
+
+# Prints the summary and the crash reports xctest (or Swift Testing's helper)
+# left since the run began.
+print_summary() {
+    [[ -s "$WORK/summary" ]] || return 0
+    echo "swift-test-sharded: failure summary"
+    cat "$WORK/summary"
+    # ReportCrash writes a report a moment after the process died.
+    if ((signalled)); then sleep 2; fi
+    local report
+    while IFS= read -r report; do
+        echo "--- crash report $report (first 200 lines)"
+        head -n 200 "$report" || true
+    done < <(find "$HOME/Library/Logs/DiagnosticReports" \( -name 'xctest*' -o -name 'swiftpm-testing-helper*' \) \
+        -newer "$WORK/list" 2>/dev/null)
 }
 
 # WATCHTOWER_TEST_SHARD: preferences are shared across processes, so the
@@ -170,4 +224,5 @@ start_lane "XCTest timing-bound classes (alone)" \
     env WATCHTOWER_TEST_SHARD="serial" NSUnbufferedIO=YES xcrun xctest -XCTest "$(paste -sd, - < "$WORK/serial")" "$BUNDLE"
 supervise "$serial_first"
 
+print_summary
 exit "$status"

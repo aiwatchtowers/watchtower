@@ -707,7 +707,9 @@ final class TargetBriefCenterTests: XCTestCase {
             !serviceB.succeeding.prompts.isEmpty && center.phase(for: targetB.id) != .queued(targetID: targetB.id)
                 && center.phase(for: targetB.id) != .briefing(targetID: targetB.id)
         }
-        XCTAssertEqual(serviceB.succeeding.prompts, ["brief B"])
+        // The brief replays the chat so far (no session is resumed, #604 G11).
+        XCTAssertEqual(serviceB.succeeding.prompts.count, 1)
+        XCTAssertTrue(serviceB.succeeding.prompts.first?.hasSuffix("brief B") == true, "\(serviceB.succeeding.prompts)")
         XCTAssertEqual(center.phase(for: targetB.id), .idle, "a stale owner-turn error failed the brief")
     }
 

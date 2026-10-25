@@ -49,20 +49,21 @@
 
 **Locked since:** 2026-10-15
 
-## LINEAR-03 — Auth loss marks the account revoked and never deletes data
+## LINEAR-03 — Auth loss marks the account revoked; data is deleted only by an enabled purge
 
 **Status:** Enforced
 
-**Observable:** When Linear rejects the grant, the account shows status `revoked` (Re-login) and keeps all its synced data. Removing a workspace deletes the token and disables the account but keeps every `linear_*` row.
+**Observable:** When Linear rejects the grant, the account shows status `revoked` (Re-login) and keeps all its synced data. Removing a workspace deletes the token and disables the account but keeps every `linear_*` row. When purge on revoked access is enabled (PURGE-01), a revoked account's data is deleted after the 72 h grace unless the owner logs in again or a pass confirms access again, and a removed workspace's rows, kept by the remove, are deleted only by an enabled lease purge 30 days after its last confirmed access. With the purge off, nothing is ever deleted.
 
-**Mechanism:** `phaseLinearSync` persists exactly one failure, `linear.ErrAuthRevoked`, via `SetLinearAccountAuthState(id, "revoked", msg)`; rate-limit and network errors are only logged, a cancelled context is checked first and leaves auth state untouched, and a nil error never writes a blanket "ok" (only a login clears the state). `linear remove` is a soft delete (status `removed`, token file deleted under the token lock, rows kept); `linear add` for a workspace whose org belongs to a **removed** account revives that account (same id, data kept), a non-removed match is refused, any failure after the account row is created cleans that row up, and `linear login` refuses a login into a different workspace than the account's.
+**Mechanism:** `phaseLinearSync` persists exactly one failure, `linear.ErrAuthRevoked`, via `SetLinearAccountAuthState(id, "revoked", msg)`; rate-limit and network errors are only logged, a cancelled context is checked first and leaves auth state untouched, and a nil error never writes a blanket "ok" (only a login clears the state). `linear remove` is a soft delete (status `removed`, token file deleted under the token lock, rows kept); `linear add` for a workspace whose org belongs to a **removed** account revives that account (same id, data kept), a non-removed match is refused, any failure after the account row is created cleans that row up, and `linear login` refuses a login into a different workspace than the account's. The auth-state writer also keeps `revoked_at` (set on `revoked`, cleared on `ok`) and `access_ok_at` (migration 00148); after a nil pass error the daemon stamps `access_ok_at` with `MarkAccountAccessOK`, which never touches `status`, so a pass still never writes `status = ok`; an `access_ok_at` newer than `revoked_at` cancels a scheduled revoked purge (PURGE-01). A `purged` account accepts only the `ok` of a login, which re-enables it; `linear add` for a purged workspace is refused as already connected (Re-login is the way back).
 
-**Why locked:** Deleting synced data on auth loss or removal destroys history the owner cannot re-fetch cheaply, and writing "ok" over a revoked state hides the Re-login prompt.
+**Why locked:** Deleting synced data on auth loss or removal without the owner's opt-in and notice destroys history the owner cannot re-fetch cheaply, and writing "ok" over a revoked state hides the Re-login prompt.
 
 **Test guards:**
 - `internal/daemon/linear_sync_test.go`: `TestLinear03_RevokedMarksAccount`, `TestLinear03_CancelledContextLeavesAuthState` (a cancelled context wins over a wrapped `ErrAuthRevoked`).
 - `internal/db/linear_accounts_test.go`: `TestLinear03_AccountLifecycleSoftDelete` (also asserts the account's issue and comment rows survive remove).
 - API key (#694): a 401 on an api-key account is `ErrAuthRevoked` and marks it `revoked` — `internal/linear/client_test.go` `TestLinear03_APIKey401IsAuthRevoked`. `linear remove` of a key account deletes the token file and disables the account but revokes nothing at Linear (the owner revokes the key in Linear's settings): `cmd/linear_test.go` `TestLinear03_RemoveAPIKeySkipsRevoke`. `linear accounts` shows `auth` (`oauth`|`api_key`, empty with no token file, `error` for an unreadable one): `cmd/linear_test.go` `TestLinear03_AccountsJSONAuth`.
+- Purge (#601): `internal/daemon/account_purge_test.go`: `TestLinear03_PurgeOffKeepsData` (purge off: a revoked account schedules nothing and keeps its rows), `TestLinear03_PurgeScheduledCancelledByReconnect` (purge on: the revoked account is scheduled, a login before the due time cancels it and nothing is deleted), `TestPurge01_CleanPassAfterRevocationCancels` (linear: a clean pass after the revocation cancels the purge and nothing is deleted).
 
 **Locked since:** 2026-10-15
 
@@ -83,6 +84,10 @@
 **Locked since:** 2026-10-15
 
 ## Changelog
+
+- 2026-10-21 (board #601 review fixes): strengthening, no guard relaxed. A Linear pass that comes back clean after a revocation stamps `access_ok_at` (as before) and that now cancels a scheduled revoked purge: a revoked account's data is deleted only while no access has been confirmed since the revocation. Guard added: `TestPurge01_CleanPassAfterRevocationCancels`.
+
+- 2026-10-21 (board #601, ask #474; spec `docs/superpowers/specs/2026-10-21-revoke-purge-design.md`): LINEAR-03 amended with the owner's approval. Auth loss still marks the account revoked and a pass still never writes `ok`; with purge on revoked access enabled (PURGE-01, `docs/inventory/account-purge.md`) a revoked account's data is deleted after the 72 h grace unless the owner logs in again, and a removed workspace's data after an enabled lease purge 30 days after its last confirmed access. The off path keeps every row as before. Guards added: `TestLinear03_PurgeOffKeepsData`, `TestLinear03_PurgeScheduledCancelledByReconnect`; no guard relaxed.
 
 - 2026-10-18 (Linear consumers, board #687): note only, **no LINEAR contract changed**. `phaseLinearSync` now runs `db.SyncLinearTargetStatuses` after a pass in which any account came back clean (phaseJiraSync's rule; `TestPhaseLinearSync_SyncsLinearTargets`); the auth-state handling (LINEAR-03) is untouched. The consumers read `tracker_*` only; the one exception is `db.LinearOwnComments`, which reads `linear_comments` through `idx_linear_comments_issue_author` because the view derives the Linear issue key (spec §10). Target status sync and Linear URL enrichment resolve a moved key through `previous_keys` (LINEAR-04).
 

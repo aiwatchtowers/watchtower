@@ -3,10 +3,10 @@ package reactioncmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -94,6 +94,9 @@ type Pipeline struct {
 	accountsFn  func(context.Context) ([]Account, error)
 	promptStore *prompts.Store
 	logger      *log.Logger
+	skip        func(accountID int64) bool // accounts not to poll (purged or being purged, #601); nil = none
+	dispatcher  atomic.Pointer[Dispatcher] // nil = the built-in DispatchWith (SetDispatcher)
+	paused      atomic.Bool                // SetDispatchPaused
 }
 
 // New builds a reaction-commands pipeline. accountsFn resolves the connected
@@ -103,6 +106,10 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, registry *to
 	accountsFn func(context.Context) ([]Account, error), logger *log.Logger) *Pipeline {
 	return &Pipeline{db: database, cfg: cfg, generator: gen, registry: registry, accountsFn: accountsFn, logger: logger}
 }
+
+// SetAccountSkip sets which accounts a poll leaves out: the daemon skips the
+// accounts it is purging or has purged (#601).
+func (p *Pipeline) SetAccountSkip(skip func(accountID int64) bool) { p.skip = skip }
 
 // SetPromptStore injects the owner-customizable prompt store.
 func (p *Pipeline) SetPromptStore(s *prompts.Store) { p.promptStore = s }
@@ -140,6 +147,9 @@ func (p *Pipeline) Run(ctx context.Context, events EventSink) (int, error) {
 	var firstErr error
 	budget := &dispatchBudget{remaining: maxDispatchPerRun}
 	for _, acct := range accounts {
+		if p.skip != nil && p.skip(acct.AccountID) {
+			continue
+		}
 		n, err := p.processAccount(ctx, acct, dict, budget, events)
 		total += n
 		if err != nil {
@@ -201,6 +211,11 @@ func (p *Pipeline) processCommands(ctx context.Context, list *reactionList, dict
 		return 0, nil
 	}
 	p.failStranded(acct.AccountID)
+	if p.dispatchPaused() {
+		// Paused: claim nothing — no ledger row, not even a free skip, and no
+		// budget — so every command stays unseen until dispatching resumes.
+		return 0, nil
+	}
 	items, err := list.get(ctx)
 	if err != nil {
 		return 0, err
@@ -250,22 +265,6 @@ func (p *Pipeline) failStranded(accountID int64) {
 	}
 }
 
-// ledgerStep is what dispatchOne does with a claimed provisional row once the
-// dispatch returns.
-type ledgerStep int
-
-const (
-	// stepFinalize records the returned terminal status on the row.
-	stepFinalize ledgerStep = iota
-	// stepRelease deletes the row: the failure was transient and provably
-	// produced no agent action, so the next poll retries.
-	stepRelease
-	// stepStrand leaves the row provisional: whether an action was recorded is
-	// unknown, so the command is never retried and surfaces as failed after
-	// strandedAfter.
-	stepStrand
-)
-
 // dispatchOne runs one unseen command through the ledger state machine and
 // reports whether it dispatched. A side-effect-free skip is recorded terminal
 // directly; anything that reaches compose/Propose first claims a provisional
@@ -297,18 +296,19 @@ func (p *Pipeline) dispatchOne(ctx context.Context, u db.OwnerReaction, c candid
 		budget.refund()
 		return false // a concurrent poll already holds this key
 	}
-	status, actionID, detail, step := p.dispatch(ctx, c, tool, &budget.prefixes)
-	switch step {
-	case stepRelease:
+	out := p.runDispatcher(ctx, p.newDispatch(c, tool, &budget.prefixes))
+	switch out.Step {
+	case StepRelease:
 		p.release(id, u.Emoji)
 		return false
-	case stepStrand:
+	case StepStrand:
 		p.logf("reaction-commands: ERROR ledger row #%d for :%s: left provisional — whether an action was recorded is unknown; it will not be retried and surfaces as failed after %s",
 			id, u.Emoji, strandedAfter)
 		return false
-	case stepFinalize:
+	case StepFinalize:
 	}
-	applied, err := p.db.FinalizeReactionCommand(id, status, actionID, detail)
+	status, actionID := out.Status, out.ActionID
+	applied, err := p.db.FinalizeReactionCommand(id, status, actionID, out.Detail)
 	switch {
 	case err != nil:
 		p.logf("reaction-commands: ERROR recording %s outcome (action #%d) for :%s: — ledger row #%d stays provisional; it will not re-dispatch and surfaces as failed after %s: %v",
@@ -358,15 +358,11 @@ func (p *Pipeline) resolveTool(c candidate) (tool *tools.Tool, detail string, ok
 	return tool, "", true
 }
 
-// dispatch composes and proposes one command's action. With stepFinalize it
-// returns the terminal ledger status to record (dispatched/failed), the
-// agent-action id (0 unless dispatched) and a detail string; stepRelease marks
-// a TRANSIENT failure that produced no action (the caller releases the row so
-// the next poll retries instead of burning it), stepStrand one whose outcome
-// is unknown. An issue tool is first routed to the tracker the channel's keys
-// belong to (routeIssue) — free, and only for a candidate that won a budget
-// slot and its claim.
-func (p *Pipeline) dispatch(ctx context.Context, c candidate, tool *tools.Tool, prefixes *prefixCache) (status string, actionID int64, detail string, step ledgerStep) {
+// newDispatch builds the Dispatch for a claimed command: it reads the
+// thread once (compose grounds on it, issue routing scans it) and routes an
+// issue tool to the tracker the channel's keys belong to (routeIssue) — free,
+// and only for a candidate that won a budget slot and its claim.
+func (p *Pipeline) newDispatch(c candidate, tool *tools.Tool, prefixes *prefixCache) Dispatch {
 	var thread []string
 	if c.ThreadTS != "" {
 		thread = p.threadContext(c)
@@ -374,64 +370,11 @@ func (p *Pipeline) dispatch(ctx context.Context, c candidate, tool *tools.Tool, 
 	if isIssueTool(tool.Name) {
 		tool = p.routeIssue(c, tool, prefixes, thread)
 	}
-	args, transient, err := p.compose(ctx, c, tool.Name, thread)
-	if err != nil {
-		if transient {
-			p.logf("reaction-commands: transient compose failure for :%s: (%s), will retry: %v", c.Emoji, tool.Name, err)
-			return "", 0, "", stepRelease
-		}
-		return "failed", 0, "compose: " + err.Error(), stepFinalize
+	return Dispatch{
+		AccountID: c.AccountID, ChannelID: c.ChannelID, MessageTS: c.MessageTS,
+		ThreadTS: c.ThreadTS, Emoji: c.Emoji, Tool: tool.Name,
+		c: c, tool: tool, thread: thread,
 	}
-	// Surface "reaction" keeps these proposals out of any chat conversation;
-	// the External-never-auto-execute rule (AGENT-03) and trust per tool and
-	// surface are enforced inside Propose, so a create_jira_issue or
-	// create_linear_issue reaction always lands as a pending proposal even if
-	// create_target is execute-trusted.
-	binding := tools.Binding{
-		Surface:     reactionSurface,
-		ContextType: "reaction",
-		ContextID:   c.ChannelID + "@" + c.MessageTS, // REACT-02: real message ref for reminders/brief
-	}
-	// The agent_actions high-water mark before Propose lets a failed Propose be
-	// told apart: "recorded a row, then failed" vs "recorded nothing".
-	floor, err := p.db.MaxAgentActionID()
-	if err != nil {
-		p.logf("reaction-commands: reading agent-action high-water mark for :%s: failed, will retry: %v", c.Emoji, err)
-		return "", 0, "", stepRelease
-	}
-	receipt, err := p.registry.Propose(ctx, tool.Name, args, binding)
-	if err != nil {
-		// A ValidationError is terminal — the model's args cannot pass the
-		// tool's schema/semantics, and re-composing the same message would only
-		// spend AI budget to fail again.
-		var ve *tools.ValidationError
-		if errors.As(err, &ve) {
-			return "failed", 0, "propose: " + err.Error(), stepFinalize
-		}
-		return p.afterProposeError(c, tool.Name, binding.ContextID, floor, err)
-	}
-	return "dispatched", receipt.ActionID, "", stepFinalize
-}
-
-// afterProposeError classifies a non-validation Propose error. Propose can fail
-// AFTER inserting its agent_actions row (a failed approve stamp or apply
-// bookkeeping on an execute-trusted tool), so the error alone does not prove
-// nothing was proposed: a row recorded since `floor` for this binding means the
-// command dispatched (finalize with that id); none means the failure was
-// transient before any write (release, retry next poll); a failed lookup
-// leaves the outcome unknown (strand).
-func (p *Pipeline) afterProposeError(c candidate, toolName, contextID string, floor int64, proposeErr error) (string, int64, string, ledgerStep) {
-	id, err := p.db.ReactionAgentActionSince(contextID, toolName, floor)
-	if err != nil {
-		p.logf("reaction-commands: ERROR propose for :%s: failed (%v) and the recorded-action lookup failed too: %v", c.Emoji, proposeErr, err)
-		return "", 0, "", stepStrand
-	}
-	if id != 0 {
-		p.logf("reaction-commands: propose for :%s: failed after recording action #%d — recording it as dispatched, not retrying: %v", c.Emoji, id, proposeErr)
-		return "dispatched", id, "propose error after recording: " + proposeErr.Error(), stepFinalize
-	}
-	p.logf("reaction-commands: transient propose failure for :%s:, nothing recorded, will retry: %v", c.Emoji, proposeErr)
-	return "", 0, "", stepRelease
 }
 
 // compose runs the one AI call that turns the reacted message into the tool's
@@ -439,9 +382,9 @@ func (p *Pipeline) afterProposeError(c candidate, toolName, contextID string, fl
 // down / timeout) and the caller should retry later rather than record a
 // terminal failure; a reply that arrived but carried no JSON is terminal.
 // thread is the thread's lines (threadContext); the first maxThreadLines go
-// into the brief.
-func (p *Pipeline) compose(ctx context.Context, c candidate, toolName string, thread []string) (args json.RawMessage, transient bool, err error) {
-	system, _ := p.getPrompt(prompts.ReactionCommand)
+// into the brief. system is the system prompt. usage is the call's (nil when
+// the generator reported none).
+func (p *Pipeline) compose(ctx context.Context, c candidate, toolName string, thread []string, system string) (args json.RawMessage, usage *digest.Usage, transient bool, err error) {
 	choices := p.issueChoices(toolName)
 	threadLines := thread[:min(len(thread), maxThreadLines)]
 	// The daemon runs in the owner's TZ (the create_target due precedent), so
@@ -452,15 +395,15 @@ func (p *Pipeline) compose(ctx context.Context, c candidate, toolName string, th
 	ownerNow := now.Format("2006-01-02T15:04:05-07:00 (MST)")
 	userMsg := buildComposeUserMessage(toolName, c, argGuide(toolName), threadLines, choices, today, ownerNow, prompts.Directive(p.language()))
 
-	reply, _, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.ReactionCommand), system, userMsg, "")
+	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.ReactionCommand), system, userMsg, "")
 	if err != nil {
-		return nil, true, err
+		return nil, usage, true, err
 	}
 	obj, err := prompts.ExtractJSONObject(reply)
 	if err != nil {
-		return nil, false, fmt.Errorf("no JSON object in reply: %w", err)
+		return nil, usage, false, fmt.Errorf("no JSON object in reply: %w", err)
 	}
-	return json.RawMessage(obj), false, nil
+	return json.RawMessage(obj), usage, false, nil
 }
 
 // issueChoices lists the projects (Jira) or teams (Linear) an issue tool may

@@ -68,7 +68,7 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
     private func engine(ai: ScriptedAIService, conversationID: Int64) -> EmbeddedChatEngine {
         let spec = ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: "idea", contextID: "1", conversationID: conversationID),
-            persistence: .database(conversationID: conversationID), toolAccess: .draftOnly,
+            persistence: .database(conversationID: conversationID), toolAccess: .draftOnly, ownerInstructions: false,
             systemPrompt: { "S" }, emptyHint: "")
         return EmbeddedChatEngine(spec: spec, store: DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID),
                                   aiService: ai, gate: EmbeddedStreamGate())
@@ -134,7 +134,7 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         }
         let engine = center.engine(for: ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: "idea", contextID: "1", conversationID: conv),
-            persistence: .database(conversationID: conv), toolAccess: .draftOnly, systemPrompt: { "S" }, emptyHint: ""))
+            persistence: .database(conversationID: conv), toolAccess: .draftOnly, ownerInstructions: false, systemPrompt: { "S" }, emptyHint: ""))
         engine.send("q")
         await engine.started()
         ai.emit(.text("streamed so far"))
@@ -215,7 +215,7 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
             return db.lastInsertedRowID
         }
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        strip.refresh()
+        await strip.refresh()
         XCTAssertEqual(strip.reminderRows.map(\.id), [id])
         let held = HeldWriter(pool)
         defer { held.release() }
@@ -248,7 +248,7 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
             return id
         }
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        strip.refresh()
+        await strip.refresh()
 
         await strip.markReminderDone(id)
 

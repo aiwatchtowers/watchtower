@@ -200,3 +200,65 @@ func TestParse_NoticeAfterOwnerTextStaysOwner(t *testing.T) {
 	assert.Equal(t, KindOwner, res.Entries[0].Kind)
 	assert.Equal(t, text, res.Entries[0].Text)
 }
+
+func queuedRec(uuid string, extra map[string]any, att map[string]any) string {
+	a := map[string]any{"type": "queued_command", "commandMode": "prompt",
+		"origin": map[string]any{"kind": "human"}, "humanTurn": true}
+	for k, v := range att {
+		if v == nil {
+			delete(a, k)
+		} else {
+			a[k] = v
+		}
+	}
+	rec := map[string]any{"type": "attachment", "uuid": uuid, "timestamp": "2026-10-01T10:00:00Z", "attachment": a}
+	for k, v := range extra {
+		rec[k] = v
+	}
+	return jsonLine(rec)
+}
+
+func TestParse_QueuedHumanPromptIsOwner(t *testing.T) {
+	res := parseStr(t, queuedRec("q1", nil, map[string]any{"prompt": "run the tests"}), 0)
+	require.Len(t, res.Entries, 1)
+	e := res.Entries[0]
+	assert.Equal(t, "q1", e.ID)
+	assert.Equal(t, KindOwner, e.Kind)
+	assert.Equal(t, "run the tests", e.Text)
+	assert.Equal(t, "2026-10-01T10:00:00Z", e.At.UTC().Format("2006-01-02T15:04:05Z"))
+}
+
+func TestParse_QueuedPromptWithoutOriginIsOwner(t *testing.T) {
+	res := parseStr(t, queuedRec("q1", nil, map[string]any{"prompt": "go on", "origin": nil}), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, KindOwner, res.Entries[0].Kind)
+	assert.Equal(t, "go on", res.Entries[0].Text)
+}
+
+func TestParse_QueuedPromptBlocksWithImage(t *testing.T) {
+	res := parseStr(t, queuedRec("q1", nil, map[string]any{"prompt": []any{textB("look"), map[string]any{"type": "image"}}}), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, "look\n[image]", res.Entries[0].Text)
+}
+
+func TestParse_QueuedAskAnswerIsAskAnswer(t *testing.T) {
+	res := parseStr(t, queuedRec("q1", nil, map[string]any{"prompt": askLine(9)}), 0)
+	require.Len(t, res.Entries, 1)
+	assert.Equal(t, KindAskAnswer, res.Entries[0].Kind)
+	assert.Equal(t, int64(9), res.Entries[0].AskID)
+}
+
+func TestParse_QueuedNonHumanIgnored(t *testing.T) {
+	res := parseStr(t, join(
+		queuedRec("q1", nil, map[string]any{"commandMode": "task-notification", "prompt": "done"}),
+		queuedRec("q2", map[string]any{"isMeta": true}, map[string]any{"origin": map[string]any{"kind": "peer"}, "prompt": "hi"}),
+		queuedRec("q3", nil, map[string]any{"origin": map[string]any{"kind": "coordinator"}, "prompt": "hi"}),
+	), 0)
+	assert.Empty(t, res.Entries)
+	assert.Empty(t, res.Unknown)
+}
+
+func TestParse_QueuedSidechainIgnoredInMain(t *testing.T) {
+	res := parseStr(t, queuedRec("q1", map[string]any{"isSidechain": true}, map[string]any{"prompt": "side"}), 0)
+	assert.Empty(t, res.Entries)
+}

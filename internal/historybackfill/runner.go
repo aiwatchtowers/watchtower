@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 	"watchtower/internal/planusage"
+	"watchtower/internal/policy"
 )
 
 // ErrHold is what a Source returns (wrapped) for a transient condition such
@@ -108,6 +110,9 @@ func (r *Runner) runRows(ctx, bctx context.Context, rows []db.HistoryBackfill) e
 		if row.Status == "done" || row.Status == "off" {
 			continue
 		}
+		if !policy.SourceAllowed(policySource(row.SourceKind)) {
+			continue // forbidden by the organization's policy: the row keeps its state (POLICY-03)
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -161,6 +166,10 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 	if err != nil {
 		return r.fail(ctx, bctx, row, fromTS, from, to, fmt.Errorf("process: %w", err))
 	}
+	if !complete && ctx.Err() != nil {
+		// Cut off by the cancel, not answered: the hold, if any, stays.
+		return true, ctx.Err()
+	}
 	// The source answered: a hold, however old, is over.
 	if err := r.releaseHold(row); err != nil {
 		return false, err
@@ -212,8 +221,9 @@ func (r *Runner) markPlanLimitWaiting(row *db.HistoryBackfill) error {
 }
 
 // fail records a chunk failure; the third failure of a chunk skips it. A
-// canceled context is a shutdown and a passed Budget deadline holds the
-// chunk for the next cycle: neither is a failure, and both stop the Step. A
+// canceled context (a daemon shutdown, or a sleep cancelling the cycle) and
+// a passed Budget deadline hold the chunk for the next cycle: neither is a
+// failure, and both stop the Step. A
 // source's ErrHold holds the chunk with no strike and the Step goes on to
 // the next row: the first hold writes held_since and its reason to
 // last_error and is logged once. held_since belongs to the row: a strike or
@@ -240,12 +250,12 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 		r.logf("history backfill: %s account %d held since %s, over %s: counting a strike",
 			row.SourceKind, row.AccountID, row.HeldSince.Format(time.RFC3339), MaxHold)
 	}
-	n, recErr := r.Store.RecordHistoryBackfillFailure(row.ID, err.Error(), r.Now())
+	n, recErr := r.Store.RecordHistoryBackfillFailure(row.ID, logredact.Full(err), r.Now())
 	if recErr != nil {
 		return false, recErr
 	}
 	row.ChunkFailures = n
-	row.LastError = err.Error()
+	row.LastError = logredact.Full(err)
 	if n < MaxChunkFailures {
 		r.logf("history backfill: %s account %d chunk [%s, %s) failed (%d of %d): %v",
 			row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), n, MaxChunkFailures, err)
@@ -258,7 +268,7 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 	}
 	// The advance cleared last_error; keep a trace of the skip until the
 	// next successful chunk clears it (R23).
-	trace := fmt.Sprintf("skipped %s..%s: %v", from.Format(time.RFC3339), to.Format(time.RFC3339), err)
+	trace := fmt.Sprintf("skipped %s..%s: %s", from.Format(time.RFC3339), to.Format(time.RFC3339), logredact.Full(err))
 	if setErr := r.Store.SetHistoryBackfillLastError(row.ID, trace, r.Now()); setErr != nil {
 		return false, setErr
 	}
@@ -270,7 +280,7 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 // an older strike's), one log line.
 func (r *Runner) hold(row *db.HistoryBackfill, from, to time.Time, err error) error {
 	now := r.Now()
-	msg := "held: " + err.Error()
+	msg := "held: " + logredact.Full(err)
 	if hErr := r.Store.HoldHistoryBackfill(row.ID, msg, now); hErr != nil {
 		return hErr
 	}
@@ -379,6 +389,15 @@ func (r *Runner) slackDone(ctx context.Context, rows []db.HistoryBackfill) {
 	if err := r.OnSlackDone(ctx, unixTime(floor)); err != nil {
 		r.logf("history backfill: slack-done follow-up: %v", err)
 	}
+}
+
+// policySource maps a backfill source kind to its AllowedSources name (#608):
+// Gmail belongs to google; the other kinds share their name.
+func policySource(kind string) string {
+	if kind == "gmail" {
+		return "google"
+	}
+	return kind
 }
 
 func (r *Runner) logf(format string, args ...any) {

@@ -91,6 +91,10 @@ final class ChatViewModel {
     /// strip re-reads then: a connector call it shows was claimed and run
     /// inside that turn, and its live "session holds it" just turned false.
     @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
+    /// A new owner message is on disk: (the owner's typed words — no skill or
+    /// REFERENCED line —, conversation id, message id).
+    /// Remember-in-place hangs here (the call never delays the turn).
+    @ObservationIgnored var onOwnerMessageStored: ((String, Int64, Int64) -> Void)?
     /// A turn of that conversation waits on an approval card (`tool_wait`).
     @ObservationIgnored var onActionAwaited: ((Int64) -> Void)?
 
@@ -125,6 +129,8 @@ final class ChatViewModel {
     /// Non-edited version numbers per message, for the card badges — reloaded
     /// with the thread (`reload()`).
     private(set) var artifactVersionsByMessage: [Int64: [String: Int]] = [:]
+    /// Artifact keys of the open chat pinned as knowledge (card badges).
+    private(set) var keptArtifactKeys: Set<String> = []
     private(set) var gmailConnected = false
     private(set) var slackLinks: SlackLinkResolver?
     /// The project page open in the detail area, or nil when a conversation
@@ -525,22 +531,25 @@ final class ChatViewModel {
             thread = []
             currentConversation = nil
             artifactVersionsByMessage = [:]
+            keptArtifactKeys = []
             return
         }
         do {
-            let (conv, items, versions, gmail, slack) = try dbManager.dbPool.read { db in
+            let (conv, items, versions, kept, gmail, slack) = try dbManager.dbPool.read { db in
                 let conv = try ChatConversationQueries.fetchByID(db, id: id)
                 let items = try ChatTreeQueries.thread(db, conversationID: id)
                 let versions = try ChatArtifactQueries.versionsByMessage(db, messageIDs: items.map(\.id))
+                let kept = try ChatArtifactQueries.keptKeys(db, conversationID: id)
                 let gmail = try GoogleAccountQueries.hasConnectedGmailAccount(db)
                 let slack = try SlackLinkResolver.load(db)
-                return (conv, items, versions, gmail, slack)
+                return (conv, items, versions, kept, gmail, slack)
             }
             currentConversation = conv
             if items != thread { thread = items }
             let refreshedSources = sourcesPanel?.refreshed(in: items)
             if refreshedSources != sourcesPanel { sourcesPanel = refreshedSources }
             artifactVersionsByMessage = versions
+            keptArtifactKeys = kept
             gmailConnected = gmail
             slackLinks = slack
         } catch {
@@ -568,7 +577,9 @@ final class ChatViewModel {
         guard let conversationID else { return }
         preferredInspectorMode = .artifacts
         guard artifactPanel?.key != key else { return }
-        artifactPanel = ArtifactPanelModel(db: dbManager.dbPool, conversationID: conversationID, key: key)
+        let panel = ArtifactPanelModel(db: dbManager.dbPool, conversationID: conversationID, key: key)
+        panel.onKnowledgeChanged = { [weak self] in self?.reload() }
+        artifactPanel = panel
     }
 
     /// The owner closed the panel: remember the key so a still-streaming turn
@@ -990,11 +1001,13 @@ final class ChatViewModel {
 
     private struct PersistedTurn {
         let assistant: ChatMessageRecord
+        /// The owner message of this turn and whether this turn wrote it (a
+        /// retry reuses the old one).
+        let userID: Int64
+        let wroteUser: Bool
         /// The parent of the owner message actually written: `historyTipID`,
         /// or the empty reply added under a legacy unanswered question.
         let historyTipID: Int64?
-        /// The thread tip a `--resume`d session last saw.
-        let seenTipID: Int64?
     }
 
     /// `startTurn` for a regenerate or an edit, which `isStartingTurn`
@@ -1014,8 +1027,10 @@ final class ChatViewModel {
     private func startTurn(_ plan: TurnPlan) async -> Bool {
         let config = sessionConfig(conversationID: plan.conversationID)
         let turnID = makeTurnID()
-        // An unreadable check only costs a replay, which is always correct.
-        let resumeIsContinuous = (try? storedSessionSawTip(plan.conversationID)) ?? false
+        // A stopped or cut reply's last save is queued on its driver: it lands
+        // before this turn's rows, so the next session's replay of the history
+        // carries it (sessions never resume, #604 G11).
+        await pool.client(for: plan.conversationID)?.driver.writesSettled()
         let persisted: PersistedTurn
         do {
             // CHAT-01: the owner's text is on disk before anything is sent.
@@ -1032,9 +1047,6 @@ final class ChatViewModel {
             reload()
         }
         let client = pool.session(for: plan.conversationID, config: config)
-        client.adoptInitialContinuity(resumeIsContinuous
-            ? ChatContinuity.initialLeaf(resumeSessionID: config.resumeSessionID, activeLeafID: persisted.seenTipID)
-            : nil)
         let replay = plan.forceReplay
             || ChatContinuity.replayNeeded(historyTipID: persisted.historyTipID, continuousLeafID: client.continuousLeafID)
         let command = ChatTurnCommand(
@@ -1043,6 +1055,10 @@ final class ChatViewModel {
             attachments: plan.attachments.map { ChatCommandAttachment(path: $0.path, mime: $0.mime, name: $0.name) },
             replay: replay)
         client.startTurn(ChatTurnRequest(command: command, assistantMessageID: persisted.assistant.id))
+        // Remember gets the owner's typed words, never the skill/REFERENCED lines.
+        if persisted.wroteUser {
+            onOwnerMessageStored?(ChatTurnComposer.displayParts(plan.userText).body, plan.conversationID, persisted.userID)
+        }
         reloadConversations()
         return true
     }
@@ -1050,17 +1066,14 @@ final class ChatViewModel {
     private func persistTurnStart(
         _ plan: TurnPlan, turnID: String, config: ChatSessionConfig
     ) async throws -> PersistedTurn {
-        let seenTip = thread.last?.message.id
-        return try await write { db in
+        try await write { db in
             var historyTip = plan.historyTipID
-            var answeredTip: Int64?
             let userID: Int64
             if let reuse = plan.reuseUserMessageID {
                 userID = reuse
             } else {
                 if let tip = historyTip, let placeholder = try Self.answerIfOwnerMessage(db, messageID: tip, config: config) {
                     historyTip = placeholder
-                    answeredTip = placeholder
                 }
                 userID = try ChatTreeQueries.insertUser(db, conversationID: plan.conversationID, parentID: historyTip,
                                                         text: plan.userText, turnID: turnID).id
@@ -1074,7 +1087,8 @@ final class ChatViewModel {
             let assistant = try ChatTreeQueries.insertAssistant(db, conversationID: plan.conversationID, parentID: userID,
                                                                 turnID: turnID, provider: config.provider,
                                                                 model: config.model ?? "")
-            return PersistedTurn(assistant: assistant, historyTipID: historyTip, seenTipID: answeredTip ?? seenTip)
+            return PersistedTurn(assistant: assistant, userID: userID, wroteUser: plan.reuseUserMessageID == nil,
+                                 historyTipID: historyTip)
         }
     }
 
@@ -1092,28 +1106,12 @@ final class ChatViewModel {
                                                    turnID: tip.turnID, provider: config.provider, model: "").id
     }
 
-    /// Whether a stored claude session (`--resume`) has seen the current
-    /// thread tip: only when that tip is the conversation's newest message
-    /// and no other provider wrote it — the session holds exactly the branch
-    /// of the last turn it ran, so after a variant switch or a codex turn it
-    /// must replay instead. The tip must also be a reply that provably
-    /// reached the provider: an `error` row, an empty `partial` (a turn
-    /// stopped or cut before any text) or an unanswered owner message may
-    /// never have been sent, and resuming past it would lose the question.
-    private func storedSessionSawTip(_ conversationID: Int64) throws -> Bool {
-        guard let tip = thread.last?.message, tip.isAssistant,
-              tip.status == "complete" || (tip.status == "partial" && !tip.text.isEmpty) else { return false }
-        let newest = try dbManager.dbPool.read { db in try ChatTreeQueries.newestMessage(db, conversationID: conversationID) }
-        guard let newest, newest.id == tip.id else { return false }
-        return newest.provider == nil || newest.provider == AIProvider.claude.rawValue
-    }
-
     private func sessionConfig(conversationID id: Int64) -> ChatSessionConfig {
-        // Only claude sessions resume; codex/ollama replay every turn (spec §1.1).
-        let resume = selectedProvider == .claude ? currentConversation?.sessionID : nil
-        return ChatSessionConfig(conversationID: id, provider: selectedProvider.rawValue,
-                                 model: selectedModel.isEmpty ? nil : selectedModel, resumeSessionID: resume,
-                                 projectID: currentConversation?.projectID)
+        // No provider resumes a stored session: a new session replays the
+        // history from the database (#604 G11).
+        ChatSessionConfig(conversationID: id, provider: selectedProvider.rawValue,
+                          model: selectedModel.isEmpty ? nil : selectedModel,
+                          projectID: currentConversation?.projectID)
     }
 
     /// A conversation remembers the provider/model it last ran with; a new
@@ -1127,8 +1125,8 @@ final class ChatViewModel {
     }
 
     /// The live process was spawned for the old provider/model: close it; the
-    /// next turn spawns a matching one (Claude keeps `--resume`, the others
-    /// replay). Never mid-turn — the picker is disabled while streaming.
+    /// next turn spawns a matching one, which replays the history. Never
+    /// mid-turn — the picker is disabled while streaming.
     private func recycleSession() {
         guard !applyingConversationSettings, !isStreaming, !isFinishingTurn, let id = conversationID else { return }
         pool.close(conversationID: id)

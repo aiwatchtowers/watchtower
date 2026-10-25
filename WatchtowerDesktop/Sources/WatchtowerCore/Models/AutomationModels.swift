@@ -45,6 +45,12 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         case personal, workbench
     }
 
+    /// Who wrote the recipe (migration 00150): the owner, or the app (a
+    /// shipped built-in, `builtin_id` set). Twin: Go `db.Automation.Origin`.
+    package enum Origin: String, Sendable {
+        case owner, builtin
+    }
+
     package let id: Int64
     package let slug: String
     package let scope: Scope
@@ -72,6 +78,16 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
     /// The daemon turned it off by itself (a runaway script, #584); "" / nil otherwise.
     package let disabledReason: String
     package let disabledAt: Date?
+    /// Twins: Go `db.Automation` `Origin`, `BuiltinID`, `Overridden`,
+    /// `BuiltinBaseHash` (migration 00150). `overridden`: the owner's copy
+    /// replaces the shipped text; `builtinBaseHash`: the shipped content hash
+    /// that copy was made from ("" when not overridden).
+    package let origin: Origin
+    package let builtinID: String?
+    package let overridden: Bool
+    package let builtinBaseHash: String
+
+    package var isBuiltin: Bool { origin == .builtin }
 
     package init(
         id: Int64,
@@ -99,7 +115,11 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         nextRunAt: Date? = nil,
         removedAt: Date? = nil,
         disabledReason: String = "",
-        disabledAt: Date? = nil
+        disabledAt: Date? = nil,
+        origin: Origin = .owner,
+        builtinID: String? = nil,
+        overridden: Bool = false,
+        builtinBaseHash: String = ""
     ) {
         self.id = id
         self.slug = slug
@@ -127,6 +147,10 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         self.removedAt = removedAt
         self.disabledReason = disabledReason
         self.disabledAt = disabledAt
+        self.origin = origin
+        self.builtinID = builtinID
+        self.overridden = overridden
+        self.builtinBaseHash = builtinBaseHash
     }
 
     package init(row: Row) throws {
@@ -157,6 +181,11 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         removedAt = AutomationDates.parse(row["removed_at"])
         disabledReason = row["disabled_reason"] ?? ""
         disabledAt = AutomationDates.parse(row["disabled_at"])
+        // The CHECK admits only these two; a schema before 00150 has no column.
+        origin = Origin(rawValue: row["origin"] ?? "") ?? .owner
+        builtinID = row["builtin_id"]
+        overridden = row["overridden"] ?? false
+        builtinBaseHash = row["builtin_base_hash"] ?? ""
     }
 
     /// "Needs your confirmation" (spec §2.5): a parsed, present recipe whose
@@ -206,7 +235,10 @@ package enum AutomationRunStatus: String, Sendable {
     }
 }
 
-/// One run (`automation_runs`, spec §9.2).
+/// One run (`automation_runs`, spec §9.2). `trigger` is the column as
+/// written: `schedule`, `catch_up`, `button`, `event`, `manual`, `dry_run`,
+/// `reply`, or `sync` (a built-in's run at its slot in the daemon's sync
+/// cycle, twin of Go `db.TriggerSync`).
 package struct AutomationRun: FetchableRecord, Identifiable, Equatable, Sendable {
     package let id: Int64
     package let automationID: Int64
@@ -434,7 +466,10 @@ package struct AutomationOutput: FetchableRecord, Identifiable, Equatable, Senda
     }
 }
 
-/// An unread `kind='inbox'` output as the Inbox action strip shows it.
+/// An open `kind='inbox'` output (neither done nor dismissed) as the Inbox
+/// shows it: read or unread, with its link, its actions (`actions_json`,
+/// decoded by the view), the button the owner pressed and its run, and the
+/// recipe's state now (a press needs a runnable recipe).
 package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
     package let id: Int64
     package let automationID: Int64
@@ -444,6 +479,20 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
     package let body: String
     package let priority: String
     package let createdAt: Date
+    package let link: String
+    package let actionsJSON: String
+    package let readAt: Date?
+    package let pressedAction: Int?
+    package let pressedRunID: Int64?
+    /// The automation's `project_id`: nil for a personal recipe.
+    package let workbenchID: Int64?
+    package let recipeState: AutomationHeaderButton.State
+    /// The recipe's file is gone (`removed_at`): its card stays, its Reply
+    /// buttons cannot send.
+    package let recipeRemoved: Bool
+
+    /// The badge and the unread dot: never opened.
+    package var isUnread: Bool { readAt == nil }
 
     package init(
         id: Int64,
@@ -453,7 +502,15 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
         title: String,
         body: String,
         priority: String,
-        createdAt: Date
+        createdAt: Date,
+        link: String = "",
+        actionsJSON: String = "[]",
+        readAt: Date? = nil,
+        pressedAction: Int? = nil,
+        pressedRunID: Int64? = nil,
+        workbenchID: Int64? = nil,
+        recipeState: AutomationHeaderButton.State = .runnable,
+        recipeRemoved: Bool = false
     ) {
         self.id = id
         self.automationID = automationID
@@ -463,6 +520,14 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
         self.body = body
         self.priority = priority
         self.createdAt = createdAt
+        self.link = link
+        self.actionsJSON = actionsJSON
+        self.readAt = readAt
+        self.pressedAction = pressedAction
+        self.pressedRunID = pressedRunID
+        self.workbenchID = workbenchID
+        self.recipeState = recipeState
+        self.recipeRemoved = recipeRemoved
     }
 }
 
@@ -607,8 +672,15 @@ package struct AutomationHeaderButton: Identifiable, Equatable, Sendable {
     /// A parse error first (nothing else about the recipe is known), then
     /// needs confirmation, then disabled — the list badges' order.
     package static func state(of automation: Automation) -> State {
-        if !automation.parseError.isEmpty { return .parseError }
-        if automation.needsConfirmation { return .needsConfirmation }
-        return automation.isRunnable ? .runnable : .disabled
+        state(parseError: automation.parseError, needsConfirmation: automation.needsConfirmation,
+              runnable: automation.isRunnable)
+    }
+
+    /// The precedence `state(of:)` applies, for a read that has only the
+    /// three facts (the Inbox cards' query).
+    package static func state(parseError: String, needsConfirmation: Bool, runnable: Bool) -> State {
+        if !parseError.isEmpty { return .parseError }
+        if needsConfirmation { return .needsConfirmation }
+        return runnable ? .runnable : .disabled
     }
 }

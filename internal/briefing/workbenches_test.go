@@ -173,7 +173,7 @@ func TestGetPrompt_CustomizedTemplateWithOldVerbCountFallsBackToDefault(t *testi
 	seedWorkbenchTarget(t, d, pid, 0, "Payments feature", "in_progress", time.Now().UTC().Format("2006-01-02T15:04:05Z"))
 
 	const sentinel = "SENTINEL-PRE-V8-BRIEFING-7C21"
-	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.BriefingDaily])
 	require.Equal(t, 17, verbs, "v12 carries 17 verbs (v8–v11 carried 16)")
 	old := sentinel + "\n" + strings.Repeat("%s\n", verbs-1)
 
@@ -196,7 +196,7 @@ func TestGetPrompt_CustomizedTemplateWithOldVerbCountFallsBackToDefault(t *testi
 }
 
 func TestCountVerbs_IgnoresEscapedPercent(t *testing.T) {
-	assert.Equal(t, 2, countVerbs("a %s b %s c 100%%s"))
+	assert.Equal(t, 2, prompts.CountVerbs("a %s b %s c 100%%s"))
 }
 
 func TestValidateIDs_ProjectSourceMustBeShown(t *testing.T) {
@@ -224,7 +224,7 @@ func TestBriefingDailyV9_WorkbenchesHeaderSameVerbsLegacySourceType(t *testing.T
 	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.BriefingDaily], 9, "the reworded template must auto-upgrade stored v8 rows")
 	assert.Contains(t, tmpl, "\n=== WORKBENCHES ===\n%s\n")
 	assert.NotContains(t, tmpl, "=== PROJECTS ===")
-	assert.Equal(t, 17, countVerbs(tmpl), "v9 kept v8's 16 verbs; v12 added FROM YOUR AUTOMATIONS")
+	assert.Equal(t, 17, prompts.CountVerbs(tmpl), "v9 kept v8's 16 verbs; v12 added FROM YOUR AUTOMATIONS")
 	assert.Contains(t, tmpl, `source_type="project"`)
 	assert.Contains(t, tmpl, noWorkbenchActivity, "the placeholder the template names is the one rendered")
 }

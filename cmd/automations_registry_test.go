@@ -134,7 +134,7 @@ func capabilityParses(entry string) bool {
 // run sees: its backends use buildAutomationRegistry, memory tools included.
 func TestAutomationAuthoringDeps_UseTheAutomationRegistry(t *testing.T) {
 	cfg, database := newAutomationRegistryEnv(t)
-	deps := automationAuthoringDeps(cfg, database)
+	deps := automationAuthoringDeps(cfg, database, nil)
 	assert.Equal(t, cfg.WorkspaceDir(), deps.WorkspaceDir)
 	b := deps.Backends()
 	require.NotNil(t, b.Generator)
@@ -185,7 +185,7 @@ func TestAutomationAuthoringDeps_BackendsCarryMCPAndAgent(t *testing.T) {
 	cfg, err := config.Load(fakeModelConfig(t, t.TempDir(), "claude", "/usr/bin/false"))
 	require.NoError(t, err)
 
-	b := automationAuthoringDeps(cfg, nil).Backends()
+	b := automationAuthoringDeps(cfg, nil, nil).Backends()
 
 	assert.NotNil(t, b.Generator)
 	assert.NotNil(t, b.Registry)
@@ -200,4 +200,16 @@ func TestAutomationAuthoringDeps_BackendsCarryMCPAndAgent(t *testing.T) {
 			assert.NotContains(t, agentEnvMarkers, name)
 		}
 	}
+}
+
+// READ-01: the registry draft_automation's dry run builds per call spends the
+// calling registry's read budget, not a fresh one.
+func TestRead01_DraftDryRunSpendsTheCallersBudget(t *testing.T) {
+	cfg, database := newAutomationRegistryEnv(t)
+	caller := tools.New(database)
+	caller.SetReadLimits(tools.ReadLimits{}) // spent: every read refused
+	reg, ok := automationAuthoringDeps(cfg, database, caller).Backends().Registry.(*tools.Registry)
+	require.True(t, ok)
+	err := reg.ReadExternal(tools.Binding{ConversationID: 1}, "mcp:acme/list", func() (int, error) { return 0, nil })
+	require.ErrorIs(t, err, tools.ErrReadLimit)
 }

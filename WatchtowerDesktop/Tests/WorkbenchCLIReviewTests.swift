@@ -51,7 +51,7 @@ final class WorkbenchCLIReviewTests: XCTestCase {
         XCTAssertEqual(env.diff?.files.first?.newBlob, "blob")
     }
 
-    func testFileSendAndContextBuildArgs() async throws {
+    func testFileSendApproveAndContextBuildArgs() async throws {
         let runner = RecordingCLIRunner(output: #"{"ok":true}"#)
         let cli = WorkbenchCLI(runner: runner)
         _ = try await cli.reviewFile(projectID: 1, roundID: 7, path: "a b.go", oldPath: nil, since: false)
@@ -61,6 +61,10 @@ final class WorkbenchCLIReviewTests: XCTestCase {
                                          "--old-path", "old.go", "--since", "--json"])
         _ = try await cli.reviewSend(projectID: 1, roundID: 7)
         XCTAssertEqual(runner.lastArgs, ["workbench", "review", "send", "--workbench", "1", "--round", "7", "--json"])
+        _ = try await cli.reviewApprove(projectID: 1, roundID: 7, resolveOpen: false)
+        XCTAssertEqual(runner.lastArgs, ["workbench", "review", "approve", "--workbench", "1", "--round", "7", "--json"])
+        _ = try await cli.reviewApprove(projectID: 1, roundID: 7, resolveOpen: true)
+        XCTAssertEqual(runner.lastArgs, ["workbench", "review", "approve", "--workbench", "1", "--round", "7", "--resolve-open", "--json"])
         _ = try await cli.reviewContext(projectID: 1, sessionID: 4)
         XCTAssertEqual(runner.lastArgs, ["workbench", "review", "context", "--workbench", "1", "--session", "4", "--json"])
     }

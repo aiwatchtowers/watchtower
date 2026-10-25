@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	goslack "github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -89,6 +88,14 @@ func testMux() *http.ServeMux {
 
 func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestrator, *httptest.Server) {
 	t.Helper()
+	orch, srv, _ := newTestOrchestratorWithClient(t, syncCount)
+	return orch, srv
+}
+
+// newTestOrchestratorWithClient is newTestOrchestrator plus the orchestrator's
+// Slack client, so a test can make the calls a sync pass would.
+func newTestOrchestratorWithClient(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestrator, *httptest.Server, *watchtowerslack.Client) {
+	t.Helper()
 
 	mux := testMux()
 
@@ -114,8 +121,7 @@ func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestra
 	srv := httptest.NewServer(countingMux)
 	t.Cleanup(srv.Close)
 
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	slackClient := watchtowerslack.NewClientWithAPIUnlimited(api)
+	slackClient := watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/")
 
 	cfg := &config.Config{
 		ActiveWorkspace: "test-workspace",
@@ -134,7 +140,7 @@ func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestra
 	orch := sync.NewOrchestrator(database, slackClient, cfg, 1)
 	orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
 
-	return orch, srv
+	return orch, srv, slackClient
 }
 
 func TestDaemon_RunsInitialSync(t *testing.T) {
@@ -195,25 +201,27 @@ func TestDaemon_WakeEventTriggersSync(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{
 			PollInterval: 10 * time.Second, // long so only wake fires, not poll
-			SyncOnWake:   false,            // we inject wake channel manually
+			SyncOnWake:   true,
 		},
 	}
+	shortenWakeSettle(t)
 
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	// Inject a fake wake channel.
-	wakeCh := make(chan struct{}, 1)
+	wakeCh := make(chan time.Duration, 1)
 	d.wakeCh = wakeCh
 
-	// Send the wake signal once the initial sync is observed, then wait for
-	// the wake-triggered one: initial + wake = at least 2.
+	// Send one wake once the initial sync is observed, then wait for the
+	// wake-triggered one: initial + wake = at least 2. Only one: a wake that
+	// lands mid-cycle cancels that cycle, so a stream of them would cancel
+	// every cycle before it got anywhere.
+	woke := false
 	err := runDaemonUntil(t, d, func() bool {
-		if syncCount.Load() >= 1 {
-			select {
-			case wakeCh <- struct{}{}:
-			default:
-			}
+		if !woke && syncCount.Load() >= 1 {
+			wakeCh <- time.Hour
+			woke = true
 		}
 		return syncCount.Load() >= 2
 	})
@@ -472,8 +480,7 @@ func TestPhaseSlackSyncRevokedTokenClassification(t *testing.T) {
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	orch := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api),
+	orch := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"),
 		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 1)
 	orch.SetLogger(log.New(os.Stderr, "[test-revoked] ", 0))
 
@@ -511,8 +518,7 @@ func newStatusTrackingOrchestrator(t *testing.T, mux *http.ServeMux, syncCount *
 	srv := httptest.NewServer(countingMux)
 	t.Cleanup(srv.Close)
 
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	slackClient := watchtowerslack.NewClientWithAPIUnlimited(api)
+	slackClient := watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/")
 
 	orch := sync.NewOrchestrator(database, slackClient, &config.Config{
 		Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1, SyncThreads: false},
@@ -708,7 +714,7 @@ func TestDaemon_AutoMarkReadAfterDigests(t *testing.T) {
 	d.SetDB(database)
 
 	// Call runSync directly (not Run which starts a loop).
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 
 	// Verify digest is now marked as read.
 	digests, err = database.GetDigests(db.DigestFilter{Type: "channel"})
@@ -982,6 +988,8 @@ func (f *fakeDayPlanRunner) AccumulatedUsage() (int, int, float64, int) {
 	return 0, 0, 0, 0
 }
 
+func (f *fakeDayPlanRunner) LastPromptNote() string { return "" }
+
 func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
@@ -1000,7 +1008,7 @@ func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 	}))
 	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
 	require.NoError(t, acctErr)
-	cfg.DayPlan = config.DayPlanConfig{Enabled: true, Hour: 0}
+	cfg.DayPlan = config.DayPlanConfig{Enabled: true}
 
 	fp := &fakeDayPlanRunner{database: database}
 
@@ -1145,7 +1153,7 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 	// Force people pipeline past its 24h throttle.
 	d.lastPeople = time.Time{}
 
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 
 	// phaseSlackSync must have run.
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1), "phaseSlackSync did not run")
@@ -1223,7 +1231,11 @@ func TestDaemon_ClosedTriggerChannelDoesNotSpinSyncs(t *testing.T) {
 		wire func(d *Daemon, ch chan struct{})
 	}{
 		{"trigger", func(d *Daemon, ch chan struct{}) { d.triggerCh = ch }},
-		{"wake", func(d *Daemon, ch chan struct{}) { d.wakeCh = ch }},
+		{"wake", func(d *Daemon, _ chan struct{}) {
+			wake := make(chan time.Duration)
+			close(wake)
+			d.wakeCh = wake
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -1270,6 +1282,90 @@ func TestSyncHeartbeat_PublishesLiveProgress(t *testing.T) {
 	assert.False(t, progress.IsSyncing(time.Now()))
 }
 
+// A heartbeat whose Slack progress moved stamps the cycle's fetch progress,
+// so Sync Now never restarts a long sync that is still moving; a beat with
+// nothing new leaves the stamp, so a stuck one still reads as stalled.
+func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+
+	orch, _ := newTestOrchestrator(t, new(atomic.Int32))
+	d := newDaemon(orch, &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(io.Discard, "", 0))
+	mono := &fakeMono{}
+	d.loopMono = mono.now
+
+	stop := d.startSyncHeartbeat(orch)
+	defer stop()
+	assert.Zero(t, d.fetchStalledFor(), "the first beat stamps the progress")
+
+	mono.advance(time.Minute)
+	time.Sleep(20 * syncHeartbeatInterval) // beats with nothing new
+	assert.Equal(t, time.Minute, d.fetchStalledFor(), "a beat with nothing new leaves the stamp")
+
+	orch.Progress().AddMessages(1)
+	eventually(t, func() bool { return d.fetchStalledFor() == 0 }, "a beat stamping the moved progress")
+}
+
+// The Slack passes that move no Progress counter — the read-state refresh
+// (one conversations.info per channel, minutes at the rate limit), the
+// deletion sweep, the inbox reactions — still make progress: every call
+// Slack answers stamps it, even across a ResetAPIStats, so Sync Now never
+// restarts (and repeated presses never livelock) such a pass.
+func TestSyncHeartbeat_StampsFetchProgressOnAnsweredSlackCalls(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+
+	orch, _, client := newTestOrchestratorWithClient(t, new(atomic.Int32))
+	d := newDaemon(orch, &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(io.Discard, "", 0))
+	mono := &fakeMono{}
+	d.loopMono = mono.now
+
+	stop := d.startSyncHeartbeat(orch)
+	defer stop()
+	snap := orch.Progress().Snapshot()
+	for i := range 3 {
+		mono.advance(manualRestartAfter)
+		_, _ = client.GetChannelReadCursor(context.Background(), "C001") // answered, here with an error
+		client.ResetAPIStats()
+		eventually(t, func() bool { return d.fetchStalledFor() == 0 }, fmt.Sprintf("a beat stamping read-state call %d", i+1))
+	}
+	assert.Equal(t, snap, orch.Progress().Snapshot(), "only API calls moved")
+}
+
+// A Slack sync cancelled by the loop (a sleep, a Sync Now restart) is no sync
+// result: no last_sync.json, whose mtime the Desktop reads as "a sync
+// finished", and no error row in pipeline_runs.
+func TestPhaseSlackSync_CancelledRunWritesNoResult(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	orch, _ := newTestOrchestrator(t, new(atomic.Int32))
+	cfg := &config.Config{
+		ActiveWorkspace: "test-workspace",
+		Workspaces:      map[string]*config.WorkspaceConfig{"test-workspace": {SlackToken: "xoxp-test-token"}},
+	}
+	d := newDaemon(orch, cfg)
+	logs := &lockedLog{}
+	d.SetLogger(log.New(logs, "", 0))
+	d.db = db.OpenTestDB(t)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errCycleSlept)
+	syncErr, _ := d.phaseSlackSync(ctx)
+	require.ErrorIs(t, syncErr, context.Canceled)
+
+	_, err := os.Stat(filepath.Join(cfg.WorkspaceDir(), "last_sync.json"))
+	assert.True(t, os.IsNotExist(err), "a cancelled run writes no last_sync.json")
+	var errMsg string
+	require.NoError(t, d.db.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs WHERE pipeline = 'slack-sync'`).Scan(&errMsg))
+	assert.Empty(t, errMsg, "a cancelled run is no failed run")
+	assert.Equal(t, 1, logs.count("slack sync: stopped by sleep"))
+}
+
 // TestInbox09_RevokedAccountSyncErrorDoesNotFreeze guards INBOX-09's
 // revoked-token carve-out (owner-approved 2026-10-01): a revoked Slack
 // account's sync error does not freeze the shared inbox watermark — it fails
@@ -1289,8 +1385,7 @@ func TestInbox09_RevokedAccountSyncErrorDoesNotFreeze(t *testing.T) {
 	require.NoError(t, err)
 	srv := httptest.NewServer(revokedMux)
 	t.Cleanup(srv.Close)
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	revokedOrch := sync.NewOrchestrator(revokedDB, watchtowerslack.NewClientWithAPIUnlimited(api),
+	revokedOrch := sync.NewOrchestrator(revokedDB, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"),
 		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 1)
 	revokedOrch.SetLogger(log.New(os.Stderr, "[test-revoked] ", 0))
 
@@ -1370,7 +1465,7 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 	}
 
 	d, database := newCycle(slow)
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	wm, err := database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
 	assert.Greater(t, wm, 1000.0, "a clean cycle advances the watermark")
@@ -1378,7 +1473,7 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 		"the watermark stops at the cycle's sync start − 30 min, not at now − 30 min")
 
 	d, database = newCycle(http.NewServeMux()) // every Slack call fails
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	wm, err = database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
 	assert.Equal(t, 1000.0, wm, "a failed account sync freezes the watermark")

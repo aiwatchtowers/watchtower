@@ -46,7 +46,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
-    private var folder: URL!
+    var folder: URL!
     private var processes: [FakeTerminalSession] = []
     private var center: TerminalCenter!
     private var transcripts = true
@@ -78,7 +78,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
+    func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults,
                                       terminalCenter: center)
         vm.titleService = { [weak self] id in
@@ -1365,6 +1365,25 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertTrue(launches.isEmpty)
     }
 
+    /// An agent the organization's policy forbids (#608) is not resumed or
+    /// started fresh: the policy's words are shown, no process starts.
+    func testAResumeOfAForbiddenAgentIsRefused() async throws {
+        let p = try await workbenchWithFolder()
+        let row = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+        vm.managedPolicy = { ManagedPolicy.normalize(["AllowedAIProviders": ["codex"]]) }
+
+        await vm.open(row)
+        XCTAssertEqual(vm.sessionErrors[p], "Could not open the session: "
+            + "policy: AI provider claude is not allowed by your organization (allowed: codex)")
+        await vm.startFresh(row)
+        XCTAssertEqual(vm.sessionErrors[p], "Could not start the session: "
+            + "policy: AI provider claude is not allowed by your organization (allowed: codex)")
+        XCTAssertTrue(launches.isEmpty)
+    }
+
     func testARevealDrillsInAndReplacesAStandaloneTerminal() async throws {
         let p = try await workbenchWithFolder()
         let vm = makeVM()
@@ -2036,5 +2055,40 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
             }
             await Task.yield()
         }
+    }
+
+    // MARK: - Workchat attachment sweep
+
+    /// The launch sweep of pasted Workchat files waits for the session
+    /// host's reattach: a run it adopts keeps its files, however old.
+    func testAttachmentSweepKeepsSessionsTheReattachAdopts() async throws {
+        let p = try await workbenchWithFolder()
+        let adopted = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "adopted", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let root = folder.appendingPathComponent("workchat-attachments", isDirectory: true)
+        let old = Date().addingTimeInterval(-30 * 86_400)
+        for id: Int64 in [adopted.id, 9_999] {
+            let dir = root.appendingPathComponent(String(id), isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let file = dir.appendingPathComponent("old.png")
+            try Data("png".utf8).write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: file.path)
+        }
+        let vm = makeVM()
+        vm.attachmentStore = WorkchatAttachmentStore(root: root)
+        // Stands in for the host's reattach: the run becomes live only then.
+        vm.hostReattach = Task { [center] in
+            await Task.yield()
+            center?.start(adopted, fresh: false)
+        }
+
+        await vm.sweepAttachmentsAfterReattach()
+
+        XCTAssertTrue(center.liveIDs.contains(adopted.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("\(adopted.id)/old.png").path),
+                      "a run adopted by the reattach keeps its files")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("9999").path),
+                       "a session not running loses its old files")
     }
 }

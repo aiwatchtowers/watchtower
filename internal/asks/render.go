@@ -1,6 +1,7 @@
 package asks
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -147,4 +148,22 @@ func renderComments(comments []Comment) string {
 // indent prefixes every line of s.
 func indent(s, prefix string) string {
 	return prefix + strings.ReplaceAll(s, "\n", "\n"+prefix)
+}
+
+// RenderStored is Render over an ask's stored payload and answer JSON: the
+// answer is parsed and checked against its ask first, so a bad row is an
+// error, never a partial text.
+func RenderStored(kind, payloadJSON, answerJSON string) (string, Answer, error) {
+	var p Payload
+	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
+		return "", Answer{}, fmt.Errorf("stored payload: %w", err)
+	}
+	a, err := ParseAnswer([]byte(answerJSON))
+	if err == nil {
+		err = ValidateAnswer(kind, p, a)
+	}
+	if err != nil {
+		return "", Answer{}, fmt.Errorf("stored answer: %w", err)
+	}
+	return Render(kind, p, a), a, nil
 }

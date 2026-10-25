@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -231,7 +232,7 @@ func mcpAutomationOptions(cfg *config.Config, database *db.DB) ([]internalmcp.Se
 	if err != nil {
 		return nil, fmt.Errorf("reading the automation of run %d: %w", runID, err)
 	}
-	r, err := automations.ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), automations.Scope{Kind: automations.ScopeKind(a.Scope), WorkbenchID: a.ProjectID})
+	r, err := automations.ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), automations.ScopeOf(*a))
 	if err != nil {
 		return nil, fmt.Errorf("automation run %d: the recipe does not parse: %w", runID, err)
 	}
@@ -290,6 +291,16 @@ func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64)
 	})}, nil
 }
 
+// mcpProcessSessionKey is this server process's read-budget session:
+// "terminal:<id>" inside a Desktop terminal session (one per agent session),
+// else "pid:<pid>".
+func mcpProcessSessionKey(getenv func(string) string, pid int) string {
+	if id := strings.TrimSpace(getenv(terminalSessionEnv)); id != "" {
+		return "terminal:" + id
+	}
+	return "pid:" + strconv.Itoa(pid)
+}
+
 // mcpAgent reads --agent: empty is "not given" (the comment label falls back
 // to claude-code), anything but an agent kind is refused.
 func mcpAgent(raw string) (agentkind.Kind, error) {
@@ -332,6 +343,9 @@ func runMCP(cmd *cobra.Command, args []string) error {
 
 	opts := []internalmcp.ServerOption{
 		internalmcp.WithSkillsDir(skills.Dir(cfg.WorkspaceDir())),
+		// One read budget per agent session (READ-01): chat and automation
+		// bindings key on their conversation or run, everything else here.
+		internalmcp.WithReadSession(mcpProcessSessionKey(os.Getenv, os.Getpid())),
 	}
 	modeOpts, err := mcpModeOptions(cfg, database, turn, turnFunc)
 	if err != nil {

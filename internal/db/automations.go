@@ -70,13 +70,41 @@ type Automation struct {
 	// by itself (DisableRunawayAutomation); "" / nil otherwise.
 	DisabledReason string
 	DisabledAt     *time.Time
+	// Origin is OriginOwner for a recipe file the owner keeps and
+	// OriginBuiltin for a recipe the app ships (00150); BuiltinID is set
+	// exactly for a built-in. Overridden marks the owner's copy of a
+	// built-in, BuiltinBaseHash the content hash of the shipped text that
+	// copy was made from ("" otherwise).
+	Origin          string
+	BuiltinID       string
+	Overridden      bool
+	BuiltinBaseHash string
 }
 
-// Runnable reports whether the executor may run a: parsed, enabled, its file
-// present, and the owner confirmed exactly the current approval hash.
-func (a Automation) Runnable() bool {
-	return a.ParseError == "" && a.Enabled && a.RemovedAt == nil &&
+// Confirmed reports whether a is parsed, present, and the owner (or the
+// shipped-text confirmation of a built-in) confirmed exactly the current
+// approval hash.
+func (a Automation) Confirmed() bool {
+	return a.ParseError == "" && a.RemovedAt == nil &&
 		a.ConfirmedHash != "" && a.ConfirmedHash == a.ApprovalHash
+}
+
+// Runnable reports whether the executor may run a: confirmed and enabled.
+func (a Automation) Runnable() bool {
+	return a.Confirmed() && a.Enabled
+}
+
+// IsBuiltin reports whether a is a recipe the app ships (or the owner's
+// copy of one).
+func (a Automation) IsBuiltin() bool { return a.Origin == OriginBuiltin }
+
+// RunsAtSlot reports whether a's runs are executed only at a sync-cycle slot
+// by the slot executor, never by the executor's poll: a built-in, or a
+// Personal recipe with a sync trigger (a custom_tracks watch recipe, the
+// only sync slot a Personal recipe may name). Every slot-run check uses this
+// predicate, not IsBuiltin.
+func (a Automation) RunsAtSlot() bool {
+	return a.IsBuiltin() || (a.Scope == "personal" && a.TriggerKind == TriggerKindSync)
 }
 
 // runnableAutomationSQL is Runnable() as a predicate over automations.
@@ -86,7 +114,8 @@ const runnableAutomationSQL = `parse_error = '' AND enabled = 1 AND removed_at I
 const automationCols = `id, slug, scope, project_id, path, name, trigger_kind, trigger_spec, missed_policy,
 	concurrency, budget_tokens, budget_minutes, pause_timeout_hours, permissions_json, outputs_json,
 	recipe_text, content_hash, approval_hash, confirmed_hash, parse_error, enabled,
-	last_scheduled_for, next_run_at, removed_at, created_at, updated_at, disabled_reason, disabled_at`
+	last_scheduled_for, next_run_at, removed_at, created_at, updated_at, disabled_reason, disabled_at,
+	origin, builtin_id, overridden, builtin_base_hash`
 
 func scanAutomation(row interface{ Scan(...any) error }) (*Automation, error) {
 	var (
@@ -95,15 +124,16 @@ func scanAutomation(row interface{ Scan(...any) error }) (*Automation, error) {
 		last, next, removed  sql.NullString
 		createdAt, updatedAt string
 		disabledAt           sql.NullString
+		builtinID            sql.NullString
 	)
 	if err := row.Scan(&a.ID, &a.Slug, &a.Scope, &projectID, &a.Path, &a.Name, &a.TriggerKind, &a.TriggerSpec,
 		&a.MissedPolicy, &a.Concurrency, &a.BudgetTokens, &a.BudgetMinutes, &a.PauseTimeoutHours,
 		&a.PermissionsJSON, &a.OutputsJSON, &a.RecipeText, &a.ContentHash, &a.ApprovalHash, &a.ConfirmedHash,
 		&a.ParseError, &a.Enabled, &last, &next, &removed, &createdAt, &updatedAt,
-		&a.DisabledReason, &disabledAt); err != nil {
+		&a.DisabledReason, &disabledAt, &a.Origin, &builtinID, &a.Overridden, &a.BuiltinBaseHash); err != nil {
 		return nil, err
 	}
-	a.ProjectID = projectID.Int64
+	a.ProjectID, a.BuiltinID = projectID.Int64, builtinID.String
 	var err error
 	if a.LastScheduledFor, err = parseAutomationTime(last, "last_scheduled_for"); err != nil {
 		return nil, err
@@ -230,11 +260,12 @@ func (db *DB) GetAutomation(id int64) (*Automation, error) {
 	return a, nil
 }
 
-// GetAutomationBySlug returns the automation of slug in a scope (projectID 0
-// for personal), removed rows included; ErrAutomationNotFound when there is none.
+// GetAutomationBySlug returns the owner automation of slug in a scope
+// (projectID 0 for personal), removed rows included; a built-in row sharing
+// the slug is never returned. ErrAutomationNotFound when there is none.
 func (db *DB) GetAutomationBySlug(scope string, projectID int64, slug string) (*Automation, error) {
 	a, err := scanAutomation(db.QueryRow(`SELECT `+automationCols+` FROM automations
-		WHERE scope = ? AND COALESCE(project_id, 0) = ? AND slug = ?`, scope, projectID, slug))
+		WHERE scope = ? AND COALESCE(project_id, 0) = ? AND slug = ? AND origin = 'owner'`, scope, projectID, slug))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("automation %s/%d/%s: %w", scope, projectID, slug, ErrAutomationNotFound)
 	}
@@ -301,7 +332,8 @@ func (db *DB) ListAutomations(f AutomationFilter) ([]Automation, error) {
 // MarkAutomationsRemovedExcept stamps removed_at = now on every row of the
 // scope (projectID 0 for personal) whose path is not in keepPaths and that is
 // not removed already, and returns how many it stamped. An empty keepPaths
-// removes the whole scope (the folder is empty or gone).
+// removes the whole scope (the folder is empty or gone). Only owner rows are
+// considered: a built-in row has no file in the folder.
 func (db *DB) MarkAutomationsRemovedExcept(scope string, projectID int64, keepPaths []string, now time.Time) (int, error) {
 	if keepPaths == nil {
 		keepPaths = []string{}
@@ -312,7 +344,7 @@ func (db *DB) MarkAutomationsRemovedExcept(scope string, projectID int64, keepPa
 	}
 	stamp := formatAutomationTime(now)
 	res, err := db.Exec(`UPDATE automations SET removed_at = ?, updated_at = ?
-		WHERE scope = ? AND COALESCE(project_id, 0) = ? AND removed_at IS NULL
+		WHERE scope = ? AND COALESCE(project_id, 0) = ? AND removed_at IS NULL AND origin = 'owner'
 		  AND path NOT IN (SELECT value FROM json_each(?))`,
 		stamp, stamp, scope, projectID, string(keep))
 	if err != nil {

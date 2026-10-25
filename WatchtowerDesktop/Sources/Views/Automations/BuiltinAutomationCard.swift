@@ -1,0 +1,397 @@
+import SwiftUI
+import WatchtowerCore
+
+/// What a built-in's card hands back to the app: its on/off and When
+/// fields live outside the recipe (the feature keys and the config file,
+/// spec §5.2/§5.4), so the app writes them. Each returns why it did not
+/// land, nil on success.
+struct BuiltinCardActions {
+    /// Turn On / Turn Off: the built-in's feature ids through the feature
+    /// manager, then one daemon restart (the FEAT-03 hooks run inside
+    /// `features enable`).
+    var setEnabled: (_ featureIDs: [String], _ on: Bool) async -> String? = { _, _ in nil }
+    /// The When fields' **Save**: config keys → text, then one daemon restart.
+    var saveParameters: (_ values: [String: String]) async -> String? = { _ in nil }
+    /// The Result box's **Show in Inbox**: the Inbox on that filter. Nil hides the link.
+    var openInbox: ((InboxFilter) -> Void)?
+}
+
+/// A built-in automation's card (spec §5, C2 Task 10): the name with
+/// **Run Now**, **Edit in Chat**, **Turn Off** / **Turn On** and **⋯**
+/// (Reset to built-in, only for the owner's copy, through an inline confirm
+/// row); the "Built-in version updated" banner with **Show changes** and
+/// **Reset to built-in**; the unconfirmed-copy line; then **When** (its
+/// fields edited in place, saved outside the recipe and its hash),
+/// **Reads** / **Does** / **Result** (with **Show in Inbox**) and **Costs**. No Delete: a built-in is turned off.
+struct BuiltinAutomationCard: View {
+    let model: BuiltinAutomationCardModel
+    /// The feature manager is applying a change (here or in Settings).
+    var isApplyingFeatures = false
+    var actions = BuiltinCardActions()
+    /// **Edit in Chat**: the editor panel on this automation.
+    let onEdit: () -> Void
+    /// After a Turn On/Off or a When save: the list re-reads the row.
+    var onChanged: () -> Void = {}
+    /// **New reaction automation** on the Reactions card: the template
+    /// panel on `on-reaction`. Nil hides the button.
+    var onNewReactionAutomation: (() -> Void)?
+    /// A `dictionary` row's editor (the Reactions built-in's emoji table).
+    var reactionDictionary: ReactionDictionaryViewModel?
+
+    static let resetConfirmLine = "Reset — your changes are lost"
+    static let unconfirmedLine = "Your edited copy is not confirmed yet, so it does not run."
+    static let runQueuedLine = "Runs at the next sync"
+    static let updatedLine = "Built-in version updated"
+    static let newReactionAutomation = "New reaction automation"
+    /// The Reactions built-in's id (twin: Go `builtin` registry).
+    static let reactionsID = "reactions"
+
+    private var automation: Automation { model.automation }
+    private var detail: BuiltinAutomationDetail? { model.detail }
+    /// A stepper's top: a count field never needs more.
+    static let countLimit = 20
+
+    private var isOn: Bool { detail?.enabled ?? automation.enabled }
+    private var isBusy: Bool { model.isWorking || isApplyingFeatures }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.page) {
+                header
+                lede
+                notes
+                if model.resetConfirming { resetConfirmRow }
+                if model.updateBanner { updateBanner }
+                stateLine
+                if let detail { sections(detail) }
+            }
+            .padding(.horizontal, Spacing.page + Spacing.regular)
+            .padding(.vertical, Spacing.wide)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task(id: automation.contentHash + automation.confirmedHash) { await model.load() }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: Spacing.medium) {
+            // The When sentence is the When box's headline, not repeated here.
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                Text(automation.name.isEmpty ? automation.slug : automation.name)
+                    .font(.title3.weight(.semibold))
+                    .textSelection(.enabled)
+                Chip(text: AutomationListSections.builtinTitle, color: Color.accentColor)
+                Chip(text: isOn ? "On" : "Off", color: isOn ? Tone.success : Color.secondary)
+            }
+            Spacer(minLength: Spacing.medium)
+            buttonRow
+        }
+    }
+
+    @ViewBuilder private var lede: some View {
+        if !model.lede.isEmpty {
+            Text(model.lede)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var buttonRow: some View {
+        HStack(spacing: Spacing.regular) {
+            if isBusy {
+                ProgressView().controlSize(.small)
+            }
+            if detail?.runNow == true {
+                Button("Run Now") { Task { await model.runNow() } }
+                    .buttonStyle(.kitPrimary)
+                    .disabled(!isOn || isBusy)
+                    .help(isOn ? "Run it at the next sync" : "Turn it on first")
+            }
+            Button("Edit in Chat", action: onEdit)
+                .buttonStyle(.kitSecondary)
+            Button(isOn ? "Turn Off" : "Turn On") {
+                let on = !isOn
+                Task {
+                    await model.setEnabled(on, actions.setEnabled)
+                    onChanged()
+                }
+            }
+                .buttonStyle(.kitSecondary)
+                .disabled(isBusy || detail?.featureIDs.isEmpty != false)
+            if detail?.overridden ?? automation.overridden {
+                Menu {
+                    Button("Reset to built-in") { model.beginReset() }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.button)
+                .buttonStyle(.kitIcon(isOn: false))
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(isBusy)
+                .help("More actions")
+                .accessibilityLabel("More actions")
+            }
+        }
+        .controlSize(.small)
+    }
+
+    /// Run Now's queued note and why the last press did not land.
+    @ViewBuilder private var notes: some View {
+        if model.runQueued {
+            Label(Self.runQueuedLine, systemImage: "clock.arrow.circlepath")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        ForEach([model.loadError, model.actionError].compactMap { $0 }, id: \.self) { message in
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(Tone.warning)
+                .textSelection(.enabled)
+        }
+    }
+
+    // MARK: - Reset, the update banner, the copy's state
+
+    private var resetConfirmRow: some View {
+        HStack(spacing: Spacing.cozy) {
+            Image(systemName: "arrow.uturn.backward")
+                .foregroundStyle(Tone.warning)
+            Text(Self.resetConfirmLine)
+                .font(.callout.weight(.semibold))
+            Spacer()
+            Button("Cancel") { model.cancelReset() }
+                .buttonStyle(.kitQuiet)
+            Button("Reset") {
+                Task {
+                    await model.confirmReset()
+                    onChanged()
+                }
+            }
+            .buttonStyle(.kitDestructive)
+            .disabled(model.isWorking)
+        }
+        .controlSize(.small)
+        .padding(Spacing.cozy)
+        .card()
+    }
+
+    private var updateBanner: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack(spacing: Spacing.cozy) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(Color.accentColor)
+                Text(Self.updatedLine)
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Button(model.showingChanges ? "Hide changes" : "Show changes") { model.showingChanges.toggle() }
+                    .buttonStyle(.kitQuiet)
+                Button("Reset to built-in") { model.beginReset() }
+                    .buttonStyle(.kitSecondary)
+                    .disabled(model.resetConfirming || isBusy)
+            }
+            .controlSize(.small)
+            if let changes = model.changes {
+                AutomationDiffLines(diff: changes)
+            }
+        }
+        .padding(Spacing.cozy)
+        .card()
+    }
+
+    @ViewBuilder private var stateLine: some View {
+        switch model.cardState {
+        case .ownCopyUnconfirmed:
+            Label(Self.unconfirmedLine, systemImage: "checkmark.shield")
+                .font(.callout)
+                .foregroundStyle(Tone.warning)
+        case let .copyError(message):
+            Label(message, systemImage: "exclamationmark.octagon")
+                .font(.callout)
+                .foregroundStyle(Tone.error)
+                .textSelection(.enabled)
+        case .shipped, .ownCopyConfirmed:
+            EmptyView()
+        }
+    }
+
+    // MARK: - When, Reads, Sends, Costs
+
+    private func sections(_ detail: BuiltinAutomationDetail) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            HStack(alignment: .top, spacing: Spacing.medium) {
+                box(title: "Reads", systemImage: "doc.text.magnifyingglass") {
+                    lines(detail.reads)
+                }
+                box(title: "Does", systemImage: "gearshape") {
+                    lines(detail.does)
+                }
+                box(title: "Result", systemImage: "tray.and.arrow.down") {
+                    lines(detail.sends)
+                    if let filter = detail.resultFilter, let openInbox = actions.openInbox {
+                        Button("Show in Inbox") { openInbox(filter) }
+                            .buttonStyle(.kitQuiet)
+                            .controlSize(.small)
+                    }
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            box(title: "When", systemImage: "clock") {
+                Text(detail.when).fontWeight(.semibold)
+                parameterFields(detail.parameters.filter { $0.kind != .dictionary })
+                dictionaries(detail.parameters.filter { $0.kind == .dictionary })
+                if detail.id == Self.reactionsID, let onNewReactionAutomation {
+                    Button(action: onNewReactionAutomation) {
+                        Label(Self.newReactionAutomation, systemImage: "plus")
+                    }
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+                    .help("An automation of your own that runs when you react with an emoji")
+                }
+            }
+            box(title: "Costs", systemImage: "dollarsign.circle") {
+                Text(model.costsLine)
+            }
+        }
+        .font(.callout)
+    }
+
+    @ViewBuilder
+    private func lines(_ lines: [String]) -> some View {
+        if lines.isEmpty {
+            Text("Nothing").foregroundStyle(.secondary)
+        }
+        ForEach(lines, id: \.self) { Text($0).fixedSize(horizontal: false, vertical: true) }
+    }
+
+    /// A `dictionary` row edits its table in place; only the reaction
+    /// dictionary exists.
+    @ViewBuilder
+    private func dictionaries(_ parameters: [BuiltinAutomationDetail.Parameter]) -> some View {
+        ForEach(parameters, id: \.key) { parameter in
+            if let reactionDictionary {
+                ReactionDictionaryEditor(vm: reactionDictionary, title: parameter.label)
+            } else {
+                Text("Loading…").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func parameterFields(_ parameters: [BuiltinAutomationDetail.Parameter]) -> some View {
+        if !parameters.isEmpty {
+            // The times on one row, the counts on the next.
+            let times = parameters.filter { $0.kind != .count }
+            let counts = parameters.filter { $0.kind == .count }
+            ForEach([times, counts].filter { !$0.isEmpty }, id: \.first?.key) { row in
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    ForEach(row, id: \.key) { parameter in
+                        // The field carries the label for VoiceOver; the text is for the eye.
+                        Text(parameter.label)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        field(parameter)
+                    }
+                }
+                .controlSize(.small)
+            }
+            if let invalid = model.invalidParameter {
+                Text(invalid).font(.caption).foregroundStyle(Tone.error)
+            }
+            if model.parametersChanged {
+                HStack(spacing: Spacing.regular) {
+                    Button("Save") {
+                        Task {
+                            await model.saveParameters(actions.saveParameters)
+                            onChanged()
+                        }
+                    }
+                    .buttonStyle(.kitSecondary)
+                    .disabled(model.invalidParameter != nil || isBusy)
+                    Button("Cancel") { model.parameterEdits = [:] }
+                        .buttonStyle(.kitQuiet)
+                        .disabled(model.isWorking)
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func field(_ parameter: BuiltinAutomationDetail.Parameter) -> some View {
+        let text = Binding(
+            get: { model.parameterEdits[parameter.key] ?? parameter.value },
+            set: { model.parameterEdits[parameter.key] = $0 == parameter.value ? nil : $0 }
+        )
+        switch parameter.kind {
+        case .hour:
+            Picker(parameter.label, selection: text) {
+                ForEach(0..<24, id: \.self) { hour in
+                    Text(String(format: "%02d:00", hour)).tag(String(hour))
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityLabel(parameter.label)
+            .disabled(model.isWorking)
+        case .count:
+            let count = Binding(
+                get: { Int(text.wrappedValue) ?? 0 },
+                set: { text.wrappedValue = String($0) }
+            )
+            HStack(spacing: Spacing.small) {
+                Text(text.wrappedValue)
+                    .monospacedDigit()
+                    .accessibilityHidden(true)
+                Stepper(parameter.label, value: count, in: 0...Self.countLimit)
+                    .labelsHidden()
+                    .accessibilityLabel(parameter.label)
+                    .accessibilityValue(text.wrappedValue)
+            }
+            .disabled(model.isWorking)
+        case .clock:
+            TextField(parameter.label, text: text, prompt: Text("HH:MM"))
+                .textFieldStyle(.kit)
+                .frame(width: 64)
+                .accessibilityLabel(parameter.label)
+                .disabled(model.isWorking)
+        case .interval:
+            // "Every" (the label) "6 hours", 1–48; a stored value outside shows clamped.
+            let range = BuiltinAutomationCardModel.intervalRange
+            let hours = Binding(
+                get: { min(max(Int(text.wrappedValue) ?? range.lowerBound, range.lowerBound), range.upperBound) },
+                set: { text.wrappedValue = String($0) }
+            )
+            HStack(spacing: Spacing.small) {
+                Text(Self.hoursText(String(hours.wrappedValue)))
+                    .monospacedDigit()
+                    .accessibilityHidden(true)
+                Stepper(parameter.label, value: hours, in: range)
+                    .labelsHidden()
+                    .accessibilityLabel(parameter.label)
+                    .accessibilityValue(Self.hoursText(String(hours.wrappedValue)))
+            }
+            .disabled(model.isWorking)
+        case .dictionary:
+            // Edited by its own editor below the fields (`dictionaries`).
+            EmptyView()
+        }
+    }
+
+    static func hoursText(_ value: String) -> String {
+        value == "1" ? "1 hour" : "\(value) hours"
+    }
+
+    private func box(title: String, systemImage: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            SectionHeader(title: title, systemImage: systemImage)
+            content()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(Spacing.medium)
+        .card()
+    }
+}

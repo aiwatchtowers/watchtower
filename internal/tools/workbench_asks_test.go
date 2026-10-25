@@ -27,8 +27,14 @@ import (
 // from env instead of the process environment.
 func askRegistry(t *testing.T, d *db.DB, env string) *Registry {
 	t.Helper()
+	return askRegistryWith(t, d, env, nil)
+}
+
+// askRegistryWith is askRegistry with a spec-review launcher installed.
+func askRegistryWith(t *testing.T, d *db.DB, env string, launch SpecReviewLauncher) *Registry {
+	t.Helper()
 	reg := New(d)
-	for _, tool := range append(workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return env }),
+	for _, tool := range append(workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return env }, launch),
 		NewListTargets(), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
@@ -265,7 +271,10 @@ func folderState(t *testing.T, root string) map[string]string {
 func TestProj03_AskOwnerNeverWritesTheFolder(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	mine := seedTerminalSession(t, fx.d, fx.a)
-	reg := askRegistry(t, fx.d, strconv.FormatInt(mine, 10))
+	// A launcher is installed; docs/spec.md classifies as other, so the spec
+	// ask below is what queues a review and calls it.
+	var launched []int64
+	reg := askRegistryWith(t, fx.d, strconv.FormatInt(mine, 10), func(id int64) error { launched = append(launched, id); return nil })
 	p, err := fx.d.GetWorkbench(fx.a)
 	require.NoError(t, err)
 	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n\nBody.\n")
@@ -281,6 +290,9 @@ func TestProj03_AskOwnerNeverWritesTheFolder(t *testing.T) {
 	callReadIn(t, reg, fx.a, "list_asks", `{"status":"all"}`)
 	third := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAsk))
 	mustApply(t, reg, fx.a, "withdraw_ask", fmt.Sprintf(`{"ask_id":%d,"reason":"moot"}`, third))
+	specAsk := askID(t, mustApply(t, reg, fx.a, "ask_owner",
+		`{"kind":"review","title":"Spec review","doc_path":"docs/spec.md","doc_type":"spec","reason":"r"}`))
+	require.Equal(t, []int64{specAsk}, launched)
 
 	assert.Equal(t, before, folderState(t, p.FolderPath))
 }
@@ -430,7 +442,7 @@ func TestWithdrawAsk(t *testing.T) {
 // withdraw_ask write (direct apply, audited), get_ask and list_asks read.
 func TestAskTools_AreWorkbenchTools(t *testing.T) {
 	access := map[string]Access{}
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil) {
 		access[tool.Name] = tool.Access
 		assert.Equal(t, workbenchSurfaces, tool.Surfaces, tool.Name)
 	}

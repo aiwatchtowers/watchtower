@@ -12,7 +12,7 @@ The agent files an ask through a Watchtower tool. There are three kinds, and two
 
 | Kind | What you do |
 |---|---|
-| **Review** | Read a spec, plan or design the agent wrote. Comment in the margin, then **Request changes** or **Approve**. |
+| **Review** | Read a spec, plan or design the agent wrote. Comment in the margin, then **Request changes** or **Approve**. A spec or plan also gets an independent reviewer: see [Reviewing a spec or plan](spec-review.md). |
 | **Check** | Try something by hand. Mark each step **✓ Works**, **✕ Doesn't work** (say what happened) or **– Didn't check**. |
 | **Question** | Pick an option per question, or write your own. |
 

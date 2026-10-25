@@ -463,11 +463,10 @@ final class TargetChatViewModelTests: XCTestCase {
         })
     }
 
-    /// A resumed turn drops the system prompt (the CLI uses --resume), so the
-    /// per-turn prompt must carry BOTH the live task context and the action
-    /// grammar — otherwise a post-restart expired session can no longer emit
-    /// valid watchtower-action blocks.
-    func testResumedTurnCarriesTaskContextAndActionContract() async throws {
+    /// No turn resumes a session (#604 G11): a later turn sends the system
+    /// prompt again — the live task context and the action grammar — and the
+    /// earlier turns as the replay block.
+    func testALaterTurnSendsTheSystemPromptAndTheReplay() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
@@ -490,12 +489,16 @@ final class TargetChatViewModelTests: XCTestCase {
         try await waitForStreamEnd(chat)
 
         XCTAssertEqual(mock.prompts.count, 2)
-        // First turn: context + contract live in the system prompt, not the message.
         XCTAssertEqual(mock.prompts[0], "hello")
-        // Resumed turn: the message itself must carry context AND the contract.
-        XCTAssertTrue(mock.prompts[1].contains("=== CURRENT TASK ==="))
-        XCTAssertTrue(mock.prompts[1].contains("=== TASK ACTIONS ==="))
+        XCTAssertTrue(mock.prompts[1].hasPrefix(EmbeddedChatReplay.header), mock.prompts[1])
+        XCTAssertTrue(mock.prompts[1].contains("Owner: hello\nAssistant: first reply\n"), mock.prompts[1])
         XCTAssertTrue(mock.prompts[1].hasSuffix("again"))
+        XCTAssertEqual(mock.systemPrompts.count, 2)
+        for system in mock.systemPrompts {
+            let text = try XCTUnwrap(system)
+            XCTAssertTrue(text.contains("=== CURRENT TASK ==="))
+            XCTAssertTrue(text.contains("=== TASK ACTIONS ==="))
+        }
     }
 
     private func waitForStreamEnd(_ chat: TargetChatViewModel, timeout: TimeInterval = 5) async throws {
@@ -802,10 +805,14 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
+        // The first turn stays open until released: a turn that streamed to
+        // its end before the approval would take the follow-up itself.
         let mock = MockClaudeService(eventSequence: [
             [.sessionID("s1"), .text("first reply"), .done],
             [.text("second reply"), .done]
-        ])
+        ], thenAwaitsRelease: true)
+        // A failed assertion before the release must not leave the stream parked.
+        defer { mock.release() }
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: mock)
 
@@ -828,7 +835,10 @@ final class TargetChatViewModelTests: XCTestCase {
             try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }?.status
         }
         XCTAssertEqual(try storedStatus(), "done")
+        XCTAssertTrue(chat.isStreaming, "the first turn is still running")
+        XCTAssertEqual(mock.prompts.count, 1, "the follow-up waits for the running turn")
 
+        mock.release()
         try await waitForStreamEnd(chat)
 
         // The queued follow-up went out as its own turn after the first finished.

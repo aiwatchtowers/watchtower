@@ -9,13 +9,14 @@ struct ForwardedNotificationResponse: Codable {
     /// The routed subset of the push's `userInfo`, every value flattened to a string.
     let payload: [String: String]
 
-    /// The routing view of the payload, with `digestId`/`ideaId` restored to the Int
+    /// The routing view of the payload, with `digestId`/`ideaId`/`trackId` restored to the Int
     /// (the other ids to the Int64) the navigation calls expect. A missing or unparseable
     /// one drops the key rather than smuggling a string in under it.
     var userInfo: [AnyHashable: Any] {
         var info: [AnyHashable: Any] = payload
         info[NotificationForwarding.digestIDKey] = payload[NotificationForwarding.digestIDKey].flatMap(Int.init)
         info[NotificationForwarding.ideaIDKey] = payload[NotificationForwarding.ideaIDKey].flatMap(Int.init)
+        info[NotificationForwarding.trackIDKey] = payload[NotificationForwarding.trackIDKey].flatMap(Int.init)
         info[NotificationForwarding.transcriptIDKey] = payload[NotificationForwarding.transcriptIDKey].flatMap(Int64.init)
         info[NotificationForwarding.workbenchIDKey] = payload[NotificationForwarding.workbenchIDKey].flatMap(Int64.init)
         info[NotificationForwarding.workbenchSubjectIDKey] = payload[NotificationForwarding.workbenchSubjectIDKey].flatMap(Int64.init)
@@ -50,6 +51,8 @@ enum NotificationForwarding {
     /// The routed keys that are not strings in the push's `userInfo`.
     static let digestIDKey = "digestId"
     static let ideaIDKey = "ideaId"
+    /// The track a `track_update` push opens in the Inbox.
+    static let trackIDKey = "trackId"
     static let transcriptIDKey = "transcriptID"
     // The workbench push keeps its pre-rename `userInfo` (spec 2026-10-02 A1).
     static let workbenchIDKey = "projectId"
@@ -65,7 +68,7 @@ enum NotificationForwarding {
     /// reads — anything else in the push is dropped rather than shipped across the
     /// process boundary.
     static let routedKeys = [
-        "type", digestIDKey, ideaIDKey, transcriptIDKey, workbenchIDKey, workbenchSubjectIDKey, workbenchPaneKey,
+        "type", digestIDKey, ideaIDKey, trackIDKey, transcriptIDKey, workbenchIDKey, workbenchSubjectIDKey, workbenchPaneKey,
         workbenchAskIDKey, automationIDKey, runIDKey
     ]
 

@@ -18,56 +18,66 @@ A recipe never runs until you confirm it, every run has its own token and time b
 
 ### Make one
 
-1. Open **Automations** in the sidebar and click **+ New**.
-2. Pick who it is **For**: **Personal** or one of your workbenches (the picker shows only when you have a workbench; the workbench's ⚡ menu also has **New Automation…**). Then pick **Describe in words** and tell the assistant what you want, or **Template** (see [Recipes and templates](automations-recipes.md)). **Form** is the manual route and makes personal automations only.
-3. Check the **Draft** panel: when it runs, **Each run may spend**, what it asks to do and **Sessions it starts**, each with its title and prompt. If a dry run has not covered the exact text, the card says so, and likewise when it stopped early. **Dry run** shows what it would do and writes nothing. A draft does not call Quick Connections or start agents: it stops at the first Quick Connection call and says so. Save it and use **Dry run** on its card to see the rest.
-4. Save. The save card says whether it is **For: Personal** or **For: workbench** with its name. The confirmation sheet lists what the recipe may do and the script; **Confirm** approves it; a disabled recipe also offers **Confirm and enable**.
+1. Open **Automations** in the sidebar and click **+**.
+2. Under **What is it for?** pick **Personal** or one of your workbenches. This decides what the automation can see and where its recipe lives, and it can't be moved later. A workbench's ⚡ menu has **New Automation…**, which skips this step.
+3. Under **How do you want to start?** pick **Describe it in words**, **Watch for something** (Personal only; see [Tracks](tracks.md)) or one of the templates (see [Recipes and templates](automations-recipes.md)), then **Continue**.
+4. Talk to the assistant in **Chat**. The draft column beside it fills in as you go: when it runs, what it may do, what it sends, what each run may spend, the sessions it starts and a dry run that writes nothing. **Form** and **Script** edit the same draft by hand. A draft does not call Quick Connections or start agents; save it and use **Dry Run** on its card to see the rest.
+5. Press **Save and Turn On**, or **Save Turned Off**. Saving confirms exactly what the column lists, so check it first. The buttons stay off while it says "Checking…", when the recipe has errors, or when the column cannot list everything the save would confirm.
+
+A draft you leave is kept at the top of its section until you save it or choose **Discard Draft**. A draft you edited only in **Form** is lost if you relaunch before saving. Once you save a draft, its chat goes on as that automation's chat.
 
 ### Run one now
 
 1. Press **⌃⌘R** (menu item **Run Automation…**) on any tab, type a few letters and press Return. The tray menu has the same list under **Run automation**.
-2. Unconfirmed or disabled recipes are dimmed, and Return opens their confirmation sheet or card instead of running. A recipe set to **Ask before running** shows a "Run “<name>”?" prompt first.
+2. Unconfirmed or disabled recipes are dimmed, and Return opens their card instead of running. A recipe set to **Ask before running** shows a "Run “<name>”?" prompt first.
 3. When a run you started ends, you get a notice: "<name> finished", "<name> failed" or "<name> stopped: ...".
 
-On the card, **Run now** starts a run the same way, without the notice; **Dry run** works even before you confirm. **History** lists runs and their steps; a failed run offers **Rerun**, an active one **Cancel**.
+On the card, **Run Now** starts a run the same way, without the notice; **Dry Run** works even before you confirm. **History** lists runs and their steps; a failed run offers **Rerun**, an active one **Cancel**.
 
 ### When a run fails
 
-A scheduled or event run that fails brings "<name> failed", at most once per automation a day; several at once share one notice. A run cut short by a restart while it was working brings none. A recipe disabled because its script got stuck always brings "<name> was disabled".
+A scheduled, event or Inbox **Reply** run that fails brings "<name> failed", at most once per automation a day; several at once share one notice. A run cut short by a restart while it was working brings none. A recipe disabled because its script got stuck always brings "<name> was disabled".
 
 The **Automations** badge counts automations whose last run failed, until you open the card or a later run succeeds.
 
 ### Change one
 
-**Change in words** asks the assistant to edit it, and you approve the save. **Edit** opens the form and the script. A change to the fingerprint brings the Save sheet, which says what the automation can now also do.
+**Edit** on the card opens the same panel on **Chat**, with **Form** and **Script** beside it. Ask the assistant for the change, or edit by hand; the column shows the hashed fields that changed since you confirmed ("New since you confirmed"). Saving brings it back to the card. A recipe stays where it was made: you can't move it between Personal and a workbench.
 
 ### Where results land
 
-- Inbox: **From your automations** cards with **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**.
+- Inbox: cards in **Actions**, with their own buttons, **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**, until you open them; a click there opens the card.
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 
+### Built in
+
+The first section, **Built in**, holds the automations that ship with Watchtower, such as **Morning brief**, **Track my threads**, **Idea finder** and **Reactions**: see [Built-in automations](automations-built-in.md).
+
 ### Reactions and tracks
 
-The tab also shows your reaction commands and custom tracks next to your recipes: see [Reactions and tracks in Automations](automations-rules.md).
+Reaction commands are the **Reactions** card in **Built in**, and each custom track is a watch in the list: see [Reactions and tracks in Automations](automations-rules.md).
 
 ## When it's empty or wrong
 
-- **"No automations yet".** You have none; click **New automation** (or **+ New** in the header).
-- **Needs your confirmation.** Open **Review…**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
-- **Disabled.** Use **⋯**, then **Enable**.
-- **Recipes turned off after the update.** Automations used to have an on/off switch in Settings → Features. If yours was off, the update turned off each recipe you had enabled, once, so nothing starts spending on its own; a notice may tell you so. In the Automations tab, use **⋯**, then **Enable** on the ones you want.
+- **"No automations yet".** You have none; click **+**.
+- **Needs your confirmation.** Open **Review…**, check the column, then press **Confirm and Turn On**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
+- **The form is off ("The recipe can't be read").** The file has an error, named next to it. The controls stay off so they never overwrite the file's settings; click **Open in Script**, fix the recipe, then save.
+- **Disabled.** Use **⋯**, then **Turn On**.
+- **Recipes turned off after the update.** Automations used to have an on/off switch in Settings → Features. If yours was off, the update turned off each recipe you had enabled, once, so nothing starts spending on its own; a notice may tell you so. In the Automations tab, use **⋯**, then **Turn On** on the ones you want.
 - **Nothing ran on schedule.** The recipe must be confirmed and enabled, with the daemon running. Slots missed before you enabled or confirmed it are never made up.
-- **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work. Calls, outputs and sessions are [capped](../troubleshooting/automation-run-limits.md) too.
+- **Ended on budget or time.** Raise the budget in **Form** (this needs confirming again) or shorten the work. Calls, outputs and sessions are [capped](../troubleshooting/automation-run-limits.md) too.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
 - **Failed with a RangeError about nesting or size.** One step of the script would have built something too large: data nested more than 1000 levels deep, more than about 16 million characters or items, or more than 256 000 entries, pieces or matches from one `JSON.parse`, `Object.entries`, `split` or global `match`. The script can catch these; otherwise handle the data in smaller pieces.
 - **Failed with "the automation used too much memory".** The run used more than about 1 GB of memory. This error ends the run and the script cannot catch it; keep less data in the script at once. The automation stays enabled.
-- **An event recipe didn't run.** It runs only after a sync that brought something new and matched its `where`. A source's first sync, history backfill and your own Slack messages never count. Jira comment changes count only while Stream Digests is on (Settings, Features). In the edit form, **On an event** picks the event type; a `where` filter is written in the recipe text.
+- **An event recipe didn't run.** It runs only after a sync that brought something new and matched its `where`. A source's first sync, history backfill and your own Slack messages never count. Jira comment changes count only while Stream Digests is on (Settings, Features). In **Form**, **On an event** picks the event type; a `where` filter is written in the recipe text.
 
 ## Related
 
+- [Built-in automations](automations-built-in.md)
 - [Recipes and templates](automations-recipes.md)
+- [Buttons on automation cards](automations-inbox-buttons.md)
 - [Reactions and tracks in Automations](automations-rules.md)
 - [Confirmation, budgets and writes](automations-safety.md)
 

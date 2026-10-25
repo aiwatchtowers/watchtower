@@ -24,10 +24,27 @@ type promptInputs struct {
 
 // buildPrompt formats the system prompt from the store (or built-in default)
 // and returns it together with the version label.
-func (p *Pipeline) buildPrompt(in *promptInputs) (string, string) {
-	tmpl, v, err := prompts.Resolve(p.promptStore, prompts.DayPlanGenerate, "")
-	if err != nil && p.logger != nil {
-		p.logger.Printf("dayplan: %v — using the built-in default", err)
+func (p *Pipeline) buildPrompt(in *promptInputs, override string) (string, string) {
+	p.lastPromptNote = ""
+	var tmpl string
+	var v int
+	if override != "" {
+		tmpl = override
+	} else {
+		var err error
+		tmpl, v, err = prompts.Resolve(p.promptStore, prompts.DayPlanGenerate, "")
+		if err != nil && p.logger != nil {
+			p.logger.Printf("dayplan: %v — using the built-in default", err)
+		}
+	}
+	// An override with the wrong verb count would shift every later section
+	// and append %!(EXTRA ...): use the default instead.
+	if got, want := prompts.CountVerbs(tmpl), prompts.CountVerbs(prompts.Defaults[prompts.DayPlanGenerate]); override != "" && got != want {
+		if p.logger != nil {
+			p.logger.Printf("dayplan: override template has %d placeholders, the default has %d — using the default", got, want)
+		}
+		p.lastPromptNote = prompts.PlaceholderNote(got, want)
+		tmpl, v = prompts.Defaults[prompts.DayPlanGenerate], 0
 	}
 	version := "default"
 	if v > 0 {

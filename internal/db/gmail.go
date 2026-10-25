@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -181,11 +182,15 @@ type GmailMessage struct {
 // (account_id, id) (migration 00043), so the same Gmail message id synced by
 // two different connected accounts is stored as two independent rows.
 func (db *DB) UpsertGmailMessage(accountID int64, m GmailMessage) error {
+	return upsertGmailMessage(context.Background(), db, accountID, m)
+}
+
+func upsertGmailMessage(ctx context.Context, q ContextQueryer, accountID int64, m GmailMessage) error {
 	unread := 0
 	if m.IsUnread {
 		unread = 1
 	}
-	_, err := db.Exec(`INSERT INTO gmail_messages
+	_, err := q.ExecContext(ctx, `INSERT INTO gmail_messages
         (account_id, id, thread_id, from_email, from_name, to_json, cc_json, subject, snippet,
          body_text, internal_date, labels_json, is_unread, permalink, synced_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)

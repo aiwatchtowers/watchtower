@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -35,9 +36,12 @@ import (
 	"watchtower/internal/jira"
 	"watchtower/internal/kb"
 	"watchtower/internal/linear"
+	"watchtower/internal/media"
 	"watchtower/internal/memory"
 
+	"watchtower/internal/automations/authoring"
 	"watchtower/internal/customtracks"
+	"watchtower/internal/logredact"
 	"watchtower/internal/reactioncmd"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
@@ -52,6 +56,7 @@ type DayPlanRunner interface {
 	DetectConflicts(ctx context.Context, userID, date string) error
 	SyncCalendarItemsForDate(ctx context.Context, userID, date string) error
 	AccumulatedUsage() (int, int, float64, int)
+	LastPromptNote() string
 }
 
 // linearAccountSyncer is the slice of *linear.Syncer behaviour phaseLinearSync uses.
@@ -71,6 +76,8 @@ type jiraAccountSyncer interface {
 	AccountID() int64
 	BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int)
 	FirstSyncFrom() (time.Time, bool)
+	CheckDeletedIssues(ctx context.Context, now time.Time) (int, error)
+	ReachedSource() bool
 }
 
 // mailSyncer is the slice of *gmail.Syncer and *imap.Syncer behaviour the
@@ -114,7 +121,7 @@ type Daemon struct {
 	orchestrators       []*sync.Orchestrator
 	config              *config.Config
 	logger              *log.Logger
-	wakeCh              <-chan struct{}
+	wakeCh              <-chan time.Duration // WatchWake: how long the machine slept
 	triggerCh           <-chan struct{}
 	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
 	automationScheduler AutomationRunner // nil = automations not wired
@@ -123,6 +130,7 @@ type Daemon struct {
 	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync and startupCalendarSync only
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
+	specReviewLaunch    func(askID int64) error // nil = the spec review sweep is off
 	pidPath             string
 	db                  *db.DB
 	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
@@ -141,30 +149,61 @@ type Daemon struct {
 	// stage-1 drain got to, so its retry starts there (backfillStreams).
 	// In memory only: a restart re-drains the chunk once. Touched only by
 	// the sequential history-backfill phase.
-	backfillResume             map[backfillResumeKey]time.Time
-	backfillCursor             int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
-	nextStepPipe               *targets.Pipeline
-	customTracksPipe           *customtracks.Pipeline
-	reactionCmdPipe            *reactioncmd.Pipeline
-	calendarSyncers            []*calendar.Syncer
-	calDAVSyncers              []*caldav.Syncer
-	gmailSyncers               []mailSyncer
-	imapSyncers                []mailSyncer
-	jiraSyncers                []jiraAccountSyncer
-	externalSync               ExternalSyncRunner
-	dayPlanPipeline            DayPlanRunner
+	backfillResume   map[backfillResumeKey]time.Time
+	backfillCursor   int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
+	nextStepPipe     *targets.Pipeline
+	customTracksPipe *customtracks.Pipeline
+	reactionCmdPipe  *reactioncmd.Pipeline
+	calendarSyncers  []*calendar.Syncer
+	calDAVSyncers    []*caldav.Syncer
+	gmailSyncers     []mailSyncer
+	imapSyncers      []mailSyncer
+	jiraSyncers      []jiraAccountSyncer
+	externalSync     ExternalSyncRunner
+	mediaPipe        *media.Pipeline
+	dayPlanPipeline  DayPlanRunner
+	// mbMu guards what the Morning brief's gate and primitives read and write
+	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
+	// briefNoDataAt, mbOwner, mbNow): a primitive runs on the script's
+	// goroutine, which can outlive the slot when the executor abandons it.
+	mbMu                       gosync.Mutex
+	briefNoDataAt              time.Time       // when a sync brief last found no data (the no-data backoff)
+	builtinsSwept              bool            // sweepBuiltinRuns succeeded this process
+	builtins                   *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
+	builtinActive              map[string]bool // by built-in id: false = its producers run as legacy phases
+	mbOwner                    db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
+	mbNow                      time.Time       // phaseMorningBrief's clock while its slot runs; zero = time.Now
 	lastJira                   time.Time
 	linearSyncers              []linearAccountSyncer
+	purgeHold                  map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
+	policySkipMu               gosync.Mutex
+	policySkipping             map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
 	lastLinear                 time.Time
 	lastPeople                 time.Time // when people cards last ran (once per day)
 	lastBriefing               time.Time // when briefing last ran (once per day)
-	lastIdeas                  time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
+	lastIdeas                  time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
 	lastInstructionSuggestions time.Time // when the instruction suggestion miner last ran (once per day)
 	lastIdeasLockSkip          time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
 	lastStreams                time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
 	lastStreamsLockSkip        time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
 	lastReactionCmd            time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
 	lastDayPlanDate            string    // YYYY-MM-DD of last generation, for dedup
+
+	// ideasMu guards lastIdeas and lastIdeasLockSkip on every path: the Idea
+	// finder's gate reads them on the slot's goroutine and its primitive
+	// stamps lastIdeas on the script's, which can outlive the slot; the
+	// legacy phaseIdeas takes it too.
+	ideasMu gosync.Mutex
+	// tracksMu guards tracksRanAt (when tracks.extract last started, set by
+	// runTracksTracked on the script's goroutine) and tracksFailedAt (a Track
+	// my threads run that failed before tracks.extract ran: the gate waits
+	// for digests newer than it).
+	tracksMu       gosync.Mutex
+	tracksRanAt    time.Time
+	tracksFailedAt time.Time
+	// reactionSlot carries each Reactions run's claimed command to its
+	// reaction.compose primitive (one per daemon; the reaction pass).
+	reactionSlot *builtin.ReactionSlot
 
 	// Real-failure attempt budgets for day plan / briefing / daily rollup (max
 	// 3/day, see maxDailyAIAttempts). Loaded from disk at daemon start
@@ -185,12 +224,24 @@ type Daemon struct {
 	// noOwnerLoggedDay maps a phase to the UTC day its "no owner identity"
 	// skip line was last printed (logNoOwnerOnce).
 	noOwnerLoggedDay map[string]string
+	noOwnerMu        gosync.Mutex // guards noOwnerLoggedDay (a Morning brief primitive may log from the script's goroutine)
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 	agentLogSkipLogged atomic.Bool // one-shot latch for the analytics phase's nil-agentlog.db skip line
 	agentLogMoveLogged atomic.Bool // one-shot latch for the analytics phase's failed-move line
+	// searchRebuildDiskLogged latches the search fill's not-enough-disk line:
+	// logged once while the disk stays short, again after a cycle found room.
+	searchRebuildDiskLogged atomic.Bool
 
 	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
+
+	// cycleSection is the running cycle's cycleSection (runSync moves it
+	// along), and fetchProgressAt (monoNow, markFetchProgress) is stamped
+	// whenever its fetches move on; runLoop reads both from its own goroutine
+	// to decide what a sleep or a manual trigger does to the cycle.
+	cycleSection    atomic.Int32
+	fetchProgressAt atomic.Int64
+	loopMono        func() time.Duration // runLoop's monotonic clock, nil = time.Since(monoEpoch); a seam for tests
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -199,8 +250,9 @@ type Daemon struct {
 // and pipelines still run.
 func New(cfg *config.Config) *Daemon {
 	return &Daemon{
-		config: cfg,
-		logger: log.New(os.Stderr, "[daemon] ", log.LstdFlags),
+		config:       cfg,
+		logger:       log.New(os.Stderr, "[daemon] ", log.LstdFlags),
+		reactionSlot: builtin.NewReactionSlot(),
 	}
 }
 
@@ -255,6 +307,9 @@ func (d *Daemon) SetIdeasPipeline(p *ideas.Pipeline) {
 // SetReactionCommandsPipeline sets the reaction-commands pipeline (owner drives
 // Watchtower by reacting in Slack; gated by reaction_commands.enabled).
 func (d *Daemon) SetReactionCommandsPipeline(p *reactioncmd.Pipeline) {
+	if p != nil {
+		p.SetAccountSkip(func(id int64) bool { return d.purgeHeld("slack", id) })
+	}
 	d.reactionCmdPipe = p
 }
 
@@ -368,6 +423,18 @@ func (d *Daemon) SetExternalSync(e ExternalSyncRunner) {
 	d.externalSync = e
 }
 
+// SetMediaPipeline sets the media describe pass (images and links become
+// knowledge). nil disables the media-describe phase.
+func (d *Daemon) SetMediaPipeline(p *media.Pipeline) {
+	d.mediaPipe = p
+}
+
+// MediaPipeline returns the media describe pass (nil when unset), so a
+// source's wiring can add its openers, resolvers and hooks.
+func (d *Daemon) MediaPipeline() *media.Pipeline {
+	return d.mediaPipe
+}
+
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
 func (d *Daemon) SetPeoplePipeline(p *guide.Pipeline) {
 	d.peoplePipe = p
@@ -408,8 +475,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		pollInterval = config.DefaultPollInterval
 	}
 
-	if d.config.Sync.SyncOnWake {
-		d.wakeCh = WatchWake(ctx, pollInterval)
+	// Always watched, whatever sync.sync_on_wake says: a sleep that
+	// interrupts a cycle cancels it (runLoop). Only when not already wired: a
+	// test drives the loop through an injected channel.
+	if d.wakeCh == nil {
+		d.wakeCh = WatchWake(ctx)
 	}
 	// Only when not already wired: a test drives the loop through an injected
 	// channel, and installing the real signal handler would replace it.
@@ -428,9 +498,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadRollupAttempts()
 	d.loadPeopleAttempts()
 	d.reapStalePipelineRuns()
-	d.sweepStaleSystemPrompts()
+	d.sweepStaleTemp()
+	d.importLegacyDraftCache()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
+
+	// Before the owner-recipe executor's own start sweep and the first slot:
+	// a built-in run left running would block its slot (the executor may not
+	// be wired at all).
+	d.sweepBuiltinRuns()
 
 	// Automations run beside the sync loop, not in it; stopped and reaped
 	// before Run returns (and before the PID file is removed).
@@ -445,51 +521,17 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// a calendar connect — onboarding's finish, the Add sheet — so shows
 	// events within seconds (#740). The cycle below syncs them a second time —
 	// a few API calls per account, accepted on a (re)start for that latency.
+	// The purge hold first (#601): a purged or half-purged account's
+	// calendar must not be refilled before the first cycle's purge phase.
+	d.refreshPurgeHold()
 	d.startupCalendarSync(ctx)
 
-	// Run an initial sync immediately on startup.
-	d.runSync(ctx)
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			d.logger.Println("shutting down")
-			return nil
-		case <-ticker.C:
-			d.runSync(ctx)
-		// Both watchers close their channel once ctx is cancelled, and a closed
-		// channel is always ready in a select — without the ok check the loop
-		// would keep drawing "events" and re-entering runSync on the dead ctx
-		// until the random select pick landed on ctx.Done(). A closed watcher
-		// is dropped (nil blocks forever) so only ctx.Done() remains.
-		case _, ok := <-d.wakeChannel():
-			if !ok {
-				d.wakeCh = nil
-				continue
-			}
-			d.logger.Println("wake event detected, syncing")
-			d.runSync(ctx)
-			// Reset the ticker so the next poll is a full interval from now.
-			ticker.Reset(pollInterval)
-		case _, ok := <-d.triggerChannel():
-			if !ok {
-				d.triggerCh = nil
-				continue
-			}
-			d.logger.Println("manual sync trigger received, syncing")
-			d.runSync(ctx)
-			// Same as the wake path: the next poll is a full interval from now.
-			ticker.Reset(pollInterval)
-		}
-	}
+	return d.runLoop(ctx, pollInterval)
 }
 
-// wakeChannel returns the wake channel or a nil channel (blocks forever) when
-// wake detection is disabled.
-func (d *Daemon) wakeChannel() <-chan struct{} {
+// wakeChannel returns the wake channel or a nil channel (blocks forever) once
+// the watcher has closed it.
+func (d *Daemon) wakeChannel() <-chan time.Duration {
 	if d.wakeCh != nil {
 		return d.wakeCh
 	}
@@ -506,40 +548,71 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 	return nil
 }
 
-func (d *Daemon) runSync(ctx context.Context) {
-	d.sampleLockStats(ctx)
+// runSync runs one cycle: the source fetches and the history backfill on
+// fetchCtx, the pipelines on ctx. fetchCtx derives from ctx; runLoop cancels
+// it alone (a sleep, a Sync Now restart), which stops the fetches and skips
+// the pipelines but never cuts off pipelines already running — their attempt
+// budgets, throttle stamps and pipeline_runs rows see a cancel only on
+// shutdown. It moves d.cycleSection along for runLoop.
+func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
+	d.setSection(sectionSlackFetch)
+	d.markFetchProgress()
+	d.sampleLockStats(fetchCtx)
+	// First: schedule/cancel/run account purges (#601), so a purged account's
+	// syncer is skipped this very cycle. On fetchCtx: a sleep or a restart
+	// pauses a purge (it resumes next cycle); the stall clock restarts after it.
+	d.phaseAccountPurge(fetchCtx)
+	d.markFetchProgress()
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
 	syncStart := time.Now()
 	d.cycleEvents = d.beginAutomationEvents()
 	var syncErr, inboxSyncErr error
-	d.observePhase(ctx, automations.SlackSource(d.db), func() { syncErr, inboxSyncErr = d.phaseSlackSync(ctx) })
+	d.observePhase(fetchCtx, automations.SlackSource(d.db), func() { syncErr, inboxSyncErr = d.phaseSlackSync(fetchCtx) })
+	// From here a manual trigger waits for the cycle: no other fetch shows
+	// progress while it runs (manualRestartAfter).
+	d.setSection(sectionOtherFetch)
+	d.markFetchProgress()
 	// Owner commands first: the reaction poll needs only the freshly synced
 	// Slack messages (thread context) and is what `Sync Now` is usually pressed
 	// for, so it runs before the other source syncs (Jira alone can take
-	// minutes) — never on a cancelled ctx (shutdown), like every pipeline.
-	if ctx.Err() == nil {
-		d.phaseReactionCommands(ctx)
+	// minutes) — never on a cancelled fetch ctx, like every pipeline.
+	if fetchCtx.Err() == nil {
+		d.phaseReactionCommands(fetchCtx)
 	}
 	// One calendar snapshot spans both calendar phases.
-	d.observePhase(ctx, automations.CalendarSource(d.db, automations.RealClock{}), func() {
-		d.phaseCalendarSync(ctx)
-		d.phaseCalDAVSync(ctx)
+	d.observePhase(fetchCtx, automations.CalendarSource(d.db, automations.RealClock{}), func() {
+		d.phaseCalendarSync(fetchCtx)
+		d.markFetchProgress()
+		d.phaseCalDAVSync(fetchCtx)
 	})
-	d.phaseGmailSync(ctx)
-	d.phaseImapSync(ctx)
-	d.observePhase(ctx, automations.JiraSource(d.db), func() { d.phaseJiraSync(ctx) })
-	d.phaseLinearSync(ctx)
-	d.observePhase(ctx, automations.ConfluenceSource(d.db), func() { d.phaseExternalSync(ctx) })
+	d.markFetchProgress()
+	d.phaseGmailSync(fetchCtx)
+	d.markFetchProgress()
+	d.phaseImapSync(fetchCtx)
+	d.markFetchProgress()
+	d.observePhase(fetchCtx, automations.JiraSource(d.db), func() { d.phaseJiraSync(fetchCtx) })
+	d.markFetchProgress()
+	d.phaseLinearSync(fetchCtx)
+	d.markFetchProgress()
+	d.observePhase(fetchCtx, automations.ConfluenceSource(d.db), func() { d.phaseExternalSync(fetchCtx) })
+	d.markFetchProgress()
+	// Lease purges are scheduled only now, after every source sync had its
+	// chance to prove access this cycle (#601).
+	d.phaseAccountPurgeLeases(fetchCtx)
 	// Once per cycle, also on a cancelled ctx: it only queues rows.
 	d.flushAutomationEvents(syncStart)
-	d.phaseAgentAnalytics(ctx)
+	d.phaseAgentAnalytics(fetchCtx)
+	// The source-fetch section ends here: a sleep from now on lets the
+	// pipelines finish (runLoop).
+	d.setSection(sectionPipelines)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
 	// partial fetch). The DB still has messages that need processing.
-	// Only skip pipelines if the context itself was cancelled (shutdown).
-	if ctx.Err() != nil {
-		d.logger.Printf("context cancelled, skipping pipelines")
+	// Only skip them when the fetches were cancelled: a sleep or a Sync Now
+	// restart (a fresh cycle follows), or a shutdown.
+	if fetchCtx.Err() != nil {
+		d.logger.Printf("source syncs stopped by %s, skipping pipelines", fetchStopReason(fetchCtx))
 		return
 	}
 	if syncErr != nil {
@@ -549,19 +622,26 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
 	d.phaseTranscriptAudioCleanup()
+	// Before the index, so this cycle's descriptions are searchable now.
+	d.phaseMediaDescribe(ctx)
 	d.phaseKnowledgeIndex(ctx)
+	// After the knowledge index: the fill is mechanical (no AI) and needs no
+	// fresh sync — Slack sync's own writes already reach the new index
+	// through the triggers — so it runs once the cycle's sync is done.
+	d.phaseMessagesSearchRebuild(ctx)
 
-	d.phaseCustomTrackScan(ctx) // before auto extraction so folds land
+	// The custom-track slot: before auto extraction so folds land.
+	d.phaseWatchSlot(ctx)
 
 	// Phases 2-4 run in parallel where possible:
-	//   Group A: Tracks → inject track context → Rollups
+	//   Group A: Track my threads → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
 	var phasesWg gosync.WaitGroup
 	phasesWg.Add(2)
 	rollupNow := time.Now()
 	go func() {
 		defer phasesWg.Done()
-		d.phaseTracksAndRollups(ctx, rollupNow)
+		d.phaseTrackMyThreads(ctx, rollupNow)
 	}()
 	go func() {
 		defer phasesWg.Done()
@@ -579,17 +659,22 @@ func (d *Daemon) runSync(ctx context.Context) {
 	}
 	d.phaseInbox(ctx)
 	d.phaseStreamDigests(ctx)
-	d.phaseIdeas(ctx)
+	d.phaseIdeaFinder(ctx)
 	d.phaseMemory(ctx)
 	d.phaseNextStep(ctx)
-	d.phaseBriefing(ctx)
-
-	d.runDayPlanPhases(ctx, time.Now())
+	d.phaseMorningBrief(ctx, time.Now())
 
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
-	d.phaseHistoryBackfill(ctx)
+	// It fetches, so it runs on fetchCtx: a sleep cancels it (or, detected
+	// during the pipelines, skips it), while a trigger waits for it.
+	if fetchCtx.Err() == nil {
+		d.setSection(sectionBackfill)
+		d.phaseHistoryBackfill(fetchCtx)
+		d.setSection(sectionPipelines)
+	}
 	d.phaseInstructionSuggestions(ctx)
+	d.phaseSpecReviewSweep(ctx)
 }
 
 // sampleLockStats writes this cycle's WAL and connection-pool wait sample to
@@ -632,7 +717,7 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 	}
 	errMsg := ""
 	if stats.err != nil {
-		errMsg = stats.err.Error()
+		errMsg = logredact.Full(stats.err)
 	}
 	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
 		d.logger.Printf("pipeline_runs: %s run %d not completed: %v", name, runID, err)
@@ -681,21 +766,46 @@ const stalePipelineRunAfter = 24 * time.Hour
 // stalePipelineRunError is the error_msg a reaped run carries.
 const stalePipelineRunError = "interrupted: the process running it exited before it finished"
 
-// staleSystemPromptAge is how old a system-prompt temp file must be before
-// the startup sweep removes it: a live claude/codex call deletes its own file
-// as soon as the child exits, well within this.
-const staleSystemPromptAge = 10 * time.Minute
+// staleTempAge is how old a prompt temp file or an extract spool file must
+// be before the startup sweep removes it: a live call removes its own long
+// before (fsutil.StaleTempPatterns, extract.StaleTempAge).
+const staleTempAge = 10 * time.Minute
 
-// sweepStaleSystemPrompts removes the 0600 system-prompt files a killed
-// process left in the temp dir (they hold the owner's data). Best-effort:
-// a failure is logged and never keeps the daemon from starting.
-func (d *Daemon) sweepStaleSystemPrompts() {
-	n, err := fsutil.SweepStalePrivateTemp(fsutil.SystemPromptTempPrefix, staleSystemPromptAge, time.Now())
+// sweepStaleTemp removes what a killed process left holding the owner's
+// data: the prompt and MCP-config temp files (fsutil.SweepStaleTemp, every
+// CLI start does the same) and the <ws>/tmp/extract spool. Best-effort: a
+// failure is logged and never keeps the daemon from starting.
+func (d *Daemon) sweepStaleTemp() {
+	now := time.Now()
+	n, err := fsutil.SweepStaleTemp(staleTempAge, now)
 	if n > 0 {
-		d.logger.Printf("removed %d stale system prompt temp file(s)", n)
+		d.logger.Printf("removed %d stale prompt temp file(s)", n)
 	}
 	if err != nil {
-		d.logger.Printf("sweeping system prompt temp files: %v", err)
+		d.logger.Printf("sweeping prompt temp files: %v", err)
+	}
+	n, err = fsutil.SweepStaleDir(filepath.Join(d.config.WorkspaceDir(), "tmp", "extract"), staleTempAge, now)
+	if n > 0 {
+		d.logger.Printf("removed %d stale extract spool file(s)", n)
+	}
+	if err != nil {
+		d.logger.Printf("sweeping the extract spool: %v", err)
+	}
+}
+
+// importLegacyDraftCache moves an older version's automation editor draft
+// cache files into the database once (#604 G2). Best-effort: a failure is
+// logged and the files stay for the next start.
+func (d *Daemon) importLegacyDraftCache() {
+	if d.db == nil {
+		return
+	}
+	n, err := authoring.ImportLegacyDraftCache(d.db, d.config.WorkspaceDir())
+	if n > 0 {
+		d.logger.Printf("imported %d automation draft cache file(s) into the database", n)
+	}
+	if err != nil {
+		d.logger.Printf("importing automation draft cache files: %v", err)
 	}
 }
 
@@ -740,6 +850,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
 		return nil, nil
 	}
+	if !d.sourceAllowed("slack") {
+		return nil, nil
+	}
 	var firstErr error
 	var freezing []error
 	snaps := make([]sync.Snapshot, 0, len(d.orchestrators))
@@ -749,6 +862,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	d.trackedPipelineRun("slack-sync", func() pipelineRunStats {
 		messages := 0
 		for _, o := range d.orchestrators {
+			if d.purgeHeld("slack", o.AccountID()) {
+				continue
+			}
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
@@ -771,9 +887,22 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 			snaps = append(snaps, snap)
 			messages += snap.MessagesFetched
 		}
-		return pipelineRunStats{items: messages, err: firstErr}
+		reportErr := firstErr
+		if isBenignShutdownErr(ctx, firstErr) {
+			// Cancelled, not failed: the run did not finish, and the next
+			// cycle resumes from the watermarks it left (the knowledge-index
+			// precedent). No "context canceled" error row.
+			d.logger.Printf("slack sync: stopped by %s", fetchStopReason(ctx))
+			reportErr = nil
+		}
+		return pipelineRunStats{items: messages, err: reportErr}
 	})
 	d.writeSyncProgress(sync.IdleProgress())
+	if ctx.Err() != nil {
+		// A cancelled run is no sync result: the Desktop reads last_sync.json's
+		// mtime as "a sync finished".
+		return firstErr, errors.Join(freezing...)
+	}
 	resultPath := filepath.Join(d.config.WorkspaceDir(), "last_sync.json")
 	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshots(snaps, firstErr)); err != nil {
 		d.logger.Printf("failed to write sync result: %v", err)
@@ -783,8 +912,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 
 // syncHeartbeatInterval is how often a running sync republishes its progress.
 // Fast enough that the tray line moves while a phase grinds through hundreds
-// of rate-limited API calls, slow enough to stay a rounding error on disk.
-const syncHeartbeatInterval = 3 * time.Second
+// of rate-limited API calls, slow enough to stay a rounding error on disk. A
+// var so tests can shorten it.
+var syncHeartbeatInterval = 3 * time.Second
 
 // syncProgressPath is the heartbeat file read by the tray — the live
 // counterpart to last_sync.json, which only records finished runs.
@@ -805,9 +935,24 @@ func (d *Daemon) writeSyncProgress(p sync.SyncProgress) {
 
 // startSyncHeartbeat publishes one orchestrator's live progress until the
 // returned stop function is called; stop waits for the writer to finish, so
-// the caller can immediately publish a final state without racing it.
+// the caller can immediately publish a final state without racing it. A beat
+// whose progress moved, or that sees a Slack API call answered since the last
+// one (the read-state, deletion-sweep and reaction passes move no progress
+// counter), stamps the cycle's fetch progress (markFetchProgress), so a long
+// but moving Slack sync is never taken for a stalled one.
 func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
-	write := func() { d.writeSyncProgress(sync.ProgressFromSnapshot(o.Progress().Snapshot())) }
+	// Touched by write only: the call below, then the writer goroutine.
+	var last sync.Snapshot
+	var lastAnswered uint64
+	write := func() {
+		snap := o.Progress().Snapshot()
+		answered := o.SlackCallsAnswered()
+		if snap != last || answered != lastAnswered {
+			last, lastAnswered = snap, answered
+			d.markFetchProgress()
+		}
+		d.writeSyncProgress(sync.ProgressFromSnapshot(snap))
+	}
 	write()
 
 	done := make(chan struct{})
@@ -853,7 +998,13 @@ func (d *Daemon) startupCalendarSync(ctx context.Context) {
 // account — a per-account failure is logged and skipped rather than
 // aborting the rest of the accounts.
 func (d *Daemon) phaseCalendarSync(ctx context.Context) {
+	if len(d.calendarSyncers) == 0 || !d.sourceAllowed("google") {
+		return
+	}
 	for _, s := range d.calendarSyncers {
+		if d.purgeHeld("google", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		if err != nil {
 			d.logger.Printf("calendar sync error: %v", err)
@@ -868,6 +1019,9 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 // over one syncer per account — a per-account failure is logged and skipped
 // rather than aborting the rest of the accounts.
 func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
+	if len(d.calDAVSyncers) == 0 || !d.sourceAllowed("caldav") {
+		return
+	}
 	for _, s := range d.calDAVSyncers {
 		n, err := s.Sync(ctx)
 		if err != nil {
@@ -884,7 +1038,13 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 // account — a per-account failure is logged and skipped rather than
 // aborting the rest of the accounts.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
+	if len(d.gmailSyncers) == 0 || !d.sourceAllowed("google") {
+		return
+	}
 	for _, s := range d.gmailSyncers {
+		if d.purgeHeld("google", s.AccountID()) {
+			continue
+		}
 		var n int
 		var err error
 		d.observePhase(ctx, automations.MailSource(d.db, "gmail", s.AccountID()), func() { n, err = s.Sync(ctx) })
@@ -914,6 +1074,9 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 // this loops over one syncer per account — a per-account failure is logged
 // and skipped rather than aborting the rest of the accounts.
 func (d *Daemon) phaseImapSync(ctx context.Context) {
+	if len(d.imapSyncers) == 0 || !d.sourceAllowed("imap") {
+		return
+	}
 	for _, s := range d.imapSyncers {
 		var n int
 		var err error
@@ -947,11 +1110,15 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 // Settings Re-login button to appear. Every other Sync error is logged and
 // left off the row entirely — a rate limit, a dropped connection or a failing
 // local read says nothing about the grant, and stamping it would strand a red
-// badge that only a re-login could clear. A cancelled context is daemon
-// shutdown, checked first for the same reason. Errors still accumulate into
-// firstErr, which is what the jira-boards pipeline_runs row records.
+// badge that only a re-login could clear. A cancelled context (shutdown, or
+// runLoop cancelling the cycle's fetches) is checked first for the same
+// reason. Errors still accumulate into firstErr, which is what the
+// jira-boards pipeline_runs row records.
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if len(d.jiraSyncers) == 0 {
+		return
+	}
+	if !d.sourceAllowed("jira") {
 		return
 	}
 	interval := time.Duration(d.config.Jira.SyncIntervalMins) * time.Minute
@@ -961,15 +1128,34 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if !d.lastJira.IsZero() && time.Since(d.lastJira) < interval {
 		return
 	}
+	prevJira := d.lastJira
 	d.lastJira = time.Now()
+	defer func() {
+		// A cancelled pass (shutdown, or a sleep interrupting the cycle) did
+		// not sync: the next cycle tries again instead of waiting out the
+		// interval.
+		if ctx.Err() != nil {
+			d.lastJira = prevJira
+		}
+	}()
 
 	var firstErr error
 	anyClean := false
 	for _, s := range d.jiraSyncers {
+		if d.purgeHeld("jira", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		// Read after every Sync, whatever it returned (R13).
 		if from, ok := s.FirstSyncFrom(); ok {
 			d.startHistoryBackfill("jira", s.AccountID(), from)
+		}
+		// A pass that reached Atlassian proved access, whatever failed after
+		// (one board, a later request); a revoked grant never does. No
+		// request (no boards selected) proves nothing. access_ok_at only,
+		// never status: a pass still never writes "ok" (#601, LINEAR-03).
+		if s.ReachedSource() && !errors.Is(err, jira.ErrAuthRevoked) {
+			d.markAccessOK("jira", s.AccountID())
 		}
 		if err != nil {
 			d.logger.Printf("jira: account %d: sync error: %v", s.AccountID(), err)
@@ -978,13 +1164,13 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			}
 			switch {
 			case ctx.Err() != nil:
-				// Shutdown, not an auth problem — leave the account's state
+				// Cancelled, not an auth problem — leave the account's state
 				// alone rather than stamping "context canceled" on it, which
 				// nothing but a re-login could clear.
 				d.logger.Printf("jira: account %d: sync cancelled, leaving auth state untouched", s.AccountID())
 			case errors.Is(err, jira.ErrAuthRevoked):
 				if d.db != nil {
-					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", err.Error()); dbErr != nil {
+					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", logredact.Full(err)); dbErr != nil {
 						d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
 					}
 				}
@@ -995,6 +1181,16 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		d.resolveJiraUsers(ctx, s)
 		if n > 0 {
 			d.logger.Printf("jira: account %d: %d issues synced", s.AccountID(), n)
+		}
+		// Daily per project (the syncer keeps the stamp). Log only: a revoked
+		// grant is recorded by the next Sync through the path above. Safe
+		// inside observePhase(JiraSource): a removed issue publishes no event.
+		removed, derr := s.CheckDeletedIssues(ctx, time.Now())
+		if removed > 0 {
+			d.logger.Printf("jira: account %d: %d deleted issues removed", s.AccountID(), removed)
+		}
+		if derr != nil {
+			d.logger.Printf("jira: account %d: deletion check: %v", s.AccountID(), derr)
 		}
 	}
 
@@ -1008,8 +1204,12 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			totalAPI += api
 		}
 		if inTok > 0 || outTok > 0 {
+			reportErr := firstErr
+			if isBenignShutdownErr(ctx, firstErr) {
+				reportErr = nil // cancelled, not failed (the slack-sync row's rule)
+			}
 			d.trackedPipelineRun("jira-boards", func() pipelineRunStats {
-				return pipelineRunStats{inTok: inTok, outTok: outTok, totalAPI: totalAPI, err: firstErr}
+				return pipelineRunStats{inTok: inTok, outTok: outTok, totalAPI: totalAPI, err: reportErr}
 			})
 		}
 	}
@@ -1034,9 +1234,13 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 // health; only a login clears the state); the one failure it persists is
 // linear.ErrAuthRevoked, which needs status "revoked" for the Re-login button.
 // Other errors (rate limit, network) say nothing about the grant and are only
-// logged, and a cancelled context is daemon shutdown, checked first.
+// logged, and a cancelled context (shutdown, or runLoop cancelling the
+// cycle's fetches) is checked first.
 func (d *Daemon) phaseLinearSync(ctx context.Context) {
 	if len(d.linearSyncers) == 0 {
+		return
+	}
+	if !d.sourceAllowed("linear") {
 		return
 	}
 	interval := time.Duration(d.config.Linear.SyncIntervalMins) * time.Minute
@@ -1046,10 +1250,20 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 	if !d.lastLinear.IsZero() && time.Since(d.lastLinear) < interval {
 		return
 	}
+	prevLinear := d.lastLinear
 	d.lastLinear = time.Now()
+	defer func() {
+		// A cancelled pass did not sync (phaseJiraSync's rule).
+		if ctx.Err() != nil {
+			d.lastLinear = prevLinear
+		}
+	}()
 
 	anyClean := false
 	for _, s := range d.linearSyncers {
+		if d.purgeHeld("linear", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		if err != nil {
 			d.logger.Printf("linear: account %d: sync error: %v", s.AccountID(), err)
@@ -1066,6 +1280,9 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 			continue
 		}
 		anyClean = true
+		// Every Linear pass starts with an authenticated viewer query, so a
+		// nil error proves access. access_ok_at only, never status (#601).
+		d.markAccessOK("linear", s.AccountID())
 		if n > 0 {
 			d.logger.Printf("linear: account %d: %d issues synced", s.AccountID(), n)
 		}
@@ -1091,9 +1308,8 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 // A failure here is logged and goes no further. Mapping identities is
 // bookkeeping over data already synced — it says nothing about the grant, so
 // it must not reach the account row, which this phase may only ever stamp
-// "revoked" (see phaseJiraSync's doc comment). A cancelled context is daemon
-// shutdown and skips the work entirely, for the same reason the auth-state
-// write does.
+// "revoked" (see phaseJiraSync's doc comment). A cancelled context skips the
+// work entirely, for the same reason the auth-state write does.
 func (d *Daemon) resolveJiraUsers(ctx context.Context, s jiraAccountSyncer) {
 	if ctx.Err() != nil {
 		return
@@ -1298,6 +1514,9 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 	if !d.config.Knowledge.Connectors.Enabled || d.externalSync == nil || d.db == nil {
 		return
 	}
+	if !d.sourceAllowed("jira") { // Confluence comes with the jira source
+		return
+	}
 	if ctx.Err() != nil {
 		return // shutting down: start nothing, record no pipeline run
 	}
@@ -1311,12 +1530,13 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 	}
 	d.trackedPipelineRun("external-sync", func() pipelineRunStats {
 		st, err := d.externalSync.Run(ctx)
+		d.markConfluenceAccess(srcs)
 		reportErr := err
 		if err != nil {
 			if isBenignShutdownErr(ctx, err) {
-				// Shutdown mid-cycle: cursors and page tokens are saved with
+				// Cancelled mid-cycle: cursors and page tokens are saved with
 				// the batch that advanced them, so the next cycle resumes.
-				d.logger.Printf("external sync: stopped by shutdown")
+				d.logger.Printf("external sync: stopped by %s", fetchStopReason(ctx))
 				reportErr = nil
 			} else {
 				d.logger.Printf("external sync: %v", err)
@@ -1328,6 +1548,31 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 		linked, linkErr := d.scanDocLinks(ctx)
 		return pipelineRunStats{items: st.Fetched + st.Deleted + st.Comments + linked, err: errors.Join(reportErr, linkErr)}
 	})
+}
+
+// markConfluenceAccess stamps access_ok_at of every Jira account one of
+// whose Confluence spaces the engine just synced cleanly (its last_synced_at
+// moved; #601): one Atlassian grant covers both, and an account used only for
+// Confluence makes no Jira request, so the lease must see this too.
+func (d *Daemon) markConfluenceAccess(before []db.ExtSource) {
+	prev := make(map[int64]string, len(before))
+	for _, s := range before {
+		prev[s.ID] = s.LastSyncedAt
+	}
+	after, err := d.db.ListExtSources("confluence")
+	if err != nil {
+		d.logger.Printf("external sync: reading sources for access: %v", err)
+		return
+	}
+	marked := map[int64]bool{}
+	for _, s := range after {
+		if s.JiraAccountID == 0 || marked[s.JiraAccountID] || s.LastSyncedAt == "" || s.LastSyncedAt == prev[s.ID] ||
+			d.purgeHeld("jira", s.JiraAccountID) {
+			continue
+		}
+		marked[s.JiraAccountID] = true
+		d.markAccessOK("jira", s.JiraAccountID)
+	}
 }
 
 // docLinkScanBudget bounds one cycle's doc_links detection (Confluence page
@@ -1358,7 +1603,8 @@ func (d *Daemon) scanDocLinks(ctx context.Context) (int, error) {
 }
 
 // isBenignShutdownErr reports whether err is fully explained by ctx being
-// done — a daemon shutdown mid-cycle — rather than a genuine failure. kb.Run
+// done — a daemon shutdown mid-cycle, or runLoop cancelling a cycle's fetches
+// (a sleep, a Sync Now restart) — rather than a genuine failure. kb.Run
 // joins per-source errors via errors.Join, so a cancellation that occurred
 // after a real source error already landed comes back as both in one joined
 // error; only a result where EVERY leaf is the cancellation/deadline error is
@@ -1382,52 +1628,64 @@ func isBenignShutdownErr(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// phaseTracksAndRollups (group A) runs the tracks pipeline, injects active
-// track context into the digest pipeline, then runs daily/weekly rollups.
-// The tracks half is compound-gated on Digest.Enabled too: tracks mine
-// digests (its own Run reads from the digests table), so with tracks.enabled
-// but digest.enabled off there is nothing for it to read — gating on
-// Tracks.Enabled alone would still create an empty pipeline_runs row every
-// cycle instead of skipping outright. The rollups half stays gated on
-// Digest.Enabled alone, unrelated to whether tracks itself is on. The Desktop
-// mirrors the tracks gate as readiness "Needs Slack Digests"
-// (ReadinessFeature.runsOnlyWithDigests, #575): keep the two in step. now is used
-// only for the rollup attempt budget's date (rollupBudgetDate) — the
-// runDayPlanPhase/phaseBriefing shape, threaded through so the budget's date
-// is provably the UTC date of the instant the phase actually ran, not a
-// second, independent read of the wall clock a test cannot control.
-func (d *Daemon) phaseTracksAndRollups(ctx context.Context, now time.Time) {
-	if d.config.Tracks.Enabled && d.config.Digest.Enabled && d.tracksPipe != nil {
-		d.trackedPipelineRun("tracks", func() pipelineRunStats {
-			n, updated, err := d.tracksPipe.Run(ctx)
-			if err != nil {
-				d.logger.Printf("tracks error: %v", err)
-			} else if n > 0 || updated > 0 {
-				d.logger.Printf("tracks: created %d, updated %d", n, updated)
-			}
-			inTok, outTok, cost, totalAPI := d.tracksPipe.AccumulatedUsage()
-			stats := pipelineRunStats{
-				items: n + updated, inTok: inTok, outTok: outTok,
-				cost: cost, totalAPI: totalAPI, err: err,
-			}
-			if d.tracksPipe.LastFrom > 0 {
-				stats.pFrom = &d.tracksPipe.LastFrom
-			}
-			if d.tracksPipe.LastTo > 0 {
-				stats.pTo = &d.tracksPipe.LastTo
-			}
-			return stats
-		})
+// phaseTracks is Track my threads' legacy phase (the built-in not active):
+// one tracks run, tracked as pipeline_runs "tracks". It is compound-gated on
+// Digest.Enabled too: tracks mine digests (its own Run reads from the
+// digests table), so with tracks.enabled but digest.enabled off there is
+// nothing for it to read — gating on Tracks.Enabled alone would still
+// create an empty pipeline_runs row every cycle instead of skipping
+// outright. The Desktop mirrors the gate as readiness "Needs Slack Digests"
+// (ReadinessFeature.runsOnlyWithDigests, #575): keep the two in step.
+func (d *Daemon) phaseTracks(ctx context.Context) {
+	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled || d.tracksPipe == nil {
+		return
+	}
+	_, _, _ = d.runTracksTracked(func() (int, int, error) { return d.tracksPipe.Run(ctx) })
+}
 
-		// Inject track context into digest pipeline for track-aware rollups.
-		if trackCtx, err := d.tracksPipe.FormatActiveTracksForPrompt(); err == nil && trackCtx != "" {
-			if d.digestPipe != nil {
-				d.digestPipe.TrackContext = trackCtx
-			}
+// runTracksTracked runs one tracks run (run) as pipeline_runs "tracks", with
+// the run's window as period_from/period_to and its usage, and logs it: the
+// legacy phase's run and the tracks.extract primitive's.
+func (d *Daemon) runTracksTracked(run func() (int, int, error)) (int, int, error) {
+	d.tracksMu.Lock()
+	d.tracksRanAt, d.tracksFailedAt = time.Now(), time.Time{}
+	d.tracksMu.Unlock()
+	var n, updated int
+	var runErr error
+	d.trackedPipelineRun("tracks", func() pipelineRunStats {
+		n, updated, runErr = run()
+		if runErr != nil {
+			d.logger.Printf("tracks error: %v", runErr)
+		} else if n > 0 || updated > 0 {
+			d.logger.Printf("tracks: created %d, updated %d", n, updated)
+		}
+		inTok, outTok, cost, totalAPI := d.tracksPipe.AccumulatedUsage()
+		stats := pipelineRunStats{
+			items: n + updated, inTok: inTok, outTok: outTok,
+			cost: cost, totalAPI: totalAPI, err: runErr,
+		}
+		if from := d.tracksPipe.LastFrom; from > 0 {
+			stats.pFrom = &from
+		}
+		if to := d.tracksPipe.LastTo; to > 0 {
+			stats.pTo = &to
+		}
+		return stats
+	})
+	return n, updated, runErr
+}
+
+// injectTrackContext hands the active tracks to the digest pipeline for
+// track-aware rollups, while tracks and digests are on.
+func (d *Daemon) injectTrackContext() {
+	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled || d.tracksPipe == nil {
+		return
+	}
+	if trackCtx, err := d.tracksPipe.FormatActiveTracksForPrompt(); err == nil && trackCtx != "" {
+		if d.digestPipe != nil {
+			d.digestPipe.TrackContext = trackCtx
 		}
 	}
-
-	d.runRollupPhase(ctx, now)
 }
 
 // runRollupPhase runs daily/weekly rollups (track-aware), gated by a
@@ -1584,25 +1842,33 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 	if d.ideasPipe == nil {
 		return
 	}
-	interval := time.Duration(d.config.Ideas.MineIntervalHours) * time.Hour
-	if d.config.Ideas.MineIntervalHours <= 0 {
-		interval = time.Duration(config.DefaultIdeasMineIntervalHours) * time.Hour
-	}
 	now := time.Now()
-	if !d.lastIdeas.IsZero() && now.Sub(d.lastIdeas) < interval {
+	if !d.ideasThrottleElapsed(now) {
 		return
 	}
 
 	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon")
 	if err != nil {
+		d.ideasMu.Lock()
 		if d.lastIdeasLockSkip.IsZero() || now.Sub(d.lastIdeasLockSkip) >= ideasLockSkipLogThrottle {
 			d.logger.Printf("ideas: skipping cycle — %v", err)
 			d.lastIdeasLockSkip = now
 		}
+		d.ideasMu.Unlock()
 		return
 	}
 	defer release()
 
+	_, _ = d.runIdeasTracked(func() (int, error) { return d.ideasPipe.Run(ctx) })
+}
+
+// runIdeasTracked runs one ideas run (run) as pipeline_runs "ideas" and
+// stamps the lastIdeas throttle whenever it ran, error or not: the legacy
+// phase's run and the ideas.consolidate primitive's.
+func (d *Daemon) runIdeasTracked(run func() (int, error)) (int, error) {
+	now := time.Now()
+	var proposed int
+	var runErr error
 	d.trackedPipelineRun("ideas", func() pipelineRunStats {
 		// The pipeline instance outlives this cycle — and is shared with
 		// phaseStreamDigests — so both its drop counters and its usage
@@ -1611,9 +1877,9 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 		// tokens double-count into this phase's reported usage too.
 		dropped0, rejected0 := d.ideasPipe.AccumulatedDrops()
 		inTok0, outTok0, cost0, totalAPI0 := d.ideasPipe.AccumulatedUsage()
-		proposed, err := d.ideasPipe.Run(ctx)
-		if err != nil {
-			d.logger.Printf("ideas error: %v", err)
+		proposed, runErr = run()
+		if runErr != nil {
+			d.logger.Printf("ideas error: %v", runErr)
 		} else if proposed > 0 {
 			d.logger.Printf("ideas: proposed %d", proposed)
 		}
@@ -1626,11 +1892,14 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 		// unconsumed material simply waits. Retrying an erroring pipeline on
 		// the very next cycle buys nothing but repeated AI cost — and one
 		// stuck account would otherwise pin the whole phase to every cycle.
+		d.ideasMu.Lock()
 		d.lastIdeas = now
 		d.saveLastIdeas()
+		d.ideasMu.Unlock()
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
-		return pipelineRunStats{items: proposed, inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
+		return pipelineRunStats{items: proposed, inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: runErr}
 	})
+	return proposed, runErr
 }
 
 // streamsLockSkipLogThrottle is the ideasLockSkipLogThrottle precedent
@@ -1716,6 +1985,14 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		d.resetReactionEventSeeds()
 		return
 	}
+	// A Slack source the organization's policy forbids (#608) polls
+	// nothing; like a disabled feature it clears the event seed stamps, so
+	// reactions placed while it was forbidden never fire once it is allowed
+	// again.
+	if !d.sourceAllowed("slack") {
+		d.resetReactionEventSeeds()
+		return
+	}
 	if d.reactionCmdPipe == nil || d.db == nil {
 		return
 	}
@@ -1743,15 +2020,25 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		}
 	}
 
+	d.setReactionDispatch()
 	sink := d.reactionEventSink()
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
 		dispatched, err := d.reactionCmdPipe.Run(ctx, sink)
-		if err != nil {
+		switch {
+		case isBenignShutdownErr(ctx, err):
+			// Cancelled, not failed (the slack-sync row's rule).
+			d.logger.Printf("reaction-commands: stopped by %s", fetchStopReason(ctx))
+			err = nil
+		case err != nil:
 			d.logger.Printf("reaction-commands error: %v", err)
-		} else if dispatched > 0 {
+		case dispatched > 0:
 			d.logger.Printf("reaction-commands: dispatched %d", dispatched)
 		}
-		d.lastReactionCmd = now
+		// A cancelled poll did not finish: the next cycle polls again
+		// instead of waiting out the interval.
+		if ctx.Err() == nil {
+			d.lastReactionCmd = now
+		}
 		return pipelineRunStats{items: dispatched, err: err}
 	})
 }
@@ -1917,13 +2204,15 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 	})
 }
 
-// phaseCustomTrackScan runs enabled custom tracks over recent activity,
-// appending timeline events. Runs before auto-track extraction so folds land.
-// Compound-gated on Digest.Enabled too: the activity it scans
+// phaseCustomTrackScan is the custom-track slot's legacy scan (until the
+// custom-tracks move is done): it runs the enabled custom tracks bound to no
+// watch recipe over recent activity, appending timeline events (a bound
+// track is its recipe's, phaseWatchSlot). Runs before auto-track extraction
+// so folds land. Compound-gated on Digest.Enabled too: the activity it scans
 // (db.GetScanActivity) includes digest-derived events, so with digest off
 // there is materially less for it to find — the same "tracks mine digests"
-// dependency phaseTracksAndRollups's tracks half has (and the same Desktop
-// dual path, ReadinessFeature.runsOnlyWithDigests, #575).
+// dependency phaseTracks has (and the same Desktop dual path,
+// ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled {
 		return
@@ -1951,20 +2240,24 @@ func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 }
 
 // phaseBriefing generates the daily briefing once per scheduled day.
-func (d *Daemon) phaseBriefing(ctx context.Context) {
+func (d *Daemon) phaseBriefing(ctx context.Context) { d.phaseBriefingAt(ctx, time.Now()) }
+
+// phaseBriefingAt is phaseBriefing at the cycle's clock now.
+func (d *Daemon) phaseBriefingAt(ctx context.Context, now time.Time) {
 	if !d.config.Briefing.Enabled {
 		return
 	}
-	if d.briefingPipe == nil || !d.shouldRunBriefing() || !d.briefingHasOwner(time.Now()) {
+	if d.briefingPipe == nil || !d.shouldRunBriefingAt(now) || !d.briefingHasOwner(now) {
 		return
 	}
+	today := now.Format("2006-01-02")
 	d.trackedPipelineRun("briefing", func() pipelineRunStats {
-		id, err := d.briefingPipe.Run(ctx)
+		id, err := d.briefingPipe.RunForDate(ctx, today)
 		if errors.Is(err, db.ErrNoOwner) {
 			// No owner is a benign skip: no budget, one line a day. The
 			// briefingHasOwner gate normally catches it before this run is
 			// tracked; this covers a daemon with no DB of its own.
-			d.logNoOwnerOnce(time.Now(), "briefing")
+			d.logNoOwnerOnce(now, "briefing")
 			err = nil
 		}
 		if err != nil {
@@ -1972,11 +2265,11 @@ func (d *Daemon) phaseBriefing(ctx context.Context) {
 			// point — RunForDate's benign skips (no owner, handled above;
 			// "no data yet", (0, nil)) never consume budget; only a real
 			// error does.
-			d.recordBriefingAttempt(time.Now().Format("2006-01-02"))
+			d.recordBriefingAttempt(today)
 			d.logger.Printf("briefing error: %v", err)
 		} else if id > 0 {
 			d.logger.Printf("generated briefing (id=%d)", id)
-			d.lastBriefing = time.Now()
+			d.lastBriefing = now
 			d.saveLastBriefing()
 		}
 		items := 0
@@ -2389,9 +2682,10 @@ func (d *Daemon) runDayPlanPhases(ctx context.Context, now time.Time) {
 }
 
 // shouldRunDayPlan returns true when the day-plan pipeline should generate a
-// plan: enabled, hour gate passed (skipped for the first plan on a fresh
-// install, dayPlanFresh), real-attempt budget not exhausted today, a known
-// owner, no plan yet for today.
+// plan: enabled, hour gate passed (briefing.hour — the Morning brief's one
+// time; skipped for the first plan on a fresh install, dayPlanFresh),
+// real-attempt budget not exhausted today, a known owner, no plan yet for
+// today.
 func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	if d.dayPlanPipeline == nil {
 		return false
@@ -2400,9 +2694,9 @@ func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	if !cfg.Enabled {
 		return false
 	}
-	targetHour := cfg.Hour
+	targetHour := d.config.Briefing.Hour
 	if targetHour <= 0 {
-		targetHour = config.DefaultDayPlanHour
+		targetHour = config.DefaultBriefingHour
 	}
 	// dayPlanFresh queries the DB, so it is asked only when the hour refuses.
 	if now.Hour() < targetHour && !d.dayPlanFresh() {
@@ -2516,5 +2810,17 @@ func (d *Daemon) runDayPlanConflictPhase(ctx context.Context, now time.Time, own
 			summary = updated.ConflictSummary.String
 		}
 		d.logger.Printf("dayplan: conflicts detected: %s", summary)
+	}
+}
+
+// markAccessOK stamps an account's access_ok_at after a pass that reached
+// the source (#601). A failure is logged: the lease clock then just keeps
+// its older value.
+func (d *Daemon) markAccessOK(source string, id int64) {
+	if d.db == nil {
+		return
+	}
+	if err := d.db.MarkAccountAccessOK(source, id); err != nil {
+		d.logger.Printf("%s: account %d: record access: %v", source, id, err)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/jirakey"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 )
@@ -103,6 +104,10 @@ type Pipeline struct {
 	crossChannelCache  string          // pre-formatted cross-channel section
 	ticketProjects     map[string]bool // synced Jira project keys: the only ticket keys a fingerprint counts
 	allActiveTracksRef []db.Track      // cached active tracks for the run
+
+	// promptOverride and lastPromptNote belong to one RunWith (see RunOptions).
+	promptOverride string
+	lastPromptNote string
 
 	// jiraKeyDetector, if set, detects Jira keys in extracted tracks.
 	jiraKeyDetector interface {
@@ -200,11 +205,67 @@ func (p *Pipeline) lastTracksStartedAt() string {
 // Digest.Enabled gate and no override forcing it true (contrast
 // cmd/people.go/cmd/digest.go, which force cfg.Digest.Enabled = true before
 // constructing their pipe), so it genuinely relies on this no-op for a
-// digest-disabled config. The daemon path (phaseTracksAndRollups) now
+// digest-disabled config. The daemon path (phaseTracks) now
 // compound-gates on Tracks.Enabled && Digest.Enabled before ever reaching
 // here, making this check redundant-but-harmless from the daemon, and load-
 // bearing only for that one CLI command.
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
+	return p.RunWith(ctx, RunOptions{})
+}
+
+// RunOptions tunes one tracks run.
+type RunOptions struct {
+	// Prompt, when non-empty, replaces the store-resolved
+	// tracks.extract_batch template (the role instruction is still
+	// prepended). The placeholder check applies to it.
+	Prompt string
+}
+
+// LastPromptNote is "" or the sentence saying the last run fell back to the
+// built-in template because the override had the wrong placeholder count.
+func (p *Pipeline) LastPromptNote() string { return p.lastPromptNote }
+
+// HasMaterial reports whether a run would have digests to look at: any digest
+// created after the last tracks run started, any owed retry digest, or — with
+// no prior run or no tracks for the owner yet — any digest at all. It makes
+// no AI call and writes nothing.
+func (p *Pipeline) HasMaterial() (bool, error) {
+	retry, err := p.db.GetTrackRetryDigests()
+	if err != nil {
+		return false, fmt.Errorf("loading retry digests: %w", err)
+	}
+	if len(retry) > 0 {
+		return true, nil
+	}
+	since := ""
+	owner, err := p.db.ResolveOwner()
+	if err != nil {
+		return false, fmt.Errorf("resolving owner: %w", err)
+	}
+	if owner.Known() {
+		hasTracks, err := p.db.HasTracksForUser(owner.ID)
+		if err != nil {
+			return false, fmt.Errorf("checking existing tracks: %w", err)
+		}
+		if hasTracks {
+			since = p.lastTracksStartedAt()
+		}
+	}
+	if since == "" {
+		since = "0000-01-01T00:00:00Z"
+	}
+	digests, err := p.db.GetDigestsCreatedAfter("channel", since)
+	if err != nil {
+		return false, fmt.Errorf("loading new digests: %w", err)
+	}
+	return len(digests) > 0, nil
+}
+
+// RunWith is Run with run options.
+func (p *Pipeline) RunWith(ctx context.Context, opts RunOptions) (int, int, error) {
+	p.promptOverride = opts.Prompt
+	p.lastPromptNote = ""
+	defer func() { p.promptOverride = "" }()
 	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
 	p.totalInputTokens.Store(0)
 	p.totalOutputTokens.Store(0)
@@ -439,7 +500,7 @@ func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, fresh
 
 	p.LastStepDurationSeconds = 0 // reset to avoid duplicate step recording on final progress
 	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for @%s across %d channels", res.stored, userName, len(allEntries)))
-	p.logger.Printf("tracks: %d tracks for @%s from %d channels", res.stored, userName, len(allEntries))
+	p.logger.Printf("tracks: %d tracks for %s from %d channels", res.stored, userID, len(allEntries))
 
 	// A window that produced nothing must not be stamped as a completed run:
 	// both tracks watermarks read pipeline_runs rows with status='done', so a
@@ -824,7 +885,7 @@ type digestEntry struct {
 // storeTrackItems validates and persists AI-extracted track items into the database.
 // Returns the number of tracks successfully stored/updated and the first
 // failed write, if any (the remaining items are still stored).
-func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelName string,
+func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID string,
 	usage *digest.Usage, promptVersion int, from, to float64) (int, error) {
 	// Divide token cost across items.
 	var inputTokens, outputTokens int
@@ -858,8 +919,8 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 
 		// Post-AI quality filter: drop low-value tracks.
 		if shouldDropTrack(ownership, priority, item.Category, item.Blocking) {
-			p.logger.Printf("tracks: #%s — dropped low-value track (ownership=%s, priority=%s, category=%s): %.80s",
-				channelName, ownership, priority, item.Category, item.Text)
+			p.logger.Printf("tracks: channel %s — dropped low-value track (ownership=%s, priority=%s, category=%s)",
+				channelID, ownership, priority, item.Category)
 			continue
 		}
 
@@ -931,9 +992,9 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			// Keep storing the other items, but report the loss: a batch
 			// with a failed write is a failed batch, so its digests stay
 			// owed (retry set) instead of being settled as processed.
-			p.logger.Printf("tracks: #%s — %v", channelName, err)
+			p.logger.Printf("tracks: channel %s — %v", channelID, err)
 			if writeErr == nil {
-				writeErr = fmt.Errorf("#%s: %w", channelName, err)
+				writeErr = fmt.Errorf("channel %s: %w", channelID, err)
 			}
 			continue
 		}
@@ -941,7 +1002,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 	}
 
 	if stored > 0 {
-		p.logger.Printf("tracks: #%s → %d tracks", channelName, stored)
+		p.logger.Printf("tracks: channel %s → %d tracks", channelID, stored)
 	}
 	return stored, writeErr
 }
@@ -966,7 +1027,7 @@ func (p *Pipeline) persistTrack(userID string, item aiItem, track db.Track, fp [
 		if err := p.db.FoldSourceRefsIntoTrack(custID, track.SourceRefs, track.ChannelIDs, track.RelatedDigestIDs); err != nil {
 			return fmt.Errorf("folding into custom track #%d: %w", custID, err)
 		}
-		p.logger.Printf("tracks: folded auto content into custom track #%d: %.80s", custID, item.Text)
+		p.logger.Printf("tracks: folded auto content into custom track=%d", custID)
 		return nil
 	}
 
@@ -976,7 +1037,7 @@ func (p *Pipeline) persistTrack(userID string, item aiItem, track db.Track, fp [
 		if _, err := p.db.UpdateTrackFromExtraction(id, track); err != nil {
 			return fmt.Errorf("updating track #%d (matched via %s): %w", id, how, err)
 		}
-		p.logger.Printf("tracks: merged into existing track #%d via %s: %.80s", id, how, item.Text)
+		p.logger.Printf("tracks: merged into existing track=%d via %s", id, how)
 		return nil
 	}
 
@@ -1094,7 +1155,7 @@ func parseBatchTracksResult(raw string) ([]batchChannelResult, error) {
 
 	var results []batchChannelResult
 	if err := json.Unmarshal([]byte(cleaned), &results); err != nil {
-		return nil, fmt.Errorf("parsing batch tracks JSON: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("parsing batch tracks JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 
 	// Filter out entries with missing channel ID.
@@ -1174,6 +1235,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 		roleRules,
 		"", // existing tracks per-channel removed — cross-channel section covers all
 		crossChannelSection,
+		"", // the default's second blank slot after the existing tracks; channel digests belong under their header
 		channelBlocks.String(),
 	)
 
@@ -1214,8 +1276,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 			rejected++
 			continue
 		}
-		chName := p.channelName(channelID)
-		stored, err := p.storeTrackItems(cr.Items, userID, channelID, chName, usage, promptVersion, from, to)
+		stored, err := p.storeTrackItems(cr.Items, userID, channelID, usage, promptVersion, from, to)
 		totalStored += stored
 		if err != nil && writeErr == nil {
 			writeErr = err
@@ -1642,9 +1703,28 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 	if p.profile != nil {
 		role = p.profile.Role
 	}
-	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
-	if err != nil {
-		p.logger.Printf("tracks: %v — using the built-in default", err)
+	var tmpl string
+	var version int
+	if p.promptOverride != "" {
+		tmpl = p.promptOverride
+	} else {
+		var err error
+		tmpl, version, err = prompts.Resolve(p.promptStore, id, role)
+		if err != nil {
+			p.logger.Printf("tracks: %v — using the built-in default", err)
+		}
+	}
+	// A template whose %s count differs from the shipped default's (an old
+	// customised row, or a bad override) would shift every section and append
+	// %!(EXTRA ...): the default is used instead.
+	if got, want := prompts.CountVerbs(tmpl), prompts.CountVerbs(prompts.Defaults[id]); got != want {
+		if p.promptOverride != "" {
+			p.logger.Printf("tracks: the edited prompt has %d %%s placeholders, the default has %d — using the default", got, want)
+		} else {
+			p.logger.Printf("tracks: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		}
+		p.lastPromptNote = prompts.PlaceholderNote(got, want)
+		tmpl, version = prompts.DefaultForRole(id, role), 0
 	}
 	return prompts.WithRoleInstruction(role, tmpl), version
 }
@@ -2077,7 +2157,7 @@ func parseResult(raw string) (*aiResult, error) {
 	cleaned := cleanJSON(raw)
 	var result aiResult
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, fmt.Errorf("parsing tracks JSON: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("parsing tracks JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 	return &result, nil
 }

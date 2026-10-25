@@ -379,3 +379,22 @@ func TestShippedPack(t *testing.T) {
 		}
 	}
 }
+
+// TestShippedSkills_CreateAutomationHasWatchSection: the authoring skill
+// teaches the watch recipe shape (C3, the custom-track replacement).
+func TestShippedSkills_CreateAutomationHasWatchSection(t *testing.T) {
+	var body string
+	for _, s := range Shipped() {
+		if s.Name == "create-automation" {
+			body = s.Content
+		}
+	}
+	for _, want := range []string{
+		"## Watch for something", "trigger: {sync: custom_tracks}", "track:scan",
+		"const instruction =", "track.scan({ instruction });", "40 items", "One recipe watches one thing", "The owner confirms",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("create-automation lacks %q", want)
+		}
+	}
+}

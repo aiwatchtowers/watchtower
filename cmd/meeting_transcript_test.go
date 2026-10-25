@@ -68,6 +68,7 @@ func resetTranscriptFlags(t *testing.T) {
 		transcriptSaveFlagTitle = ""
 		transcriptSaveFlagLangStats = ""
 		transcriptSaveFlagDuration = 0
+		transcriptSaveFlagStdin = false
 		transcriptListFlagEventID = ""
 		transcriptFollowupChapter = -1
 	})
@@ -79,6 +80,7 @@ func resetTranscriptFlags(t *testing.T) {
 	transcriptSaveFlagTitle = ""
 	transcriptSaveFlagLangStats = ""
 	transcriptSaveFlagDuration = 0
+	transcriptSaveFlagStdin = false
 	transcriptListFlagEventID = ""
 	transcriptFollowupChapter = -1
 }
@@ -1873,4 +1875,66 @@ func TestTranscriptSaveEventLookupErrorFails(t *testing.T) {
 	rows, err := database.ListMeetingTranscripts(db.MeetingTranscriptFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, rows)
+}
+
+// saveTranscriptRow runs save and returns the stored row.
+func saveTranscriptRow(t *testing.T, stdin string) *db.MeetingTranscript {
+	t.Helper()
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	transcriptSaveCmd.SetIn(strings.NewReader(stdin))
+	t.Cleanup(func() { transcriptSaveCmd.SetIn(nil) })
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	assert.True(t, env.SegmentsOK)
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	return tr
+}
+
+// TestTranscriptSave_Stdin (#604 S7): the Desktop pipes one JSON object; the
+// row equals the one the --*-file flags save from the same payload.
+func TestTranscriptSave_Stdin(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, longSegmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, longSegmentsFixtureJSON)
+	fromFiles := saveTranscriptRow(t, "")
+
+	resetTranscriptFlags(t)
+	transcriptSaveFlagStdin = true
+	payload, err := json.Marshal(map[string]any{
+		"transcript": longSegmentsFixtureText,
+		"segments":   json.RawMessage(longSegmentsFixtureJSON),
+		"speakers":   nil,
+	})
+	require.NoError(t, err)
+	fromStdin := saveTranscriptRow(t, string(payload))
+
+	assert.Equal(t, fromFiles.TranscriptText, fromStdin.TranscriptText)
+	require.True(t, fromStdin.SegmentsJSON.Valid)
+	var a, b any
+	require.NoError(t, json.Unmarshal([]byte(fromFiles.SegmentsJSON.String), &a))
+	require.NoError(t, json.Unmarshal([]byte(fromStdin.SegmentsJSON.String), &b))
+	assert.Equal(t, a, b, "the same segments_json")
+	assert.Equal(t, fromFiles.SpeakersJSON, fromStdin.SpeakersJSON)
+}
+
+func TestTranscriptSave_StdinAndFileRefused(t *testing.T) {
+	assert.Equal(t, []string{"stdin transcript-file"},
+		transcriptSaveCmd.Flags().Lookup("transcript-file").Annotations["cobra_annotation_mutually_exclusive"])
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	err := transcriptSaveCmd.ParseFlags([]string{"--stdin", "--transcript-file", "/nonexistent"})
+	require.NoError(t, err)
+	require.Error(t, transcriptSaveCmd.ValidateFlagGroups(), "--stdin and --transcript-file are mutually exclusive")
 }

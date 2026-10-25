@@ -9,7 +9,7 @@
 > proposed change that would break a guard test or remove a contract
 > must be raised as a question before touching code.
 
-**Writers outside the detectors:** Home's Done/Hide through `watchtower inbox resolve|dismiss` (owner ask #408, #717).
+**Writers outside the detectors:** Home's Done/Hide through `watchtower inbox resolve|dismiss` (owner ask #408, #717); the Inbox's Messages cards (C1, 2026-10-22): `read_at` on open (Desktop), Done/Hide/Snooze through `watchtower inbox resolve|dismiss|snooze`.
 
 **Module:** `internal/inbox/` + `WatchtowerDesktop/Sources/Views/Inbox/`
 **Last full audit:** 2026-07-06
@@ -240,6 +240,7 @@ deleted with the triage stage, not relaxed.
 
 ## Changelog
 
+- 2026-10-22 (C1 — One Inbox, spec 2026-10-22 §6/§9, approved in ask #500): no contract changed and no guard changed. **INBOX:** `inbox_items` gain a screen — the Inbox's **Messages** filter (and the All mix) lists the open actionable items with Home's predicate, without Home's 72 h window, at most 200 (`InboxQueries.fetchOpenMessages`). The Desktop writes only `inbox_items.read_at`, when a card is opened and only while NULL (`InboxQueries.markRead`; guard `InboxFeedQueriesTests::testMarkMessageReadWritesOnlyReadAt`, full-row comparison); **Done**, **Hide** and **Snooze** run `watchtower inbox resolve|dismiss|snooze` (`ActionStripAllKindsTests::testMessageButtonsRunTheInboxCLI`). The detectors, INBOX-02 auto-resolve, INBOX-05 (learned rules, now opened from the Inbox header's ⋯ as Learned Rules) and INBOX-09 one-record-per-channel accumulation are unchanged.
 - 2026-10-18 (Linear consumers, board #687; spec `docs/superpowers/specs/2026-10-15-linear-integration-design.md` §6, §8 "INBOX-02/09: same guarantees for Linear items — extension only"): extension, **no guard relaxed and no Jira behaviour changed**. A Linear detector (`internal/inbox/linear_detector.go`) mints `linear_assigned` (issues assigned to the owner in `tracker_issues` — their Linear ids from `db.OwnerLinearIDs`, else their Slack id through `assignee_slack_id` — updated after the watermark, minus the owner's own comment bumps, one pending item per issue) and `linear_comment_mention` (`tracker_comments` whose `mentioned_ids` name the owner); migration 00143 adds both trigger types. INBOX-02: the owner's own Linear comment resolves both (`autoResolveLinear`, the shared `autoResolveIssueComments` body that `autoResolveJira` now calls with its unchanged trigger pair). INBOX-09: every Linear read or insert failure is a detector error that freezes the watermark; the Linear and Jira detectors run independently. Only Slack's sync result is consulted, so a failed Linear sync does not freeze the watermark (the documented Jira residue, now for both trackers). Guards added: `TestInbox02_AutoResolveLinearOnUserComment`, `TestInbox09_LinearReadErrorFreezesWatermark`. The `Run` log line gains an `L%d` count.
 - 2026-10-18 (board #670 phase 2b-2): note only — **no contract or assertion changed**. `InboxLearnedRulesQueries.upsertManual`/`delete` await the writer off the main thread, and the learned-rules view model surfaces a failed write instead of swallowing it. `test_INBOX_06_manual_rule_overrides_implicit` gained `async`/`await` only (its setup write and the upsert are awaited); its assertions are unchanged. The INBOX-05 guards are unchanged (`addRule` keeps its call shape).
 

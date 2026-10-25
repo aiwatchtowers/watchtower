@@ -742,7 +742,7 @@ func TestStoreTrackItems(t *testing.T) {
 	}
 
 	usage := &digest.Usage{InputTokens: 200, OutputTokens: 100, CostUSD: 0}
-	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", "general", usage, 1, 1000, 2000)
+	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", usage, 1, 1000, 2000)
 	require.NoError(t, storeErr)
 	assert.Equal(t, 2, stored)
 
@@ -767,7 +767,7 @@ func TestStoreTrackItems_WriteFailureIsReturned(t *testing.T) {
 	stored, storeErr := pipe.storeTrackItems([]aiItem{
 		{Text: "Lost track", Context: "first", Priority: "high", Category: "task", Ownership: "mine"},
 		{Text: "Kept track", Context: "second", Priority: "high", Category: "bug_fix", Ownership: "mine"},
-	}, "U1", "C1", "general", nil, 1, 1000, 2000)
+	}, "U1", "C1", nil, 1, 1000, 2000)
 	require.Error(t, storeErr)
 	assert.Contains(t, storeErr.Error(), "injected track write failure")
 	assert.Equal(t, 1, stored, "only the landed track counts")
@@ -1117,7 +1117,7 @@ func TestTextSimilarityDedupInStoreTrackItems(t *testing.T) {
 		},
 	}
 
-	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", "incidents", nil, 1, from, to)
+	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", nil, 1, from, to)
 	require.NoError(t, storeErr)
 	assert.Equal(t, 1, stored)
 
@@ -1289,7 +1289,7 @@ func TestAutoExtractionFoldsIntoCustomTrack(t *testing.T) {
 		Text: "Decide HashBank refund owner", Context: "who owns the hashbank refund",
 		Priority: "high", Ownership: "mine",
 		SourceRefs: json.RawMessage(`[{"ts":"1","author":"a","text":"x"}]`),
-	}}, "U1", "C1", "general", nil, 1, 0, 0)
+	}}, "U1", "C1", nil, 1, 0, 0)
 	require.NoError(t, storeErr)
 
 	// The auto item folded into the custom track → no new auto track created.
@@ -1346,4 +1346,172 @@ func TestLoadWindowContext_LoadsTicketProjects(t *testing.T) {
 	pipe.loadWindowContext(db.Owner{ID: "U1", Source: db.OwnerSourceSlack})
 
 	assert.Equal(t, []string{"ACME-4"}, extractFingerprint("ship ACME-4 in UTF-8", "", pipe.ticketProjects))
+}
+
+// seedOverrideRun seeds the one-channel digest window the override tests run on.
+func seedOverrideRun(t *testing.T, role string) *db.DB {
+	t.Helper()
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
+	if role != "" {
+		require.NoError(t, database.UpsertUserProfile(db.UserProfile{SlackUserID: "U1", Role: role}))
+	}
+	now := time.Now()
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(now.Add(-2 * time.Hour).Unix()), PeriodTo: float64(now.Unix()),
+		Summary: "Backend review", MessageCount: 10, Model: "test",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+		VALUES (1, 0, 'Topic', 'Topic summary', '[]', '[{"text":"review code"}]', '[]', '[]')`)
+	require.NoError(t, err)
+	return database
+}
+
+func overridePipeline(t *testing.T, database *db.DB, stored string) (*Pipeline, *capturingGenerator) {
+	t.Helper()
+	store := prompts.New(database, nil)
+	require.NoError(t, store.Seed())
+	if stored != "" {
+		require.NoError(t, store.Update(prompts.TracksExtractBatch, stored, "test"))
+	}
+	gen := &capturingGenerator{response: `[]`}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+	pipe.SetPromptStore(store)
+	return pipe, gen
+}
+
+func verbTemplate(lead string, n int) string {
+	return lead + strings.Repeat(" %s", n)
+}
+
+func TestTracksRunWith_PromptOverrideReachesGenerator(t *testing.T) {
+	database := seedOverrideRun(t, "ic")
+	n := prompts.CountVerbs(prompts.Defaults[prompts.TracksExtractBatch])
+	pipe, gen := overridePipeline(t, database, verbTemplate("A-STORED", n))
+
+	_, _, err := pipe.RunWith(context.Background(), RunOptions{Prompt: verbTemplate("B-OVERRIDE", n)})
+	require.NoError(t, err)
+	assert.Contains(t, gen.systemSeen+gen.userSeen, "B-OVERRIDE")
+	assert.NotContains(t, gen.systemSeen+gen.userSeen, "A-STORED")
+	assert.Contains(t, gen.systemSeen+gen.userSeen, prompts.GetRoleInstruction("ic"), "the role prefix is still prepended")
+	assert.Empty(t, pipe.LastPromptNote())
+
+	// Without options the stored row still wins.
+	_, _, err = pipe.Run(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, gen.systemSeen+gen.userSeen, "A-STORED")
+}
+
+func TestTracksRunWith_PlaceholderMismatchUsesDefault(t *testing.T) {
+	database := seedOverrideRun(t, "")
+	pipe, gen := overridePipeline(t, database, "")
+
+	_, _, err := pipe.RunWith(context.Background(), RunOptions{Prompt: "B-OVERRIDE %s only"})
+	require.NoError(t, err)
+	assert.NotContains(t, gen.systemSeen+gen.userSeen, "B-OVERRIDE")
+	assert.Contains(t, gen.systemSeen+gen.userSeen, "You are analyzing channel digests from multiple Slack channels", "the default prompt was sent")
+	assert.Contains(t, pipe.LastPromptNote(), "built-in prompt was used")
+}
+
+func TestTracksRun_StoredRowPlaceholderMismatchUsesDefault(t *testing.T) {
+	database := seedOverrideRun(t, "")
+	pipe, gen := overridePipeline(t, database, "C-OLDROW %s %s")
+
+	_, _, err := pipe.Run(context.Background())
+	require.NoError(t, err)
+	sent := gen.systemSeen + gen.userSeen
+	assert.NotContains(t, sent, "C-OLDROW")
+	assert.NotContains(t, sent, "%!")
+	assert.Contains(t, sent, "You are analyzing channel digests from multiple Slack channels")
+	assert.Contains(t, pipe.LastPromptNote(), "built-in prompt was used")
+}
+
+func TestTracksHasMaterial_Cases(t *testing.T) {
+	setCreated := func(t *testing.T, database *db.DB, at time.Time) {
+		t.Helper()
+		_, err := database.Exec(`UPDATE digests SET created_at = ?`, at.UTC().Format(time.RFC3339))
+		require.NoError(t, err)
+	}
+	markRun := func(t *testing.T, database *db.DB, at time.Time) {
+		t.Helper()
+		_, err := database.UpsertTrack(db.Track{Text: "task", AssigneeUserID: "U1", Priority: "medium"})
+		require.NoError(t, err)
+		_, err = database.Exec(`INSERT INTO pipeline_runs (pipeline, source, model, status, started_at) VALUES ('tracks','test','m','done',?)`,
+			at.UTC().Format(time.RFC3339))
+		require.NoError(t, err)
+	}
+	now := time.Now()
+
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, database *db.DB)
+		want  bool
+	}{
+		{"fresh install with digests", func(t *testing.T, d *db.DB) {}, true},
+		{"fresh install without digests", func(t *testing.T, d *db.DB) {
+			_, err := d.Exec(`DELETE FROM digests`)
+			require.NoError(t, err)
+		}, false},
+		{"no digest since the last run", func(t *testing.T, d *db.DB) {
+			setCreated(t, d, now.Add(-3*time.Hour))
+			markRun(t, d, now.Add(-2*time.Hour))
+		}, false},
+		{"a new digest since the last run", func(t *testing.T, d *db.DB) {
+			setCreated(t, d, now.Add(-time.Hour))
+			markRun(t, d, now.Add(-2*time.Hour))
+		}, true},
+		{"owed retry digest only", func(t *testing.T, d *db.DB) {
+			setCreated(t, d, now.Add(-3*time.Hour))
+			markRun(t, d, now.Add(-2*time.Hour))
+			_, err := d.Exec(`INSERT INTO track_retry_digests (digest_id, attempts) VALUES (1, 1)`)
+			require.NoError(t, err)
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database := seedOverrideRun(t, "")
+			tc.setup(t, database)
+			pipe := New(database, testConfig(), &mockGenerator{}, log.Default())
+			got, err := pipe.HasMaterial()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestTracksBatchPrompt_DefaultHasNoFormatErrors(t *testing.T) {
+	database := seedOverrideRun(t, "")
+	pipe, gen := overridePipeline(t, database, "")
+
+	_, _, err := pipe.Run(context.Background())
+	require.NoError(t, err)
+	sent := gen.systemSeen + gen.userSeen
+	require.NotEmpty(t, sent)
+	assert.NotContains(t, sent, "%!")
+	assert.Equal(t, 11, prompts.CountVerbs(prompts.Defaults[prompts.TracksExtractBatch]))
+	assert.Contains(t, sent, "=== CHANNEL DIGESTS ===\n--- #backend")
+}
+
+// An override with the right %s count plus another fmt directive ("100%
+// sure" is the directive "% s") would take a section's argument: the
+// default is used and nothing prints %!.
+func TestTracksRunWith_OtherDirectiveUsesDefault(t *testing.T) {
+	n := prompts.CountVerbs(prompts.Defaults[prompts.TracksExtractBatch])
+	for _, extra := range []string{"100% sure", "count %d"} {
+		database := seedOverrideRun(t, "")
+		pipe, gen := overridePipeline(t, database, "")
+		_, _, err := pipe.RunWith(context.Background(), RunOptions{Prompt: verbTemplate("B-OVERRIDE "+extra, n)})
+		require.NoError(t, err)
+		assert.NotContains(t, gen.systemSeen+gen.userSeen, "B-OVERRIDE", extra)
+		assert.NotContains(t, gen.systemSeen+gen.userSeen, "%!", extra)
+		assert.Contains(t, pipe.LastPromptNote(), "other than %s", extra)
+	}
 }

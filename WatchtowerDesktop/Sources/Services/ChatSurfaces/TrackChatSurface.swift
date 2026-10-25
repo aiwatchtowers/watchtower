@@ -38,6 +38,7 @@ enum TrackChatSurface {
             key: EmbeddedChatKey(contextType: contextType, contextID: String(track.id), conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { buildSystemPrompt(track: track, dbPool: dbPool) },
             emptyHint: "Ask about this track, who's involved, or related discussions.",
             starterPrompts: starterPrompts

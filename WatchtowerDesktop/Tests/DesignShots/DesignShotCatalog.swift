@@ -46,6 +46,25 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
+            DesignShot(name: "chat-knowledge-marks", size: NSSize(width: 560, height: 260)) {
+                AnyView(DesignShotFixtures.chatKnowledgeMarks().padding(12).shotFrame().detailBackground())
+            },
+            // Native text runs (§5b): finished and streaming must match.
+            DesignShot(name: "chat-markdown-finished", size: NSSize(width: 784, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 760).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-streaming", size: NSSize(width: 784, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 760).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-finished-narrow", size: NSSize(width: 344, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 320).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
+            },
+            DesignShot(name: "workchat-live-line", size: NSSize(width: 560, height: 120)) {
+                AnyView(DesignShotFixtures.workchatLiveLine().padding(12).shotFrame().detailBackground())
+            },
             DesignShot(name: "calendar-rows", size: NSSize(width: 480, height: 200)) {
                 AnyView(DesignShotFixtures.calendarRows().padding(12).shotFrame().detailBackground())
             },
@@ -63,18 +82,150 @@ enum DesignShotCatalog {
             DesignShot(name: "home-getting-ready", size: NSSize(width: 1800, height: 1100)) {
                 HomeShotFixtures.home(gettingReady: true)
             },
-            DesignShot(name: "automation-draft-panel", size: NSSize(width: 560, height: 720)) {
-                AnyView(AutomationShotFixtures.draftPanel().shotFrame().detailBackground())
+            // Account purge notice (#601): the banner above Getting ready.
+            DesignShot(name: "home-account-purge", size: NSSize(width: 1280, height: 720)) {
+                HomeShotFixtures.home(purges: HomeShotFixtures.purges)
+            },
+            DesignShot(name: "settings-privacy", size: NSSize(width: 640, height: 420)) {
+                AnyView(HomeShotFixtures.privacySettings().shotFrame().detailBackground())
+            },
+            DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 600)) {
+                AnyView(HomeShotFixtures.organizationPolicy().shotFrame().detailBackground())
+            },
+            DesignShot(name: "settings-connections-blocked", size: NSSize(width: 760, height: 420)) {
+                AnyView(HomeShotFixtures.connectionsBlocked().shotFrame().detailBackground())
+            },
+            DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
+                AutomationShotFixtures.list()
+            },
+            DesignShot(name: "automation-list-collapsed", size: NSSize(width: 1280, height: 760)) {
+                AutomationShotFixtures.list(collapsed: true)
+            },
+            DesignShot(name: "automation-card", size: NSSize(width: 900, height: 720)) {
+                AnyView(AutomationShotFixtures.card().detailBackground())
+            },
+            DesignShot(name: "automation-draft-column", size: NSSize(width: 560, height: 760)) {
+                AnyView(AutomationShotFixtures.draftColumn().shotFrame().detailBackground())
             },
             DesignShot(name: "automation-save-card", size: NSSize(width: 560, height: 520)) {
                 AnyView(AutomationShotFixtures.saveCard().padding(12).shotFrame().detailBackground())
             },
-            DesignShot(name: "automation-new-sheet-workbench", size: NSSize(width: 960, height: 640)) {
-                AnyView(AutomationShotFixtures.newSheetForWorkbench().detailBackground())
+            DesignShot(name: "automation-new-panel", size: NSSize(width: 900, height: 640)) {
+                AnyView(AutomationShotFixtures.newPanel(fixedToAcme: false).detailBackground())
+            },
+            DesignShot(name: "automation-new-panel-workbench", size: NSSize(width: 900, height: 640)) {
+                AnyView(AutomationShotFixtures.newPanel(fixedToAcme: true).detailBackground())
+            },
+            DesignShot(name: "automation-template-panel", size: NSSize(width: 1000, height: 760)) {
+                AnyView(AutomationShotFixtures.templatePanel().detailBackground())
+            },
+            DesignShot(name: "automation-editor-panel", size: NSSize(width: 1280, height: 800)) {
+                AnyView(AutomationShotFixtures.editorPanel(review: false).detailBackground())
+            },
+            DesignShot(name: "automation-editor-review", size: NSSize(width: 1280, height: 800)) {
+                AnyView(AutomationShotFixtures.editorPanel(review: true).detailBackground())
+            },
+            // The Inbox read like mail (spec B1).
+            DesignShot(name: "inbox-reading-pane", size: NSSize(width: 1180, height: 720)) {
+                InboxShotFixtures.readingPane()
+            },
+            DesignShot(name: "inbox-reading-pane-narrow", size: NSSize(width: 420, height: 560)) {
+                InboxShotFixtures.narrowPane()
+            },
+            DesignShot(name: "inbox-proposal-pane", size: NSSize(width: 1180, height: 720)) {
+                InboxShotFixtures.proposalPane()
+            },
+            DesignShot(name: "inbox-message-pane", size: NSSize(width: 1180, height: 720)) {
+                InboxShotFixtures.messagePane()
+            },
+            // The one Inbox (C1): every kind under the filter bar, at a fixed moment.
+            DesignShot(name: "inbox-all", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.all()
+            },
+            DesignShot(name: "inbox-filter-day", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.filterDay()
+            },
+            DesignShot(name: "inbox-day-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.dayCard()
+            },
+            DesignShot(name: "inbox-day-card-regenerate", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.dayCardRegenerate()
+            },
+            DesignShot(name: "inbox-day-card-empty", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.dayCardEmpty()
+            },
+            DesignShot(name: "inbox-track-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.trackCard()
+            },
+            DesignShot(name: "inbox-tracks-stopped", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.tracksStopped()
+            },
+            DesignShot(name: "inbox-idea-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.ideaCard()
+            },
+            DesignShot(name: "inbox-decision-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.decisionCard()
+            },
+            DesignShot(name: "inbox-chat-decision-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.chatDecisionCard()
+            },
+            DesignShot(name: "inbox-message-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.messageCard()
+            },
+            DesignShot(name: "inbox-filter-ideas-new", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.ideasNew()
+            },
+            DesignShot(name: "inbox-cheat-sheet", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.cheatSheet()
+            },
+            DesignShot(name: "inbox-day-card-narrow", size: NSSize(width: 420, height: 560)) {
+                OneInboxShotFixtures.dayCardNarrow()
+            },
+            // Built-in automations (C2): the Inbox notice of a failed move.
+            DesignShot(name: "inbox-builtin-notice", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.builtinNotice()
+            },
+            // Built-in automations (C2): the Built in section and Morning brief's card.
+            DesignShot(name: "automation-builtin-list", size: NSSize(width: 1280, height: 760)) {
+                BuiltinShotFixtures.list()
+            },
+            DesignShot(name: "automation-builtin-card", size: NSSize(width: 900, height: 720)) {
+                BuiltinShotFixtures.card(.shipped)
+            },
+            DesignShot(name: "automation-builtin-card-updated", size: NSSize(width: 900, height: 900)) {
+                BuiltinShotFixtures.card(.updated)
+            },
+            DesignShot(name: "automation-builtin-card-reset", size: NSSize(width: 900, height: 720)) {
+                BuiltinShotFixtures.card(.resetting)
+            },
+            DesignShot(name: "settings-features-builtin", size: NSSize(width: 640, height: 620)) {
+                BuiltinShotFixtures.featuresSettings()
+            },
+            // C3: the Reactions and Idea finder cards, Watch for something, the track card through its watch.
+            DesignShot(name: "automations-builtin-reactions", size: NSSize(width: 900, height: 820)) {
+                BuiltinShotFixtures.c3Card(reactions: true)
+            },
+            DesignShot(name: "automations-builtin-ideas", size: NSSize(width: 900, height: 620)) {
+                BuiltinShotFixtures.c3Card(reactions: false)
+            },
+            DesignShot(name: "automations-new-watch", size: NSSize(width: 900, height: 720)) {
+                AnyView(AutomationShotFixtures.newPanel(fixedToAcme: false).detailBackground())
+            },
+            DesignShot(name: "inbox-track-card-watch", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.trackCard(.bound)
+            },
+            DesignShot(name: "inbox-track-card-watch-edited", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.trackCard(.edited)
+            },
+            DesignShot(name: "inbox-track-card-unbound", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.trackCard(.unbound)
             },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
+            },
+            DesignShot(name: "branch-review-chat-panel", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.changesWithChat()
             },
             DesignShot(name: "branch-review-empty", size: NSSize(width: 1180, height: 520)) {
                 ReviewShotFixtures.empty()
@@ -84,6 +235,40 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
+            },
+            // Spec review in the review ask drawer (spec 2026-10-25 §7).
+            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
+                SpecReviewShotFixtures.screen(.meaning)
+            },
+            DesignShot(name: "spec-review-chapters", size: NSSize(width: 760, height: 900)) {
+                SpecReviewShotFixtures.screen(.chapters)
+            },
+            DesignShot(name: "spec-review-wrapup", size: NSSize(width: 760, height: 900)) {
+                SpecReviewShotFixtures.screen(.wrapup)
+            },
+            DesignShot(name: "spec-review-running", size: NSSize(width: 760, height: 360)) {
+                SpecReviewShotFixtures.running()
+            },
+            DesignShot(name: "spec-review-strips", size: NSSize(width: 760, height: 150)) {
+                SpecReviewShotFixtures.strips()
+            },
+            // Approve / Request changes (#964, mockup 3).
+            DesignShot(name: "branch-review-approve-popover", size: NSSize(width: 400, height: 260)) {
+                ReviewShotFixtures.approvePopover()
+            },
+            DesignShot(name: "branch-review-approved", size: NSSize(width: 1180, height: 560)) {
+                ReviewShotFixtures.approved()
+            },
+            // Branch review polish (#958–#962): the preview and the chapter's risks.
+            DesignShot(name: "branch-review-preview", size: NSSize(width: 1180, height: 560)) {
+                ReviewShotFixtures.preview()
+            },
+            DesignShot(name: "branch-review-chapter-risks", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.chapterRisks()
+            },
+            // Search while the messages index is rebuilt (#892).
+            DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {
+                AnyView(SearchShotFixtures.rebuildPending().shotFrame().detailBackground())
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
@@ -121,6 +306,11 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        SpecReviewShotFixtures.cleanUp()
+        InboxShotFixtures.cleanUp()
+        OneInboxShotFixtures.cleanUp()
+        AutomationShotFixtures.cleanUp()
+        BuiltinShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
@@ -271,6 +461,46 @@ enum DesignShotFixtures {
         } catch {
             return failure(error)
         }
+    }
+
+    /// An owner message that saved a decision, and each other mark state.
+    static func chatKnowledgeMarks() -> AnyView {
+        let marks: [(ChatKnowledgeMark, String)] = [
+            (.saved(kind: "note", ideaID: 2), "note"), (.empty, "decision"), (.changed(ideaID: 3), "decision"),
+            (.undone, "decision"), (.failed("database is locked"), "decision")
+        ]
+        return AnyView(VStack(alignment: .trailing, spacing: 12) {
+            UserMessageBubble(text: "decided: release acme on Tuesdays from next week")
+            ChatKnowledgeMarkLine(mark: .saved(kind: "decision", ideaID: 1), prefixKind: "decision",
+                                  undo: {}, openInInbox: { _ in })
+            ForEach(Array(marks.enumerated()), id: \.offset) { _, entry in
+                ChatKnowledgeMarkLine(mark: entry.0, prefixKind: entry.1, undo: {}, openInInbox: { _ in })
+            }
+            Spacer(minLength: 0)
+        })
+    }
+
+    // MARK: - Workchat
+
+    /// The live line with a tool step and its timer, Thinking…, and the
+    /// empty row that keeps its height.
+    static func workchatLiveLine() -> AnyView {
+        let now = Date()
+        let tool = WorkchatActivityPresenter.line(
+            activity: SessionFeedActivity(tool: "Bash", summary: "make test FILTER=AcmeExportTests", startedAt: now.addingTimeInterval(-75)),
+            working: true, background: false, runningSubagents: 0, stateAt: now, lastAgentAt: nil)
+        let thinking = WorkchatActivityPresenter.line(
+            activity: nil, working: true, background: false, runningSubagents: 0,
+            stateAt: now.addingTimeInterval(-12), lastAgentAt: nil)
+        return AnyView(VStack(spacing: 0) {
+            WorkchatActivityLine(line: tool)
+            Divider()
+            WorkchatActivityLine(line: thinking)
+            Divider()
+            WorkchatActivityLine(line: nil)
+            Divider()
+            Spacer(minLength: 0)
+        })
     }
 
     // MARK: - Calendar

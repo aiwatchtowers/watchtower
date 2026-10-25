@@ -53,6 +53,10 @@ final class HomeLinksBuilderTests: XCTestCase {
         data.dayPlanDone = 2
         data.dayPlanTotal = 5
         XCTAssertEqual(row(.dayPlan, data)?.status, "2 of 5 done")
+        // The plan opens today's Inbox day card (`InboxRoute.forFeature`).
+        XCTAssertEqual(row(.dayPlan, data)?.link, .feature(.dayPlan))
+        XCTAssertEqual(InboxRoute.forFeature(.dayPlan, today: "2026-10-19"),
+                       InboxRoute(filter: .day, selection: .day("2026-10-19")))
         XCTAssertNil(row(.dayPlan, HomeLinksData())?.status)
         XCTAssertNil(row(.digests, data)?.status)
     }

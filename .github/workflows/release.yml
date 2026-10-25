@@ -11,7 +11,7 @@ on:
 jobs:
   go-release-gate:
     name: Go Release Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail the gate, not run to GitHub's 6 h default. The step
     # budgets (code index 20 + coverage 25 = 45) plus ~10 for setup and
     # build, so the job cap never cuts a step short of its own timeout.
@@ -22,6 +22,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       # -tags codegrammars: the release CLI carries the code index's full
       # grammar set (scripts/build-app.sh builds it the same way).
@@ -46,7 +52,7 @@ jobs:
   # -race), in parallel: the unsharded pass outgrew one 40-minute step.
   go-release-race:
     name: Go Release Race (${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -58,6 +64,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (race, library packages)
         timeout-minutes: 30
@@ -108,6 +120,9 @@ jobs:
 
       - name: Test
         timeout-minutes: 20
+        env:
+          # SQLCipherInteropTests fail instead of skipping without Go (#603).
+          WATCHTOWER_REQUIRE_GO: "1"
         run: swift test
 
       # The process-spawning suites again on a one-thread concurrency pool,

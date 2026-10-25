@@ -51,7 +51,7 @@ func newWorkbenchFixture(t *testing.T) workbenchFixture {
 func workbenchRegistry(t *testing.T, d *db.DB) *Registry {
 	t.Helper()
 	reg := New(d)
-	for _, tool := range append(WorkbenchTools(workbenchfiles.New(t.TempDir())), NewListTargets(), NewGetTarget()) {
+	for _, tool := range append(WorkbenchTools(workbenchfiles.New(t.TempDir()), nil), NewListTargets(), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg
@@ -89,7 +89,7 @@ func countActions(t *testing.T, d *db.DB) int {
 }
 
 func TestProjectTools_AllOnProjectSurfaceNeverExternal(t *testing.T) {
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil) {
 		assert.Equal(t, []string{"project"}, tool.Surfaces, tool.Name)
 		assert.False(t, tool.External, "%s must stay on this machine (DEV-06)", tool.Name)
 		if tool.Access == AccessWrite {

@@ -13,11 +13,13 @@ If any of these changes, the fingerprint changes and the recipe stops until you 
 
 A file pulled in from outside (say with `git pull`) also shows **Needs your confirmation** and waits.
 
-A recipe that runs a shell command (`shell:`) is confirmed by the command text only. The scripts or Makefile the command runs are not part of the fingerprint: if they change later, for example when the repository is updated or an agent edits them, the command still runs unattended without asking again. Confirm such a recipe only if you trust that folder's contents; the confirm sheet says this.
+A recipe that runs a shell command (`shell:`) is confirmed by the command text only. The scripts or Makefile the command runs are not part of the fingerprint: if they change later, for example when the repository is updated or an agent edits them, the command still runs unattended without asking again. Confirm such a recipe only if you trust that folder's contents; the draft column says so.
 
 ### Budgets
 
 Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. There is no daily cap across runs. At most two runs execute at the same time.
+
+A run also has one read budget for your synced data, shared by its `tool()` reads and `mcp()` calls: 300 reads or 5,000 rows. Past it a read throws a **ValidationError** the script can catch, and the run goes on.
 
 ### What a run can write
 
@@ -27,25 +29,25 @@ A run waiting on you pauses and resumes after you decide. After its pause timeou
 
 ### Auto grants
 
-You can let one automation apply one kind of write without asking, with that tool's checkbox under the "Auto" caption in the edit form. A grant is tied to the recipe's fingerprint: edit the recipe and the grant pauses (**Auto paused**).
+You can let one automation apply one kind of write without asking, with that tool's checkbox under the "Auto" caption in **Form**. A grant is tied to the recipe's fingerprint: edit the recipe and the grant pauses (**Auto paused**).
 
-The Save sheet then lists each tool with a "Keep auto for ..." box, unchecked. Tools marked **Always asks** never go automatic.
+The draft column then lists each tool with a "Keep auto for ..." box, unchecked. Tools marked **Always asks** never go automatic.
 
 ### Other people's text is data
 
 When a recipe passes mail, messages or tickets to `llm()` as `input`, Watchtower marks that text as written by other people, and the model is told never to follow instructions inside it. Pass such text as `input`, not inside the prompt itself, so it gets this marking.
 
-The marking lowers the risk but does not remove it. If such a recipe also has auto on, or paused, for a tool that writes outside Watchtower (a Slack message, a Jira comment), a warning appears next to the Auto checkboxes in the edit form, next to the "Keep auto for ..." boxes in the Save sheet and in the confirmation sheet: text the model writes from other people's messages could go out without asking you.
+The marking lowers the risk but does not remove it. If such a recipe also has auto on, or paused, for a tool that writes outside Watchtower (a Slack message, a Jira comment), a warning appears next to the Auto checkboxes in **Form**, next to the "Keep auto for ..." boxes in the draft column: text the model writes from other people's messages could go out without asking you.
 
 ## Using it
-- To confirm: open the card, press **Review…**, read the permissions and the script, then **Confirm**.
-- To allow an automatic write: tick the tool under the "Auto" caption in the edit form.
+- To confirm: open the card, press **Review…**, read the column (**Show recipe** has the script), then **Confirm** or **Confirm and Turn On**. Saving also confirms, and only what the column listed.
+- To allow an automatic write: tick the tool under the "Auto" caption in **Form**.
 - To see what a run is waiting on: open **Inbox**, **Actions**.
 
 ## When it's empty or wrong
 - **Needs your confirmation.** The fingerprint changed or the file came from outside. Open **Review…**.
-- **Auto paused.** You edited the recipe. Tick "Keep auto for ..." in the Save sheet again.
-- **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work.
+- **Auto paused.** You edited the recipe. Tick "Keep auto for ..." in the draft column when you save, or use the **Auto** caption in **Form**.
+- **Ended on budget or time.** Raise the budget in **Form** (this needs confirming again) or shorten the work.
 - **Expired.** The run waited longer than its pause timeout for your decision.
 
 ## Related

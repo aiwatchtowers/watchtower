@@ -24,7 +24,7 @@ final class ActionStripViewModelTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         XCTAssertEqual(vm.actionRows.map(\.turnID), ["a"])
         XCTAssertEqual(vm.reminderRows.map(\.messageRef), ["C1@1"])
@@ -42,7 +42,7 @@ final class ActionStripViewModelTests: XCTestCase {
             return db.lastInsertedRowID
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
         XCTAssertEqual(vm.reminderRows.map(\.id), [id])
 
         await vm.markReminderDone(id)
@@ -62,7 +62,7 @@ final class ActionStripViewModelTests: XCTestCase {
             return db.lastInsertedRowID
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
         XCTAssertEqual(vm.reminderRows.map(\.id), [id])
 
         await vm.snoozeReminder(id, until: "2999-01-01T00:00:00Z")
@@ -79,7 +79,7 @@ final class ActionStripViewModelTests: XCTestCase {
         let id = try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, status: "pending") }
         let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        vm.refresh()
+        await vm.refresh()
         XCTAssertEqual(vm.actionRows.map(\.status), ["pending"])
 
         let otherPool = try DatabasePool(path: path)
@@ -105,7 +105,7 @@ final class ActionStripViewModelTests: XCTestCase {
         }
         let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"error":""}"#.utf8))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        vm.refresh()
+        await vm.refresh()
         XCTAssertEqual(vm.actionRows.map(\.id), [id], "an undismissed unknown outcome waits on the strip")
 
         let otherPool = try DatabasePool(path: path)
@@ -132,7 +132,7 @@ final class ActionStripViewModelTests: XCTestCase {
         struct Boom: LocalizedError { var errorDescription: String? { "boom" } }
         let runner = FakeCLIRunner(error: Boom())
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        vm.refresh()
+        await vm.refresh()
 
         await vm.approve(id, shownArgs: "{}")
         XCTAssertEqual(vm.actionFeed.rowErrors[id]?.message, "boom", "a failed CLI call must surface on the row's card")
@@ -162,7 +162,7 @@ final class ActionStripViewModelTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         XCTAssertEqual(vm.lastReactionCheck, "2026-09-25T09:00:04Z")
         XCTAssertNil(vm.lastError)
@@ -173,7 +173,7 @@ final class ActionStripViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         XCTAssertNil(vm.lastReactionCheck)
     }

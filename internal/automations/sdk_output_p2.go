@@ -21,7 +21,7 @@ const (
 // registerP2OutputKinds adds output.briefing, output.target and output.slack
 // to m, closing over b for the two registry shortcuts.
 func registerP2OutputKinds(m *OutputMod, b Backends) {
-	m.RegisterOutputKind(outputKindBriefing, bufferedOutput(outputKindBriefing, false))
+	m.RegisterOutputKind(outputKindBriefing, bufferedOutput(outputKindBriefing, outputOpts{}))
 	for tool, kind := range outputTools {
 		m.RegisterOutputKind(kind, toolOutput(b, kind, tool))
 	}

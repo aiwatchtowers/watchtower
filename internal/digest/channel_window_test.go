@@ -538,23 +538,13 @@ func TestChannelWindow_CeilingBreachAdvancesLoudly(t *testing.T) {
 
 	// One row past the ceiling, all inside a single second, so not even the
 	// over-cap reload can leave that second.
-	//
-	// Seeded in one statement, and all but the first few rows with empty text:
-	// the messages_ai FTS trigger skips an empty message, and it is quadratic
-	// otherwise (a full messages_fts scan per inserted row), which would cost
-	// this test ~19s. The few visible rows are the oldest of the second, so the
-	// load carries them and the channel takes the ordinary accepted path.
 	const inOneSecond = db.BoundarySecondRowLimit + 1
-	const visible = 5
 	sec := time.Now().Add(-6 * time.Hour).Unix()
-	for i := range visible {
-		seedMessage(t, database, "C_CEILING", fmt.Sprintf("%d.%06d", sec, i+1), "U1", fmt.Sprintf("ceiling-%d-end", i))
-	}
 	_, err := database.Exec(`
-		WITH RECURSIVE seq(n) AS (SELECT ? UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+		WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
 		INSERT INTO messages (channel_id, ts, user_id, text)
-		SELECT 'C_CEILING', printf('%d.%06d', ?, n), 'U1', '' FROM seq`,
-		visible+1, inOneSecond, sec)
+		SELECT 'C_CEILING', printf('%d.%06d', ?, n), 'U1', printf('ceiling-%d-end', n) FROM seq`,
+		inOneSecond, sec)
 	require.NoError(t, err)
 	seedMessage(t, database, "C_CEILING", fmt.Sprintf("%d.000000", sec+120), "U1", "after-the-ceiling")
 
@@ -570,7 +560,7 @@ func TestChannelWindow_CeilingBreachAdvancesLoudly(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	assert.Contains(t, logBuf.String(), "ERROR: #ceiling",
+	assert.Contains(t, logBuf.String(), "ERROR: channel C_CEILING",
 		"a breach of the row ceiling must be loud, naming the channel")
 	assert.Contains(t, logBuf.String(), fmt.Sprintf("in second %d", sec),
 		"and naming the second it could not get past")

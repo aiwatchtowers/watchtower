@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 )
 
 // validProjectKeyRe validates Jira project keys to prevent JQL injection.
@@ -41,6 +42,10 @@ type Syncer struct {
 	changelogLimit   int                // max issues whose status/assignee history is fetched per pass (0 = disabled)
 	OnProgress       func(SyncProgress) // optional progress callback
 	firstSyncFrom    time.Time          // set by Sync when it was the account's first; see FirstSyncFrom
+	reached          bool               // set by Sync when a project's issue search succeeded; see ReachedSource
+
+	deletionsDueAt map[string]time.Time            // project key → earliest next CheckDeletedIssues; in memory per daemon run
+	deletionsKept  map[string]map[string]time.Time // project key → missing keys Jira still returned → when last confirmed
 }
 
 // NewSyncer creates a Syncer for one Jira account.
@@ -52,6 +57,9 @@ func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []i
 		logger:    log.New(os.Stderr, "[jira-sync] ", log.LstdFlags),
 		boardIDs:  boardIDs,
 		accountID: accountID,
+
+		deletionsDueAt: map[string]time.Time{},
+		deletionsKept:  map[string]map[string]time.Time{},
 	}
 }
 
@@ -95,6 +103,7 @@ func (s *Syncer) SetCommentSyncLimit(n int) {
 // first sync (FirstSyncFrom).
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	s.firstSyncFrom = time.Time{}
+	s.reached = false
 	started := time.Now().UTC()
 	had, err := s.hasSyncWatermark()
 	if err != nil {
@@ -118,6 +127,14 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
 	return s.firstSyncFrom, !s.firstSyncFrom.IsZero()
 }
+
+// ReachedSource reports whether the last Sync made at least one successful
+// authenticated request (a project's issue search came back), whatever Sync
+// returned after it: a later failure (another board, the history fetch) does
+// not undo that proof. A pass with no boards selected, or whose every
+// project's search failed, never reached the source. The daemon stamps
+// access_ok_at when this is true and the error is not ErrAuthRevoked (#601).
+func (s *Syncer) ReachedSource() bool { return s.reached }
 
 // hasSyncWatermark reports whether any project of this account has a
 // last_synced_at watermark.
@@ -366,7 +383,7 @@ func buildStatusNotIn(statuses []string) string {
 // in the log line.
 func (s *Syncer) recordProjectError(what, projectKey string, err error) {
 	s.logger.Printf("%s error for project %s: %v", what, projectKey, err)
-	if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
+	if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, logredact.Full(err), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
 		s.logger.Printf("recording %s error for project %s: %v", what, projectKey, rerr)
 	}
 }
@@ -402,6 +419,9 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 	jql := buildIncrementalJQL(projectKey, lastSyncedAt, passStart)
 
 	n, changedKeys, err := s.syncWithJQL(ctx, jql, boardID)
+	if err == nil {
+		s.reached = true
+	}
 	if err != nil {
 		if errors.Is(err, ErrAuthRevoked) {
 			// The account's grant is gone — every remaining project would

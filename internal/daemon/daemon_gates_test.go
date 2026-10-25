@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/briefing"
 	"watchtower/internal/config"
 	"watchtower/internal/customtracks"
@@ -20,6 +21,7 @@ import (
 	"watchtower/internal/guide"
 	"watchtower/internal/ideas"
 	"watchtower/internal/inbox"
+	"watchtower/internal/media"
 	"watchtower/internal/memory"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -80,13 +82,13 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				cfg.Tracks.Enabled = false
 				d.SetTracksPipeline(tracks.New(database, cfg, gen, l))
 				d.SetCustomTracksPipeline(customtracks.New(database, gen, cfg.Digest.Language, l))
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
 			},
 			// Custom tracks shares the tracks gate key (both scan/extract
-			// narrative tracks) — exercise both phase methods.
-			run: func(d *Daemon) {
-				d.phaseTracksAndRollups(context.Background(), time.Now())
-				d.phaseCustomTrackScan(context.Background())
-			},
+			// narrative tracks) — exercise both slots (the watch slot and
+			// Track my threads), on the legacy phases and on the built-ins.
+			run:   runTrackSlotsBothWays,
+			check: assertNoPipelineOrAutomationRuns,
 		},
 		{
 			// Tracks mine digests (tracks.Pipeline.Run reads the digests
@@ -102,11 +104,10 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				cfg.Digest.Enabled = false
 				d.SetTracksPipeline(tracks.New(database, cfg, gen, l))
 				d.SetCustomTracksPipeline(customtracks.New(database, gen, cfg.Digest.Language, l))
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
 			},
-			run: func(d *Daemon) {
-				d.phaseTracksAndRollups(context.Background(), time.Now())
-				d.phaseCustomTrackScan(context.Background())
-			},
+			run:   runTrackSlotsBothWays,
+			check: assertNoPipelineOrAutomationRuns,
 		},
 		{
 			name: "people",
@@ -133,10 +134,12 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
 				cfg.Ideas.Enabled = false
 				d.SetIdeasPipeline(ideas.New(database, cfg, gen, l))
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
 			},
-			run: func(d *Daemon) { d.phaseIdeas(context.Background()) },
+			// The Idea finder slot, on the legacy phase and on the built-in.
+			run: runIdeaFinderBothWays,
 			check: func(t *testing.T, cfg *config.Config, database *db.DB) {
-				assertNoPipelineRuns(t, cfg, database)
+				assertNoPipelineOrAutomationRuns(t, cfg, database)
 				// The load-bearing assertion (the quirk this task closes):
 				// with wireIdeasPipeline now unconditional, ideasPipe is
 				// non-nil even when ideas.enabled=false, so without this
@@ -209,8 +212,31 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				// a day, rather than skipping the case outright.
 				cfg.Briefing.Hour = 1
 				d.SetBriefingPipeline(briefing.New(database, cfg, gen, l))
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
 			},
-			run: func(d *Daemon) { d.phaseBriefing(context.Background()) },
+			// The Morning brief slot, on the legacy phases and on the
+			// built-in: neither writes a pipeline_runs or automation_runs row.
+			run:   runMorningBriefBothWays,
+			check: assertNoPipelineOrAutomationRuns,
+		},
+		{
+			// The media pass is part of Knowledge search: off = no fetch,
+			// no model call, no media row touched and no run row.
+			name: "media",
+			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
+				cfg.Knowledge.Enabled = false
+				seedPendingMedia(t, database)
+				d.SetMediaPipeline(&media.Pipeline{DB: database, Gen: gen, WorkspaceDir: cfg.WorkspaceDir(),
+					Openers: map[string]media.Opener{"slack": &mediaTestOpener{}}, Logger: l})
+			},
+			run: func(d *Daemon) { d.phaseMediaDescribe(context.Background()) },
+			check: func(t *testing.T, cfg *config.Config, database *db.DB) {
+				assertNoPipelineRuns(t, cfg, database)
+				var worked int
+				require.NoError(t, database.QueryRow(`SELECT count(*) FROM media_items
+					WHERE status != 'pending' OR attempts != 0 OR described_at != ''`).Scan(&worked))
+				assert.Zero(t, worked, "knowledge.enabled=false must never work a media row")
+			},
 		},
 		{
 			name: "day_plan",
@@ -231,12 +257,18 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				})
 				require.NoError(t, err)
 				d.SetDayPlanPipeline(dayplan.New(database, cfg, gen, l))
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
 			},
+			// The plan phase and the conflict phase both sit in the Morning
+			// brief slot (phaseMorningBrief), legacy and built-in; the
+			// conflict phase is also driven directly with the resolved owner,
+			// so its own Enabled gate is what stops it.
 			run: func(d *Daemon) {
+				runMorningBriefBothWays(d)
 				now := time.Now()
-				d.runDayPlanPhase(context.Background(), now, d.dayPlanOwner(now))
 				d.runDayPlanConflictPhase(context.Background(), now, d.dayPlanOwner(now))
 			},
+			check: assertNoPipelineOrAutomationRuns,
 		},
 	}
 
@@ -267,6 +299,43 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 			check(t, cfg, database)
 		})
 	}
+}
+
+// runMorningBriefBothWays drives the Morning brief slot on the legacy phases
+// and then on the built-in.
+func runMorningBriefBothWays(d *Daemon) {
+	d.builtinActive[morningBriefID] = false
+	d.phaseMorningBrief(context.Background(), time.Now())
+	d.builtinActive[morningBriefID] = true
+	d.phaseMorningBrief(context.Background(), time.Now())
+}
+
+// runTrackSlotsBothWays drives the custom-track slot and Track my threads
+// on the legacy phases and then on the built-ins (the custom-tracks move
+// done too).
+func runTrackSlotsBothWays(d *Daemon) {
+	for _, active := range []bool{false, true} {
+		d.builtinActive[trackMyThreadsID], d.builtinActive[customTracksID] = active, active
+		d.phaseWatchSlot(context.Background())
+		d.phaseTrackMyThreads(context.Background(), time.Now())
+	}
+}
+
+// runIdeaFinderBothWays drives the Idea finder slot on the legacy phase and
+// then on the built-in.
+func runIdeaFinderBothWays(d *Daemon) {
+	for _, active := range []bool{false, true} {
+		d.builtinActive[ideaFinderID] = active
+		d.phaseIdeaFinder(context.Background())
+	}
+}
+
+// assertNoPipelineOrAutomationRuns is assertNoPipelineRuns plus zero
+// automation_runs rows (the built-ins' and the watch recipes' runs).
+func assertNoPipelineOrAutomationRuns(t *testing.T, cfg *config.Config, database *db.DB) {
+	t.Helper()
+	assertNoPipelineRuns(t, cfg, database)
+	assertNoAutomationRuns(t, database)
 }
 
 // TestDaemon_RunDayPlanConflictPhase_DisabledSkipsEntirely pins the gate this

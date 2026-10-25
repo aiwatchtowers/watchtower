@@ -23,9 +23,10 @@ const maxDryRunSummaryBytes = 2 * 1024
 
 // Messages save_automation's refusals carry verbatim.
 const (
-	msgRecipeTextDrifted = "the recipe text no longer matches the reviewed one"
-	msgRecipeFileChanged = "the recipe file changed since this was proposed — ask the assistant to draft it again"
-	msgRecipePathChanged = "the recipe's location changed since this was proposed — ask the assistant to draft it again"
+	msgRecipeTextDrifted     = "the recipe text no longer matches the reviewed one"
+	msgRecipeFileChanged     = "the recipe file changed since this was proposed — ask the assistant to draft it again"
+	msgRecipePathChanged     = "the recipe's location changed since this was proposed — ask the assistant to draft it again"
+	msgBuiltinSavedFromPanel = "a built-in is saved from its panel"
 )
 
 type saveArgs struct {
@@ -34,6 +35,7 @@ type saveArgs struct {
 	WorkbenchID   int64  `json:"workbench_id,omitempty" jsonschema:"the workbench the recipe belongs to; omit for a personal recipe"`
 	Reason        string `json:"reason" jsonschema:"why you propose this save, for the owner"`
 	DryRunSummary string `json:"dry_run_summary,omitempty" jsonschema:"a short summary of draft_automation's dry run of this exact text (at most 2 KiB)"`
+	BuiltinID     string `json:"builtin_id,omitempty" jsonschema:"never set: a built-in is saved from its panel"`
 }
 
 // savePinned is what Normalize stores in agent_actions.args_json: the call's
@@ -89,9 +91,16 @@ func NewSaveAutomation(d Deps) *tools.Tool {
 		Access:      tools.AccessWrite,
 		AlwaysAsk:   true,
 		Surfaces:    []string{"main", tools.AutomationEditorSurface},
-		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			_, _, err := parseSave(raw)
-			return err
+		Validate: func(_ context.Context, database *db.DB, raw json.RawMessage) error {
+			_, r, err := parseSave(raw)
+			if err != nil {
+				return err
+			}
+			// The organization's policy (#608): a recipe it forbids is never proposed.
+			if err := automations.CheckRecipePolicy(database, r); err != nil {
+				return &tools.ValidationError{Msg: err.Error()}
+			}
+			return nil
 		},
 		Normalize: func(ctx context.Context, _ *db.DB, raw json.RawMessage) (json.RawMessage, error) {
 			return normalizeSave(ctx, d, raw)
@@ -119,6 +128,8 @@ func parseSave(raw json.RawMessage) (saveArgs, *automations.Recipe, error) {
 		return a, nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
 	switch {
+	case a.BuiltinID != "":
+		return a, nil, &tools.ValidationError{Msg: msgBuiltinSavedFromPanel}
 	case strings.TrimSpace(a.RecipeText) == "":
 		return a, nil, &tools.ValidationError{Msg: "recipe_text is required"}
 	case !automations.ValidSlug(a.Slug):
@@ -257,6 +268,11 @@ func executeSave(ctx context.Context, d Deps, raw json.RawMessage) (*SaveResult,
 	r, err := automations.ParseRecipe(p.Slug, []byte(p.RecipeText), scope)
 	if err != nil || p.ApprovalHash == "" || automations.ApprovalHash(r) != p.ApprovalHash {
 		return nil, errors.New(msgRecipeTextDrifted)
+	}
+	// The organization's policy may have tightened since the proposal (#608):
+	// checked again against the live policy before anything is written.
+	if err := automations.CheckRecipePolicy(d.DB, r); err != nil {
+		return nil, fmt.Errorf("save_automation: %w", err)
 	}
 	// The workbench folder's symlink check (recipeTarget) is not atomic with
 	// the write either: the same accepted window as `automations save`.

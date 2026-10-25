@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/config"
+	"watchtower/internal/logredact"
 )
 
 // containsPair reports whether args contains flag immediately followed by value.
@@ -146,15 +147,15 @@ func TestClaudeGeneratorSurfacesEnvelopeErrorOnNonZeroExit(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope")
 	}
-	if !strings.Contains(err.Error(), "API Error: request was interrupted") {
+	if !strings.Contains(logredact.Full(err), "API Error: request was interrupted") {
 		t.Errorf("error = %q, want the CLI's own result message", err)
 	}
 	for _, diag := range []string{"stop_sequence", "error_during_execution"} {
-		if !strings.Contains(err.Error(), diag) {
+		if !strings.Contains(logredact.Full(err), diag) {
 			t.Errorf("error = %q, want it to carry %q", err, diag)
 		}
 	}
-	if strings.Contains(err.Error(), "cache_read_input_tokens") {
+	if strings.Contains(logredact.Full(err), "cache_read_input_tokens") {
 		t.Errorf("error = %q, want the raw envelope JSON kept out of it", err)
 	}
 }
@@ -172,7 +173,7 @@ func TestClaudeGeneratorEnvelopeErrorWithoutMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope")
 	}
-	if !strings.Contains(err.Error(), "error_max_turns") {
+	if !strings.Contains(logredact.Full(err), "error_max_turns") {
 		t.Errorf("error = %q, want the subtype to stand in for the missing message", err)
 	}
 }
@@ -191,10 +192,10 @@ func TestClaudeGeneratorEnvelopeErrorOnZeroExit(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope on exit 0")
 	}
-	if !strings.Contains(err.Error(), "error_during_execution") {
+	if !strings.Contains(logredact.Full(err), "error_during_execution") {
 		t.Errorf("error = %q, want the subtype to stand in for the missing message", err)
 	}
-	if strings.HasSuffix(err.Error(), ": ") {
+	if strings.HasSuffix(logredact.Full(err), ": ") {
 		t.Errorf("error = %q, want a message rather than an empty tail", err)
 	}
 }
@@ -213,10 +214,10 @@ func TestClaudeGeneratorEnvelopeMessageIsBounded(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope")
 	}
-	if len(err.Error()) > 8192 {
-		t.Errorf("error length = %d, want the envelope message bounded", len(err.Error()))
+	if len(logredact.Full(err)) > 8192 {
+		t.Errorf("error length = %d, want the envelope message bounded", len(logredact.Full(err)))
 	}
-	if !strings.Contains(err.Error(), "truncated") {
+	if !strings.Contains(logredact.Full(err), "truncated") {
 		t.Errorf("error = %q, want the truncation stated rather than silent", err)
 	}
 }
@@ -238,7 +239,7 @@ func TestClaudeGeneratorEnvelopeTruncationKeepsValidUTF8(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope")
 	}
-	if !utf8.ValidString(err.Error()) {
+	if !utf8.ValidString(logredact.Full(err)) {
 		t.Errorf("error = %q, want the truncation to land on a rune boundary", err)
 	}
 }
@@ -256,10 +257,10 @@ func TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for a failing CLI")
 	}
-	if strings.Contains(err.Error(), secret) {
+	if strings.Contains(logredact.Full(err), secret) {
 		t.Errorf("error = %q, want the stdout content described, not echoed", err)
 	}
-	if !strings.Contains(err.Error(), "sha256:") {
+	if !strings.Contains(logredact.Full(err), "sha256:") {
 		t.Errorf("error = %q, want a DescribeOutput fingerprint", err)
 	}
 }
@@ -337,11 +338,13 @@ func TestGenerateArgsSystemPromptFile(t *testing.T) {
 	}
 }
 
-// TestClaudeGeneratorLargeSystemPromptViaFile: a large system prompt
-// (briefing, target extract) reaches the CLI through a --system-prompt-file,
-// never argv, and the file is removed after the call.
-func TestClaudeGeneratorLargeSystemPromptViaFile(t *testing.T) {
+// TestClaudeGeneratorLargeSystemPromptViaFD: a large system prompt
+// (briefing, target extract) reaches the CLI as --system-prompt-file
+// /dev/fd/3 over an inherited pipe (#604 G7): never argv, never a file in
+// the temp dir.
+func TestClaudeGeneratorLargeSystemPromptViaFD(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	tmp := t.TempDir()
 
 	const marker = "SYSPROMPT-MARKER-claude-5b1e"
 	script := filepath.Join(t.TempDir(), "fake-claude")
@@ -363,23 +366,24 @@ fi
 	}
 
 	gen := NewClaudeGenerator("test-model-light", "test-model", script)
-	sys := strings.Repeat("x", 64*1024) + marker
+	sys := strings.Repeat("x", 256*1024) + marker
+	t.Setenv("TMPDIR", tmp)
 
 	got, _, _, err := gen.Generate(context.Background(), sys, "hello", "")
 	if err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
-	if got == "on-argv" || got == "marker-missing" {
-		t.Fatalf("result = %q — the system prompt did not reach the CLI through the file", got)
+	if got != "/dev/fd/3" {
+		t.Fatalf("result = %q — the system prompt did not reach the CLI over /dev/fd/3", got)
 	}
-	if _, statErr := os.Stat(got); !os.IsNotExist(statErr) {
-		t.Errorf("system prompt file %q must be removed after Generate, stat err = %v", got, statErr)
+	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
+		t.Errorf("temp dir holds %d entries (err %v), want none", len(entries), err)
 	}
 }
 
 // TestClaudeGeneratorSmallPromptsNeverOnArgv (board #566): a small system
 // prompt and a small user message — the common daemon case — reach the CLI
-// through the 0600 file and stdin, and neither ever sits on the child's
+// through the pipe and stdin, and neither ever sits on the child's
 // argv, where every local process could read it through `ps`.
 func TestClaudeGeneratorSmallPromptsNeverOnArgv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

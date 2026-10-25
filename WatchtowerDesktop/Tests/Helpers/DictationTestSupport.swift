@@ -51,6 +51,12 @@ final class GatedCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         self.stdoutData = stdout
     }
 
+    /// The texts that ride stdin (`--text-file -`, `validate -`, #604 S6)
+    /// change nothing here.
+    func run(args: [String], stdin _: Data) async throws -> Data {
+        try await run(args: args)
+    }
+
     func run(args: [String]) async throws -> Data {
         await gate.wait()
         return stdoutData

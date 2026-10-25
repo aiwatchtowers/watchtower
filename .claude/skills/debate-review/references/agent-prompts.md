@@ -6,7 +6,7 @@ Every panel agent receives: the diff under review, the contents of `docs/review/
 READ-ONLY — they inspect the diff and repo, never edit or run git/network mutations.
 
 Watchtower is a Go 1.26 CLI (`watchtower`, module `watchtower`, SQLite via
-`modernc.org/sqlite`) plus a SwiftUI macOS Desktop app (`WatchtowerDesktop/`, GRDB.swift).
+an in-repo cgo SQLCipher build of `mattn/go-sqlite3` in `internal/sqlcipher`) plus a SwiftUI macOS Desktop app (`WatchtowerDesktop/`, GRDB.swift through the `aiwatchtowers/GRDB.swift` SQLCipher fork).
 Reviewers must understand both halves; many changes touch the Go pipeline and the Swift UI
 that reads the same SQLite DB.
 

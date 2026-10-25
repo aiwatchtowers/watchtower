@@ -8,7 +8,23 @@ import WatchtowerCore
 struct ReviewPhaseStrip: View {
     let model: ReviewChangesModel
 
-    private static let titles: [ReviewPhase: String] = [
+    var body: some View {
+        ReviewPhasePicker(
+            // A failure lands in lastError.
+            phase: Binding(get: { model.phase }, set: { phase in Task { try? await model.setPhase(phase) } }),
+            progress: ReviewToolbar.progressLine(model)
+        )
+    }
+}
+
+/// The three steps as a segmented picker and a progress line beside it,
+/// with no model of its own: Deep review's strip and the spec review
+/// screen both drive it.
+struct ReviewPhasePicker: View {
+    @Binding var phase: ReviewPhase
+    let progress: String
+
+    static let titles: [ReviewPhase: String] = [
         .meaning: "1 Meaning", .chapters: "2 Chapters", .wrapup: "3 Wrap-up"
     ]
 
@@ -16,11 +32,10 @@ struct ReviewPhaseStrip: View {
         HStack(spacing: Spacing.cozy) {
             KitSegmentedPicker(
                 title: "Phase",
-                // A failure lands in lastError.
-                selection: Binding(get: { model.phase }, set: { phase in Task { try? await model.setPhase(phase) } }),
+                selection: $phase,
                 segments: ReviewPhase.allCases.map { KitSegment(value: $0, title: Self.titles[$0] ?? $0.rawValue) }
             )
-            Text(ReviewToolbar.progressLine(model))
+            Text(progress)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

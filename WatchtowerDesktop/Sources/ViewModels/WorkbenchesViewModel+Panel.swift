@@ -384,7 +384,11 @@ extension WorkbenchesViewModel {
     func workchat(sessionID: Int64) -> WorkchatModel? {
         if let model = workchatModels[sessionID] { return model }
         guard let sessionControl else { return nil }
-        let model = WorkchatModel(sessionID: sessionID, control: sessionControl, lineDelivery: lineDelivery)
+        let model = WorkchatModel(
+            sessionID: sessionID, control: sessionControl, lineDelivery: lineDelivery, attachmentStore: attachmentStore
+        ) { [weak self] in
+            self?.terminalSessions.values.lazy.flatMap { $0 }.first { $0.id == sessionID }?.kind
+        }
         workchatModels[sessionID] = model
         return model
     }
@@ -434,7 +438,10 @@ extension WorkbenchesViewModel {
     /// screen like a FILES click; ⌥↩ (`beside`) puts it beside the pane on
     /// screen, splitting a single pane (`WorkspaceLayout.openBeside`) — the
     /// Files pane alone stays alone (a workbench has one Files pane).
+    /// The key Branch review pane takes the pick instead (board #960).
     func openFile(at target: OpenQuicklyTarget, root: CodeRoot, beside: Bool) async {
+        let location = CodeNavLocation(path: target.path, line: target.line ?? 0, col: target.col ?? 1)
+        if let destination = keyDestination(for: root), destination.show(location, root: root) { return }
         await codeFiles.pullPending(root)
         codeFiles.open(target.path, root: root, preview: true)
         codeFiles.requestReveal(target.path, line: target.line, col: target.col, root: root)
@@ -472,7 +479,9 @@ extension WorkbenchesViewModel {
     /// pane, the cursor on its line and column. A jump (`keepingTab`) opens
     /// a kept tab — keeping a preview tab it lands on; back/forward
     /// activate the tab as it is, reopening a closed file as a kept tab.
+    /// The key Branch review pane takes it instead (board #960).
     func showLocation(_ location: CodeNavLocation, root: CodeRoot, keepingTab: Bool) {
+        if let destination = keyDestination(for: root), destination.show(location, root: root) { return }
         if keepingTab || !codeFiles.tabs(for: root).contains(location.path) {
             codeFiles.open(location.path, root: root, preview: false)
         } else {
@@ -480,6 +489,25 @@ extension WorkbenchesViewModel {
         }
         codeFiles.requestReveal(location.path, line: location.line, col: location.col, root: root)
         showFilesPane(projectID: root.workbenchID)
+    }
+
+    /// A Branch review pane came on screen: while it is key, jumps in its
+    /// root land in it (board #960).
+    func registerDestination(_ destination: CodeLocationDestination, workbenchID: Int64) {
+        var list = codeDestinations[workbenchID, default: []].filter { $0.destination != nil && $0.destination !== destination }
+        list.append(WeakCodeLocationDestination(destination: destination))
+        codeDestinations[workbenchID] = list
+    }
+
+    func unregisterDestination(_ destination: CodeLocationDestination, workbenchID: Int64) {
+        let list = codeDestinations[workbenchID, default: []].filter { $0.destination != nil && $0.destination !== destination }
+        codeDestinations[workbenchID] = list.isEmpty ? nil : list
+    }
+
+    /// The registered pane that is key and shows `root`; nil = the Files
+    /// pane takes the jump (Review Focus 4).
+    func keyDestination(for root: CodeRoot) -> CodeLocationDestination? {
+        codeDestinations[root.workbenchID]?.lazy.compactMap(\.destination).first { $0.isKeyDestination && $0.root == root }
     }
 
     /// The Files pane on screen, the way the header's Files button puts it.

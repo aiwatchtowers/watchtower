@@ -71,12 +71,12 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.catchUpTotalCount, 0, "only a finished recap asks to be read")
     }
 
-    /// The Inbox badge counts what the action strip shows — proposals awaiting
-    /// the owner (pending + failed) and due reminders — and nothing else. The
-    /// frozen situations backlog and the detector's `inbox_items` feed have no
-    /// screen of their own since the inbox demolition, so neither may badge the
-    /// tab: both are inserted here precisely to prove they contribute zero.
-    func testInboxBadgeCountsStripOnly() async throws {
+    /// The Inbox badge follows R1 (C1): proposals awaiting the owner (pending
+    /// + failed), due reminders and unread open messages (`inbox_items`, the
+    /// Messages cards since C1). The frozen situations backlog has no screen,
+    /// so it is inserted here to prove it contributes zero; an applied
+    /// proposal and a reminder not yet due count zero too.
+    func testInboxBadgeCountsTheInboxCards() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
@@ -99,7 +99,30 @@ final class SidebarCountsViewModelTests: XCTestCase {
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
         await vm.loadInitial()
 
-        XCTAssertEqual(vm.inboxStripCount, 3, "2 proposals awaiting the owner + 1 due reminder")
+        XCTAssertEqual(vm.inboxStripCount, 4, "2 proposals awaiting the owner + 1 due reminder + 1 unread message")
+    }
+
+    /// A message written out of this pool's sight (another connection, as
+    /// the daemon's writes are) reaches the badge through the Inbox read's
+    /// `onFeedRefreshed`, the hook AppState wires to the counts' refresh.
+    func testInboxBadgeFollowsAWriteTheObservationNeverSees() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let counts = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await counts.loadInitial()
+        let strip = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner())
+        strip.onFeedRefreshed = { await counts.refresh() }
+        XCTAssertEqual(counts.inboxStripCount, 0)
+
+        let other = try DatabaseQueue(path: manager.dbPool.path)
+        try await other.write { db in
+            try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
+        }
+        try other.close()
+        XCTAssertEqual(counts.inboxStripCount, 0, "no observation runs")
+
+        await strip.refresh()
+        XCTAssertEqual(counts.inboxStripCount, 1)
     }
 
     func testInboxBadgeIsZeroOnEmptyDB() async throws {
@@ -110,37 +133,6 @@ final class SidebarCountsViewModelTests: XCTestCase {
         await vm.loadInitial()
 
         XCTAssertEqual(vm.inboxStripCount, 0)
-    }
-
-    /// The Ideas badge is the count of ideas awaiting owner review — matches
-    /// `IdeaQueries.countForReview` exactly (proposed OR flagged needs_review).
-    func testIdeasCountMatchesCountForReview() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-
-        try await manager.dbPool.write { db in
-            try TestDatabase.insertIdea(db, status: "proposed")
-            try TestDatabase.insertIdea(db, status: "active", needsReview: true)
-            try TestDatabase.insertIdea(db, status: "active")
-            try TestDatabase.insertIdea(db, status: "dropped")
-        }
-
-        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
-        await vm.loadInitial()
-
-        let expected = try await manager.dbPool.read { try IdeaQueries.countForReview($0) }
-        XCTAssertEqual(vm.ideasCount, expected)
-        XCTAssertEqual(vm.ideasCount, 2)
-    }
-
-    func testIdeasCountIsZeroOnEmptyDB() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-
-        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
-        await vm.loadInitial()
-
-        XCTAssertEqual(vm.ideasCount, 0)
     }
 
     /// The Digests sidebar badge sums Slack + stream + decision unread — the

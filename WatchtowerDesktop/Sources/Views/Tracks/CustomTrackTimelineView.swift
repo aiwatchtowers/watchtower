@@ -1,146 +1,188 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The scan-produced activity timeline shown on a CUSTOM track's detail page.
-/// Ported from the removed `ObserverTimelineView`. A custom track carries a
-/// single watch instruction (not N observers), so the observer-chip UI is gone;
-/// the refresh + history-scan controls remain. A confirmable proposed action is
-/// only actionable when the track is linked to a target (`canApplyActions`).
+/// The scan-produced activity timeline on a CUSTOM track's card: what came
+/// in since the owner last looked first, then the read events folded under
+/// `Earlier · N` until **Show all**. Opening the card writes nothing (R4);
+/// the card's Done marks every event read. **Scan** opens an inline row of
+/// ranges (no pop-up); a range from a date scans through the card's seam.
+/// A proposed action's **Apply** is offered only on a track linked to a
+/// target (`canApplyActions`) and runs the registry press (`TrackActionPress`).
 struct CustomTrackTimelineView: View {
     let viewModel: CustomTrackTimelineViewModel
-    @State private var showScanPopover = false
+    /// The card owns its inline rows and folds (`TrackCardState`).
+    @Binding var scanRowOpen: Bool
+    @Binding var showsEarlier: Bool
+    /// False for a track nothing watches (C3 "Not watched yet."): no Scan.
+    var canScan = true
     @State private var customSince = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Activity").font(.headline)
-                if unreadCount > 0 {
-                    Text("\(unreadCount)")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.accentColor)
-                        .foregroundColor(.white)
-                        .clipShape(Capsule())
-                }
-                Spacer()
-                Text(viewModel.lastScannedText)
-                    .font(.caption2).foregroundStyle(.secondary)
-                if viewModel.isScanRunning {
-                    ProgressView().controlSize(.small)
-                }
-                Button {
-                    showScanPopover = true
-                } label: {
-                    Label("Scan", systemImage: "arrow.clockwise")
-                }
-                .controlSize(.small)
-                .disabled(viewModel.isScanRunning)
-                .help("Scan a chosen range and fill the timeline")
-                .popover(isPresented: $showScanPopover, arrowEdge: .bottom) { scanRangePopover.popoverSurface() }
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            header
+            if scanRowOpen, canScan {
+                scanRow
             }
+            status
+            timeline
+        }
+    }
 
+    private var header: some View {
+        HStack(spacing: Spacing.regular) {
+            Text("Activity").font(.headline)
+            Spacer()
+            Text(viewModel.lastScannedText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             if viewModel.isScanRunning {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(viewModel.scanStatus ?? "Scanning… you can leave this view; it keeps running.")
-                        .font(.caption).foregroundColor(.secondary)
-                    Spacer()
-                }
-                .padding(8)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-            } else if let err = viewModel.errorMessage {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
-                    Text(err).font(.caption).foregroundColor(.secondary).lineLimit(3)
-                    Spacer()
-                    Button { viewModel.errorMessage = nil } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.borderless)
-                }
-                .padding(8)
-                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-            } else if let note = viewModel.lastScanNote {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle").foregroundColor(.secondary)
-                    Text(note).font(.caption).foregroundColor(.secondary).lineLimit(3)
-                    Spacer()
-                    Button { viewModel.lastScanNote = nil } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.borderless)
-                }
-                .padding(8)
-                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                ProgressView().controlSize(.small)
             }
-
-            if viewModel.events.isEmpty {
-                Text("No activity yet. This track surfaces relevant updates as they happen — or scan history to backfill.")
-                    .font(.caption).foregroundColor(.secondary)
-            } else {
-                ForEach(viewModel.events) { event in
-                    TrackEventRow(event: event, viewModel: viewModel)
-                        .onAppear { Task { await viewModel.markRead(event) } }
-                }
+            if canScan {
+                Button("Scan") { scanRowOpen.toggle() }
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+                    .disabled(viewModel.isScanRunning)
+                    .help("Scan a chosen range and fill the timeline")
             }
         }
     }
 
-    private var unreadCount: Int { viewModel.events.filter { $0.isUnread }.count }
+    // MARK: - Events
 
-    private func scanHistory(days: Int) {
-        let since = Calendar.current.date(byAdding: .day, value: -days, to: Date())
-        Task { await viewModel.scanHistory(since: since, label: "last \(days) days") }
-    }
-
-    /// A tappable range option that dismisses the popover and kicks off the scan.
-    private func rangeRow(_ title: String, systemImage: String, _ run: @escaping () -> Void) -> some View {
-        Button {
-            showScanPopover = false
-            run()
-        } label: {
-            Label(title, systemImage: systemImage)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+    @ViewBuilder
+    private var timeline: some View {
+        let unread = viewModel.events.filter(\.isUnread)
+        let earlier = viewModel.events.filter { !$0.isUnread }
+        if viewModel.events.isEmpty {
+            Text("No activity yet. This track surfaces relevant updates as they happen — or scan history to backfill.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
+        if !unread.isEmpty {
+            SectionHeader(title: "New since you looked", systemImage: "sparkles")
+            rows(unread)
+        }
+        if !earlier.isEmpty {
+            // Nothing new: the earlier events are all there is, so they show.
+            let folded = !showsEarlier && !unread.isEmpty
+            HStack(spacing: Spacing.regular) {
+                SectionHeader(title: "Earlier · \(earlier.count)", systemImage: "clock")
+                Spacer()
+                if folded {
+                    Button("Show all") { showsEarlier = true }
+                        .buttonStyle(.kitQuiet)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.top, unread.isEmpty ? 0 : Spacing.small)
+            if !folded {
+                rows(earlier)
+            }
+        }
     }
 
-    /// The "choose a period" popover. Every option builds on what's already
+    private func rows(_ events: [TrackEvent]) -> some View {
+        ForEach(events) { event in
+            TrackEventRow(event: event, viewModel: viewModel)
+        }
+    }
+
+    // MARK: - Scan status
+
+    @ViewBuilder
+    private var status: some View {
+        if viewModel.isScanRunning {
+            HStack(spacing: Spacing.regular) {
+                ProgressView().controlSize(.small)
+                Text(viewModel.scanStatus ?? "Scanning… you can leave this view; it keeps running.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(Spacing.regular)
+            .card()
+        } else if let err = viewModel.errorMessage {
+            note(err, systemImage: "exclamationmark.triangle.fill") { viewModel.errorMessage = nil }
+        } else if let note = viewModel.lastScanNote {
+            self.note(note, systemImage: "checkmark.circle") { viewModel.lastScanNote = nil }
+        }
+    }
+
+    private func note(_ text: String, systemImage: String, onClose: @escaping () -> Void) -> some View {
+        HStack(spacing: Spacing.regular) {
+            Image(systemName: systemImage).foregroundStyle(.secondary)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+            Spacer()
+            Button(action: onClose) { Image(systemName: "xmark") }
+                .buttonStyle(.kitIcon(isOn: false))
+                .help("Close")
+                .accessibilityLabel("Close")
+        }
+        .padding(Spacing.regular)
+        .card()
+    }
+
+    // MARK: - The scan row
+
+    /// The ranges to scan, inline. Every option builds on what's already
     /// collected — it reads only what's newer than the range start and dedups
     /// against existing events, so nothing is duplicated.
-    private var scanRangePopover: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Scan range").font(.headline)
+    private var scanRow: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            Text("Scan range").font(.subheadline.weight(.semibold))
             Text("Reads what's new for the chosen range and dedups against what the track already collected.")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-
-            rangeRow("Since last check", systemImage: "arrow.clockwise") {
-                Task { await viewModel.scanSinceLast() }
+            FlowLayout(spacing: Spacing.regular) {
+                range("Since last check") { await viewModel.scanSinceLast() }
+                range("Last 7 days") { await scanHistory(days: 7) }
+                range("Last 30 days") { await scanHistory(days: 30) }
+                range("Last 90 days") { await scanHistory(days: 90) }
+                range("Since track created") {
+                    await viewModel.scanHistory(since: viewModel.track.createdDate, label: "since the track was created")
+                }
+                range("All history") { await viewModel.scanHistory(since: nil, label: "all history") }
             }
-            rangeRow("Last 7 days", systemImage: "calendar") { scanHistory(days: 7) }
-            rangeRow("Last 30 days", systemImage: "calendar") { scanHistory(days: 30) }
-            rangeRow("Last 90 days", systemImage: "calendar") { scanHistory(days: 90) }
-            rangeRow("Since track created", systemImage: "flag") {
-                Task { await viewModel.scanHistory(since: viewModel.track.createdDate, label: "since the track was created") }
+            HStack(spacing: Spacing.regular) {
+                Text("From").font(.caption).foregroundStyle(.secondary)
+                DatePicker("From", selection: $customSince, in: ...Date(), displayedComponents: [.date])
+                    .datePickerStyle(.compact)
+                    .labelsHidden()
+                Button("Scan from date") {
+                    let since = customSince
+                    let label = "from " + since.formatted(date: .abbreviated, time: .omitted)
+                    start { await viewModel.scanHistory(since: since, label: label) }
+                }
+                .buttonStyle(.kitSecondary)
+                Spacer()
+                Button("Cancel") { scanRowOpen = false }
+                    .buttonStyle(.kitQuiet)
             }
-            rangeRow("All history", systemImage: "infinity") {
-                Task { await viewModel.scanHistory(since: nil, label: "all history") }
-            }
-
-            Divider()
-            Text("From a specific date").font(.caption).foregroundColor(.secondary)
-            DatePicker("", selection: $customSince, in: ...Date(), displayedComponents: [.date])
-                .datePickerStyle(.compact).labelsHidden()
-            Button("Scan from date") {
-                showScanPopover = false
-                let label = "from " + customSince.formatted(date: .abbreviated, time: .omitted)
-                Task { await viewModel.scanHistory(since: customSince, label: label) }
-            }
-            .keyboardShortcut(.defaultAction)
         }
-        .padding()
-        .frame(width: 300)
+        .controlSize(.small)
+        .padding(Spacing.medium)
+        .card()
+    }
+
+    private func range(_ title: String, _ run: @escaping @MainActor () async -> Void) -> some View {
+        Button(title) { start(run) }
+            .buttonStyle(.kitSecondary)
+    }
+
+    /// Closes the row and starts the scan; the status line shows its progress.
+    private func start(_ run: @escaping @MainActor () async -> Void) {
+        scanRowOpen = false
+        Task { await run() }
+    }
+
+    private func scanHistory(days: Int) async {
+        let since = Calendar.current.date(byAdding: .day, value: -days, to: Date())
+        await viewModel.scanHistory(since: since, label: "last \(days) days")
     }
 }
 
@@ -188,20 +230,20 @@ private struct TrackEventRow: View {
                     // Only a track linked to a target can apply a proposed action.
                     if viewModel.canApplyActions {
                         Button("Apply") { Task { await viewModel.applyAction(for: event) } }
-                            .controlSize(.small)
+                            .buttonStyle(.kitSecondary)
                     }
                     Button("Dismiss") { Task { await viewModel.dismissAction(for: event) } }
-                        .controlSize(.small).buttonStyle(.borderless)
+                        .buttonStyle(.kitQuiet)
                 }
+                .controlSize(.small)
                 .disabled(viewModel.pendingWrites.isPending(event.id))
                 .padding(.top, 2)
             } else if event.actionStatus == "applied" {
                 Label("Applied", systemImage: "checkmark.circle.fill")
                     .font(.caption2).foregroundColor(.green)
             }
-            Divider()
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, Spacing.small)
     }
 
     /// Collapsed footer: source kind + decision chip on a single line.

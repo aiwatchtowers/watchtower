@@ -71,7 +71,7 @@ final class TargetWatchesViewModelTests: XCTestCase {
             target: target,
             dbManager: manager,
             scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
-            targetsViewModel: TargetsViewModel(dbManager: manager),
+            actionRunner: FakeCLIRunner(),
             scanCenter: TrackScanCenter()
         )
         XCTAssertTrue(vm.events.isEmpty)
@@ -90,7 +90,74 @@ final class TargetWatchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.events.map(\.summary), ["new update"], "the feed must reflect the CLI's write without an active observation")
     }
 
-    func testApplyActionMutatesTargetAndMarksApplied() async throws {
+    /// A bound watch scans through the custom-track seam (its recipe, at the
+    /// next sync); `tracks scan` is not run for it.
+    func testScanWatchSendsABoundWatchThroughTheSeam() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let targetID = try await manager.dbPool.write { db -> Int in
+            try TargetQueries.create(db, text: "goal", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let watchID = try await manager.dbPool.write { db -> Int in
+            try db.execute(sql: """
+                INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
+                    origin, instruction, enabled, linked_target_id, automation_id)
+                VALUES ('U1', 'watch A', '', 'task', 'watching', 'medium', 'custom', 'watch', 1, ?, 42)
+                """, arguments: [targetID])
+            return Int(db.lastInsertedRowID)
+        }
+        let fetchedTarget = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
+        let target = try XCTUnwrap(fetchedTarget)
+        let fetchedWatch = try await manager.dbPool.read { db in try TrackQueries.fetchByID(db, id: watchID) }
+        let watch = try XCTUnwrap(fetchedWatch)
+        let scanRunner = FakeCLIRunner(stdout: Data("[]".utf8))
+        let seam = RecordingCustomTrackControls()
+        let center = TrackScanCenter()
+        let vm = TargetWatchesViewModel(
+            target: target, dbManager: manager, scanService: TrackScanService(runner: scanRunner),
+            actionRunner: FakeCLIRunner(), scanCenter: center, trackControls: seam)
+
+        await vm.scanWatch(watch, since: nil, label: "since last check")
+        await vm.scanWatch(watch, since: WatchTrackControls.allHistory, label: "all history")
+
+        XCTAssertEqual(seam.calls, [.scan(trackID: watchID, from: nil),
+                                    .scan(trackID: watchID, from: WatchTrackControls.allHistory)])
+        XCTAssertEqual(scanRunner.invocations, [])
+        XCTAssertEqual(center.note[watchID], "watch A: runs at the next sync.")
+    }
+
+    /// An unbound watch keeps the legacy flagless `tracks scan` for All history.
+    func testScanWatchAllHistoryOfAnUnboundWatchKeepsTheLegacyScan() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let targetID = try await manager.dbPool.write { db -> Int in
+            try TargetQueries.create(db, text: "goal", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let watchID = try await manager.dbPool.write { db -> Int in
+            try db.execute(sql: """
+                INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
+                    origin, instruction, enabled, linked_target_id)
+                VALUES ('U1', 'watch A', '', 'task', 'watching', 'medium', 'custom', 'watch', 1, ?)
+                """, arguments: [targetID])
+            return Int(db.lastInsertedRowID)
+        }
+        let fetchedTarget = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
+        let target = try XCTUnwrap(fetchedTarget)
+        let fetchedWatch = try await manager.dbPool.read { db in try TrackQueries.fetchByID(db, id: watchID) }
+        let watch = try XCTUnwrap(fetchedWatch)
+        let scanRunner = FakeCLIRunner(stdout: Data("[]".utf8))
+        let seam = RecordingCustomTrackControls()
+        let vm = TargetWatchesViewModel(
+            target: target, dbManager: manager, scanService: TrackScanService(runner: scanRunner),
+            actionRunner: FakeCLIRunner(), scanCenter: TrackScanCenter(), trackControls: seam)
+
+        await vm.scanWatch(watch, since: WatchTrackControls.allHistory, label: "all history")
+
+        XCTAssertEqual(scanRunner.invocations, [["tracks", "scan", "\(watchID)"]])
+        XCTAssertEqual(seam.calls, [])
+    }
+
+    func testApplyActionPressesThroughTheRegistryAndShowsApplied() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
@@ -109,11 +176,16 @@ final class TargetWatchesViewModelTests: XCTestCase {
 
         let targetRow = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
         let target = try XCTUnwrap(targetRow)
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let pool = manager.dbPool
+        runner.onRun = { _ in  // Go's side effect: the event is applied
+            try? await pool.write { db in try db.execute(sql: "UPDATE track_events SET action_status = 'applied'") }
+        }
         let vm = TargetWatchesViewModel(
             target: target,
             dbManager: manager,
             scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
-            targetsViewModel: TargetsViewModel(dbManager: manager),
+            actionRunner: runner,
             scanCenter: TrackScanCenter()
         )
         let eventRow = try await manager.dbPool.read { db in
@@ -122,13 +194,13 @@ final class TargetWatchesViewModelTests: XCTestCase {
         let event = try XCTUnwrap(eventRow)
         await vm.applyAction(for: event)
 
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(runner.invocations, [TrackActionPress.arguments(eventID: eventID)])
+        XCTAssertEqual(vm.events.map(\.actionStatus), ["applied"], "the feed shows the CLI's write")
+        // The Desktop itself no longer writes the target.
         let status = try await manager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [targetID])
         }
-        XCTAssertEqual(status, "done")
-        let evStatus = try await manager.dbPool.read { db in
-            try String.fetchOne(db, sql: "SELECT action_status FROM track_events WHERE id = ?", arguments: [eventID])
-        }
-        XCTAssertEqual(evStatus, "applied")
+        XCTAssertEqual(status, "todo")
     }
 }

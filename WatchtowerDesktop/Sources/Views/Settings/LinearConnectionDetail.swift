@@ -7,6 +7,9 @@ import WatchtowerCore
 /// non-destructive like Jira's: the token goes, synced issues stay.
 struct LinearConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// The organization's policy forbids this source (#608): nothing new
+    /// connects; existing accounts keep their data.
+    private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("linear") }
     @State private var showAddSheet = false
     @State private var pendingRemoval: LinearAccount?
     /// The API-key account whose key is being replaced.
@@ -54,9 +57,12 @@ struct LinearConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(pendingRemoval?.usesAPIKey == true
-                 ? "Disconnects the workspace. Already-synced issues stay in Watchtower. Delete the API key in Linear's settings to revoke it."
-                 : "Disconnects the workspace and revokes Watchtower's access. Already-synced issues stay in Watchtower.")
+            Text(AccountPurgeStatus.removeDialogMessage(
+                pendingRemoval?.usesAPIKey == true
+                    ? "Disconnects the workspace. Already-synced issues stay in Watchtower. Delete the API key in Linear's settings to revoke it."
+                    : "Disconnects the workspace and revokes Watchtower's access. Already-synced issues stay in Watchtower.",
+                status: appState.accountPurgeCenter?.status
+            ))
         }
     }
 
@@ -81,19 +87,25 @@ struct LinearConnectionDetail: View {
                                 .foregroundStyle(.red)
                                 .lineLimit(2)
                         }
+                        if let line = AccountPurgeLine.make(
+                            center: appState.accountPurgeCenter, source: "linear", accountID: account.id,
+                            isPurged: account.isPurged
+                        ) {
+                            line
+                        }
                     }
                     Spacer()
                     Circle()
                         .fill(statusColor(account))
                         .frame(width: 8, height: 8)
-                        .help(account.isOK ? "Connected" : account.status)
+                        .help(account.isOK ? "Connected" : (account.isPurged ? "Data deleted" : account.status))
                     Toggle("Enabled", isOn: Binding(
                         get: { account.enabled },
                         set: { value in Task { await vm.setEnabled(account, enabled: value) } }
                     ))
                     .toggleStyle(.switch)
                     .controlSize(.mini)
-                    .disabled(vm.isBusy)
+                    .disabled(vm.isBusy || account.isPurged)
                     if !account.isOK || account.auth == "error" {
                         Button("Re-login") {
                             if account.usesAPIKey {
@@ -102,7 +114,9 @@ struct LinearConnectionDetail: View {
                                 Task { await vm.relogin(account) }
                             }
                         }
-                        .disabled(vm.isBusy)
+                        .managedByOrganization(sourceBlocked)
+                        .help(reloginBlocked(account.id) ?? "")
+                        .disabled(vm.isBusy || reloginBlocked(account.id) != nil)
                     }
                     Button("Remove") { pendingRemoval = account }
                         .buttonStyle(.plain)
@@ -120,6 +134,7 @@ struct LinearConnectionDetail: View {
 
             HStack {
                 Button("Add Linear Workspace") { showAddSheet = true }
+                    .managedByOrganization(sourceBlocked)
                     .disabled(vm.isBusy)
                 if vm.isBusy, !showAddSheet {
                     ProgressView().controlSize(.small)
@@ -202,9 +217,16 @@ struct LinearConnectionDetail: View {
         .frame(width: 380)
     }
 
+    /// Why Re-login is off for the account (its purge is running), or nil.
+    private func reloginBlocked(_ id: Int64) -> String? {
+        AccountPurgeLine.reloginBlockedReason(
+            center: appState.accountPurgeCenter, source: "linear", accountID: id)
+    }
+
     private func statusColor(_ account: LinearAccount) -> Color {
         if account.isOK { return .green }
         if account.status == "revoked" { return .red }
+        if account.isPurged { return .gray }
         return .orange
     }
 }

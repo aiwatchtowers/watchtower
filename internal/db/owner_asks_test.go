@@ -189,6 +189,21 @@ func TestGetOwnerAsk_AnotherWorkbenchsAskIsNotFound(t *testing.T) {
 	assert.Equal(t, "Theirs", a.Title)
 }
 
+func TestGetOwnerAskByID_AnyWorkbench(t *testing.T) {
+	d := openTestDB(t)
+	other, err := d.CreateWorkbench("other", t.TempDir())
+	require.NoError(t, err)
+	id := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: other, Kind: "review", Title: "Spec", DocPath: "docs/a.md", DocSnapshot: "# A", DocType: "spec"})
+
+	a, err := d.GetOwnerAskByID(id)
+	require.NoError(t, err)
+	assert.Equal(t, other, a.WorkbenchID)
+	assert.Equal(t, "# A", a.DocSnapshot)
+	assert.Equal(t, "spec", a.DocType)
+	_, err = d.GetOwnerAskByID(id + 100)
+	assert.ErrorIs(t, err, ErrAskNotFound)
+}
+
 func TestListOwnerAsks_FiltersAndOrders(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)

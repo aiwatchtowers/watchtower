@@ -47,8 +47,35 @@ package final class AutomationsViewModel {
     /// (`SidebarCountsViewModel`, which sees only this process's writes)
     /// re-reads.
     @ObservationIgnored package var onInboxOutputCountChanged: (() -> Void)?
+    /// The list groups the owner folded, stored under `collapsedSectionsKey`.
+    package private(set) var collapse: AutomationListCollapse
+    /// A selection made before its row was loaded; the next refresh reveals its group.
+    private var pendingRevealID: Int64?
+    nonisolated package static let collapsedSectionsKey = "automations.collapsedSections"
     /// The automation whose card is open. Set it through `select(_:)` to load the card.
     package var selectedID: Int64?
+    /// What the right panel shows: the empty state, a card, the New flow, a
+    /// template, or the editor. `select(_:)` and `showCard(_:)` set a card,
+    /// `showNew(_:)` the New flow, `showEditor(_:composerPrefill:)` the editor.
+    package var panel: AutomationsPanel = .empty
+    /// The New flow's composer text for the editor it continues to: put into
+    /// an empty chat once; any other panel drops it.
+    package private(set) var composerPrefill: String?
+    /// New automation chats with a draft on disk or open in the editor
+    /// (`AutomationDraftRows`), read with the list.
+    package private(set) var draftRows: [AutomationDraftRow] = []
+    /// The new drafts the editor holds, by conversation id → name
+    /// (`AutomationEditorCenter.openNewDraftNames`), read with the list.
+    @ObservationIgnored package var openNewDrafts: @MainActor () -> [Int64: String] = { [:] }
+    /// The embedded chats' engines: a saved draft's engine is let go of
+    /// before its conversation moves to the automation (`draftSaved`).
+    @ObservationIgnored package weak var embeddedChats: EmbeddedChatCenter?
+    /// Drops the editor's draft by key (`AutomationEditorCenter.discard`):
+    /// a saved draft's buffer is never listed or saved again.
+    @ObservationIgnored package var discardEditorDraft: @MainActor (Int64) -> Void = { _ in }
+    /// Saved drafts whose conversation is not re-keyed yet (`draftSaved`
+    /// waits for the chat to go idle): never a row meanwhile.
+    @ObservationIgnored private var savedDraftConversations: Set<Int64> = []
     /// Run ids whose steps are shown in the history.
     package private(set) var expandedRuns: Set<Int64> = []
     /// Keyed by automation id.
@@ -72,12 +99,7 @@ package final class AutomationsViewModel {
     /// `lastError` came from the list's own read: the next read that works
     /// clears it (a CLI failure stays until dismissed).
     @ObservationIgnored private var lastErrorIsRead = false
-    /// The "New automation" chat's draft: its conversation is keyed by this
-    /// id, so a half-written draft survives closing the sheet. A new one
-    /// starts after a draft is saved (`startNewDraft`).
-    package private(set) var newDraftID = UUID().uuidString
-
-    // MARK: Templates (plan Task 13)
+    // MARK: Templates
 
     /// `automations templates --json`; empty while the CLI has none (or P6's
     /// subcommand does not exist yet).
@@ -85,26 +107,11 @@ package final class AutomationsViewModel {
     package private(set) var templatesLoading = false
     /// Why the template list could not be read; nil for "no templates".
     package private(set) var templatesError: String?
-    /// The template being installed (one at a time).
-    package private(set) var installingTemplate: String?
-    /// The last failed install's stderr; cleared by the next install.
-    package private(set) var installError: String?
-    /// The freshly installed automation whose edit form the tab opens (the
-    /// copy stays unconfirmed, so Save confirms it). The tab clears it once
-    /// the form is up; held here so an install finishing while the tab is
-    /// off screen still opens the form on return.
-    package var pendingEditID: Int64?
-    /// What a template copy installed in this session covers ("Covers: PAY,
-    /// OPS"), keyed by automation id; the edit form shows it (#582).
-    package private(set) var installCoverage: [Int64: String] = [:]
-    /// An unconfirmed recipe picked in the "Run Automation…" palette: the
-    /// tab opens its confirmation sheet and clears this (held here so the
-    /// sheet opens when the tab appears).
+    /// An unconfirmed recipe picked in the "Run Automation…" palette or a
+    /// header button: the tab opens its card (whose banner leads to the
+    /// editor) through `consumePendingConfirm()`; held here so it opens when
+    /// the tab appears.
     package var pendingConfirmID: Int64?
-    /// **New Automation…** in a workbench's header menu: the tab opens the
-    /// New automation sheet with this workbench picked under "For" and
-    /// clears it (held here so the sheet opens when the tab appears).
-    package var pendingNewWorkbenchID: Int64?
     /// Quick run's finish watch (`QuickRunCenter` registers itself): each
     /// poll tick checks it, and the poll stays fast while it watches a run.
     @ObservationIgnored package weak var runWatcher: QuickRunCenter?
@@ -112,6 +119,7 @@ package final class AutomationsViewModel {
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let failureWatch: AutomationFailureWatch?
+    @ObservationIgnored private let defaults: UserDefaults
     /// The app is active with a visible key window: only then does an open
     /// card count as seen.
     @ObservationIgnored private let isOwnerLooking: () -> Bool
@@ -121,11 +129,15 @@ package final class AutomationsViewModel {
     @ObservationIgnored private var tabVisible = false
     /// The run last opened as the newest, per automation id: it opens once.
     @ObservationIgnored private var expandedAsNewest: [Int64: Int64] = [:]
+    /// The built-ins' cards by automation id, kept with this AppState-owned
+    /// view model so a Reset or Run Now under way outlives the panel.
+    @ObservationIgnored private var builtinCards: [Int64: BuiltinAutomationCardModel] = [:]
 
     package init(
         dbPool: DatabasePool,
         cli: AutomationsCLI,
         failureWatch: AutomationFailureWatch? = nil,
+        defaults: UserDefaults = .standard,
         isOwnerLooking: @escaping () -> Bool = { true },
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
@@ -133,14 +145,20 @@ package final class AutomationsViewModel {
         self.dbPool = dbPool
         self.cli = cli
         self.failureWatch = failureWatch
+        self.defaults = defaults
+        collapse = AutomationListCollapse(collapsed: Set(defaults.stringArray(forKey: Self.collapsedSectionsKey) ?? []))
         self.isOwnerLooking = isOwnerLooking
         self.now = now
         self.sleep = sleep
     }
 
-    /// The next **+ New** opens a fresh chat; the saved draft's stays on disk.
-    package func startNewDraft() {
-        newDraftID = UUID().uuidString
+    /// Built-in `automation`'s card, made on first use and kept after; its
+    /// view hands it the newest row (`automation`).
+    package func builtinCard(_ automation: Automation) -> BuiltinAutomationCardModel {
+        if let card = builtinCards[automation.id] { return card }
+        let card = BuiltinAutomationCardModel(automation: automation, cli: cli)
+        builtinCards[automation.id] = card
+        return card
     }
 
     // MARK: - Poll
@@ -190,7 +208,8 @@ package final class AutomationsViewModel {
                 guard let interval = self?.pollInterval else { return }
                 await sleep(interval)
                 guard !Task.isCancelled, let self else { return }
-                self.refresh()
+                // A hidden tab's tick is for the badge: the draft rows wait.
+                self.refresh(drafts: self.tabVisible)
                 await self.runWatcher?.checkWatched()
             }
         }
@@ -198,17 +217,26 @@ package final class AutomationsViewModel {
 
     // MARK: - Reads
 
-    /// Re-reads the list, the badge and the open card.
-    package func refresh() {
+    /// Re-reads the list, the badge and the open card, and with `drafts`
+    /// the draft rows (with their newest cached draft, in the same read).
+    package func refresh(drafts: Bool = true) {
         do {
             let selected = selectedID
             let expanded = expandedRuns
             let date = now()
             let failures = failureWatch != nil
             let snapshot = try dbPool.read { db in
-                try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures)
+                try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures,
+                                  drafts: drafts)
             }
             apply(snapshot)
+            if let conversations = snapshot.draftConversations {
+                let rows = AutomationDraftRows.rows(conversations,
+                                                    liveWorkbenchIDs: snapshot.workbenchIDs,
+                                                    openDrafts: openNewDrafts())
+                    .filter { !savedDraftConversations.contains($0.conversationID) }
+                if draftRows != rows { draftRows = rows }
+            }
             if lastErrorIsRead {
                 lastError = nil
                 lastErrorIsRead = false
@@ -229,6 +257,9 @@ package final class AutomationsViewModel {
         var allIDs: Set<Int64>
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
+        /// Read only with `drafts`, with each newest cached draft.
+        var draftConversations: [AutomationDraftRows.Conversation]?
+        var workbenchIDs: Set<Int64>
 
         struct Card {
             let automationID: Int64
@@ -237,7 +268,14 @@ package final class AutomationsViewModel {
             let grants: [AutomationToolGrant]
         }
 
-        static func read(_ db: Database, now: Date, selected: Int64?, expanded: Set<Int64>, failures: Bool) throws -> Self {
+        static func read(
+            _ db: Database,
+            now: Date,
+            selected: Int64?,
+            expanded: Set<Int64>,
+            failures: Bool,
+            drafts: Bool
+        ) throws -> Self {
             var card: Card?
             if let selected {
                 card = Card(
@@ -252,6 +290,7 @@ package final class AutomationsViewModel {
                 steps[runID] = try AutomationQueries.fetchSteps(db, runID: runID)
             }
             let items = try AutomationQueries.fetchList(db, now: now)
+            let workbenchIDs = try WorkbenchQueries.allIDs(db)
             return Self(
                 items: items,
                 attentionCount: try AutomationQueries.attentionCount(db),
@@ -260,13 +299,19 @@ package final class AutomationsViewModel {
                 endedRuns: failures ? try AutomationQueries.newestEndedRuns(db) : [:],
                 allIDs: failures ? try AutomationQueries.allIDs(db) : [],
                 card: card,
-                steps: steps
+                steps: steps,
+                draftConversations: drafts ? try AutomationDraftRows.conversations(db) : nil,
+                workbenchIDs: workbenchIDs
             )
         }
     }
 
     private func apply(_ snapshot: Snapshot) {
         items = snapshot.items
+        if let pending = pendingRevealID {
+            pendingRevealID = nil
+            if pending == selectedID { revealSection(ofAutomation: pending) }
+        }
         attentionCount = snapshot.attentionCount
         headerButtonsByProject = snapshot.headerButtons
         if snapshot.inboxOutputCount != inboxOutputCount {
@@ -305,7 +350,171 @@ package final class AutomationsViewModel {
     package func select(_ id: Int64?) {
         if id != selectedID { expandedRuns = [] }
         selectedID = id
+        panel = id.map(AutomationsPanel.card) ?? .empty
+        composerPrefill = nil
         if id != nil { refresh() }
+        revealSection(ofAutomation: id)
+    }
+
+    /// Shows an automation's card in the panel and selects its row.
+    package func showCard(_ id: Int64) {
+        select(id)
+    }
+
+    /// Opens the New automation flow; no row stays selected meanwhile.
+    package func showNew(_ flow: AutomationNewFlow) {
+        if selectedID != nil { expandedRuns = [] }
+        selectedID = nil
+        panel = .new(flow)
+        composerPrefill = nil
+    }
+
+    /// Opens a template's panel; no row stays selected meanwhile.
+    package func showTemplate(name: String, scope: AutomationScopeChoice) {
+        if selectedID != nil { expandedRuns = [] }
+        selectedID = nil
+        panel = .template(name: name, scope: scope)
+        composerPrefill = nil
+    }
+
+    /// A template panel's install finished with `firstID` as its first copy:
+    /// that card opens, but only while this template's panel is the one
+    /// shown — a finished panel seen again opens it once, never from elsewhere.
+    package func templateFinished(name: String, scope: AutomationScopeChoice, firstID: Int64) {
+        guard panel == .template(name: name, scope: scope) else { return }
+        showCard(firstID)
+    }
+
+    /// Opens the editor: an edit keeps its row selected, a new draft selects
+    /// none (its draft row, if any, shows as selected). `composerPrefill`
+    /// goes into the editor chat's empty composer once.
+    package func showEditor(_ target: AutomationEditorTarget, composerPrefill: String? = nil) {
+        let id: Int64? = if case let .existing(id, _) = target { id } else { nil }
+        if id != selectedID { expandedRuns = [] }
+        selectedID = id
+        panel = .editor(target)
+        self.composerPrefill = composerPrefill
+        if id != nil { refresh() }
+        if case let .newDraft(_, scope, _) = target {
+            reveal(scope.workbenchID.map(AutomationListSections.workbenchID) ?? AutomationListSections.personalID)
+        } else {
+            revealSection(ofAutomation: id)
+        }
+    }
+
+    // MARK: - Group collapse
+
+    /// The list section `id` is listed in; nil while it is not in the list.
+    package func sectionID(forAutomation id: Int64) -> String? {
+        items.first { $0.id == id }.flatMap { AutomationListSections.sectionID(of: $0.automation) }
+    }
+
+    /// A group shows open when the owner left it open, or, while `query`
+    /// searches, when it has a match (a listed section always has one). A
+    /// search never changes the stored set.
+    package func isExpanded(_ section: AutomationListSection, query: String) -> Bool {
+        let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return collapse.isExpanded(section.id, searching: searching, hasMatch: !section.isEmpty)
+    }
+
+    /// A click on a group's header folds or opens it, remembered.
+    package func toggleSection(_ id: String) {
+        collapse.toggle(id)
+        storeCollapse()
+    }
+
+    /// A row opened in a folded group (the Inbox, a notification,
+    /// auto-select) opens that group, remembered.
+    private func revealSection(ofAutomation id: Int64?) {
+        guard let id else { return }
+        if let section = sectionID(forAutomation: id) {
+            pendingRevealID = nil
+            reveal(section)
+        } else {
+            // A cold tab: the list has not loaded yet; the first refresh finishes this.
+            pendingRevealID = id
+        }
+    }
+
+    private func reveal(_ section: String) {
+        guard collapse.collapsed.contains(section) else { return }
+        collapse.reveal(section)
+        storeCollapse()
+    }
+
+    private func storeCollapse() {
+        defaults.set(collapse.collapsed.sorted(), forKey: Self.collapsedSectionsKey)
+    }
+
+    /// The list's first row (`first`) is shown while the panel is empty, or
+    /// in place of a card whose automation is gone; New, a template and the
+    /// editor are never replaced by a list change.
+    package func autoSelect(first: Int64?) {
+        switch panel {
+        case .empty:
+            if let first { select(first) }
+        case let .card(id) where !items.map(\.id).contains(id):
+            select(first)
+        case .card, .new, .template, .editor:
+            break
+        }
+    }
+
+    /// `pendingConfirmID` opens that automation's card and is cleared.
+    package func consumePendingConfirm() {
+        guard let id = pendingConfirmID else { return }
+        pendingConfirmID = nil
+        showCard(id)
+    }
+
+    /// **Discard Draft** of a new draft: its cached drafts go (so it is no
+    /// longer a row) and the panel empties. A draft never drafted by the
+    /// assistant has no cached draft; its in-memory draft is the editor center's.
+    package func discardDraft(contextID: String) async {
+        if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
+        guard let row = draftRows.first(where: { $0.contextID == contextID }) else { return }
+        draftRows.removeAll { $0.contextID == contextID }
+        do {
+            try await dbPool.write { try AutomationDraftCacheQueries.delete($0, conversationID: row.conversationID) }
+        } catch {
+            lastError = "Could not remove the draft: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
+    }
+
+    /// A new draft's save landed as automation `automationID` (spec
+    /// 2026-10-24 §4): its row leaves the list and its cached drafts go at
+    /// once, with the editor's draft; once the draft's chat engine is idle
+    /// and let go of, its conversation becomes the automation's editor chat
+    /// (ask #528). The selection is the caller's: this never empties the panel.
+    package func draftSaved(contextID: String, conversationID: Int64, automationID: Int64) async {
+        savedDraftConversations.insert(conversationID)
+        defer { savedDraftConversations.remove(conversationID) }
+        discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
+        await removeDraftCache(conversationID)
+        draftRows.removeAll { $0.conversationID == conversationID }
+        let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
+                                  conversationID: conversationID)
+        await embeddedChats?.releaseWhenIdle(key)
+        do {
+            _ = try await DatabaseEmbeddedChatStore.rekeyConversation(
+                dbPool: dbPool, conversationID: conversationID, toContextType: "automation",
+                contextID: String(automationID))
+        } catch {
+            lastError = "Saved, but the draft's chat could not move to the automation: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
+        // The turn waited for may have drafted again.
+        await removeDraftCache(conversationID)
+    }
+
+    private func removeDraftCache(_ conversationID: Int64) async {
+        do {
+            try await dbPool.write { try AutomationDraftCacheQueries.delete($0, conversationID: conversationID) }
+        } catch {
+            lastError = "Could not remove the saved draft: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
     }
 
     /// Shows or hides a run's steps in the history.
@@ -329,8 +538,11 @@ package final class AutomationsViewModel {
     package func open(automationID: Int64, runID: Int64?) {
         if automationID != selectedID { expandedRuns = [] }
         selectedID = automationID
+        panel = .card(automationID)
+        composerPrefill = nil
         if let runID { expandedRuns.insert(runID) }
         refresh()
+        revealSection(ofAutomation: automationID)
     }
 
     /// Reads the card's `show --json`. The card calls it on open and whenever
@@ -365,28 +577,6 @@ package final class AutomationsViewModel {
             let message = Self.message(for: error)
             let unknown = ["unknown command", "unknown flag"].contains { message.localizedCaseInsensitiveContains($0) }
             templatesError = unknown ? nil : message
-        }
-    }
-
-    /// Installs a template copy (unconfirmed, disabled), selects it and asks
-    /// the tab to open its edit form. A workbench template passes the
-    /// workbench id. Returns false when the install failed.
-    @discardableResult
-    package func installTemplate(_ template: AutomationTemplate, workbenchID: Int64? = nil) async -> Bool {
-        guard installingTemplate == nil else { return false }
-        installingTemplate = template.name
-        installError = nil
-        defer { installingTemplate = nil }
-        do {
-            let result = try await cli.installTemplate(template.name, workbenchID: workbenchID)
-            installCoverage[result.automationID] = AutomationTemplateGallery.coverageLine(result.params)
-            refresh()
-            select(result.automationID)
-            pendingEditID = result.automationID
-            return true
-        } catch {
-            installError = Self.message(for: error)
-            return false
         }
     }
 

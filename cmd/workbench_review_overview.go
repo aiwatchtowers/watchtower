@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/reviewai"
 	"watchtower/internal/reviewdiff"
+	"watchtower/internal/tools"
 )
 
 // reviewAIBudget bounds a whole overview or lessons command — git, the model
@@ -41,7 +42,7 @@ func reviewAIContext(cmd *cobra.Command) (context.Context, context.CancelFunc) {
 // calls; tests swap it.
 var reviewAIGeneratorFactory = func(cfg *config.Config) digest.Generator { return cliBoundedGenerator(cfg) }
 
-var workbenchReviewOverviewCmd = &cobra.Command{Use: "overview", Short: "AI overview of a round: intent coverage, risk, chapters", RunE: runWorkbenchReviewOverview}
+var workbenchReviewOverviewCmd = &cobra.Command{Use: "overview", Short: "AI overview of a round or a session: intent coverage, risk, chapters", RunE: runWorkbenchReviewOverview}
 
 // reviewFlagCachedOnly answers only a cached overview and never calls the
 // model: a miss is `ok` with no overview (Quick mode asks this way, board #585).
@@ -52,6 +53,7 @@ func init() {
 	workbenchReviewOverviewCmd.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 	workbenchReviewOverviewCmd.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 	workbenchReviewOverviewCmd.Flags().Int64Var(&reviewFlagRound, "round", 0, "review round id")
+	workbenchReviewOverviewCmd.Flags().Int64Var(&reviewFlagSession, "session", 0, "terminal session id: the session's folder as it stands, no round")
 	workbenchReviewCmd.AddCommand(workbenchReviewOverviewCmd)
 }
 
@@ -69,6 +71,12 @@ func loadReviewAIConfig() (*config.Config, error) {
 }
 
 func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
+	if reviewFlagSession != 0 {
+		if reviewFlagRound != 0 {
+			return fmt.Errorf("--round and --session are exclusive")
+		}
+		return runSessionReviewOverview(cmd)
+	}
 	aiCtx, aiCancel := reviewAIContext(cmd)
 	defer aiCancel()
 	database, r, repo, ctx, cancel, err := loadRoundIn(cmd, aiCtx)
@@ -80,52 +88,69 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	in, err := reviewOverviewIntent(ctx, database, p, r)
+	var in reviewai.Input
+	if r.SessionID.Valid { // a round without a session has no intent
+		if in, err = tools.ReviewOverviewInput(ctx, database, p, r.SessionID.Int64); err != nil {
+			return failReview(cmd, err)
+		}
+	}
+	return answerReviewOverview(aiCtx, ctx, cmd, database, p, repo, r.TreeSHA, r.BaseSHA, in)
+}
+
+// runSessionReviewOverview is the agent's form (spec
+// 2026-10-24-finish-whole-ticket, gate 2): the overview of the session's
+// folder as it stands, with no round opened. It is cached under the key the
+// Desktop's round on the same tree reads, and the one finish_session checks;
+// an empty diff answers ok with no overview.
+func runSessionReviewOverview(cmd *cobra.Command) error {
+	aiCtx, aiCancel := reviewAIContext(cmd)
+	defer aiCancel()
+	database, p, err := reviewTarget()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(aiCtx, workbenchReviewBudget)
+	defer cancel()
+	snap, err := tools.SnapshotReviewSession(ctx, database, p, reviewFlagSession)
 	if err != nil {
 		return failReview(cmd, err)
 	}
+	if snap.Empty {
+		return writeReview(cmd, reviewEnvelope{OK: true})
+	}
+	in, err := tools.ReviewOverviewInput(ctx, database, p, reviewFlagSession)
+	if err != nil {
+		return failReview(cmd, err)
+	}
+	return answerReviewOverview(aiCtx, ctx, cmd, database, p, snap.Repo, snap.Tree, snap.Base, in)
+}
+
+// answerReviewOverview answers the cached overview of (tree, base, intent),
+// or — unless --cached-only — makes the model call and caches it.
+func answerReviewOverview(aiCtx, ctx context.Context, cmd *cobra.Command, database *db.DB, p *db.Workbench, repo *reviewdiff.Repo,
+	tree, base string, in reviewai.Input) error {
 	lenses, _ := reviewdiff.LoadLenses(p.FolderPath)
 	for _, l := range lenses {
 		in.LensIDs = append(in.LensIDs, l.ID)
 	}
 	hash := reviewai.IntentHash(in.Intent, in.Notes)
-	if js, ok, err := database.ReviewOverviewJSON(p.ID, r.TreeSHA, r.BaseSHA, hash); err != nil {
+	if js, ok, err := database.ReviewOverviewJSON(p.ID, tree, base, hash); err != nil {
 		return failReview(cmd, err)
 	} else if ok {
 		return writeReview(cmd, reviewEnvelope{OK: true, Overview: json.RawMessage(js), OverviewCached: true})
 	} else if reviewFlagCachedOnly {
 		return writeReview(cmd, reviewEnvelope{OK: true})
 	}
-	if in.Diff, err = repo.Diff(ctx, r.BaseSHA, r.TreeSHA); err != nil {
+	var err error
+	if in.Diff, err = repo.Diff(ctx, base, tree); err != nil {
 		return failReview(cmd, err)
 	}
-
-	return generateReviewOverview(aiCtx, cmd, database, p, r, in, hash)
-}
-
-// reviewOverviewIntent gathers the round's session context items and the
-// agent's notes; a round without a session has neither.
-func reviewOverviewIntent(ctx context.Context, database *db.DB, p *db.Workbench, r *db.ReviewRound) (reviewai.Input, error) {
-	var in reviewai.Input
-	if !r.SessionID.Valid {
-		return in, nil
-	}
-	items, err := reviewContextItems(ctx, database, p, r.SessionID.Int64)
-	if err != nil {
-		return in, err
-	}
-	for _, it := range items {
-		in.Intent = append(in.Intent, reviewai.IntentItem{Text: it.Text, Intent: it.Intent, Task: it.PlanText})
-	}
-	if in.Notes, err = database.ReviewNotes(p.ID, r.SessionID.Int64); err != nil {
-		return in, err
-	}
-	return in, nil
+	return generateReviewOverview(aiCtx, cmd, database, p, tree, base, in, hash)
 }
 
 // generateReviewOverview makes the model call, caches the reply under hash
 // and answers it.
-func generateReviewOverview(aiCtx context.Context, cmd *cobra.Command, database *db.DB, p *db.Workbench, r *db.ReviewRound, in reviewai.Input, hash string) error {
+func generateReviewOverview(aiCtx context.Context, cmd *cobra.Command, database *db.DB, p *db.Workbench, tree, base string, in reviewai.Input, hash string) error {
 	cfg, err := loadReviewAIConfig()
 	if err != nil {
 		return failReview(cmd, fmt.Errorf("AI overview unavailable: %w", err))
@@ -141,7 +166,7 @@ func generateReviewOverview(aiCtx context.Context, cmd *cobra.Command, database 
 		return failReview(cmd, err)
 	}
 	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	if err := database.PutReviewOverview(p.ID, r.TreeSHA, r.BaseSHA, hash, string(js), strong); err != nil {
+	if err := database.PutReviewOverview(p.ID, tree, base, hash, string(js), strong); err != nil {
 		// The overview is paid for: answer it; the next open just asks again.
 		fmt.Fprintf(cmd.ErrOrStderr(), "review overview: caching failed: %v\n", err)
 	}

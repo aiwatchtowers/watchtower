@@ -18,6 +18,8 @@
 #   - FLAVOR_SUFFIX derivation, empty vs non-empty
 #   - ambient BUILD_FLAVOR without any profile        → still honored (default
 #     profile path applies no flavor requirement)
+#   - WATCHTOWER_LINK_FETCH_DENY_HOSTS is optional for every build (the
+#     owner's company domains are derived from the accounts, ask #598)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -140,6 +142,19 @@ if grep -q "RESULT_SUFFIX=-ambient" <<< "$OUT"; then
     echo "ok: ambient BUILD_FLAVOR honored on the default path"
 else
     note_fail "ambient BUILD_FLAVOR (got: $OUT)"
+fi
+
+# 10. The link deny list is optional: a flavour without it still builds.
+printf 'BUILD_FLAVOR=corp\n' > "$ROOT4/.env.nodeny"
+if OUT=$(env -u BUILD_FLAVOR -u WATCHTOWER_LINK_FETCH_DENY_HOSTS ENV_FILE=.env.nodeny bash "$RUNNER" "$ROOT4") && grep -q "RESULT_SUFFIX=-corp" <<< "$OUT"; then
+    echo "ok: a flavour without WATCHTOWER_LINK_FETCH_DENY_HOSTS builds"
+else
+    note_fail "a flavour must not need WATCHTOWER_LINK_FETCH_DENY_HOSTS"
+fi
+if env -u ENV_FILE -u BUILD_FLAVOR -u WATCHTOWER_LINK_FETCH_DENY_HOSTS bash "$RUNNER" "$ROOT2" > /dev/null 2>&1; then
+    echo "ok: the public build needs no link deny list"
+else
+    note_fail "the public build must not need WATCHTOWER_LINK_FETCH_DENY_HOSTS"
 fi
 
 echo ""

@@ -21,8 +21,8 @@ import WatchtowerCore
 /// - The model (owner decision 3) is the conversation's
 ///   `provider`/`model`, read when each turn starts, so a follow-up keeps it
 ///   and a new pick applies from the next turn.
-/// - A turn that resumes no provider session (Codex, Ollama, Claude after a
-///   switch) carries the earlier turns as `EmbeddedChatReplay`'s block.
+/// - No turn resumes a provider session (#604 G11): each one carries the
+///   system prompt and the engine's `EmbeddedChatReplay` block.
 @MainActor
 enum CodeQuestionSurface {
     static let contextType = CodeQuestionList.contextType
@@ -95,27 +95,23 @@ enum CodeQuestionSurface {
         origin: CodeQuestionOrigin,
         conversationID: Int64,
         dbPool: DatabasePool,
-        context: CodeQuestionContext?,
-        turnAttachment: @escaping @MainActor () -> String? = { nil }
+        context: CodeQuestionContext?
     ) -> ChatSurfaceSpec {
-        spec(workbench: workbench, origin: origin, conversationID: conversationID, dbPool: dbPool,
-             context: { context }, turnAttachment: turnAttachment)
+        spec(workbench: workbench, origin: origin, conversationID: conversationID, dbPool: dbPool) { context }
     }
 
     /// `context` is read when each turn starts (ruling R41: every turn's
     /// system prompt carries it): the first-turn context built where the
     /// question was asked, or rebuilt from the file when it was reopened;
     /// nil while there is none, and the prompt then names the file and line
-    /// only. `turnAttachment` is read once per turn: text added to a turn
-    /// that resumes a provider session (which drops the system prompt) — the
-    /// usages "Where is it used?" attached after the first turn (ruling R45).
+    /// only. The usages "Where is it used?" attached after the first turn
+    /// are part of it (ruling R45).
     static func spec(
         workbench: Workbench,
         origin: CodeQuestionOrigin,
         conversationID: Int64,
         dbPool: DatabasePool,
-        context: @escaping @MainActor () -> CodeQuestionContext?,
-        turnAttachment: @escaping @MainActor () -> String? = { nil }
+        context: @escaping @MainActor () -> CodeQuestionContext?
     ) -> ChatSurfaceSpec {
         let currentChoice = { @MainActor () -> ModelChoice in
             do {
@@ -139,23 +135,12 @@ enum CodeQuestionSurface {
                                  conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
+            ownerInstructions: true,
             systemPrompt: {
                 buildSystemPrompt(workbench: workbench, origin: origin, context: context(),
                                   provider: currentChoice().provider)
             },
-            turnPrompt: { input in
-                let attachment = turnAttachment()
-                guard input.isResumed else {
-                    // A fresh run (Codex, Ollama, Claude after a switch):
-                    // the system prompt is sent again and the earlier turns
-                    // are replayed (board #361).
-                    let replay = history(conversationID: conversationID, before: input.turnID, prompt: input.text,
-                                         dbPool: dbPool)
-                    return (replay ?? "") + input.text
-                }
-                guard let attachment else { return input.text }
-                return input.text + "\n\n" + attachment
-            },
+            turnPrompt: { $0.text },
             postTurn: { input in
                 var result = ChatPostTurnResult.identity(input)
                 if !currentChoice().readsFiles, !hasCannotReadNotice(conversationID: conversationID, dbPool: dbPool) {
@@ -166,21 +151,6 @@ enum CodeQuestionSurface {
             emptyHint: "Ask about this code. The assistant reads the workbench folder and never changes it.",
             runOptions: runOptions
         )
-    }
-
-    /// The conversation's earlier turns as a replay block; nil on the first
-    /// turn. A failed read sends the turn without them, logged.
-    private static func history(
-        conversationID: Int64, before turnID: String, prompt: String, dbPool: DatabasePool
-    ) -> String? {
-        do {
-            let messages = try dbPool.read { try ChatMessageQueries.fetchByConversation($0, conversationID: conversationID) }
-            return EmbeddedChatReplay.block(messages: messages, before: turnID, prompt: prompt)
-        } catch {
-            NSLog("CodeQuestionSurface: reading the history of conversation %lld: %@",
-                  conversationID, error.localizedDescription)
-            return nil
-        }
     }
 
     /// Whether the conversation already told the owner its model reads no

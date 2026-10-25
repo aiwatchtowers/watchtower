@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,6 +141,9 @@ func openToolSession(cmd *cobra.Command) (*internalmcp.LocalSession, func(), err
 	}
 	mcpOpts := []internalmcp.ServerOption{
 		internalmcp.WithSkillsDir(skills.Dir(cfg.WorkspaceDir())),
+		// Lines tie to the agent session that ran the command (READ-02);
+		// the budget lives only as long as this one invocation (v1 limit).
+		internalmcp.WithReadSession(mcpProcessSessionKey(os.Getenv, os.Getpid())),
 	}
 	var shadowDB *db.DB
 	if cfg.Memory.Enabled {

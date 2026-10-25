@@ -1,22 +1,27 @@
 import Foundation
 import GRDB
+import os
 import WatchtowerCore
 
 /// Drives the target's "Watch" tab: the watches linked to the target, the
 /// origin track it was promoted from (if any), and the merged activity feed
-/// from all its watches. Applies a confirmed proposed action to THIS target.
+/// from all its watches. Applies a confirmed proposed action to THIS target through the registry.
 @MainActor
 @Observable
 final class TargetWatchesViewModel {
     let target: Target
+    private static let log = Logger(subsystem: Constants.bundleID, category: "target-watches")
     private let dbPool: DatabasePool
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending apply or dismiss per event (board #670).
     let pendingWrites = PendingWrites()
     private let scanCenter: TrackScanCenter
-    private let targetsViewModel: TargetsViewModel
+    private let actionPress: TrackActionPress
     private let scanService: TrackScanService
+    /// A bound watch's scan goes through the custom-track seam (its recipe);
+    /// nil, or an unbound watch, runs `tracks scan` through `scanService`.
+    private let trackControls: (any CustomTrackControlling)?
 
     var watches: [Track] = []
     var originTrack: Track?
@@ -29,12 +34,14 @@ final class TargetWatchesViewModel {
     init(target: Target,
          dbManager: DatabaseManager,
          scanService: TrackScanService,
-         targetsViewModel: TargetsViewModel,
-         scanCenter: TrackScanCenter) {
+         actionRunner: any CLIRunnerProtocol,
+         scanCenter: TrackScanCenter,
+         trackControls: (any CustomTrackControlling)? = nil) {
         self.target = target
         self.dbPool = dbManager.dbPool
         self.scanService = scanService
-        self.targetsViewModel = targetsViewModel
+        self.trackControls = trackControls
+        self.actionPress = TrackActionPress(runner: actionRunner)
         self.scanCenter = scanCenter
     }
 
@@ -90,14 +97,23 @@ final class TargetWatchesViewModel {
 
     func isScanning(_ trackID: Int) -> Bool { scanCenter.isRunning(trackID) }
 
-    /// Scans one watch over the given range (nil since = all history), tracked
-    /// in the shared center so the indicator survives navigation.
+    /// Scans one watch over the given range (nil = since the last check,
+    /// `WatchTrackControls.allHistory` = all history), tracked in the shared
+    /// center so the indicator survives navigation. A bound watch gets the
+    /// epoch as its Scan from for all history; an unbound one keeps the
+    /// legacy flagless `tracks scan`.
     func scanWatch(_ watch: Track, since: Date?, label: String) async {
         scanCenter.begin(watch.id)
         var note: String?
         defer { scanCenter.finish(watch.id, note: note) }
         do {
-            let iso = since.map { Self.isoFormatter.string(from: $0) }
+            if watch.automationID != nil, let trackControls {
+                try await trackControls.scan(watch, from: since)
+                note = "\(watch.text): \(WatchTrackControls.nextSyncNote.lowercased())."
+                return
+            }
+            let legacySince = since == WatchTrackControls.allHistory ? nil : since
+            let iso = legacySince.map { Self.isoFormatter.string(from: $0) }
             let created = try await scanService.run(trackID: watch.id, since: iso)
             note = created.isEmpty
                 ? "\(watch.text): no new activity (\(label))."
@@ -158,25 +174,26 @@ final class TargetWatchesViewModel {
     }
 
     private func applyNow(_ event: TrackEvent) async {
-        guard let action = event.decodedAction else { return }
+        guard event.decodedAction != nil else { return }
         errorMessage = nil
         do {
-            let (fresh, eventExists) = try await dbPool.read { db in
-                (try TargetQueries.fetchByID(db, id: target.id), try TrackEventQueries.exists(db, id: event.id))
-            }
-            guard let fresh else {
-                errorMessage = "This target no longer exists — it may have been deleted."
-                return
-            }
-            // Checked before the target is touched: an apply whose event vanished
-            // (its watch deleted elsewhere) would land and then report a failure.
-            guard eventExists else {
-                reportWriteFailure("apply", RowNotFoundError(kind: "track event", id: event.id))
-                return
-            }
-            _ = try await TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
-            try await chained { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
-        } catch { reportWriteFailure("apply", error) }
+            try await actionPress.press(eventID: event.id)
+        } catch {
+            errorMessage = "Failed to apply: \(error.localizedDescription)"
+        }
+        // The CLI wrote on its own connection: the observations never see it,
+        // and a refused press may mean the event or watch is gone.
+        refreshEvents()
+        refreshWatches()
+    }
+
+    /// A failed read keeps the rows shown and is logged.
+    private func refreshWatches() {
+        do {
+            watches = try dbPool.read { db in try TrackQueries.fetchByLinkedTarget(db, targetID: target.id) }
+        } catch {
+            Self.log.error("reading target \(self.target.id)'s watches: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func dismissNow(_ event: TrackEvent) async {

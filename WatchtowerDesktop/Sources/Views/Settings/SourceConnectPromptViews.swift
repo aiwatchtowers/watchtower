@@ -19,7 +19,8 @@ struct SidebarConnectRow: View {
 
     var body: some View {
         if let title = SourceConnectPrompt.rowTitle(
-            connected: appState.featureVisibility.connectedSources, dismissed: dismissed
+            connected: appState.featureVisibility.connectedSources, dismissed: dismissed,
+            policy: appState.managedPolicy.policy
         ) {
             HStack(spacing: 4) {
                 Button {

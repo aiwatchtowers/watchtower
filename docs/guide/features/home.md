@@ -1,43 +1,45 @@
 # Home
 
-Home is the page Watchtower opens on. It shows what needs you right now and, on a new install, how far the setup has got. The menu on the left is described at the end.
+Home is the page Watchtower opens on. It shows what needs you right now and, on a new install, how far the setup has got.
 
 ## Why use it
 
-You open the app after a meeting and want one answer: what is waiting for me? Home puts what needs you, then your meetings, in one feed. Next to it sit your coding agents' sessions and questions, shortcuts to your briefing and recap, and a few numbers for today.
+You open the app after a meeting and want one answer: what is waiting for me? Home puts what needs you, then your meetings, in one feed, next to your agents' sessions, shortcuts and today's numbers.
 
 ## How it works
 
-Home only reads what the rest of the app has produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. In a narrow window everything is one column in the same order: feed, Workbench, links, numbers. A zone with nothing to show is left out.
+Home only reads what the app produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. A narrow window stacks them in one column, in that order. A zone with nothing to show is left out.
 
 ### The feed
 
 The feed reads top to bottom like your day: above a **NOW** line is everything that waits on you, below it your meetings and what is still to come.
 
-**Above NOW** are, from the last 72 hours: Slack mentions, DMs, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, notes your automations left for you, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read row stays, dimmer, until you act on it. Newest comes first within each kind; seven rows show, **N more** opens up to 50, and **Show 50 more** the next 50. Workbench targets never appear.
+**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, notes your automations left for you, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read Inbox row stays, dimmer; an automation note leaves once you open its card, and a Jira row whose issue was deleted in Jira leaves too. Newest first within each kind; seven rows show, **N more** opens up to 50, and **Show 50 more** the next 50. Workbench targets never appear.
 
 **Below NOW** are the meeting in progress, then today's remaining meetings, reminders and timed targets in time order. The next meeting says how soon it starts, such as "in 25 min", and shows "Prep ready" when prep exists. After today, a short block shows the first of the next three days that has meetings: **Tomorrow**, or the weekday, with up to three meetings. All-day, cancelled and declined events are left out.
 
 ### Done and Hide
 
 - Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00; a hidden automation note is dismissed, as in Inbox. Proposals and meetings have no buttons: open them instead.
-- A row leaves the feed at once. If the action fails it comes back with the error under it; press again to retry.
-- Click a row to open it: Slack, Jira and email open their source, an automation note its run, the rest Inbox, the target or the meeting.
+- A row leaves at once; if the action fails it comes back with the error.
+- Click a row to open it: Slack, Jira and email open their source, an automation note its Inbox card with its buttons, the rest Inbox, the target or the meeting.
 
 ### Workbench
 
-The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. Finished and stopped sessions are left out; others show while they wait for approval, failed, are ready to check, or work (or in the background). Then open questions and review requests, oldest first. Click a session for its terminal (plus its Branch review when ready to check), a question for its session.
+The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. Finished and stopped sessions are left out; others show while they wait for approval, failed, are ready to check, or are working. Then open questions and review requests, oldest first. Click a session for its terminal (and Branch review when ready to check), a question for its session.
 
 If you keep telling agents the same thing, the last row offers it as an instruction: **Add** or **Dismiss**.
 
 ### Links
 
-The **Links** zone has up to four shortcuts, each shown while its tab is visible:
+The **Links** zone has up to four shortcuts, each shown while its tab (for the briefing and plan, the Inbox) is in the menu:
 
 - **Briefing** shows "ready 08:05" once today's briefing exists, else the latest one's weekday.
 - **Catch-Up** shows a highlighted "new recap" while a finished recap waits for **I'm caught up**.
 - **Day plan** shows "2 of 5 done" for today's plan.
 - **Digests** has no status.
+
+**Briefing** and **Day plan** open today's **Your day** card in the [Inbox](inbox.md).
 
 ### Today in numbers
 
@@ -50,7 +52,11 @@ The **Links** zone has up to four shortcuts, each shown while its tab is visible
 - **workbench targets new / done**: created and finished today.
 - **meetings recorded**: recordings made today.
 
-**AI spend** always shows. A number whose source is off or not connected is left out; one that couldn't be read shows "—".
+**AI spend** always shows; a number whose source is off is left out, one that couldn't be read shows "—".
+
+### Data scheduled for deletion
+
+When an account's data is scheduled for deletion ([Revoked access](../concepts/revoked-access.md)), a red banner at the top names it, with **Reconnect** until the deletion starts.
 
 ### The Getting ready zone
 
@@ -70,29 +76,27 @@ When every feature is ready or retrying on its own, the zone shrinks to "Everyth
 
 ### The menu on the left
 
-The menu lists Home, Targets, Tracks, Workbench, Automations and Calendar first. Below them are three collapsible sections:
+The menu lists Home, Targets, Workbench, Automations and Calendar first. Below them are three collapsible sections:
 
-- **FOCUS**: Catch Up, Briefings, Day Plan, Inbox, Ideas.
+- **FOCUS**: Catch Up, Inbox (briefings, plans, tracks and ideas are its filters).
 - **EXECUTION**: Project Map, Releases, Blockers, Workload.
 - **INSIGHTS**: Digests, People, Memory, Statistics.
 
-AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOCUS starts open and the other two start folded; your own folds are remembered.
+AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOCUS starts open, the others folded; your folds are remembered.
 
 - **⌘B** folds the menu into an icon rail and back; in the rail each section is one icon that opens its tabs.
 - Right-click a tab and choose **Hide**; it moves to the section's **HIDDEN** list, where **Show** brings it back.
 - A tab appears only when its feature is on in Settings → Features and its source is connected.
 - Until Slack, mail and Jira are all connected, a quiet **+ Connect …** line at the bottom names what is missing and opens Settings → Connections. Its **×** hides it for good.
-- Badges show what waits: unread briefings, Inbox proposals and due reminders, ideas to review, a recap waiting.
+- Badges show what waits: the Inbox's count, a recap.
 
-Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." It is always there, and **⌘/** opens the [assistant over this tab](ai-chat.md).
+Home ends with "Stuck? Press **⌘/** to ask, or open the User Guide."; **⌘/** opens the [assistant over this tab](ai-chat.md).
 
 ## When it's empty or wrong
 
 - **No Getting ready zone.** It is shown only while something is still preparing or waiting for a source. It is also gone after three days, or after you hid it.
 - **A tab is missing from the menu.** Turn its feature on in Settings → Features and connect its source, or look under **HIDDEN**.
-- **A link is missing.** Its tab is hidden or its feature is off or its source isn't connected.
-- **A number is missing.** Its source isn't connected or is off.
-- **No Workbench zone.** No session needs a look and nothing is asked of you.
+- **A link or number is missing.** Its tab is hidden, or its feature or source is off or not connected.
 - **The feed has no Slack, Jira, Linear or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
 - **No meetings below NOW.** Calendar isn't connected or its tab is hidden, or the events are all-day, cancelled or declined.
 - **"Couldn't read … — see the log."** A zone (Workbench, the links, or a feed source) says this when the local database couldn't be read. Quit and reopen the app; if it persists, check the app log.

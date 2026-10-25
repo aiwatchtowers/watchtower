@@ -13,7 +13,9 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
     package let essence: String
     package let statusRaw: String     // column: status
     package let source: String
-    package let snoozeUntil: String   // column: snooze_until
+    /// column: snooze_until — "" (no date), an owner-local `yyyy-MM-dd` (Inbox
+    /// Not now), or a legacy ISO datetime; a reader must accept all three.
+    package let snoozeUntil: String
     package let needsReview: Bool     // column: needs_review
     package let reviewReason: String  // column: review_reason
     package let similarToID: Int?         // column: similar_to_id
@@ -26,6 +28,11 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
     package let createdAt: String     // column: created_at
     package let updatedAt: String     // column: updated_at
     package let seenAt: String?       // column: seen_at
+    /// column: chat_born — first proposed from chat material (or an owner
+    /// prefix in a chat); such an item waits for a verdict whatever its kind
+    /// and stays out of knowledge readers while never approved
+    /// (`IdeaQueries.knowledgeVisibleSQL`, see 00154).
+    package let chatBorn: Bool
 
     package enum Kind: String {
         case idea
@@ -81,5 +88,6 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
         seenAt = row["seen_at"] as String?
+        chatBorn = row["chat_born"] ?? false
     }
 }

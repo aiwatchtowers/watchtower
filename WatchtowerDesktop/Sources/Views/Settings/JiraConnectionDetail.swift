@@ -10,6 +10,9 @@ import WatchtowerCore
 /// already-synced issues, boards, and releases in place.
 struct JiraConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// The organization's policy forbids this source (#608): nothing new
+    /// connects; existing accounts keep their data.
+    private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("jira") }
     @State private var showAddJiraAccountSheet = false
     @State private var jiraAccountPendingRemoval: JiraAccount?
     @State private var accountBeingRenamed: AccountRenameTarget?
@@ -42,12 +45,18 @@ struct JiraConnectionDetail: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
+                                if let line = AccountPurgeLine.make(
+                                    center: appState.accountPurgeCenter, source: "jira", accountID: Int64(account.id),
+                                    isPurged: account.isPurged
+                                ) {
+                                    line
+                                }
                             }
                             Spacer()
                             Circle()
                                 .fill(jiraAccountStatusColor(account))
                                 .frame(width: 8, height: 8)
-                                .help(account.isOK ? "Connected" : (account.error.isEmpty ? account.status : account.error))
+                                .help(accountStatusHelp(account))
                             Toggle("Enabled", isOn: Binding(
                                 get: { account.enabled },
                                 set: { newValue in
@@ -56,12 +65,14 @@ struct JiraConnectionDetail: View {
                             ))
                             .toggleStyle(.switch)
                             .controlSize(.mini)
-                            .disabled(vm.isConnecting)
+                            .disabled(vm.isConnecting || account.isPurged)
                             if !account.isOK {
                                 Button("Re-login") {
                                     Task { await vm.relogin(account) }
                                 }
-                                .disabled(vm.isConnecting)
+                                .managedByOrganization(sourceBlocked)
+                                .help(reloginBlocked(account.id) ?? "")
+                                .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
                             }
                             Button("Rename…") {
                                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
@@ -87,6 +98,7 @@ struct JiraConnectionDetail: View {
                 Button("Add Jira Site") {
                     showAddJiraAccountSheet = true
                 }
+                .managedByOrganization(sourceBlocked)
                 .disabled(vm.isConnecting)
             } else {
                 Text("Loading...")
@@ -120,10 +132,11 @@ struct JiraConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(
+            Text(AccountPurgeStatus.removeDialogMessage(
                 "Disconnects the site. Already-synced issues, boards, and "
-                    + "releases stay in Watchtower."
-            )
+                    + "releases stay in Watchtower.",
+                status: appState.accountPurgeCenter?.status
+            ))
         }
 
         if appState.jiraAccountsViewModel?.accounts.isEmpty == false {
@@ -160,9 +173,22 @@ struct JiraConnectionDetail: View {
         }
     }
 
+    /// Why Re-login is off for the account (its purge is running), or nil.
+    private func reloginBlocked(_ id: Int) -> String? {
+        AccountPurgeLine.reloginBlockedReason(
+            center: appState.accountPurgeCenter, source: "jira", accountID: Int64(id))
+    }
+
     private func jiraAccountStatusColor(_ account: JiraAccount) -> Color {
         if account.isOK { return .green }
         if account.isRevoked { return .red }
+        if account.isPurged { return .gray }
         return .orange
+    }
+
+    private func accountStatusHelp(_ account: JiraAccount) -> String {
+        if account.isOK { return "Connected" }
+        if account.isPurged { return "Data deleted" }
+        return account.error.isEmpty ? account.status : account.error
     }
 }

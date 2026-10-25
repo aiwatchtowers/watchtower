@@ -407,7 +407,6 @@ func TestDayPlanConfig_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, DefaultDayPlanEnabled, cfg.DayPlan.Enabled)
-	assert.Equal(t, DefaultDayPlanHour, cfg.DayPlan.Hour)
 	assert.Equal(t, DefaultDayPlanWorkingHoursStart, cfg.DayPlan.WorkingHoursStart)
 	assert.Equal(t, DefaultDayPlanWorkingHoursEnd, cfg.DayPlan.WorkingHoursEnd)
 	assert.Equal(t, DefaultDayPlanMaxTimeblocks, cfg.DayPlan.MaxTimeblocks)
@@ -431,7 +430,6 @@ day_plan:
 	require.NoError(t, err)
 
 	assert.False(t, cfg.DayPlan.Enabled)
-	assert.Equal(t, 7, cfg.DayPlan.Hour)
 	assert.Equal(t, "08:00", cfg.DayPlan.WorkingHoursStart)
 	assert.Equal(t, "18:00", cfg.DayPlan.WorkingHoursEnd)
 	assert.Equal(t, 5, cfg.DayPlan.MaxTimeblocks)
@@ -755,6 +753,17 @@ func TestConfigRecordingsDir(t *testing.T) {
 	})
 }
 
+// TestAppSupportDir: the Desktop's Application Support folder, the parent of
+// the default recordings folder (BACKUP-01 excludes it from Time Machine).
+func TestAppSupportDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := AppSupportDir()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "Library", "Application Support", "Watchtower"), got)
+	assert.Equal(t, filepath.Join(got, "recordings"), (&Config{}).RecordingsDir())
+}
+
 func TestFeatureGateDefaults(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
 	if err != nil {
@@ -810,4 +819,20 @@ func TestConfig_BackfillZeroIsKept(t *testing.T) {
 	cfg, err := Load(writeTestConfig(t, "active_workspace: acme\nsync:\n  backfill_days: 0\n"))
 	require.NoError(t, err)
 	assert.Equal(t, 0, cfg.Sync.BackfillDays, "0 turns new backfills off, never re-defaulted")
+}
+
+// privacy.purge_revoked_data is tri-state (#601): absent stays nil so the
+// build default decides; true and false are kept as set.
+func TestLoad_PurgeRevokedDataTriState(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, "active_workspace: acme\n"))
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Privacy.PurgeRevokedData, "absent key must stay nil")
+
+	for _, v := range []bool{true, false} {
+		yaml := "active_workspace: acme\nprivacy:\n  purge_revoked_data: " + map[bool]string{true: "true", false: "false"}[v] + "\n"
+		cfg, err := Load(writeTestConfig(t, yaml))
+		require.NoError(t, err)
+		require.NotNil(t, cfg.Privacy.PurgeRevokedData)
+		assert.Equal(t, v, *cfg.Privacy.PurgeRevokedData)
+	}
 }

@@ -140,6 +140,10 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
     package let changes: String
     package let payload: OwnerAskPayload
     package let docPath: String
+    /// A review's document kind (00158): spec, plan or other; empty for
+    /// other kinds and for asks filed before it. Only a spec or a plan
+    /// gets a spec review.
+    package let docType: String
     package let docSnapshot: String
     package let previousAskID: Int64?
     package let status: OwnerAskStatus
@@ -188,6 +192,7 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
         changes = row["changes"] ?? ""
         payload = try OwnerAskPayload.decode(row["payload"] ?? "{}")
         docPath = row["doc_path"] ?? ""
+        docType = row["doc_type"] ?? ""
         docSnapshot = row["doc_snapshot"] ?? ""
         previousAskID = row["previous_ask_id"]
         withdrawnReason = row["withdrawn_reason"] ?? ""

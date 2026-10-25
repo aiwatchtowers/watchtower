@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/inbox"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
@@ -473,7 +474,7 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 		created, resolved, err := pipe.Run(cmd.Context())
 		errMsg := ""
 		if err != nil {
-			errMsg = err.Error()
+			errMsg = logredact.Full(err)
 		}
 
 		inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
@@ -505,7 +506,7 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
 	errMsg := ""
 	if err != nil {
-		errMsg = err.Error()
+		errMsg = logredact.Full(err)
 	}
 	if runID > 0 {
 		_ = database.CompletePipelineRun(runID, created+resolved, inTok, outTok, cost, totalAPI, nil, nil, errMsg)

@@ -267,7 +267,7 @@ final class AppStateTests: XCTestCase {
         appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = dbManager
         await appState.refreshConnectedSources()
-        XCTAssertFalse(SidebarDestination.inbox.isVisible(
+        XCTAssertFalse(SidebarDestination.catchUp.isVisible(
             disabledFeatures: [], connected: appState.featureVisibility.connectedSources
         ))
 
@@ -275,7 +275,7 @@ final class AppStateTests: XCTestCase {
         appState.completeOnboarding()
         await appState.connectedSourcesRefresh?.value
 
-        XCTAssertTrue(SidebarDestination.inbox.isVisible(
+        XCTAssertTrue(SidebarDestination.catchUp.isVisible(
             disabledFeatures: [], connected: appState.featureVisibility.connectedSources
         ))
         await appState.stopSidebarCounts()?.value
@@ -640,6 +640,20 @@ final class AppStateTests: XCTestCase {
         appState.resumePeopleRosterIfNeeded()
 
         XCTAssertEqual(launches.accounts.count, 1)
+    }
+
+    /// A purged Slack account counts as removed (ask #491): no load starts.
+    func testResumePeopleRosterSkipsAPurgedAccount() async throws {
+        let launches = RosterLaunches()
+        let appState = onboardingAppState(launches)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1", status: "purged") }
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        await appState.slackAccountsViewModel?.refreshAsync()
+
+        appState.resumePeopleRosterIfNeeded()
+        await appState.peopleRoster.waitForCompletion()
+
+        XCTAssertEqual(launches.accounts, [])
     }
 
     // MARK: - Onboarding database and finish

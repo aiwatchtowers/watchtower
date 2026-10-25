@@ -3,6 +3,7 @@ import UserNotifications
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// `NotificationDelegate.route` — the notification-response dispatch table, and the
 /// `forwarded` gate that downgrades a response handed over by a deferring duplicate to
@@ -146,7 +147,7 @@ final class NotificationRouteTests: XCTestCase {
             "decision", "track", "track_update", "task_overdue", "target_extract",
             "daily_summary", "voice_label", "meeting_reminder", "meeting_stop_recording",
             "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update", "agent_action", "plan_usage",
-            "automation_run"
+            "automation_run", "account_purge"
         ]
         let actionIDs = [
             UNNotificationDefaultActionIdentifier,
@@ -204,6 +205,26 @@ final class NotificationRouteTests: XCTestCase {
         }
     }
 
+    /// An account purge notice (board #601) opens Settings → Connections on
+    /// the account's source, self-received or forwarded alike.
+    func testAccountPurgePushOpensTheConnection() async {
+        for forwarded in [false, true] {
+            let appState = AppState.isolated()
+            appState.settingsTab = .system
+            var opened = 0
+            appState.openSettingsWindow = { opened += 1 }
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier,
+                userInfo: ["type": "account_purge", "source": "jira"],
+                appState: appState,
+                forwarded: forwarded
+            )
+            XCTAssertEqual(appState.settingsTab, .connections, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.settingsConnection, .jira, "forwarded: \(forwarded)")
+            XCTAssertEqual(opened, 1, "forwarded: \(forwarded)")
+        }
+    }
+
     /// A decision push carries an idea id (decisions are ledger-sourced, not tied to a
     /// single digest — see DigestWatcher) and opens the Decisions segment on that entry;
     /// without one it can only land on the Digests tab.
@@ -234,8 +255,9 @@ final class NotificationRouteTests: XCTestCase {
     /// destination — the gate touches only the action-bearing branches.
     func testNavigationTypesRouteToTheirTab() async {
         let cases: [(type: String, destination: SidebarDestination)] = [
-            ("track", .tracks),
-            ("track_update", .tracks),
+            ("track", .inbox),
+            ("track_update", .inbox),
+            ("briefing", .inbox),
             ("task_overdue", .targets),
             ("target_extract", .targets),
             ("daily_summary", .digests),
@@ -272,6 +294,48 @@ final class NotificationRouteTests: XCTestCase {
                     )
                 }
             }
+        }
+    }
+
+    /// The track and briefing pushes open Inbox cards (C1): `track` the
+    /// Tracks filter, `track_update` with a `trackId` that track's card (also
+    /// after the forwarding round trip), `briefing` today's day card.
+    func testTrackAndBriefingPushesOpenInboxCards() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        // Track 7 exists: a route selects only a listed card.
+        try await pool.write { db in
+            let track = try TestDatabase.insertTrack(db, text: "Launch")
+            try db.execute(sql: "UPDATE tracks SET id = 7 WHERE id = ?", arguments: [track])
+        }
+        let savedFilter = UserDefaults.standard.object(forKey: "inbox.filter")
+        defer { UserDefaults.standard.set(savedFilter, forKey: "inbox.filter") }
+        let today = AppState.inboxToday()
+        let forwardedUpdate = try XCTUnwrap(
+            NotificationForwarding.encode(actionID: UNNotificationDefaultActionIdentifier,
+                                          userInfo: ["type": "track_update", "trackId": 7])
+                .flatMap(NotificationForwarding.decode)
+        ).userInfo
+        let cases: [([AnyHashable: Any], InboxFilter, InboxSelection?)] = [
+            (["type": "track"], .tracks, nil),
+            (["type": "track_update", "trackId": 7], .tracks, .track(7)),
+            (forwardedUpdate, .tracks, .track(7)),
+            (["type": "briefing"], .day, .day(today))
+        ]
+        for (userInfo, filter, selection) in cases {
+            UserDefaults.standard.removeObject(forKey: "inbox.filter")
+            let appState = AppState.isolated()
+            appState.initActionStrip(dbPool: pool)
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier, userInfo: userInfo, appState: appState, forwarded: true)
+            let vm = try XCTUnwrap(appState.actionStripViewModel)
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline, vm.filter != filter || vm.selection != selection {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(appState.selectedDestination, .inbox, "\(userInfo)")
+            XCTAssertEqual(vm.filter, filter, "\(userInfo)")
+            XCTAssertEqual(vm.selection, selection, "\(userInfo)")
         }
     }
 
@@ -446,7 +510,7 @@ final class NotificationRouteTests: XCTestCase {
             NotificationForwarding.routedKeys,
             [
                 "type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey,
-                NotificationForwarding.transcriptIDKey, NotificationForwarding.workbenchIDKey,
+                NotificationForwarding.trackIDKey, NotificationForwarding.transcriptIDKey, NotificationForwarding.workbenchIDKey,
                 NotificationForwarding.workbenchSubjectIDKey, NotificationForwarding.workbenchPaneKey,
                 NotificationForwarding.workbenchAskIDKey, NotificationForwarding.automationIDKey,
                 NotificationForwarding.runIDKey
@@ -454,6 +518,7 @@ final class NotificationRouteTests: XCTestCase {
         )
         XCTAssertEqual(NotificationForwarding.digestIDKey, "digestId")
         XCTAssertEqual(NotificationForwarding.ideaIDKey, "ideaId")
+        XCTAssertEqual(NotificationForwarding.trackIDKey, "trackId")
         XCTAssertEqual(NotificationForwarding.transcriptIDKey, "transcriptID")
         XCTAssertEqual(NotificationForwarding.workbenchIDKey, "projectId")
         XCTAssertEqual(NotificationForwarding.workbenchSubjectIDKey, "subjectId")

@@ -71,6 +71,7 @@ type Input struct {
 	Checklist     []ChecklistItem `json:"checklist,omitempty"`
 	DocPath       string          `json:"doc_path,omitempty"`
 	PreviousAskID int64           `json:"previous_ask_id,omitempty"`
+	DocType       string          `json:"doc_type,omitempty"`
 }
 
 // Payload is what owner_asks.payload stores: the validated lists, text
@@ -124,6 +125,15 @@ func Validate(in Input, origin string) (Payload, error) {
 		return p, fmt.Errorf("doc_path: required for a review")
 	case in.Kind != KindReview && hasDoc:
 		return p, fmt.Errorf("doc_path: only a review has a document")
+	}
+	switch strings.TrimSpace(in.DocType) {
+	case "":
+	case "spec", "plan", "other":
+		if in.Kind != KindReview {
+			return p, fmt.Errorf("doc_type: only a review has a document")
+		}
+	default:
+		return p, fmt.Errorf("doc_type: must be spec, plan or other")
 	}
 	return p, nil
 }

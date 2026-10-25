@@ -20,7 +20,7 @@ Once the session ends, the field gives way to **Session finished. The history st
 
 ### Switch between Terminal and Workchat
 
-- **Terminal | Workchat** on the session's strip swaps the session in that pane between the two. The session name with ▾ at the strip's left picks another session or starts a new one.
+- The toggle button on the session's strip, named for the mode it switches to (**Terminal** or **Workchat**), swaps the session in that pane between the two. It is greyed out when that mode already shows in the other pane. The session name with ▾ at the strip's left picks another session or starts a new one.
 - ⌃` does the same, as does View → **Show Terminal** / **Show Workchat**.
 - With the split on, both show side by side: the terminal on the left, the Workchat on the right.
 - A small glyph on each session row shows the mode it opens in. Right-click a row for **Open in Terminal** or **Open in Workchat**.
@@ -29,7 +29,9 @@ Once the session ends, the field gives way to **Session finished. The history st
 
 - Return in the field at the bottom sends your line. Shift-Return adds a line break; the message keeps its line breaks.
 - A line starting with `/` is typed as written, so `/clear` works.
-- While the agent works, your line waits as **Queued · sends when the agent stops**. **Cancel** drops it; quitting drops it too.
+- You can send while the agent works. With Claude Code the line shows **Queued · the agent reads it at its next step** until the agent picks it up. If it has to wait a moment, it reads **Queued · sends in a moment** (**Queued · sends when the agent stops** for Codex), and **Cancel** drops it; quitting drops it too.
+- A line under the chat shows what the agent is doing now, such as a command or "3 files", with a timer, or **Thinking…**. It is not part of the history.
+- Paste a screenshot or PDF with ⌘V, or drop files, and they show as chips above the field (✕ removes one). Pasted images are kept in Watchtower's folder for 7 days. Finder files attach as they are. If a paste can't be saved, or a file's path has a line break, the reason shows under the field.
 - **Stop** (■), or Esc in the empty field, interrupts the agent. If it can't, the reason shows above the field.
 - A line typed into the terminal but not sent says so, with **Show in Terminal**: press Return there.
 

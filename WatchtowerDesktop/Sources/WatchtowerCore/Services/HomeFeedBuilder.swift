@@ -78,7 +78,7 @@ package enum HomeFeedBuilder {
                 who: output.title.isEmpty ? "Automation output" : output.title,
                 whereText: output.automationName, text: output.body,
                 stamp: output.createdAt, read: false, actions: [.done, .hide],
-                link: .automationRun(automationID: output.automationID, runID: output.runID))
+                link: .inboxOutput(id: output.id, automationID: output.automationID, runID: output.runID))
         }
         for target in data.targets {
             let due = dueInstant(target.dueDate, calendar: calendar)

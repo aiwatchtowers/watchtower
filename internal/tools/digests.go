@@ -38,6 +38,7 @@ func NewGetTodayBriefing() *Tool {
 		Description: "Get today's daily briefing (your personalized roll-up of what needs attention). Returns null if today's briefing hasn't been generated yet.",
 		InputSchema: mustSchema[getTodayBriefingArgs]("get_today_briefing"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, _ Call) (any, error) {
 			// No owner is an error, not null: null means "not generated yet"
 			// (OWNER-02). Read-only either way (DEV-01).
@@ -64,6 +65,7 @@ func NewListDigests() *Tool {
 		Description: "List channel/daily/weekly digests (AI summaries of Slack activity), most recent first.",
 		InputSchema: mustSchema[listDigestsArgs]("list_digests"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listDigestsArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -107,6 +109,7 @@ func NewGetDigest() *Tool {
 		Description: "Get a single digest by id, including its full summary.",
 		InputSchema: mustSchema[getDigestArgs]("get_digest"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getDigestArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {

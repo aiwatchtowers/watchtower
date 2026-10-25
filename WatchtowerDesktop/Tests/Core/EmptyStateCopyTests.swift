@@ -6,11 +6,12 @@ final class EmptyStateCopyTests: XCTestCase {
     /// EmptyStateCopyCoverageTests sweeps the real enum).
     private let covered = [
         "catchUp", "briefings", "dayPlan", "inbox", "ideas", "calendar", "targets", "tracks", "projects", "automations",
-        "digests", "people", "memory", "workload", "blockers", "projectMap", "releases", "statistics", "boards"
+        "digests", "people", "memory", "workload", "blockers", "projectMap", "releases", "statistics", "boards",
+        "inboxMessages", "inboxAutomations"
     ]
 
-    private func copy(_ rawValue: String, briefingHour: Int = 8, dayPlanHour: Int = 8) -> EmptyStateCopy? {
-        EmptyStateCopyTable.copy(for: rawValue, briefingHour: briefingHour, dayPlanHour: dayPlanHour)
+    private func copy(_ rawValue: String, briefingHour: Int = 8) -> EmptyStateCopy? {
+        EmptyStateCopyTable.copy(for: rawValue, briefingHour: briefingHour)
     }
 
     func testBriefingsCopyNamesConfiguredHour() throws {
@@ -22,23 +23,34 @@ final class EmptyStateCopyTests: XCTestCase {
             text, "A morning briefing: meetings, what needs you, what changed. Generated once a day at or after 07:00.")
     }
 
-    /// The Inbox holds proposals and due reminders, not replies (owner, ask #299).
+    /// The Inbox's All holds every kind (C1); its Automations filter keeps B's
+    /// proposals-and-reminders sentence (owner, ask #299).
     func testInboxCopySaysProposalsAndReminders() throws {
         XCTAssertEqual(
-            try XCTUnwrap(copy("inbox")).landsHere, "Proposals and due reminders that need you, plus reaction shortcuts.")
+            try XCTUnwrap(copy("inbox")).landsHere,
+            "Your day, messages, tracks, ideas and automation cards that need you.")
+        XCTAssertEqual(
+            try XCTUnwrap(copy("inboxAutomations")).landsHere,
+            "Proposals and due reminders that need you, plus reaction shortcuts.")
     }
 
-    func testDayPlanCopyNamesConfiguredHour() throws {
-        let text = try XCTUnwrap(copy("dayPlan", briefingHour: 7, dayPlanHour: 9)).landsHere
-        XCTAssertTrue(text.contains("09:00"), text)
-        XCTAssertFalse(text.contains("07:00"), "the day plan uses its own hour: \(text)")
+    func testEveryInboxFilterHasCopy() {
+        for filter in InboxFilter.allCases {
+            XCTAssertNotNil(copy(filter.emptyCopyKey), filter.rawValue)
+        }
+    }
+
+    /// `day_plan.hour` is retired: the plan is made with the brief, after the briefing hour.
+    func testDayPlanCopyNamesBriefingHour() throws {
+        let text = try XCTUnwrap(copy("dayPlan", briefingHour: 7)).landsHere
+        XCTAssertTrue(text.contains("07:00"), text)
         XCTAssertFalse(text.contains("{hour}"), text)
     }
 
     func testNoHourGatedCopySaysAfterSync() throws {
         for hour in [0, 8, 23] {
             for rawValue in ["briefings", "dayPlan"] {
-                let text = try XCTUnwrap(copy(rawValue, briefingHour: hour, dayPlanHour: hour)).landsHere
+                let text = try XCTUnwrap(copy(rawValue, briefingHour: hour)).landsHere
                 XCTAssertFalse(text.localizedCaseInsensitiveContains("after sync"), "\(rawValue): \(text)")
             }
         }

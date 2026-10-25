@@ -97,16 +97,16 @@ var registry = []Feature{
 	{
 		ID:          "knowledge-search",
 		Title:       "Knowledge search",
-		Description: "Keeps a local search index over Slack, mail, Jira, calendar, meeting transcripts and recaps, digests, decisions and ideas, so the chat finds what you ask about on the first try — no AI, nothing leaves your Mac.",
+		Description: "Keeps a search index over Slack, mail, Jira, calendar, meeting transcripts and recaps, digests, decisions and ideas, so the chat finds what you ask about on the first try. Images are described by AI and public web links are fetched and summarized, so a screenshot, a diagram or a link is found by what it shows.",
 		Tagline:     "Ask about anything you've seen",
 		Benefits: []string{
 			"The chat finds the right thread, mail or ticket by topic",
 			"Understands Russian word forms and mixed-language questions",
-			"Runs locally in the background, no AI cost",
+			"Screenshots, diagrams and links count like text — AI describes images; links to public pages are fetched",
 		},
 		Icon:      "text.magnifyingglass",
 		ConfigKey: "knowledge.enabled",
-		Cost:      CostNone,
+		Cost:      CostMedium,
 		Enabled:   func(cfg *config.Config) bool { return cfg.Knowledge.Enabled },
 	},
 	{

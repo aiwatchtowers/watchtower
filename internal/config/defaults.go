@@ -121,7 +121,6 @@ const (
 
 	// DayPlan defaults
 	DefaultDayPlanEnabled           = true
-	DefaultDayPlanHour              = 8
 	DefaultDayPlanWorkingHoursStart = "09:00"
 	DefaultDayPlanWorkingHoursEnd   = "19:00"
 	DefaultDayPlanMaxTimeblocks     = 3

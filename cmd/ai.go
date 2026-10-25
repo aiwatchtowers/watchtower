@@ -16,6 +16,8 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/instructions"
+	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 
@@ -32,16 +34,20 @@ var (
 	// aiFlagPromptStdin reads the whole query — prompt and system prompt —
 	// as one JSON object from stdin (the Desktop's chats: the owner's typed
 	// message must not sit on this process's argv either).
-	aiFlagPromptStdin  bool
-	aiFlagDBPath       string
-	aiFlagTools        string
-	aiFlagSurface      string
-	aiFlagConversation int64
-	aiFlagTurn         string
-	aiFlagContextType  string
-	aiFlagContextID    string
-	aiFlagEvents       string
-	aiFlagReadFolder   string
+	aiFlagPromptStdin bool
+	// aiFlagOwnerInstructions appends the owner's chat instructions to the
+	// resolved system prompt. A bare flag: the text is read from the
+	// database, never carried on argv (CHAT-04, PROJ-22).
+	aiFlagOwnerInstructions bool
+	aiFlagDBPath            string
+	aiFlagTools             string
+	aiFlagSurface           string
+	aiFlagConversation      int64
+	aiFlagTurn              string
+	aiFlagContextType       string
+	aiFlagContextID         string
+	aiFlagEvents            string
+	aiFlagReadFolder        string
 )
 
 var aiCmd = &cobra.Command{
@@ -92,13 +98,18 @@ func init() {
 	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 
 	aiQueryCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
-	aiQueryCmd.Flags().StringVar(&aiFlagSessionID, "session-id", "", "resume session (Claude only)")
+	// Ignored since #604 G11 (no Claude session is stored); kept so an
+	// older caller's flag still parses.
+	aiQueryCmd.Flags().StringVar(&aiFlagSessionID, "session-id", "", "ignored: no session is stored")
+	_ = aiQueryCmd.Flags().MarkHidden("session-id")
 	aiQueryCmd.Flags().StringVar(&aiFlagSystemPrompt, "system-prompt", "", "system prompt")
 	aiQueryCmd.Flags().BoolVar(&aiFlagSystemPromptStdin, "system-prompt-stdin", false,
 		"read the system prompt from stdin (keeps it off argv: visible in ps, bounded by ARG_MAX)")
 	aiQueryCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-stdin")
 	aiQueryCmd.Flags().BoolVar(&aiFlagPromptStdin, "prompt-stdin", false,
 		`read the query from stdin as JSON {"prompt": "...", "system_prompt": "..."} instead of a positional prompt (keeps both off argv)`)
+	aiQueryCmd.Flags().BoolVar(&aiFlagOwnerInstructions, "owner-instructions", false,
+		"append the owner's instructions to the system prompt (a resumed turn, with no system prompt, gets none)")
 	aiQueryCmd.MarkFlagsMutuallyExclusive("prompt-stdin", "system-prompt")
 	aiQueryCmd.MarkFlagsMutuallyExclusive("prompt-stdin", "system-prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
@@ -111,6 +122,23 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 	aiQueryCmd.Flags().StringVar(&aiFlagReadFolder, "read-folder", "",
 		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
+}
+
+// withOwnerInstructions appends the owner's chat slot to a non-empty system
+// prompt. An empty prompt (a resumed turn) and an empty slot leave it as is.
+func withOwnerInstructions(d *db.DB, system string) (string, error) {
+	if system == "" {
+		return system, nil
+	}
+	g, err := d.GetOwnerInstructions()
+	if err != nil {
+		return "", err
+	}
+	slot := instructions.ChatSlot(g)
+	if slot == "" {
+		return system, nil
+	}
+	return system + "\n\n" + slot, nil
 }
 
 // maxStdinSystemPrompt bounds --system-prompt-stdin and --prompt-stdin; a chat prompt is tens of
@@ -222,6 +250,20 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		return err
 	}
 
+	if aiFlagOwnerInstructions && systemPrompt != "" {
+		database, err := db.Open(dbPath)
+		if err != nil {
+			emitError(enc, fmt.Sprintf("--owner-instructions: opening the database: %v", err))
+			return nil
+		}
+		systemPrompt, err = withOwnerInstructions(database, systemPrompt)
+		_ = database.Close()
+		if err != nil {
+			emitError(enc, fmt.Sprintf("--owner-instructions: %v", err))
+			return nil
+		}
+	}
+
 	aiClient, cleanup, err := newQueryClient(cfg, dbPath)
 	if err != nil {
 		emitError(enc, fmt.Sprintf("preparing tools: %v", err))
@@ -271,7 +313,7 @@ func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan
 	// Check for errors
 	for err := range errCh {
 		if err != nil {
-			_ = enc.Encode(aiStreamEvent{Type: "error", Error: err.Error()})
+			_ = enc.Encode(aiStreamEvent{Type: "error", Error: logredact.Full(err)})
 		}
 	}
 
@@ -359,7 +401,7 @@ func runAIModels(cmd *cobra.Command, _ []string) error {
 			// error string, never a failing command.
 			models, err := ollama.ListModels(ctx, cfg.AI.OllamaURL)
 			if err != nil {
-				entry.Error = err.Error()
+				entry.Error = logredact.Full(err)
 			} else {
 				entry.Models = models
 			}
@@ -442,8 +484,8 @@ func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, err
 	}
 	for err := range errCh {
 		if err != nil {
-			code, retry := chat.ClassifyClaudeError(err.Error())
-			_ = out.Emit(chat.Event{Type: chat.EventError, TurnID: turnID, Code: code, Message: err.Error(), Retryable: retry})
+			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
+			_ = out.Emit(chat.Event{Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
 			return
 		}
 	}

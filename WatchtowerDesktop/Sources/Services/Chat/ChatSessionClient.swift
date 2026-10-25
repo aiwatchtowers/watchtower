@@ -3,13 +3,13 @@ import GRDB
 import WatchtowerCore
 
 /// What a session process is spawned with. Every argv-affecting field
-/// except `resumeSessionID` (a spawn-time hint) belongs in `isCompatible`.
+/// belongs in `isCompatible`. A session never resumes a stored provider
+/// session (#604 G11): a new process replays the history from the database.
 struct ChatSessionConfig: Equatable, Sendable {
     var conversationID: Int64
     var provider: String
     var model: String?
     var surface: String
-    var resumeSessionID: String?
     /// The chat project whose instructions/files join the session's prompt
     /// (`--project-id`); nil for a chat outside any project.
     var projectID: Int64?
@@ -19,14 +19,12 @@ struct ChatSessionConfig: Equatable, Sendable {
         provider: String,
         model: String?,
         surface: String = "main",
-        resumeSessionID: String? = nil,
         projectID: Int64? = nil
     ) {
         self.conversationID = conversationID
         self.provider = provider
         self.model = model
         self.surface = surface
-        self.resumeSessionID = resumeSessionID
         self.projectID = projectID
     }
 
@@ -84,7 +82,6 @@ final class ChatSessionClient {
     @ObservationIgnored private var exited = false
     @ObservationIgnored private var shutdownRequested = false
     @ObservationIgnored private var sigtermSent = false
-    @ObservationIgnored private var hasRunTurn = false
     /// Set by `retireAfterTurn`: the running turn is this session's last.
     @ObservationIgnored private var retiresAfterTurn = false
     /// The turn whose `turn` command was actually written to the process.
@@ -122,7 +119,6 @@ final class ChatSessionClient {
         var args = ["ai", "session", "--conversation", String(config.conversationID),
                     "--provider", config.provider, "--surface", config.surface]
         if let model = config.model, !model.isEmpty { args += ["--model", model] }
-        if let resume = config.resumeSessionID, !resume.isEmpty { args += ["--resume", resume] }
         if let projectID = config.projectID { args += ["--project-id", String(projectID)] }
         if let dbPath, !dbPath.isEmpty { args += ["--db-path", dbPath] }
         return args
@@ -172,20 +168,12 @@ final class ChatSessionClient {
         }
     }
 
-    /// Only a session that has run no turn yet may adopt the conversation's
-    /// history as "already seen" (a `--resume` spawn).
-    func adoptInitialContinuity(_ leafID: Int64?) {
-        guard !hasRunTurn else { return }
-        continuousLeafID = leafID
-    }
-
     /// Runs one turn. The assistant row (`request.assistantMessageID`) must
     /// already exist; a dead session or a failed write fails the turn
     /// visibly with `provider_unavailable` rather than throwing. On a
     /// pending session the turn is held until launch.
     func startTurn(_ request: ChatTurnRequest) {
         guard !isBusy else { return }
-        hasRunTurn = true
         touch()
         let command = request.command
         driver.begin(messageID: request.assistantMessageID, turnID: command.turnID)
@@ -241,7 +229,8 @@ final class ChatSessionClient {
     /// then stop counting as alive so the pool replaces it (CHAT-03 — a
     /// running turn is never cut). `keepingSessionID`: the prompt is fine,
     /// only the process must be replaced (the claude.ai switches changed),
-    /// so the turn's session id is still recorded and the next one resumes it.
+    /// so the turn's session id is still recorded. No session resumes it
+    /// (#604 G11): the stored id is no longer read.
     func retireAfterTurn(keepingSessionID: Bool = false) {
         retiresAfterTurn = true
         if !keepingSessionID { driver.stopRecordingSession() }

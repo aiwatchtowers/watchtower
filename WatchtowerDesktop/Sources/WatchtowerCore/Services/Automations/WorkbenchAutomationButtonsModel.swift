@@ -11,7 +11,7 @@ package enum WorkbenchAutomationButtonsModel {
         case run
         /// A run in progress opens on its card; no second run starts.
         case openRun(Int64)
-        /// The P3 confirmation sheet ("Confirm and enable" for a disabled recipe).
+        /// The card of an unconfirmed recipe (its banner leads to the editor, which confirms).
         case openConfirmSheet
         case openCard
     }

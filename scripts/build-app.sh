@@ -259,10 +259,12 @@ JIRA_ID="${WATCHTOWER_JIRA_CLIENT_ID:-}"
 LINEAR_ID="${WATCHTOWER_LINEAR_CLIENT_ID:-}"
 JIRA_SECRET="${WATCHTOWER_JIRA_CLIENT_SECRET:-}"
 MS_ID="${WATCHTOWER_MICROSOFT_CLIENT_ID:-}"
+PURGE_DEFAULT="${WATCHTOWER_PURGE_DEFAULT:-}"
+LINK_FETCH_DENY_HOSTS="${WATCHTOWER_LINK_FETCH_DENY_HOSTS:-}"
 # -tags codegrammars: the code index's full grammar set (an untagged build
 # carries only Go, Swift and Python).
 GOARCH=arm64 CGO_ENABLED=1 go build -tags codegrammars \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS}" \
     -o "$STAGE_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$STAGE_DIR/watchtower" | cut -f1))"
 
@@ -297,6 +299,35 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 # Copy desktop binary
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/WatchtowerDesktop"
+
+# BEGIN embed-frameworks (extracted verbatim by scripts/tests/test-build-app-frameworks.sh)
+# Dynamic frameworks SwiftPM links the app against — SQLCipher.framework, the
+# SQLite engine under our GRDB fork (#603) — sit next to the binary in the bin
+# path, found there through the linker's @loader_path rpath. In the bundle
+# they go to Contents/Frameworks/, so the binary also needs the standard
+# @executable_path/../Frameworks rpath (a dependency cannot add linker flags,
+# hence install_name_tool here). Every @rpath/<name>.framework the binary
+# loads must be embedded, or the app dies at launch in dyld. app-codesign
+# signs them before the bundle.
+FRAMEWORKS_SRC_DIR=$(swift build -c release --arch arm64 --show-bin-path)
+FRAMEWORKS_DIR="$APP_BUNDLE/Contents/Frameworks"
+APP_EXECUTABLE="$APP_BUNDLE/Contents/MacOS/WatchtowerDesktop"
+mkdir -p "$FRAMEWORKS_DIR"
+for fw in "$FRAMEWORKS_SRC_DIR"/*.framework; do
+    [ -d "$fw" ] || continue
+    ditto "$fw" "$FRAMEWORKS_DIR/$(basename "$fw")"
+    echo "    Embedded framework: $(basename "$fw")"
+done
+for fw_name in $(otool -L "$APP_EXECUTABLE" | sed -n 's|^[[:space:]]*@rpath/\([^/]*\.framework\)/.*|\1|p'); do
+    if [ ! -d "$FRAMEWORKS_DIR/$fw_name" ]; then
+        echo "ERROR: WatchtowerDesktop loads @rpath/$fw_name, but it is not in $FRAMEWORKS_SRC_DIR"
+        exit 1
+    fi
+done
+if ! otool -l "$APP_EXECUTABLE" | grep -qF 'path @executable_path/../Frameworks '; then
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_EXECUTABLE"
+fi
+# END embed-frameworks
 
 # Copy SPM resource bundles into Contents/Resources/ (standard macOS .app location)
 # AppBundle.resources searches here via Bundle.main.resourceURL
@@ -643,6 +674,13 @@ if [ "$SIGN_IDENTITY" != "-" ]; then
     else
         echo "    WARNING: mobile hub disabled: no provisioning profile (set WATCHTOWER_PROVISION_PROFILE) — signing with the base entitlements."
     fi
+    # Inside out: the embedded frameworks (embed-frameworks) first, with our
+    # identity — the hardened runtime's library validation loads only code
+    # signed by the app's own team.
+    for fw in "$APP_BUNDLE/Contents/Frameworks/"*.framework; do
+        [ -d "$fw" ] || continue
+        codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$fw"
+    done
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --entitlements "$BUNDLE_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
@@ -655,6 +693,10 @@ else
     echo "    Signing ad-hoc: TCC permission grants (microphone, system audio) will"
     echo "    NOT survive rebuilds — the grant is pinned to the bundle's cdhash,"
     echo "    which changes every build."
+    for fw in "$APP_BUNDLE/Contents/Frameworks/"*.framework; do
+        [ -d "$fw" ] || continue
+        codesign --force --sign - "$fw"
+    done
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
     # The OCR helper needs no entitlement at all: never give it the app's.
     codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"

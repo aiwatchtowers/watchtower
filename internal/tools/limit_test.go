@@ -19,3 +19,11 @@ func TestListLimit(t *testing.T) {
 		}
 	}
 }
+
+// The 256 KB per-response cap has one copy, here; internal/automations'
+// MaxSDKResultBytes refers to it (#606).
+func TestMaxReadResultBytes_IsTheAutomationsCap(t *testing.T) {
+	if MaxReadResultBytes != 256*1024 {
+		t.Fatalf("MaxReadResultBytes = %d, want %d", MaxReadResultBytes, 256*1024)
+	}
+}

@@ -6,14 +6,13 @@ import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 /// Each AI-output tab's no-data branch renders the shared `FeatureEmptyState`
-/// with the tab's copy, keeping its own content inside. The tab views read
+/// with the tab's copy, keeping its own content inside. (The Inbox filters'
+/// empty lists — the former Briefings, Day Plan, Tracks and Ideas tabs — are
+/// pinned in the Inbox tests.) The tab views read
 /// `@Environment(AppState.self)`, which ViewInspector can't populate, so
 /// these drive the environment-free pieces those views render.
 @MainActor
 final class EmptyStateTabWiringTests: XCTestCase {
-    private static let known = Owner(
-        id: "1:U1", source: .slack, slackUserID: "1:U1", email: "", jiraAccountID: "", displayName: "Me"
-    )
     private var context: EmptyStateContext {
         var context = EmptyStateContext()
         context.readiness = { _ in .scheduled(.nextCycle(minutes: 15)) }
@@ -27,7 +26,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
     }
 
     private func copy(_ destination: SidebarDestination) throws -> EmptyStateCopy {
-        try XCTUnwrap(EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 8))
+        try XCTUnwrap(EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8))
     }
 
     private func assertSharedState<V: View>(
@@ -39,47 +38,6 @@ final class EmptyStateTabWiringTests: XCTestCase {
         // A tab with no pipeline (Targets, Workbench) has no readiness line.
         guard copy.feature != nil else { return }
         XCTAssertNoThrow(try view.inspect().find(text: "Within ~15 min"), "the readiness line", file: file, line: line)
-    }
-
-    func testBriefingsEmptyUsesSharedState() throws {
-        let view = BriefingsEmptyState(
-            owner: Self.known, isGenerating: false, generateError: nil,
-            onGenerate: {}, onOpenConnections: {}, context: context)
-        try assertSharedState(view, .briefings)
-        XCTAssertThrowsError(try view.inspect().find(text: "Briefings are generated daily after sync completes."))
-        XCTAssertNoThrow(try view.inspect().find(text: "Generate Briefing"))
-    }
-
-    func testDayPlanEmptyUsesSharedState() throws {
-        try assertSharedState(DayPlanEmptyState(owner: Self.known, context: context) {}, .dayPlan)
-        // OWNER-02 stays inside: no owner → the way to connect one.
-        let noOwner = DayPlanEmptyState(owner: .unknown, context: context) {}
-        XCTAssertNoThrow(try noOwner.inspect().find(button: "Open Connections"))
-    }
-
-    /// An established install (day plan rows exist) with no plan for today
-    /// yet gets a calm line, not the first-run screen (owner, ask #299).
-    func testDayPlanEstablishedWithoutTodaysPlanSaysWhen() throws {
-        var established = context
-        established.readiness = { _ in .ready }
-        established.dayPlanHour = 8
-        let view = DayPlanEmptyState(owner: Self.known, context: established) {}
-        XCTAssertNoThrow(try view.inspect().find(text: "Today's plan at or after 08:00"))
-        XCTAssertThrowsError(try view.inspect().find(text: try copy(.dayPlan).title), "not the first-run screen")
-
-        established.dayPlanHour = 10
-        let later = DayPlanEmptyState(owner: Self.known, context: established) {}
-        XCTAssertNoThrow(try later.inspect().find(text: "Today's plan at or after 10:00"), "the configured hour")
-
-        // No owner: the daemon makes no plan, so no time is promised.
-        let noOwner = DayPlanEmptyState(owner: .unknown, context: established) {}
-        XCTAssertThrowsError(try noOwner.inspect().find(text: "Today's plan at or after 10:00"))
-        XCTAssertNoThrow(try noOwner.inspect().find(button: "Open Connections"))
-
-        // A fresh install keeps the first-run copy.
-        let fresh = DayPlanEmptyState(owner: Self.known, context: context) {}
-        XCTAssertNoThrow(try fresh.inspect().find(text: try copy(.dayPlan).title))
-        XCTAssertThrowsError(try fresh.inspect().find(text: "Today's plan at or after 08:00"))
     }
 
     func testPeopleEmptyUsesSharedState() throws {
@@ -96,20 +54,6 @@ final class EmptyStateTabWiringTests: XCTestCase {
         XCTAssertNoThrow(try noMatches.inspect().find(text: "No matches"))
         XCTAssertThrowsError(try noMatches.inspect().find(text: try copy(.digests).title))
         XCTAssertNil(DigestListView.emptyKind(feedIsEmpty: false, visibleIsEmpty: false))
-    }
-
-    func testTracksEmptyUsesSharedState() throws {
-        try assertSharedState(TracksListView.emptyState(context: context), .tracks)
-    }
-
-    func testIdeasEmptyUsesSharedState() throws {
-        var found = false
-        let view = IdeasView.emptyState(context: context, onFindIdeas: { found = true }, onCreate: {}, badge: { EmptyView() })
-        try assertSharedState(view, .ideas)
-        // The fresh-install backfill and Create stay reachable.
-        try view.inspect().find(text: "Find Ideas").find(ViewType.Button.self, relation: .parent).tap()
-        XCTAssertTrue(found)
-        XCTAssertNoThrow(try view.inspect().find(text: "Create"))
     }
 
     func testMemoryEmptyVaultUsesSharedState() throws {
@@ -148,7 +92,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
         return context
     }
 
-    /// #575: the Tracks tab's Turn on, progress and error are Slack
+    /// #575: the Inbox Tracks filter's Turn on, progress and error are Slack
     /// Digests' while it waits on it, and its error and retry stay after a
     /// failed restart moved the state on (review F1).
     func testTracksTabTurnsOnSlackDigests() throws {
@@ -156,7 +100,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
         var context = withReadiness(.needsDigests)
         context.isTurningOn = { $0 == "slack-digests" }
         context.perform = { performed = $0 }
-        let waiting = TabEmptyState(.tracks, context: context)
+        let waiting = TabEmptyState(copyKey: InboxFilter.tracks.emptyCopyKey, context: context) {}
         XCTAssertNoThrow(try waiting.inspect().find(text: "Needs Slack Digests"))
         let button = try waiting.inspect().find(button: "Turn on Slack Digests")
         XCTAssertTrue(button.isDisabled(), "progress is keyed by slack-digests")
@@ -165,7 +109,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
         context = withReadiness(.scheduled(.nextCycle(minutes: 15)))
         context.turnOnError = { $0 == "slack-digests" ? "boom" : nil }
         context.perform = { performed = $0 }
-        let failed = TabEmptyState(.tracks, context: context)
+        let failed = TabEmptyState(copyKey: InboxFilter.tracks.emptyCopyKey, context: context) {}
         XCTAssertNoThrow(try failed.inspect().find(text: "boom"))
         try failed.inspect().find(button: "Try again").tap()
         XCTAssertEqual(performed, .turnOn(featureID: "slack-digests"))

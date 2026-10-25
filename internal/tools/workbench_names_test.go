@@ -19,7 +19,7 @@ import (
 // resolved, never registered or served.
 func TestCanonicalToolName_MapsTheRenamedWorkbenchTools(t *testing.T) {
 	var names []string
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil) {
 		names = append(names, tool.Name)
 	}
 	require.Len(t, names, 18)

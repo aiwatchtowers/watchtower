@@ -12,7 +12,7 @@ The AI runs through the Claude Code or Codex command-line tool (or a local serve
 
 ## What one sync cycle does
 
-A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, when the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. The daemon keeps running when you close the window and stops when you quit the app.
+A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, about 15 seconds after the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. A cycle the Mac fell asleep in while fetching stops on wake and is replaced by that fresh one, so the digests never run on data the sleep kept from syncing. A cycle already building digests finishes them first. The daemon keeps running when you close the window and stops when you quit the app.
 
 ```mermaid
 flowchart LR
@@ -38,23 +38,23 @@ Times are local. "Every cycle" means every 15 minutes by default.
 | Output | When | Needs |
 |---|---|---|
 | Slack messages | Every cycle | Slack workspace connected and enabled |
-| Reaction commands | Every cycle, right after the Slack sync | Slack; Reaction Commands on (on by default) |
+| Reaction commands | Every cycle, right after the Slack sync; the [Reactions](../features/automations-rules.md) built-in composes each | Slack; Reactions on (on by default) |
 | Calendar events, mail | Every cycle | An account connected; calendar and Gmail sync on (on by default) |
 | Jira issues | Every cycle, at most every 15 minutes (own interval) | A Jira site connected |
 | Linear issues | Every cycle, at most every 15 minutes (own interval) | A Linear workspace connected in **Settings** → **Connections** → **Linear** |
 | Confluence pages | Every cycle | A space picked; Confluence in search on |
 | Channel digests | Every cycle, for channels with new messages | Slack Digests on |
 | Daily rollup | Every cycle, once there are new digests (at least two channels); gives up after 3 failed tries a day | Slack Digests on |
-| Tracks | Every cycle | Tracks and Slack Digests on |
+| Tracks | Every cycle with new digests ([Track my threads](../features/tracks.md)); custom-track watches every cycle | Track my threads and Slack Digests on |
 | People cards | At most once every 24 hours | People Cards and Slack Digests on |
 | Attention detection (no AI) | Every cycle | Attention detection on; Watchtower knows who you are |
 | Stream digests (mail and Jira) | Every 6 hours | Stream Digests on; Gmail or Jira connected |
-| Ideas & Decisions | Every 6 hours (**Settings → Features → Ideas → Mining interval**, 1 to 48) | Ideas on |
+| Ideas & Decisions | Every 6 hours (**Every** on the Idea finder card, 1 to 24) | Idea finder on |
 | Memory | Every cycle; waits while history backfill runs | Memory on (off by default) |
 | Next-step suggestions | Every cycle, for targets with none or a stale one | Next Step Suggestions on |
-| Briefing | Once a day, at or after 08:00 (**Briefing Hour**) | Briefing on; Watchtower knows who you are |
-| Day plan | Once a day, at or after 08:00 (**Generate at hour**); conflicts are re-checked every cycle after | Day Plan on; Watchtower knows who you are |
+| Briefing, then day plan | Once a day, at or after 08:00 (**Time** on the [Morning brief](../features/automations-built-in.md) card), in one run; the plan's conflicts are re-checked every cycle after | Morning brief on; Watchtower knows who you are |
 | History backfill | After everything else, while a new source is loading | A newly connected source |
+| Image and link descriptions | Every cycle, before the search index, up to 2 minutes; paused near the Claude plan limit | Knowledge search on; images need Claude or Codex |
 | Search index | Every cycle, in slices of up to 60 seconds | Knowledge search on (on by default) |
 | Agent analytics | Every cycle | A Workbench with agent analytics enabled |
 | Snoozed items coming back | Every cycle | Nothing |
@@ -73,6 +73,10 @@ Some updates free a lot of space inside the database file, and the file only shr
 From 15 seconds on, **Skip for now** stops it; nothing is lost, and it tries again at the next launch. Quitting the app stops it the same way.
 
 If the disk is short, the app opens normally and says **Watchtower could not optimize its database**, with the free space it needs (twice the file's size) and what is available. Free that much space and relaunch.
+
+Some updates also rebuild the search index of your Slack messages. Then the splash first shows **Updating search index —** with the time so far, and moves on to **Optimizing database** when the index is done. **Skip for now** works the same: the rebuild continues where it stopped at the next launch, or in the background while Watchtower syncs.
+
+Until the rebuild finishes, search may miss older Slack messages; nothing is lost, and new messages are searchable right away. The rebuild removes the old index first and writes the new one into the space it frees, so it needs only 64 MiB free; with less, the app says **Watchtower could not update its search index**, with the free space it needs and what is available. If the rebuild fails three times at launch, the app stops trying it there and the background sync finishes it.
 
 After three failed tries it waits for the next update and says so. You can also run it yourself with `watchtower db compact` ([Command line](../reference/cli.md)).
 

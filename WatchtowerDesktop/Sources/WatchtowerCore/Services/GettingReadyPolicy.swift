@@ -19,8 +19,7 @@ package enum GettingReadyPolicy {
         memory: GettingReadyMemory,
         sawUnready: Bool,
         now: Date,
-        briefingHour: Int,
-        dayPlanHour: Int
+        briefingHour: Int
     ) -> GettingReadyStep {
         let hidden = GettingReadyStep(zone: .hidden, memory: memory, sawUnready: sawUnready)
         // No flicker before the first evaluation.
@@ -34,7 +33,7 @@ package enum GettingReadyPolicy {
         let ownerGap: ReadinessSource = ownerPendingSource.map { .ownerIdentityPending($0) } ?? .ownerIdentity
         let (cards, sourceRows) = entries(
             readiness: readiness, ownerKnown: ownerKnown, ownerGap: ownerGap,
-            briefingHour: briefingHour, dayPlanHour: dayPlanHour)
+            briefingHour: briefingHour)
         // The zone opens on a card that reads a source, or on a Connect row a
         // feature the owner's goals switched on waits for (goals picked,
         // Connect skipped). Always-on features (Inbox) do not count, so a
@@ -69,8 +68,7 @@ package enum GettingReadyPolicy {
         readiness: [ReadinessFeature: Readiness],
         ownerKnown: Bool,
         ownerGap: ReadinessSource,
-        briefingHour: Int,
-        dayPlanHour: Int
+        briefingHour: Int
     ) -> ([GettingReadyCard], [GettingReadySourceRow]) {
         var cards: [GettingReadyCard] = []
         var sourceRows: [GettingReadySourceRow] = []
@@ -102,7 +100,7 @@ package enum GettingReadyPolicy {
             default:
                 cards.append(GettingReadyCard(
                     feature: feature,
-                    copy: EmptyStateCopyTable.featureCard(feature, briefingHour: briefingHour, dayPlanHour: dayPlanHour),
+                    copy: EmptyStateCopyTable.featureCard(feature, briefingHour: briefingHour),
                     readiness: state))
             }
         }

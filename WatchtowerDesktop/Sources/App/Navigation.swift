@@ -40,8 +40,9 @@ struct NavigationRoot: View {
 }
 
 struct SplashView: View {
-    /// The launch's compaction step: while it compacts, its progress line,
-    /// subtitle and (from 15 s) Skip sit under the progress view.
+    /// The launch's compaction step: while its child runs (search index
+    /// update, then compaction), the phase's line, subtitle and (from 15 s)
+    /// Skip sit under the progress view.
     let compaction: DatabaseCompactionStep
     @State private var opacity: Double = 0
 
@@ -55,13 +56,11 @@ struct SplashView: View {
                 .scaleEffect(0.8)
                 .padding(.top, 8)
 
-            if case let .compacting(dbBytes) = compaction.phase {
+            if let progressLine {
                 VStack(spacing: Spacing.compact) {
-                    Text(DatabaseCompactionStep.progressLine(
-                        dbBytes: dbBytes, elapsedSeconds: compaction.elapsedSeconds
-                    ))
-                    .font(.callout)
-                    .monospacedDigit()
+                    Text(progressLine)
+                        .font(.callout)
+                        .monospacedDigit()
                     Text(DatabaseCompactionStep.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -81,6 +80,19 @@ struct SplashView: View {
             withAnimation(.easeIn(duration: 0.4)) {
                 opacity = 1
             }
+        }
+    }
+
+    /// The running phase's line, timed from that phase's start; nil when no
+    /// child runs.
+    private var progressLine: String? {
+        switch compaction.phase {
+        case .updatingSearchIndex:
+            DatabaseCompactionStep.searchIndexLine(elapsedSeconds: compaction.phaseElapsedSeconds)
+        case let .compacting(dbBytes):
+            DatabaseCompactionStep.progressLine(dbBytes: dbBytes, elapsedSeconds: compaction.phaseElapsedSeconds)
+        case .idle, .checking, .finished:
+            nil
         }
     }
 }
@@ -224,8 +236,8 @@ struct MainNavigationView: View {
         .onAppear { applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
-        // Direct writes (deep links, Day Plan, the action strip, Catch-Up
-        // cards) must not land on a hidden tab either.
+        // Direct writes (deep links, the Inbox, Catch-Up cards) must not
+        // land on a hidden tab either.
         .onChange(of: appState.selectedDestination) { _, new in
             applyFeatureFallback()
             // The AI Chat tab shows the same thread; one view of it at a time.
@@ -233,17 +245,14 @@ struct MainNavigationView: View {
         }
     }
 
-    /// Redirects away from the current tab when it becomes hidden — a
-    /// feature was just disabled, or a persisted selection from a previous
-    /// launch points at a tab that's now gated off. Runs once at appear
-    /// (stale persisted selection), on every live feature-list or
-    /// connected-source change, and on every selection change, sharing the
-    /// same pure `fallbackDestination` rule.
-    /// The Automations tab's hooks into other surfaces; later tasks add
-    /// the New/Templates/Change in words ones. Edit and the confirmation
-    /// sheet are the tab's own (`AutomationEditorCenter`).
+    /// The Automations tab's links out of a run's steps.
     private var automationsTabActions: AutomationsTabActions {
         var actions = AutomationsTabActions()
+        actions.builtin = BuiltinCardActions(
+            setEnabled: { await appState.setBuiltinEnabled($0, on: $1) },
+            saveParameters: { await appState.saveBuiltinParameters($0) },
+            openInbox: { appState.openInbox(InboxRoute(filter: $0, selection: nil)) }
+        )
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
         actions.onOpenSession = { projectID, sessionID in
             guard let vm = appState.workbenchesViewModel else { return }
@@ -258,18 +267,29 @@ struct MainNavigationView: View {
         return actions
     }
 
-    private var automationEditorChatHooks: AutomationEditorChatHooks {
+    private func automationHooks(_ vm: AutomationsViewModel) -> AutomationEditorChatHooks {
         // Personal recipes live in <workspace>/automations, beside the database.
-        let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent
+        let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent ?? ""
+        let workbenches = (appState.workbenchesViewModel?.summaries ?? []).map { AutomationScopeChoice.forWorkbench($0.project) }
+        let panels = appState.automationTemplatePanels
+        let template = { (name: String) in vm.templates.first { $0.name == name } }
         return AutomationEditorChatHooks(
-            open: { try await appState.automationEditorChat(automationID: $0) },
-            openNew: { try await appState.newAutomationEditorChat(workbenchID: $0) },
-            automationsDir: (workspaceDir as NSString?)?.appendingPathComponent("automations"),
-            unavailableHelp: AutomationEditorChatSurface.toolsAvailable(provider: nil)
-                ? nil : AutomationEditorChatSurface.unavailableHelp
+            scopes: [.personal] + workbenches,
+            workspaceDir: workspaceDir,
+            draftContextID: { appState.draftContextID(for: $0) },
+            makeNewChat: { try await appState.newAutomationEditorChat(contextID: $0, scope: $1) },
+            makeEditChat: { try await appState.automationEditorChat(automationID: $0) },
+            templatePanel: { name, scope in template(name).flatMap { panels?.panel(for: $0, scope: scope) } },
+            startTemplate: { name, scope in template(name).flatMap { panels?.start($0, scope: scope) } }
         )
     }
 
+    /// Redirects away from the current tab when it becomes hidden — a
+    /// feature was just disabled, or a persisted selection from a previous
+    /// launch points at a tab that's now gated off. Runs once at appear
+    /// (stale persisted selection), on every live feature-list or
+    /// connected-source change, and on every selection change, sharing the
+    /// same pure `fallbackDestination` rule.
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
@@ -307,38 +327,12 @@ struct MainNavigationView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        case .briefings:
-            if let vm = appState.briefingViewModel {
-                BriefingsListView(vm: vm)
-            } else {
-                Text("Briefings unavailable")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        case .dayPlan:
-            if let vm = appState.dayPlanViewModel {
-                DayPlanView(vm: vm)
-            } else {
-                Text("Day Plan unavailable")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         case .inbox:
             ActionStripView()
-        case .ideas:
-            if let vm = appState.ideasViewModel {
-                IdeasView(vm: vm)
-            } else {
-                Text("Ideas unavailable")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         case .calendar:
             CalendarEventsView()
         case .targets:
             TargetsListView()
-        case .tracks:
-            TracksListView()
         case .workbench:
             if let vm = appState.workbenchesViewModel {
                 WorkbenchesView(vm: vm)
@@ -352,20 +346,19 @@ struct MainNavigationView: View {
                 AutomationsView(
                     vm: vm,
                     actions: automationsTabActions,
-                    workbenchName: { id in
-                        appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
-                    },
-                    workbenches: (appState.workbenchesViewModel?.summaries ?? []).map {
-                        AutomationTemplateGallery.InstallTarget(id: $0.project.id, name: $0.project.name)
-                    },
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,
-                    chats: automationEditorChatHooks,
-                    tracksVisible: SidebarDestination.tracks.isVisible(
-                        disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
-                        connected: appState.featureVisibility.connectedSources
+                    hooks: automationHooks(vm),
+                    reactionDictionary: appState.reactionDictionaryViewModel,
+                    isApplyingFeatures: appState.featureManager.isApplying
+                ) { [appState] automation in
+                    AutomationPolicyBlock.isBlocked(
+                        automation, policy: appState.managedPolicy.policy,
+                        connections: appState.externalConnectionsViewModel?.connections
                     )
-                )
+                }
+                // The policy check needs the Quick Connections (#608).
+                .onAppear { appState.externalConnectionsViewModel?.refresh() }
             } else {
                 Text("Automations unavailable")
                     .foregroundStyle(.secondary)

@@ -10,6 +10,10 @@ struct SessionChatView: View {
     let vm: WorkbenchesViewModel
     let sessionID: Int64
     let projectID: Int64
+    /// Each new value puts the keyboard in the composer (Branch review's Ask agent).
+    var composerFocus: UUID?
+    /// The composer takes the keyboard as it is made.
+    var composerAutoFocus = false
 
     @StateObject private var store: SessionFeedStore
     /// The subagents opened in place; empty = the main feed.
@@ -25,10 +29,18 @@ struct SessionChatView: View {
     private static var bottomID: String { "session-chat-bottom" }
     private static var scrollSpace: String { "session-chat-scroll" }
 
-    init(vm: WorkbenchesViewModel, sessionID: Int64, projectID: Int64) {
+    init(
+        vm: WorkbenchesViewModel,
+        sessionID: Int64,
+        projectID: Int64,
+        composerFocus: UUID? = nil,
+        composerAutoFocus: Bool = false
+    ) {
         self.vm = vm
         self.sessionID = sessionID
         self.projectID = projectID
+        self.composerFocus = composerFocus
+        self.composerAutoFocus = composerAutoFocus
         // An autoclosure: the store and its CLI lookup are built once per
         // pane, not on every render of the parent.
         _store = StateObject(wrappedValue: SessionFeedStore(sessionID: sessionID, runner: ProcessCLIRunner.makeDefault()))
@@ -65,6 +77,32 @@ struct SessionChatView: View {
     /// The round button is Stop while the agent or its subagents work.
     private var working: Bool {
         vm.sessionStatuses[sessionID].map(SessionControl.isWorking) ?? false
+    }
+
+    /// The live line (Task 6): the agent's open step, Agents working or
+    /// Thinking…, from the main feed's `activity`. The permission card
+    /// replaces it while it shows.
+    private var activityLine: WorkchatActivityPresenter.Line? {
+        guard permission == nil else { return nil }
+        return Self.activityLine(
+            activity: store.activity, working: working, background: stateKind == .background,
+            status: vm.sessionStatuses[sessionID],
+            entries: store.entries,
+            runningSubagents: store.entries.count { $0.kind == "subagent" && $0.subagent?.status == "running" })
+    }
+
+    static func activityLine(
+        activity: SessionFeedActivity?,
+        working: Bool,
+        background: Bool,
+        status: SessionAgentStatus?,
+        entries: [SessionFeedEntry],
+        runningSubagents: Int
+    ) -> WorkchatActivityPresenter.Line? {
+        let lastAgent = entries.last { $0.kind == "agent" }
+        return WorkchatActivityPresenter.line(
+            activity: activity, working: working, background: background, runningSubagents: runningSubagents,
+            stateAt: SessionFeedEntry.parseDate(status?.at), lastAgentAt: lastAgent?.at)
     }
 
     /// The session's pending prompt, shown only while the session takes
@@ -106,6 +144,7 @@ struct SessionChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Spacing.cozy)
             } else if path.isRoot, composerShown, let workchat {
+                WorkchatActivityLine(line: activityLine)
                 Divider()
                 // No card to carry it: a failed permission read shows here.
                 if permission == nil, let error = workchat.permissionError {
@@ -117,7 +156,8 @@ struct SessionChatView: View {
                         .padding(.horizontal, Spacing.large)
                         .padding(.top, Spacing.compact)
                 }
-                WorkchatComposer(model: workchat, working: working)
+                WorkchatComposer(model: workchat, working: working, autoFocus: composerAutoFocus,
+                                 focusRequest: composerFocus)
             }
         }
         // Each hook write for the session reads its permission prompt again
@@ -139,6 +179,9 @@ struct SessionChatView: View {
         .task(id: appState.uiVisibility.isOnScreen) {
             guard path.isRoot else { return }
             await store.screenChanged(appState.uiVisibility.isOnScreen)
+        }
+        .onChange(of: working) { _, nowWorking in
+            if !nowWorking { store.clearActivity() }
         }
         .onChange(of: sessionID) { path = SessionChatPath() }
     }
@@ -163,9 +206,18 @@ struct SessionChatView: View {
             SessionChatSubagentView(
                 store: store,
                 subagent: subagent,
+                status: { SessionFeedSubagent.currentStatus(of: subagent, in: store.entries) },
                 isActive: { isActive },
                 isOnScreen: { vm.isTabOnScreen() },
                 onOpenSubagent: { path.push($0) },
+                liveLine: { activity, entries in
+                    let lastAgent = entries.last { $0.kind == "agent" }
+                    return WorkchatActivityPresenter.subagentLine(
+                        activity: activity, sessionWorking: working,
+                        subagentStatus: SessionFeedSubagent.currentStatus(of: subagent, in: store.entries),
+                        stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
+                        lastAgentAt: lastAgent?.at)
+                },
                 followKey: SubagentFollowKey(state: stateKind, onScreen: appState.uiVisibility.isOnScreen)
             )
             .id(path.stack.map(\.toolUseID))
@@ -258,6 +310,8 @@ struct SessionChatView: View {
                             ForEach(workchat.outgoing) { line in
                                 WorkchatOutgoingBubble(
                                     line: line,
+                                    working: working,
+                                    holdsUntilIdle: workchat.holdsUntilIdle,
                                     onCancel: { workchat.cancel(line.id) },
                                     onShowTerminal: showInTerminal
                                 )

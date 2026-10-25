@@ -43,10 +43,18 @@ type Env struct {
 	Buffer     *CommitBuffer
 	Wait       Waiter
 	Trigger    TriggerInfo
+	// ConversationID is the chat conversation an in-memory draft dry run
+	// serves (draft_automation): its run has no id, so its reads spend that
+	// conversation's read budget instead (READ-01). Zero elsewhere.
+	ConversationID int64
 	// Replay records a live run's replay log and plays a resumed run's back
 	// (nil = neither: a dry run, a test env). The sandbox's clock reads
 	// through it.
 	Replay *Replay
+	// capturePrompt and stopAtModelCalls are a capture dry run's
+	// (DryRunOptions.CapturePrompts, StopAtModelCalls); unset otherwise.
+	capturePrompt    func(primitive, prompt string)
+	stopAtModelCalls bool
 }
 
 // Binding is the registry binding of this run's tool calls (spec §6.1). A
@@ -58,6 +66,7 @@ func (e *Env) Binding() tools.Binding {
 		b.ContextID = strconv.FormatInt(e.Run.ID, 10)
 		b.AutomationRunID = e.Run.ID
 	}
+	b.ConversationID = e.ConversationID
 	switch {
 	case e.Automation != nil:
 		b.WorkbenchID = e.Automation.ProjectID
@@ -118,6 +127,12 @@ func (e *Env) call(kind, name string, args any, opts callOpts, fn func(step *Ste
 		// write steps for its whole budget (board #562).
 		e.Journal.Begin(kind, name, args).Fail(errStepCap)
 		return nil, errStepCap
+	}
+	if e.stopsAtModelCall(kind, name) {
+		fn = func(step *Step) (any, error) {
+			dryRunResult(step, map[string]any{"note": ModelCallStop})
+			return nil, &RunInterrupted{Reason: InterruptModelCallStop}
+		}
 	}
 	step, played, err := e.beginStep(kind, name, args, opts)
 	if err != nil {
@@ -274,7 +289,31 @@ type Definer interface {
 
 type definer struct {
 	fns map[string]SDKFunc
-	err error
+	// vals are plain read-only values (builtin.input), installed as frozen
+	// JSON copies.
+	vals map[string]any
+	err  error
+}
+
+// envModule is a Module whose paths depend on the run (its manifest): the
+// sandbox installs it with installFor instead of Install.
+type envModule interface {
+	installFor(env *Env, d *definer)
+}
+
+// defineValue defines a plain value at path (a later definition replaces
+// an earlier one).
+func (d *definer) defineValue(path string, v any) {
+	if !validSDKPath(path) {
+		if d.err == nil {
+			d.err = fmt.Errorf("invalid SDK definition %q", path)
+		}
+		return
+	}
+	if d.vals == nil {
+		d.vals = map[string]any{}
+	}
+	d.vals[path] = v
 }
 
 func (d *definer) Define(path string, fn SDKFunc) {
@@ -297,8 +336,13 @@ func validSDKPath(path string) bool {
 }
 
 // TriggerInfo is the script's read-only `trigger` object. Events is nil
-// (trigger.events undefined) for every run but an event run.
+// (trigger.events undefined) for every run but an event run; Reply is nil
+// (trigger.reply undefined) for every run but a reply run, where it holds
+// output_id, action, value, data and card {title, link}. Builtin is a slot
+// run's input (event_json's "builtin"), which the script reads as
+// builtin.input, not on trigger.
 type TriggerInfo struct {
+	Builtin      BuiltinInput
 	Kind         string
 	RunID        int64
 	ScheduledFor *time.Time
@@ -307,6 +351,7 @@ type TriggerInfo struct {
 	Events       []map[string]any
 	Truncated    bool
 	DryRun       bool
+	Reply        map[string]any
 }
 
 func (t TriggerInfo) jsObject() map[string]any {
@@ -321,6 +366,9 @@ func (t TriggerInfo) jsObject() map[string]any {
 	}
 	if t.Events != nil {
 		m["events"] = t.Events
+	}
+	if t.Reply != nil {
+		m["reply"] = t.Reply
 	}
 	return m
 }

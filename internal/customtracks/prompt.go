@@ -28,7 +28,7 @@ type aiOutput struct {
 
 // buildScanPrompt renders the watch instruction, the custom track's own
 // narrative context, and the recent cross-source activity into the user message.
-func buildScanPrompt(t db.Track, act db.ScanActivity) string {
+func buildScanPrompt(t db.Track, act db.ScanActivity, extra []ExtraItem) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Today: %s\n\n", time.Now().Format("2006-01-02"))
 
@@ -48,7 +48,6 @@ func buildScanPrompt(t db.Track, act db.ScanActivity) string {
 
 	if len(act.Digests) == 0 && len(act.Tracks) == 0 && len(act.Inbox) == 0 {
 		b.WriteString("(none)\n")
-		return b.String()
 	}
 	for _, dgt := range act.Digests {
 		fmt.Fprintf(&b, "- [digest id=%d ch=%s] %s\n", dgt.ID, dgt.ChannelID, truncate(dgt.Summary, 400))
@@ -62,6 +61,7 @@ func buildScanPrompt(t db.Track, act db.ScanActivity) string {
 	for _, in := range act.Inbox {
 		fmt.Fprintf(&b, "- [inbox id=%d %s] %s\n", in.ID, in.TriggerType, truncate(in.Snippet, 240))
 	}
+	writeExtra(&b, extra)
 	return b.String()
 }
 

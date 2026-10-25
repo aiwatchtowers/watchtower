@@ -37,4 +37,7 @@ type RunOptions struct {
 	Force    bool      // regenerate even if plan exists
 	Feedback string    // triggers regeneration, non-empty implies Force
 	Now      time.Time // test hook; zero value → time.Now()
+	// Prompt, when non-empty, replaces the store-resolved template; a wrong
+	// placeholder count falls back to the default (see LastPromptNote).
+	Prompt string
 }

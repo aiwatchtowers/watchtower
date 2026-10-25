@@ -45,6 +45,9 @@ package enum EmptyStateAction: Equatable, Sendable {
     /// A Settings tab, e.g. "features" for the briefing and day plan hours,
     /// under the button's own label.
     case openSettings(tab: String, label: String)
+    /// A built-in automation's card in Automations → Built in (by its
+    /// built-in id), e.g. Morning brief for the briefing and day plan hour.
+    case openBuiltin(id: String, label: String)
     /// The tab's own existing action (e.g. "Build a recap").
     case tabAction(label: String)
 }
@@ -52,15 +55,14 @@ package enum EmptyStateAction: Equatable, Sendable {
 /// The per-tab copy (first-run spec §1.5). UI text is English only.
 package enum EmptyStateCopyTable {
     /// Keyed by `SidebarDestination.rawValue` (SidebarDestination lives in the
-    /// Desktop target; Workbench's persisted raw value is "projects").
-    package static func copy(for destinationRawValue: String, briefingHour: Int, dayPlanHour: Int) -> EmptyStateCopy? {
+    /// Desktop target; Workbench's persisted raw value is "projects"), plus
+    /// the Inbox filters' own keys (`InboxFilter.emptyCopyKey`).
+    package static func copy(for destinationRawValue: String, briefingHour: Int) -> EmptyStateCopy? {
         guard let row = rows[destinationRawValue] else { return nil }
-        let hour: Int? = switch destinationRawValue {
-        case "briefings": briefingHour
-        case "dayPlan": dayPlanHour
-        default: nil
-        }
-        guard let hour else { return row }
+        // The day plan is made with the brief, after the briefing hour
+        // (`day_plan.hour` is retired).
+        guard ["briefings", "dayPlan"].contains(destinationRawValue) else { return row }
+        let hour = briefingHour
         return EmptyStateCopy(
             icon: row.icon,
             title: row.title,
@@ -86,15 +88,24 @@ package enum EmptyStateCopyTable {
         "briefings": EmptyStateCopy(
             icon: "sun.max", title: "No briefings yet",
             landsHere: "A morning briefing: meetings, what needs you, what changed. Generated once a day at or after {hour}.",
-            feature: .briefing, primaryAction: .openSettings(tab: "features", label: "Change the hour")),
+            feature: .briefing, primaryAction: .openBuiltin(id: "morning-brief", label: "Change the hour")),
         "dayPlan": EmptyStateCopy(
             icon: "calendar.day.timeline.left", title: "No day plan yet",
             landsHere: "Your day in time blocks, from the calendar, targets and the briefing. Once a day at or after {hour}.",
-            feature: .dayPlan, primaryAction: .openSettings(tab: "features", label: "Change the hour")),
+            feature: .dayPlan, primaryAction: .openBuiltin(id: "morning-brief", label: "Change the hour")),
         "inbox": EmptyStateCopy(
             icon: "tray", title: "Nothing waiting for you",
-            landsHere: "Proposals and due reminders that need you, plus reaction shortcuts.",
+            landsHere: "Your day, messages, tracks, ideas and automation cards that need you.",
             feature: .inbox, primaryAction: nil),
+        // The Inbox's Messages and Automations filters (`InboxFilter.emptyCopyKey`).
+        "inboxMessages": EmptyStateCopy(
+            icon: "bubble.left.and.bubble.right", title: "No messages waiting",
+            landsHere: "Mentions, DMs, thread replies, mail and Jira or Linear items that need you.",
+            feature: .inbox, primaryAction: nil),
+        "inboxAutomations": EmptyStateCopy(
+            icon: "gearshape.2", title: "Nothing from your automations",
+            landsHere: "Proposals and due reminders that need you, plus reaction shortcuts.",
+            feature: nil, primaryAction: nil),
         "ideas": EmptyStateCopy(
             icon: "lightbulb", title: "No ideas yet",
             landsHere: "Ideas and decisions picked up from conversations, every ~6 h.",
@@ -150,7 +161,7 @@ extension EmptyStateCopyTable {
     /// this feature, `whatItIs` IS that row's `landsHere` (hour filled in); the
     /// five features with no tab row of their own (slackSync, streamDigests,
     /// knowledgeIndex, jira, linear) have their own sentence here.
-    package static func featureCard(_ feature: ReadinessFeature, briefingHour: Int, dayPlanHour: Int) -> FeatureCardCopy {
+    package static func featureCard(_ feature: ReadinessFeature, briefingHour: Int) -> FeatureCardCopy {
         let title = cardTitle(feature)
         let tab: String
         switch feature {
@@ -179,7 +190,7 @@ extension EmptyStateCopyTable {
         case .calendar: tab = "calendar"
         }
         // Every tab above has a row in `rows`.
-        let landsHere = copy(for: tab, briefingHour: briefingHour, dayPlanHour: dayPlanHour)?.landsHere ?? ""
+        let landsHere = copy(for: tab, briefingHour: briefingHour)?.landsHere ?? ""
         return FeatureCardCopy(title: title, whatItIs: landsHere)
     }
 

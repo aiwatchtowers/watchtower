@@ -134,7 +134,7 @@ final class DigestViewModel {
     /// GRDB ValueObservation cannot see writes from the Go daemon (separate
     /// process, separate SQLite update hooks) — the ideas.consolidate pipeline
     /// mines decisions there, so the ledger needs the same periodic-reload
-    /// safety net IdeasViewModel uses.
+    /// safety net the Inbox poll is (`ActionStripViewModel`).
     private let decisionsPollInterval: Duration = .seconds(30)
 
     init(dbManager: DatabaseManager) {
@@ -175,7 +175,9 @@ final class DigestViewModel {
         }
         decisionsObservationTask = Task { [weak self] in
             let observation = ValueObservation.tracking { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ideas WHERE kind = 'decision'") ?? 0
+                try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM ideas WHERE kind = 'decision' AND \(IdeaQueries.knowledgeVisibleSQL)
+                    """) ?? 0
             }
             do {
                 for try await _ in observation.values(in: dbPool).dropFirst() {

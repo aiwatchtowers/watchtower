@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/policy"
 )
 
 // StepKindSession is the journal kind of a session() call.
@@ -200,6 +201,11 @@ func runSession(env *Env, b Backends, step *Step, req sessionCall) (any, error) 
 		return nil, err
 	}
 	step.SetPermission(entry)
+	// The agent kinds are their providers: one the organization's policy
+	// forbids (#608) is never asked of the Desktop.
+	if p := policy.Current(); !p.ProviderAllowed(req.agent) {
+		return nil, PolicyError(p.ProviderError(req.agent))
+	}
 	if env.DryRun {
 		return dryRunResult(step, req.stepArgs()), nil
 	}

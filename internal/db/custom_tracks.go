@@ -49,12 +49,13 @@ func (db *DB) GetEnabledCustomTracks() ([]Track, error) {
 }
 
 // GetCustomTracksDueForScan returns the enabled custom tracks the daemon may
-// scan on the UTC date day ("2006-01-02"): every enabled track except one that
-// has already failed maxAttempts scans that day. A failure on an earlier day
-// never counts against today.
+// scan on the UTC date day ("2006-01-02"): every enabled unbound track except
+// one that has already failed maxAttempts scans that day. A failure on an
+// earlier day never counts against today. A track bound to a watch recipe
+// (automation_id set) is scanned by its recipe, never here.
 func (db *DB) GetCustomTracksDueForScan(day string, maxAttempts int) ([]Track, error) {
 	return db.queryCustomTracks(`SELECT `+trackSelectCols+`
-		FROM tracks WHERE origin = 'custom' AND enabled = 1 AND dismissed_at = ''
+		FROM tracks WHERE origin = 'custom' AND enabled = 1 AND dismissed_at = '' AND automation_id IS NULL
 		  AND NOT (scan_attempts >= ? AND substr(scan_attempted_at, 1, 10) = ?)
 		ORDER BY created_at`, maxAttempts, day)
 }
@@ -137,4 +138,17 @@ func (db *DB) FoldSourceRefsIntoTrack(id int, sourceRefs, channelIDs, relatedDig
 		WHERE id = ?`, mergedChannels, mergedDigests, id)
 	_ = sourceRefs // reserved: appending quote-level refs is out of scope for v1
 	return err
+}
+
+// CustomTrackScanBudgetSpent reports whether track id has spent its daily
+// scan budget: maxAttempts failed scans on UTC day (YYYY-MM-DD), the same
+// rule GetCustomTracksDueForScan filters by.
+func (db *DB) CustomTrackScanBudgetSpent(id int, day string, maxAttempts int) (bool, error) {
+	var spent bool
+	err := db.QueryRow(`SELECT COALESCE(scan_attempts >= ? AND substr(scan_attempted_at, 1, 10) = ?, 0)
+		FROM tracks WHERE id = ?`, maxAttempts, day, id).Scan(&spent)
+	if err != nil {
+		return false, fmt.Errorf("reading the scan budget of track %d: %w", id, err)
+	}
+	return spent, nil
 }

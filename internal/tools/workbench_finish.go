@@ -65,7 +65,9 @@ const (
 type finishSessionArgs struct {
 	Summary  string `json:"summary" jsonschema:"your last word to the owner, 2-3 lines and at most 4 (600 characters): what was done, the PRs and their state, what is left"`
 	TargetID int64  `json:"target_id,omitempty" jsonschema:"the workbench target this session worked on, if one"`
-	Reason   string `json:"reason" jsonschema:"one sentence: why the session is finished"`
+	// HandoverAskID passes the finish gates (spec 2026-10-24-finish-whole-ticket).
+	HandoverAskID int64  `json:"handover_ask_id,omitempty" jsonschema:"an ask_owner of this session about the ticket that says what is left and why (open leaves, coverage the AI overview does not see); passes the finish check"`
+	Reason        string `json:"reason" jsonschema:"one sentence: why the session is finished"`
 }
 
 // errNoTerminalSession refuses finish_session outside a Watchtower terminal
@@ -79,7 +81,10 @@ func NewFinishSession(sessionEnv func() string) *Tool {
 		Name: "finish_session",
 		Description: "Mark this terminal session finished once the work it was started for is done or handed to the " +
 			"owner, with a short summary the owner reads in the Watchtower app (what was done, the PRs, what is " +
-			"left). Open asks may stay open. Calling it again replaces the summary. Applied immediately.",
+			"left). The work is the whole ticket the session was started for: with the finish check on, it is " +
+			"refused while the ticket has open leaves or the reviewer's AI overview of your changes is missing or " +
+			"sees work not done — unless handover_ask_id names an ask that tells the owner why. Open asks may " +
+			"stay open. Calling it again replaces the summary. Applied immediately.",
 		InputSchema: mustSchema[finishSessionArgs]("finish_session"),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
@@ -96,8 +101,15 @@ func NewFinishSession(sessionEnv func() string) *Tool {
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return &ValidationError{Msg: "invalid arguments"}
 			}
-			_, err := scopeFinishSession(ctx, d, b, a, sessionEnv)
-			return err
+			session, err := scopeFinishSession(ctx, d, b, a, sessionEnv)
+			if err != nil {
+				return err
+			}
+			p, err := workbenchOf(ctx, d, b)
+			if err != nil {
+				return err
+			}
+			return checkFinishGates(ctx, d, p, session, a)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a finishSessionArgs
@@ -173,6 +185,9 @@ func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs
 		return nil, err
 	}
 	out := map[string]any{"session_id": sessionID, "finished_at": at.Format(finishedAtLayout)}
+	if a.HandoverAskID != 0 {
+		out["handover_ask_id"] = a.HandoverAskID
+	}
 	if a.TargetID != 0 {
 		reportLinkFailure(out, linkTargets(d, sessionID, []int64{a.TargetID}))
 	}

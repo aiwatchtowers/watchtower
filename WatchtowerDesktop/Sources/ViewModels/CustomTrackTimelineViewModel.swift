@@ -4,8 +4,8 @@ import WatchtowerCore
 
 /// Drives the Activity timeline on a CUSTOM track's detail view. Observes
 /// `track_events` for the track and, when the track is linked to a target,
-/// applies a confirmed proposed action through the shared (static)
-/// `TargetActionExecutor` — reusing the same TargetsViewModel the chat path uses.
+/// applies a confirmed proposed action through the registry
+/// (`TrackActionPress`: `actions propose --approve`, Go writes the target).
 ///
 /// Ported from the removed `ObserverTimelineViewModel`. A custom track carries a
 /// single watch instruction (not N observers), so the observer-management CRUD
@@ -19,10 +19,10 @@ final class CustomTrackTimelineViewModel {
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending apply or dismiss per event (board #670).
     let pendingWrites = PendingWrites()
-    /// Optional: only present (and only usable) when the track is linked to a
-    /// target, so a confirmed proposed action has something to mutate.
-    private let targetsViewModel: TargetsViewModel?
-    private let scanService: TrackScanService
+    private let actionPress: TrackActionPress
+    /// Every scan goes through the card's seam (C3 drives the track's watch
+    /// recipe there).
+    private let controls: any CustomTrackControlling
     /// Shared registry so the "scanning" indicator survives navigation away
     /// from this detail (the list/sidebar read it too).
     private let scanCenter: TrackScanCenter
@@ -41,22 +41,21 @@ final class CustomTrackTimelineViewModel {
     var lastScanNote: String?
 
     /// True when a confirmed proposed action can be applied: the track must be
-    /// linked to a target AND a TargetsViewModel must be available to mutate it.
-    /// Standalone tracks hide the Apply button (the scan prompt already
-    /// suppresses proposed actions for them).
-    var canApplyActions: Bool { track.linkedTargetID != nil && targetsViewModel != nil }
+    /// linked to a target. Standalone tracks hide the Apply button (the scan
+    /// prompt already suppresses proposed actions for them).
+    var canApplyActions: Bool { track.linkedTargetID != nil }
 
     private var observationTask: Task<Void, Never>?
 
     init(track: Track,
          dbManager: DatabaseManager,
-         scanService: TrackScanService,
-         targetsViewModel: TargetsViewModel? = nil,
+         actionRunner: any CLIRunnerProtocol,
+         controls: any CustomTrackControlling,
          scanCenter: TrackScanCenter) {
         self.track = track
         self.dbPool = dbManager.dbPool
-        self.scanService = scanService
-        self.targetsViewModel = targetsViewModel
+        self.controls = controls
+        self.actionPress = TrackActionPress(runner: actionRunner)
         self.scanCenter = scanCenter
         self.lastRunAt = track.lastRunAt
     }
@@ -117,21 +116,25 @@ final class CustomTrackTimelineViewModel {
             // The CLI subprocess writes any new rows on its own connection, so
             // the ValueObservation above (same-process only) will not see them —
             // refreshEvents() below does the explicit refetch.
-            let created = try await scanService.run(trackID: track.id)
+            let known = Set(events.map(\.id))
+            try await controls.scan(track, from: nil)
+            if queuedForNextSync() { return }
             refreshLastRunAt()
             refreshEvents()
-            lastScanNote = created.isEmpty
+            let found = events.filter { !known.contains($0.id) }.count
+            lastScanNote = found == 0
                 ? "Scan complete — no new activity since the last check. Pick a wider range to backfill older activity."
-                : "Found \(created.count) new update\(created.count == 1 ? "" : "s")."
+                : "Found \(found) new update\(found == 1 ? "" : "s")."
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     /// Backfills the timeline by scanning history from `since` (nil = all history)
-    /// up to now, deduping against existing events. `label` describes the range
-    /// for the in-progress banner. The scan runs several AI calls and can take a
-    /// few minutes, so `scanStatus` stays set for the whole duration.
+    /// up to now, deduping against existing events, through the card's seam.
+    /// `label` describes the range for the in-progress banner. The scan runs
+    /// several AI calls and can take a few minutes, so `scanStatus` stays set
+    /// for the whole duration. The new events are the ones the refetch adds.
     func scanHistory(since: Date?, label: String) async {
         scanCenter.begin(track.id)
         isRefreshing = true
@@ -139,23 +142,34 @@ final class CustomTrackTimelineViewModel {
         errorMessage = nil
         lastScanNote = nil
         defer { isRefreshing = false; scanStatus = nil; scanCenter.finish(track.id, note: lastScanNote ?? errorMessage) }
-        let iso = Self.isoFormatter.string(from: since ?? Date(timeIntervalSince1970: 0))
+        let known = Set(events.map(\.id))
         do {
-            let created = try await scanService.run(trackID: track.id, since: iso)
+            try await controls.scan(track, from: since ?? WatchTrackControls.allHistory)
+            if queuedForNextSync() { return }
             refreshLastRunAt()
             refreshEvents()
-            lastScanNote = created.isEmpty
+            let found = events.filter { !known.contains($0.id) }.count
+            lastScanNote = found == 0
                 ? "History scan complete — no matching activity found for \(label)."
-                : "History scan found \(created.count) update\(created.count == 1 ? "" : "s")."
+                : "History scan found \(found) update\(found == 1 ? "" : "s")."
         } catch {
             errorMessage = "History scan failed: \(error.localizedDescription)"
         }
     }
 
+    /// A watched track's scan is only queued (`automations run --since`): it
+    /// runs at the next sync, so there is nothing to refetch yet and the note
+    /// says so. Sets the note; true for a bound track.
+    private func queuedForNextSync() -> Bool {
+        guard track.automationID != nil else { return false }
+        lastScanNote = WatchTrackControls.nextSyncNote
+        return true
+    }
+
     /// Human "Last scanned" line for the header: relative age of the watermark.
     var lastScannedText: String { Self.lastScannedText(lastRunAt: lastRunAt) }
 
-    /// The same line for any track's `last_run_at` (the Automations → Tracks rows).
+    /// The same line for any track's `last_run_at` (a watch row on the Inbox track card).
     static func lastScannedText(lastRunAt: String) -> String {
         guard !lastRunAt.isEmpty else { return "Not scanned yet" }
         let parser = ISO8601DateFormatter()
@@ -165,14 +179,6 @@ final class CustomTrackTimelineViewModel {
         rel.unitsStyle = .abbreviated
         return "Last scanned \(rel.localizedString(for: date, relativeTo: Date()))"
     }
-
-    /// UTC ISO8601 without fractional seconds, matching the Go watermark format.
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        f.timeZone = TimeZone(identifier: "UTC")
-        return f
-    }()
 
     /// Resolves an external "open the source" link for an event: an explicit
     /// source_ref if present, else a resolved permalink for the underlying entity
@@ -184,16 +190,11 @@ final class CustomTrackTimelineViewModel {
         }
     }
 
-    func markRead(_ event: TrackEvent) async {
-        guard event.isUnread else { return }
-        try? await chained { db in try TrackEventQueries.markRead(db, id: event.id) }
-    }
-
-    /// Applies a confirmed proposed action to the LINKED target via the shared
-    /// static executor, then records the event's action_status so the button does
-    /// not re-fire. Standalone tracks (no linked target) are a no-op: there is
-    /// nothing to mutate, and the scan prompt suppresses proposed actions for
-    /// them, so the event is left untouched.
+    /// Applies a confirmed proposed action to the LINKED target through the
+    /// registry; Go claims the event, writes the target and sets the event's
+    /// action_status. Standalone tracks (no linked target) are a no-op: there
+    /// is nothing to mutate, and the scan prompt suppresses proposed actions
+    /// for them, so the event is left untouched.
     /// One apply or dismiss per event at a time (board #670): a second
     /// press while the first waits would apply the action twice.
     func applyAction(for event: TrackEvent) async {
@@ -205,36 +206,15 @@ final class CustomTrackTimelineViewModel {
     }
 
     private func applyNow(_ event: TrackEvent) async {
-        guard let linkedID = track.linkedTargetID, let targetsViewModel else { return }
-        guard let action = event.decodedAction else { return }
+        guard track.linkedTargetID != nil, event.decodedAction != nil else { return }
+        errorMessage = nil
         do {
-            // Apply against a FRESH copy of the target, not an init-time
-            // snapshot: the executor's sub-item/note paths are whole-JSON
-            // read-modify-writes, so a stale snapshot would clobber anything
-            // applied since this VM was created (lost update). A missing row
-            // means the target was deleted — surface that instead of silently
-            // marking the event applied with no effect.
-            let (fresh, eventExists) = try await dbPool.read { db in
-                (try TargetQueries.fetchByID(db, id: linkedID), try TrackEventQueries.exists(db, id: event.id))
-            }
-            guard let fresh else {
-                errorMessage = "The linked task no longer exists — it may have been deleted."
-                return
-            }
-            // Checked before the task is touched: otherwise the apply would land
-            // and then fail on the vanished event's status write.
-            guard eventExists else {
-                refreshEvents()
-                errorMessage = RowNotFoundError(kind: "track event", id: event.id).localizedDescription
-                return
-            }
-            _ = try await TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
-            try await chained { db in
-                try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied")
-            }
+            try await actionPress.press(eventID: event.id)
         } catch {
             errorMessage = error.localizedDescription
         }
+        // The CLI wrote on its own connection: the observation never sees it.
+        refreshEvents()
     }
 
     private func dismissNow(_ event: TrackEvent) async {

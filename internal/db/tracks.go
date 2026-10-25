@@ -15,7 +15,8 @@ const trackSelectCols = `id, assignee_user_id, text, context, category,
 	COALESCE(read_at,''), has_updates, COALESCE(dismissed_at,''),
 	model, input_tokens, output_tokens, cost_usd, prompt_version,
 	created_at, updated_at,
-	origin, instruction, enabled, last_run_at, COALESCE(linked_target_id, 0)`
+	origin, instruction, enabled, last_run_at, COALESCE(linked_target_id, 0),
+	COALESCE(automation_id, 0)`
 
 // scanTrack scans a Track from a row with the standard SELECT column list.
 func scanTrack(row interface{ Scan(...any) error }) (*Track, error) {
@@ -30,6 +31,7 @@ func scanTrack(row interface{ Scan(...any) error }) (*Track, error) {
 		&t.Model, &t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.PromptVersion,
 		&t.CreatedAt, &t.UpdatedAt,
 		&t.Origin, &t.Instruction, &t.Enabled, &t.LastRunAt, &t.LinkedTargetID,
+		&t.AutomationID,
 	); err != nil {
 		return nil, err
 	}

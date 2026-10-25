@@ -1,5 +1,6 @@
 // Package linkscan detects Confluence page links in the other synced sources
-// (Slack, Gmail, IMAP, Jira) and records them in doc_links. It is split from
+// (Slack, Gmail, IMAP, Jira, and the text read off their images) and records
+// them in doc_links. It is split from
 // internal/doclinks because it imports internal/kb (for the Slack document
 // ref), which the transaction-side linker extsync is wired with must not
 // pull.
@@ -30,12 +31,14 @@ const likeConfluence = `'%` + doclinks.URLPrefilter + `%'`
 
 // scanRow is one source row: the knowledge ref of the document it renders
 // into, its text ("" when it cannot hold a link) and its cursor position.
+// kind is the row's own doc_links.from_kind, set only by the media kind
+// (whose rows hang off documents of several sources).
 type scanRow struct {
-	ref, text, pos string
+	ref, text, pos, kind string
 }
 
 // scanKind is one scanned source. key names its ext_link_state row;
-// fromKind is doc_links.from_kind. read returns up to limit rows after
+// fromKind is doc_links.from_kind ("" = per row, scanRow.kind). read returns up to limit rows after
 // cursor (and before horizon, for timestamp cursors) in cursor order.
 type scanKind struct {
 	key, fromKind string
@@ -51,6 +54,7 @@ var scanKinds = []scanKind{
 	{key: "imap", fromKind: "imap", read: syncedReader(imapScanQuery)},
 	{key: "jira_issue", fromKind: "jira", read: syncedReader(jiraIssueScanQuery)},
 	{key: "jira_comment", fromKind: "jira", read: syncedReader(jiraCommentScanQuery)},
+	{key: "media", read: syncedReader(mediaScanQuery)},
 }
 
 // slackScanQuery walks messages by rowid (the INTEGER PRIMARY KEY seek).
@@ -65,12 +69,31 @@ const slackScanQuery = `SELECT rowid, channel_id, COALESCE(thread_ts, ''), ts_un
 // document (the kb source's key expression); textExpr its searchable text.
 // Both come from the constants below, never from input.
 func syncedScanQuery(table, refExpr, textExpr string) string {
-	return `SELECT rowid, synced_at, ` + refExpr + `,
+	return `SELECT rowid, synced_at, ` + refExpr + `, '',
 		CASE WHEN ` + textExpr + ` LIKE ` + likeConfluence + ` THEN ` + textExpr + ` ELSE '' END
 		FROM ` + table + `
 		WHERE synced_at >= ? AND synced_at < ? AND (synced_at > ? OR rowid > ?)
 		ORDER BY synced_at, rowid LIMIT ?`
 }
+
+// mediaScanQuery is the syncedScanQuery shape over described media items
+// (described_at is their marker, empty until described). Only an ok image
+// with a knowledge key yields text — the text read off it and its kept keys
+// (keys_json), never the model's own title or description (Ruling 12); a
+// link summary is the page's own words and never links anything, but every
+// row moves the cursor. The ref is the row's kb_ref and the kind its
+// kb_source (the parent document's source).
+const mediaScanQuery = `SELECT rowid, described_at, kb_ref, kb_source,
+	CASE WHEN kind = 'image' AND status = 'ok' AND kb_ref != ''
+	      AND (image_text || ' ' || ` + mediaKeysText + `) LIKE ` + likeConfluence + `
+	     THEN image_text || ' ' || ` + mediaKeysText + ` ELSE '' END
+	FROM media_items
+	WHERE described_at != '' AND described_at >= ? AND described_at < ? AND (described_at > ? OR rowid > ?)
+	ORDER BY described_at, rowid LIMIT ?`
+
+// mediaKeysText is a media row's keys_json array as space-separated words
+// (decoded, so a key's "&" reads as written).
+const mediaKeysText = `COALESCE((SELECT group_concat(value, ' ') FROM json_each(CASE WHEN json_valid(keys_json) THEN keys_json ELSE '[]' END)), '')`
 
 // The ref expressions mirror internal/kb's keys (gmailKeyExpr, imapKeyExpr,
 // jiraSource); TestScanSources_LinksEveryKindToItsKnowledgeRef pins that
@@ -91,7 +114,7 @@ var (
 )
 
 // ScanSources links Confluence page URLs found in Slack, Gmail, IMAP and
-// Jira rows written since each kind's ext_link_state cursor, spending at
+// Jira rows and in the text of described images written since each kind's ext_link_state cursor, spending at
 // most about budget (checked between batches; a started batch always
 // commits, so every call progresses). The first run backfills from empty
 // cursors. It returns how many new links it wrote.
@@ -227,9 +250,13 @@ func (s *scanner) link(ctx context.Context, q doclinks.Queryer, fromKind string,
 	linked := 0
 	stamp := time.Now().UTC().Format(time.RFC3339)
 	for _, r := range rows {
+		kind := fromKind
+		if kind == "" {
+			kind = r.kind
+		}
 		for _, page := range doclinks.ConfluencePageIDs(r.text, s.hosts) {
 			res, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO doc_links (from_kind, from_ref, to_kind, to_ref)
-				VALUES (?, ?, ?, ?)`, fromKind, r.ref, doclinks.ToConfluencePage, page)
+				VALUES (?, ?, ?, ?)`, kind, r.ref, doclinks.ToConfluencePage, page)
 			if err != nil {
 				return 0, fmt.Errorf("doclinks: linking %s → %s: %w", r.ref, page, err)
 			}
@@ -328,7 +355,7 @@ func syncedReader(query string) func(ctx context.Context, q doclinks.Queryer, cu
 			var r scanRow
 			var id int64
 			var synced string
-			if err := rows.Scan(&id, &synced, &r.ref, &r.text); err != nil {
+			if err := rows.Scan(&id, &synced, &r.ref, &r.kind, &r.text); err != nil {
 				return nil, err
 			}
 			r.pos = synced + "|" + strconv.FormatInt(id, 10)

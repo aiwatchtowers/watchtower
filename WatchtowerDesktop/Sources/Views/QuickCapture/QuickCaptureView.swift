@@ -417,7 +417,7 @@ struct QuickCaptureView: View {
                 // may have been triggered while the app had no visible window.
                 ActivationPolicyDecision.becomeRegularAndActivate()
                 openWindow(id: TrayAppDelegate.mainWindowSceneID)
-                appState.selectedDestination = .ideas
+                appState.navigateToIdea(Int(ideaID))
                 dismiss()
             }
         }

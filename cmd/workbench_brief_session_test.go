@@ -459,3 +459,18 @@ func TestProjectBrief_ListsWaitingReviewRounds(t *testing.T) {
 	out, _ = runBriefHook(t, pid, hookPayload("resume", briefLaunchID))
 	assert.NotContains(t, out, "Review round #", "a delivered round is no longer waiting")
 }
+
+func TestProjectBrief_ApprovedRoundLine(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	rid, err := database.CreateReviewRound(db.ReviewRound{ProjectID: pid, SessionID: sql.NullInt64{Int64: row, Valid: true},
+		FolderRoot: "/tmp/acme", BaseSHA: "b", TreeSHA: "t"})
+	require.NoError(t, err)
+	ok, err := database.ApproveReviewRound(pid, rid, false)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	out, _ := runBriefHook(t, pid, hookPayload("startup", briefLaunchID))
+	assert.Contains(t, out, fmt.Sprintf("Review round #%d approved → get_review %d", rid, rid))
+	assert.NotContains(t, out, "waiting (")
+}

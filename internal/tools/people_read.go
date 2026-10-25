@@ -43,6 +43,7 @@ func NewListPeople() *Tool {
 		Description: "List people cards (per-person communication and collaboration profiles).",
 		InputSchema: mustSchema[listPeopleArgs]("list_people"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listPeopleArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -69,6 +70,7 @@ func NewGetPerson() *Tool {
 		Description: "Get the latest people card for a person by Slack user id or name.",
 		InputSchema: mustSchema[getPersonArgs]("get_person"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getPersonArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -155,6 +157,7 @@ func NewListTracks() *Tool {
 		Description: "List work/narrative tracks (active by default), optionally filtered by priority or ownership.",
 		InputSchema: mustSchema[listTracksArgs]("list_tracks"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listTracksArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -185,6 +188,7 @@ func NewGetTrack() *Tool {
 		Description: "Get a single track by id.",
 		InputSchema: mustSchema[getTrackArgs]("get_track"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getTrackArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -209,6 +213,7 @@ func NewListUpcomingEvents() *Tool {
 		Description: "List calendar events in the next N hours (default 48).",
 		InputSchema: mustSchema[listUpcomingEventsArgs]("list_upcoming_events"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listUpcomingEventsArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {

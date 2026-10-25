@@ -624,3 +624,198 @@ func TestRecipe_ParsesSwiftWrittenFrontmatter(t *testing.T) {
 		t.Errorf("swift_written.md:\n got: %+v\nwant: %+v", got, want)
 	}
 }
+
+var builtinScope = Scope{Kind: ScopePersonal, BuiltinID: "morning-brief"}
+
+func syncRecipe(slot string, perms ...string) []byte {
+	fm := "name: Morning brief\ntrigger:\n  sync: " + slot + "\n"
+	if len(perms) > 0 {
+		fm += "permissions: [" + strings.Join(perms, ", ") + "]\n"
+	}
+	return recipeWith(fm, "log(1);\n")
+}
+
+func TestRecipe_BuiltinScopeValidated(t *testing.T) {
+	data := readFixture(t, "ok.md")
+	r := mustParse(t, data, builtinScope)
+	if !r.Scope.IsBuiltin() || r.Scope.String() != "builtin:morning-brief" {
+		t.Errorf("scope = %s (builtin %v)", r.Scope, r.Scope.IsBuiltin())
+	}
+	if (Scope{Kind: ScopePersonal}).IsBuiltin() {
+		t.Error("a plain personal scope reports built-in")
+	}
+	for _, s := range []Scope{
+		{Kind: ScopePersonal, BuiltinID: "Not A Slug"},
+		{Kind: ScopePersonal, BuiltinID: "morning-brief", WorkbenchID: 2},
+		{Kind: ScopeWorkbench, WorkbenchID: 1, BuiltinID: "morning-brief"},
+	} {
+		_, err := ParseRecipe("ok", data, s)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, "scope") {
+			t.Errorf("scope %+v: want a scope *ParseError, got %v", s, err)
+		}
+	}
+}
+
+func TestParseRecipe_SyncTriggerBuiltinOnly(t *testing.T) {
+	data := syncRecipe("morning_brief")
+	r := mustParse(t, data, builtinScope)
+	if r.Trigger.Kind != TriggerSync || r.Trigger.Sync != "morning_brief" {
+		t.Errorf("trigger = %+v", r.Trigger)
+	}
+	for _, s := range []Scope{{Kind: ScopePersonal}, {Kind: ScopeWorkbench, WorkbenchID: 1}} {
+		_, err := ParseRecipe("ok", data, s)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, "a sync trigger is only for built-in automations") {
+			t.Errorf("scope %s: want the built-in-only refusal, got %v", s, err)
+		}
+	}
+}
+
+func TestParseRecipe_SyncUnknownSlotRefused(t *testing.T) {
+	_, err := ParseRecipe("ok", syncRecipe("weekly_digest"), builtinScope)
+	var pe *ParseError
+	if !errors.As(err, &pe) || !strings.Contains(pe.Msg, `"weekly_digest"`) || !strings.Contains(pe.Msg, strings.Join(SyncSlots, ", ")) {
+		t.Errorf("want an unknown-slot refusal listing the slots, got %v", err)
+	}
+	if _, err := ParseRecipe("ok", recipeWith("name: A\ntrigger:\n  sync: [morning_brief]\n", "log(1);\n"), builtinScope); err == nil {
+		t.Error("a non-string slot parsed")
+	}
+}
+
+func TestApprovalHash_BuiltinScopeAndSyncAreHashed(t *testing.T) {
+	data := syncRecipe("morning_brief", "builtin:brief.compose")
+	base := mustParse(t, data, builtinScope)
+	other := mustParse(t, data, Scope{Kind: ScopePersonal, BuiltinID: "evening-brief"})
+	if ApprovalHash(base) == ApprovalHash(other) {
+		t.Error("two built-in ids hash alike")
+	}
+	slot := mustParse(t, syncRecipe("tracks", "builtin:brief.compose"), builtinScope)
+	if ApprovalHash(base) == ApprovalHash(slot) {
+		t.Error("changing the sync slot kept the hash")
+	}
+	fields := map[string]string{}
+	for _, f := range ApprovalFields(base) {
+		fields[f.Name] = f.Value
+	}
+	if fields["scope"] != "builtin:morning-brief" || fields["trigger"] != `{"sync":"morning_brief"}` {
+		t.Errorf("fields scope=%q trigger=%q", fields["scope"], fields["trigger"])
+	}
+}
+
+func watchRecipe(trigger string, perms ...string) []byte {
+	fm := "name: Watch\ntrigger:\n  " + trigger + "\n"
+	if len(perms) > 0 {
+		fm += "permissions: [" + strings.Join(perms, ", ") + "]\n"
+	}
+	return recipeWith(fm, "log(1);\n")
+}
+
+func TestParseRecipe_PersonalWatchRecipeParses(t *testing.T) {
+	r := mustParse(t, watchRecipe("sync: custom_tracks", "track:scan"), Scope{Kind: ScopePersonal})
+	if r.Trigger.Kind != TriggerSync || r.Trigger.Sync != "custom_tracks" {
+		t.Errorf("trigger = %+v", r.Trigger)
+	}
+	if !reflect.DeepEqual(r.Permissions, []string{"track:scan"}) {
+		t.Errorf("permissions = %v", r.Permissions)
+	}
+}
+
+func TestParseRecipe_WatchShapeRefusals(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal}
+	watch := watchRecipe("sync: custom_tracks", "track:scan")
+	cases := []struct {
+		name  string
+		data  []byte
+		scope Scope
+		want  string
+	}{
+		{"track:scan on a cron trigger", watchRecipe(`schedule: "0 9 * * *"`, "track:scan"), personal,
+			"track:scan needs trigger: {sync: custom_tracks}"},
+		{"custom_tracks without track:scan", watchRecipe("sync: custom_tracks", "llm:light"), personal,
+			"a sync trigger is only for built-in automations"},
+		{"workbench scope", watch, Scope{Kind: ScopeWorkbench, WorkbenchID: 1},
+			`"track:scan" is allowed only in a personal automation`},
+		{"built-in scope", watch, Scope{Kind: ScopePersonal, BuiltinID: "tracks"},
+			`"track:scan" is allowed only in a personal automation`},
+		{"personal at slot tracks", watchRecipe("sync: tracks", "track:scan"), personal,
+			"track:scan needs trigger: {sync: custom_tracks}"},
+	}
+	for _, c := range cases {
+		_, err := ParseRecipe("ok", c.data, c.scope)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, c.want) {
+			t.Errorf("%s: want a *ParseError containing %q, got %v", c.name, c.want, err)
+		}
+	}
+}
+
+func TestApprovalHash_TrackScanIsHashed(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal}
+	base := mustParse(t, watchRecipe("sync: custom_tracks", "track:scan"), personal)
+	more := mustParse(t, watchRecipe("sync: custom_tracks", "track:scan", "llm:light"), personal)
+	if ApprovalHash(base) == ApprovalHash(more) {
+		t.Error("adding llm:light beside track:scan kept the hash")
+	}
+	fields := map[string]string{}
+	for _, f := range ApprovalFields(base) {
+		fields[f.Name] = f.Value
+	}
+	if !strings.Contains(fields["permissions"], "track:scan") || fields["trigger"] != `{"sync":"custom_tracks"}` {
+		t.Errorf("fields permissions=%q trigger=%q", fields["permissions"], fields["trigger"])
+	}
+}
+
+func TestParseRecipe_Summary(t *testing.T) {
+	r := mustParse(t, recipeWith(baseFrontmatter+"summary: Your brief and day plan\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	if r.Summary != "Your brief and day plan" {
+		t.Fatalf("Summary = %q", r.Summary)
+	}
+}
+
+func TestParseRecipe_SummaryTooLong(t *testing.T) {
+	_, err := ParseRecipe("t", recipeWith(baseFrontmatter+"summary: "+strings.Repeat("x", 61)+"\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	var pe *ParseError
+	if !errors.As(err, &pe) || pe.Line == 0 || !strings.Contains(pe.Msg, "summary") || !strings.Contains(pe.Msg, "60") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestParseRecipe_SummaryMultiline(t *testing.T) {
+	_, err := ParseRecipe("t", recipeWith(baseFrontmatter+"summary: |\n  one\n  two\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestApprovalHash_IgnoresSummary(t *testing.T) {
+	a := mustParse(t, recipeWith(baseFrontmatter+"summary: One\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	b := mustParse(t, recipeWith(baseFrontmatter+"summary: Two\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	if ApprovalHash(a) != ApprovalHash(b) {
+		t.Fatal("summary changed the approval hash")
+	}
+}
+
+func TestFallbackSummary(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("abcdefghi ", 10))
+	word60 := strings.Repeat("abcdefghi ", 5) + "abcdefghij" // 60 runes, then a space
+	cyr := strings.TrimSpace(strings.Repeat("привет мир ", 6))
+	cases := []struct{ name, in, want string }{
+		{"two sentences", "Every morning, writes your brief. Then plans.", "Every morning, writes your brief."},
+		{"empty", "", ""},
+		{"newline wrapped", "Writes the brief.\nThen plans.", "Writes the brief."},
+		{"wrapped no period", "Writes the\nbrief\n\n and plans", "Writes the brief and plans"},
+		{"short no separator", "Writes the brief.", "Writes the brief."},
+		{"short no period", "Writes the brief", "Writes the brief"},
+		{"long cut at space", long + ". Next.", strings.Repeat("abcdefghi ", 5) + "abcdefghi…"},
+		{"60 ends on a word", word60 + " tail words here", word60 + "…"},
+		{"cyrillic", cyr, "привет мир привет мир привет мир привет мир привет мир…"},
+		{"no space in 60", strings.Repeat("x", 100), strings.Repeat("x", 60) + "…"},
+	}
+	for _, c := range cases {
+		if got := FallbackSummary(c.in); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}

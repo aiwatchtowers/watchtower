@@ -1652,7 +1652,7 @@ func TestGenerateChannelDigest_BlanksInventedMessageRefs(t *testing.T) {
 	assert.Empty(t, ideas[1].MessageTS)
 	assert.Equal(t, "invented idea", ideas[1].Text)
 
-	assert.Contains(t, logBuf.String(), "blanked 3 invented message_ts ref(s) in #general")
+	assert.Contains(t, logBuf.String(), "blanked 3 invented message_ts ref(s) in channel C1")
 }
 
 // TestPersistBatchResults_BlanksInventedMessageRefs is the batch half of
@@ -1701,7 +1701,7 @@ func TestPersistBatchResults_BlanksInventedMessageRefs(t *testing.T) {
 	assert.Contains(t, topics[0].Ideas, "invented idea", "the idea text survives")
 	assert.NotContains(t, topics[0].Ideas, "1785746330.000000")
 
-	assert.Contains(t, logBuf.String(), "blanked 2 invented message_ts ref(s) in #general")
+	assert.Contains(t, logBuf.String(), "blanked 2 invented message_ts ref(s) in channel C1")
 }
 
 func TestFormatProfileContext_WithAllFields(t *testing.T) {

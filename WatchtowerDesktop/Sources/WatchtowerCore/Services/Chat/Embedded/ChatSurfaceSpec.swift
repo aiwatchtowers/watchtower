@@ -57,9 +57,6 @@ package struct ChatAppliedChange: Equatable, Sendable {
 /// What a turn's prompt is built from.
 package struct ChatTurnInput: Sendable {
     package let text: String
-    /// The conversation already has a provider session: the CLI `--resume`s
-    /// it and drops the system prompt, so surfaces re-inject their context.
-    package let isResumed: Bool
     /// The owner message before this turn's (nil on the first one and on
     /// follow-up turns) — the target chat's outcomes floor.
     package let previousOwnerMessageAt: Date?
@@ -70,13 +67,11 @@ package struct ChatTurnInput: Sendable {
 
     package init(
         text: String,
-        isResumed: Bool,
         previousOwnerMessageAt: Date?,
         turnID: String,
         alreadyApplied: [ChatAppliedChange] = []
     ) {
         self.text = text
-        self.isResumed = isResumed
         self.previousOwnerMessageAt = previousOwnerMessageAt
         self.turnID = turnID
         self.alreadyApplied = alreadyApplied
@@ -150,11 +145,6 @@ package struct ChatRunOptions: Equatable, Sendable {
         self.model = model
         self.readFolder = readFolder
     }
-
-    /// Only Claude resumes a session (`--session-id`); a conversation whose
-    /// owner switched to another provider sends that provider the system
-    /// prompt again rather than an id it cannot use.
-    package var resumesSession: Bool { provider == nil || provider == "claude" }
 }
 
 /// One embedded chat, as a value: how its prompts are built, what it may do
@@ -195,6 +185,17 @@ package struct ChatSurfaceSpec {
     package let key: EmbeddedChatKey
     package let persistence: Persistence
     package let toolAccess: ToolAccess
+    /// The turn runs with `ai query --owner-instructions`: the owner's chat
+    /// instructions join the system prompt and a "remember:" message is
+    /// stored. Explicit on every surface; false for setup assistants.
+    package let ownerInstructions: Bool
+    /// A remember message is stored and its bubble shows the mark: a database
+    /// chat with the owner's instructions only. An in-memory chat's ids are
+    /// not `chat_messages` ids, so they could match another chat's ledger row.
+    package var showsRememberMarks: Bool {
+        guard ownerInstructions, case .database = persistence else { return false }
+        return true
+    }
     /// Sent only while the conversation has no provider session yet.
     package let systemPrompt: @MainActor () -> String
     package let turnPrompt: @MainActor (ChatTurnInput) -> String
@@ -222,6 +223,7 @@ package struct ChatSurfaceSpec {
         key: EmbeddedChatKey,
         persistence: Persistence,
         toolAccess: ToolAccess,
+        ownerInstructions: Bool,
         systemPrompt: @escaping @MainActor () -> String,
         turnPrompt: @escaping @MainActor (ChatTurnInput) -> String = { $0.text },
         postTurn: @escaping @MainActor (ChatPostTurnInput) async -> ChatPostTurnResult = ChatPostTurnResult.identity,
@@ -234,6 +236,7 @@ package struct ChatSurfaceSpec {
         self.key = key
         self.persistence = persistence
         self.toolAccess = toolAccess
+        self.ownerInstructions = ownerInstructions
         self.systemPrompt = systemPrompt
         self.turnPrompt = turnPrompt
         self.postTurn = postTurn

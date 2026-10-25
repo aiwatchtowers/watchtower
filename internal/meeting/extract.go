@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 )
 
@@ -62,7 +63,7 @@ func (p *Pipeline) ExtractDiscussionTopics(
 	cleaned := cleanJSON(aiResponse)
 	var result ExtractTopicsResult
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, fmt.Errorf("parsing AI response: %w (raw: %.300s)", err, aiResponse)
+		return nil, fmt.Errorf("parsing AI response: %w (%s)", err, logredact.Body([]byte(aiResponse)))
 	}
 
 	// Defensive: normalize priorities and drop empty topics.

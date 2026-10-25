@@ -129,6 +129,7 @@ struct SelectionPage: View {
     @State private var hovered: String?
     @State private var range = "Week"
     @State private var mode = "List"
+    @State private var editMode = "Form"
     @State private var notify = true
     @State private var digest = false
     @State private var splitOn = false
@@ -172,6 +173,14 @@ struct SelectionPage: View {
                             KitSegment(value: "Calendar", title: "Calendar", systemImage: "calendar")
                         ])
                     }
+                }
+                Sample("A disabled segment: greyed out, no hover fill, its help says why",
+                       usage: "KitSegment(value: \"Chat\", title: \"Chat\", isEnabled: false, help: \"Needs Claude or Codex\")") {
+                    KitSegmentedPicker(title: "Edit with", selection: $editMode, segments: [
+                        KitSegment(value: "Chat", title: "Chat", isEnabled: false, help: "Needs Claude or Codex"),
+                        KitSegment(value: "Form", title: "Form"),
+                        KitSegment(value: "Script", title: "Script")
+                    ])
                 }
                 Sample("segmentCapsule(): the capsule alone, around your own controls", usage: "HStack { … }.segmentCapsule()") {
                     HStack(spacing: Spacing.small) {

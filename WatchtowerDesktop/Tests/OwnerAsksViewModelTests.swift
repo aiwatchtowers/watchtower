@@ -1458,6 +1458,119 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isObscured(sessionID: other.id, projectID: p), "expanded, it covers every terminal of the page")
     }
 
+    /// An ask opens its session in the mode it was last shown in (#711,
+    /// Workchat polish): a session remembered in Workchat mode comes up as
+    /// its Workchat, live or stopped; a terminal one as its terminal.
+    private func showAskOfSession(workchat: Bool, live: Bool, via route: Bool = false, restarted: Bool = false) async throws
+        -> (vm: WorkbenchesViewModel, project: Int64, session: Int64, ask: Int64) {
+        let (p, s, askID) = try await seed()
+        let acme = folder.path
+        let other = try await pool.write { d in
+            try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "Other", folderPath: acme))
+        }
+        if live { center.start(s, fresh: true) }
+        var vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.loadSessions(projectID: p)
+        var layout = vm.layout(projectID: p)
+        layout.setMode(workchat, sessionID: s.id)
+        layout.show(.session(other.id))
+        vm.setLayout(layout, projectID: p)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(other.id)])
+        if restarted {
+            // The app relaunched: the layout comes back from the defaults, nothing drilled into.
+            vm = makeVM()
+            await vm.reload()
+        }
+        if route {
+            vm.reveal(.forAsk(projectID: p, sessionID: s.id, askID: askID))
+            for _ in 0 ..< 200 where vm.asks.drawerAskIDs[p] == nil { await Task.yield(); try? await Task.sleep(for: .milliseconds(10)) }
+        } else {
+            await vm.showAsk(askID, projectID: p)
+        }
+        return (vm, p, s.id, askID)
+    }
+
+    func testShowAskOfLiveWorkchatSessionShowsWorkchat() async throws {
+        let r = try await showAskOfSession(workchat: true, live: true)
+        let panes = r.vm.layout(projectID: r.project).visiblePanes
+        XCTAssertTrue(panes.contains(.sessionChat(r.session)), "\(panes)")
+        XCTAssertFalse(panes.contains(.session(r.session)))
+        XCTAssertEqual(r.vm.asks.drawerAskIDs[r.project], r.ask)
+    }
+
+    func testShowAskOfStoppedWorkchatSessionShowsWorkchat() async throws {
+        let r = try await showAskOfSession(workchat: true, live: false)
+        let panes = r.vm.layout(projectID: r.project).visiblePanes
+        XCTAssertTrue(panes.contains(.sessionChat(r.session)), "\(panes)")
+        XCTAssertFalse(panes.contains(.session(r.session)))
+        XCTAssertEqual(r.vm.asks.drawerAskIDs[r.project], r.ask)
+    }
+
+    func testShowAskOfTerminalSessionShowsTerminal() async throws {
+        let r = try await showAskOfSession(workchat: false, live: true)
+        let panes = r.vm.layout(projectID: r.project).visiblePanes
+        XCTAssertTrue(panes.contains(.session(r.session)), "\(panes)")
+        XCTAssertFalse(panes.contains(.sessionChat(r.session)))
+    }
+
+    func testShowAskAfterRelaunchShowsWorkchat() async throws {
+        let r = try await showAskOfSession(workchat: true, live: true, restarted: true)
+        let panes = r.vm.layout(projectID: r.project).visiblePanes
+        XCTAssertTrue(panes.contains(.sessionChat(r.session)), "\(panes)")
+        XCTAssertEqual(r.vm.asks.drawerAskIDs[r.project], r.ask)
+    }
+
+    /// After an answer's line is delivered the session comes on screen in
+    /// its remembered mode; only a line the owner must press (typed, copied)
+    /// needs the terminal.
+    private func answeredSession(
+        workchat: Bool, delivery: SessionLineDelivery.Delivery
+    ) async throws -> (vm: WorkbenchesViewModel, project: Int64, session: Int64) {
+        let (p, s, _) = try await seed()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        var layout = vm.layout(projectID: p)
+        layout.setMode(workchat, sessionID: s.id)
+        layout.show(.board)
+        vm.setLayout(layout, projectID: p)
+        vm.showAnsweredSession(s.id, projectID: p, delivery: delivery)
+        return (vm, p, s.id)
+    }
+
+    func testAnswerSubmittedKeepsWorkchat() async throws {
+        let r = try await answeredSession(workchat: true, delivery: .submitted)
+        XCTAssertEqual(r.vm.layout(projectID: r.project).visiblePanes, [.sessionChat(r.session)])
+        XCTAssertNil(center.keyboardFocusSerial(for: r.session), "no terminal keyboard request")
+    }
+
+    func testAnswerHeldKeepsWorkchat() async throws {
+        let r = try await answeredSession(workchat: true, delivery: .held)
+        XCTAssertEqual(r.vm.layout(projectID: r.project).visiblePanes, [.sessionChat(r.session)])
+        XCTAssertNil(center.keyboardFocusSerial(for: r.session))
+    }
+
+    func testAnswerTypedShowsTerminal() async throws {
+        let r = try await answeredSession(workchat: true, delivery: .typed)
+        XCTAssertEqual(r.vm.layout(projectID: r.project).visiblePanes, [.session(r.session)])
+        XCTAssertNotNil(center.keyboardFocusSerial(for: r.session))
+    }
+
+    func testAnswerSubmittedTerminalModeFocusesTerminal() async throws {
+        let r = try await answeredSession(workchat: false, delivery: .submitted)
+        XCTAssertEqual(r.vm.layout(projectID: r.project).visiblePanes, [.session(r.session)])
+        XCTAssertNotNil(center.keyboardFocusSerial(for: r.session))
+    }
+
+    func testRouteForAskKeepsWorkchat() async throws {
+        let r = try await showAskOfSession(workchat: true, live: true, via: true)
+        let panes = r.vm.layout(projectID: r.project).visiblePanes
+        XCTAssertTrue(panes.contains(.sessionChat(r.session)), "\(panes)")
+        XCTAssertFalse(panes.contains(.session(r.session)))
+    }
+
     /// The page-edge drawer of a deleted session's ask answers and
     /// dismisses: nothing is typed anywhere, the brief delivers (PROJ-12).
     func testADeletedSessionsAskAnswersAndDismissesFromItsDrawer() async throws {

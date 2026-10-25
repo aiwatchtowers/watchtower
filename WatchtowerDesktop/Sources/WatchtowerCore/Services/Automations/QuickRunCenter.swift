@@ -47,7 +47,7 @@ package final class QuickRunCenter {
         case coalesced(runID: Int64)
         /// A `confirm: true` recipe: `pendingConfirm` is set, nothing ran.
         case askFirst
-        /// An unconfirmed recipe: its confirmation sheet opens on the tab.
+        /// An unconfirmed recipe: its card opens on the tab, whose banner leads to the editor.
         case openedConfirmation
         /// A disabled or unreadable recipe: its card opens.
         case openedCard(Int64)

@@ -69,6 +69,41 @@ func TestTemplates_RunE2E(t *testing.T) {
 	t.Run("jira-state-report two projects", testRunJiraStateReportTwoProjects)
 
 	t.Run("team-performance-report", testRunTeamPerformanceReport)
+
+	t.Run("on-reaction", testRunOnReaction)
+}
+
+// on-reaction: a reaction event for a synced message puts a full Inbox card;
+// one for a message that is not synced puts a fallback card naming the channel.
+func testRunOnReaction(t *testing.T) {
+	f := newTplFixture(t, &automationstest.FakeGenerator{})
+	a := f.installTemplate(t, "on-reaction", map[string]string{"EMOJI": "eyes"})
+	event := func(cycle, ts string) int64 {
+		raw, err := json.Marshal(db.AutomationEventPayload{Cycles: []string{cycle}, Count: 1, Events: []json.RawMessage{
+			json.RawMessage(`{"type":"slack.reaction_added","account":"1","channel_id":"1:C0REL","message_ts":"` + ts + `","emoji":"eyes"}`)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerEvent, EventCycle: cycle, EventJSON: string(raw)})
+	}
+
+	missing := event("c1", "1760000000.000000")
+	f.step(t, 1)
+	f.wantRun(t, missing, db.RunSucceeded, "")
+	outs := f.outputs(t)
+	if len(outs) != 1 || outs[0].Kind != "inbox" || outs[0].Title != "Reacted with :eyes:" || !strings.Contains(outs[0].Body, "1:C0REL") ||
+		!strings.Contains(outs[0].Body, "1760000000.000000") {
+		t.Fatalf("outputs for a message that is not synced = %+v; want one fallback card naming the channel", outs)
+	}
+
+	found := event("c2", "1760428800.000200")
+	f.step(t, 1)
+	f.wantRun(t, found, db.RunSucceeded, "")
+	outs = f.outputs(t)
+	if len(outs) != 2 || outs[1].Kind != "inbox" || !strings.Contains(outs[1].Body, "Payout retries are blocked on the fraud check") ||
+		!strings.Contains(outs[1].Title, "Reacted with :eyes: in") {
+		t.Fatalf("outputs = %+v; want the fallback card, then one with the message", outs)
+	}
 }
 
 func testRunNewMailSummary(t *testing.T) {
@@ -789,14 +824,16 @@ func llmInputOf(t *testing.T, user string) string {
 // 200 more PAY issues, each with a 20 KiB raw payload, 20 KiB of custom
 // field values, an 8 KiB description and two status changes this week; 40
 // people with full cards (about 6 KiB each) and 30 messages of 2 KiB each.
+// The filler is hex(zeroblob(n)): only its size matters, and randomblob's
+// ChaCha20 ran instrumented under -race for ~20 s of every seeding.
 const productionSizeSeed = `
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
 INSERT INTO jira_issues (account_id, key, id, project_key, board_id, sprint_id, summary, description_text, issue_type, status,
     status_category, assignee_display_name, priority, created_at, updated_at, synced_at, raw_json, custom_fields_json)
-SELECT 1, 'PAY-' || (100 + i), '2' || i, 'PAY', 1, 0, 'Payments work item ' || i || ' ' || hex(randomblob(40)),
-    hex(randomblob(4096)), 'Story', 'In Progress', 'indeterminate', 'colleague A', 'Medium',
+SELECT 1, 'PAY-' || (100 + i), '2' || i, 'PAY', 1, 0, 'Payments work item ' || i || ' ' || hex(zeroblob(40)),
+    hex(zeroblob(4096)), 'Story', 'In Progress', 'indeterminate', 'colleague A', 'Medium',
     '2026-09-01T09:00:00Z', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-    '{"fields":{"blob":"' || hex(randomblob(10240)) || '"}}', '{"customfield_10010":"' || hex(randomblob(10240)) || '"}'
+    '{"fields":{"blob":"' || hex(zeroblob(10240)) || '"}}', '{"customfield_10010":"' || hex(zeroblob(10240)) || '"}'
 FROM n;
 
 INSERT INTO jira_issue_changelog (account_id, issue_key, history_id, field, from_string, to_string, author_display_name, changed_at)
@@ -815,15 +852,15 @@ SELECT '1:U9' || printf('%07d', i), 'person-' || i, 'person ' || i, 'person ' ||
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
 INSERT INTO people_cards (user_id, period_from, period_to, message_count, summary, communication_style, decision_role,
     red_flags, highlights, accomplishments, communication_guide, decision_style, tactics, relationship_context, status)
-SELECT '1:U9' || printf('%07d', i), 1759820400, 1760425200 + i, 120, hex(randomblob(512)), 'driver', 'contributor',
-    '["' || hex(randomblob(256)) || '"]', '["' || hex(randomblob(256)) || '"]', '["' || hex(randomblob(256)) || '"]',
-    hex(randomblob(512)), hex(randomblob(150)), '["' || hex(randomblob(512)) || '"]', hex(randomblob(256)), 'active'
+SELECT '1:U9' || printf('%07d', i), 1759820400, 1760425200 + i, 120, hex(zeroblob(512)), 'driver', 'contributor',
+    '["' || hex(zeroblob(256)) || '"]', '["' || hex(zeroblob(256)) || '"]', '["' || hex(zeroblob(256)) || '"]',
+    hex(zeroblob(512)), hex(zeroblob(150)), '["' || hex(zeroblob(512)) || '"]', hex(zeroblob(256)), 'active'
 FROM n;
 
 WITH RECURSIVE p(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM p WHERE i < 40),
      m(j) AS (SELECT 1 UNION ALL SELECT j + 1 FROM m WHERE j < 30)
 INSERT INTO messages (channel_id, ts, user_id, text)
-SELECT '1:C0REL', (1760500000 + i * 100 + j) || '.000100', '1:U9' || printf('%07d', i), hex(randomblob(1024))
+SELECT '1:C0REL', (1760500000 + i * 100 + j) || '.000100', '1:U9' || printf('%07d', i), hex(zeroblob(1024))
 FROM p, m;
 `
 
@@ -833,32 +870,16 @@ const productionSizeOpsSeed = `
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
 INSERT INTO jira_issues (account_id, key, id, project_key, board_id, sprint_id, summary, description_text, issue_type, status,
     status_category, assignee_display_name, priority, created_at, updated_at, synced_at, raw_json, custom_fields_json)
-SELECT 1, 'OPS-' || (100 + i), '3' || i, 'OPS', 2, 0, 'Operations work item ' || i || ' ' || hex(randomblob(40)),
-    hex(randomblob(4096)), 'Task', 'In Progress', 'indeterminate', 'colleague B', 'Medium',
+SELECT 1, 'OPS-' || (100 + i), '3' || i, 'OPS', 2, 0, 'Operations work item ' || i || ' ' || hex(zeroblob(40)),
+    hex(zeroblob(4096)), 'Task', 'In Progress', 'indeterminate', 'colleague B', 'Medium',
     '2026-09-01T09:00:00Z', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-    '{"fields":{"blob":"' || hex(randomblob(10240)) || '"}}', '{"customfield_10010":"' || hex(randomblob(10240)) || '"}'
+    '{"fields":{"blob":"' || hex(zeroblob(10240)) || '"}}', '{"customfield_10010":"' || hex(zeroblob(10240)) || '"}'
 FROM n;
 `
 
-// seedProductionSize runs the production-size seeds with the per-row
-// messages FTS triggers lifted, then indexes every message in one pass and
-// puts the triggers back as the schema wrote them. Each trigger firing
-// deletes from messages_fts by its UNINDEXED channel_id and ts, a scan of the
-// whole index, so seeding 1,200 messages row by row is quadratic: minutes
-// under -race, where the modernc SQLite engine runs instrumented (#868). The
-// end state is the one the triggers would have left: every live message with
-// text indexed once.
+// seedProductionSize runs the production-size seeds, skipping empty ones.
 func seedProductionSize(t *testing.T, d *db.DB, seeds ...string) {
 	t.Helper()
-	names, creates := messagesFTSTriggers(t, d)
-	if len(creates) != 2 {
-		t.Fatalf("messages FTS triggers = %v; want messages_ai and messages_au", names)
-	}
-	for _, name := range names {
-		if _, err := d.Exec(`DROP TRIGGER ` + name); err != nil {
-			t.Fatalf("lifting trigger %s: %v", name, err)
-		}
-	}
 	for _, seed := range seeds {
 		if seed == "" {
 			continue
@@ -867,46 +888,6 @@ func seedProductionSize(t *testing.T, d *db.DB, seeds ...string) {
 			t.Fatalf("seeding production-size rows: %v", err)
 		}
 	}
-	if _, err := d.Exec(`DELETE FROM messages_fts;
-INSERT INTO messages_fts (text, channel_id, ts, user_id)
-SELECT text, channel_id, ts, user_id FROM messages WHERE text != '' AND is_deleted = 0`); err != nil {
-		t.Fatalf("indexing the seeded messages: %v", err)
-	}
-	for _, create := range creates {
-		if _, err := d.Exec(create); err != nil {
-			t.Fatalf("restoring a messages FTS trigger: %v", err)
-		}
-	}
-	var indexed, live int
-	if err := d.QueryRow(`SELECT (SELECT COUNT(*) FROM messages_fts),
-(SELECT COUNT(*) FROM messages WHERE text != '' AND is_deleted = 0)`).Scan(&indexed, &live); err != nil {
-		t.Fatalf("counting the indexed messages: %v", err)
-	}
-	if indexed != live {
-		t.Fatalf("messages_fts rows = %d; want %d live messages with text", indexed, live)
-	}
-}
-
-// messagesFTSTriggers reads the names and CREATE statements of the per-row
-// messages FTS triggers, closing its rows before the caller drops them.
-func messagesFTSTriggers(t *testing.T, d *db.DB) (names, creates []string) {
-	t.Helper()
-	rows, err := d.Query(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('messages_ai', 'messages_au')`)
-	if err != nil {
-		t.Fatalf("reading the messages FTS triggers: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var name, create string
-		if err := rows.Scan(&name, &create); err != nil {
-			t.Fatalf("scanning a messages FTS trigger: %v", err)
-		}
-		names, creates = append(names, name), append(creates, create)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("reading the messages FTS triggers: %v", err)
-	}
-	return names, creates
 }
 
 // TestTemplates_ProductionSizeReports runs jira-state-report and
@@ -920,8 +901,8 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 	// cap. (150 issues and no description keep list_jira_issues under its
 	// 256 KiB result cap.)
 	ampOpsSeed := strings.NewReplacer(
-		`'Operations work item ' || i || ' ' || hex(randomblob(40)),
-    hex(randomblob(4096))`, `replace(hex(zeroblob(80)), '0', '&'), ''`,
+		`'Operations work item ' || i || ' ' || hex(zeroblob(40)),
+    hex(zeroblob(4096))`, `replace(hex(zeroblob(80)), '0', '&'), ''`,
 		"WHERE i < 200", "WHERE i < 150",
 	).Replace(productionSizeOpsSeed)
 	if ampOpsSeed == productionSizeOpsSeed {

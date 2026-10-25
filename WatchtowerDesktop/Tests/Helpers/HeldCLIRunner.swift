@@ -33,6 +33,12 @@ final class HeldCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         finish.release()
     }
 
+    /// The texts that ride stdin (`--text-file -`, `validate -`, #604 S6)
+    /// change nothing here.
+    func run(args: [String], stdin _: Data) async throws -> Data {
+        try await run(args: args)
+    }
+
     func run(args: [String]) async throws -> Data {
         lock.withLock { recorded.append(args) }
         started.release()

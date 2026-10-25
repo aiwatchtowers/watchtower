@@ -21,5 +21,5 @@ func (o *Orchestrator) syncThread(ctx context.Context, channelID, threadTS strin
 		return 0, nil
 	}
 
-	return o.upsertMessagePage(channelID, replies)
+	return o.upsertMessagePage(ctx, channelID, replies)
 }

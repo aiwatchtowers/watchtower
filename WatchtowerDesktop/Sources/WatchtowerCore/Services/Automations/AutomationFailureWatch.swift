@@ -10,7 +10,8 @@ import Foundation
 ///   and the owner has not looked at its card since. Looking at the card
 ///   (the caller decides: tab visible, app active) or a newer run that did
 ///   not fail clears it.
-/// - **Failure notice:** a schedule, catch-up or event run that failed posts
+/// - **Failure notice:** a schedule, catch-up, event or Inbox reply run that
+///   failed (the daemon runs a reply later, like an event run) posts
 ///   at most one notice per automation per `noticeInterval`; a failure inside
 ///   the window, a run ended by a daemon restart (`interrupted`), a run that
 ///   ended more than `noticeInterval` ago and a run that disabled its
@@ -29,8 +30,10 @@ import Foundation
 @MainActor
 package final class AutomationFailureWatch {
     nonisolated package static let failedStatuses: Set<AutomationRunStatus> = [.failed, .budgetExceeded, .timedOut, .expired]
-    /// Runs nobody started by hand.
-    nonisolated package static let backgroundTriggers: Set<String> = ["schedule", "catch_up", "event"]
+    /// Runs the daemon starts later, nobody watching: an Inbox reply runs
+    /// on a later daemon cycle, like an event run, and a built-in's `sync`
+    /// run (twin: Go `db.TriggerSync`) at its slot in the cycle.
+    nonisolated package static let backgroundTriggers: Set<String> = ["schedule", "catch_up", "event", "reply", "sync"]
     nonisolated package static let noticeInterval: TimeInterval = 24 * 60 * 60
     /// More failure notices than this in one pass post one summary instead.
     nonisolated package static let coalesceAbove = 2

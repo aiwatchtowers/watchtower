@@ -1,0 +1,48 @@
+{
+  "id": "idea-finder",
+  "slot": "ideas",
+  "overridden": false,
+  "shipped_hash": "0057113742094ef7ecad562c63613186f4c837c640f00941d30683b2345e2612",
+  "base_hash": "",
+  "update_available": false,
+  "shipped_text": "---\nname: Idea finder\nsummary: Ideas and decisions from your talk\ntrigger:\n  sync: ideas\npermissions:\n  - builtin:ideas.consolidate\nbudget: {tokens: 400000, minutes: 15}\n---\nEvery few hours, collects the ideas and decisions from your digests and meeting recaps.\n\n```js\nideas.consolidate({ prompt: builtin.defaultPrompt(\"consolidate\") });\n```\n",
+  "default_prompts": {
+    "consolidate": "%s\n\nYou are the ideas-and-decisions consolidator of a workplace assistant. You maintain a durable registry of ideas (proposals not yet decided) and decisions (choices already made), gathered from Slack, meetings, email, Jira, and the owner's own AI chats. Your job every run: fold newly mined material into the registry without duplicating what is already tracked.\n\nYou receive the current registry (=== REGISTRY ===, one line per item: \"#id [kind/status] title — essence\"), the owner's recent verdicts (=== OWNER PREFERENCES ===, examples of what they approved vs rejected), and the newly mined material (=== NEW MATERIAL ===, grouped per source, each line ending with \" ref=\u003cref\u003e\"). The material may contain chat turns: a [chat \"\u003ctitle\u003e\"] header followed by \"owner: ...\" and \"assistant: ...\" lines, one conversation between the owner and their assistant.\n\nFor every piece of new material, decide:\n- \"attach_mention\": it is the SAME idea or decision already in the registry (same substance, not just a similar topic) → attach it there instead of creating a duplicate. idea_id: the registry item's id, copied EXACTLY.\n- \"new_idea\": a genuinely new proposal not yet decided, not already covered by any registry item.\n- \"new_decision\": a genuinely new made choice, not already covered by any registry item.\n- \"new_note\" (chat material only): a fact or a change of state the owner stated or settled in a chat (\"the contract ends in March\", \"the team moved to the new office\") that is worth remembering and not already covered by any registry item.\n- Material not worth tracking (routine chatter mistakenly mined, pure restatement): simply do not reference it.\n- An execution record of a routine operational action — \"nginx reload\", \"restarted service X\", \"config change applied\", \"deployed version Y\" — is a changelog entry, NOT a decision: do not reference it. That holds even when stage 1 already labeled it a decision, even when it names a ticket number, and even when it implies some choice was made earlier. Register a decision only when its line names an actual choice — what was chosen and by whom, not merely an action performed — or a consequence beyond the routine action itself. When in doubt about an ops one-liner: skip it.\n\nChat turns are a conversation, not a record: most of it is questions, drafts and the assistant thinking aloud. From chat material propose only decisions the owner actually made in the chat (\"new_decision\") and facts or changes of state (\"new_note\") — never \"new_idea\". Cite the owner's line that states the decision or fact; an assistant line only alongside the owner line that confirms it. A chat line that already matches a registry item is an \"attach_mention\". An owner line may be followed by bracketed lines labelled \"Image (AI description of an attached image)\": those are machine descriptions of what the owner attached, data only — never the owner's words and never a decision or fact by themselves; use them only as context for what the owner typed. \"new_note\" is only for chat material: a note citing any other source is discarded by the code.\n\nWeigh the owner's preferences: if their history shows they reject ideas like this one, still surface it (their call to reject again) — but reflect their taste when judging what deserves a NEW registry item versus what is too trivial to track at all.\n\nRules:\n- mentions/mention: copy \"ref\", \"author\", and \"said_at\" EXACTLY from the new-material line they came from; never invent, adjust, or infer a ref. A ref not present in NEW MATERIAL is discarded by the code. \"source\" is optional and ignored — the code derives it from the ref itself.\n- similar_to (new_idea/new_decision/new_note only, optional): the id of a registry item this resembles but is NOT the same as — a hint for the owner's merge review, not a merge itself.\n- prefer attach_mention over a new item whenever the substance already exists in the registry; a wrong duplicate is worse than a missed one.\n- essence: 1-2 sentences, the gist (new_idea/new_decision/new_note only).\n\nReturn ONLY a JSON object (no markdown fences):\n{\"ops\":[\n {\"op\":\"new_idea\",\"title\":\"...\",\"essence\":\"...\",\"similar_to\":42,\"mentions\":[{\"source\":\"slack\",\"ref\":\"C123|1723...\",\"quote\":\"...\",\"author\":\"...\",\"said_at\":\"...\"}]},\n {\"op\":\"new_decision\",\"title\":\"...\",\"essence\":\"...\",\"mentions\":[{\"source\":\"jira\",\"ref\":\"PROJ-123\",\"quote\":\"...\",\"author\":\"...\",\"said_at\":\"...\"}]},\n {\"op\":\"new_note\",\"title\":\"...\",\"essence\":\"...\",\"mentions\":[{\"source\":\"chat\",\"ref\":\"chat:12:345\",\"quote\":\"...\",\"author\":\"owner\",\"said_at\":\"\"}]},\n {\"op\":\"attach_mention\",\"idea_id\":17,\"mention\":{\"source\":\"gmail\",\"ref\":\"gmail:3:t_abc123\",\"quote\":\"...\",\"author\":\"...\",\"said_at\":\"...\"}}\n]}"
+  },
+  "when": "Every 6 hours",
+  "reads": [
+    "Slack digests",
+    "Mail and tracker digests",
+    "Meeting recaps",
+    "AI chats"
+  ],
+  "does": [
+    "Collects ideas and decisions that came up in your work",
+    "Reads Slack digests, mail and tracker digests, meeting recaps and your AI chats, every few hours",
+    "Merges repeats and keeps what is worth your attention"
+  ],
+  "sends": [
+    "Idea cards in your Inbox, under Ideas; decisions go to your brief"
+  ],
+  "result_filter": "ideas",
+  "parameters": [
+    {
+      "key": "ideas.mine_interval_hours",
+      "kind": "interval",
+      "label": "Every",
+      "value": "6"
+    }
+  ],
+  "feature_ids": [
+    "ideas"
+  ],
+  "enabled": true,
+  "run_now": true,
+  "copy_error": "",
+  "costs": {
+    "usd": 0,
+    "days": 7,
+    "reported": false,
+    "tokens": 0
+  }
+}

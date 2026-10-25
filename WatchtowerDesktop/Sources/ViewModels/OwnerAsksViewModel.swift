@@ -211,7 +211,7 @@ final class OwnerAsksViewModel {
     @ObservationIgnored var watchedProjectID: () -> Int64? = { nil }
     /// An answer's line went to `sessionID` (sent, typed, copied or held):
     /// the page shows that terminal and moves the keyboard into it.
-    @ObservationIgnored var onDelivered: ((_ projectID: Int64, _ sessionID: Int64) -> Void)?
+    @ObservationIgnored var onDelivered: ((_ projectID: Int64, _ sessionID: Int64, _ delivery: Delivery) -> Void)?
     /// A workbench's open asks were read: the page opens a new one's drawer
     /// if its session is on screen (`WorkbenchesViewModel.openNewAsk`).
     @ObservationIgnored var onLoaded: ((_ projectID: Int64) -> Void)?
@@ -673,17 +673,27 @@ final class OwnerAsksViewModel {
     /// (`failed`). A success discards the ask's draft; otherwise it is kept.
     /// An automation's ask (spec §13.3) is never delivered to a session —
     /// its run reads the answer once the daemon is woken (`wakeAutomations`).
+    /// A review ask's answer (not a dismissal) gets its spec review's
+    /// comment marks, read from the database now (`specReviewAnswer`), so
+    /// every path sends them once, whatever screen was loaded.
     @discardableResult
-    func answer(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerResult {
+    func answer(_ ask: OwnerAsk, with given: OwnerAskAnswer) async -> AnswerResult {
         guard !isAnswering(ask.id) else { return .busy }
         let (askID, projectID) = (ask.id, ask.projectID)
-        let answer = answer.normalized(for: ask)
+        answering.insert(askID)
+        defer { answering.remove(askID) }
+        let answer: OwnerAskAnswer
+        do {
+            answer = try await specReviewAnswer(ask, given).normalized(for: ask)
+        } catch {
+            let reason = "Could not read the spec review's comments: \(error.localizedDescription)"
+            answerErrors[askID] = reason
+            return .failed(reason)
+        }
         if let problem = answer.problem(kind: ask.kind, payload: ask.payload) {
             answerErrors[askID] = "This answer cannot be sent: \(problem.message)"
             return .invalid(problem.message)
         }
-        answering.insert(askID)
-        defer { answering.remove(askID) }
         do {
             try await dbPool.write { db in
                 try OwnerAskQueries.answer(db, askID: askID, projectID: projectID, with: answer)
@@ -712,12 +722,35 @@ final class OwnerAsksViewModel {
         if delivery != .noSession, let sessionID = ask.sessionID {
             showHint(delivery, sessionID: sessionID)
             if drawerAskIDs[projectID] == askID { closeDrawer(projectID: projectID) }
-            onDelivered?(projectID, sessionID)
+            onDelivered?(projectID, sessionID, delivery)
         }
         await load(projectID: projectID)
         await onAnswered?()
         if ask.automationRunID != nil { await wakeAutomationRun(askID: askID) }
         return .delivered(delivery)
+    }
+
+    /// `answer` with the comments of the ask's spec review marks
+    /// (`SpecReviewAnswer`, F5): `spec_review_marks` and the reviewer's
+    /// result as stored now — no result (queued, running, failed) sends
+    /// every comment mark as "From the previous run". Placed off the main
+    /// actor on the drawer's rendered snapshot when it has one. Any other
+    /// ask, a dismissal, or an ask without comment marks is unchanged.
+    private func specReviewAnswer(_ ask: OwnerAsk, _ answer: OwnerAskAnswer) async throws -> OwnerAskAnswer {
+        guard ask.kind == .review, !answer.dismissed else { return answer }
+        let askID = ask.id
+        let (result, marks) = try await dbPool.read { db in
+            (try SpecReviewQueries.row(db, askID: askID)?.result, try SpecReviewQueries.marks(db, askID: askID))
+        }
+        guard marks.values.contains(where: { $0.state == .comment }) else { return answer }
+        let snapshot = ask.docSnapshot
+        let cached = reviewDocuments.rendered[askID]
+        return await Task.detached(priority: .userInitiated) {
+            SpecReviewAnswer.build(
+                result: result, marks: marks, base: answer, snapshot: snapshot,
+                rendered: cached.map { doc in { doc } }
+            )
+        }.value
     }
 
     /// Best effort: the answer is saved either way, and the daemon's next

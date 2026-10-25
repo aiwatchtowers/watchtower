@@ -44,7 +44,7 @@ func TestRun_RendersOutsideTheWriteLock(t *testing.T) {
 	seedThreads(t, d, 5)
 	exec(t, d, `CREATE TABLE lock_probe (k TEXT)`)
 
-	other, err := sql.Open("sqlite", path)
+	other, err := sql.Open("sqlite3", path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = other.Close() })
 	other.SetMaxOpenConns(1)
@@ -73,7 +73,7 @@ func TestIndexFileSet_ChunksOutsideTheWriteLock(t *testing.T) {
 	exec(t, d, `CREATE TABLE lock_probe (k TEXT)`)
 	writeWorkbenchFile(t, folder, "docs/new.md", "# New\nfresh text\n")
 
-	other, err := sql.Open("sqlite", path)
+	other, err := sql.Open("sqlite3", path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = other.Close() })
 	other.SetMaxOpenConns(1)

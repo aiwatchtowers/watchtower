@@ -227,6 +227,7 @@ final class TargetChatViewModel {
             key: EmbeddedChatKey(contextType: "target", contextID: String(targetID), conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { "" },
             willSend: { _ in false },
             emptyHint: ""
@@ -242,6 +243,7 @@ final class TargetChatViewModel {
             // The target chat is an action surface (AGENT-04): a tool mode is
             // sent only while the provider reaches the MCP server.
             toolAccess: tools ? .actions(surface: "target") : .draftOnly,
+            ownerInstructions: true,
             // The closures reach this controller weakly: the engine lives in the
             // app-wide center. Every path that lets the controller go releases
             // the engine too, so a missing controller is only ever logged.
@@ -304,23 +306,11 @@ final class TargetChatViewModel {
     /// The floor is the PREVIOUS owner message, and it alone: a turn with no
     /// prior owner message has nothing to report anyway. Gating on the
     /// session id instead would silently exclude codex, which never emits
-    /// one — unlike the context re-injection below, which is about --resume.
-    ///
-    /// On the first turn the target context is in the system prompt. On a
-    /// resumed turn the CLI uses --resume and drops the system prompt entirely
-    /// — and if that session has expired (e.g. after an app restart) the model
-    /// would have NO context at all. So carry the live target context AND the
-    /// action contract with the message on every resumed turn: the assistant
-    /// never loses track of which target it is working on, sees the target's
-    /// current state, and can still emit valid watchtower-action blocks.
+    /// one. The target context and the action contract are in the system
+    /// prompt every turn carries (no session is resumed, #604 G11).
     private func turnPrompt(_ input: ChatTurnInput) -> String {
         let outcomes = actionFeed.outcomesBlock(after: input.previousOwnerMessageAt)
-        let base = input.isResumed
-            ? "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbManager.dbPool))\n\n"
-                + "\(Self.taskActionsContract)\n\n"
-                + "\(toolsAvailable ? AgentToolsContract.promptBlock(surface: .target) : "")\n\n\(input.text)"
-            : input.text
-        let prompt = outcomes.map { "\($0)\n\n\(base)" } ?? base
+        let prompt = outcomes.map { "\($0)\n\n\(input.text)" } ?? input.text
         // A Retry of a turn whose reply was lost after its writes landed.
         guard !input.alreadyApplied.isEmpty else { return prompt }
         let done = input.alreadyApplied.map { "- \($0.summary)" }.joined(separator: "\n")

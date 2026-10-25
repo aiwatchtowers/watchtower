@@ -16,7 +16,6 @@ protocol ReadinessEnvironment: AnyObject {
     var disabledFeatureIDs: Set<String> { get }
     var connected: ConnectedSources { get }
     var briefingHour: Int { get }
-    var dayPlanHour: Int { get }
     /// `sync.poll_interval` as written in config.yaml ("15m").
     var pollInterval: String? { get }
     /// `sync.backfill_days` as written in config.yaml; nil = unset (Go's
@@ -38,10 +37,10 @@ protocol ReadinessEnvironment: AnyObject {
 final class ReadinessCenter {
     /// Empty until the first evaluation, which waits for the first DB read.
     private(set) var readiness: [ReadinessFeature: Readiness] = [:]
-    /// The hours the last evaluation read, for the empty states' "at or
-    /// after HH:00" (Go's `config.DefaultBriefingHour`/`DefaultDayPlanHour` until then).
+    /// The briefing hour the last evaluation read, for the empty states' "at
+    /// or after HH:00" of the brief and the day plan (Go's
+    /// `config.DefaultBriefingHour` until then).
     private(set) var briefingHour = 8
-    private(set) var dayPlanHour = 8
     /// The daemon has been down past `FeatureReadiness.daemonDownGrace`:
     /// the app-wide banner's Start shows. Follows the status poll and the tick.
     private(set) var daemonDown = false
@@ -162,7 +161,6 @@ final class ReadinessCenter {
         let next = FeatureReadiness.evaluate(inputs)
         if next != readiness { readiness = next }
         if inputs.briefingHour != briefingHour { briefingHour = inputs.briefingHour }
-        if inputs.dayPlanHour != dayPlanHour { dayPlanHour = inputs.dayPlanHour }
         let down = FeatureReadiness.isDaemonDown(
             running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now)
         if down != daemonDown { daemonDown = down }
@@ -190,7 +188,6 @@ final class ReadinessCenter {
                 lastStreams: environment.stamp("last_streams.txt")
             ),
             briefingHour: environment.briefingHour,
-            dayPlanHour: environment.dayPlanHour,
             pollIntervalMinutes: FeatureReadiness.parsePollInterval(environment.pollInterval),
             runningBackfillStarts: snapshot.runningBackfillStarts,
             memoryHasRun: snapshot.memoryHasRun,
@@ -234,7 +231,6 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
     var disabledFeatureIDs: Set<String> { visibility.disabledFeatureIDs }
     var connected: ConnectedSources { visibility.connectedSources }
     var briefingHour: Int { currentConfig().briefingHour }
-    var dayPlanHour: Int { currentConfig().dayPlanHour }
     var pollInterval: String? { currentConfig().syncInterval }
     var backfillDays: Int? { currentConfig().backfillDays }
 

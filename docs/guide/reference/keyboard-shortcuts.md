@@ -41,10 +41,12 @@ Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows 
 | **⌘Return / ⌃Return** | Send a comment, or save the text you are editing (target comments) |
 | **Esc** | Cancel editing |
 
-### Ideas
+### Inbox
 
 | Keys | Action |
 |---|---|
+| **↑ / ↓** | Move between cards |
+| **Esc** | Close the card |
 | **⌘Return** | Create (new idea) |
 
 ### Workbench
@@ -113,9 +115,11 @@ With a workbench page on screen; the Navigate menu lists most of these.
 | **⌃6** | File symbols |
 | **⌃⌘← / ⌃⌘→** | Back / forward |
 | **⌘S** | Save now |
-| **⌥⌘Return** | Hand to Session (an Ask AI answer) |
+| **⌥⌘Return** | Hand to Session (an Ask AI answer); Chapter viewed in Branch review (Deep) |
 | **⌥⌘M** | Comment on the selected lines (Branch review pane) |
 | **⌥⌘↑ / ⌥⌘↓** | Previous / next unviewed file (Branch review pane) |
+| **⇧⌘A** | Ask agent about the selected lines (Branch review) |
+| **⌥⌘C** | Show or hide the review's chat panel |
 
 ### Open Quickly
 

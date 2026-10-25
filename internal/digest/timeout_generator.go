@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"syscall"
 	"time"
+
+	"watchtower/internal/logredact"
 )
 
 // DaemonAICallTimeout bounds a single AI subprocess call made from the
@@ -71,13 +73,46 @@ func (g *timeoutGenerator) Generate(ctx context.Context, systemPrompt, userMessa
 	defer cancel()
 
 	result, usage, newSessionID, err := g.inner.Generate(ctx, systemPrompt, userMessage, sessionID)
-	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil {
-		return "", nil, "", WithCause(fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded), ErrAICall)
+	if g.timedOut(parent, ctx, err) {
+		return "", nil, "", g.deadlineError(err)
 	}
 	if err != nil && aiTransportFailure(err) {
 		return result, usage, newSessionID, WithCause(err, ErrAICall)
 	}
 	return result, usage, newSessionID, err
+}
+
+func (g *timeoutGenerator) wrappedGenerator() Generator { return g.inner }
+
+// GenerateWithImage is the image call of the generator g wraps (see
+// ImageCapable), bounded and its failures classified like Generate.
+func (g *timeoutGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, mediaType string) (string, *Usage, error) {
+	inner, ok := ImageCapable(g.inner)
+	if !ok {
+		return "", nil, errNotImageCapable
+	}
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, g.timeout)
+	defer cancel()
+
+	result, usage, err := inner.GenerateWithImage(ctx, systemPrompt, userMessage, imagePath, mediaType)
+	if g.timedOut(parent, ctx, err) {
+		return "", nil, g.deadlineError(err)
+	}
+	if err != nil && aiTransportFailure(err) {
+		return result, usage, WithCause(err, ErrAICall)
+	}
+	return result, usage, err
+}
+
+// timedOut reports whether err comes from g's own deadline on ctx rather
+// than from the caller's parent context.
+func (g *timeoutGenerator) timedOut(parent, ctx context.Context, err error) bool {
+	return err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil
+}
+
+func (g *timeoutGenerator) deadlineError(err error) error {
+	return WithCause(fmt.Errorf("ai call exceeded %s (%v): %w", g.timeout, err, context.DeadlineExceeded), ErrAICall)
 }
 
 // ErrAICall marks a failure of an AI call that says nothing about the
@@ -100,7 +135,7 @@ func aiTransportFailure(err error) bool {
 		errors.As(err, &execErr) || errors.As(err, &pathErr) ||
 		(errors.As(err, &exitErr) && !exitErr.Exited()) || // killed by a signal
 		NetworkFailure(err) ||
-		aiUnavailable.MatchString(err.Error())
+		aiUnavailable.MatchString(logredact.Full(err))
 }
 
 // NetworkFailure reports a connection-level failure: a timeout, a dial/

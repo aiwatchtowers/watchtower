@@ -122,10 +122,10 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(button: "Start"))
         XCTAssertThrowsError(try view.inspect().find(button: "Turn on"))
 
-        let catchUp = try XCTUnwrap(EmptyStateCopyTable.copy(for: "catchUp", briefingHour: 8, dayPlanHour: 8))
+        let catchUp = try XCTUnwrap(EmptyStateCopyTable.copy(for: "catchUp", briefingHour: 8))
         XCTAssertEqual(FeatureEmptyState<EmptyView>.visibleAction(copy: catchUp, readiness: .daemonStopped),
                        .tabAction(label: "Build a recap"))
-        let briefings = try XCTUnwrap(EmptyStateCopyTable.copy(for: "briefings", briefingHour: 8, dayPlanHour: 8))
+        let briefings = try XCTUnwrap(EmptyStateCopyTable.copy(for: "briefings", briefingHour: 8))
         XCTAssertEqual(FeatureEmptyState<EmptyView>.visibleAction(copy: briefings, readiness: .daemonStopped),
                        briefings.primaryAction)
     }
@@ -161,13 +161,14 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "cheat"))
     }
 
-    /// Briefings and Day Plan name what the button is for, not where it goes
-    /// (owner, ask #299); it still opens Settings → Features.
+    /// The brief's and the plan's copy (the Inbox's Day filter reads the
+    /// brief's) name what the button is for, not where it goes (owner, ask
+    /// #299); it opens Morning brief's card in Automations → Built in (C2).
     func testHourActionSaysChangeTheHour() throws {
-        for destination in [SidebarDestination.briefings, .dayPlan] {
-            let copy = try XCTUnwrap(EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 8))
+        for destination in ["briefings", "dayPlan"] {
+            let copy = try XCTUnwrap(EmptyStateCopyTable.copy(for: destination, briefingHour: 8))
             let action = try XCTUnwrap(copy.primaryAction)
-            XCTAssertEqual(action, .openSettings(tab: "features", label: "Change the hour"))
+            XCTAssertEqual(action, .openBuiltin(id: "morning-brief", label: "Change the hour"))
             XCTAssertEqual(FeatureEmptyState<EmptyView>.label(for: action), "Change the hour")
             let view = makeView(copy: copy, readiness: .scheduled(.nextCycle(minutes: 15)))
             XCTAssertNoThrow(try view.inspect().find(button: "Change the hour"), "\(destination)")
@@ -180,7 +181,7 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertNil(SettingsTab(emptyStateTab: "briefing"))
         // Every Settings tab the copy table names exists.
         for destination in SidebarDestination.allCases {
-            let copy = EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 8)
+            let copy = EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8)
             guard case .openSettings(let tab, _) = copy?.primaryAction else { continue }
             XCTAssertNotNil(SettingsTab(emptyStateTab: tab), "\(destination.rawValue): \(tab)")
         }

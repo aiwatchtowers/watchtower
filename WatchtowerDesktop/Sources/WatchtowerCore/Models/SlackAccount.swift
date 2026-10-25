@@ -32,6 +32,13 @@ package struct SlackAccount: FetchableRecord, Identifiable, Equatable {
 
     package var isOK: Bool { status == "ok" }
     package var isRevoked: Bool { status == "revoked" }
+    /// Its synced data was deleted after its access was revoked or went stale
+    /// (board #601); a Re-login revives it. Never healthy.
+    package var isPurged: Bool { status == "purged" }
+
+    /// Removed, or purged — a purged account counts as removed outside
+    /// Settings (ask #491), where it stays listed for its Re-login.
+    package var isGone: Bool { status == "removed" || isPurged }
 
     /// A note an ok account still carries in its error column — the search
     /// catch-up gap ("messages … were not fetched"). nil when the account is

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/db"
@@ -41,7 +42,8 @@ const (
 // sinceOverride to a deeper watermark and switches to the two-stage
 // shortlist→extract path with dedup.
 type runOpts struct {
-	sinceOverride string // non-empty => scan from here instead of the watermark
+	sinceOverride string      // non-empty => scan from here instead of the watermark
+	extra         []ExtraItem // recipe-gathered material (ScanBound); forward runs only
 }
 
 func (o runOpts) isBackfill() bool { return o.sinceOverride != "" }
@@ -52,6 +54,39 @@ type Pipeline struct {
 	gen    digest.Generator
 	lang   string // workspace response language (digest.language); "" falls back to the prompts default
 	logger *log.Logger
+
+	mu    sync.Mutex // guards usage
+	usage pipelineUsage
+}
+
+// pipelineUsage is what the pipeline's model calls spent since New.
+type pipelineUsage struct {
+	in, out, calls int
+	cost           float64
+}
+
+// AccumulatedUsage returns the input tokens, output tokens, cost and number
+// of model calls of every call this pipeline made since New (scan,
+// shortlist and compose alike). It only grows: a caller that wants one
+// scan's usage reads it before and after (the track.scan primitive does).
+// Safe for concurrent use.
+func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.usage.in, p.usage.out, p.usage.cost, p.usage.calls
+}
+
+// addUsage adds one model call's usage to the pipeline's; a call that
+// failed still counts, with whatever usage it reported.
+func (p *Pipeline) addUsage(u *digest.Usage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.usage.calls++
+	if u != nil {
+		p.usage.in += u.InputTokens
+		p.usage.out += u.OutputTokens
+		p.usage.cost += u.CostUSD
+	}
 }
 
 // New constructs a Pipeline. lang is the workspace response language
@@ -94,7 +129,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 				return total, ctx.Err()
 			}
 			failed++
-			p.recordScanFailure(due[i].ID, now, err)
+			p.RecordFailure(due[i].ID, now, err)
 			continue
 		}
 		total += len(events)
@@ -117,9 +152,9 @@ func (p *Pipeline) HasDueTracks() (bool, error) {
 	return len(due) > 0, nil
 }
 
-// recordScanFailure logs a failed scan and charges it to the track's daily
+// RecordFailure logs a failed scan and charges it to the track's daily
 // budget, noting once when that failure spends the budget.
-func (p *Pipeline) recordScanFailure(trackID int, now time.Time, scanErr error) {
+func (p *Pipeline) RecordFailure(trackID int, now time.Time, scanErr error) {
 	p.logger.Printf("customtracks: track %d: %v", trackID, scanErr)
 	attempts, err := p.db.RecordCustomTrackScanFailure(trackID, now)
 	if err != nil {
@@ -193,24 +228,30 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 	// Forward runs feed recent activity directly; a backfill window holds too much
 	// to feed whole, so it goes through the cheap shortlist → extract retrieval.
 	var act db.ScanActivity
+	var extra []ExtraItem
 	var err error
 	if opts.isBackfill() {
 		act, err = p.gatherBackfillActivity(ctx, t, since)
 	} else {
 		act, err = p.db.GetScanActivity(since, until, defaultActivityLimit)
+		if err == nil {
+			extra, err = p.extraInWindow(t.ID, opts.extra, since, until)
+		}
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	// No new activity since the watermark: advance it and exit without an AI call.
-	if len(act.Digests) == 0 && len(act.Tracks) == 0 && len(act.Inbox) == 0 {
+	if len(act.Digests) == 0 && len(act.Tracks) == 0 && len(act.Inbox) == 0 && len(extra) == 0 {
 		return nil, p.db.SetTrackLastRun(t.ID, until)
 	}
 
 	// When a source hit the per-source cap the window was only partially read:
 	// advance the watermark to the last row actually loaded, not to now, so the
 	// overflow is picked up by the next run instead of being skipped forever.
+	// Recipe material in (CappedAt, until] is fed again by that next run; the
+	// summary dedup below keeps it from re-creating the same events.
 	next := until
 	if !opts.isBackfill() && act.CappedAt != "" {
 		next = act.CappedAt
@@ -218,10 +259,11 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 			t.ID, defaultActivityLimit, next)
 	}
 
-	user := buildScanPrompt(t, act)
+	user := buildScanPrompt(t, act, extra)
 	ctx2 := digest.WithSource(ctx, "customtrack.run")
 	sys := p.promptFor(prompts.TrackRun) + "\n\n" + prompts.Directive(p.lang)
-	raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
+	raw, u, _, err := p.gen.Generate(ctx2, sys, user, "")
+	p.addUsage(u)
 	if err != nil {
 		return nil, fmt.Errorf("custom-track AI call: %w", err)
 	}
@@ -321,7 +363,8 @@ func (p *Pipeline) gatherBackfillActivity(ctx context.Context, t db.Track, since
 		end := min(start+shortlistChunk, len(titles))
 		user := buildShortlistPrompt(t, titles[start:end], maxCandidates)
 		ctx2 := digest.WithSource(ctx, "customtrack.shortlist")
-		raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
+		raw, u, _, err := p.gen.Generate(ctx2, sys, user, "")
+		p.addUsage(u)
 		if err != nil {
 			return db.ScanActivity{}, fmt.Errorf("custom-track shortlist AI call: %w", err)
 		}
@@ -384,7 +427,8 @@ func (p *Pipeline) Compose(ctx context.Context, linkedTargetID int, input string
 	user := buildComposePrompt(target, input)
 	ctx2 := digest.WithSource(ctx, "customtrack.compose")
 	sys := p.promptFor(prompts.TrackCompose) + "\n\n" + prompts.Directive(p.lang)
-	raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
+	raw, u, _, err := p.gen.Generate(ctx2, sys, user, "")
+	p.addUsage(u)
 	if err != nil {
 		return ComposeResult{}, fmt.Errorf("custom-track compose AI call: %w", err)
 	}

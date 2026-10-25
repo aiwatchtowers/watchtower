@@ -191,8 +191,15 @@ func TestAuto08_ResumeAtSessionWait(t *testing.T) {
 // externalModule defines external(): a value from outside the journal (a
 // test-only call that writes no step), so a replay can see a different one.
 func externalModule(v *atomic.Int64) automations.Module {
+	return externalModuleCounting(v, new(atomic.Int64))
+}
+
+// externalModuleCounting is externalModule that also counts its calls in
+// reads, so a test knows the script runs (its meter started).
+func externalModuleCounting(v, reads *atomic.Int64) automations.Module {
 	return exModule{name: "external", fns: map[string]automations.SDKFunc{
 		"external": func(*automations.Env, goja.FunctionCall, *goja.Runtime) (any, error) {
+			reads.Add(1)
 			return v.Load(), nil
 		},
 	}}
@@ -440,16 +447,27 @@ const loopScript = `log("a"); if (external() > 0) { while (true) {} } ` + resume
 // replay reached the wait puts the run back to waiting (its ask open, this
 // life's active time recorded), and the next start resumes it.
 func TestAuto08_StopDuringReplayReturnsToWaiting(t *testing.T) {
-	var v atomic.Int64
-	w := newWriteFixtureWith(t, func(*exFixture) []automations.Module { return []automations.Module{externalModule(&v)} })
+	var v, reads atomic.Int64
+	w := newWriteFixtureWith(t, func(*exFixture) []automations.Module {
+		return []automations.Module{externalModuleCounting(&v, &reads)}
+	})
 	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox", loopScript)
 	id := w.enqueue(t, a, db.TriggerManual)
 	w.stopWhileWaiting(t, id)
 	before := w.run(t, id).ActiveMS
 	v.Store(1)
 	w.restart()
+	readsBefore := reads.Load()
 	stop := runExecutor(t, w.exFixture)
-	w.waitStatus(t, id, db.RunRunning)
+	// The claim marks the run running before its meter starts; the clock
+	// moves only once the replayed script calls external() (meter running).
+	deadline := time.Now().Add(10 * time.Second)
+	for reads.Load() == readsBefore {
+		if time.Now().After(deadline) {
+			t.Fatalf("the resumed script never ran (run is %s)", w.run(t, id).Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	w.clock.Advance(30 * time.Second)
 	stop()
 	r := w.wantRun(t, id, db.RunWaiting, "")
@@ -537,5 +555,62 @@ func TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed(t *testing.T) {
 			r := w.wantRun(t, id, db.RunFailed, db.ErrKindInterrupted)
 			mustContain(t, "error", r.Error, "so the run was not resumed")
 		})
+	}
+}
+
+// seedReplyWait seeds a workbench recipe with ask:owner and inbox:reply whose
+// script waits on an ask, queues a reply run of it and stops the executor
+// while the run waits.
+func (w *writeFixture) seedReplyWait(t *testing.T) (db.Automation, int64) {
+	t.Helper()
+	a := w.seedWorkbenchOutput(t, "triage", []string{"ask:owner", "inbox:reply"}, "inbox",
+		`log("a"); `+resumeAskCall+`; return trigger.kind + ":" + trigger.reply.value + ":" + trigger.reply.data.id`)
+	id := w.enqueueReply(t, a)
+	w.stopWhileWaiting(t, id)
+	return a, id
+}
+
+// TestAuto08_ResumedReplyRunKeepsTriggerReply: a resumed reply run sees the
+// same trigger.reply, rebuilt from its stored payload.
+func TestAuto08_ResumedReplyRunKeepsTriggerReply(t *testing.T) {
+	w := newWriteFixture(t)
+	a, id := w.seedReplyWait(t)
+	ask := w.onlyAsk(t, a.ProjectID)
+	w.restart()
+	stop := runExecutor(t, w.exFixture)
+	defer stop()
+	w.waitStatus(t, id, db.RunWaiting)
+	w.answerAsk(t, ask.ID)
+	w.e.Wake()
+	r := w.waitEnded(t, id)
+	if r.Status != db.RunSucceeded || r.Summary != "reply:backlog:A-1" {
+		t.Fatalf("run = %s/%s %q (%s); want succeeded reply:backlog:A-1", r.Status, r.ErrorKind, r.Summary, r.Error)
+	}
+}
+
+// TestAuto08_ResumedReplyRunIsCheckedForInboxReply: the inbox:reply check
+// runs on a resume too — a snapshot without the entry ends the resumed run
+// failed/permission before any of its script replays.
+func TestAuto08_ResumedReplyRunIsCheckedForInboxReply(t *testing.T) {
+	w := newWriteFixture(t)
+	_, id := w.seedReplyWait(t)
+	res, err := w.d.Exec(`UPDATE automation_runs SET recipe_snapshot = replace(recipe_snapshot, '  - inbox:reply'||char(10), '')
+		WHERE id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 || strings.Contains(w.run(t, id).RecipeSnapshot, "inbox:reply") {
+		t.Fatal("the snapshot still carries inbox:reply")
+	}
+	w.restart()
+	stop := runExecutor(t, w.exFixture)
+	defer stop()
+	r := w.waitEnded(t, id)
+	if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindPermission {
+		t.Fatalf("run = %s/%s (%s); want failed/permission", r.Status, r.ErrorKind, r.Error)
+	}
+	mustContain(t, "error", r.Error, "inbox:reply")
+	if got := stepSeqsAndKinds(w.steps(t, id)); got != "1:log:ok,2:ask:error" {
+		t.Fatalf("steps = %s; want nothing replayed", got)
 	}
 }

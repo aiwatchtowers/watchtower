@@ -80,6 +80,9 @@ func automationsAutoOn(cmd *cobra.Command, arg, toolName string) error {
 	if err != nil {
 		return err
 	}
+	if a.IsBuiltin() {
+		return errors.New(msgBuiltinNoAuto)
+	}
 	// The manifest checked below must be the one --hash pins: a recipe
 	// edited since the owner reviewed it is refused before it is parsed.
 	// SetAutomationToolGrant re-checks the hash in its own transaction.
@@ -147,6 +150,9 @@ func automationsAutoOff(cmd *cobra.Command, arg, toolName string) error {
 	a, err := resolveAutomation(database, arg, autoFlags.Workbench)
 	if err != nil {
 		return err
+	}
+	if a.IsBuiltin() {
+		return errors.New(msgBuiltinNoAuto)
 	}
 	removed, err := database.DeleteAutomationToolGrant(a.ID, toolName)
 	if err != nil {

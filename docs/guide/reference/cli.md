@@ -12,7 +12,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower version` | Version |
 | `watchtower workspace init` | Create the local workspace (data directory and database) |
 | `watchtower db migrate` | Apply database migrations |
-| `watchtower db compact` | Shrink the database file after an update freed space (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short unless `--force` |
+| `watchtower db compact` | Shrink the database file after an update freed space, first finishing a pending search index rebuild (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short (twice the file's size for compacting, 64 MiB for the rebuild) unless `--force` |
 | `watchtower backfill status` | Progress of the [history backfill](../concepts/history-backfill.md) per source |
 | `watchtower features list\|enable\|disable <id>` | [Feature switches](../concepts/features-on-and-off.md) |
 | `watchtower config` | Read and change configuration |
@@ -26,6 +26,8 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
 | `watchtower jira`, `linear`, `confluence` | Trackers and Confluence spaces |
+| `watchtower accounts purges` | Scheduled and finished deletions of a revoked or unreached account's data, newest first; `--json` for scripts. See [Revoked access](../concepts/revoked-access.md) |
+| `watchtower policy show` | The organization policy forced on this Mac; `--json` for scripts. See [Organization policy](organization-policy.md) |
 | `watchtower connections` | [Quick Connections](../features/quick-connections.md); `connections import` brings in your codex and Claude Code MCP servers |
 
 Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` exists on most (Outlook uses `logout`); `enable` / `disable` exist on Slack, Jira and Linear but not on Google, IMAP or CalDAV. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).
@@ -35,11 +37,11 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | Command | What it does |
 |---|---|
 | `watchtower catchup` | Run, list, show and acknowledge [Catch Up](../features/catch-up.md) recaps |
-| `watchtower briefing` | Today's [briefing](../features/briefings.md) |
-| `watchtower day-plan` | The [day plan](../features/day-plan.md) |
+| `watchtower briefing` | Today's [briefing](../features/briefings.md); `briefing generate` makes today's now, if there is none yet, through the Morning brief's current recipe, even with the feature off |
+| `watchtower day-plan` | The [day plan](../features/day-plan.md); `day-plan generate [--feedback <text>]` makes or redoes it the same way |
 | `watchtower inbox`, `remind <text>` | [Inbox](../features/inbox.md) and reminders |
 | `watchtower digest`, `decisions`, `ideas` | [Digests](../features/digests.md), decisions, [ideas](../features/ideas-and-decisions.md) |
-| `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md) |
+| `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md); `tracks start <id>` makes a track's watch, `tracks instruction <id> --text <t>` edits it |
 | `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
 | `watchtower meeting-prep [event-id\|next]` | Meeting preparation |
 | `watchtower ask "<question>"` | Ask the assistant a question from the terminal |
@@ -52,12 +54,16 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | Command | What it does |
 |---|---|
 | `watchtower automations` | [Automations](../features/automations.md): list, validate, run, enable, templates |
-| `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust |
+| `watchtower automations run morning-brief` | A [built-in automation](../features/automations-built-in.md) runs at the next sync, which starts at once; on a watch, `--since <date>` sets where the scan starts; `enable`, `disable`, `delete` and `auto` refuse a built-in and say what to use instead |
+| `watchtower automations reset <id>` | Put a built-in back on its shipped version, deleting your edited copy (asks you to confirm) |
+| `watchtower automations upgrade-builtins` | Retry moving your old settings and prompt edits into the built-ins and watches (the Inbox's **Retry**); refused in a coding agent's shell. Restart the daemon after "moved" |
+| `watchtower automations reply --output <id> --action <n>` | An Inbox card's Reply press: records it and queues one run; [Buttons on automation cards](../features/automations-inbox-buttons.md) |
+| `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust; `propose --approve` is the Inbox's own Apply press on a track's change |
 | `watchtower reaction-commands` | Slack emoji reactions that drive the assistant |
 
 ### Why the app asks you to confirm a command
 
-Some commands are yours alone: `actions approve` and `apply`, `actions trust … execute`, `automations confirm`, `enable`, `delete` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
+Some commands are yours alone: `actions approve`, `apply` and `propose --approve`, `actions trust … execute`, `tracks start`, `tracks instruction`, `automations confirm`, `enable`, `delete`, `reset`, `reply` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
 
 - The buttons in the app never ask: the app confirms its own commands.
 - With the app closed, the command is refused with **open Watchtower to confirm this**.

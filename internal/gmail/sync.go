@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -27,6 +28,9 @@ type Syncer struct {
 	// otherwise. Sync resets it; the daemon reads it via FirstSyncFrom to
 	// start a history backfill.
 	firstSyncFrom time.Time
+
+	// ownEmail is the account's own address, read once (fromOwner).
+	ownEmail string
 }
 
 // AccountID returns the google_accounts row this syncer serves.
@@ -245,7 +249,7 @@ func (s *Syncer) storeMessage(ctx context.Context, id string, syncedAt func(inte
 		IsUnread: m.IsUnread, Permalink: m.Permalink,
 	}
 	row.SyncedAt = syncedAt(m.InternalDate)
-	if err := s.db.UpsertGmailMessage(s.accountID, row); err != nil {
+	if err := s.db.UpsertGmailMessageMedia(ctx, s.accountID, row, s.fromOwner(m.FromEmail), mediaFound(m.Images)); err != nil {
 		return false, msgUnix, fmt.Errorf("upsert %s: %w", m.ID, err)
 	}
 	return true, msgUnix, nil
@@ -349,4 +353,41 @@ func isoToUnix(iso string) float64 {
 		return 0
 	}
 	return float64(t.Unix())
+}
+
+// fromOwner reports whether from is the account's own address. A failed
+// account read is retried on the next message.
+func (s *Syncer) fromOwner(from string) bool {
+	if s.ownEmail == "" {
+		acct, err := s.db.GetGoogleAccount(s.accountID)
+		if err != nil {
+			s.logger.Printf("gmail: reading account %d for its own address: %v", s.accountID, err)
+			return false
+		}
+		s.ownEmail = strings.TrimSpace(acct.Email)
+	}
+	return s.ownEmail != "" && strings.EqualFold(strings.TrimSpace(from), s.ownEmail)
+}
+
+// mediaFound turns a message's image parts into media rows (locator
+// part:<partID>). A part with a
+// Content-ID (an inline image) is named "cid:<id>", followed by " " and
+// its filename when it has one; the pass's mail junk rule reads the cid:
+// prefix. Mail links are never recorded.
+func mediaFound(images []ImagePart) []db.MediaFound {
+	out := make([]db.MediaFound, 0, len(images))
+	for _, im := range images {
+		name := mailImageName(im.Filename, im.ContentID)
+		out = append(out, db.MediaFound{Kind: "image", Locator: "part:" + im.PartID, Name: name,
+			MediaType: im.MediaType, Size: im.Size})
+	}
+	return out
+}
+
+// mailImageName is a mail image row's name (see mediaFound).
+func mailImageName(filename, contentID string) string {
+	if contentID == "" {
+		return filename
+	}
+	return strings.TrimSpace("cid:" + contentID + " " + filename)
 }

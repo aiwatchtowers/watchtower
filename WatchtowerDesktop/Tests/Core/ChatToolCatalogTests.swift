@@ -8,6 +8,24 @@ final class ChatToolCatalogTests: XCTestCase {
         XCTAssertEqual(ChatToolCatalog.label(name: "get_jira_issue", args: #"{"key":"PROJ-123"}"#), "Opened PROJ-123")
         XCTAssertEqual(ChatToolCatalog.label(name: "list_messages", args: #"{"person":"anna"}"#), "Searched Slack: anna")
         XCTAssertEqual(ChatToolCatalog.label(name: "load_skill", args: #"{"name":"triage"}"#), "Loaded skill triage")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_automation_runs", args: #"{"automation":"digest"}"#), "Listed automation runs")
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_automation_run", args: #"{"run_id":7}"#), "Opened a run")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_automations", args: #"{"query":"digest"}"#), "Listed automations")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_slack_channels", args: #"{"query":"acme"}"#), "Listed Slack channels")
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_automation", args: #"{"automation":"digest"}"#), "Opened a recipe")
+    }
+
+    func testEditorReadsHaveLabels() {
+        let expected = [
+            "list_inbox": "Listed Inbox cards", "list_emails": "Listed emails", "get_email": "Opened an email",
+            "list_calendar_events": "Listed calendar events", "list_meeting_recaps": "Listed meeting recaps",
+            "get_meeting_recap": "Opened a meeting recap", "list_meeting_notes": "Listed meeting notes",
+            "list_day_plans": "Listed day plans", "get_day_plan": "Opened a day plan",
+            "list_reminders": "Listed reminders", "list_jira_sprints": "Listed Jira sprints",
+            "list_jira_releases": "Listed Jira releases", "get_confluence_page": "Opened a Confluence page"
+        ]
+        for (name, label) in expected { XCTAssertEqual(ChatToolCatalog.label(name: name, args: "{}"), label, name) }
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_emails", args: #"{"query":"invoice"}"#), "Searched email: invoice")
     }
 
     func testWebSearchStep() {

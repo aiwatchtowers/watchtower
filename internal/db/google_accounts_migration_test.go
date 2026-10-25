@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestMigration00043GoogleAccounts covers the schema half: table exists,
@@ -82,7 +80,7 @@ func TestMigration00043_FreshDBHasNoSeedRow(t *testing.T) {
 // 'gmail:1:<thread>' form.
 func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

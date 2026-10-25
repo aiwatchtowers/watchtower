@@ -527,7 +527,7 @@ func renderedEmailWindow(msgs []db.GmailExtractMessage, renderedIDs map[string]b
 // ref instruction appended, so an IMAP mailbox's candidates are not all
 // rejected for refs the template told the model to write in another shape.
 func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, what, block, refPrefix string, renderedTags map[string]bool) ([]streamTopic, error) {
-	tmpl, _ := p.getPrompt(promptID)
+	tmpl := p.getPrompt(promptID, "")
 	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
 	if refPrefix != "" && !strings.Contains(tmpl, refPrefix) {
 		system += fmt.Sprintf("\n\nRef tags in this input start with %q: copy the tag in parentheses on the numbered line EXACTLY as the ref.", refPrefix)

@@ -1,0 +1,115 @@
+package auditlog
+
+import (
+	"encoding/json"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestLine_PinnedKeys(t *testing.T) {
+	line := Line(Event{
+		Proc: "mcp", Surface: "workbench", Session: "terminal:42", Workbench: 7,
+		Agent: "claude", Tool: "list_messages", Filters: []string{"person", "query"},
+		Rows: 200, Bytes: 61234, Calls: 17, RowsTotal: 2410, Result: ResultOK,
+	})
+	if !strings.HasPrefix(line, `{"v":1,"proc":`) {
+		t.Fatalf("line must start with v then proc: %s", line)
+	}
+	if strings.Contains(line, "\n") {
+		t.Fatalf("line must be one line: %q", line)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(line), &m); err != nil {
+		t.Fatalf("not JSON: %v (%s)", err, line)
+	}
+	want := []string{"v", "proc", "surface", "session", "workbench", "agent", "tool", "filters", "rows", "bytes", "calls", "rows_total", "result"}
+	got := make([]string, 0, len(m))
+	for k := range m {
+		got = append(got, k)
+	}
+	slices.Sort(got)
+	sortedWant := slices.Clone(want)
+	slices.Sort(sortedWant)
+	if !slices.Equal(got, sortedWant) {
+		t.Fatalf("keys = %v, want %v", got, sortedWant)
+	}
+	// Pinned order, too: each key appears after the previous one.
+	at := 0
+	for _, k := range want {
+		i := strings.Index(line[at:], `"`+k+`":`)
+		if i < 0 {
+			t.Fatalf("key %s out of order in %s", k, line)
+		}
+		at += i
+	}
+	if m["v"] != float64(1) {
+		t.Fatalf("v = %v, want 1", m["v"])
+	}
+}
+
+func TestLine_NilFiltersIsEmptyArray(t *testing.T) {
+	line := Line(Event{Tool: "x"})
+	if !strings.Contains(line, `"filters":[]`) {
+		t.Fatalf("nil filters must marshal as []: %s", line)
+	}
+	if strings.Contains(line, `"workbench"`) || strings.Contains(line, `"agent"`) {
+		t.Fatalf("unset workbench/agent are omitted: %s", line)
+	}
+}
+
+func TestRead_UsesProcessWhenProcEmpty(t *testing.T) {
+	var got []string
+	restore := SetSinkForTest(func(s string) { got = append(got, s) })
+	defer restore()
+	prev := process.Load()
+	defer process.Store(prev)
+	SetProcess("mcp")
+
+	Read(Event{Tool: "x"})
+	Read(Event{Proc: "cli:digest", Tool: "y"})
+	if len(got) != 2 {
+		t.Fatalf("lines = %d, want 2", len(got))
+	}
+	if !strings.Contains(got[0], `"proc":"mcp"`) {
+		t.Fatalf("empty Proc takes the process: %s", got[0])
+	}
+	if !strings.Contains(got[1], `"proc":"cli:digest"`) {
+		t.Fatalf("a set Proc wins: %s", got[1])
+	}
+}
+
+func TestLine_StaysUnderTheOSLogLimit(t *testing.T) {
+	long := strings.Repeat("\u2028\"<x>", 400)
+	names := make([]string, 50)
+	for i := range names {
+		names[i] = long
+	}
+	line := Line(Event{
+		Proc: long, Surface: long, Session: long, Workbench: 1<<63 - 1, Agent: long,
+		Tool: long, Filters: names, Rows: 1<<63 - 1, Bytes: 1<<63 - 1, Calls: 1<<63 - 1,
+		RowsTotal: 1<<63 - 1, Result: long,
+	})
+	if len(line) > 760 {
+		t.Fatalf("line is %d bytes; it must stay well under 1 KB: %s", len(line), line)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(line), &m); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if strings.ContainsAny(line, "<>\\") || strings.Contains(line, "\u2028") {
+		t.Fatalf("unsafe characters survive: %s", line)
+	}
+	if got := len(m["filters"].([]any)); got != maxFilters {
+		t.Fatalf("filters = %d, want %d", got, maxFilters)
+	}
+}
+
+func TestLine_KeepsOrdinaryNames(t *testing.T) {
+	line := Line(Event{Tool: "mcp:acme-docs/search.v2", Session: "terminal:42", Filters: []string{"person_id"}})
+	for _, want := range []string{`"tool":"mcp:acme-docs/search.v2"`, `"session":"terminal:42"`, `"filters":["person_id"]`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %s in %s", want, line)
+		}
+	}
+}

@@ -38,7 +38,7 @@ extension AppState {
             peopleRosterRun: peopleRosterRun,
             featureManager: FeatureManagerService(runner: featuresRunner),
             onboardingGoals: onboardingGoals?(defaults)
-        )
+        ) { [:] } // the managed policy: never this Mac's managed preferences
         appState.daemonControlOverride = FakeDaemon()
         appState.daemonStartQueue = DaemonStartQueue()
         appState.wireAppDatabaseOverride = { _ in }
@@ -167,7 +167,7 @@ struct NotDueCompactionCLI: CompactionCLI {
         )
     }
 
-    func startCompact() throws -> any CompactionChild {
+    func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild {
         throw Unexpected()
     }
 }

@@ -13,13 +13,17 @@ import (
 
 // ToolRegistry is the part of the tool registry the SDK calls: Get and
 // CallRead for reads, Propose for writes (ToolWriteModule), List for
-// agent()'s effective tool set (EffectiveAgentTools).
+// agent()'s effective tool set (EffectiveAgentTools), ReadExternal for
+// mcp()'s share of the read budget.
 // *tools.Registry satisfies it.
 type ToolRegistry interface {
 	Get(name string) (*tools.Tool, bool)
 	List(surface string) []*tools.Tool
 	CallRead(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (any, error)
 	Propose(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (tools.Receipt, error)
+	// ReadExternal runs an mcp() call inside the run's read budget
+	// (READ-01): counted like a company-data tool() read, one audit line.
+	ReadExternal(b tools.Binding, name string, fn func() (size int, err error)) error
 }
 
 var _ ToolRegistry = (*tools.Registry)(nil)
@@ -39,6 +43,14 @@ type Backends struct {
 	Workbench WorkbenchResolver
 	MCP       MCPCaller
 	Agent     AgentRunner
+	// Primitives implement the primitive calls (the built-ins' brief.compose,
+	// plan.compose, tracks.extract, ideas.consolidate, reaction.compose, and
+	// the watch recipes' track.scan), keyed by primitive name; a missing one
+	// throws NotAvailable.
+	Primitives map[string]PrimitiveFunc
+	// DefaultPrompt is builtin.defaultPrompt(name): the shipped default of a
+	// built-in's prompt for the owner's role; nil throws NotAvailable.
+	DefaultPrompt func(builtinID, name, role string) (string, error)
 }
 
 // AgentRequest is one agent() call (P6, spec §6.5) as its runner gets it.

@@ -18,8 +18,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Skips the push-triggered run when the branch has an open PR — the
-  # pull_request-triggered run of the same commit does the work instead.
+  # Skips the push-triggered run only when the pull_request-triggered run of
+  # the same commit on the same branch exists (not cancelled) — it does the
+  # work instead. A conflicting PR gets no pull_request run at all, and one
+  # sometimes never fires, so a push run with an open PR waits up to ~2 min
+  # for that run and goes ahead without it; any gh/API error also lets the
+  # run go ahead (fail-open). See scripts/ci-dedupe-gate.sh.
   # On a pull request it also says which jobs the change can affect:
   #   code   — anything but docs: Go and Swift test each other (Swift Test
   #            builds the CLI, Go tests read Swift sources and the generated
@@ -30,8 +34,9 @@ jobs:
   # A push (main included) and workflow_dispatch always run everything.
   gate:
     name: Dedupe gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
@@ -59,19 +64,18 @@ jobs:
             guide:
               - 'docs/guide/**'
 
+      # Only the gate script: the job stays a few seconds long.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/ci-dedupe-gate.sh
+          sparse-checkout-cone-mode: false
+
+      # scripts/ci-dedupe-gate.sh, tested by scripts/tests/test-ci-dedupe-gate.sh.
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_NAME}" != "main" ]; then
-            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${GITHUB_REF_NAME}" --state open --json number --jq length)
-            if [ "$open_prs" -gt 0 ]; then
-              echo "branch has an open PR — the pull_request run covers this commit"
-              echo "run=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          echo "run=true" >> "$GITHUB_OUTPUT"
+          EVENT: ${{ github.event_name }}
+        run: bash scripts/ci-dedupe-gate.sh
 
   # The user guide is a Go package (docs/guide): its links, anchors and page
   # sizes are checked by its tests. Runs on its own, so a guide-only PR gets
@@ -80,13 +84,19 @@ jobs:
     name: Guide Check
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.guide == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Guide check
         # internal/chat pins guide.Map() in the prompt golden and internal/kb
@@ -97,13 +107,19 @@ jobs:
     name: Go Lint
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
@@ -119,7 +135,7 @@ jobs:
     name: Leak Check
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -173,7 +189,7 @@ jobs:
     name: Go Test
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail the job, not run to GitHub's 6 h default. Measured
     # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
     timeout-minutes: 60
@@ -183,6 +199,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Build
         run: go build ./...
@@ -204,7 +226,7 @@ jobs:
   # timed out; two shards then put tools, kb and db on one runner and timed
   # out at 25 m), each shard runs ~a third of the packages (`make test-race
   # SHARD=K/3` — the split and how to rebalance it live there).
-  # Race-instrumented pure-Go sqlite is ~10x slower, so the race pass runs
+  # The race-instrumented suite is many times slower, so the race pass runs
   # only on pushes to main (i.e. per merged PR — a one-PR bisect window), on
   # a manual workflow_dispatch (so a branch can prove it before merging), and
   # in the release workflow, keeping feature-branch CI fast. -timeout is per
@@ -218,7 +240,7 @@ jobs:
     name: Go Test (race ${{ matrix.shard }}/3)
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # Both shards report: one shard's race must not hide the other's.
       fail-fast: false
@@ -232,6 +254,12 @@ jobs:
         with:
           go-version: "1.26.9"
 
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
+
       - name: Test (race, library packages)
         timeout-minutes: 30
         run: make test-race SHARD=${{ matrix.shard }}/3
@@ -243,7 +271,7 @@ jobs:
     name: Code index changes
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -275,7 +303,7 @@ jobs:
     name: Code Index (full grammars)
     needs: [gate, codeindex-changes]
     if: needs.gate.outputs.run == 'true' && needs.codeindex-changes.outputs.codeindex == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -283,6 +311,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (full grammar set)
         run: make test-codeindex-full
@@ -422,6 +456,8 @@ jobs:
         timeout-minutes: 25
         env:
           LANE_TIMEOUT: "600"
+          # SQLCipherInteropTests fail instead of skipping without Go (#603).
+          WATCHTOWER_REQUIRE_GO: "1"
         run: ../scripts/swift-test-sharded.sh 3
 
       # The process-spawning suites again on a one-thread concurrency pool,
@@ -430,6 +466,14 @@ jobs:
         timeout-minutes: 10
         working-directory: .
         run: make test-swift-strict-pool
+
+      # The code viewer's and Branch review's editor pages (index.html,
+      # diff.html) in a headless WKWebView against the pinned Monaco build,
+      # which is gitignored: fetched (checksummed) first.
+      - name: Editor bridge check
+        timeout-minutes: 10
+        working-directory: .
+        run: scripts/fetch-monaco.sh && make editor-bridge-check
 
   # Drops the main SPM build caches the latest main push replaced: one ~2 GB
   # entry against the repo's 10 GB cache. Its own job so actions: write (cache
@@ -441,7 +485,7 @@ jobs:
     # still leaves a new entry behind; the KEEP guard below covers a run that
     # never saved one.
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.swift-test.outputs.spm-key != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: write
     steps:

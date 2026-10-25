@@ -22,11 +22,11 @@ Details: [Home](../features/home.md). A tab that stays empty is explained on [A 
 
 By now the sync has had time to write something for you.
 
-- **Try:** open **Briefings**. The first one on a new install skips the 08:00 hour, so it may already be there from Day 1.
-- **See:** one morning read with **Needs Attention**, **Your Day** and **What Happened**, each line linking to its source.
-- **Needs:** **Daily Briefing** on, and Slack, Google, Jira, Linear or an email account connected so Watchtower knows who you are.
+- **Try:** open **Inbox**. The first briefing on a new install skips the 08:00 hour, so it may already be there from Day 1.
+- **See:** the **Your day** card on top: today's plan, then one morning read with **Needs you**, **Your day** and **What happened**, each line linking to its source.
+- **Needs:** **Morning brief** on (Automations → **Built in**), and Slack, Google, Jira, Linear or an email account connected so Watchtower knows who you are.
 
-No briefing yet? **Generate Briefing** in the empty tab builds one now. Details: [Briefings](../features/briefings.md).
+No briefing yet? Press **Make today's brief and plan** on today's **Your day** card to build both now. Details: [Briefings](../features/briefings.md) and [Inbox](../features/inbox.md).
 
 ## Day 2: catch up after being away
 
@@ -45,7 +45,7 @@ Stuck at any point? Press **⌘/** on any tab to ask the assistant, or use **Hel
 Now start your own list.
 
 - **Try:** in **Targets**, press **⌘N**, write a promise you made and press **Enter**. Then react with :white_check_mark: to a Slack message you owe a reply on.
-- **See:** your target with a suggested **NEXT STEP**. The reaction arrives as a proposal in **Inbox**, and the target appears in Targets after you click **Approve**.
+- **See:** your target with a suggested **NEXT STEP**. The reaction arrives as a proposal under **Needs your decision** in **Inbox**, and the target appears in Targets after you click **Approve**.
 - **Needs:** the daemon running for next steps; Slack and **Reaction Commands** (on by default) for the reaction.
 
 Details: [Targets](../features/targets.md) and [Inbox](../features/inbox.md).
@@ -82,8 +82,8 @@ Details: [Workbench](../features/workbench/README.md).
 
 Once you do something weekly, let the daemon do it.
 
-- **Try:** open **Automations**, click **+ New**, choose **Describe in words** and ask for a weekly summary of something you check by hand.
-- **See:** a draft you can **Dry run**, which writes nothing, then a confirmation sheet. Every run has a token and time budget.
+- **Try:** open **Automations**, click **+**, pick **Personal**, choose **Describe it in words** and ask for a weekly summary of something you check by hand.
+- **See:** a draft you can **Dry Run**, which writes nothing, then a column listing everything saving would confirm. Every run has a token and time budget.
 - **Needs:** the daemon running and your confirmation; a recipe never runs before it.
 
 Details: [Automations](../features/automations.md).

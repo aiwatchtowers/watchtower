@@ -940,3 +940,91 @@ extension FeatureManagerServiceTests {
         ])
     }
 }
+
+// MARK: - disableNow() — a built-in's Turn Off (C2)
+
+extension FeatureManagerServiceTests {
+    @Test("disableNow() writes only the named keys still on and restarts once (FEAT-04)")
+    func testDisableNowWritesOnlyNamedKeysAndRestartsOnce() async {
+        let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+        service.setPending("memory", enabled: true)
+        service.applyWithDependents.insert("ideas")
+        let spy = RestartSpy()
+
+        // "ideas" is on, "tracks" already off, "dashboard" core.
+        let result = await service.disableNow(["ideas", "tracks", "dashboard"]) { await spy.restart() }
+
+        #expect(runner.invocations == [
+            ["features", "list", "--json"],
+            ["features", "list", "--json"],
+            ["features", "disable", "ideas"],
+            ["features", "list", "--json"]
+        ], "never --with-dependents, never anything staged in Settings")
+        #expect(result.disabled == ["ideas"])
+        #expect(result.restarted)
+        #expect(!result.busy)
+        #expect(spy.callCount == 1)
+        #expect(service.pending == ["memory": true])
+        #expect(service.applyWithDependents.isEmpty, "the consent was for the disable that just landed")
+        #expect(service.loadError == nil)
+        #expect(service.isApplying == false)
+    }
+
+    @Test("disableNow() with nothing on writes nothing and does not restart")
+    func disableNowSkipsFeaturesAlreadyOff() async {
+        let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
+        let spy = RestartSpy()
+
+        let result = await service.disableNow(["tracks", "memory"]) { await spy.restart() }
+
+        #expect(runner.invocations == [["features", "list", "--json"]])
+        #expect(result.disabled.isEmpty)
+        #expect(spy.callCount == 0)
+    }
+
+    @Test("disableNow() surfaces a failed disable via loadError and skips the restart")
+    func disableNowSurfacesFailure() async {
+        let runner = NthCallFailingRunner(
+            failOnCall: 2,
+            error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom: config locked"),
+            stdout: Data(Self.featuresListJSON.utf8)
+        )
+        let service = FeatureManagerService(runner: runner)
+        let spy = RestartSpy()
+
+        let result = await service.disableNow(["ideas"]) { await spy.restart() }
+
+        #expect(result.disabled.isEmpty)
+        #expect(spy.callCount == 0)
+        #expect(service.loadError?.contains("boom: config locked") == true)
+        #expect(service.isApplying == false)
+    }
+
+    @Test("Settings → Features hides the rows the C3 built-ins took over (tracks, ideas, reaction-commands)")
+    func testSettingsHidesC3FeatureRows() async throws {
+        func row(_ id: String, parent: String = "") -> String {
+            """
+            {"id":"\(id)","title":"\(id)","description":"","tagline":"","benefits":[],"icon":"","state":"enabled",
+             "core":false,"parent":"\(parent)","config_key":"\(id).enabled","cost":"light","feeds_into":[],"sub_toggles":[]}
+            """
+        }
+        let ids = ["slack-digests", "tracks", "ideas", "reaction-commands", "briefing", "day-plan", "memory"]
+        let json = #"{"features":["# + (ids.map { row($0) } + [row("stream-digests", parent: "slack-digests")])
+            .joined(separator: ",") + "]}"
+        let (service, _) = Self.makeService(stdout: json)
+        await service.load()
+        #expect(service.features.count == 8)
+
+        #expect(FeatureManagerSection.listed(service.features).map(\.id) == ["slack-digests", "memory"])
+        #expect(FeatureManagerSection.listed(service.features, parent: "slack-digests").map(\.id) == ["stream-digests"])
+        #expect(BuiltinFeaturesPointer.title == "Briefing, Day Plan, Tracks, Ideas and Reaction commands")
+        // The ideas interval moved to Idea finder's card: no Ideas tuning section left.
+        let settings = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Views/Settings/FeaturesSettings.swift")
+        let source = try String(contentsOf: settings, encoding: .utf8)
+        #expect(!source.contains("ideasMineIntervalHours"))
+    }
+}

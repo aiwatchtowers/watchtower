@@ -16,6 +16,13 @@ private final class ClosureCLIRunner: CLIRunnerProtocol {
         invocations.append(args)
         return try await onRun(args)
     }
+
+    func run(args: [String], stdin: Data) async throws -> Data {
+        stdinInputs.append(stdin)
+        return try await run(args: args)
+    }
+
+    private(set) var stdinInputs: [Data] = []
 }
 
 final class TranscriptSaveServiceTests: XCTestCase {
@@ -25,6 +32,18 @@ final class TranscriptSaveServiceTests: XCTestCase {
     """
 
     // MARK: - save: argument construction
+
+    /// The `--stdin` object the save sent, decoded.
+    private func payload(_ fake: FakeCLIRunner) throws -> [String: Any] {
+        let data = try XCTUnwrap(fake.stdinInputs.first, "save sends its object on stdin")
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// The JSON text of one payload key; nil for null.
+    private func json(_ value: Any?) throws -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        return String(bytes: try JSONSerialization.data(withJSONObject: value), encoding: .utf8)
+    }
 
     func test_saveArgOrderWithAllFlags() async throws {
         let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
@@ -39,28 +58,16 @@ final class TranscriptSaveServiceTests: XCTestCase {
             langStatsJSON: "{\"ru\":0.8}"
         )
 
-        guard let args = fake.invocations.first else {
-            return XCTFail("no invocation recorded")
-        }
-        // ["meeting-prep","transcript","save","--transcript-file",<path>,
-        //  "--audio","/tmp/a.wav","--duration","1800","--event-id","evt-1",
-        //  "--title","Weekly","--lang-stats","{\"ru\":0.8}"]
-        XCTAssertEqual(args.count, 15)
-        XCTAssertEqual(args[0], "meeting-prep")
-        XCTAssertEqual(args[1], "transcript")
-        XCTAssertEqual(args[2], "save")
-        XCTAssertEqual(args[3], "--transcript-file")
-        XCTAssertFalse(args[4].isEmpty)
-        XCTAssertEqual(args[5], "--audio")
-        XCTAssertEqual(args[6], "/tmp/a.wav")
-        XCTAssertEqual(args[7], "--duration")
-        XCTAssertEqual(args[8], "1800")
-        XCTAssertEqual(args[9], "--event-id")
-        XCTAssertEqual(args[10], "evt-1")
-        XCTAssertEqual(args[11], "--title")
-        XCTAssertEqual(args[12], "Weekly")
-        XCTAssertEqual(args[13], "--lang-stats")
-        XCTAssertEqual(args[14], "{\"ru\":0.8}")
+        // #604 S7: the transcript rides stdin (`--stdin`), never a temp file.
+        XCTAssertEqual(fake.invocations.first, [
+            "meeting-prep", "transcript", "save", "--stdin",
+            "--audio", "/tmp/a.wav", "--duration", "1800", "--event-id", "evt-1",
+            "--title", "Weekly", "--lang-stats", "{\"ru\":0.8}"
+        ])
+        let sent = try payload(fake)
+        XCTAssertEqual(sent["transcript"] as? String, "hello transcript")
+        XCTAssertNil(try json(sent["segments"]))
+        XCTAssertNil(try json(sent["speakers"]))
     }
 
     func test_saveOmitsOptionalFlagsWhenNil() async throws {
@@ -76,39 +83,21 @@ final class TranscriptSaveServiceTests: XCTestCase {
             langStatsJSON: "{}"
         )
 
-        guard let args = fake.invocations.first else {
-            return XCTFail("no invocation recorded")
-        }
-        XCTAssertFalse(args.contains("--event-id"))
-        XCTAssertFalse(args.contains("--title"))
-        // ["meeting-prep","transcript","save","--transcript-file",<path>,
-        //  "--audio","/tmp/a.wav","--duration","60","--lang-stats","{}"]
-        XCTAssertEqual(args.count, 11)
-        XCTAssertEqual(args[9], "--lang-stats")
-        XCTAssertEqual(args[10], "{}")
+        XCTAssertEqual(fake.invocations.first, [
+            "meeting-prep", "transcript", "save", "--stdin",
+            "--audio", "/tmp/a.wav", "--duration", "60", "--lang-stats", "{}"
+        ])
     }
 
-    // MARK: - save: segments file
+    // MARK: - save: segments
 
-    func test_saveWritesSegmentsFileNextToTranscript() async throws {
+    func test_saveSendsSegmentsInThePayload() async throws {
         let utterances = [
             TranscriptUtterance(idx: 0, startSec: 0, endSec: 2, speaker: "Я", text: "привет"),
             TranscriptUtterance(idx: 1, startSec: 2, endSec: 5, speaker: "Speaker 1", text: "ответ")
         ]
-        let envelope = Data(envelopeJSON.utf8)
-        var segmentsContentDuringRun: String?
-        var segmentsPathDuringRun: String?
-        let runner = ClosureCLIRunner { args in
-            guard let idx = args.firstIndex(of: "--segments-file"), args.indices.contains(idx + 1) else {
-                XCTFail("--segments-file flag missing")
-                return envelope
-            }
-            let path = args[idx + 1]
-            segmentsPathDuringRun = path
-            segmentsContentDuringRun = try String(contentsOfFile: path, encoding: .utf8)
-            return envelope
-        }
-        let svc = TranscriptSaveService(runner: runner)
+        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
+        let svc = TranscriptSaveService(runner: fake)
 
         _ = try await svc.save(
             transcriptText: "[Я] привет\n[Speaker 1] ответ",
@@ -120,112 +109,53 @@ final class TranscriptSaveServiceTests: XCTestCase {
             langStatsJSON: "{}"
         )
 
-        let content = try XCTUnwrap(segmentsContentDuringRun)
-        XCTAssertEqual(TranscriptSegments.decode(content), utterances,
-                       "the segments file must round-trip the utterances")
-        let path = try XCTUnwrap(segmentsPathDuringRun)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: path),
-                       "the temp segments file must be removed after save")
+        let segments = try XCTUnwrap(try json(try payload(fake)["segments"]))
+        XCTAssertEqual(TranscriptSegments.decode(segments), utterances, "the segments round-trip the utterances")
     }
 
-    func test_saveOmitsSegmentsFileWhenUtterancesNil() async throws {
-        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
-        let svc = TranscriptSaveService(runner: fake)
-
-        _ = try await svc.save(
-            transcriptText: "plain",
-            utterances: nil,
-            audioPath: "/tmp/a.wav",
-            durationSec: 60,
-            eventID: nil,
-            title: nil,
-            langStatsJSON: "{}"
-        )
-
-        let args = try XCTUnwrap(fake.invocations.first)
-        XCTAssertFalse(args.contains("--segments-file"))
-    }
-
-    func test_saveOmitsSegmentsFileWhenUtterancesEmpty() async throws {
-        // Degenerate but valid: an empty utterance array must behave like nil
-        // (no --segments-file), never ship an empty JSON array the CLI would
-        // reject and warn about.
-        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
-        let svc = TranscriptSaveService(runner: fake)
-
-        _ = try await svc.save(
-            transcriptText: "plain",
-            utterances: [],
-            audioPath: "/tmp/a.wav",
-            durationSec: 60,
-            eventID: nil,
-            title: nil,
-            langStatsJSON: "{}"
-        )
-
-        let args = try XCTUnwrap(fake.invocations.first)
-        XCTAssertFalse(args.contains("--segments-file"))
-    }
-
-    // MARK: - save: temp file lifecycle
-
-    func test_saveTranscriptFileExistsDuringRunAndIsRemovedAfter() async throws {
-        let envelope = Data(envelopeJSON.utf8)
-        var contentDuringRun: String?
-        var pathDuringRun: String?
-        let runner = ClosureCLIRunner { args in
-            guard let idx = args.firstIndex(of: "--transcript-file"),
-                  args.indices.contains(idx + 1) else {
-                XCTFail("--transcript-file flag missing")
-                return envelope
-            }
-            let path = args[idx + 1]
-            pathDuringRun = path
-            contentDuringRun = try String(contentsOfFile: path, encoding: .utf8)
-            return envelope
+    func test_saveSendsNoSegmentsWhenUtterancesNilOrEmpty() async throws {
+        // Degenerate but valid: an empty utterance array behaves like nil,
+        // never an empty JSON array the CLI would reject and warn about.
+        for utterances in [nil, [TranscriptUtterance]()] {
+            let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
+            _ = try await TranscriptSaveService(runner: fake).save(
+                transcriptText: "plain", utterances: utterances, audioPath: "/tmp/a.wav", durationSec: 60,
+                eventID: nil, title: nil, langStatsJSON: "{}")
+            XCTAssertNil(try json(try payload(fake)["segments"]))
         }
-        let svc = TranscriptSaveService(runner: runner)
-
-        _ = try await svc.save(
-            transcriptText: "the full transcript body",
-            audioPath: "/tmp/a.wav",
-            durationSec: 5,
-            eventID: nil,
-            title: nil,
-            langStatsJSON: "{}"
-        )
-
-        XCTAssertEqual(contentDuringRun, "the full transcript body")
-        let path = try XCTUnwrap(pathDuringRun)
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: path),
-            "temp transcript file must be removed after save"
-        )
     }
 
-    func test_saveRemovesTempFileWhenRunnerThrows() async {
-        var pathDuringRun: String?
-        let runner = ClosureCLIRunner { args in
-            if let idx = args.firstIndex(of: "--transcript-file"), args.indices.contains(idx + 1) {
-                pathDuringRun = args[idx + 1]
-            }
-            throw CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
-        }
-        let svc = TranscriptSaveService(runner: runner)
+    // MARK: - save: no temp files
 
+    func test_saveWritesNoTempFile() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+        let before = Set(try FileManager.default.contentsOfDirectory(atPath: tmp.path))
+        var newDuringRun: Set<String> = []
+        let runner = ClosureCLIRunner { _ in
+            let now = Set(try FileManager.default.contentsOfDirectory(atPath: tmp.path))
+            newDuringRun = now.subtracting(before).filter { name in
+                StaleTempSweep.prefixes.contains { name.hasPrefix($0) }
+            }
+            return Data(self.envelopeJSON.utf8)
+        }
+        _ = try await TranscriptSaveService(runner: runner).save(
+            transcriptText: "the full transcript body", audioPath: "/tmp/a.wav", durationSec: 5,
+            eventID: nil, title: nil, langStatsJSON: "{}")
+        XCTAssertEqual(newDuringRun, [], "nothing of the transcript lands in the temp directory")
+        let sent = try XCTUnwrap(runner.stdinInputs.first)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: sent) as? [String: Any])
+        XCTAssertEqual(object["transcript"] as? String, "the full transcript body")
+    }
+
+    func test_saveThrowsWhenRunnerThrows() async {
+        let runner = ClosureCLIRunner { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "boom") }
         do {
-            _ = try await svc.save(
+            _ = try await TranscriptSaveService(runner: runner).save(
                 transcriptText: "x", audioPath: "/tmp/a.wav", durationSec: 1,
-                eventID: nil, title: nil, langStatsJSON: "{}"
-            )
+                eventID: nil, title: nil, langStatsJSON: "{}")
             XCTFail("expected throw")
         } catch {
             // expected
-        }
-        if let path = pathDuringRun {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: path))
-        } else {
-            XCTFail("runner never saw --transcript-file")
         }
     }
 
@@ -456,29 +386,15 @@ final class TranscriptSaveServiceTests: XCTestCase {
         }
     }
 
-    // MARK: - speakers file (voice embeddings)
+    // MARK: - speakers (voice embeddings)
 
-    func test_saveWritesSpeakersFileWhenEmbeddingsPresent() async throws {
+    func test_saveSendsSpeakersWhenEmbeddingsPresent() async throws {
         let speakers = [
             SpeakerEmbedding(speaker: "Я", embedding: [0, 1]),
             SpeakerEmbedding(speaker: "Speaker 1", embedding: [1, 0])
         ]
-        let envelope = Data(envelopeJSON.utf8)
-        var speakersContentDuringRun: String?
-        var speakersPathDuringRun: String?
-        let runner = ClosureCLIRunner { args in
-            guard let idx = args.firstIndex(of: "--speakers-file"), args.indices.contains(idx + 1) else {
-                XCTFail("--speakers-file flag missing")
-                return envelope
-            }
-            let path = args[idx + 1]
-            speakersPathDuringRun = path
-            speakersContentDuringRun = try String(contentsOfFile: path, encoding: .utf8)
-            return envelope
-        }
-        let svc = TranscriptSaveService(runner: runner)
-
-        _ = try await svc.save(
+        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
+        _ = try await TranscriptSaveService(runner: fake).save(
             transcriptText: "[Я] привет\n[Speaker 1] ответ",
             utterances: [
                 TranscriptUtterance(idx: 0, startSec: 0, endSec: 2, speaker: "Я", text: "привет"),
@@ -491,30 +407,15 @@ final class TranscriptSaveServiceTests: XCTestCase {
             title: nil,
             langStatsJSON: "{}"
         )
-
-        let content = try XCTUnwrap(speakersContentDuringRun)
-        XCTAssertEqual(SpeakerEmbeddings.decode(content), speakers,
-                       "the speakers file must round-trip the embeddings")
-        let path = try XCTUnwrap(speakersPathDuringRun)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: path),
-                       "the temp speakers file must be removed after save")
+        let sent = try XCTUnwrap(try json(try payload(fake)["speakers"]))
+        XCTAssertEqual(SpeakerEmbeddings.decode(sent), speakers, "the speakers round-trip the embeddings")
     }
 
-    func test_saveOmitsSpeakersFileWhenNil() async throws {
+    func test_saveSendsNoSpeakersWhenNil() async throws {
         let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
-        let svc = TranscriptSaveService(runner: fake)
-
-        _ = try await svc.save(
-            transcriptText: "hello",
-            audioPath: "/tmp/a.wav",
-            durationSec: 1,
-            eventID: nil,
-            title: nil,
-            langStatsJSON: "{}"
-        )
-
-        let args = try XCTUnwrap(fake.invocations.first)
-        XCTAssertFalse(args.contains("--speakers-file"),
-                       "nil speakers → no flag, legacy behavior")
+        _ = try await TranscriptSaveService(runner: fake).save(
+            transcriptText: "hello", audioPath: "/tmp/a.wav", durationSec: 1,
+            eventID: nil, title: nil, langStatsJSON: "{}")
+        XCTAssertNil(try json(try payload(fake)["speakers"]), "nil speakers → null, legacy behavior")
     }
 }

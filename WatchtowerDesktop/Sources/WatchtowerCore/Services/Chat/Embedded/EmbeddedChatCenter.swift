@@ -97,6 +97,37 @@ package final class EmbeddedChatCenter {
         remove(key, quietly: false)
     }
 
+    /// Lets go of `key`'s engine once it is idle: a running or queued turn
+    /// ends by itself first (never cut short) and its writes land, then the
+    /// engine is dropped. A saved draft's chat moves to the automation's key
+    /// only after this, so one conversation never has two engines (spec
+    /// 2026-10-24 §4).
+    package func releaseWhenIdle(_ key: EmbeddedChatKey) async {
+        while let engine = engines[key], engine.isBusy || engine.isFinishing {
+            await Self.nextChange(of: engine)
+        }
+        guard let engine = engines[key] else { return }
+        await engine.finished()
+        // Another turn may have started while the writes landed.
+        if engine.isBusy || engine.isFinishing {
+            await releaseWhenIdle(key)
+            return
+        }
+        if engines[key] === engine { remove(key, quietly: false) }
+    }
+
+    /// Returns at the engine's next change of busy state.
+    private static func nextChange(of engine: EmbeddedChatEngine) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            withObservationTracking {
+                _ = engine.isBusy
+                _ = engine.isFinishing
+            } onChange: {
+                continuation.resume()
+            }
+        }
+    }
+
     /// App quit: every running reply keeps what streamed, as `partial`. The
     /// queued turns are withdrawn first, so a slot freed here never starts
     /// one — their text comes back as a draft after the restart.

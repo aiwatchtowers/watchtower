@@ -952,7 +952,7 @@
 			mainGroup = 4BBAEC9D313266F0A1986AE4;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				DA3BC80CE33AA1AD726F3AA6 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 				163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -1571,12 +1571,12 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+		DA3BC80CE33AA1AD726F3AA6 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/groue/GRDB.swift";
+			repositoryURL = "https://github.com/aiwatchtowers/GRDB.swift";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 7.0.0;
+				kind = exactVersion;
+				version = "7.11.1-sqlcipher.2";
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -1592,7 +1592,7 @@
 		};
 		5CF9E51BB968298C0AAB2FD5 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			package = DA3BC80CE33AA1AD726F3AA6 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
 			productName = GRDB;
 		};
 		5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */ = {
@@ -1605,7 +1605,7 @@
 		};
 		73828104AEDF42B7DD8514E7 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			package = DA3BC80CE33AA1AD726F3AA6 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
 			productName = GRDB;
 		};
 		82E2DC2033E6312FAD9B717C /* WatchtowerSync */ = {

@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/guide"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/ui"
 
@@ -418,14 +419,14 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 			final.PeriodTo = pipe.LastStepPeriodTo.Format(time.RFC3339)
 		}
 		if err != nil {
-			final.Error = err.Error()
+			final.Error = logredact.Full(err)
 		}
 		emit(final)
 
 		if runID > 0 {
 			var errMsg string
 			if err != nil {
-				errMsg = err.Error()
+				errMsg = logredact.Full(err)
 			}
 			_ = database.CompletePipelineRun(runID, n, inTok, outTok, cost, totalAPI, nil, nil, errMsg)
 		}
@@ -466,7 +467,7 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(out)
 	if err != nil {
 		if runID > 0 {
-			_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+			_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, logredact.Full(err))
 		}
 		return fmt.Errorf("people card pipeline: %w", err)
 	}

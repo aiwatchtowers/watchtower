@@ -39,19 +39,9 @@ package struct AutomationDryRunSessions: Equatable, Sendable {
 }
 
 /// The words of the Automations tab (spec §12.1–12.2, approved mockup 1):
-/// list rows, the card's subtitle, **It may**, **Limits per run**, the
+/// list rows, **It may**, **Limits per run**, the
 /// History lines and which buttons are live. Pure, so the views stay thin.
 package enum AutomationCardPresentation {
-    package struct Pill: Equatable, Sendable {
-        package let text: String
-        package let badge: StatusBadge
-
-        package init(text: String, badge: StatusBadge) {
-            self.text = text
-            self.badge = badge
-        }
-    }
-
     package struct PermissionLine: Equatable, Sendable {
         package let text: String
         /// In `show --json`'s `widening`: not covered by the confirmation.
@@ -163,12 +153,6 @@ package enum AutomationCardPresentation {
         }
     }
 
-    /// The status pill of a row without badges: the active run's, else the last run's.
-    package static func statusPill(_ item: AutomationListItem) -> Pill? {
-        guard let run = item.activeRun ?? item.lastRun else { return nil }
-        return Pill(text: statusText(run.status), badge: run.status.badge)
-    }
-
     package static func statusText(_ status: AutomationRunStatus) -> String {
         switch status {
         case .queued: "Queued"
@@ -183,23 +167,7 @@ package enum AutomationCardPresentation {
         }
     }
 
-    package static func badgeText(_ badge: AutomationRowBadge) -> String {
-        switch badge {
-        case .needsConfirmation: "Needs your confirmation"
-        case .autoPaused: "Auto paused"
-        case .disabled: "Disabled"
-        case .parseError: "Parse error"
-        }
-    }
-
     // MARK: - Card
-
-    /// "<schedule in words> · <personal | workbench name> · <enabled | disabled>".
-    package static func subtitle(_ automation: Automation, workbenchName: String?) -> String {
-        let when = AutomationTriggerText.sentence(kind: automation.triggerKind, specJSON: automation.triggerSpecJSON)
-        let scope = automation.scope == .personal ? "personal" : (workbenchName ?? "workbench")
-        return [when, scope, automation.enabled ? "enabled" : "disabled"].joined(separator: " · ")
-    }
 
     /// **Limits per run**.
     package static func limitsLines(_ automation: Automation) -> [String] {
@@ -258,16 +226,30 @@ package enum AutomationCardPresentation {
             ?? permission
     }
 
-    /// Shown in the confirm sheet when the recipe has `shell:` entries (board #560, ask #304): the
-    /// confirmation covers the command text only, not the files the command runs. nil without `shell:`.
+    /// Shown in the draft column's It may box, on every screen that confirms, when the recipe has
+    /// `shell:` entries (board #560, ask #304): the confirmation covers the command text only, not the
+    /// files the command runs. nil without `shell:`.
     package static func shellWarning(permissions: [String]) -> String? {
         guard permissions.contains(where: { $0.hasPrefix("shell:") }) else { return nil }
         return "Confirming approves the command text only. The scripts or Makefile it runs can change "
             + "later (for example when the repository is updated) and will then run unattended without asking again."
     }
 
-    /// `tool:`, `mcp:` and `shell:` entries.
+    /// A built-in's engine primitives (`builtin:<name>`), twin of Go
+    /// `automations.BuiltinPrimitiveNames`.
+    private static let builtinPrimitives: [String: String] = [
+        "brief.compose": "Write your daily brief",
+        "plan.compose": "Plan your day",
+        "tracks.extract": "Update your tracks from Slack digests",
+        "ideas.consolidate": "Find ideas and decisions in your messages",
+        "reaction.compose": "Turn your reactions into proposals"
+    ]
+
+    /// `tool:`, `mcp:`, `shell:` and `builtin:` entries.
     private static func prefixedLine(_ permission: String) -> String? {
+        if permission.hasPrefix("builtin:") {
+            return builtinPrimitives[String(permission.dropFirst("builtin:".count))]
+        }
         if permission.hasPrefix("tool:") {
             return "Use the tool " + permission.dropFirst("tool:".count)
         }
@@ -307,7 +289,8 @@ package enum AutomationCardPresentation {
         }
     }
 
-    /// The model, agent, ask and session capabilities.
+    /// The model, agent, ask, session, Inbox-button and watch capabilities
+    /// (`track:scan`, twin of Go `automations.CapabilityForPrimitive`).
     private static func runtimeLine(cap: String, verb: String, scope: String?) -> String? {
         switch (cap, verb, scope) {
         case ("llm", "light", nil): "Use the light model"
@@ -317,6 +300,8 @@ package enum AutomationCardPresentation {
         case ("session", "start", nil): "Start agent sessions"
         case ("session", "start", "claude"): "Start Claude Code sessions"
         case ("session", "start", "codex"): "Start Codex sessions"
+        case ("inbox", "reply", nil): "Reacts to its own Inbox buttons"
+        case ("track", "scan", nil): "Add events to this watch's track"
         default: nil
         }
     }
@@ -330,6 +315,11 @@ package enum AutomationCardPresentation {
         case "slack": "Send Slack messages"
         default: "Write \(output)"
         }
+    }
+
+    /// The card's ⋯ menu item that turns the automation off or on.
+    package static func toggleMenuTitle(enabled: Bool) -> String {
+        enabled ? "Turn Off" : "Turn On"
     }
 
     /// Run now and Dry run for the card. Run now follows Go's `Runnable()`
@@ -396,7 +386,9 @@ package enum AutomationCardPresentation {
         case "button": return "Button"
         case "event": return "Event"
         case "manual": return "Run now"
+        case "reply": return "Inbox button"
         case "dry_run": return "Dry run"
+        case "sync": return "At its slot in the sync cycle"
         default: return run.trigger
         }
     }
@@ -532,7 +524,7 @@ package enum AutomationCardPresentation {
         decimal.string(from: NSNumber(value: value)) ?? String(value)
     }
 
-    private static func firstLine(_ text: String) -> String {
+    package static func firstLine(_ text: String) -> String {
         String(text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true).first ?? "")
     }
 }

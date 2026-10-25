@@ -71,6 +71,19 @@ public struct OwnerAsk: SliceMirror, Identifiable {
         }
     }
 
+    /// The spec reviewer's state on a review ask of a spec or plan; absent
+    /// from an older Mac's slice. `line` is built on the Mac.
+    public struct SpecReviewLine: Codable, Hashable, Sendable {
+        /// queued, running, done, failed or skipped (open wire value).
+        public let status: String
+        public let line: String
+
+        public init(status: String, line: String) {
+            self.status = status
+            self.line = line
+        }
+    }
+
     public let id: Int64
     public let workbenchID: Int64
     public let workbenchName: String
@@ -112,6 +125,7 @@ public struct OwnerAsk: SliceMirror, Identifiable {
     /// The stored answer; closed asks only.
     public let answer: OwnerAskAnswer?
     public let quick: Quick?
+    public let specReview: SpecReviewLine?
 
     // convertFromSnakeCase maps "*_id" -> "*Id" (lowercase d).
     enum CodingKeys: String, CodingKey {
@@ -123,7 +137,7 @@ public struct OwnerAsk: SliceMirror, Identifiable {
         case kind, status, withdrawnReason
         case previousAskID = "previousAskId"
         case createdAt, answeredAt, deliveredAt, title, titleClipped, summary, summaryClipped, changes, changesClipped
-        case payload, payloadClipped, docPath, docPathClipped, docSnapshot, docClipped, docBytes, answer, quick
+        case payload, payloadClipped, docPath, docPathClipped, docSnapshot, docClipped, docBytes, answer, quick, specReview
     }
 
     public init(from decoder: Decoder) throws {
@@ -157,6 +171,7 @@ public struct OwnerAsk: SliceMirror, Identifiable {
         docBytes = try c.decodeIfPresent(Int.self, forKey: .docBytes)
         answer = try c.decodeIfPresent(OwnerAskAnswer.self, forKey: .answer)
         quick = try c.decodeIfPresent(Quick.self, forKey: .quick)
+        specReview = try c.decodeIfPresent(SpecReviewLine.self, forKey: .specReview)
     }
 }
 

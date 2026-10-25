@@ -121,7 +121,6 @@ struct ConfigServiceTests {
         let path = makeTempConfig("active_workspace: x\n")
         let svc = ConfigService(configPath: path)
         #expect(svc.dayPlanEnabled == true)
-        #expect(svc.dayPlanHour == 8)
         #expect(svc.workingHoursStart == "09:00")
         #expect(svc.workingHoursEnd == "19:00")
         #expect(svc.maxTimeblocks == 3)
@@ -193,7 +192,102 @@ struct ConfigServiceTests {
         #expect(ai?["ollama_url"] == nil)
     }
 
-    @Test("Save round-trips ideas tuning, never ideas.enabled, and preserves unrelated keys")
+    @Test("A built-in card's When fields save to their config keys; unknown keys and bad values are refused")
+    func builtinParametersSave() throws {
+        let path = makeTempConfig("""
+        active_workspace: keep-me
+        briefing:
+          hour: 8
+        """)
+        let svc = ConfigService(configPath: path)
+        try svc.saveBuiltinParameters([
+            "briefing.hour": "9", "day_plan.working_hours_start": "08:30", "day_plan.working_hours_end": "17:00"
+        ])
+        #expect(svc.briefingHour == 9)
+        #expect(throws: ConfigService.BuiltinParameterError.self) { try svc.saveBuiltinParameters(["briefing.hour": "24"]) }
+        #expect(throws: ConfigService.BuiltinParameterError.self) {
+            try svc.saveBuiltinParameters(["day_plan.working_hours_end": "7pm"])
+        }
+        #expect(throws: ConfigService.BuiltinParameterError.self, "on/off is the feature manager's") {
+            try svc.saveBuiltinParameters(["ideas.enabled": "true"])
+        }
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.briefingHour == 9)
+        #expect(svc2.workingHoursStart == "08:30")
+        #expect(svc2.workingHoursEnd == "17:00")
+        #expect(svc2.activeWorkspace == "keep-me")
+    }
+
+    @Test("The card's count fields save as integers; a backlog at-least above its at-most is refused")
+    func builtinCountParametersSave() throws {
+        let path = makeTempConfig("day_plan:\n  max_backlog: 6\n")
+        let svc = ConfigService(configPath: path)
+        try svc.saveBuiltinParameters([
+            "day_plan.max_timeblocks": "2", "day_plan.min_backlog": "4", "day_plan.max_backlog": "7"
+        ])
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let dayPlan = (try Yams.load(yaml: raw) as? [String: Any])?["day_plan"] as? [String: Any]
+        #expect(dayPlan?["max_timeblocks"] as? Int == 2, "an integer, not text; got: \(raw)")
+        #expect(dayPlan?["min_backlog"] as? Int == 4)
+        #expect(dayPlan?["max_backlog"] as? Int == 7)
+        #expect(svc.maxTimeblocks == 2)
+
+        #expect(throws: ConfigService.BuiltinParameterError.self) {
+            try svc.saveBuiltinParameters(["day_plan.min_backlog": "8"])
+        }
+        #expect(throws: ConfigService.BuiltinParameterError.self) {
+            try svc.saveBuiltinParameters(["day_plan.max_timeblocks": "-1"])
+        }
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.minBacklog == 4, "a refused save writes nothing")
+        #expect(reloaded.maxTimeblocks == 2)
+    }
+
+    /// Settings keeps one ConfigService for the window's life: its Save must
+    /// not put back the hour and working hours the card saved meanwhile.
+    @Test("A Settings save after a card save keeps the card's When values")
+    func settingsSaveKeepsCardValues() throws {
+        let path = makeTempConfig("""
+        briefing:
+          hour: 8
+        day_plan:
+          working_hours_start: "09:00"
+          max_timeblocks: 4
+        """)
+        let settings = ConfigService(configPath: path)
+        try ConfigService(configPath: path).saveBuiltinParameters([
+            "briefing.hour": "10", "day_plan.working_hours_start": "07:45"
+        ])
+        settings.digestMinMessages = 7
+        try settings.save()
+
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.briefingHour == 10)
+        #expect(reloaded.workingHoursStart == "07:45")
+        #expect(reloaded.maxTimeblocks == 4)
+        #expect(reloaded.digestMinMessages == 7)
+    }
+
+    /// The Idea finder card saves the interval through a fresh instance; the
+    /// Settings window's long-lived one must not put the old value back (C3).
+    @Test("A Settings save after Idea finder's card save keeps the card's interval")
+    func settingsSaveKeepsIdeasInterval() throws {
+        let path = makeTempConfig("""
+        ideas:
+          mine_interval_hours: 6
+        """)
+        let settings = ConfigService(configPath: path)
+        try ConfigService(configPath: path).saveBuiltinParameters(["ideas.mine_interval_hours": "9"])
+        settings.digestMinMessages = 7
+        try settings.save()
+
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.ideasMineIntervalHours == 9)
+        #expect(reloaded.digestMinMessages == 7)
+    }
+
+    @Test("Save writes neither ideas.enabled nor the Idea finder interval, and preserves unrelated keys")
     func saveIdeasRoundTrip() throws {
         let path = makeTempConfig("""
         active_workspace: keep-me
@@ -212,7 +306,7 @@ struct ConfigServiceTests {
         try svc.save()
 
         let svc2 = ConfigService(configPath: path)
-        #expect(svc2.ideasMineIntervalHours == 24, "tuning keys still round-trip")
+        #expect(svc2.ideasMineIntervalHours == 12, "the interval's only writer is Idea finder's card")
         #expect(svc2.ideasEnabled == false, "on-disk ideas.enabled must survive a save that changed another field")
         #expect(svc2.activeWorkspace == "keep-me", "unrelated keys must survive the save merge")
     }
@@ -277,11 +371,11 @@ struct ConfigServiceTests {
         let yaml = try Yams.load(yaml: raw) as? [String: Any]
         #expect(yaml?.keys.contains("digest") == false, "an absent digest section must stay absent; got: \(raw)")
         #expect(
-            (yaml?["ideas"] as? [String: Any])?.keys.contains("enabled") == false,
-            "ideas.enabled must not be created by a save; got: \(raw)"
+            (yaml?["ideas"] as? [String: Any])?.keys.contains("enabled") != true,
+            "ideas.enabled must not be created by a save (the save writes no ideas key at all); got: \(raw)"
         )
         #expect(
-            (yaml?["day_plan"] as? [String: Any])?.keys.contains("enabled") == false,
+            (yaml?["day_plan"] as? [String: Any])?.keys.contains("enabled") != true,
             "day_plan.enabled must not be created by a save; got: \(raw)"
         )
     }
@@ -381,14 +475,14 @@ struct ConfigServiceTests {
         try "calendar:\n  enabled: true\ngmail:\n  enabled: true\n"
             .write(toFile: path, atomically: true, encoding: .utf8)
 
-        stale.briefingHour = 10
+        stale.transcriptAudioRetentionDays = 10
         try stale.save()
 
         #expect(stale.calendarEnabled == true, "the saved instance adopts the switch on disk")
         let reloaded = ConfigService(configPath: path)
         #expect(reloaded.calendarEnabled == true)
         #expect(reloaded.gmailEnabled == true)
-        #expect(reloaded.briefingHour == 10)
+        #expect(reloaded.transcriptAudioRetentionDays == 10)
     }
 
     /// #740: a connect or Re-login from Settings turns the switches on from the
@@ -563,7 +657,7 @@ struct ConfigServiceTests {
         svc.aiProvider = "codex"
         svc.calendarEnabled = true
         svc.calendarSyncDaysAhead = 7
-        svc.briefingHour = 11
+        svc.transcriptAudioRetentionDays = 11
         try svc.save()
 
         let svc2 = ConfigService(configPath: path)
@@ -572,7 +666,7 @@ struct ConfigServiceTests {
         #expect(svc2.aiProvider == "codex")
         #expect(svc2.calendarEnabled == true)
         #expect(svc2.calendarSyncDaysAhead == 7)
-        #expect(svc2.briefingHour == 11)
+        #expect(svc2.transcriptAudioRetentionDays == 11)
     }
 
     @Test("Save sets file permissions to 0600")
@@ -695,5 +789,37 @@ struct ConfigServiceTests {
         try ConfigService(configPath: path).save()
         let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
         #expect(saved?["workbench"] == nil, "the Claude default writes nothing on a fresh config")
+    }
+
+    /// `privacy.purge_revoked_data` (board #601) is tri-state: absent stays
+    /// absent on Save (the build default applies), a set value round-trips
+    /// and the section's other keys are kept.
+    @Test("Purge on revoked access round-trips and stays absent until set")
+    func testPurgeRevokedDataRoundTrips() throws {
+        let fresh = makeTempConfig("sync:\n  workers: 1")
+        let svc = ConfigService(configPath: fresh)
+        #expect(svc.purgeRevokedData == nil)
+        try svc.save()
+        var saved = try Yams.load(yaml: String(contentsOfFile: fresh, encoding: .utf8)) as? [String: Any]
+        #expect(saved?["privacy"] == nil, "absent stays absent")
+
+        #expect(!svc.lastSaveChangedPurge)
+        svc.purgeRevokedData = false
+        try svc.save()
+        #expect(svc.lastSaveChangedPurge, "a new value asks for a daemon restart")
+        try svc.save()
+        #expect(!svc.lastSaveChangedPurge, "an unchanged value does not")
+        saved = try Yams.load(yaml: String(contentsOfFile: fresh, encoding: .utf8)) as? [String: Any]
+        #expect((saved?["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool == false, "an explicit off is written")
+
+        let path = makeTempConfig("privacy:\n  purge_revoked_data: true\n  other_key: kept")
+        let on = ConfigService(configPath: path)
+        #expect(on.purgeRevokedData == true)
+        on.purgeRevokedData = false
+        try on.save()
+        saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        let privacy = saved?["privacy"] as? [String: Any]
+        #expect(privacy?["purge_revoked_data"] as? Bool == false)
+        #expect(privacy?["other_key"] as? String == "kept")
     }
 }

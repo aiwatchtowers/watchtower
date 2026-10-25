@@ -112,6 +112,10 @@ type KnowledgeConfig struct {
 	// into ext_* for the index). Mechanical, no AI; does nothing until a
 	// space is selected.
 	Connectors KnowledgeConnectorsConfig `mapstructure:"connectors"`
+	// LinkFetchDenyHosts are hosts (subdomains included) whose links the
+	// media pass never fetches. They add to the build's seed list
+	// (media.BuildDenyHosts), never replace it.
+	LinkFetchDenyHosts []string `mapstructure:"link_fetch_deny_hosts"`
 }
 
 // KnowledgeConnectorsConfig holds the knowledge-connectors feature switch.
@@ -282,13 +286,12 @@ type TargetsConfig struct {
 // TranscriptsConfig holds settings for meeting transcript storage.
 type TranscriptsConfig struct {
 	AudioRetentionDays int    `mapstructure:"audio_retention_days"` // delete recording audio after N days (default 30); transcript text is kept forever
-	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the Desktop recorder writes rec_* files into; empty → the default computed by Config.RecordingsDir
+	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the daemon orphan cleanup scans for rec_* files; empty → the default computed by Config.RecordingsDir. The Desktop recorder does not read it (it always writes Application Support/Watchtower/recordings), so BACKUP-01 does not exclude it
 }
 
 // DayPlanConfig holds settings for the daily plan generation pipeline.
 type DayPlanConfig struct {
 	Enabled           bool   `yaml:"enabled" mapstructure:"enabled"`
-	Hour              int    `yaml:"hour" mapstructure:"hour"`
 	WorkingHoursStart string `yaml:"working_hours_start" mapstructure:"working_hours_start"`
 	WorkingHoursEnd   string `yaml:"working_hours_end" mapstructure:"working_hours_end"`
 	MaxTimeblocks     int    `yaml:"max_timeblocks" mapstructure:"max_timeblocks"`
@@ -419,6 +422,7 @@ type Config struct {
 	Catchup          CatchupConfig               `mapstructure:"catchup"`
 	DB               DBConfig                    `mapstructure:"db"`
 	Workbench        WorkbenchConfig             `mapstructure:"workbench"`
+	Privacy          PrivacyConfig               `mapstructure:"privacy"`
 	ClaudePath       string                      `mapstructure:"claude_path"`
 	CodexPath        string                      `mapstructure:"codex_path"`
 
@@ -430,6 +434,14 @@ type Config struct {
 	// data directory at all, so ValidateWorkspace reports that instead of
 	// mistaking an unreadable directory for a fresh install.
 	workspaceLookupErr error
+}
+
+// PrivacyConfig holds the owner's privacy switches.
+type PrivacyConfig struct {
+	// PurgeRevokedData turns on the purge of an account's synced data after
+	// its access is revoked or its 30-day lease runs out (board #601). nil =
+	// absent = the build default (purge.Enabled); no SetDefault on purpose.
+	PurgeRevokedData *bool `mapstructure:"purge_revoked_data"`
 }
 
 // DBConfig captures database-runtime state that the binary tracks across
@@ -517,7 +529,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("jira.changelog_issues_per_sync", DefaultJiraChangelogIssuesPerSync)
 	setJiraFeatureDefaults(v)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
-	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
 	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)
 	v.SetDefault("day_plan.working_hours_end", DefaultDayPlanWorkingHoursEnd)
 	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
@@ -846,9 +857,20 @@ func (c *Config) RecordingsDir() string {
 	if c.Transcripts.RecordingsDir != "" {
 		return c.Transcripts.RecordingsDir
 	}
-	home, err := os.UserHomeDir()
+	as, err := AppSupportDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings")
+	return filepath.Join(as, "recordings")
+}
+
+// AppSupportDir returns the Desktop's Application Support folder
+// (~/Library/Application Support/Watchtower): recordings, MobileHub, the CLI
+// copy and the session host's log.
+func AppSupportDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine home directory: %w", err)
+	}
+	return filepath.Join(home, "Library", "Application Support", "Watchtower"), nil
 }

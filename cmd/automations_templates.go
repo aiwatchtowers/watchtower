@@ -28,6 +28,7 @@ func init() {
 		c.Flags().BoolVar(&autoFlags.JSON, "json", false, "output as JSON")
 	}
 	install.Flags().Int64Var(&autoFlags.Workbench, "workbench", 0, "workbench id (required for a workbench template)")
+	install.Flags().BoolVar(&autoFlags.Render, "render", false, "print the rendered recipes and their validation without installing anything")
 	install.Flags().StringArrayVar(&autoFlags.Params, "param", nil, "KEY=VALUE for a template placeholder <KEY> (repeatable)")
 	automationsCmd.AddCommand(templates, install)
 }
@@ -93,6 +94,24 @@ type installedRecipeJSON struct {
 	Slug         string `json:"slug"`
 	Path         string `json:"path"`
 	ParseError   string `json:"parse_error"`
+	// ApprovalHash is the indexed row's hash ("" for a copy with a parse
+	// error): what `install-template --render` showed as validate.approval_hash.
+	ApprovalHash string `json:"approval_hash"`
+}
+
+// renderJSON is `install-template --render --json`: what an install would
+// write, nothing written. files follow the template's files order.
+type renderJSON struct {
+	Name   string              `json:"name"`
+	Scope  string              `json:"scope"`
+	Params map[string][]string `json:"params"`
+	Files  []renderFileJSON    `json:"files"`
+}
+
+type renderFileJSON struct {
+	Slug     string       `json:"slug"`
+	Text     string       `json:"text"`
+	Validate validateJSON `json:"validate"`
 }
 
 // runAutomationsInstallTemplate writes a template's recipes into the personal
@@ -127,6 +146,9 @@ func runAutomationsInstallTemplate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if autoFlags.Render {
+		return printRenderedTemplate(cmd.OutOrStdout(), renderTemplateJSON(tpl, scope, params, files))
+	}
 	if scope.Kind == automations.ScopePersonal {
 		dir = automations.PersonalDir(cfg.WorkspaceDir())
 	} else if err := automations.RefuseLinkedRecipeDir(dir); err != nil {
@@ -142,6 +164,35 @@ func runAutomationsInstallTemplate(cmd *cobra.Command, args []string) error {
 		out.Params[key] = automations.TemplateParamValues(value)
 	}
 	return printInstalledTemplate(cmd.OutOrStdout(), out)
+}
+
+// renderTemplateJSON validates each rendered file as the install would index it.
+func renderTemplateJSON(tpl automations.Template, scope automations.Scope, params map[string]string, files map[string][]byte) renderJSON {
+	out := renderJSON{Name: tpl.Name, Scope: string(scope.Kind), Params: make(map[string][]string, len(params)),
+		Files: make([]renderFileJSON, 0, len(tpl.Files))}
+	for key, value := range params {
+		out.Params[key] = automations.TemplateParamValues(value)
+	}
+	for _, slug := range tpl.Files {
+		data := files[slug]
+		out.Files = append(out.Files, renderFileJSON{Slug: slug, Text: string(data),
+			Validate: validateRecipe(slug, data, automations.ContentHash(data), scope, nil, nil)})
+	}
+	return out
+}
+
+// printRenderedTemplate writes the render result as JSON or text.
+func printRenderedTemplate(w io.Writer, out renderJSON) error {
+	if autoFlags.JSON {
+		return writeJSON(w, out)
+	}
+	for _, f := range out.Files {
+		fmt.Fprintf(w, "--- %s.md\n%s", f.Slug, f.Text)
+		if !strings.HasSuffix(f.Text, "\n") {
+			fmt.Fprintln(w)
+		}
+	}
+	return nil
 }
 
 // templateForInstall finds the named template and checks --workbench against
@@ -265,7 +316,7 @@ func indexTemplateFiles(ctx context.Context, cfg *config.Config, database *db.DB
 		if err != nil {
 			return installJSON{}, err
 		}
-		out.Installed = append(out.Installed, installedRecipeJSON{AutomationID: a.ID, Slug: recipeSlugOf(path), Path: a.Path, ParseError: a.ParseError})
+		out.Installed = append(out.Installed, installedRecipeJSON{AutomationID: a.ID, Slug: recipeSlugOf(path), Path: a.Path, ParseError: a.ParseError, ApprovalHash: a.ApprovalHash})
 	}
 	out.AutomationID, out.Path = out.Installed[0].AutomationID, out.Installed[0].Path
 	return out, nil

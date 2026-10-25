@@ -98,18 +98,23 @@ struct GettingReadyZoneView: View {
     static func connectLine(_ row: GettingReadySourceRow) -> String {
         var titles: [String] = []
         for feature in row.features {
-            for tab in featureTabs(for: feature) where !titles.contains(tab.title) {
-                titles.append(tab.title)
+            for title in featureTabTitles(for: feature) where !titles.contains(title) {
+                titles.append(title)
             }
         }
         return "\(row.source.actionTitle) to get \(joinedNames(titles))"
     }
 
-    /// Jira fills five tabs; every other feature its Open's tab.
-    private static func featureTabs(for feature: ReadinessFeature) -> [SidebarDestination] {
-        feature == .jira
-            ? [.boards, .workload, .blockers, .projectMap, .releases]
-            : [AppState.homeDestination(for: feature)]
+    /// Jira fills five tabs; an Inbox feature names its filter ("Your day"
+    /// for the brief and the plan); every other feature its Open's tab.
+    private static func featureTabTitles(for feature: ReadinessFeature) -> [String] {
+        if feature == .jira {
+            return [SidebarDestination.boards, .workload, .blockers, .projectMap, .releases].map(\.title)
+        }
+        if let route = InboxRoute.forFeature(feature, today: "") {
+            return [route.filter == .day ? "Your day" : route.filter.title]
+        }
+        return AppState.homeDestination(for: feature).map { [$0.title] } ?? []
     }
 
     /// "A", "A and B", "A, B and C".

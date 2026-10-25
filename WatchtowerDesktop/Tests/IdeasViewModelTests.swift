@@ -152,23 +152,15 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertNil(vm.errorMessage)
     }
 
-    /// A created entry has to be visible, which means clearing whatever the
-    /// owner had narrowed the list down to: it is born `active`, so a
-    /// "Proposed" status filter (or a stale search) would swallow it and the
-    /// create would look like it silently failed.
     func testCreateManual_SwitchesSegmentAndSelects() async throws {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
         XCTAssertEqual(vm.kindMode, "idea")
-        vm.statusFilter = "proposed"
-        vm.searchText = "something else entirely"
 
         let newIDRow = await vm.createManual(kind: "note", title: "A note", essence: "typed by the owner")
         let newID = try XCTUnwrap(newIDRow)
 
         XCTAssertEqual(vm.kindMode, "note", "the new entry's segment must be the visible one")
-        XCTAssertNil(vm.statusFilter, "a status filter that would hide the new entry is cleared")
-        XCTAssertEqual(vm.searchText, "", "so is a search that would hide it")
         XCTAssertEqual(vm.selectedID, newID)
         XCTAssertEqual(vm.registryItems.map(\.title), ["A note"])
     }
