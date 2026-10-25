@@ -227,11 +227,11 @@ func paramKeys(s string) []string {
 			p = p[:i]
 		}
 		p = decodeStable(p, url.QueryUnescape)
-		if i := strings.IndexByte(p, '['); i > 0 {
-			p = p[:i]
-		}
-		if p != "" {
-			keys = append(keys, p)
+		// "a[b][c]" yields the outer key and every inner name.
+		for _, part := range strings.FieldsFunc(p, func(r rune) bool { return r == '[' || r == ']' }) {
+			if part != "" {
+				keys = append(keys, part)
+			}
 		}
 	}
 	return keys
@@ -243,20 +243,23 @@ func splitWords(s string) []string {
 	var words []string
 	var cur []rune
 	var prev rune
+	rs := []rune(s)
 	flush := func() {
 		if len(cur) > 0 {
 			words = append(words, string(cur))
 			cur = cur[:0]
 		}
 	}
-	for _, r := range s {
+	for i, r := range rs {
 		if r == '-' || r == '_' || r == '.' {
 			flush()
 			prev = 0
 			continue
 		}
 		if prev != 0 && ((unicode.IsLower(prev) && unicode.IsUpper(r)) ||
-			(unicode.IsDigit(prev) != unicode.IsDigit(r))) {
+			(unicode.IsDigit(prev) != unicode.IsDigit(r)) ||
+			// "CSRFToken": split before the last capital of a run.
+			(unicode.IsUpper(prev) && unicode.IsUpper(r) && i+1 < len(rs) && unicode.IsLower(rs[i+1]))) {
 			flush()
 		}
 		cur = append(cur, r)

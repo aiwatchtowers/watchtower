@@ -258,3 +258,26 @@ func TestFetchable_CamelCaseAndBrackets(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchable_NestedAndAcronymKeys(t *testing.T) {
+	for _, u := range []string{
+		"https://example.com/p?user[password]=x", "https://example.com/p?a[token]=x", "https://example.com/p?a[b][accessToken]=x",
+		"https://example.com/p?a%5Bsecret%5D=x", "https://example.com/p?a[token=x",
+		"https://example.com/p?CSRFToken=x", "https://example.com/p?APISecret=x", "https://example.com/p?AWSToken=x",
+		"https://example.com/p?URLSignature=x", "https://example.com/p?APITokenId=x",
+		"https://example.com/p#user[password]=x", "https://example.com/p;CSRFToken=x",
+	} {
+		if n, ok := Fetchable(u, nil); ok {
+			t.Errorf("%s allowed as %s", u, n)
+		}
+	}
+	for _, u := range []string{
+		"https://example.com/p?utf8=1", "https://example.com/p?h264=1", "https://example.com/p?pageSize=1",
+		"https://example.com/p?keyboard=1", "https://example.com/p?filter[name]=x", "https://example.com/p?items[0]=x",
+		"https://example.com/p?HTMLPage=1",
+	} {
+		if _, ok := Fetchable(u, nil); !ok {
+			t.Errorf("%s refused", u)
+		}
+	}
+}
