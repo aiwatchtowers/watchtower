@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/policy"
 	"watchtower/internal/purge"
 )
 
@@ -157,6 +158,42 @@ func purgeLine(p accountPurgeJSON) string {
 // running: the purge would delete the credentials it writes when it finishes.
 var errLoginDuringPurge = errors.New("watchtower is deleting this account's data; " +
 	"log in again once it finishes (see 'watchtower accounts purges')")
+
+// refuseSourceByPolicy refuses connecting a source the organization's policy
+// (AllowedSources, #608) forbids.
+func refuseSourceByPolicy(src string) error {
+	if p := policy.Current(); !p.SourceAllowed(src) {
+		return p.SourceError(src)
+	}
+	return nil
+}
+
+// guardSource runs refuseSourceByPolicy before run, so the refusal comes
+// before any network call, browser or write.
+func guardSource(src string, run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if err := refuseSourceByPolicy(src); err != nil {
+			return err
+		}
+		return run(cmd, args)
+	}
+}
+
+// Every command that connects a source, by the policy source it connects
+// (google = Gmail + Calendar, imap includes Outlook, jira includes
+// Confluence). Package vars are set before any init runs.
+func init() {
+	for c, src := range map[*cobra.Command]string{
+		slackAddCmd: "slack", slackLoginCmd: "slack",
+		googleLoginCmd: "google", googleAddCmd: "google", gmailLoginCmd: "google", calendarLoginCmd: "google",
+		imapAddCmd: "imap", outlookLoginCmd: "imap",
+		caldavAddCmd: "caldav", caldavAddICSCmd: "caldav",
+		jiraAddCmd: "jira", jiraLoginCmd: "jira",
+		linearAddCmd: "linear", linearLoginCmd: "linear",
+	} {
+		c.RunE = guardSource(src, c.RunE)
+	}
+}
 
 // refuseLoginDuringPurge returns errLoginDuringPurge when the account's purge
 // is running. Every login path calls it before its first write.
