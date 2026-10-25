@@ -227,7 +227,7 @@ func TestWriteItemsRejectsMismatchedItem(t *testing.T) {
 	refs := []ItemRef{{Kind: KindPage, ExtID: "p1", Version: 1}}
 	items := []*Item{{Ref: ItemRef{Kind: KindPage, ExtID: "p2", Version: 1}}}
 	var st Stats
-	err := writeItems(context.Background(), d, src.ID, refs, items, time.Now(), &st)
+	err := New(d, Options{}).writeItems(context.Background(), d, src.ID, refs, items, &st)
 	require.Error(t, err)
 	assert.Zero(t, countDocs(t, d, src.ID))
 }

@@ -202,7 +202,7 @@ func (e *Engine) writeAttachmentItems(ctx context.Context, q Queryer, p pass, re
 		}
 		wrefs, witems = append(wrefs, refs[i]), append(witems, it)
 	}
-	return writeItems(ctx, q, p.src.ID, wrefs, witems, e.opts.Now(), st)
+	return e.writeItems(ctx, q, p.src.ID, wrefs, witems, st)
 }
 
 // writeExtractions records each written attachment's extraction status. A

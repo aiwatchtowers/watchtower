@@ -337,6 +337,32 @@ func (db *DB) FindDescribedMedia(ctx context.Context, contentKey, scope string) 
 	return &it, nil
 }
 
+// MediaItemAt returns the row of parentKey with kind and locator, or nil.
+func (db *DB) MediaItemAt(ctx context.Context, parentKey, kind, locator string) (*MediaItem, error) {
+	it, err := scanMediaItem(db.QueryRowContext(ctx, `SELECT `+mediaItemColumns+` FROM media_items
+		WHERE parent_key = ? AND kind = ? AND locator = ?`, parentKey, kind, locator))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading media item %s %s on %s: %w", kind, locator, parentKey, err)
+	}
+	return &it, nil
+}
+
+// LastMediaItem returns the newest row of parentKey with kind, or nil.
+func (db *DB) LastMediaItem(ctx context.Context, parentKey, kind string) (*MediaItem, error) {
+	it, err := scanMediaItem(db.QueryRowContext(ctx, `SELECT `+mediaItemColumns+` FROM media_items
+		WHERE parent_key = ? AND kind = ? ORDER BY id DESC LIMIT 1`, parentKey, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading media %s on %s: %w", kind, parentKey, err)
+	}
+	return &it, nil
+}
+
 // getMediaItem reads one row by id.
 func (db *DB) getMediaItem(ctx context.Context, id int64) (*MediaItem, error) {
 	it, err := scanMediaItem(db.QueryRowContext(ctx, `SELECT `+mediaItemColumns+` FROM media_items WHERE id = ?`, id))
