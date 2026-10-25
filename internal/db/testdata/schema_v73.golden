@@ -1876,6 +1876,13 @@ last_reconciled_at TEXT NOT NULL DEFAULT '',
 updated_at TEXT NOT NULL DEFAULT ''
 )
 
+table	learn_seen
+CREATE TABLE learn_seen (
+item_id TEXT PRIMARY KEY,
+how TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
+seen_at TEXT NOT NULL
+)
+
 table	linear_accounts
 CREATE TABLE linear_accounts (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5019,6 +5026,11 @@ GROUP BY up.ancestor
 1	cursor	TEXT	notnull=1	dflt=''	pk=0
 2	last_reconciled_at	TEXT	notnull=1	dflt=''	pk=0
 3	updated_at	TEXT	notnull=1	dflt=''	pk=0
+
+## learn_seen
+0	item_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	how	TEXT	notnull=1	dflt=NULL	pk=0
+2	seen_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## linear_accounts
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

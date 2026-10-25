@@ -2290,6 +2290,11 @@ CREATE TABLE IF NOT EXISTS spec_review_marks (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );
+CREATE TABLE IF NOT EXISTS learn_seen (
+    item_id TEXT PRIMARY KEY,
+    how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
+    seen_at TEXT NOT NULL
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
