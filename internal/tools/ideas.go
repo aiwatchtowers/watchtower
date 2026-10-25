@@ -66,7 +66,8 @@ func NewListIdeas() *Tool {
 	}
 }
 
-// NewGetIdea fetches one idea by id, including every recorded mention.
+// NewGetIdea fetches one idea by id, including every recorded mention except
+// a chat mention the assistant authored (db.AgentVisibleMentionCond).
 func NewGetIdea() *Tool {
 	return &Tool{
 		Name:        "get_idea",
@@ -79,14 +80,14 @@ func NewGetIdea() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
-			idea, err := d.GetIdea(a.ID)
+			idea, err := d.GetKnowledgeVisibleIdea(a.ID)
 			if err != nil {
 				return nil, fmt.Errorf("getting idea: %w", err)
 			}
 			if idea == nil {
 				return nil, fmt.Errorf("idea not found")
 			}
-			mentions, err := d.ListIdeaMentions(a.ID)
+			mentions, err := d.ListAgentVisibleIdeaMentions(a.ID)
 			if err != nil {
 				return nil, fmt.Errorf("listing idea mentions: %w", err)
 			}

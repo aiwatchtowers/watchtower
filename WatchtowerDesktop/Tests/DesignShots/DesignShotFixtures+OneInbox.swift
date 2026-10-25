@@ -43,6 +43,8 @@ enum OneInboxShotFixtures {
         var builtinNotice = false
         /// The custom track's watch (C3).
         var watch: WatchScene = .legacy
+        /// A decision proposed from a chat, with its chat mention, opened.
+        var chatDecision = false
     }
 
     /// The custom track before the custom-tracks move (C1's controls), bound
@@ -87,6 +89,7 @@ enum OneInboxShotFixtures {
     }
     static func ideaCard() -> AnyView { inbox(Scene(filter: .ideas) { .idea($0.proposedIdea) }) }
     static func decisionCard() -> AnyView { inbox(Scene(filter: .ideas) { .idea($0.decision) }) }
+    static func chatDecisionCard() -> AnyView { inbox(Scene(filter: .ideas, chatDecision: true)) }
     static func ideasNew() -> AnyView {
         inbox(Scene(filter: .ideas, select: { .idea($0.proposedIdea) }, ideasRow: .newIdea))
     }
@@ -143,6 +146,7 @@ enum OneInboxShotFixtures {
                 }
                 return seeded
             }
+            let chatDecision = scene.chatDecision ? try manager.dbPool.write { try seedChatDecision($0) } : nil
             let defaults = UserDefaults(suiteName: defaultsSuite) ?? .standard
             defaults.removePersistentDomain(forName: defaultsSuite)
             let clock = now
@@ -155,7 +159,7 @@ enum OneInboxShotFixtures {
             vm.filter = scene.filter
             vm.showsStopped = scene.showsStopped
             refreshed(vm)
-            vm.selection = scene.select(seeded)
+            vm.selection = chatDecision.map { .idea($0) } ?? scene.select(seeded)
             let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner())
             let ideas = IdeasViewModel(dbManager: manager, cliRunner: FakeCLIRunner())
             let appState = AppState()
@@ -309,6 +313,23 @@ enum OneInboxShotFixtures {
             db, title: "Self-serve CSV import", essence: "Let acme admins import users without a ticket.",
             status: "active", createdAt: "2026-10-19T11:00:00Z", updatedAt: "2026-10-19T11:00:00Z")
         return (Int(proposed), Int(decision))
+    }
+
+    /// A decision the chat miner proposed, its mention pointing at a chat
+    /// message that still exists.
+    private static func seedChatDecision(_ db: Database) throws -> Int {
+        let conversation = try TestDatabase.insertChatConversation(db, title: "acme release cadence")
+        let message = try TestDatabase.insertChatMessage(
+            db, conversationID: conversation, role: "user", text: "Let's move the acme release to Tuesdays.")
+        let decision = try TestDatabase.insertIdea(
+            db, kind: "decision", title: "Release acme on Tuesdays",
+            essence: "Agreed in a chat: the weekly acme release moves from Thursday to Tuesday.",
+            lastMentionAt: "2026-10-21T09:40:00Z", createdAt: "2026-10-21T09:45:00Z",
+            updatedAt: "2026-10-21T09:45:00Z", chatBorn: true)
+        try TestDatabase.insertIdeaMention(
+            db, ideaID: decision, source: "chat", ref: "chat:\(conversation):\(message)",
+            quote: "Let's move the acme release to Tuesdays.", saidAt: "2026-10-21T09:40:00Z")
+        return Int(decision)
     }
 
     private static func seedMessages(_ db: Database) throws -> Int {

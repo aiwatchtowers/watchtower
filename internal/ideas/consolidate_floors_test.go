@@ -274,3 +274,100 @@ func TestIdeas01_MidApplyFailure_RollsBackEarlierOps(t *testing.T) {
 	assert.Zero(t, dFloor, "a rolled-back pass leaves its material unconsumed")
 	assert.NotZero(t, topicID)
 }
+
+// --- IDEA-01: the chat floor -------------------------------------------------
+
+func TestIdeas01_ChatFloorStopsAtBudgetDroppedTurn(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	conv := seedChatConversation(t, d, "Rollout", "")
+	first := seedChatTurn(t, d, conv, "user", "turn one", quietAgo())
+	seedChatTurn(t, d, conv, "assistant", "turn two", quietAgo())
+
+	turns, err := d.ListChatTurnsForIdeas(0, time.Now().UTC().Format(time.RFC3339), 10)
+	require.NoError(t, err)
+	require.Len(t, turns, 2)
+	unit := renderChatUnit(turns[0], true)
+
+	var captured string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		captured = user
+		return `{"ops":[]}`, nil
+	}}
+	p := New(d, testCfgWithBudget(len(unit)), gen, testLogger())
+	_, _, err = p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, captured, "turn one")
+	assert.NotContains(t, captured, "turn two")
+
+	floor, err := d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, first, floor, "the chat floor never passes a budget-dropped turn")
+}
+
+func TestIdeas01_ChatTurnsInsideQuietWindowNotConsumed(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	conv := seedChatConversation(t, d, "Rollout", "")
+	old := seedChatTurn(t, d, conv, "user", "settled earlier", quietAgo())
+	seedChatTurn(t, d, conv, "user", "said just now", time.Now().Add(-time.Minute))
+	// A later id stamped older (clock skew) must not be mined past the fresh one.
+	seedChatTurn(t, d, conv, "assistant", "skewed reply", quietAgo())
+
+	var captured string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		captured = user
+		return `{"ops":[]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	_, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, captured, "settled earlier")
+	assert.NotContains(t, captured, "said just now")
+	assert.NotContains(t, captured, "skewed reply")
+	floor, err := d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, old, floor)
+
+	// Only the quiet-window turn left: nothing to send, nothing consumed.
+	gen.calls = 0
+	_, _, err = p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, gen.calls)
+	floor, err = d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, old, floor)
+}
+
+func TestIdeas01_ChatPrefixedTurnsConsumedNotRendered(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	conv := seedChatConversation(t, d, "Rollout", "")
+	seedChatTurn(t, d, conv, "user", "decided: we use Postgres", quietAgo())
+	last := seedChatTurn(t, d, conv, "user", "remember: answer in short bullets", quietAgo())
+
+	gen := &fakeGen{reply: func(string) (string, error) { return `{"ops":[]}`, nil }}
+	p := New(d, testCfg(), gen, testLogger())
+	_, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, gen.calls, "only skipped turns: no AI call")
+	floor, err := d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, last, floor, "skipped turns are consumed")
+
+	seedChatTurn(t, d, conv, "user", "fact: the office moves in May", quietAgo())
+	plain := seedChatTurn(t, d, conv, "user", "what about the budget?", quietAgo())
+	var captured string
+	gen.reply = func(user string) (string, error) {
+		captured = user
+		return `{"ops":[]}`, nil
+	}
+	_, _, err = p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, gen.calls)
+	assert.NotContains(t, captured, "office moves")
+	assert.Contains(t, captured, "what about the budget?")
+	floor, err = d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, plain, floor)
+}

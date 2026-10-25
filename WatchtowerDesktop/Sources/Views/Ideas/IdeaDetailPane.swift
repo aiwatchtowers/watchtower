@@ -32,6 +32,8 @@ struct IdeaDetailPane: View {
     @State private var mentionsLoaded = false
     @State private var mentionsError: String?
     @State private var jiraSiteURL: String?
+    /// The chat conversations the `chat` mentions point at that still exist.
+    @State private var liveChats: Set<Int64> = []
     /// The inline merge or delete row under the verdict buttons.
     @State private var openRow: IdeaActionRow?
 
@@ -240,7 +242,23 @@ struct IdeaDetailPane: View {
 
     @ViewBuilder
     private func mentionLink(_ mention: IdeaMention) -> some View {
-        if let url = mentionURL(mention) {
+        if let chat = mention.chatTarget {
+            if liveChats.contains(chat.conversationID) {
+                Button {
+                    appState.openChatMessage(conversationID: chat.conversationID, messageID: chat.messageID)
+                } label: {
+                    Image(systemName: "arrow.up.right.square")
+                }
+                .buttonStyle(.kitQuiet)
+                .foregroundStyle(.secondary)
+                .help("Open in Chat")
+                .accessibilityLabel("Open in Chat")
+            } else {
+                Text("Chat deleted")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        } else if let url = mentionURL(mention) {
             Link(destination: url) {
                 Image(systemName: "arrow.up.right.square")
             }
@@ -272,7 +290,8 @@ struct IdeaDetailPane: View {
         case .jira:
             guard let jiraSiteURL, !jiraSiteURL.isEmpty else { return nil }
             return URL(string: "\(jiraSiteURL)/browse/\(mention.ref)")
-        case .meeting, .gmail, .imap, .linear, .owner:
+        case .meeting, .gmail, .imap, .linear, .owner, .chat:
+            // A chat mention opens in the app (`mentionLink`), never a URL.
             return nil
         }
     }
@@ -288,7 +307,13 @@ struct IdeaDetailPane: View {
             // An async read: a mentions list is unbounded, and a synchronous
             // dbPool.read here blocks the main actor behind whatever the daemon
             // is writing.
-            mentions = try await db.dbPool.read { conn in try IdeaQueries.fetchMentions(conn, ideaID: idea.id) }
+            let (read, chats) = try await db.dbPool.read { conn in
+                let read = try IdeaQueries.fetchMentions(conn, ideaID: idea.id)
+                let ids = read.compactMap { $0.chatTarget?.conversationID }
+                return (read, try ChatConversationQueries.existingIDs(conn, ids: ids))
+            }
+            mentions = read
+            liveChats = chats
             mentionsError = nil
         } catch {
             // "No mentions recorded." is a real, meaningful state — an idea can
@@ -445,9 +470,11 @@ extension Idea.Kind {
 /// a verdict (`awaitsVerdict`: proposed, or brought up again — IDEA-04)
 /// gets **Approve**, **Make a Task**, **Not now ▾** and **Reject** (Make a
 /// Task and Not now for ideas only; a note is born active and is never
-/// snoozed or converted). A decided one keeps today's lifecycle: active ↔
+/// snoozed or converted). A decision born in a chat waits the same way
+/// (Approve, Not now, Reject, Merge — spec §1 of the chat-knowledge design).
+/// A decided one keeps today's lifecycle: active ↔
 /// not now, converted or dropped; a rejected or dropped one can be
-/// activated again. A decision is informational — its status chip in the
+/// activated again. Any other decision is informational — its status chip in the
 /// header and, while active, **Supersede** / **Reverse**, never a verdict —
 /// but keeps what the Ideas screen gave it: **Activate** when it sits in
 /// rejected, dropped or not now (the way out of an IDEA-04 flag), Merge and
@@ -500,7 +527,9 @@ struct IdeaActionBar: View {
 
     @ViewBuilder
     private var buttons: some View {
-        if idea.kind == .decision {
+        if idea.awaitsVerdict {
+            verdictButtons
+        } else if idea.kind == .decision {
             if idea.status == .active {
                 Button { run(actions.supersede) } label: {
                     Label("Supersede", systemImage: "arrow.triangle.2.circlepath")
@@ -517,26 +546,33 @@ struct IdeaActionBar: View {
                     .buttonStyle(.kitSecondary)
             }
             mergeButton
-        } else if idea.awaitsVerdict {
-            if approveIsPrimary {
-                Button("Approve") { run(actions.approve) }
-                    .buttonStyle(.kitPrimary)
-            } else {
-                Button("Approve") { run(actions.approve) }
-                    .buttonStyle(.kitSecondary)
-            }
-            if idea.kind == .idea {
-                makeTaskButton
-                notNowMenu
-            }
-            // One prominent action: Reject is a plain soft button beside Approve.
-            Button("Reject", role: .destructive) { run(actions.reject) }
-                .buttonStyle(.kitSecondary)
-            mergeButton
         } else {
             decidedButtons
             mergeButton
         }
+    }
+
+    /// An item waiting for a verdict: Approve, then Make a Task (ideas), Not
+    /// now (ideas and chat-born decisions), Reject and Merge.
+    @ViewBuilder
+    private var verdictButtons: some View {
+        if approveIsPrimary {
+            Button("Approve") { run(actions.approve) }
+                .buttonStyle(.kitPrimary)
+        } else {
+            Button("Approve") { run(actions.approve) }
+                .buttonStyle(.kitSecondary)
+        }
+        if idea.kind == .idea {
+            makeTaskButton
+        }
+        if idea.kind != .note {
+            notNowMenu
+        }
+        // One prominent action: Reject is a plain soft button beside Approve.
+        Button("Reject", role: .destructive) { run(actions.reject) }
+            .buttonStyle(.kitSecondary)
+        mergeButton
     }
 
     @ViewBuilder
