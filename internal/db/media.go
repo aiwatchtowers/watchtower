@@ -12,12 +12,12 @@ import (
 	"time"
 )
 
-// Media items (migration 00155): images and web links found on synced
+// Media items (migration 00156): images and web links found on synced
 // content, described by the daemon's media pass. No bytes are ever stored;
 // a row hangs off exactly one parent by a cascading foreign key.
 
 // mediaTimeLayout is the layout of media_items.content_at and
-// media_state.start_at (UTC, second precision; the strftime of 00155).
+// media_state.start_at (UTC, second precision; the strftime of 00156).
 const mediaTimeLayout = "2006-01-02T15:04:05Z"
 
 // MediaErrorClasses are the only values media_items.error may hold — never

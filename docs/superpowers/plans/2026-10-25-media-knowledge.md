@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Branch off `main` (part B, PR #465, is there): the migration is **00155** (`00155_media_items.sql`); re-check `ls internal/db/migrations | tail -1` before writing it.
+- Branch off `main` (part B, PR #465, is there): the migration is **00155** (`00156_media_items.sql`); re-check `ls internal/db/migrations | tail -1` before writing it.
 - Item kinds: `image`, `link`. Parent kinds: `slack`, `confluence`, `gmail`, `imap`, `chat`, `target`.
 - Statuses (CHECK): `pending`, `ok`, `skipped_type`, `skipped_junk`, `too_large`, `unreachable`, `unavailable` (no vision-capable provider), `failed`. Terminal: all but `pending` and `unavailable`. `failed` after the 3rd failed attempt (`maxMediaAttempts = 3`) and never retried by the pass.
 - Only new content (ask #566): `media_state.start_at` (single row, set by the migration to the migration's UTC time) — discovery records nothing whose content time is older; the pass describes only rows with `content_at >= start_at`. The `knowledge-search` fast-forward hook (FEAT-03) moves `start_at` to now. No backfill, ever.
@@ -58,12 +58,12 @@
 
 ---
 
-### Task 1: Storage — migration 00155
+### Task 1: Storage — migration 00156
 
 **Depends on:** none
 
 **Files:**
-- Create: `internal/db/migrations/00155_media_items.sql`, `internal/db/media.go`, `internal/db/media_test.go`
+- Create: `internal/db/migrations/00156_media_items.sql`, `internal/db/media.go`, `internal/db/media_test.go`
 - Modify: `internal/db/schema.sql`, `internal/db/db_test.go` (`TestAllTablesExist`), `internal/db/testdata/schema_v*.golden`, `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (regenerated)
 
 **Interfaces:**
@@ -79,10 +79,10 @@
   - `db.FindDescribedMedia(ctx, contentKey, scope string) (*MediaItem, error)` — an `ok` row with that key **in that scope**, or nil.
   - `db.FinishMedia(ctx, id int64, r MediaResult) error` and `db.FailMedia(ctx, id int64, class string, maxAttempts int) (final bool, err error)` — one short autocommit each; `MediaResult{Status, ContentKey, Kind, Title, Body, ImageText, ErrorClass string; Keys []string; KBSource, KBRef string}`. Both refuse (error, nothing written) a class not in `db.MediaErrorClasses` (the same list as `media.ErrorClasses`; `media` re-exports it).
 
-- [ ] **Step 1:** Write `TestMigration00155_MediaItems`: the `media_state` row exists with a parseable `start_at`; an item with two parents set fails the CHECK; deleting a `messages` / `ext_documents` / `gmail_messages` / `imap_messages` / `chat_attachments` / `project_target_images` parent deletes its item (FK cascade, one case each); an `INSERT … ON CONFLICT DO UPDATE` on `messages` keeps the item; inserting a `chat_attachments` image row creates one `pending` chat item, a `text/plain` one creates none, a project-level attachment (`project_id` set) creates none; a target image insert creates one `target` item.
+- [ ] **Step 1:** Write `TestMigration00156_MediaItems`: the `media_state` row exists with a parseable `start_at`; an item with two parents set fails the CHECK; deleting a `messages` / `ext_documents` / `gmail_messages` / `imap_messages` / `chat_attachments` / `project_target_images` parent deletes its item (FK cascade, one case each); an `INSERT … ON CONFLICT DO UPDATE` on `messages` keeps the item; inserting a `chat_attachments` image row creates one `pending` chat item, a `text/plain` one creates none, a project-level attachment (`project_id` set) creates none; a target image insert creates one `target` item.
 - [ ] **Step 2:** Write `TestMediaKBDirtyTriggers`: setting an item with `kb_ref = 'slack:thread:1:C1:1.0'` to `ok` writes that `kb_dirty` row; a second update bumps `gen`; deleting an `ok` item marks again; deleting a `pending` item marks nothing; an item with empty `kb_ref` marks nothing.
 - [ ] **Step 3:** Write `TestRecordMedia`: content older than `start_at` records nothing; a re-record keeps an `ok` row's status and body; `replaceKinds "link"` deletes a link no longer found and leaves image rows; without `replaceKinds` nothing is deleted; a `MediaFound` with `Status: "skipped_type"` lands terminal and is never listed; `scope` and `from_owner` come from the parent. `TestListPendingMedia`: `unavailable` only with `visionOK`; rows below `start_at` (after `SetMediaStartAt` moves it) are never listed; a `from_owner` row with a higher id is listed before an older non-owner row. `TestFindDescribedMedia_ScopedByAccount` (an `ok` row with the same `content_key` in `slack:1` is not found for `slack:2`). `TestFailMedia_FinalOnThirdAttempt`. `TestFailMedia_StoresOnlyClass` (class `timeout` stored; `https://x.example/?token=a` or any text outside `MediaErrorClasses` is refused and the row is unchanged).
-- [ ] **Step 4:** Run `go test ./internal/db -run 'Migration00155|MediaKBDirty|RecordMedia|ListPendingMedia|FindDescribedMedia|FailMedia'` — FAIL.
+- [ ] **Step 4:** Run `go test ./internal/db -run 'Migration00156|MediaKBDirty|RecordMedia|ListPendingMedia|FindDescribedMedia|FailMedia'` — FAIL.
 - [ ] **Step 5:** Write the migration (follow `add-migration`; plain `CREATE TABLE` + triggers, no rebuild needed; a full Down), the accessors; mirror `schema.sql`; add both tables to `TestAllTablesExist`; regenerate (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`).
 - [ ] **Step 6:** `go test ./internal/db` — PASS; `make test-swift FILTER='ChatAttachment|TargetImage'` — PASS (the new triggers fire on the Desktop's own inserts in the test schema); `make lint-diff`.
 - [ ] **Step 7:** Commit `feat(db): media items — storage, start mark, kb_dirty and owner-upload triggers`.

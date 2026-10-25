@@ -43,7 +43,7 @@ func insertMediaRow(t *testing.T, d *DB, parentKind, key, cols, vals string) int
 	return id
 }
 
-func TestMigration00155_MediaItems(t *testing.T) {
+func TestMigration00156_MediaItems(t *testing.T) {
 	d := openTestDB(t)
 	start, err := d.MediaStartAt()
 	if err != nil {
