@@ -87,10 +87,14 @@ package struct GettingReadyStep: Equatable, Sendable {
 package struct HomeInstructionSuggestion: Equatable, Sendable {
     package let id: Int64
     package let text: String
+    /// `instruction_suggestions.field`: `session`, `procedure` or `chat`
+    /// (the chat-only text, which reaches chats and never an agent).
+    package let field: String
 
-    package init(id: Int64, text: String) {
+    package init(id: Int64, text: String, field: String = "session") {
         self.id = id
         self.text = text
+        self.field = field
     }
 }
 

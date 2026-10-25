@@ -359,6 +359,14 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(calls.map(\.1), [true])
     }
 
+    /// A chat-only suggestion is about the chat, not the agents.
+    func testChatSuggestionNamesTheChat() throws {
+        let chat = HomeInstructionSuggestion(id: 6, text: "answer in English", field: "chat")
+        let all = try texts(makeContent(viewSnapshot(suggestion: chat)))
+        XCTAssertTrue(all.contains(
+            "You keep telling the chat: \u{201C}answer in English\u{201D}. Add to your chat instructions?"))
+    }
+
     func testWorkbenchReadFailedIsSaid() throws {
         let all = try texts(makeContent(viewSnapshot(workbenchFailed: true)))
         XCTAssertTrue(all.contains("Workbench"))
