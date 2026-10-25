@@ -1,0 +1,139 @@
+{
+  "connections": [
+    {
+      "name": "acme",
+      "kind": "http",
+      "url": "https://other.example.com/mcp",
+      "command": ""
+    },
+    {
+      "name": "docs",
+      "kind": "http",
+      "url": "https://mcp.example.com/docs",
+      "command": ""
+    }
+  ],
+  "cases": [
+    {
+      "name": "no_profile",
+      "permissions": [
+        "shell:\"make test\"",
+        "mcp:acme/*"
+      ],
+      "policy": {},
+      "want": ""
+    },
+    {
+      "name": "shell_off",
+      "permissions": [
+        "shell:\"make test\""
+      ],
+      "policy": {
+        "AllowAutomationShell": false
+      },
+      "want": "shell"
+    },
+    {
+      "name": "shell_head_any_case",
+      "permissions": [
+        "Shell:\"x\""
+      ],
+      "policy": {
+        "AllowAutomationShell": false
+      },
+      "want": "shell"
+    },
+    {
+      "name": "shell_trimmed",
+      "permissions": [
+        "  shell:\"x\"  "
+      ],
+      "policy": {
+        "AllowAutomationShell": false
+      },
+      "want": "shell"
+    },
+    {
+      "name": "shell_wins_over_mcp",
+      "permissions": [
+        "mcp:acme/*",
+        "shell:\"x\""
+      ],
+      "policy": {
+        "AllowAutomationShell": false,
+        "AllowedQuickConnections": []
+      },
+      "want": "shell"
+    },
+    {
+      "name": "mcp_outside_list",
+      "permissions": [
+        "mcp:acme/*"
+      ],
+      "policy": {
+        "AllowedQuickConnections": [
+          "https://mcp.example.com"
+        ]
+      },
+      "want": "mcp"
+    },
+    {
+      "name": "mcp_head_any_case",
+      "permissions": [
+        "MCP:acme/get_*"
+      ],
+      "policy": {
+        "AllowedQuickConnections": [
+          "https://mcp.example.com"
+        ]
+      },
+      "want": "mcp"
+    },
+    {
+      "name": "mcp_inside_list",
+      "permissions": [
+        "mcp:docs/*"
+      ],
+      "policy": {
+        "AllowedQuickConnections": [
+          "https://mcp.example.com"
+        ]
+      },
+      "want": ""
+    },
+    {
+      "name": "mcp_missing_connection",
+      "permissions": [
+        "mcp:gone/*"
+      ],
+      "policy": {
+        "AllowedQuickConnections": [
+          "https://mcp.example.com"
+        ]
+      },
+      "want": ""
+    },
+    {
+      "name": "mcp_server_name_exact",
+      "permissions": [
+        "mcp:Acme/*"
+      ],
+      "policy": {
+        "AllowedQuickConnections": [
+          "https://mcp.example.com"
+        ]
+      },
+      "want": ""
+    },
+    {
+      "name": "mcp_empty_list",
+      "permissions": [
+        "mcp:docs/*"
+      ],
+      "policy": {
+        "AllowedQuickConnections": []
+      },
+      "want": "mcp"
+    }
+  ]
+}

@@ -183,6 +183,7 @@ How Watchtower works
 - AI providers, models and cost (concepts/ai-providers-and-cost.md)
 - Privacy (concepts/privacy.md)
 - Revoked access deletes an account's data (concepts/revoked-access.md)
+- Managed by your organization (concepts/managed-by-your-organization.md)
 
 Troubleshooting
 - Troubleshooting (troubleshooting/README.md)
@@ -266,6 +267,7 @@ Reference
 - Keyboard shortcuts (reference/keyboard-shortcuts.md)
 - Command line (reference/cli.md)
 - Glossary (reference/glossary.md)
+- Organization policy for admins (reference/organization-policy.md)
 
 To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, inbox (your day, messages, tracks and ideas are its filters), calendar, targets, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text.
 ===

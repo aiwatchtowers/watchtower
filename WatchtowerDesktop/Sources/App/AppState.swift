@@ -45,6 +45,10 @@ final class AppState {
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
     let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
+    /// The organization policy forced through the MDM (#608). Read only once
+    /// `initialize()` starts it, so a test that never initializes never reads
+    /// this Mac's managed preferences.
+    let managedPolicy: ManagedPolicyCenter
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -382,11 +386,14 @@ final class AppState {
     private(set) var mobileHubInitError: String?
     /// Where the toggle lives; tests pass a throwaway suite.
     @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
+    /// The policy's `MobileSync` mode for the hub's background parts (#608).
+    @ObservationIgnored let mobileSyncPolicy = MobileSyncPolicyBox()
+    @ObservationIgnored private var policyOffWipeDone = false
     /// Opens the hub's transport and sidecar; tests pass a stub.
     @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
-    @ObservationIgnored private var mobileHubPool: DatabasePool?
+    @ObservationIgnored private(set) var mobileHubPool: DatabasePool?
     /// Built with the first hub and kept across rebuilds, so a QR on screen
     /// keeps its link when `initWorkbenches` replaces the hub.
     @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
@@ -470,7 +477,8 @@ final class AppState {
     /// (design shots have no installed CLI); nil finds the installed one.
     @ObservationIgnored var trackActionRunnerOverride: (any CLIRunnerProtocol)?
 
-    /// `onboardingDefaults` backs the onboarding step and goals,
+    /// `managedPolicyRead` reads the organization policy (design shots pass a
+    /// fixture). `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `migrateDatabase` and
     /// `openDatabase` the database migration and open, `databaseCompaction`
     /// the launch's compaction step (nil: the real one), `peopleRosterRun`
@@ -484,8 +492,10 @@ final class AppState {
         databaseCompaction: DatabaseCompactionStep? = nil,
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
         featureManager: FeatureManagerService? = nil,
-        onboardingGoals: OnboardingGoalsModel? = nil
+        onboardingGoals: OnboardingGoalsModel? = nil,
+        managedPolicyRead: @escaping () -> [String: Any] = { ManagedPolicyReader.appRead() }
     ) {
+        managedPolicy = ManagedPolicyCenter(read: managedPolicyRead)
         let features = featureManager ?? FeatureManagerService()
         self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
@@ -511,6 +521,8 @@ final class AppState {
         daemonManager.onSyncFinished = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
+        managedPolicy.onChange = { [weak self] in self?.managedPolicyChanged($0) }
+        managedPolicy.onRefresh = { [weak self] _ in self?.retryPolicyOffWipe() }
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
@@ -754,6 +766,8 @@ final class AppState {
         isInitializing = true
         isLoading = true
         Constants.prewarmResolvedEnvironment()
+        // Before anything a key decides starts (the mobile hub, the pickers).
+        managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
@@ -1782,6 +1796,7 @@ final class AppState {
         )
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
+        vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
@@ -1857,22 +1872,45 @@ final class AppState {
 
     private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
 
-    var isMobileSyncEnabled: Bool {
-        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey)
-    }
-
     /// Tears down the previous hub and, while the toggle is on, builds and
     /// starts a new one over the run's one transport and sidecar. Called at
-    /// the end of `initWorkbenches`. With the toggle off nothing is opened.
+    /// the end of `initWorkbenches`. With the toggle off nothing is opened —
+    /// unless the organization's `MobileSync = off` must still wipe the
+    /// phone (`wipeHubForPolicyOff`).
     func initMobileHub(dbPool: DatabasePool) {
         let previous = mobileHub
         previous?.dispose()
         mobileHub = nil
         mobileHubPool = dbPool
-        guard isMobileSyncEnabled else { return }
-        let storage: MobileHubStorage
+        guard isMobileSyncEnabled else {
+            wipeHubForPolicyOff(dbPool: dbPool)
+            return
+        }
+        guard let hub = buildRunHub(dbPool: dbPool) else { return }
+        Task {
+            // The replaced hub's relay pass ends first: two never overlap.
+            await previous?.waitUntilStopped()
+            await hub.start()
+        }
+    }
+
+    /// `MobileSync = off` (#608) found the owner's toggle on and no hub
+    /// running (a profile installed while the app was quit): the hub is
+    /// built once and disabled, so what the phone held is removed. Once per
+    /// run; the toggle itself is kept.
+    func wipeHubForPolicyOff(dbPool: DatabasePool) {
+        guard mobileSyncPolicy.current == "off", mobileHub == nil, !policyOffWipeDone,
+              mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey),
+              let hub = buildRunHub(dbPool: dbPool) else { return }
+        policyOffWipeDone = true
+        hub.disable()
+    }
+
+    /// Builds the run's hub over its one storage (opened on first use) into
+    /// `mobileHub`; nil (the error kept) when it cannot be built.
+    private func buildRunHub(dbPool: DatabasePool) -> MobileHubService? {
         do {
-            storage = try mobileHubStorage ?? makeMobileHubStorage()
+            let storage = try mobileHubStorage ?? makeMobileHubStorage()
             if mobileHubStorage == nil {
                 // Once per run, with the storage: CKSyncEngine learns of
                 // remote changes from pushes (the relay poll is the backstop).
@@ -1881,32 +1919,11 @@ final class AppState {
             mobileHubStorage = storage
             mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
             mobileHubInitError = nil
+            return mobileHub
         } catch {
             mobileHubInitError = error.localizedDescription
             Self.mobileHubLogger.error("mobile hub unavailable: \(error.localizedDescription, privacy: .public)")
-            return
-        }
-        let hub = mobileHub
-        Task {
-            // The replaced hub's relay pass ends first: two never overlap.
-            await previous?.waitUntilStopped()
-            await hub?.start()
-        }
-    }
-
-    /// The Settings → Mobile toggle: on starts the hub (building it on first
-    /// use), off stops it. The hub object is kept, so toggling never opens a
-    /// second transport.
-    func setMobileSyncEnabled(_ enabled: Bool) {
-        mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
-        guard enabled else {
-            mobileHub?.disable()
-            return
-        }
-        if let hub = mobileHub {
-            Task { await hub.start() }
-        } else if let pool = mobileHubPool {
-            initMobileHub(dbPool: pool)
+            return nil
         }
     }
 

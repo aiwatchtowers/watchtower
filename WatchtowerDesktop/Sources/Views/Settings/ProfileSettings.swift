@@ -47,7 +47,9 @@ struct ProfileSettings: View {
                 Section("Instructions") { InstructionsSettingsSection() }
                     .id(SettingsAnchor.instructions)
                 AssistantToolsSettingsSection()
-                ClaudeAIConnectorsSection(model: appState.claudeAIConnectors)
+                ClaudeAIConnectorsSection(
+                    model: appState.claudeAIConnectors, lockedOff: !appState.managedPolicy.policy.claudeAIToolsAllowed
+                )
                 onboardingSection
             }
         }

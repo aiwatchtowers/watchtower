@@ -65,6 +65,13 @@ extension SlicePublisher {
         }
         let kindSources = sources.filter { $0.kind == kind }
         guard !kindSources.isEmpty else { return nil }
+        if let allowed = allowedKinds(), !allowed.contains(kind) {
+            // Outside the organization's MobileSync mode (#608): nothing is
+            // read, and what the phone holds of the kind is deleted.
+            let diff = SliceDiff.compute(kind: kind, records: [], knownHashes: known, assets: [:])
+            let isAssetKind = kindSources.contains { $0 is any AssetSliceSource }
+            return KindDiff(diff: diff, assetKindNames: isAssetKind ? [] : nil, published: published)
+        }
         for source in kindSources {
             do {
                 try source.prepare(dbPool)

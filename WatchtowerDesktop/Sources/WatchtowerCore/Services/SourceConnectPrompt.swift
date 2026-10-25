@@ -32,8 +32,16 @@ package enum SourceConnectPrompt {
 
     /// "+ Connect Slack, Mail, Jira…" naming what is still missing; nil once
     /// all three are connected or the row was closed.
-    package static func rowTitle(connected: ConnectedSources, dismissed: Bool) -> String? {
-        let absent = missing(connected)
+    /// A kind the organization's policy (#608) forbids every source of is
+    /// not named.
+    package static func rowTitle(connected: ConnectedSources, dismissed: Bool, policy: ManagedPolicy = .none) -> String? {
+        let absent = missing(connected).filter { kind in
+            switch kind {
+            case .slack: policy.sourceAllowed("slack")
+            case .mail: ["google", "imap", "caldav"].contains(where: policy.sourceAllowed)
+            case .jira: ["jira", "linear"].contains(where: policy.sourceAllowed)
+            }
+        }
         guard !dismissed, !absent.isEmpty else { return nil }
         return "+ Connect " + absent.map(\.title).joined(separator: ", ") + "…"
     }

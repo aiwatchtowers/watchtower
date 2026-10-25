@@ -91,9 +91,16 @@ func NewSaveAutomation(d Deps) *tools.Tool {
 		Access:      tools.AccessWrite,
 		AlwaysAsk:   true,
 		Surfaces:    []string{"main", tools.AutomationEditorSurface},
-		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			_, _, err := parseSave(raw)
-			return err
+		Validate: func(_ context.Context, database *db.DB, raw json.RawMessage) error {
+			_, r, err := parseSave(raw)
+			if err != nil {
+				return err
+			}
+			// The organization's policy (#608): a recipe it forbids is never proposed.
+			if err := automations.CheckRecipePolicy(database, r); err != nil {
+				return &tools.ValidationError{Msg: err.Error()}
+			}
+			return nil
 		},
 		Normalize: func(ctx context.Context, _ *db.DB, raw json.RawMessage) (json.RawMessage, error) {
 			return normalizeSave(ctx, d, raw)
@@ -261,6 +268,11 @@ func executeSave(ctx context.Context, d Deps, raw json.RawMessage) (*SaveResult,
 	r, err := automations.ParseRecipe(p.Slug, []byte(p.RecipeText), scope)
 	if err != nil || p.ApprovalHash == "" || automations.ApprovalHash(r) != p.ApprovalHash {
 		return nil, errors.New(msgRecipeTextDrifted)
+	}
+	// The organization's policy may have tightened since the proposal (#608):
+	// checked again against the live policy before anything is written.
+	if err := automations.CheckRecipePolicy(d.DB, r); err != nil {
+		return nil, fmt.Errorf("save_automation: %w", err)
 	}
 	// The workbench folder's symlink check (recipeTarget) is not atomic with
 	// the write either: the same accepted window as `automations save`.

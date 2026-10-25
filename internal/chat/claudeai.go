@@ -1,6 +1,10 @@
 package chat
 
-import "strings"
+import (
+	"strings"
+
+	"watchtower/internal/policy"
+)
 
 // ClaudeAIMode turns on the warm Claude session's claude.ai tools: publishing
 // to the owner's claude.ai account and the account's claude.ai connectors.
@@ -31,6 +35,10 @@ var claudeAIOffMarkers = []struct{ name, uses string }{
 	{"CLAUDE_CODE_USE_FOUNDRY", "Foundry"},
 }
 
+// claudeAIPolicyOff is the off reason when the organization's policy turns
+// the claude.ai tools off.
+const claudeAIPolicyOff = "claude.ai tools are turned off by your organization's policy."
+
 // ClaudeAIAvailability reports whether a chat session may run in claude.ai
 // mode: the Claude provider (provider is a resolved provider id, "claude"),
 // the main chat surface (embedded chats get nothing, decision Q2) and a child
@@ -39,8 +47,12 @@ var claudeAIOffMarkers = []struct{ name, uses string }{
 // be the whole environment the child gets — os.Environ() plus
 // ClaudeOptions.Env — or a key inherited from the app's own environment is
 // missed. When it is off, reason says why, for the prompt and the Settings
-// sidecar.
+// sidecar. The organization's policy (AllowClaudeAITools, #608) is checked
+// before anything else.
 func ClaudeAIAvailability(env []string, provider, surface string) (on bool, reason string) {
+	if !policy.ClaudeAIToolsAllowed() { // AllowClaudeAITools (#608), checked first
+		return false, claudeAIPolicyOff
+	}
 	if provider != "claude" {
 		return false, "claude.ai tools need the Claude provider."
 	}

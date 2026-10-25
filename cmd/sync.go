@@ -508,6 +508,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// A one-shot or --users-only sync is a Slack sync in this process; the
+	// daemon checks the policy per phase and cycle instead.
+	if !syncFlagDaemon && !syncFlagStop && !syncFlagNow {
+		if err := sourceRefusal("slack"); err != nil {
+			return err
+		}
+	}
+
 	// --stop only needs workspace validation (no Slack token).
 	if syncFlagStop {
 		if err := cfg.ValidateWorkspace(); err != nil {
@@ -1182,7 +1190,7 @@ func newJiraAccountSyncer(cfg *config.Config, database *db.DB, acct db.JiraAccou
 	// Wire board analyzer for auto-refresh of changed configs. This
 	// serves Boards, not digests, so it attaches whenever the account
 	// itself is wired — no longer behind cfg.Digest.Enabled (Task 3).
-	aiProvider := newAIClient(cfg, cfg.DBPath())
+	aiProvider := checkedAIClient(cfg, cfg.DBPath()) // long-lived: the policy is asked per call (#608)
 	analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, acct.ID)
 	analyzer.SetLogger(subLogger(logger, "[jira-analyzer] "))
 	analyzer.SetLanguage(cfg.Digest.Language)

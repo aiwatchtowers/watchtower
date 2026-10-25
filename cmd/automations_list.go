@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/db"
 )
 
@@ -44,6 +45,8 @@ type automationListItem struct {
 	Overridden bool   `json:"overridden"`
 	// TrackID is the track a watch recipe is bound to (0 when none).
 	TrackID int `json:"track_id"`
+	// PolicyBlocked is automationPolicyBlocked: "", "shell" or "mcp" (#608).
+	PolicyBlocked string `json:"policy_blocked"`
 }
 
 func runAutomationsList(cmd *cobra.Command, _ []string) error {
@@ -80,6 +83,10 @@ func runAutomationsList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	lookup, err := automations.ConnectionLookup(database)
+	if err != nil {
+		return err
+	}
 	items := make([]automationListItem, 0, len(rows))
 	for i := range rows {
 		a := &rows[i]
@@ -92,6 +99,7 @@ func runAutomationsList(cmd *cobra.Command, _ []string) error {
 			DisabledReason: a.DisabledReason, DisabledAt: a.DisabledAt,
 			LastStatus: s.LastStatus, Tokens7d: s.TokensSince, Grants: gj, AutoPaused: anyGrantPaused(gj),
 			Origin: a.Origin, BuiltinID: a.BuiltinID, Overridden: a.Overridden, TrackID: watchTracks[a.ID],
+			PolicyBlocked: automationPolicyBlocked(a, lookup),
 		})
 	}
 	w := cmd.OutOrStdout()

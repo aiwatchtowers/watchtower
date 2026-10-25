@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/claude"
+	"watchtower/internal/policy/policytest"
 )
 
 // claudeAITestOptions is a warm-session ClaudeOptions with every argv field
@@ -129,4 +130,25 @@ func TestClaudeAIAvailability(t *testing.T) {
 			assert.Equal(t, c.reason, reason)
 		})
 	}
+}
+
+// TestClaudeAIAvailability_PolicyOff pins the CHAT-02/03 amendment (#608):
+// AllowClaudeAITools false turns the tools off first, with its own reason;
+// without the key nothing changes.
+func TestClaudeAIAvailability_PolicyOff(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowClaudeAITools": false})
+	on, reason := ClaudeAIAvailability([]string{"HOME=/h"}, "claude", "main")
+	assert.False(t, on)
+	assert.Equal(t, "claude.ai tools are turned off by your organization's policy.", reason)
+	_, reason = ClaudeAIAvailability(nil, "codex", "target")
+	assert.Equal(t, "claude.ai tools are turned off by your organization's policy.", reason, "checked first")
+
+	policytest.Set(t, map[string]any{"AllowClaudeAITools": "no"})
+	on, _ = ClaudeAIAvailability(nil, "claude", "main")
+	assert.False(t, on, "a wrong type fails closed")
+
+	policytest.Set(t, nil)
+	on, reason = ClaudeAIAvailability([]string{"HOME=/h"}, "claude", "main")
+	assert.True(t, on)
+	assert.Empty(t, reason)
 }

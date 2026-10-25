@@ -716,3 +716,5 @@ One phone links up to `HubRegistry.limit` = 4 Macs (multi-hub spec §5–§7, pl
 - **No suspected-leak rotation in the UI**: `RotationReason.manual` exists, nothing calls it yet.
 - **One hub process per sidecar.** The damaged-identity recovery treats every second `.corrupt` read as damage, and two signed builds sharing one sidecar would cut each other.
 - **CloudKit environments** must match between the Mac and the phone (see above); a mismatch fails silently.
+
+**Organization policy (2026-10-25, #608):** the MDM key `MobileSync` decides the hub. `off` outvotes `mobileSyncEnabled` (kept as stored), disables a running hub (zones deleted, phones forgotten — re-pairing is needed after the policy loosens) and, when the toggle is on at launch, builds the hub once to wipe; the Settings → Mobile toggle is locked. `workbench_only` publishes only `SliceKind.workbenchOnly` (workbench, targets on the board, comments, sessions, reports, timelines, asks, ask alerts, permission requests, session chat, heartbeat, device grant); every other kind is published empty, so the phone deletes it, and phone recording uploads are refused. See `docs/features/mdm-policy.md`.

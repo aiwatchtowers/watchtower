@@ -7,6 +7,9 @@ import WatchtowerCore
 /// ok/error/revoked per account rather than a single connected/disconnected flag.
 struct EmailConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// The organization's policy forbids this source (#608): nothing new
+    /// connects; existing accounts keep their data.
+    private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("imap") }
     @State private var showAddEmailAccountSheet = false
     @State private var accountPendingRemoval: EmailAccount?
     @State private var accountBeingRenamed: AccountRenameTarget?
@@ -71,6 +74,7 @@ struct EmailConnectionDetail: View {
                 Button("Add Account") {
                     showAddEmailAccountSheet = true
                 }
+                .managedByOrganization(sourceBlocked)
             } else {
                 Text("Loading...")
                     .font(.caption)

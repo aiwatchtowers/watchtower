@@ -115,6 +115,8 @@ misbehaving child.
 `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps`
 (`internal/chat/gate_test.go`)
 
+**Amendment (2026-10-25, #608):** the main chat's claude.ai tools (publish and connectors) gain a first off reason, the organization's `AllowClaudeAITools = false` — "claude.ai tools are turned off by your organization's policy." — and a warm `ai session` answers each turn with the policy error when its provider is no longer allowed (`policyCheckedBackend`). Guards: `internal/chat/claudeai_test.go` `TestClaudeAIAvailability_PolicyOff`, `cmd/provider_policy_test.go` `TestProviderPolicy_SessionTurnRefused`.
+
 ## CHAT-04 — content stays off argv
 
 **Status:** Enforced
@@ -266,3 +268,4 @@ child is never started without it.
 - 2026-09-29 (Projects POC Phase 6, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` §6.3): **CHAT-05**'s Observable extends to owner comments on chat artifacts (`chat_artifact_comments`, migration `00082`, Swift-only writer — Go neither reads nor writes it) and to the chat quote-reply batch. Both stay private/pending state until the owner's own send: **Send N comments** composes the unsent artifact comments into one ordinary owner message (`ArtifactCommentMessage`, built on the shared `CommentBatchComposer` batch rule — comments never reach the assistant one by one), and **Quote in reply** accumulates quoted passages into a per-conversation batch that rides along with the owner's own next turn (`ChatQuoteReply`, the same composer). The source scan (`ArtifactChat05ScanTests`) is extended to these new files and now also forbids any `.send(`/`sendDraft`/`startTurn` reference on the artifact side. `ArtifactsContract` gains one line asking the assistant to answer comments with a new version of the same artifact key. No CHAT-01..04 guard changed.
 - 2026-09-26: initial contracts CHAT-01..05 (spec `docs/superpowers/specs/2026-09-26-chat-redesign-design.md` §9).
 - 2026-09-30: CHAT-05 extended to artifact comments (projects POC phase 6, migration 00082): the source scan covers the comment files and forbids send entry points on the artifact side; comments leave the machine only as the owner's own message. Strengthening only — no guard relaxed.
+- 2026-10-25 (board #608, approved 2026-10-25, asks #569 and #572): CHAT-02/03 note — the claude.ai tools off reason `policy` and the per-turn provider check; no guard relaxed.

@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/claude"
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/policy"
 )
 
 // StepKindShell is the step kind of a shell() call.
@@ -67,7 +68,8 @@ func parseShellCall(env *Env, rt *goja.Runtime, call goja.FunctionCall) (string,
 }
 
 // runShell applies the checks in their order — workbench scope, the
-// manifest, dry run, the folder — and then runs the command.
+// organization's policy, the manifest, dry run, the folder — and then runs
+// the command.
 func runShell(env *Env, b Backends, step *Step, cmd string) (any, error) {
 	wbID := env.Binding().WorkbenchID
 	if wbID == 0 {
@@ -77,6 +79,9 @@ func runShell(env *Env, b Backends, step *Step, cmd string) (any, error) {
 	m, err := manifestOf(env)
 	if err != nil {
 		return nil, err
+	}
+	if !policy.ShellAllowed() { // AllowAutomationShell (#608): no process, dry run included
+		return nil, PolicyError(policy.ShellError())
 	}
 	entry, err := m.AllowShell(cmd)
 	if err != nil {

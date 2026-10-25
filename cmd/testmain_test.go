@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"watchtower/internal/extract"
 	"watchtower/internal/gittest"
 	"watchtower/internal/ownerconfirm"
+	"watchtower/internal/policy"
 )
 
 // TestMain installs the db schema template cache before running tests and
@@ -71,6 +73,16 @@ func TestMain(m *testing.M) {
 		// the signed app: its subprocess trusts the peer (test binary only).
 		if os.Getenv(trustTestPeerEnv) == "1" {
 			ownerconfirm.VerifyPeer = func(context.Context, int) error { return nil }
+		}
+		// The source-guard Execute test's policy (test binary only; the
+		// shipped CLI reads managed preferences alone).
+		if raw := os.Getenv(testPolicyEnv); raw != "" {
+			var forced map[string]any
+			if err := json.Unmarshal([]byte(raw), &forced); err != nil {
+				fmt.Fprintf(os.Stderr, "testmain: %s: %v\n", testPolicyEnv, err)
+				os.Exit(1)
+			}
+			policy.SetReaderForTesting(func() map[string]any { return forced })
 		}
 		os.Exit(Execute())
 	}
@@ -135,6 +147,9 @@ func TestMain(m *testing.M) {
 	backupExcludeApply = func([]string) []error { return nil }
 	// No test runs the owner's login shell (connections import).
 	loginShellEnv = func() map[string]string { return nil }
+	// Tests calling a command's RunE directly see it guarded, as every
+	// Execute does through cobra's initializers (#608).
+	applySourceGuards()
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)
