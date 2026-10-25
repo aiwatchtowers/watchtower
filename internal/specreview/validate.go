@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +28,8 @@ func contains(hay, needle string) bool {
 // containsNorm is contains for a hay that is already normalised.
 func containsNorm(normHay, needle string) bool {
 	n := Normalize(needle)
-	return utf8.RuneCountInString(n) >= minQuoteRunes && strings.Contains(normHay, n)
+	r := utf8.RuneCountInString(n)
+	return r >= minQuoteRunes && r <= maxQuoteRunes && strings.Contains(normHay, n)
 }
 
 func clip(s string, n int) string {
@@ -82,6 +82,9 @@ func (v *validator) anchor(a Anchor) (key, heading string, ok bool) {
 	if known {
 		return "", "", false
 	}
+	if n := Normalize(a.Quote); !containsNorm(v.docNorm, n) || strings.Count(v.docNorm, n) != 1 {
+		return "", "", false // absent or ambiguous
+	}
 	hit := -1
 	for i := range v.chapters {
 		if containsNorm(v.norm[i], a.Quote) {
@@ -112,11 +115,21 @@ func (v *validator) sourceOK(s Source) bool {
 	case "target":
 		text, found = v.src.Target, v.src.Target != ""
 	case "decisions":
-		text, found = v.src.Doc, true
+		text, found = v.decisionsText()
 	case "spec":
 		text, found = v.src.Spec, v.src.Spec != ""
 	}
 	return found && contains(text, s.Quote)
+}
+
+// decisionsText is the text of the chapter headed "Decisions" (the first one).
+func (v *validator) decisionsText() (string, bool) {
+	for i, c := range v.chapters {
+		if normHeading(c.Heading) == "decisions" {
+			return v.norm[i], true
+		}
+	}
+	return "", false
 }
 
 // evidenceOK reports whether e names a regular file under the folder.
@@ -124,13 +137,10 @@ func (v *validator) evidenceOK(e Evidence) bool {
 	if v.root == nil || e.Path == "" || filepath.IsAbs(e.Path) || e.Line < 0 {
 		return false
 	}
-	f, err := v.root.Open(filepath.Clean(e.Path)) // os.Root refuses ".." and escaping links
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	return err == nil && st.Mode().Type() == fs.FileMode(0)
+	// Stat, never Open: opening a FIFO would block Parse forever. os.Root
+	// refuses ".." and links that leave the folder.
+	st, err := v.root.Stat(filepath.Clean(e.Path))
+	return err == nil && st.Mode().IsRegular()
 }
 
 func (v *validator) chapterKeyFor(ref string) (string, bool) {

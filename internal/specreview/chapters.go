@@ -31,7 +31,7 @@ func Chapters(doc string, t DocType) []Chapter {
 			switch {
 			case fence == "":
 				fence = f
-			case strings.HasPrefix(f, fence[:1]) && len(f) >= len(fence):
+			case strings.HasPrefix(f, fence[:1]) && len(f) >= len(fence) && strings.TrimSpace(strings.TrimLeft(line, " ")[len(f):]) == "":
 				fence = ""
 			}
 		} else if fence == "" && isChapterHeading(line, t) {

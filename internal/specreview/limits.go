@@ -16,5 +16,9 @@ const (
 	// to anchor anything.
 	minQuoteRunes = 8
 
+	// maxQuoteRunes: a longer quote is rejected, never clipped, so every stored
+	// quote is still a real substring.
+	maxQuoteRunes = 1000
+
 	keyHexDigits = 12
 )

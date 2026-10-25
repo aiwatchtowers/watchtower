@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/result_keys.golden")
@@ -195,6 +197,20 @@ func TestParse_EvidenceOutsideFolderDropped(t *testing.T) {
 		t.Errorf("key = %q", r.BlindSpots[0].Key)
 	}
 
+	// a FIFO must not hang Parse
+	fifo := filepath.Join(folder, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err == nil {
+		done := make(chan Result, 1)
+		go func() { done <- parseOne(t, `{"summary":"s","blind_spots":[`+spot("pipe")+`]}`, src) }()
+		select {
+		case r := <-done:
+			if len(r.BlindSpots) != 0 {
+				t.Error("FIFO accepted as evidence")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Parse hangs on a FIFO evidence path")
+		}
+	}
 	// a symlink out of the folder is refused too
 	if err := os.Symlink(filepath.Join(parent, "secret.txt"), filepath.Join(folder, "link.txt")); err == nil {
 		if r := parseOne(t, `{"summary":"s","blind_spots":[`+spot("link.txt")+`]}`, src); len(r.BlindSpots) != 0 {
@@ -335,4 +351,21 @@ func FuzzParse(f *testing.F) {
 			t.Fatal("empty summary accepted")
 		}
 	})
+}
+
+func TestParse_DecisionsSourceNeedsDecisionsSection(t *testing.T) {
+	mk := func(quote string) string {
+		return `{"summary":"s","agreements":[{"text":"a","status":"as_agreed","source":{"kind":"decisions","ref":"","quote":"` + quote + `"}}]}`
+	}
+	src := testSources()
+	if r := parseOne(t, mk("Mute state lives in the local database"), src); len(r.Agreements) != 1 {
+		t.Errorf("quote in Decisions dropped: %+v", r)
+	}
+	if r := parseOne(t, mk("The mute button sits in the channel header"), src); len(r.Agreements) != 0 || r.Dropped != 1 {
+		t.Errorf("quote outside Decisions kept: %+v", r)
+	}
+	src.Doc = "## Behaviour\n\nMuting lasts twenty-four hours.\n"
+	if r := parseOne(t, mk("Muting lasts twenty-four hours"), src); len(r.Agreements) != 0 {
+		t.Errorf("no Decisions section, entry kept: %+v", r)
+	}
 }
