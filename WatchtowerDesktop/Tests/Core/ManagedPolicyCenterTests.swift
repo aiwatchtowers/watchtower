@@ -39,7 +39,7 @@ struct ManagedPolicyCenterTests {
         let center = ManagedPolicyCenter { reads += 1; return [:] }
         let notifications = NotificationCenter()
         let activation = Notification.Name("test.activation")
-        center.start(activation: activation, center: notifications, interval: 3600)
+        center.start(activation: activation, center: notifications, queue: nil, interval: 3600)
         #expect(reads == 1)
         notifications.post(name: activation, object: nil)
         #expect(reads == 2)

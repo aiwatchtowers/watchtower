@@ -259,8 +259,12 @@ func httpsURL(s string) (*url.URL, bool) {
 }
 
 // parseEntry parses an AllowedQuickConnections URL entry: https with a host,
-// no user info, no query or fragment, and a path that pathSafe accepts.
+// no user info, no query or fragment (a bare "#" included), and a path that
+// pathSafe accepts.
 func parseEntry(s string) (*url.URL, bool) {
+	if strings.Contains(s, "#") {
+		return nil, false
+	}
 	u, ok := httpsURL(s)
 	if !ok || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
 		return nil, false

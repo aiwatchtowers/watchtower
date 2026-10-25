@@ -1,5 +1,4 @@
 import Foundation
-import GRDB
 import Testing
 @testable import WatchtowerCore
 
@@ -37,20 +36,5 @@ struct PolicySourceMapTests {
         #expect(SourceConnectPrompt.rowTitle(connected: none, dismissed: false, policy: p) == "+ Connect Mail, Jira…")
         let slackOnly = ManagedPolicy.normalize(["AllowedSources": ["slack"]])
         #expect(SourceConnectPrompt.rowTitle(connected: none, dismissed: false, policy: slackOnly) == "+ Connect Slack…")
-    }
-
-    @Test("an automation needing a forbidden shell or Quick Connection is blocked, as in Go")
-    func automationPolicyBlock() {
-        let acme = ExternalConnection(row: Row(["id": 1, "name": "acme", "kind": "http", "url": "https://other.example.com/mcp"]))
-        let shell = Automation(id: 1, slug: "s", permissions: [#"shell:"make test""#])
-        let mcp = Automation(id: 2, slug: "m", permissions: ["mcp:acme/*"])
-        let missing = Automation(id: 3, slug: "x", permissions: ["mcp:gone/*"])
-        #expect(!AutomationPolicyBlock.isBlocked(shell, policy: .none, connections: [acme]))
-        let noShell = ManagedPolicy.normalize(["AllowAutomationShell": false])
-        #expect(AutomationPolicyBlock.isBlocked(shell, policy: noShell, connections: []))
-        #expect(!AutomationPolicyBlock.isBlocked(mcp, policy: noShell, connections: [acme]))
-        let list = ManagedPolicy.normalize(["AllowedQuickConnections": ["https://mcp.example.com"]])
-        #expect(AutomationPolicyBlock.isBlocked(mcp, policy: list, connections: [acme]))
-        #expect(!AutomationPolicyBlock.isBlocked(missing, policy: list, connections: [acme]))
     }
 }

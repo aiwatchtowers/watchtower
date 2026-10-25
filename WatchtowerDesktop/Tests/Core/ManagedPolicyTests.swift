@@ -104,4 +104,12 @@ struct ManagedPolicyTests {
         #expect(p.claudeAIToolsAllowed)
         #expect(ManagedPolicy.Key.allCases.allSatisfy { !p.isLocked($0) })
     }
+
+    @Test("closed sets compare bytes, never canonical equivalence")
+    func closedSetsCompareBytes() {
+        // U+212A KELVIN SIGN is canonically equivalent to "K"; "slac\u{212A}" must not read as a known source.
+        #expect(!ManagedPolicy.byteIn("\u{212A}", ["K"]))
+        let p = ManagedPolicy.normalize(["AllowedSources": ["slack"]])
+        #expect(!p.sourceAllowed("sla\u{0063}k".precomposedStringWithCanonicalMapping + "\u{0301}"))
+    }
 }

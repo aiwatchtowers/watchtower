@@ -638,6 +638,47 @@
           }
         ]
       }
+    },
+    {
+      "name": "quick_connections_go_url_rules",
+      "raw": {
+        "AllowedQuickConnections": [
+          "https://mcp.example.com/#",
+          "https://mcp.example.com/a b",
+          "https://mcp example.com/",
+          "https://mcp.example.com:abc/",
+          "https://mcp%zz.example.com/",
+          "https://mcp.example.com/ü",
+          "https://mcp.example.com:/x",
+          "https://mcp.example.com/a!b",
+          "https://mcp.example.com/a\u0001b"
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": [
+            "https://mcp.example.com/a b",
+            "https://mcp.example.com/ü",
+            "https://mcp.example.com:/x",
+            "https://mcp.example.com/a!b"
+          ],
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedQuickConnections",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
     }
   ],
   "connection_cases": [
@@ -976,6 +1017,116 @@
       "url": "https://mcp.example.com/api/v1?x=1",
       "command": "",
       "want": true
+    },
+    {
+      "name": "raw_space_matches_escaped",
+      "allowed": [
+        "https://mcp.example.com/a b"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/a%20b/x",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "non_ascii_matches_escaped",
+      "allowed": [
+        "https://mcp.example.com/ü"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/%C3%BC",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "bang_raw_vs_escaped_differ",
+      "allowed": [
+        "https://mcp.example.com/a!b"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/a%21b",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "bad_port_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com:abc/",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "space_in_host_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp example.com/",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "bad_escape_in_host_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp%zz.example.com/",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "empty_port_is_another_host",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://MCP.EXAMPLE.COM:/x",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "control_char_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/a\u0001b",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "path_bytes_not_canonical_equivalence",
+      "allowed": [
+        "https://mcp.example.com/café"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/café",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "command_bytes_not_canonical_equivalence",
+      "allowed": [
+        "/opt/café"
+      ],
+      "kind": "stdio",
+      "url": "",
+      "command": "/opt/café",
+      "want": false
+    },
+    {
+      "name": "fragment_only_entry_invalid",
+      "allowed": [
+        "https://mcp.example.com/#"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/x",
+      "command": "",
+      "want": false
     }
   ]
 }

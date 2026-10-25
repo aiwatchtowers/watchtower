@@ -182,7 +182,7 @@ struct SystemSettings: View {
         }
     }
 
-    private var aiProviderPicker: some View {
+    @ViewBuilder private var aiProviderPicker: some View {
         Picker(
             "AI Provider",
             selection: Binding(
@@ -200,15 +200,20 @@ struct SystemSettings: View {
                 }
             )
         ) {
-            // Only the providers the organization's policy allows (#608); a
-            // stored provider it forbids stays visible, so the picker shows
-            // what is configured, but is locked.
+            // Only the providers the organization's policy allows (#608),
+            // plus a stored provider it forbids, marked, so the owner sees
+            // what is configured and can pick an allowed one.
             ForEach(Self.providerChoices.filter { policy.providerAllowed($0.id) || $0.id == selectedProviderID },
                     id: \.id) { choice in
-                Text(choice.title).tag(choice.id)
+                Text(policy.providerAllowed(choice.id) ? choice.title : "\(choice.title) (not allowed)").tag(choice.id)
             }
         }
         .managedByOrganization(providerLocked)
+        if !policy.providerAllowed(selectedProviderID) {
+            Text(ConnectionTest.policyRefusal(provider: selectedProviderID, policy: policy) ?? "")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private static let providerChoices: [(id: String, title: String)] = [
@@ -217,10 +222,12 @@ struct SystemSettings: View {
 
     private var policy: ManagedPolicy { appState.managedPolicy.policy }
 
-    /// Locked when the policy leaves one provider, or forbids the stored one.
+    /// Locked only when the policy allows exactly one provider and it is the
+    /// stored one: nothing else could be picked. A forbidden stored provider
+    /// leaves the picker open, so AI is never stuck on it.
     private var providerLocked: Bool {
         guard let allowed = policy.allowedAIProviders else { return false }
-        return allowed.count <= 1 || !allowed.contains(selectedProviderID)
+        return allowed.count == 1 && allowed.first == selectedProviderID
     }
 
     private var aiWorkersField: some View {

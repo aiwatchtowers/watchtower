@@ -1,9 +1,11 @@
 import Foundation
 
 /// Which organization-policy source (#608, `AllowedSources`) an account kind
-/// belongs to: Google covers Gmail and Calendar, Email covers IMAP and
-/// Outlook, Jira covers Confluence. Go's command groups map the same way
-/// (`cmd/accounts.go`).
+/// belongs to, keyed on `ConnectionService`'s raw values and a few aliases:
+/// Google covers Gmail and Google Calendar, Email covers IMAP and Outlook,
+/// the Calendar service (CalDAV and ICS feeds) is `caldav`, Jira covers
+/// Confluence. Go's guard keys on its command groups instead
+/// (`cmd/accounts.go`), where `calendar` is Google Calendar.
 package enum PolicySourceMap {
     /// nil for a kind no source decides (Quick Connections).
     package static func policySource(forAccountKind kind: String) -> String? {

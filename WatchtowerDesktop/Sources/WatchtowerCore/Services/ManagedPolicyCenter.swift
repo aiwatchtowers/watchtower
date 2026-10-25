@@ -31,11 +31,18 @@ package final class ManagedPolicyCenter {
     }
 
     /// Refreshes now, on each `activation` notification and every `interval`.
-    package func start(activation: Notification.Name, center: NotificationCenter = .default, interval: TimeInterval = 60) {
+    /// `queue` nil delivers the notification on the posting thread (the
+    /// main one; tests rely on it being synchronous).
+    package func start(
+        activation: Notification.Name,
+        center: NotificationCenter = .default,
+        queue: OperationQueue? = .main,
+        interval: TimeInterval = 60
+    ) {
         refresh()
         guard timer == nil else { return }
         observedCenter = center
-        observer = center.addObserver(forName: activation, object: nil, queue: .main) { [weak self] _ in
+        observer = center.addObserver(forName: activation, object: nil, queue: queue) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in

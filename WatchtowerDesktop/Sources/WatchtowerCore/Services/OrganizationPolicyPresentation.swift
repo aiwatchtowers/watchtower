@@ -24,7 +24,7 @@ package enum OrganizationPolicyPresentation {
             out.append(Line(label: "Shell commands in automations", value: allowed(b)))
         }
         if let a = p.allowedAIProviders {
-            out.append(Line(label: "AI providers", value: list(a.map(providerName))))
+            out.append(Line(label: "AI providers", value: a.isEmpty ? "none — AI features cannot run" : list(a.map(providerName))))
         }
         if let b = p.allowClaudeAITools {
             out.append(Line(label: "claude.ai tools in the chat", value: allowed(b)))

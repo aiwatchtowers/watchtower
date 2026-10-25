@@ -47,7 +47,7 @@ struct OrganizationPolicyPresentationTests {
     func emptySourcesSaysNone() {
         #expect(text(["AllowedSources": [String](), "AllowedAIProviders": [String]()]) == [
             "Sources you can connect: none",
-            "AI providers: none"
+            "AI providers: none — AI features cannot run"
         ])
     }
 }

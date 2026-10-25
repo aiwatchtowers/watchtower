@@ -1365,6 +1365,25 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertTrue(launches.isEmpty)
     }
 
+    /// An agent the organization's policy forbids (#608) is not resumed or
+    /// started fresh: the policy's words are shown, no process starts.
+    func testAResumeOfAForbiddenAgentIsRefused() async throws {
+        let p = try await workbenchWithFolder()
+        let row = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+        vm.managedPolicy = { ManagedPolicy.normalize(["AllowedAIProviders": ["codex"]]) }
+
+        await vm.open(row)
+        XCTAssertEqual(vm.sessionErrors[p], "Could not open the session: "
+            + "policy: AI provider claude is not allowed by your organization (allowed: codex)")
+        await vm.startFresh(row)
+        XCTAssertEqual(vm.sessionErrors[p], "Could not start the session: "
+            + "policy: AI provider claude is not allowed by your organization (allowed: codex)")
+        XCTAssertTrue(launches.isEmpty)
+    }
+
     func testARevealDrillsInAndReplacesAStandaloneTerminal() async throws {
         let p = try await workbenchWithFolder()
         let vm = makeVM()

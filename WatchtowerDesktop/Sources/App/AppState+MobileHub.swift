@@ -6,6 +6,28 @@ import WatchtowerCore
 extension AppState: MobileSettingsHost {}
 
 extension AppState {
+    /// The owner's toggle, outvoted by the organization's `MobileSync = off`
+    /// (#608); the stored toggle itself is never rewritten by the policy.
+    var isMobileSyncEnabled: Bool {
+        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey) && managedPolicy.policy.mobileSyncMode != "off"
+    }
+
+    /// The Settings → Mobile toggle: on starts the hub (building it on first
+    /// use), off stops it. The hub object is kept, so toggling never opens a
+    /// second transport.
+    func setMobileSyncEnabled(_ enabled: Bool) {
+        mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
+        guard enabled else {
+            mobileHub?.disable()
+            return
+        }
+        if let hub = mobileHub {
+            Task { await hub.start() }
+        } else if let pool = mobileHubPool {
+            initMobileHub(dbPool: pool)
+        }
+    }
+
     var mobileSyncLockedByPolicy: Bool { managedPolicy.policy.mobileSyncMode == "off" }
 
     /// Follows a changed policy on the hub: `off` stops it and removes what
@@ -18,7 +40,11 @@ extension AppState {
         mobileSyncPolicy.store(mode)
         guard mode != previous else { return }
         if mode == "off" {
-            mobileHub?.disable()
+            if let hub = mobileHub {
+                hub.disable()
+            } else if let pool = mobileHubPool {
+                wipeHubForPolicyOff(dbPool: pool)
+            }
         } else if previous == "off", isMobileSyncEnabled {
             if let hub = mobileHub {
                 Task { await hub.start() }
