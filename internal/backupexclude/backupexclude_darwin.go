@@ -44,7 +44,7 @@ func applyOne(dir string) error {
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("resolving: %w", err)
 	}
 	buf := make([]byte, len(fixture)+1)
 	n, err := unix.Getxattr(resolved, Attr, buf)
@@ -56,7 +56,10 @@ func applyOne(dir string) error {
 	case errors.Is(err, unix.ENOATTR), errors.Is(err, unix.ERANGE):
 		// Missing, or a value longer than ours: write it.
 	default:
-		return err
+		return fmt.Errorf("reading the exclusion: %w", err)
 	}
-	return setxattr(resolved, Attr, fixture, 0)
+	if err := setxattr(resolved, Attr, fixture, 0); err != nil {
+		return fmt.Errorf("writing the exclusion: %w", err)
+	}
+	return nil
 }
