@@ -91,9 +91,16 @@ func NewSaveAutomation(d Deps) *tools.Tool {
 		Access:      tools.AccessWrite,
 		AlwaysAsk:   true,
 		Surfaces:    []string{"main", tools.AutomationEditorSurface},
-		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			_, _, err := parseSave(raw)
-			return err
+		Validate: func(_ context.Context, database *db.DB, raw json.RawMessage) error {
+			_, r, err := parseSave(raw)
+			if err != nil {
+				return err
+			}
+			// The organization's policy (#608): a recipe it forbids is never proposed.
+			if err := automations.CheckRecipePolicy(database, r); err != nil {
+				return &tools.ValidationError{Msg: err.Error()}
+			}
+			return nil
 		},
 		Normalize: func(ctx context.Context, _ *db.DB, raw json.RawMessage) (json.RawMessage, error) {
 			return normalizeSave(ctx, d, raw)
