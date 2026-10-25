@@ -1,16 +1,22 @@
 # Sources and accounts
 
-A source is an account Watchtower reads from. You connect them in **Settings → Connections**, and almost every feature is only as full as the sources behind it. You can connect several accounts of the same kind.
+A source is an account Watchtower reads from. You connect them in **Connections**, under TOOLS in the sidebar, and almost every feature is only as full as the sources behind it. You can connect several accounts of the same kind.
+
+## The Connections tab
+
+**Connections** opens on a card per source: its status dot, how many accounts it has and one line, such as the account that needs you or what connecting it brings. **Quick Connections** sits apart under **TOOLS FOR AI**. Click a card to open that service, with the list of services beside it and **All Connections** to go back; **Connect…** at the top opens the service you pick.
+
+A service that needs you gets a banner on top with **Reconnect**, which opens the service, and the **Connections** row in the sidebar shows how many services need you. An account you switched off does not count, nor a source your company blocks. **Settings → Connections** only has an **Open Connections** button now.
 
 ## What each source gives
 
 | Source | Where | What Watchtower takes | What reads it |
 |---|---|---|---|
 | **Slack** | Connections → Slack | Messages, mentions and threads of the workspaces you connect, plus your own reactions | Digests, Tracks, People, Catch Up, Attention detection, Reaction Commands |
-| **Google** | Connections → Google | Calendar events and the Gmail inbox, switched separately per account | Calendar, meeting prep, Day Plan, Briefings, Attention detection, Stream Digests, Ideas, Search |
-| **Email** | Connections → Email | New mail from an IMAP or Outlook mailbox | Search, Catch Up, Attention detection |
+| **Google** | Connections → Google | Calendar events and the Gmail inbox, switched separately per account | Calendar, meeting prep, Day Plan, Briefings, Attention detection, Stream Digests, Ideas, Knowledge search |
+| **Email** | Connections → Email | New mail from an IMAP or Outlook mailbox | Knowledge search, Catch Up, Attention detection |
 | **Calendar** | Connections → Calendar | A CalDAV account or an ICS feed | Calendar, meeting prep, Day Plan |
-| **Jira** | Connections → Jira | Issues, boards, sprints, releases and comments of a Jira Cloud site; Confluence spaces you pick under the site | Targets, Boards, Workload, Blockers, Search, Ideas |
+| **Jira** | Connections → Jira | Issues, boards, sprints, releases and comments of a Jira Cloud site; Confluence spaces you pick under the site. Boards are chosen in the same place | Targets, Workload, Blockers, Knowledge search, Ideas |
 | **Linear** | Connections → Linear | Issues, cycles and projects of the teams you select ([Linear](../features/linear.md)) | Blockers, weekly digest progress, AI Chat; identifies you as the owner |
 | **Quick Connections** | Connections → Quick Connections | Nothing is synced. The assistant can call an external tool server (MCP) you add, only when you ask in chat | The AI Chat. See [Quick Connections](../features/quick-connections.md) |
 

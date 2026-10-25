@@ -126,7 +126,7 @@ still decides only the `briefing` feature.
 
 **Sidebar visibility.** A tab shows when its feature rule AND its source
 rule hold (`SidebarDestination.isVisible`, `ConnectedSources`): Calendar
-needs a calendar; Boards, Workload, Project Map and Releases need
+needs a calendar; Workload, Project Map and Releases need
 Jira, Blockers Jira or Linear; Statistics needs Slack or mail; Catch-Up needs any source
 (Slack, mail, Jira, Linear or a calendar). Inbox has neither rule since C1 (it
 also holds the briefings, plans, tracks and ideas, whose tabs had none); Catch-Up needs
@@ -134,7 +134,7 @@ also holds the briefings, plans, tracks and ideas, whose tabs had none); Catch-U
 2026-10-03, #284). A selection that lands on a hidden tab falls back to
 Home, which has no gate (first-run P2, `docs/features/first-run.md`). The quiet "+ Connect Slack, Mail, Jira…"
 row at the bottom of the menu names the kinds still missing (Mail = any
-Google, IMAP or CalDAV/ICS source), opens Settings → Connections, and hides
+Google, IMAP or CalDAV/ICS source), opens the Connections tab, and hides
 for good with its × (`sidebar_connect_row_dismissed`).
 
 **C1, the one Inbox (2026-10-22, board #861):** the Briefings, Day Plan,

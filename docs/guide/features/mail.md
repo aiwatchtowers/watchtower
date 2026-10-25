@@ -28,12 +28,12 @@ Your reply does not close a mail item. Slack, Jira and calendar items resolve wh
 
 ## Using it
 
-1. Open **Settings → Connections**.
+1. Open **Connections**.
 2. For Gmail with Calendar, use **Google** and click **Add Google Account**. Leave **Gmail** switched on and click **Connect**.
 3. For Gmail on its own, Outlook or another IMAP mailbox, use **Email** and click **Add Account**. Choose **Connect Gmail**, **Connect Outlook** or fill in the **IMAP** form (host, username, password; port, security and folder wait under **Advanced** with the usual 993, SSL and `INBOX`) and click **Test and Connect**.
 4. Wait for the next sync cycle, then check **Catch Up** or the next briefing.
 
-Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** under **Settings → Connections → Google**. Remove one account with **Remove**.
+Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** under **Connections → Google**. Remove one account with **Remove**.
 
 ## When it's empty or wrong
 

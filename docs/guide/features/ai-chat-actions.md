@@ -62,7 +62,7 @@ The card can be approved only while that reply is still running. Once the chat's
 ## When it's empty or wrong
 
 - **The send fails with "sign in again to grant send".** Your Slack workspace was connected before send existed. Click **Reconnect Slack** on the card, approve Slack's page in the browser, then **Retry**.
-- **The assistant says it cannot edit Confluence.** The site needs **Allow editing** in **Settings → Connections → Jira → Confluence**. If Confluence sync is off, that section says "Confluence sync is turned off"; click its **Enable** button first.
+- **The assistant says it cannot edit Confluence.** The site needs **Allow editing** in **Connections → Jira → Confluence**. If Confluence sync is off, that section says "Confluence sync is turned off"; click its **Enable** button first.
 - **An archived page.** It can be read but not edited; restore it in Confluence first.
 - **A Confluence card says the edit "may have been saved".** The page moved one version but not to this edit. Ask the assistant to read the page again before trying again.
 - **A connector card says "Chat session ended".** The chat stopped, quit or restarted before the call ran, so it was not sent. Ask again.

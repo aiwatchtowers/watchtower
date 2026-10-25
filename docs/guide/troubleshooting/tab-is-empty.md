@@ -19,7 +19,7 @@ A tab shows what a background job wrote. It stays empty until its feature is on,
 | Inbox → All, Messages | Attention detection | Any source, and Watchtower knows who you are |
 | Memory | Memory (off by default) | Any source |
 | Calendar | none | A calendar |
-| Workload, Project map, Releases, Boards | none | Jira |
+| Workload, Project map, Releases | none | Jira |
 | Blockers | none | Jira or Linear |
 | Statistics | none | Slack (the tab also shows with only mail connected, but stays empty) |
 
@@ -29,8 +29,8 @@ Targets, Workbench, Automations and the Inbox's **Automations** filter have no s
 
 1. Read the status line.
    - **Off — Turn on:** press **Turn on**.
-   - **Connect Slack to get this** (or a calendar, Jira, a source): connect it in **Settings → Connections**.
-   - **Choose Jira boards to get this:** Jira is connected but no board is picked. Press **Choose Jira boards** and switch boards on in **Boards**.
+   - **Connect Slack to get this** (or a calendar, Jira, a source): connect it in **Connections**.
+   - **Choose Jira boards to get this:** Jira is connected but no board is picked. Press **Choose Jira boards**; it opens **Connections** → **Jira**, where you switch boards on.
    - **Needs Slack Digests** (Tracks, People): press **Turn on Slack Digests**; Tracks and People Cards run only with it.
    - **Watchtower isn't running:** the background sync has been stopped for at least 30 seconds, so nothing new arrives. Press **Start** on the banner at the top of the window; it says "Starting Watchtower…" until the sync is up, which can take up to a minute after an update. If you stopped it on purpose, **Dismiss** hides the banner until the next time it stops. If it does not start, the banner says why, with **Retry** and **Open Logs**; see [Sync is stuck or slow](sync-stuck-or-slow.md).
    - **Waiting for history to load** (Memory): a source is loading its first month; before its first run, Memory waits for it at most a day.

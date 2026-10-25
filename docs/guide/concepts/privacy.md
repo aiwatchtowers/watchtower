@@ -7,7 +7,7 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 - **All synced data and AI results.** The database lives in `~/.local/share/watchtower/<workspace>/watchtower.db`, next to Memory's notes and the search index. Meeting recordings are in `~/Library/Application Support/Watchtower/recordings`.
 - **Sign-ins.** OAuth tokens for Slack, Google, Jira and Linear are stored as separate files in that folder, readable only by your user. Quick Connection secrets are the same.
 - **Meeting transcription.** Audio is captured and transcribed on the Mac. The speech models are downloaded once, on first use, then run locally. Recording audio is deleted after 30 days (**Settings → Meetings → Delete audio after N days**); transcript text is kept.
-- **Search.** The Knowledge search index is local; only its image descriptions and link summaries use AI (below).
+- **Knowledge search.** The index is local; only its image descriptions and link summaries use AI (below).
 - **Mechanical features.** Attention detection and Claude plan limits make no AI calls.
 
 Removing an account deletes its sign-in file. With **Delete an account's data when its access is revoked** on, a revoked account's synced data is deleted after a 72-hour notice, and so is a source's that Watchtower has not reached for 30 days: see [Revoked access deletes an account's data](revoked-access.md).

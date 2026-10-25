@@ -26,7 +26,7 @@ If the server does not say, a tool is allowed when its name starts with get, lis
 
 ## Using it
 
-1. Open **Settings → Connections → Quick Connections** and click **Add Connection**.
+1. Open **Connections → Quick Connections** and click **Add Connection**.
 2. Enter a **Name**. Choose **Kind**: **stdio (local process)** runs a command on your Mac (a **Command** and optional arguments, for example `npx -y trello-mcp`); **http (remote server)** takes a **Server URL**.
 3. For http, choose **Sign in with OAuth (recommended)**, which opens the server's authorization page after **Add**, or **Headers (manual)** to enter a static key.
 4. Click **Add**. The connection starts off. Turn on its **Enabled** switch; this lists its tools.

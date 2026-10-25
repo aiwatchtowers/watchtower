@@ -64,7 +64,7 @@ On a new install a **Getting ready** zone sits above the columns, its header cou
 
 While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan lines say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead.
 
-A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button. A row goes only when your company forbids every source behind it: "Connect Jira or mail" stays while mail is allowed. A connected Jira with no board picked keeps a line with **Choose Jira boards**, which opens **Boards**.
+A source you haven't connected becomes one dashed row ("Connect Jira to get Workload, Blockers, Project Map and Releases") with a **Connect** button. A row goes only when your company forbids every source behind it: "Connect Jira or mail" stays while mail is allowed. A connected Jira with no board picked keeps a line with **Choose Jira boards**, which opens **Connections** → **Jira**. **Connect** opens **Connections** on that source.
 
 When every feature is ready or retrying on its own, the zone shrinks to "Everything's ready" for the rest of that launch. It folds three days after it first showed, whatever still waits. An install that was already ready never sees it.
 
@@ -81,11 +81,11 @@ The menu lists Home, Targets, Workbench, Automations and Calendar, then three co
 - **EXECUTION**: Project Map, Releases, Blockers, Workload.
 - **INSIGHTS**: Digests, People, Memory, Statistics.
 
-AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOCUS starts open, the others folded; your folds are remembered.
+AI Chat and the TOOLS (Connections, Usage, MCP Server) sit at the bottom. The **Connections** badge counts the services that need you, such as an expired sign-in. FOCUS starts open, the others folded; your folds are remembered.
 
 - **⌘B** folds the menu into an icon rail and back; there each section is one icon with its tabs.
 - Right-click a tab for **Hide**; it moves to the section's **HIDDEN** list, where **Show** brings it back.
-- Until Slack, mail and Jira are connected, a quiet **+ Connect …** line at the bottom names what is missing, unless your company forbids it, and opens Settings → Connections. Its **×** hides it for good.
+- Until Slack, mail and Jira are connected, a quiet **+ Connect …** line at the bottom names what is missing, unless your company forbids it, and opens **Connections**. Its **×** hides it for good.
 - Badges show what waits: the Inbox's count, a recap.
 
 Home ends with "Stuck? Press **⌘/** to ask, or open the User Guide."; **⌘/** opens the [assistant over this tab](ai-chat.md).
