@@ -1,7 +1,13 @@
 # Watchtower data stays out of Time Machine — design (board #605)
 
 Part of board group #595 (corporate data on the Mac must not be easy to carry
-away). Status: draft for the owner, 2026-10-25; no code yet. Siblings: #601
+away). Status: approved by the owner 2026-10-25 (ask #574) with the
+recommended answer to every question: Q1 (a) everyone, always, no switch;
+Q2 (a) the data folder, Application Support/Watchtower and a custom
+recordings folder, settings stay in backups; Q3 (a) the guide says how to
+delete old backups, nothing automatic. New inventory entry BACKUP-01 is
+approved with it. Plan:
+`docs/superpowers/plans/2026-10-25-time-machine-exclusion.md`. Siblings: #601
 (revoke purge, `docs/superpowers/specs/2026-10-21-revoke-purge-design.md`),
 #603 (database encryption, `docs/superpowers/specs/2026-10-21-db-encryption-design.md`,
 Stage 1 merged: engine only, every file still plaintext), #604 (files outside
