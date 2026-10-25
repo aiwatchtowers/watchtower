@@ -41,6 +41,13 @@ func WithWorkDir(ctx context.Context, root string) context.Context {
 	return context.WithValue(ctx, workDirKey{}, root)
 }
 
+// WorkDirFromContext returns the root WithWorkDir set, for an image
+// generator outside this package.
+func WorkDirFromContext(ctx context.Context) (string, bool) {
+	root, ok := ctx.Value(workDirKey{}).(string)
+	return root, ok && root != ""
+}
+
 // generatorWrapper is a decorator around another Generator.
 type generatorWrapper interface {
 	wrappedGenerator() Generator
@@ -140,6 +147,27 @@ func parseStreamResult(output []byte) (*cliResponse, error) {
 	return nil, fmt.Errorf("no result event in claude CLI stream-json output (%d lines)", len(lines))
 }
 
+// CheckImageFile requires path to be a regular file within the image input
+// cap, so a missing or oversized image fails before any model call starts.
+func CheckImageFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("opening the image: %w", err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("reading the image: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return errors.New("the image is not a regular file")
+	}
+	if st.Size() > maxImageInput {
+		return fmt.Errorf("the image is over %d bytes", maxImageInput)
+	}
+	return nil
+}
+
 // readImage reads the image file, refusing one over maxImageInput.
 func readImage(path string) ([]byte, error) {
 	f, err := os.Open(path)
@@ -163,8 +191,8 @@ func readImage(path string) ([]byte, error) {
 // base64 content block on stdin, the system prompt a 0600 file: neither
 // reaches argv. The reply and usage come from the final result event.
 func (g *ClaudeGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, mediaType string) (string, *Usage, error) {
-	root, _ := ctx.Value(workDirKey{}).(string)
-	if root == "" {
+	root, ok := WorkDirFromContext(ctx)
+	if !ok {
 		return "", nil, errors.New("image call without a work directory (digest.WithWorkDir)")
 	}
 	data, err := readImage(imagePath)

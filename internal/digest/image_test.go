@@ -192,3 +192,32 @@ func TestParseStreamResult(t *testing.T) {
 		t.Fatal("a stream without a result event parsed")
 	}
 }
+
+func TestCheckImageFile(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "a.png")
+	if err := os.WriteFile(ok, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckImageFile(ok); err != nil {
+		t.Errorf("regular file: %v", err)
+	}
+	if CheckImageFile(filepath.Join(dir, "none.png")) == nil {
+		t.Error("missing file accepted")
+	}
+	big := filepath.Join(dir, "big.png")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxImageInput + 1); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if CheckImageFile(big) == nil {
+		t.Error("oversized file accepted")
+	}
+	if CheckImageFile(dir) == nil {
+		t.Error("directory accepted")
+	}
+}
