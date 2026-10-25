@@ -758,9 +758,9 @@ final class AppState {
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
         }
-        // Surface a recording captured before a crash/relaunch so the global
-        // indicator can offer to (re-)transcribe it. No DB needed.
-        meetingRecorderCenter.restorePendingOnLaunch()
+        // A recording captured before a crash/relaunch is surfaced once the
+        // pool opens (`wireMeetingRecorderLoaders`): its pending row lives in
+        // the database.
         // Neither direction of this handshake needs the DB, so it is wired
         // unconditionally rather than inside the DB-dependent Task below.
         dictationCenter.meetingBusy = { [meetingRecorderCenter] in meetingRecorderCenter.isBusy }

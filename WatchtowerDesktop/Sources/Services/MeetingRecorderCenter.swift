@@ -59,12 +59,14 @@ extension NotificationService: MeetingTranscriptNotifying {}
 /// keeps mutating this `AppState`-held Center.
 ///
 /// The audio file is preserved on disk through every downstream failure. A
-/// `rec_X.meta` sidecar written next to it at record start mirrors the event
-/// link/title, so a recording captured before a crash is recovered event-linked
-/// on relaunch (`restorePendingOnLaunch`) — one sidecar per recording, so N
-/// unprocessed recordings all come back. Once transcription succeeds the
-/// transcript is also persisted next to the audio until the save lands, so
-/// retrying a failed save never re-transcribes.
+/// `pending_transcripts` row written at record start (`pendingStore`, #604
+/// S3/S4 — it replaced the `rec_X.meta` sidecar) holds the event link/title, so
+/// a recording captured before a crash is recovered event-linked on relaunch
+/// (`restorePendingOnLaunch`) — one row per recording, so N unprocessed
+/// recordings all come back; an audio file with no row and no saved transcript
+/// (the database was not open yet) comes back too, without its link. Once
+/// transcription succeeds the transcript is kept in the row until the save
+/// lands, so retrying a failed save never re-transcribes.
 @MainActor
 @Observable
 final class MeetingRecorderCenter {
@@ -449,6 +451,14 @@ final class MeetingRecorderCenter {
     /// Audio file of the active capture.
     private var captureAudioURL: URL?
 
+    /// Where recordings not yet saved are recorded (`pending_transcripts`);
+    /// nil until the database opens (AppState sets it, then calls
+    /// `restorePendingOnLaunch` again). A recording started without it is
+    /// still captured and comes back from its audio file alone.
+    var pendingStore: PendingTranscriptStore?
+    /// The legacy `rec_*` sidecars were imported into `pendingStore`.
+    private var legacySidecarsImported = false
+
     private let recorderFactory: () -> AudioRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
     private let diarizerFactory: (TranscriptionConfig) async throws -> SpeakerDiarizing
@@ -482,11 +492,15 @@ final class MeetingRecorderCenter {
     /// which cannot run under `swift test` (headless CoreAudio), so tests feed
     /// samples directly instead of a real audio file.
     ///
+    /// `pendingStore` is nil in the app until the pool opens (AppState sets
+    /// it); tests hand one in.
+    ///
     /// `runnerResolver` is consulted only at the save step — stopping capture,
     /// finalizing the audio file, and transcribing must never depend on the
     /// `watchtower` CLI being locatable; a nil resolution fails visibly with
     /// the audio (and persisted transcript) kept for retry.
     init(
+        pendingStore: PendingTranscriptStore? = nil,
         recorderFactory: @escaping () -> AudioRecording = { SystemAudioRecorder() },
         engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber = MeetingRecorderCenter.defaultEngineFactory,
         diarizerFactory: @escaping (TranscriptionConfig) async throws -> SpeakerDiarizing = {
@@ -501,6 +515,7 @@ final class MeetingRecorderCenter {
         now: @escaping () -> Date = Date.init,
         meetingsProvider: @escaping (Date) -> WarmMeetingWindow = { _ in .noMeetings }
     ) {
+        self.pendingStore = pendingStore
         self.recorderFactory = recorderFactory
         self.engineFactory = engineFactory
         self.diarizerFactory = diarizerFactory
@@ -913,11 +928,12 @@ final class MeetingRecorderCenter {
 
         let recorder = recorderFactory()
         self.recorder = recorder
-        let url = Self.uniqueRecordingURL(in: recordingsDirectory)
+        let store = pendingStore
+        let url = Self.uniqueRecordingURL(in: recordingsDirectory) { Self.isReserved($0, in: store) }
 
         do {
             try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
-            Self.writeMetaSidecar(eventID: eventID, title: title, for: url)
+            beginPending(eventID: eventID, title: title, for: url)
             try await recorder.start(to: url)
             captureAudioURL = url
             captureState = .recording(startedAt: Date())
@@ -950,7 +966,7 @@ final class MeetingRecorderCenter {
             captureAudioURL = nil
             currentEventID = nil
             currentTitle = nil
-            Self.removeMetaSidecar(for: url)
+            removePending(for: url)
             captureError = error.localizedDescription
             notifier.sendTranscriptFailedNotification(reason: error.localizedDescription)
         }
@@ -1227,7 +1243,12 @@ final class MeetingRecorderCenter {
     /// text instead of re-running the engine.
     func prepareRetry(audioURL: URL, eventID: String?, title: String?) {
         guard !isBusy else { return }
-        Self.removePersistedTranscript(audioURL: audioURL)
+        do {
+            try pendingStore?.clearTranscript(recording: audioURL.lastPathComponent)
+        } catch {
+            print("[MeetingRecorder] could not clear the kept transcript of \(audioURL.lastPathComponent): "
+                  + error.localizedDescription)
+        }
         addRecoverable(RecoverableRecording(audioURL: audioURL, eventID: eventID, title: title), atHead: true)
     }
 
@@ -1247,44 +1268,64 @@ final class MeetingRecorderCenter {
     }
 
     /// Forgets a recovered recording the user chose not to transcribe: drops the
-    /// entry and its `.meta` sidecar so the "recovered" pill goes away for good
-    /// — this session and on relaunch. The audio file is left on disk; the Go
-    /// orphan sweep reclaims it like any other `rec_*` file. Only acts on the
-    /// idle recovered state, never mid-capture — otherwise an in-flight
-    /// recording would lose the sidecar that lets it recover from a crash.
+    /// entry and marks its row dismissed so the "recovered" pill goes away for
+    /// good — this session and on relaunch. The audio file is left on disk; the
+    /// Go orphan sweep reclaims it like any other `rec_*` file (the row goes
+    /// with it at a later launch). Only acts on the idle recovered state,
+    /// never mid-capture.
     func dismissRecovered() {
         guard case .idle = captureState, !recoverable.isEmpty else { return }
         let entry = recoverable.removeFirst()
-        Self.removeMetaSidecar(for: entry.audioURL)
+        do {
+            try pendingStore?.dismiss(recording: entry.audioURL.lastPathComponent, at: clock())
+        } catch {
+            print("[MeetingRecorder] could not mark \(entry.audioURL.lastPathComponent) dismissed: "
+                  + error.localizedDescription)
+        }
     }
 
-    /// Recovers every recording captured before a crash: each `rec_*` `.caf`/`.m4a` in the
-    /// recordings directory that still carries its `.meta` sidecar (the sidecar
-    /// is removed on a successful save, so its presence means "never saved").
-    /// The three legacy `UserDefaults` keys of the pre-queue single-slot pointer
-    /// are read — and cleared — once here, so a recording captured by an older
-    /// build recovers too.
+    /// Recovers every recording captured before a crash, once the database is
+    /// open (`pendingStore`; without it this does nothing, and AppState calls
+    /// it again when the pool opens): each `pending_transcripts` row whose
+    /// `rec_*` audio is still in the recordings directory, plus every `rec_*` `.caf`/`.m4a` with no row and no
+    /// saved transcript — a recording started before the database opened
+    /// (Review Focus 3), recovered without its event link. The legacy `rec_*`
+    /// sidecars are imported into rows first (`LegacyRecordingSidecarImport`),
+    /// and the three legacy `UserDefaults` keys of the pre-queue single-slot
+    /// pointer are read — and cleared — once, so recordings captured by older
+    /// builds recover too. A recording this session is capturing or
+    /// processing is never listed.
     func restorePendingOnLaunch() {
-        migrateLegacyPendingDefaults()
-        for entry in Self.scanRecoverable(in: recordingsDirectory) {
+        guard let store = pendingStore else { return }
+        if !legacySidecarsImported {
+            legacySidecarsImported = true
+            LegacyRecordingSidecarImport.importAll(in: recordingsDirectory, into: store)
+        }
+        migrateLegacyPendingDefaults(into: store)
+        let busy = Set(jobs.map(\.audioURL)).union(captureAudioURL.map { [$0] } ?? [])
+        for entry in Self.recoverable(in: recordingsDirectory, store: store) where !busy.contains(entry.audioURL) {
             addRecoverable(entry)
         }
     }
 
     /// One-shot migration off the single-slot pointer. The legacy UserDefaults
     /// pointer was durable across launches, so the migrated recording must stay
-    /// durable too: a `.meta` sidecar is written BEFORE the keys are cleared —
-    /// quitting without acting on the recovered pill would otherwise leave the
-    /// recording invisible to every later scan, and the Go orphan sweep would
-    /// eventually reclaim the audio. A crash mid-migration keeps the legacy
-    /// pointer for the next launch (the keys clear last).
-    private func migrateLegacyPendingDefaults() {
+    /// durable too: its row is written BEFORE the keys are cleared — quitting
+    /// without acting on the recovered pill would otherwise leave the recording
+    /// invisible to every later launch. A failed write keeps the legacy pointer
+    /// for the next launch (the keys clear last).
+    private func migrateLegacyPendingDefaults(into store: PendingTranscriptStore) {
         guard let path = defaults.string(forKey: Self.pendingAudioPathKey) else { return }
         let eventID = defaults.string(forKey: Self.pendingEventIDKey)
         let title = defaults.string(forKey: Self.pendingTitleKey)
         if FileManager.default.fileExists(atPath: path) {
             let url = URL(fileURLWithPath: path)
-            Self.writeMetaSidecar(eventID: eventID, title: title, for: url)
+            do {
+                try store.begin(recording: url.lastPathComponent, eventID: eventID, title: title, at: clock())
+            } catch {
+                print("[MeetingRecorder] could not record the legacy pending recording: \(error.localizedDescription)")
+                return
+            }
             addRecoverable(RecoverableRecording(audioURL: url, eventID: eventID, title: title))
         }
         defaults.removeObject(forKey: Self.pendingAudioPathKey)
@@ -1365,7 +1406,7 @@ final class MeetingRecorderCenter {
         // A transcript persisted by a run whose save failed re-saves directly:
         // no decode, no transcription, no re-diarization (spec §7). Its roles
         // flag describes exactly that text, so it is NOT reset here.
-        if let persisted = Self.loadPersistedTranscript(audioURL: job.audioURL) {
+        if let persisted = loadPersistedTranscript(audioURL: job.audioURL) {
             await save(jobID: jobID,
                        text: persisted.text,
                        utterances: persisted.utterances,
@@ -1464,12 +1505,12 @@ final class MeetingRecorderCenter {
         }
         let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
                                          samples: samples, config: config, eventID: job.eventID)
-        // Persist the (role-tagged) transcript next to the audio so a failed
-        // save is retried from the file instead of paying for a full
+        // Keep the (role-tagged) transcript in the recording's row so a failed
+        // save is retried from it instead of paying for a full
         // re-transcription — or a re-diarization (spec §7).
-        Self.persistTranscript(text: rendered.text, utterances: rendered.utterances,
-                               speakers: rendered.speakers, durationSec: durationSec,
-                               langStats: output.langStats, audioURL: job.audioURL)
+        persistTranscript(text: rendered.text, utterances: rendered.utterances,
+                          speakers: rendered.speakers, durationSec: durationSec,
+                          langStats: output.langStats, audioURL: job.audioURL)
         await save(jobID: jobID, text: rendered.text, utterances: rendered.utterances,
                    speakers: rendered.speakers, durationSec: durationSec, langStats: output.langStats,
                    registry: rendered.registry, voiceNotifications: config.voiceNotifications)
@@ -1507,8 +1548,7 @@ final class MeetingRecorderCenter {
                 langStatsJSON: Self.encodeLangStats(langStats)
             )
             let rolesError = self.job(jobID)?.rolesError
-            Self.removePersistedTranscript(audioURL: job.audioURL)
-            Self.removeMetaSidecar(for: job.audioURL)
+            removePending(for: job.audioURL)
             // A failed job pointing at the SAME audio goes with it: this
             // recording is persisted now, so retrying that one would save a
             // duplicate transcript of it.
@@ -1639,49 +1679,42 @@ final class MeetingRecorderCenter {
         notifier.sendTranscriptFailedNotification(reason: message)
     }
 
-    // MARK: - Meta sidecar (crash recovery)
+    // MARK: - Pending rows (crash recovery)
 
-    /// Per-recording sidecar (`rec_X.meta`, the `rec_X.activity` naming family,
-    /// so the Go daemon's orphan sweep reclaims it for free) holding the event
-    /// link and title a recording must come back with after a crash. Written
-    /// before capture starts, removed once the transcript is saved or the user
-    /// dismisses the recovered recording — so "sidecar present" means "this
-    /// recording was never saved".
-    private struct MetaSidecar: Codable {
-        let eventID: String?
-        let title: String?
-    }
-
-    nonisolated private static func metaURL(for audioURL: URL) -> URL {
-        audioURL.deletingPathExtension().appendingPathExtension("meta")
-    }
-
-    /// Best-effort, but the cost is not only the event link: the recovery scan
-    /// keys on the sidecar's presence, so a recording whose sidecar never landed
-    /// is read as "already saved" and is NOT offered for recovery after a crash.
-    /// The audio file itself always survives (the Go orphan sweep reclaims it).
-    /// Hence the logging — this failure must not be invisible.
-    nonisolated private static func writeMetaSidecar(eventID: String?, title: String?, for audioURL: URL) {
-        let url = metaURL(for: audioURL)
+    /// Records the recording as not saved yet. Best-effort, but logged: a
+    /// recording whose row never landed still comes back after a crash from
+    /// its audio file alone, only without its event link.
+    private func beginPending(eventID: String?, title: String?, for audioURL: URL) {
+        guard let store = pendingStore else {
+            print("[MeetingRecorder] the database is not open: \(audioURL.lastPathComponent) records without its "
+                  + "pending row and is recovered from its audio file if the app quits before it is saved")
+            return
+        }
         do {
-            let data = try JSONEncoder().encode(MetaSidecar(eventID: eventID, title: title))
-            try data.write(to: url, options: .atomic)
+            try store.begin(recording: audioURL.lastPathComponent, eventID: eventID, title: title, at: clock())
         } catch {
-            print("[MeetingRecorder] failed to write recovery sidecar \(url.lastPathComponent): "
-                  + "\(error.localizedDescription) — this recording will not be offered for recovery")
+            print("[MeetingRecorder] failed to record \(audioURL.lastPathComponent) as pending: "
+                  + "\(error.localizedDescription) — it is recovered from its audio file alone")
         }
     }
 
-    /// A sidecar left behind makes a saved recording look unsaved, so the
-    /// failure is logged. A sidecar that was never there is not a failure.
-    private static func removeMetaSidecar(for audioURL: URL) {
-        let url = metaURL(for: audioURL)
+    /// A row left behind makes a saved recording look unsaved, so the failure
+    /// is logged.
+    private func removePending(for audioURL: URL) {
         do {
-            try FileManager.default.removeItem(at: url)
-        } catch CocoaError.fileNoSuchFile {
+            try pendingStore?.remove(recording: audioURL.lastPathComponent)
         } catch {
-            print("[MeetingRecorder] failed to remove recovery sidecar \(url.lastPathComponent): "
-                  + "\(error.localizedDescription)")
+            print("[MeetingRecorder] failed to remove the pending row of \(audioURL.lastPathComponent): "
+                  + error.localizedDescription)
+        }
+    }
+
+    /// Whether a recording name with this stem is held by a pending row (a
+    /// reserved phone recording whose audio is not copied yet).
+    nonisolated static func isReserved(_ stem: String, in store: PendingTranscriptStore?) -> Bool {
+        guard let store else { return false }
+        return recordingAudioExtensions.contains { ext in
+            (try? store.transcript(recording: "\(stem).\(ext)")) != nil
         }
     }
 
@@ -1704,11 +1737,10 @@ final class MeetingRecorderCenter {
         return (String(base[..<dash]), suffix)
     }
 
-    /// `rec_*` audio files (`recordingAudioExtensions`) that still carry a
-    /// `.meta` sidecar, oldest first. A sidecar that is present but unreadable
-    /// still proves the recording was never saved, so it comes back without its
-    /// event link rather than being lost.
-    private static func scanRecoverable(in directory: URL) -> [RecoverableRecording] {
+    /// The recordings to recover, oldest first: the rows (not dismissed) whose
+    /// audio is still in `directory`, then — merged in name order — every
+    /// `rec_*` audio file there with no row and no saved transcript.
+    private static func recoverable(in directory: URL, store: PendingTranscriptStore) -> [RecoverableRecording] {
         let names: [String]
         do {
             names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
@@ -1717,30 +1749,41 @@ final class MeetingRecorderCenter {
                   + "\(error.localizedDescription)")
             return []
         }
-        return names
-            .filter { $0.hasPrefix("rec_") && recordingAudioExtensions.contains(($0 as NSString).pathExtension) }
-            .sorted { recoverySortKey($0) < recoverySortKey($1) }
-            .compactMap { name -> RecoverableRecording? in
-                let audioURL = directory.appendingPathComponent(name)
-                let meta = metaURL(for: audioURL)
-                // No sidecar at all == saved (the save removes it) — leave it be.
-                guard FileManager.default.fileExists(atPath: meta.path) else { return nil }
-                guard let data = try? Data(contentsOf: meta),
-                      let decoded = try? JSONDecoder().decode(MetaSidecar.self, from: data) else {
-                    print("[MeetingRecorder] unreadable recovery sidecar \(meta.lastPathComponent) — "
-                          + "recovering \(name) without its event link")
-                    return RecoverableRecording(audioURL: audioURL, eventID: nil, title: nil)
-                }
-                return RecoverableRecording(audioURL: audioURL, eventID: decoded.eventID, title: decoded.title)
-            }
+        let audio = Set(names.filter { $0.hasPrefix("rec_") && recordingAudioExtensions.contains(($0 as NSString).pathExtension) })
+        let rows: [PendingTranscript]
+        let saved: Set<String>
+        do {
+            rows = try store.pending()
+            saved = try store.savedAudioPaths()
+        } catch {
+            print("[MeetingRecorder] cannot read the pending recordings: \(error.localizedDescription)")
+            return []
+        }
+        var byName: [String: RecoverableRecording] = [:]
+        var withRow: Set<String> = []
+        for row in rows {
+            withRow.insert(row.recording)
+            // A row whose audio is gone (the daemon's orphan sweep took it)
+            // is not listed; it is left alone, a few bytes.
+            guard audio.contains(row.recording) else { continue }
+            if row.dismissed { continue }
+            byName[row.recording] = RecoverableRecording(audioURL: directory.appendingPathComponent(row.recording),
+                                                         eventID: row.eventID, title: row.title)
+        }
+        for name in audio where !withRow.contains(name) {
+            let url = directory.appendingPathComponent(name)
+            if saved.contains(url.path) { continue }
+            byName[name] = RecoverableRecording(audioURL: url, eventID: nil, title: nil)
+        }
+        return byName.keys.sorted { recoverySortKey($0) < recoverySortKey($1) }.compactMap { byName[$0] }
     }
 
     // MARK: - Transcript persistence (retry save without re-transcribing)
 
-    /// Transcript + metadata persisted next to the audio file (same basename,
-    /// `.txt`/`.json`) right after transcription succeeds, removed on a
-    /// successful save. While a save failure stands, retry re-invokes save
-    /// straight from these files instead of re-transcribing.
+    /// Transcript + metadata kept in the recording's `pending_transcripts` row
+    /// right after transcription succeeds, removed on a successful save. While
+    /// a save failure stands, retry re-invokes save straight from the row
+    /// instead of re-transcribing.
     private struct PersistedTranscript {
         let text: String
         let utterances: [TranscriptUtterance]?
@@ -1749,57 +1792,48 @@ final class MeetingRecorderCenter {
         let langStats: [String: Int]
     }
 
-    /// Sidecar `.json` payload accompanying the persisted transcript text.
-    /// `utterances`/`speakers` are optional so sidecars written before the
-    /// segments/speaker-identity work still decode (they retry as
-    /// segment-less/embedding-less saves).
-    private struct PersistedTranscriptMeta: Codable {
+    /// The row's `meta_json` beside the transcript text. `utterances`/`speakers`
+    /// are optional so payloads written before the segments/speaker-identity
+    /// work still decode (they retry as segment-less/embedding-less saves).
+    /// Also the encoding of the legacy `rec_*.json` sidecar.
+    struct PersistedTranscriptMeta: Codable {
         let durationSec: Int
         let langStats: [String: Int]
         var utterances: [TranscriptUtterance]?
         var speakers: [SpeakerEmbedding]?
     }
 
-    private static func transcriptTextURL(for audioURL: URL) -> URL {
-        audioURL.deletingPathExtension().appendingPathExtension("txt")
-    }
-
-    private static func transcriptMetaURL(for audioURL: URL) -> URL {
-        audioURL.deletingPathExtension().appendingPathExtension("json")
-    }
-
     /// Best-effort: a persistence failure only means a later save retry pays
-    /// for a full re-transcription, so it is deliberately not surfaced.
-    private static func persistTranscript(text: String,
-                                          utterances: [TranscriptUtterance]?,
-                                          speakers: [SpeakerEmbedding]?,
-                                          durationSec: Int,
-                                          langStats: [String: Int],
-                                          audioURL: URL) {
-        try? text.write(to: transcriptTextURL(for: audioURL), atomically: true, encoding: .utf8)
+    /// for a full re-transcription, so it is logged, not surfaced.
+    private func persistTranscript(text: String,
+                                   utterances: [TranscriptUtterance]?,
+                                   speakers: [SpeakerEmbedding]?,
+                                   durationSec: Int,
+                                   langStats: [String: Int],
+                                   audioURL: URL) {
+        guard let store = pendingStore else { return }
         let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: langStats,
                                            utterances: utterances, speakers: speakers)
-        if let data = try? JSONEncoder().encode(meta) {
-            try? data.write(to: transcriptMetaURL(for: audioURL), options: .atomic)
+        do {
+            let json = String(bytes: try JSONEncoder().encode(meta), encoding: .utf8) ?? "{}"
+            try store.saveTranscript(recording: audioURL.lastPathComponent, text: text, metaJSON: json, at: clock())
+        } catch {
+            print("[MeetingRecorder] could not keep the transcript of \(audioURL.lastPathComponent) for a retry: "
+                  + error.localizedDescription)
         }
     }
 
-    /// Both files must load cleanly (non-empty text + decodable metadata);
-    /// anything less falls back to full re-transcription.
-    private static func loadPersistedTranscript(audioURL: URL) -> PersistedTranscript? {
-        guard let text = try? String(contentsOf: transcriptTextURL(for: audioURL), encoding: .utf8),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let data = try? Data(contentsOf: transcriptMetaURL(for: audioURL)),
-              let meta = try? JSONDecoder().decode(PersistedTranscriptMeta.self, from: data) else {
+    /// Non-empty text and decodable metadata, or nil (then the retry
+    /// re-transcribes).
+    private func loadPersistedTranscript(audioURL: URL) -> PersistedTranscript? {
+        guard let row = try? pendingStore?.transcript(recording: audioURL.lastPathComponent),
+              let text = row.transcript, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let json = row.metaJSON,
+              let meta = try? JSONDecoder().decode(PersistedTranscriptMeta.self, from: Data(json.utf8)) else {
             return nil
         }
         return PersistedTranscript(text: text, utterances: meta.utterances, speakers: meta.speakers,
                                    durationSec: meta.durationSec, langStats: meta.langStats)
-    }
-
-    private static func removePersistedTranscript(audioURL: URL) {
-        try? FileManager.default.removeItem(at: transcriptTextURL(for: audioURL))
-        try? FileManager.default.removeItem(at: transcriptMetaURL(for: audioURL))
     }
 
     private static func encodeLangStats(_ stats: [String: Int]) -> String {
@@ -1828,10 +1862,11 @@ final class MeetingRecorderCenter {
 
     /// `rec_<timestamp>.<fileExtension>`, disambiguated with a `-N` suffix
     /// while the name is taken: by an audio file of EITHER extension
-    /// (`rec_X.caf` and `rec_X.m4a` would share every sidecar) or by a `.meta`
-    /// sidecar. The timestamp has one-second resolution, so two recordings
-    /// started inside the same second would otherwise share a path — the
-    /// second overwriting the first's audio and stealing its recovery sidecar.
+    /// (`rec_X.caf` and `rec_X.m4a` would share their pending row), by a
+    /// legacy `.meta` sidecar not imported yet, or when `taken` says so (a
+    /// pending row reserving the stem). The timestamp has one-second
+    /// resolution, so two recordings started inside the same second would
+    /// otherwise share a path — the second overwriting the first's audio.
     /// The `rec_` prefix and the timestamp stay: the Go orphan sweep matches
     /// on the family, and the name is what makes a recovered recording
     /// identifiable. Internal (not private) so the disambiguation is testable
@@ -1839,14 +1874,15 @@ final class MeetingRecorderCenter {
     nonisolated static func uniqueRecordingURL(
         in directory: URL,
         date: Date = Date(),
-        fileExtension: String = "caf"
+        fileExtension: String = "caf",
+        taken: (String) -> Bool = { _ in false }
     ) -> URL {
         let base = "rec_\(timestampComponent(date))"
         func isTaken(_ stem: String) -> Bool {
             let stemURL = directory.appendingPathComponent(stem)
             let paths = recordingAudioExtensions.union([fileExtension, "meta"])
                 .map { stemURL.appendingPathExtension($0).path }
-            return paths.contains { FileManager.default.fileExists(atPath: $0) }
+            return paths.contains { FileManager.default.fileExists(atPath: $0) } || taken(stem)
         }
         var stem = base
         var suffix = 2
@@ -1859,58 +1895,59 @@ final class MeetingRecorderCenter {
 
     // MARK: - Phone recording ingest (mobile hub)
 
-    /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by creating its
-    /// `.meta` sidecar EXCLUSIVELY (`.withoutOverwriting`, i.e. `O_EXCL`):
-    /// when a concurrent writer took the name between the `uniqueRecordingURL`
-    /// check and the create, the create fails and the next `-N` is tried, so
-    /// no other recording's sidecar is ever overwritten. The sidecar is what
-    /// the recovery scan keys on, so a quit before the job runs leaves the
-    /// recording recoverable. Unlike `writeMetaSidecar` (best-effort for a
-    /// live capture) a failure here throws. Returns the reserved audio URL;
-    /// nothing exists there yet.
+    /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by inserting
+    /// its `pending_transcripts` row EXCLUSIVELY (`PendingTranscriptStore.reserve`):
+    /// when a concurrent reserver took the name first, the insert does
+    /// nothing and the next `-N` is tried, so no other recording's row is ever
+    /// overwritten. The row is what recovery keys on, so a quit before the job
+    /// runs leaves the recording recoverable, event-linked. Unlike a live
+    /// capture's best-effort row, a failure here throws. Returns the reserved
+    /// audio URL; nothing exists there yet.
     ///
-    /// Call it on the main actor (as `ingestPhoneRecording` does). The
-    /// exclusive create makes it safe against other reservers on any
-    /// thread, but `startRecording`'s own sidecar write is not exclusive, so
-    /// a reservation is serialised with a Desktop capture only on the main
-    /// actor. Internal (and `nonisolated`) only so the reservers' race is
-    /// testable off the main actor.
+    /// Call it on the main actor (as `ingestPhoneRecording` does); the
+    /// exclusive insert makes it safe against other reservers on any thread.
+    /// Internal (and `nonisolated`) only so the reservers' race is testable
+    /// off the main actor.
     nonisolated static func reservePhoneRecording(
         eventID: String?,
         title: String?,
         in directory: URL,
+        store: PendingTranscriptStore,
         date: Date = Date()
     ) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(MetaSidecar(eventID: eventID, title: title))
+        var lost: Set<String> = []
         while true {
-            let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a")
-            do {
-                try data.write(to: metaURL(for: audioURL), options: .withoutOverwriting)
-                return audioURL
-            } catch CocoaError.fileWriteFileExists {
-                // Lost the race for this name; the sidecar now exists, so the
-                // next `uniqueRecordingURL` moves past it.
-                continue
+            let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a") {
+                lost.contains($0) || isReserved($0, in: store)
             }
+            if try store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title, at: date) {
+                return audioURL
+            }
+            // Lost the race for this name; the next `uniqueRecordingURL` moves past it.
+            lost.insert(audioURL.deletingPathExtension().lastPathComponent)
         }
     }
 
     /// Copies the phone's audio into a name `reservePhoneRecording` reserved.
     /// On failure only what this call created is removed — the partial audio
-    /// (never a file that already sat there) and the reserved sidecar — and
-    /// the error is thrown, so a disk-full ingest leaves nothing half-written.
+    /// (never a file that already sat there) and the reserved row — and the
+    /// error is thrown, so a disk-full ingest leaves nothing half-written.
     /// Copies rather than moves: the source belongs to the transport, which
     /// deletes it only once the ingest succeeded. `nonisolated`: the copy of a
     /// long recording runs off the main actor.
-    nonisolated static func copyPhoneRecording(from sourceURL: URL, to audioURL: URL) throws {
+    nonisolated static func copyPhoneRecording(
+        from sourceURL: URL,
+        to audioURL: URL,
+        store: PendingTranscriptStore
+    ) throws {
         do {
             try FileManager.default.copyItem(at: sourceURL, to: audioURL)
         } catch {
             if (error as? CocoaError)?.code != .fileWriteFileExists {
                 try? FileManager.default.removeItem(at: audioURL)
             }
-            try? FileManager.default.removeItem(at: metaURL(for: audioURL))
+            try? store.remove(recording: audioURL.lastPathComponent)
             throw error
         }
     }
@@ -1922,9 +1959,13 @@ final class MeetingRecorderCenter {
         /// The file could not be read (an I/O error), so whether it is audio
         /// is unknown.
         case unreadable(String)
+        /// The database is not open yet: the recording could not be recorded
+        /// as pending, so it was not taken (the phone keeps it and retries).
+        case databaseUnavailable
 
         var errorDescription: String? {
             switch self {
+            case .databaseUnavailable: "Watchtower's database is not open yet."
             case .notAudio: "The file is not an audio recording."
             case let .unreadable(detail): "The file could not be read: \(detail)"
             }
@@ -1990,10 +2031,11 @@ final class MeetingRecorderCenter {
     ) async throws -> URL {
         let isAudio = try await Task.detached { try await Self.isAudioRecording(sourceURL) }.value
         guard isAudio else { throw PhoneIngestError.notAudio }
+        guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
         let audioURL = try Self.reservePhoneRecording(eventID: eventID, title: title,
-                                                      in: recordingsDirectory, date: clock())
+                                                      in: recordingsDirectory, store: store, date: clock())
         try await Task.detached {
-            try Self.copyPhoneRecording(from: sourceURL, to: audioURL)
+            try Self.copyPhoneRecording(from: sourceURL, to: audioURL, store: store)
         }.value
         let job = ProcessingJob(audioURL: audioURL, eventID: eventID, title: title)
         jobs.append(job)

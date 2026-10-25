@@ -3,12 +3,13 @@ import GRDB
 import os
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 import WatchtowerE2ETesting
 import WatchtowerSync
 import WatchtowerTestSupport
 
 /// Hub ingest of phone `recording_upload` records (mobile POC spec §5.3,
-/// §6.4): the asset lands as `rec_*.m4a` + `.meta` through the transcriber's
+/// §6.4): the asset lands as `rec_*.m4a` + its pending row through the transcriber's
 /// own phone-ingest helpers, the record is rewritten `received` without its
 /// asset, and every failure is a `failed` echo that leaves the phone its file
 /// and a working Retry. Review focus 3 (unwritable recordings dir) and 4 (the
@@ -66,16 +67,26 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         TestDatabase.cleanup(path: dbPath)
     }
 
+    private func pendingRow(_ audio: URL) throws -> PendingTranscript? {
+        try DatabasePendingTranscriptStore(writer: try XCTUnwrap(dbPool)).transcript(recording: audio.lastPathComponent)
+    }
+
+    private func pendingRows() throws -> [PendingTranscript] {
+        try DatabasePendingTranscriptStore(writer: try XCTUnwrap(dbPool)).pending()
+    }
+
     /// The tracker over the transcriber's real phone-ingest file helpers
     /// (`reservePhoneRecording` + `copyPhoneRecording`, the steps
     /// `ingestPhoneRecording` runs before it enqueues the job).
     private func makeJobs() throws -> PhoneRecordingJobs {
         let dir = recordingsDir
+        let store = DatabasePendingTranscriptStore(writer: try XCTUnwrap(dbPool))
         return try PhoneRecordingJobs(
             sidecar: sidecar, dbPool: dbPool, events: nil, now: { [now] in now },
             enqueue: { [weak self] audio, eventID, title in
-                let url = try MeetingRecorderCenter.reservePhoneRecording(eventID: eventID, title: title, in: dir)
-                try MeetingRecorderCenter.copyPhoneRecording(from: audio, to: url)
+                let url = try MeetingRecorderCenter.reservePhoneRecording(eventID: eventID, title: title, in: dir,
+                                                                          store: store)
+                try MeetingRecorderCenter.copyPhoneRecording(from: audio, to: url, store: store)
                 self?.enqueued.append((url, eventID, title))
                 return url
             }
@@ -183,12 +194,11 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         XCTAssertEqual(pass.handled, 1)
         let files = recordingFiles()
-        XCTAssertEqual(files.count, 2, "one .m4a and its .meta: \(files)")
+        XCTAssertEqual(files.count, 1, "one .m4a, no sidecar (#604 S3): \(files)")
         let audioName = try XCTUnwrap(files.first { $0.hasSuffix(".m4a") })
         let audio = recordingsDir.appendingPathComponent(audioName)
         XCTAssertEqual(try Data(contentsOf: audio), Data(repeating: 0xCD, count: 128))
-        let meta = try SliceJSON.object(try Data(contentsOf: audio.deletingPathExtension().appendingPathExtension("meta")))
-        XCTAssertEqual(meta["title"] as? String, "Acme standup")
+        XCTAssertEqual(try pendingRow(audio)?.title, "Acme standup", "the title is in its pending row")
         XCTAssertEqual(enqueued.map(\.audio), [audio], "the recording is enqueued for transcription")
 
         let echo = try XCTUnwrap(try echoes(of: record.recordName).first)
@@ -222,7 +232,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         _ = try await makeProcessor().processOnce()
 
         XCTAssertEqual(enqueued.count, 1, "a received upload is ingested once")
-        XCTAssertEqual(recordingFiles().count, 2)
+        XCTAssertEqual(recordingFiles().count, 1, "one .m4a")
         let echoes = try echoes(of: record.recordName)
         XCTAssertEqual(echoes.map(\.payload.status), [.received, .received], "the stale pending converges to received")
         XCTAssertNil(echoes.last?.record.assetFileURL, "the re-echo drops the asset again")
@@ -282,7 +292,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         _ = try await processor.processOnce()
 
         XCTAssertEqual(enqueued.count, 1, "ingested once")
-        XCTAssertEqual(recordingFiles().count, 2, "one .m4a and its .meta")
+        XCTAssertEqual(recordingFiles().count, 1, "one .m4a, no sidecar")
         XCTAssertEqual(try echoes(of: record.recordName).map(\.payload.status), [.received, .received], "re-echoed received")
         XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(retry.assetFileURL).path), "the copy is consumed")
@@ -360,7 +370,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         _ = try await processor.processOnce()
 
         XCTAssertEqual(enqueued.count, 1, "the upload id was ingested already")
-        XCTAssertEqual(recordingFiles().count, 2, "one .m4a and its .meta")
+        XCTAssertEqual(recordingFiles().count, 1, "one .m4a, no sidecar")
         XCTAssertEqual(try echoes(of: record.recordName).map(\.payload.status), [.received, .received])
         XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "received")
     }
@@ -593,7 +603,8 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(echo.payload.status, .failed, "the phone keeps its file and offers Retry")
         XCTAssertFalse(echo.payload.errorMessage?.isEmpty ?? true)
         XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:write_failed")
-        XCTAssertTrue(recordingFiles().isEmpty, "no half-written .m4a or .meta")
+        XCTAssertTrue(recordingFiles().isEmpty, "no half-written .m4a")
+        XCTAssertEqual(try pendingRows(), [], "no reserved row")
         XCTAssertTrue(enqueued.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: asset.path), "the received copy is kept until an ingest succeeds")
     }
@@ -608,7 +619,8 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         XCTAssertEqual(try echoes(of: record.recordName).first?.payload.status, .failed)
         XCTAssertEqual(try sidecar.relayOutcome(record.plainName), "failed:write_failed")
-        XCTAssertTrue(recordingFiles().isEmpty, "the reserved .meta is removed with the partial audio")
+        XCTAssertTrue(recordingFiles().isEmpty, "the partial audio is removed")
+        XCTAssertEqual(try pendingRows(), [], "the reserved row is removed with the partial audio")
     }
 
     // MARK: - Review focus 4: the event is gone
@@ -622,8 +634,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(enqueued.count, 1)
         XCTAssertNil(enqueued.first?.eventID, "the transcript is saved ad-hoc")
         let audio = try XCTUnwrap(enqueued.first?.audio)
-        let meta = try SliceJSON.object(try Data(contentsOf: audio.deletingPathExtension().appendingPathExtension("meta")))
-        XCTAssertTrue(meta["eventID"] == nil || meta["eventID"] is NSNull)
+        XCTAssertNil(try pendingRow(audio)?.eventID)
     }
 
     func testAnUploadForAnExistingEventIsLinkedToIt() async throws {

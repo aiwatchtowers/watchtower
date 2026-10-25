@@ -30,6 +30,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
     func testStartWhileBusyIsANoOp() async throws {
         let recorder = FakeRecorder()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -58,6 +59,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
     func testStartRecordingInvokesCaptureWillStartBeforeCaptureBegins() async throws {
         let recorder = FakeRecorder()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -92,6 +94,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let defaults = try isolatedDefaults()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello world"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -105,9 +108,12 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         guard case .recording = center.phase else {
             return XCTFail("expected .recording, got \(center.phase)")
         }
-        // Crash recovery rides a per-recording `rec_X.meta` sidecar; the
-        // single-slot UserDefaults pointer it replaced is never written again.
-        _ = try startedRecordingMeta()
+        // Crash recovery rides a per-recording pending row (#604 S3; it
+        // replaced the `rec_X.meta` sidecar, which replaced the single-slot
+        // UserDefaults pointer); neither is written any more.
+        let started = try startedRecording()
+        XCTAssertEqual(pendingRow(started)?.title, "Ad hoc", "the row holds the title")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: metaSidecar(started).path), "no .meta sidecar")
         XCTAssertNil(defaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey),
                      "the retired single-slot pointer must not be written any more")
 
@@ -119,9 +125,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(notifier.failedReasons.isEmpty)
         XCTAssertEqual(runner.invocations.count, 1)
         XCTAssertEqual(runner.invocations.first?.first, "meeting-prep")
-        let sidecar = audio.deletingPathExtension().appendingPathExtension("txt")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path),
-                       "the persisted transcript must be removed after a successful save")
+        XCTAssertFalse(hasPendingRow(audio), "the kept transcript and the pending row go after a successful save")
     }
 
     func testStateSurvivesViewLifetime() async throws {
@@ -137,6 +141,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 5)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["captured"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -174,6 +179,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 5)
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["some talk"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -206,6 +212,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 5)
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["some talk"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -237,6 +244,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         recorder.startError = AudioRecordingError.microphonePermissionDenied
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -262,6 +270,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let defaults = try isolatedDefaults()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -282,8 +291,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(reason.localizedCaseInsensitiveContains("device vanished"))
         XCTAssertEqual(center.pendingAudioURL, pendingBefore,
                        "the pending audio pointer must be kept after a stop error")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: metaSidecar(pendingBefore).path),
-                      "the recovery sidecar must survive a stop error so the audio comes back after a crash")
+        XCTAssertTrue(hasPendingRow(pendingBefore),
+                      "the pending row must survive a stop error so the audio comes back after a crash")
         XCTAssertEqual(runner.invocations.count, 0)
         XCTAssertEqual(notifier.failedReasons.count, 1)
     }
@@ -308,6 +317,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         var engineLoads = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineLoads += 1
@@ -351,6 +361,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let notifier = FakeNotifier()
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -384,6 +395,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let notifier = FakeNotifier()
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in throw EngineLoadError() },
             decode: stubDecode(sampleCount: 1600),
@@ -414,6 +426,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let notifier = FakeNotifier()
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: { _ in throw AudioFileDecoderError.unsupportedFormat },
@@ -446,6 +459,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 5)
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["real speech"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -478,6 +492,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let notifier = FakeNotifier()
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) }, // all-silence
             decode: stubDecode(sampleCount: 1600),
@@ -516,6 +531,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         var activeRunner: CLIRunnerProtocol = failingRunner
         var engineLoads = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineLoads += 1
@@ -536,13 +552,14 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         }
         XCTAssertEqual(center.pendingAudioURL, audio)
         XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path))
-        // While the save failure stands, the transcript sits next to the audio.
-        let transcriptFile = audio.deletingPathExtension().appendingPathExtension("txt")
-        XCTAssertEqual(try String(contentsOf: transcriptFile, encoding: .utf8), "real speech")
+        // While the save failure stands, the transcript is kept in the pending row.
+        XCTAssertEqual(pendingRow(audio)?.transcript, "real speech")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: audio.deletingPathExtension().appendingPathExtension("txt").path), "no .txt sidecar")
 
         // Retry with a working runner re-invokes save straight from the
-        // persisted transcript — no second engine load / transcription — and
-        // cleans the sidecar files up on success.
+        // kept transcript — no second engine load / transcription — and drops
+        // the row on success.
         activeRunner = goodRunner
         await center.retryTranscription(config: singleWindowConfig())
 
@@ -552,7 +569,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
                      "the retired single-slot pointer must not be written any more")
         XCTAssertEqual(goodRunner.invocations.count, 1)
         XCTAssertEqual(engineLoads, 1, "retry after a save failure must reuse the persisted transcript")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: transcriptFile.path))
+        XCTAssertFalse(hasPendingRow(audio))
     }
 
     // MARK: Recovery / launch
@@ -564,6 +581,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -580,6 +598,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let missingDefaults = try isolatedDefaults()
         missingDefaults.set("/tmp/does-not-exist-\(UUID().uuidString).caf", forKey: MeetingRecorderCenter.pendingAudioPathKey)
         let center2 = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -606,6 +625,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         defaults.set("evt-1", forKey: MeetingRecorderCenter.pendingEventIDKey)
         defaults.set("Weekly", forKey: MeetingRecorderCenter.pendingTitleKey)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -635,6 +655,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         // tear the pending pointer out from under an in-flight recording.
         let recorder = FakeRecorder()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -671,6 +692,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
 
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["recovered speech"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -703,14 +725,13 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             try? FileManager.default.removeItem(at: audio)
             removeSidecars(audio)
         }
-        let staleTxt = audio.deletingPathExtension().appendingPathExtension("txt")
-        let staleJSON = audio.deletingPathExtension().appendingPathExtension("json")
-        try "STALE cached text".write(to: staleTxt, atomically: true, encoding: .utf8)
-        try #"{"durationSec":5,"langStats":{}}"#.write(to: staleJSON, atomically: true, encoding: .utf8)
+        try pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "STALE cached text",
+                                        metaJSON: #"{"durationSec":5,"langStats":{}}"#, at: Date())
 
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         var engineLoads = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in
                 engineLoads += 1
@@ -724,10 +745,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         )
 
         center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: staleTxt.path),
-                       "prepareRetry must delete the stale transcript sidecar")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: staleJSON.path),
-                       "prepareRetry must delete the stale metadata sidecar")
+        XCTAssertNil(pendingRow(audio)?.transcript, "prepareRetry must drop the stale kept transcript")
+        XCTAssertNil(pendingRow(audio)?.metaJSON, "prepareRetry must drop the stale metadata")
 
         await center.retryTranscription(config: singleWindowConfig())
 
@@ -755,16 +774,14 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             try? FileManager.default.removeItem(at: audio)
             removeSidecars(audio)
         }
-        try txt.write(to: audio.deletingPathExtension().appendingPathExtension("txt"),
-                      atomically: true, encoding: .utf8)
-        try json.write(to: audio.deletingPathExtension().appendingPathExtension("json"),
-                       atomically: true, encoding: .utf8)
+        try pendingStore.saveTranscript(recording: audio.lastPathComponent, text: txt, metaJSON: json, at: Date())
 
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
         var engineLoads = 0
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in
                 engineLoads += 1
@@ -797,6 +814,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
 
         let engine = GateEngine(texts: ["a", "b", "c"])
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(engine) },
             decode: stubDecode(sampleCount: 4800), // 3 windows at 0.1 s / no overlap
@@ -845,6 +863,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         var decodeCalls = 0
         var engineLoads = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in engineLoads += 1; return TestTranscriber(ScriptedEngine(texts: ["live one", "live two"])) },
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
@@ -876,6 +895,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         var engineLoads = 0
         var decodeCalls = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in engineLoads += 1; return TestTranscriber(ScriptedEngine(texts: ["batch text"])) },
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
@@ -925,6 +945,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         var decodeCalls = 0
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: {
                 recorderFactoryCalls += 1
                 return recorderFactoryCalls == 1 ? recorder1 : recorder2
@@ -999,6 +1020,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["alpha", "beta"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -1030,6 +1052,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         var decodeCalls = 0
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineCalls += 1
@@ -1070,6 +1093,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         var decodeCalls = 0
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in
                 // Engine loads fine; it just offers no live session.
@@ -1111,6 +1135,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         var recorderFactoryCalls = 0
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: {
                 recorderFactoryCalls += 1
                 return recorderFactoryCalls == 1 ? recorder1 : recorder2
@@ -1208,6 +1233,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет", "ответ"])) },
             diarizerFactory: { _ in diarizer },
@@ -1480,6 +1506,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         diarizer.segments = [SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.3)]
         var decodeCalls = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["live text"])) },
             diarizerFactory: { _ in diarizer },
@@ -1526,6 +1553,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let runner = FakeCLIRunner(stdout: recapOKEnvelope, error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет"])) },
             diarizerFactory: { _ in diarizer },
@@ -1589,6 +1617,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
         var engineLoads = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineLoads += 1
@@ -1635,11 +1664,9 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             try? FileManager.default.removeItem(at: audio)
             removeSidecars(audio)
         }
-        let base = audio.deletingPathExtension()
-        try "[Я] привет".write(to: base.appendingPathExtension("txt"), atomically: true, encoding: .utf8)
         // Exact old-format payload: durationSec + langStats only.
-        try Data(#"{"durationSec":42,"langStats":{"ru":42}}"#.utf8)
-            .write(to: base.appendingPathExtension("json"))
+        try pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "[Я] привет",
+                                        metaJSON: #"{"durationSec":42,"langStats":{"ru":42}}"#, at: Date())
 
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
@@ -1647,6 +1674,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         var engineLoads = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in engineLoads += 1; return TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 4800),
@@ -1691,6 +1719,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             engineIdleTTL: .seconds(900)
         )
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { meetingRecorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["meeting words"])) },
             decode: stubDecode(sampleCount: 1600),

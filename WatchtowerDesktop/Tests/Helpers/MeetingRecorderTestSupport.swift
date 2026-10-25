@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -283,9 +284,18 @@ class MeetingRecorderTestCase: XCTestCase {
     /// neither litter nor read the real one (a leftover recording there would
     /// surface as a recovered one and change what the assertions see).
     var recordingsDir: URL!
+    /// The recorder's pending rows (#604 S3/S4): an in-memory database shared
+    /// by every Center a test builds, so a "relaunched" Center sees the rows
+    /// the first one wrote.
+    var pendingStore: DatabasePendingTranscriptStore!
+    /// The database behind `pendingStore` (a saved transcript's row goes here).
+    var pendingDB: DatabaseQueue!
 
     override func setUp() {
         super.setUp()
+        // swiftlint:disable:next force_try
+        pendingDB = try! TestDatabase.create()
+        pendingStore = DatabasePendingTranscriptStore(writer: pendingDB)
         recordingsDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("recorder-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
@@ -336,20 +346,31 @@ class MeetingRecorderTestCase: XCTestCase {
         { _ in [Float](repeating: 0, count: sampleCount) }
     }
 
-    /// Removes the recording's sidecars: the persisted transcript
-    /// (`<basename>.txt`/`.json`), the mic-activity timeline (`.activity`) and
-    /// the crash-recovery metadata (`.meta`).
+    /// Removes what a recording leaves beside its audio — the mic-activity
+    /// timeline (`.activity`) and any legacy sidecar a test wrote — and its
+    /// pending row.
     func removeSidecars(_ audio: URL) {
         for ext in ["txt", "json", "activity", "meta"] {
             try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension(ext))
         }
+        try? pendingStore.remove(recording: audio.lastPathComponent)
     }
 
-    /// The crash-recovery sidecar the Center writes next to a recording at start
-    /// and removes once the transcript is saved.
+    /// A legacy crash-recovery sidecar (older versions wrote it at record
+    /// start); `restorePendingOnLaunch` imports it into a row.
     func metaSidecar(_ audio: URL) -> URL {
         audio.deletingPathExtension().appendingPathExtension("meta")
     }
+
+    /// The recording's `pending_transcripts` row, nil when it has none (saved,
+    /// or never started).
+    func pendingRow(_ audio: URL) -> PendingTranscript? {
+        try? pendingStore.transcript(recording: audio.lastPathComponent)
+    }
+
+    /// Whether the recording has a pending row — the Center writes one at
+    /// record start and removes it once the transcript is saved.
+    func hasPendingRow(_ audio: URL) -> Bool { pendingRow(audio) != nil }
 
     /// The value of `flag` in one `meeting-prep transcript save` invocation, or
     /// nil when the flag was not passed at all (an ad-hoc save omits
@@ -360,13 +381,11 @@ class MeetingRecorderTestCase: XCTestCase {
     }
 
     /// The one recording the Center started this test (its `.caf` in the
-    /// injected recordings directory). The fake recorder never writes audio, so
-    /// only the `.meta` sidecar the Center itself wrote is on disk.
-    func startedRecordingMeta() throws -> URL {
-        let names = try FileManager.default.contentsOfDirectory(atPath: recordingsDir.path)
-        return recordingsDir.appendingPathComponent(
-            try XCTUnwrap(names.first { $0.hasSuffix(".meta") },
-                          "the Center must write a rec_*.meta sidecar at record start"))
+    /// injected recordings directory), read from its pending row: the fake
+    /// recorder never writes audio.
+    func startedRecording() throws -> URL {
+        let row = try XCTUnwrap(try pendingStore.pending().first, "the Center must write a pending row at record start")
+        return recordingsDir.appendingPathComponent(row.recording)
     }
 
     /// Yields the main actor until `condition` holds, polling against a

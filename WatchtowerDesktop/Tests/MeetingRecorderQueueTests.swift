@@ -36,6 +36,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -119,6 +120,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -190,6 +192,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var failFirstDecode = true
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -258,6 +261,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -311,6 +315,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let recorder = FakeRecorder()
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -323,7 +328,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         await center.startRecording(eventID: "evt-1", title: "Weekly", config: singleWindowConfig())
 
         let started = try XCTUnwrap(recorder.lastStartURL)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: metaSidecar(started).path),
+        XCTAssertTrue(hasPendingRow(started),
                       "the recovery sidecar must exist from record start, before any audio is finalized")
 
         // Production's recorder finalizes the very file it was started on.
@@ -332,13 +337,14 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         await center.stopAndProcess(config: singleWindowConfig())
 
         XCTAssertEqual(center.phase, .idle)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: metaSidecar(started).path),
+        XCTAssertFalse(hasPendingRow(started),
                        "a saved transcript must remove the recovery sidecar")
     }
 
-    /// Recovery generalizes to N recordings: every `rec_*.caf` that still has a
-    /// `.meta` sidecar comes back (oldest first, event link intact), while one
-    /// whose sidecar is gone — i.e. already saved — is left alone.
+    /// Recovery generalizes to N recordings: every `rec_*.caf` with a pending
+    /// row (here imported from legacy `.meta` sidecars) comes back (oldest
+    /// first, event link intact), while one a saved transcript points at is
+    /// left alone.
     func testRecoveryScanFindsEveryOrphanedRecording() async throws {
         let older = recordingsDir.appendingPathComponent("rec_20260803_100000.caf")
         let newer = recordingsDir.appendingPathComponent("rec_20260803_120000.caf")
@@ -350,8 +356,13 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             .write(to: metaSidecar(older), atomically: true, encoding: .utf8)
         try #"{"title":"Newer ad-hoc"}"#
             .write(to: metaSidecar(newer), atomically: true, encoding: .utf8)
+        try await pendingDB.write { db in
+            try db.execute(sql: "INSERT INTO meeting_transcripts (title, audio_path, transcript_text) VALUES ('s', ?, 't')",
+                           arguments: [saved.path])
+        }
 
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -364,7 +375,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [older, newer],
-                       "every unsaved recording is recovered, oldest first; a sidecar-less one is not")
+                       "every unsaved recording is recovered, oldest first; a saved one is not")
         XCTAssertEqual(center.recoverable.map(\.eventID), ["evt-older", nil])
         XCTAssertEqual(center.recoverable.map(\.title), ["Older", "Newer ad-hoc"])
         // The legacy pill acts on the oldest.
@@ -386,6 +397,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         }
 
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -419,6 +431,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         defaults.set("evt-legacy", forKey: MeetingRecorderCenter.pendingEventIDKey)
         defaults.set("Legacy build", forKey: MeetingRecorderCenter.pendingTitleKey)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -438,7 +451,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
                     MeetingRecorderCenter.pendingTitleKey] {
             XCTAssertNil(defaults.string(forKey: key), "\(key) must be cleared by the one-shot migration")
         }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: metaSidecar(audio).path),
+        XCTAssertTrue(hasPendingRow(audio),
                       "the migration must leave a durable sidecar — the keys it cleared were the only other pointer")
 
         // A second scan on the same Center must not re-add or duplicate it.
@@ -448,6 +461,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         // A genuine relaunch: a FRESH Center over the same (now key-less)
         // defaults still finds the recording — via the sidecar, link intact.
         let relaunched = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -473,6 +487,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         try Data("not json{".utf8).write(to: metaSidecar(audio))
 
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -488,6 +503,60 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
                        "an unreadable sidecar must not lose the recording")
         XCTAssertNil(center.recoverable.first?.eventID, "the link it could not supply degrades to ad-hoc")
         XCTAssertNil(center.recoverable.first?.title)
+    }
+
+    /// Review Focus 3: a recording started before the database opened (no
+    /// store) still records — the missing row is only logged — and after a
+    /// relaunch with the store it is listed as recovered from its audio file
+    /// alone. The audio is never dropped.
+    func testStartWithoutDatabaseStillRecords() async throws {
+        let recorder = FakeRecorder()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+        await center.startRecording(eventID: "evt-x", title: "No DB yet", config: config)
+        guard case .recording = center.captureState else { return XCTFail("expected recording, got \(center.captureState)") }
+        let audio = try XCTUnwrap(recorder.lastStartURL)
+        try Data([0x00]).write(to: audio) // the recorder finalizes its file
+        XCTAssertEqual(try pendingStore.pending(), [], "nothing could be written without the store")
+
+        let relaunched = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        relaunched.restorePendingOnLaunch()
+        XCTAssertEqual(relaunched.recoverable.map(\.audioURL), [audio], "recovered from the audio file alone")
+        XCTAssertNil(relaunched.recoverable.first?.eventID)
+
+        // Dismissing it is remembered: the next launch does not offer it again.
+        relaunched.dismissRecovered()
+        let again = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        again.restorePendingOnLaunch()
+        XCTAssertTrue(again.recoverable.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path), "the audio is never dropped")
     }
 
     // MARK: - Recording filenames
@@ -523,6 +592,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let recorder2 = FakeRecorder()
         var recorderCalls = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -543,12 +613,11 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let url2 = try XCTUnwrap(recorder2.lastStartURL)
         XCTAssertNotEqual(url1, url2, "two recordings must never share an audio file")
         for url in [url1, url2] {
-            XCTAssertTrue(FileManager.default.fileExists(atPath: metaSidecar(url).path),
+            XCTAssertTrue(hasPendingRow(url),
                           "\(url.lastPathComponent) must keep its own recovery sidecar")
         }
-        let firstMeta = try String(contentsOf: metaSidecar(url1), encoding: .utf8)
-        XCTAssertTrue(firstMeta.contains("evt-1"),
-                      "recording 1's event link must survive recording 2's start, got \(firstMeta)")
+        XCTAssertEqual(pendingRow(url1)?.eventID, "evt-1",
+                       "recording 1's event link must survive recording 2's start")
     }
 
     // MARK: - Save notification (savedTick)
@@ -563,6 +632,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var firstAudio: URL?
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["some talk"])) },
             decode: { url in
@@ -603,6 +673,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let recorder = FakeRecorder()
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "db locked"))
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["live one"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -636,6 +707,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineLoads += 1
@@ -675,6 +747,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         recorder2.startError = AudioRecordingError.microphonePermissionDenied
         var recorderCalls = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -706,7 +779,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
                        "its audio stays retriable rather than disappearing")
         XCTAssertEqual(center.recoverable.first?.eventID, "evt-1", "with the event link intact")
         XCTAssertTrue(FileManager.default.fileExists(atPath: started.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: metaSidecar(started).path),
+        XCTAssertTrue(hasPendingRow(started),
                       "the recovery sidecar is kept — forgetting for good is dismissRecovered's job")
     }
 
@@ -719,6 +792,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let goodRunner = FakeCLIRunner(stdout: recapOKEnvelope)
         var activeRunner: CLIRunnerProtocol = failingRunner
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["one take"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -819,6 +893,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -880,6 +955,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: {
                 recorderCalls += 1
                 switch recorderCalls {
@@ -952,6 +1028,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -1028,6 +1105,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -1091,6 +1169,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -1141,6 +1220,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineLoads += 1
@@ -1196,6 +1276,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let liveGate = GateEngine(texts: ["queued job"])
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in TestTranscriber(liveGate) },
             decode: stubDecode(sampleCount: 1600),
@@ -1246,6 +1327,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: {
                 recorderCalls += 1
                 return [recorder1, recorder2, recorder3][recorderCalls - 1]
@@ -1321,6 +1403,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let recorder = FakeRecorder()
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет"])) },
             diarizerFactory: { config in
@@ -1352,6 +1435,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
     private func makeAlwaysFailingCenter(startFailsAfter: Int = .max) throws -> MeetingRecorderCenter {
         var recorderCalls = 0
         return MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: {
                 recorderCalls += 1
                 let recorder = FakeRecorder()

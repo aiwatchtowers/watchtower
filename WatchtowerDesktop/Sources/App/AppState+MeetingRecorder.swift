@@ -46,6 +46,12 @@ extension AppState {
             }
         }
 
+        // Recordings not yet saved live in `pending_transcripts` (#604 S3/S4):
+        // with the pool open the recorder records them there, and recovers
+        // what an earlier run left (the launch call ran before the pool).
+        meetingRecorderCenter.pendingStore = DatabasePendingTranscriptStore(writer: dbPool)
+        meetingRecorderCenter.restorePendingOnLaunch()
+
         voiceRegistryCenter.attach(dbPool: dbPool)
         // Launch catch-up: the one full retro pass (spec §4.1), skipped with
         // "Voice recognition" off (spec §6).
