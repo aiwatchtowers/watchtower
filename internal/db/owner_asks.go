@@ -39,6 +39,8 @@ type OwnerAsk struct {
 	WithdrawnAt     string // when it was withdrawn (created_at's format); '' while not, or withdrawn before 00107
 	// AutomationRunID is the automation run the ask belongs to (00122); NULL = not an automation's.
 	AutomationRunID sql.NullInt64
+	// DocType is a review ask's document kind (00158): spec | plan | other; '' for any other ask.
+	DocType string
 }
 
 // OwnerAskFilter selects the asks of one workbench.
@@ -72,7 +74,7 @@ const (
 	ownerAskHead = `a.id, a.project_id, a.session_id, a.target_id, a.kind, a.title, a.summary, a.changes,
 	a.payload, a.doc_path, `
 	ownerAskTail = `, a.previous_ask_id, a.status, a.withdrawn_reason, a.answer, a.created_at,
-	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at, a.automation_run_id`
+	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at, a.automation_run_id, a.doc_type`
 	ownerAskCols = ownerAskHead + `a.doc_snapshot` + ownerAskTail
 	// ownerAskListCols leaves doc_snapshot out: it holds up to 2 MiB a row.
 	ownerAskListCols = ownerAskHead + `''` + ownerAskTail
@@ -91,7 +93,7 @@ func scanOwnerAsk(row interface{ Scan(...any) error }) (*OwnerAsk, error) {
 	var a OwnerAsk
 	if err := row.Scan(&a.ID, &a.WorkbenchID, &a.SessionID, &a.TargetID, &a.Kind, &a.Title, &a.Summary, &a.Changes,
 		&a.Payload, &a.DocPath, &a.DocSnapshot, &a.PreviousAskID, &a.Status, &a.WithdrawnReason, &a.Answer,
-		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt, &a.AutomationRunID); err != nil {
+		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt, &a.AutomationRunID, &a.DocType); err != nil {
 		return nil, err
 	}
 	return &a, nil
@@ -146,10 +148,10 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 	}
 	res, err := tx.Exec(`INSERT INTO owner_asks
 		(project_id, session_id, target_id, kind, title, summary, changes, payload, doc_path, doc_snapshot, previous_ask_id,
-		 level, origin, chat_asked_at, automation_run_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 level, origin, chat_asked_at, automation_run_id, doc_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.WorkbenchID, a.SessionID, a.TargetID, a.Kind, a.Title, a.Summary, a.Changes, a.Payload,
-		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt, a.AutomationRunID)
+		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt, a.AutomationRunID, a.DocType)
 	if err != nil {
 		return 0, 0, fmt.Errorf("inserting ask: %w", err)
 	}
@@ -245,6 +247,19 @@ func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID 
 // another workbench's ask is ErrAskNotFound.
 func (db *DB) GetOwnerAsk(workbenchID, id int64) (*OwnerAsk, error) {
 	return getOwnerAsk(db, ownerAskCols, workbenchID, id)
+}
+
+// GetOwnerAskByID returns ask id of any workbench, snapshot included, or
+// ErrAskNotFound: for a caller that knows only the id (the spec reviewer).
+func (db *DB) GetOwnerAskByID(id int64) (*OwnerAsk, error) {
+	a, err := scanOwnerAsk(db.QueryRow(`SELECT `+ownerAskCols+` FROM owner_asks a WHERE a.id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("ask %d: %w", id, ErrAskNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading ask %d: %w", id, err)
+	}
+	return a, nil
 }
 
 func getOwnerAsk(q targetsQuerier, cols string, workbenchID, id int64) (*OwnerAsk, error) {

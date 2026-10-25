@@ -233,6 +233,7 @@ Workbench
 - Code viewer (features/workbench/code-viewer.md)
 - Switching branches (features/workbench/branches.md)
 - Worktrees and cleanup (features/workbench/worktrees-and-cleanup.md)
+- Reviewing a spec or plan (features/workbench/spec-review.md)
 - Branch review (features/workbench/diff-review.md)
 - Methodology (features/workbench/methodology.md)
 - Your instructions (features/workbench/instructions.md)

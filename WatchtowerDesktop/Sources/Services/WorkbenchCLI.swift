@@ -697,9 +697,12 @@ struct InstructionForgetResult: Decodable, Equatable {
 enum WorkbenchCLIError: LocalizedError, Equatable {
     /// `launch-args` found no binary for the agent (exit 3).
     case agentNotFound(AgentKind)
+    /// `spec-review start` exited 3: a reviewer run is already in progress.
+    case specReviewRunning
 
     var errorDescription: String? {
         switch self {
+        case .specReviewRunning: "The reviewer is already running"
         case let .agentNotFound(agent): TerminalLaunch.exitMessage(code: 127, agent: agent)
         }
     }
@@ -1115,6 +1118,20 @@ struct WorkbenchCLI {
             throw WorkbenchCLIError.agentNotFound(agent)
         }
         return try JSONDecoder().decode(CodexLaunchArgs.self, from: data)
+    }
+
+    /// Queues the spec reviewer for review ask `askID`. `force` re-runs a row
+    /// that is done, failed or skipped (without it the CLI exits 3 on those,
+    /// as it does on a running one). Exit 3 is thrown as
+    /// `WorkbenchCLIError.specReviewRunning`.
+    func specReviewStart(askID: Int64, force: Bool) async throws {
+        var args = ["workbench", "spec-review", "start", "--ask", String(askID)]
+        if force { args.append("--force") }
+        do {
+            _ = try await runner.run(args: args)
+        } catch CLIRunnerError.nonZeroExit(code: 3, _) {
+            throw WorkbenchCLIError.specReviewRunning
+        }
     }
 
     /// Removes what was installed in the folder, then the workbench and every

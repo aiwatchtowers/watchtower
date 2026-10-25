@@ -59,6 +59,7 @@ const (
 	TerminalTitle              = "terminal.title"
 	ReviewOverview             = "review.overview"
 	ReviewLessons              = "review.lessons"
+	SpecReview                 = "review.spec"
 	InstructionSuggestions     = "instructions.suggest"
 	MediaDescribe              = "media.describe"
 	MediaSummarizeLink         = "media.summarize_link"

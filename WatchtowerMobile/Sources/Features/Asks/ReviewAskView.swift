@@ -9,6 +9,8 @@ import WatchtowerKit
 /// nothing to select.
 struct ReviewAskView: View {
     let review: AskFormModel.Review
+    /// The Mac reviewer's state; nil from an older Mac or a non-spec document.
+    var specReview: OwnerAsk.SpecReviewLine?
     let model: AskViewModel
     let isEditable: Bool
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -18,6 +20,12 @@ struct ReviewAskView: View {
 
     var body: some View {
         Section {
+            if let specReview, !specReview.line.isEmpty {
+                Label(specReview.line, systemImage: "checklist")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(specReview.line)
+            }
             if let document = review.document {
                 SnapshotTextView(document: document, category: UIContentSizeCategory(dynamicTypeSize), selection: $selection)
                     .frame(minHeight: 320, maxHeight: 480)

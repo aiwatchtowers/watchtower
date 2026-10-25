@@ -10,7 +10,7 @@ package enum OwnerAskReviewText {
     /// title. nil when it names neither or the snapshot has no such place;
     /// the header then lists it without a link.
     package static func range(of focus: OwnerAskFocus, in doc: RenderedDocument) -> NSRange? {
-        quoteRange(focus.quote, in: doc) ?? headingRange(focus.heading, in: doc)
+        range(ofQuote: focus.quote, in: doc) ?? headingRange(focus.heading, in: doc)
     }
 
     /// The anchor of a margin comment on `selection` of the rendered
@@ -29,7 +29,11 @@ package enum OwnerAskReviewText {
         anchor.locate(in: doc.text).map { NSRange($0, in: doc.text) }
     }
 
-    private static func quoteRange(_ quote: String, in doc: RenderedDocument) -> NSRange? {
+    /// A quote's place in the rendered snapshot: as written, else as the
+    /// Markdown renders it (a raw-markdown quote with `code` or **bold**),
+    /// whitespace runs read as one space. Shared by focus items and the
+    /// spec review's comments, so both land where the closed ask looks.
+    package static func range(ofQuote quote: String, in doc: RenderedDocument) -> NSRange? {
         let written = trimmed(quote)
         guard !written.isEmpty else { return nil }
         let rendered = trimmed(DocumentRendering.render(written).text)

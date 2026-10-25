@@ -62,6 +62,7 @@ var allowedStrongSources = []allowedStrongSource{
 	{"catchup.compose", "docs/features/catchup.md: 'One strong-tier catchup.compose call composes eight gathered window areas'"},
 	{"workbench.review_overview", "diff reviewer: judges an agent's change set against the owner's intent (coverage, risk, chapters); a judgment call, not a mechanical rollup"},
 	{"workbench.review_lessons", "diff reviewer: groups the owner's repeated comments into house rules; a judgment call over free text, not a mechanical rollup"},
+	{"workbench.spec_review", "spec reviewer: judges a spec or plan against what the owner agreed (agreements, decided alone, blind spots); spec 2026-10-25-spec-review-design §3 names the strong tier"},
 
 	// Newly tagged by fix-wave-4 task 6 (previously untagged, logged
 	// source:"unknown"): tag-only per decision 9 — attribution fixed, tier

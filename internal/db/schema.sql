@@ -2735,11 +2735,42 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     chat_asked_at    TEXT NOT NULL DEFAULT '',   -- origin chat only: when it was asked in the terminal; '' otherwise
     withdrawn_at     TEXT NOT NULL DEFAULT '',   -- when it was withdrawn (00107); '' while not, and for asks withdrawn before 00107
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run the ask belongs to (00122); NULL = not an automation's
+    doc_type         TEXT NOT NULL DEFAULT '',   -- review asks: spec | plan | other (00158); '' for any other ask
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
 CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
+
+-- Spec review (00158): one reviewer-agent run per review ask. queued -> running
+-- (claimed by a pid) -> done | failed; skipped = no review runs (reason).
+-- result is the reviewer's JSON; a re-queue keeps the marks and counts attempt.
+CREATE TABLE IF NOT EXISTS spec_reviews (
+    ask_id      INTEGER PRIMARY KEY REFERENCES owner_asks(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL CHECK (status IN ('queued','running','done','failed','skipped')),
+    reason      TEXT NOT NULL DEFAULT '',
+    result      TEXT NOT NULL DEFAULT '',
+    provider    TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL DEFAULT '',
+    doc_sha     TEXT NOT NULL DEFAULT '',
+    dropped     INTEGER NOT NULL DEFAULT 0,
+    pid         INTEGER NOT NULL DEFAULT 0,
+    attempt     INTEGER NOT NULL DEFAULT 0,
+    queued_at   TEXT NOT NULL,
+    started_at  TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT ''
+);
+
+-- The owner's per-item marks on a spec review (00158); the Desktop writes them.
+CREATE TABLE IF NOT EXISTS spec_review_marks (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
+    body       TEXT NOT NULL DEFAULT '',
+    about      TEXT NOT NULL DEFAULT '',   -- a comment's finding text, kept when a re-run drops the finding
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
+);
 
 -- The one session the owner is looking at (00107): a singleton written by the
 -- Desktop only (enter + 30 s heartbeat; NULL on leave, lock, sleep, quit),

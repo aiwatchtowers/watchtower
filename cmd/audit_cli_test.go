@@ -403,6 +403,8 @@ var cliNoContentCommands = map[string]bool{
 	"workbench session-probe":          true,
 	"workbench session-report":         true,
 	"workbench session-state":          true,
+	"workbench spec-review run":        true, // detached reviewer child: prints nothing, writes only the DB
+	"workbench spec-review start":      true, // prints a status line only
 	"workbench show":                   true,
 	"workbench target add":             true,
 	"workbench worktree create":        true,

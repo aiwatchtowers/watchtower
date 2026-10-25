@@ -43,7 +43,14 @@ type Client struct {
 	// serversFromHome: the child's CODEX_HOME declares its servers itself
 	// (SetServersFromHome); no -c override is added.
 	serversFromHome bool
+	// noServers: the run mounts no MCP server at all (SetNoMCPServers).
+	noServers bool
 }
+
+// SetNoMCPServers makes the run tool-less on MCP: every server of the
+// owner's codex config layers is disabled and none is mounted, not even
+// the watchtower one (the spec reviewer's read-only run).
+func (c *Client) SetNoMCPServers() { c.noServers = true }
 
 // SetServersFromHome is for a child whose CODEX_HOME (SetChildEnv) is a
 // scrubbed per-run home that already declares exactly its servers (the
@@ -207,15 +214,19 @@ func (m runMount) prompt(systemPrompt string) string {
 // codex config layers and mounts the watchtower server plus the Quick
 // Connections (mcpOverride). A run with none (a plain query), or whose
 // CODEX_HOME declares its servers (SetServersFromHome), is left as codex
-// configures it.
+// configures it. SetNoMCPServers disables the owner's servers and mounts none.
 func (c *Client) mount() (runMount, error) {
-	if c.serversFromHome || c.dbPath == "" {
+	if !c.noServers && (c.serversFromHome || c.dbPath == "") {
 		return runMount{}, nil
 	}
 	base := c.baseEnv()
 	owner, err := ownerServerNames(codexHomeIn(envMap(base)["CODEX_HOME"]), c.processDir())
 	if err != nil {
 		return runMount{}, err
+	}
+	if c.noServers {
+		override, _, _ := mcpOverride("", nil, nil, nil, owner, base)
+		return runMount{args: []string{"-c", override}}, nil
 	}
 	var external []ai.ExternalMCPServer
 	if c.loadExternal != nil {

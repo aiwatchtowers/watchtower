@@ -1354,7 +1354,7 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     answer           TEXT NOT NULL DEFAULT '',   -- JSON, Desktop-written
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     answered_at      TEXT NOT NULL DEFAULT '',
-    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '', automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
+    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '', automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, doc_type TEXT NOT NULL DEFAULT '',
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
@@ -2265,6 +2265,30 @@ CREATE TABLE IF NOT EXISTS chat_queued_drafts (
     surface_key TEXT PRIMARY KEY,
     text        TEXT NOT NULL,
     at          REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS spec_reviews (
+    ask_id      INTEGER PRIMARY KEY REFERENCES owner_asks(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL CHECK (status IN ('queued','running','done','failed','skipped')),
+    reason      TEXT NOT NULL DEFAULT '',
+    result      TEXT NOT NULL DEFAULT '',
+    provider    TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL DEFAULT '',
+    doc_sha     TEXT NOT NULL DEFAULT '',
+    dropped     INTEGER NOT NULL DEFAULT 0,
+    pid         INTEGER NOT NULL DEFAULT 0,
+    attempt     INTEGER NOT NULL DEFAULT 0,
+    queued_at   TEXT NOT NULL,
+    started_at  TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS spec_review_marks (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
+    body       TEXT NOT NULL DEFAULT '',
+    about      TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,

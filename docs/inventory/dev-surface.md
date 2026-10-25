@@ -196,7 +196,7 @@ follows the same rules, and so does the removal of the pre-rename
 `watchtower-project` skill when a workbench folder is resynced
 (`removeSkill`: only a marked, un-edited copy is deleted).
 
-Since 2026-10-15 (board #266) the workbench install ships two skills under these rules — the core (v16 since board #907, the reader line for AI-described images and links; v15 was board #964, v14 board #947, v13 board #558) and the watchtower-flow preset; the upgrade fixtures cover v1..v15 → v16 core + preset (an edited pre-v10 copy is kept as a single file, with no preset).
+Since 2026-10-15 (board #266) the workbench install ships two skills under these rules — the core (v17 since the spec review, 2026-10-25; v16 was board #907, the reader line for AI-described images and links; v15 board #964, v14 board #947, v13 board #558) and the watchtower-flow preset (v11); the upgrade fixtures cover v1..v16 → v17 core + preset (an edited pre-v10 copy is kept as a single file, with no preset).
 
 **Test guards:**
 - `internal/devpack/install_test.go::TestInstallWritesThePackAndIsIdempotent`
@@ -204,7 +204,7 @@ Since 2026-10-15 (board #266) the workbench install ships two skills under these
 - `internal/devpack/install_test.go::TestRemoveDeletesOnlyMarkedFiles`
 - `internal/devpack/install_test.go::TestStatusReportsMissingWithoutWriting`
 - supporting (the workbench skill): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne` — each shipped earlier text (`internal/devpack/testdata/watchtower-workbench-v1.md` … `-v5.md`; v4 and v5 added 2026-10-11 with pack v6) is replaced when un-edited and kept byte-identical when edited
-- supporting (2026-10-15, now v1..v13 → v14 core + preset): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne`
+- supporting (2026-10-15, now v1..v16 → v17 core + preset): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne`
 
 **Why locked:** `watchtower integrate` writes into a directory
 (`~/.claude/skills` by default) the user may also hand-edit or fill with

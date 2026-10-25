@@ -122,7 +122,7 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 }
 
 // Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
-// finishing a session (pack v3); the marker is now v16 (v4: spec 2026-10-08,
+// finishing a session (pack v3); the marker is now v17 (v4: spec 2026-10-08,
 // Working a target / Working a group; v5: board #499, in_progress from the
 // first prompt; v6: spec 2026-10-10-owner-asks-v2 Part 7, Asking the owner;
 // v7: spec 2026-10-12-codex-workbench-agent §6.5, both agents' tool spellings;
@@ -135,12 +135,13 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 // rules and workflow.md cannot turn the checks down; v14: board #947, the
 // whole ticket and the AI overview before finish_session; v15: an approved
 // review round tells the agent to finish the branch; v16: ask #576, the
-// AI descriptions of images and fetched pages in search hits are data).
+// AI descriptions of images and fetched pages in search hits are data; v17:
+// spec 2026-10-25 spec review, doc_type and the independent reviewer).
 func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v16\n") {
-		t.Fatalf("the skill must carry %s: v16", MarkerKey)
+	if !strings.Contains(content, "\n"+MarkerKey+": v17\n") {
+		t.Fatalf("the skill must carry %s: v17", MarkerKey)
 	}
 	start := strings.Index(content, "## Finishing a session")
 	if start < 0 {
@@ -250,11 +251,11 @@ func TestWorkbenchSkill_AskingTheOwnerTeachesLevelsAndDiscipline(t *testing.T) {
 	}
 }
 
-// DEV-04 across every previous version (v1..v15 → v16): a copy we wrote
+// DEV-04 across every previous version (v1..v16 → v17): a copy we wrote
 // and the owner never touched is upgraded; an edited one is kept,
 // byte-identical, as drifted.
 func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
-	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md", "watchtower-workbench-v8.md", "watchtower-workbench-v9.md", "watchtower-workbench-v10.md", "watchtower-workbench-v11.md", "watchtower-workbench-v12.md", "watchtower-workbench-v13.md", "watchtower-workbench-v14.md", "watchtower-workbench-v15.md"} {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md", "watchtower-workbench-v8.md", "watchtower-workbench-v9.md", "watchtower-workbench-v10.md", "watchtower-workbench-v11.md", "watchtower-workbench-v12.md", "watchtower-workbench-v13.md", "watchtower-workbench-v14.md", "watchtower-workbench-v15.md", "watchtower-workbench-v16.md"} {
 		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
 		if err != nil {
 			t.Fatal(err)
@@ -295,12 +296,13 @@ func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *
 
 // assertUpgradeLayout checks spec §4.3: an unedited copy gets the preset
 // beside the current core; an edited single file (before v10) keeps its
-// layout, no preset; an edited split core (v10 … v15) still gets it.
+// layout, no preset; an edited split core (v10 … v16) still gets it.
 func assertUpgradeLayout(t *testing.T, fixture, folder string, want State, rep WorkbenchInstallReport) {
 	t.Helper()
 	splitCore := fixture == "watchtower-workbench-v10.md" || fixture == "watchtower-workbench-v11.md" ||
 		fixture == "watchtower-workbench-v12.md" || fixture == "watchtower-workbench-v13.md" ||
-		fixture == "watchtower-workbench-v14.md" || fixture == "watchtower-workbench-v15.md"
+		fixture == "watchtower-workbench-v14.md" || fixture == "watchtower-workbench-v15.md" ||
+		fixture == "watchtower-workbench-v16.md"
 	if want == StateUpdated || splitCore {
 		if rep.Flow.State != StateInstalled || rep.SingleFileLayout {
 			t.Fatalf("%s %s: flow %+v single=%v, want the preset installed", want, fixture, rep.Flow, rep.SingleFileLayout)

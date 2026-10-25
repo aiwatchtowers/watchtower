@@ -1,0 +1,112 @@
+{
+  "summary": "The spec matches the idea; one promise has no task.",
+  "idea": {
+    "owner_quote": "mute a channel for a day",
+    "goal_quote": "the owner can mute a channel for a day",
+    "verdict": "matches",
+    "note": "Same scope.",
+    "owner_source": {
+      "kind": "conversation",
+      "ref": "entry:1",
+      "quote": "mute a channel for a day",
+      "speaker": "owner"
+    }
+  },
+  "agreements": [
+    {
+      "key": "ag:0123456789ab",
+      "text": "A mute lasts one day",
+      "status": "as_agreed",
+      "note": "Stated in Behaviour.",
+      "chapter": "ch:1",
+      "source": {
+        "kind": "ask",
+        "ref": "ask:1",
+        "quote": "keep the state local",
+        "speaker": "owner"
+      },
+      "where": {
+        "heading": "Behaviour",
+        "quote": "Muting lasts twenty-four hours"
+      }
+    },
+    {
+      "key": "ag:ba9876543210",
+      "text": "Threads stay unmuted",
+      "status": "missing",
+      "note": "Not in the document.",
+      "chapter": "ch:1",
+      "source": {
+        "kind": "conversation",
+        "ref": "entry:1",
+        "quote": "nothing more",
+        "speaker": "owner"
+      },
+      "where": null
+    }
+  ],
+  "decided_alone": [
+    {
+      "key": "da:0123456789ab",
+      "text": "State is kept in the local database",
+      "note": "Nobody asked for it.",
+      "chapter": "ch:2",
+      "where": {
+        "heading": "Decisions",
+        "quote": "Mute state lives in the local database"
+      }
+    }
+  ],
+  "blind_spots": [
+    {
+      "key": "bs:0123456789ab",
+      "text": "No word on muted threads",
+      "why": "A mention would stay silent.",
+      "chapter": "ch:1",
+      "where": {
+        "heading": "Behaviour",
+        "quote": "Muting lasts twenty-four hours"
+      },
+      "evidence": {
+        "path": "internal/notify/mute.go",
+        "line": 42
+      }
+    }
+  ],
+  "checks": [
+    {
+      "key": "ck:0123456789ab",
+      "chapter": "ch:1",
+      "lens": "promises",
+      "question": "Does every promise have a task?",
+      "answer": "concern",
+      "note": "Expiry has none."
+    }
+  ],
+  "resolved": [
+    {
+      "comment_quote": "name the retention period",
+      "status": "resolved",
+      "note": "Now stated."
+    }
+  ],
+  "chapters": [
+    {
+      "key": "ch:0",
+      "heading": "Intro",
+      "start": 0,
+      "end": 40
+    },
+    {
+      "key": "ch:1",
+      "heading": "Behaviour",
+      "start": 40,
+      "end": 200
+    }
+  ],
+  "notes": [
+    "The conversation was trimmed to the last 50 entries."
+  ],
+  "code_read": true,
+  "dropped": 2
+}

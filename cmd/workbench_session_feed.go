@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -227,18 +226,11 @@ func sessionFeedAskLookup(database *db.DB, workbench sql.NullInt64) sessionfeed.
 		if a.Status != "answered" && a.Status != "delivered" {
 			return a.Title, "", true
 		}
-		var payload asks.Payload
-		if json.Unmarshal([]byte(a.Payload), &payload) != nil {
-			return a.Title, "", true
-		}
-		answer, err := asks.ParseAnswer([]byte(a.Answer))
-		if err == nil {
-			err = asks.ValidateAnswer(a.Kind, payload, answer)
-		}
+		text, _, err := asks.RenderStored(a.Kind, a.Payload, a.Answer)
 		if err != nil {
 			return a.Title, "", true
 		}
-		return a.Title, asks.Render(a.Kind, payload, answer), true
+		return a.Title, text, true
 	}
 }
 

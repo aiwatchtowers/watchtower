@@ -57,6 +57,16 @@ public enum Stroke {
     public static var hairlineColor: Color { Color(nsColor: .separatorColor) }
 }
 
+/// Pane widths: a side list beside its detail in a split (the spec
+/// review's chapters), and a narrow centred page (a status or empty page).
+public enum PaneWidth {
+    public static let sideListMin: CGFloat = 170
+    public static let sideListIdeal: CGFloat = 220
+    public static let sideListMax: CGFloat = 360
+    public static let detailMin: CGFloat = 260
+    public static let narrowPage: CGFloat = 420
+}
+
 /// Glyph sizes for chevrons, headers and composer buttons.
 public enum IconSize {
     public static let chevron: CGFloat = 8

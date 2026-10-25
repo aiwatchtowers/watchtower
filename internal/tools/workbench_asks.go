@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/kb"
+	"watchtower/internal/specreview"
 )
 
 // TerminalSessionEnv names the terminal_sessions row a Desktop-launched
@@ -170,6 +171,7 @@ type askOwnerArgs struct {
 	Questions     []asks.Question      `json:"questions,omitempty" jsonschema:"up to 4 questions (1-4 for kind question), each with 2-4 options; multi allows several labels"`
 	Checklist     []asks.ChecklistItem `json:"checklist,omitempty" jsonschema:"check only: 1-30 steps for the owner to run"`
 	DocPath       string               `json:"doc_path,omitempty" jsonschema:"review only, required: the .md/.markdown/.txt file of this folder to review (relative or absolute); its text at this moment is what the owner sees"`
+	DocType       string               `json:"doc_type,omitempty" jsonschema:"review only: spec | plan | other; a spec or plan gets an independent reviewer agent before the owner opens it (default: from the path)"`
 	PreviousAskID int64                `json:"previous_ask_id,omitempty" jsonschema:"an earlier ask of this workbench of the same kind this one follows up; if still open it is withdrawn as superseded"`
 	TargetID      int64                `json:"target_id,omitempty" jsonschema:"the workbench target the ask is about"`
 	Level         string               `json:"level,omitempty" jsonschema:"quick (one question, 2-3 short options, answered with one tap) or full (the owner opens the ask); default: from its shape. quick on a shape that is not one is stored full with level_note saying why"`
@@ -180,13 +182,23 @@ func (a askOwnerArgs) input() asks.Input {
 	return asks.Input{
 		Kind: a.Kind, Title: a.Title, Summary: a.Summary, Changes: a.Changes,
 		Focus: a.Focus, Questions: a.Questions, Checklist: a.Checklist,
-		DocPath: a.DocPath, PreviousAskID: a.PreviousAskID,
+		DocPath: a.DocPath, PreviousAskID: a.PreviousAskID, DocType: a.DocType,
 	}
 }
 
+// SpecReviewLauncher starts the independent reviewer of a queued spec review
+// (docs/features/spec-review.md). A nil launcher means no reviewer.
+type SpecReviewLauncher func(askID int64) error
+
+// ErrSpecReviewSkipped is a launcher's refusal to start the reviewer for a
+// reason that is not a failure; Reason is recorded verbatim.
+type ErrSpecReviewSkipped struct{ Reason string }
+
+func (e ErrSpecReviewSkipped) Error() string { return e.Reason }
+
 // NewAskOwner files an ask of the owner: a document review, a check or
 // questions. sessionEnv returns the terminal session env (TerminalSessionEnv).
-func NewAskOwner(sessionEnv func() string) *Tool {
+func NewAskOwner(sessionEnv func() string, launch SpecReviewLauncher) *Tool {
 	return &Tool{
 		Name: "ask_owner",
 		Description: "Ask the owner for a document review (kind review, doc_path), a check they run (kind check, " +
@@ -227,7 +239,7 @@ func NewAskOwner(sessionEnv func() string) *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding ask_owner args: %w", err)
 			}
-			return fileAsk(ctx, d, call.Binding, a, sessionEnv)
+			return fileAsk(ctx, d, call.Binding, a, sessionEnv, launch)
 		},
 	}
 }
@@ -303,7 +315,7 @@ func askLevel(requested, kind string, p asks.Payload) (level, note string) {
 // index_warning, a failed link its session_link_warning, never a failed ask.
 // A question ask of a session that has another open one filed within
 // seriesHintWindow carries the series hint.
-func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEnv func() string) (any, error) {
+func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEnv func() string, launch SpecReviewLauncher) (any, error) {
 	p, err := workbenchOf(ctx, d, b)
 	if err != nil {
 		return nil, err
@@ -328,7 +340,9 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 		if ask.DocPath, ask.DocSnapshot, err = readReviewDoc(p.FolderPath, a.DocPath); err != nil {
 			return nil, err
 		}
+		ask.DocType = string(specreview.ClassifyDoc(a.DocType, ask.DocPath))
 	}
+	reviewed := ask.DocType == string(specreview.Spec) || ask.DocType == string(specreview.Plan)
 	if ask.SessionID, err = terminalSessionOf(d, p.ID, sessionEnv); err != nil {
 		return nil, err
 	}
@@ -360,8 +374,44 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	if series != nil {
 		out["hint"] = fmt.Sprintf("ask #%d of this session is still open — put related decisions in one ask (up to 4 questions)", series.ID)
 	}
+	if reviewed {
+		out["spec_review"] = launchSpecReview(d, id, launch)
+	}
 	indexAndLinkFiledAsk(ctx, d, p, ask, out)
 	return out, nil
+}
+
+// launchSpecReview queues the review of a just-filed ask, after the ask's own
+// transaction, and starts its reviewer. A queue write that fails, or a
+// launcher that is absent, refuses or fails, never fails the ask: the row is
+// skipped with the reason and the owner opens the document unreviewed.
+func launchSpecReview(d *db.DB, askID int64, launch SpecReviewLauncher) string {
+	if err := d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, time.Now()) }); err != nil {
+		return skipSpecReview(d, askID, "could not queue: "+err.Error())
+	}
+	if launch == nil {
+		return skipSpecReview(d, askID, "no reviewer on this surface")
+	}
+	err := launch(askID)
+	var skipped ErrSpecReviewSkipped
+	var skippedPtr *ErrSpecReviewSkipped
+	switch {
+	case err == nil:
+		return "queued"
+	case errors.As(err, &skipped):
+		return skipSpecReview(d, askID, skipped.Reason)
+	case errors.As(err, &skippedPtr):
+		return skipSpecReview(d, askID, skippedPtr.Reason)
+	default:
+		return skipSpecReview(d, askID, "launch failed: "+err.Error())
+	}
+}
+
+func skipSpecReview(d *db.DB, askID int64, reason string) string {
+	if err := d.SkipSpecReview(askID, reason, time.Now()); err != nil {
+		return "skipped: " + reason + " (not recorded: " + err.Error() + ")"
+	}
+	return "skipped: " + reason
 }
 
 // openQuestionSeriesAsk returns another open question ask of the new ask's

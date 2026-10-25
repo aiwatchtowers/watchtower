@@ -236,6 +236,22 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
             },
+            // Spec review in the review ask drawer (spec 2026-10-25 §7).
+            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
+                SpecReviewShotFixtures.screen(.meaning)
+            },
+            DesignShot(name: "spec-review-chapters", size: NSSize(width: 760, height: 900)) {
+                SpecReviewShotFixtures.screen(.chapters)
+            },
+            DesignShot(name: "spec-review-wrapup", size: NSSize(width: 760, height: 900)) {
+                SpecReviewShotFixtures.screen(.wrapup)
+            },
+            DesignShot(name: "spec-review-running", size: NSSize(width: 760, height: 360)) {
+                SpecReviewShotFixtures.running()
+            },
+            DesignShot(name: "spec-review-strips", size: NSSize(width: 760, height: 150)) {
+                SpecReviewShotFixtures.strips()
+            },
             // Approve / Request changes (#964, mockup 3).
             DesignShot(name: "branch-review-approve-popover", size: NSSize(width: 400, height: 260)) {
                 ReviewShotFixtures.approvePopover()
@@ -290,6 +306,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        SpecReviewShotFixtures.cleanUp()
         InboxShotFixtures.cleanUp()
         OneInboxShotFixtures.cleanUp()
         AutomationShotFixtures.cleanUp()

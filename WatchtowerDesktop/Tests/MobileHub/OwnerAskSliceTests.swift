@@ -73,7 +73,7 @@ final class OwnerAskSliceTests: XCTestCase {
     private let optionalKeys: Set<String> = [
         "session_id", "target_id", "withdrawn_reason", "previous_ask_id", "answered_at", "delivered_at",
         "title_clipped", "summary_clipped", "changes_clipped", "payload", "payload_clipped", "doc_path_clipped",
-        "doc_snapshot", "doc_clipped", "doc_bytes", "answer", "quick"
+        "doc_snapshot", "doc_clipped", "doc_bytes", "answer", "quick", "spec_review"
     ]
     /// Inside `payload` (passed through verbatim): the Kit mirror decodes a
     /// question's `multi` and an option's `description` as optional.
@@ -105,6 +105,58 @@ final class OwnerAskSliceTests: XCTestCase {
         XCTAssertNil(payload["answer"], "an open ask carries no answer")
         XCTAssertNil(payload["answered_at"])
         XCTAssertTrue(SliceJSON.allKeys(payload).isDisjoint(with: neverPublishedKeys))
+    }
+
+    func testSliceCarriesSpecReviewLine() throws {
+        let result = #"{"agreements":[{"key":"a","status":"as_agreed"},{"key":"b","status":"differs"}],"blind_spots":[{"key":"c"}]}"#
+        let cases: [(status: String, result: String, reason: String, line: String?)] = [
+            ("done", result, "", "1 as agreed · 1 differs · 1 blind spot"),
+            ("queued", "", "", "Reviewer is reading…"),
+            ("running", "", "", "Reviewer is reading…"),
+            ("failed", "", "timed out", "Reviewer failed: timed out"),
+            ("skipped", "", "", "Reviewer skipped")
+        ]
+        let project = try dbPool.write { try TestDatabase.insertWorkbench($0) }
+        for item in cases {
+            let id = try insertAsk(kind: "review", project: project)
+            try dbPool.write { db in
+                try db.execute(sql: """
+                    INSERT INTO spec_reviews (ask_id, status, result, reason, queued_at)
+                    VALUES (?, ?, ?, ?, '2026-10-25T10:00:00Z')
+                    """, arguments: [id, item.status, item.result, item.reason])
+            }
+            let review = try XCTUnwrap(try payload(id)["spec_review"] as? [String: Any], item.status)
+            XCTAssertEqual(review["status"] as? String, item.status)
+            XCTAssertEqual(review["line"] as? String, item.line)
+        }
+        let plain = try insertAsk(kind: "review", project: project)
+        XCTAssertNil(try payload(plain)["spec_review"], "no reviewer row: today's view")
+    }
+
+    /// F9: a done review's counts are decoded once per finish: the same
+    /// slice reading the same `finished_at` keeps its line (the result is
+    /// not read again); a new finish is read.
+    func testDoneReviewLineIsKeptPerFinish() throws {
+        let id = try insertAsk(kind: "review")
+        try dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, result, queued_at, finished_at)
+                VALUES (?, 'done', '{"blind_spots":[{"key":"c"}]}', '2026-10-25T10:00:00Z', '2026-10-25T10:05:00Z')
+                """, arguments: [id])
+        }
+        let slice = OwnerAskSlice()
+        func line() throws -> String? {
+            let records = try dbPool.read { try slice.records($0) }
+            let payload = try SliceJSON.objects(records).first { ($0["id"] as? NSNumber)?.int64Value == id }
+            return (payload?["spec_review"] as? [String: Any])?["line"] as? String
+        }
+        XCTAssertEqual(try line(), "1 blind spot")
+        try dbPool.write { try $0.execute(sql: "UPDATE spec_reviews SET result = '{}' WHERE ask_id = ?", arguments: [id]) }
+        XCTAssertEqual(try line(), "1 blind spot", "same finish: the cached line")
+        try dbPool.write {
+            try $0.execute(sql: "UPDATE spec_reviews SET finished_at = '2026-10-25T10:09:00Z' WHERE ask_id = ?", arguments: [id])
+        }
+        XCTAssertEqual(try line(), "No findings", "a new finish is decoded")
     }
 
     func testAnOpenReviewMatchesTheKitFixture() throws {
