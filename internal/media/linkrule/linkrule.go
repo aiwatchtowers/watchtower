@@ -1,6 +1,7 @@
-// The link rules: which URLs are extracted from text, how they are normalized,
-// and which ones Watchtower must never fetch.
-
+// Package linkrule holds the link rules: which URLs are extracted from text,
+// how they are normalized, and which ones Watchtower must never fetch. It is
+// a leaf (the standard library and golang.org/x/net/idna only), so a
+// connector can use it without the media pipeline.
 package linkrule
 
 import (
