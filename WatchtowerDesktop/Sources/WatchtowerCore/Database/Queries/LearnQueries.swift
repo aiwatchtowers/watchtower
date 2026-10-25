@@ -6,7 +6,8 @@ import GRDB
 package enum LearnQueries {
     /// Tables the reads use, for a ValueObservation region.
     package static let observedTables = [
-        "learn_seen", "meeting_transcripts", "chat_messages", "projects", "reaction_commands", "automations"
+        "learn_seen", "meeting_transcripts", "chat_messages", "projects", "reaction_commands", "automations",
+        "ext_sources"
     ]
 
     /// Every seen row by id; a `how` this build does not know is skipped.
@@ -35,8 +36,9 @@ package enum LearnQueries {
         try db.execute(sql: "DELETE FROM learn_seen WHERE item_id = ?", arguments: [id])
     }
 
-    /// The row-backed signals, in one read. The others (memory, sources, the
-    /// phone, dictation) come from state the app already holds.
+    /// The row-backed signals, in one read: Confluence counts while a space
+    /// syncs (an enabled `ext_sources` row). The others (memory, the other
+    /// sources, the phone, dictation) come from `LearnInputs`.
     package static func rowSignals(_ db: Database) throws -> Set<LearnSignal> {
         guard let row = try Row.fetchOne(db, sql: """
             SELECT
@@ -44,12 +46,13 @@ package enum LearnQueries {
               EXISTS (SELECT 1 FROM chat_messages WHERE role = 'user') AS chat,
               EXISTS (SELECT 1 FROM projects) AS workbench,
               EXISTS (SELECT 1 FROM reaction_commands) AS reaction,
-              EXISTS (SELECT 1 FROM automations WHERE origin = 'owner') AS automation
+              EXISTS (SELECT 1 FROM automations WHERE origin = 'owner') AS automation,
+              EXISTS (SELECT 1 FROM ext_sources WHERE provider = 'confluence' AND enabled = 1) AS confluence
             """)
         else { return [] }
         let columns: [(String, LearnSignal)] = [
             ("meeting", .meetingRecorded), ("chat", .chatUsed), ("workbench", .workbenchBound),
-            ("reaction", .reactionUsed), ("automation", .automationCreated)
+            ("reaction", .reactionUsed), ("automation", .automationCreated), ("confluence", .confluenceConnected)
         ]
         return Set(columns.compactMap { column, signal in (row[column] as Bool) ? signal : nil })
     }

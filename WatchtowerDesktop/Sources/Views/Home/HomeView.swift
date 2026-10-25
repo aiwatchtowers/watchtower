@@ -22,7 +22,9 @@ struct HomeView: View {
                 onAct: { await appState.homeCenter.act($0, on: $1) },
                 onExpand: { appState.homeCenter.setFeedExpanded($0) },
                 onReconnect: { appState.openAccountConnection(source: $0) },
-                purges: appState.accountPurgeCenter?.openRows ?? []
+                purges: appState.accountPurgeCenter?.openRows ?? [],
+                learn: appState.learnCenter.zone,
+                learnActions: appState.learnZoneActions
             )
         }
     }
@@ -50,6 +52,9 @@ struct HomeContent: View {
     /// Open account purges (board #601): the red banner above Getting ready.
     let purges: [AccountPurge]
     let onReconnect: (String) -> Void
+    /// The Learn zone; nil hides it (catalog failed or empty).
+    let learn: LearnSelection?
+    let learnActions: LearnZoneActions
 
     init(
         snapshot: HomeSnapshot?,
@@ -64,9 +69,13 @@ struct HomeContent: View {
         onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
         onExpand: @escaping (Bool) -> Void = { _ in },
         onReconnect: @escaping (String) -> Void = { _ in },
-        purges: [AccountPurge] = []
+        purges: [AccountPurge] = [],
+        learn: LearnSelection? = nil,
+        learnActions: LearnZoneActions = .none
     ) {
         self.purges = purges
+        self.learn = learn
+        self.learnActions = learnActions
         self.onReconnect = onReconnect
         self.calendar = calendar
         self.feedErrors = feedErrors
@@ -115,7 +124,9 @@ struct HomeContent: View {
         let feed = FeedZoneView(
             feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: today,
             calendar: calendar)
-        let right = HomeSideColumn(snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion)
+        let right = HomeSideColumn(
+            snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion, learn: learn,
+            learnActions: learnActions)
         return ViewThatFits(in: .horizontal) {
             HomeColumnsLayout(spacing: Spacing.page) {
                 feed
@@ -165,13 +176,15 @@ struct HomeContent: View {
     }()
 }
 
-/// Home's right column: the Workbench zone, the links zone and today in
-/// numbers, in that order; a zone with nothing to show is left out (numbers
-/// show once their first read lands).
+/// Home's right column: the Workbench zone, the links zone, today in
+/// numbers and Learn Watchtower, in that order; a zone with nothing to show
+/// is left out (numbers show once their first read lands).
 struct HomeSideColumn: View {
     let snapshot: HomeSnapshot
     let onLink: (HomeLink) -> Void
     let onDecideSuggestion: (Int64, Bool) async -> String?
+    var learn: LearnSelection?
+    var learnActions: LearnZoneActions = .none
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
@@ -185,6 +198,9 @@ struct HomeSideColumn: View {
             }
             if let numbers = snapshot.numbers {
                 NumbersZoneView(numbers: numbers)
+            }
+            if let learn {
+                LearnZoneView(selection: learn, actions: learnActions)
             }
         }
     }
