@@ -9,6 +9,26 @@ You are mid-thought and typing would slow you down. Press a key, say it, and a c
 ## How it works
 
 ### Where the mic button appears
+<!-- learn
+id: dictation-mic
+title: Dictate instead of typing
+text: Click the mic button in a chat, the new-idea sheet or a recording's **Notes**, speak, then press **Stop**.
+area: meetings
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:chat
+done_when: dictation.used
+-->
+<!-- learn
+id: dictation-raw
+title: Get back your exact words
+text: After a cleaned-up dictation, press **Raw** on the **Cleaned** chip within 5 seconds to keep what you said.
+area: meetings
+level: power
+kind: tip
+since: 0.24.0
+-->
 
 A mic button sits next to three kinds of fields: every assistant chat input (including the setup assistants), the new-idea sheet, and a recording's **Notes** tab.
 
@@ -17,6 +37,16 @@ In a chat input, your words land exactly as transcribed. In the idea sheet and *
 If you dictate into a field that already has text, the new text is added after it.
 
 ### Engines and the first download
+<!-- learn
+id: dictation-engine
+title: Pick the dictation model
+text: Choose **Apple (realtime)** or a Whisper size under **Dictation model** in **Settings → Meetings**.
+area: meetings
+level: power
+kind: tip
+since: 0.24.0
+action: hotkey:settings
+-->
 
 **Settings → Meetings → Dictation model** picks the engine, separately from the meeting engine: **Apple (realtime)** on macOS 26 and later (the default there, nothing to download), or **Whisper large-v3 turbo**, **Whisper small (fast)** or **Whisper base (fastest)**. On older macOS the default is Whisper small.
 
@@ -39,6 +69,17 @@ A meeting recording takes priority. While one is capturing or processing, the mi
 3. Click **Stop** to insert the text. **Esc** cancels and discards it.
 
 ### Quick Capture
+<!-- learn
+id: dictation-quick-capture
+title: Capture an idea by voice
+text: Press **⌃⌥D** in any app, say the idea and press **Save**: it lands in the Inbox's **Ideas** filter.
+area: meetings
+level: next
+kind: shortcut
+since: 0.24.0
+action: hotkey:quick-capture
+requires: feature:ideas
+-->
 
 Press **⌃⌥D** in any app, or choose **New Voice Idea** in the menu bar icon's menu. A small window opens and listens at once.
 

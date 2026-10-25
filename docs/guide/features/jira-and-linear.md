@@ -7,6 +7,50 @@ Watchtower copies the Jira boards you pick onto your Mac and turns them into fou
 Jira shows one board at a time. Here the same data is read across every connected site: which epics slip, which release is at risk, which issues have sat in progress for a week, and who carries too much. The same issues also feed the briefing, the inbox and the assistant's answers.
 
 ## How it works
+<!-- learn
+id: jira-blockers
+title: See what is blocked or stale
+text: Open **Blockers** for Jira and Linear issues that are blocked or sat in progress for over 7 days.
+area: tasks
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:blockers
+requires: source:jira
+-->
+<!-- learn
+id: jira-workload
+title: Spot who carries too much
+text: **Workload** marks each person **Overload**, **Watch** or **Low** from their late, blocked and open issues.
+area: tasks
+level: next
+kind: feature
+since: 0.24.0
+action: nav:workload
+requires: source:jira
+-->
+<!-- learn
+id: jira-releases
+title: Check which releases are at risk
+text: **Releases** marks an unreleased fix version **At Risk** when too much is blocked or time runs short.
+area: tasks
+level: next
+kind: feature
+since: 0.24.0
+action: nav:releases
+requires: source:jira
+-->
+<!-- learn
+id: jira-project-map
+title: See which epics slip
+text: **Project Map** rates each epic **On Track**, **At Risk** or **Behind** from its velocity and due date.
+area: tasks
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projectMap
+requires: source:jira
+-->
 
 The background sync pulls issues from the boards you selected every 15 minutes (`jira.sync_interval_mins`), one pass per connected Jira site. Nothing is written back to Jira from the tabs. The four tabs read the local copy, so they show what the last sync saw.
 
@@ -24,6 +68,50 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 Linear workspaces connect in **Settings** → **Connections** → **Linear**; their issues show in **Blockers** and the weekly digest next to Jira's, and the assistant can read and change them. See [Linear](linear.md).
 
 ## Using it
+<!-- learn
+id: jira-connect
+title: Connect Jira
+text: Press **Add Jira Site** in **Settings → Connections → Jira**, approve in the browser, then tick boards.
+area: tasks
+level: basics
+kind: feature
+since: 0.24.0
+action: connect:jira
+done_when: jira.connected
+-->
+<!-- learn
+id: jira-boards
+title: Change which boards sync
+text: Open **Boards**, press **Refresh Boards** and flip a board's switch to start or stop syncing it.
+area: tasks
+level: next
+kind: tip
+since: 0.24.0
+action: nav:boards
+requires: source:jira
+-->
+<!-- learn
+id: jira-user-mapping
+title: Match Jira people to Slack
+text: People missing from **Workload**? Expand **User Mapping** on **Boards** and press **Resolve**.
+area: tasks
+level: power
+kind: tip
+since: 0.24.0
+action: nav:boards
+requires: source:jira
+-->
+<!-- learn
+id: jira-features
+title: Pick Jira signals for your role
+text: In **Boards → Jira Features**, pick a role to choose which Jira signals the briefing and people cards show.
+area: tasks
+level: power
+kind: tip
+since: 0.24.0
+action: nav:boards
+requires: source:jira
+-->
 
 1. Open **Settings** → **Connections** → **Jira**, press **Add Jira Site** and approve in the browser. You type nothing: if your Atlassian account reaches several sites, the sheet lists them under **Choose a Site**, so pick one and press **Continue**. Until you press **Continue**, **Cancel** stops the connect and nothing is added; after it, the site is added even if the sheet closes. Add a second site the same way. Setup's Jira card opens the same sheet. **Also connect Confluence** (ticked by default) makes the same sign-in cover Confluence for [knowledge search](search-and-knowledge.md); untick it for Jira only. If Atlassian refuses Confluence, a second sign-in tab connects Jira alone and the next step says so. If Atlassian shows an error page instead, press **Cancel**: the box unticks itself, so **Connect** again signs in to Jira only.
 2. After the approval the sheet turns into **Choose Boards**: tick the boards you want synced and press **Done**. Only ticked boards sync. With Confluence connected, a line under the list names the spaces it selected for you. To change them later, open **Boards** in the sidebar, press **Refresh Boards** (**Fetch Boards** when the list is empty) and flip a board's switch.
