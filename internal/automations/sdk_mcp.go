@@ -9,6 +9,7 @@ import (
 	"github.com/dop251/goja"
 
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/policy"
 )
 
 // MCPModule defines mcp(server, tool, args?) (spec §5): the manifest check
@@ -110,6 +111,8 @@ func parseMCPCall(env *Env, rt *goja.Runtime, call goja.FunctionCall) (mcpCall, 
 // message.
 func mcpError(req mcpCall, err error) error {
 	switch {
+	case errors.Is(err, policy.ErrNotAllowed):
+		return PolicyError(err)
 	case errors.Is(err, ErrMCPNotAvailable):
 		msg := fmt.Sprintf("Quick Connection %q is not available", req.server)
 		// The caller wraps the sentinel first: "<sentinel>: <cause>".

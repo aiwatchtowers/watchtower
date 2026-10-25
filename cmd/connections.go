@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/mcpoauth"
 	"watchtower/internal/netsec"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/policy"
 )
 
 // connectionNamePattern constrains --name to characters that are safe to
@@ -304,6 +305,9 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 	if err := validateConnectionAddFlags(name, kind, command, url); err != nil {
 		return err
 	}
+	if err := connectionPolicyError(name, kind, url, command); err != nil {
+		return err
+	}
 	// Parse the secret before touching the database, so a malformed
 	// --secret-stdin payload never leaves behind a disabled row with no
 	// secret to show for it.
@@ -335,6 +339,15 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Added connection #%d %q (%s), disabled.\n", id, name, kind)
 	fmt.Fprintf(out, "Run 'watchtower connections enable %d' to enable it.\n", id)
 	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, name)
+	return nil
+}
+
+// connectionPolicyError refuses a Quick Connection outside the
+// organization's AllowedQuickConnections (#608); nil when it may be used.
+func connectionPolicyError(name, kind, url, command string) error {
+	if p := policy.Current(); !p.ConnectionAllowed(kind, url, command) {
+		return p.ConnectionError(name)
+	}
 	return nil
 }
 
@@ -409,6 +422,15 @@ func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error 
 	}
 	defer database.Close()
 
+	if enabled {
+		c, err := database.GetExternalConnection(id)
+		if err != nil {
+			return err
+		}
+		if err := connectionPolicyError(c.Name, c.Kind, c.URL, c.Command); err != nil {
+			return err
+		}
+	}
 	if err := database.SetExternalConnectionEnabled(id, enabled); err != nil {
 		return fmt.Errorf("updating connection: %w", err)
 	}

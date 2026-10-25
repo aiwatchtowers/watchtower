@@ -60,6 +60,11 @@ func (m *automationMCPCaller) Call(ctx context.Context, server, tool string, arg
 		return nil, fmt.Errorf("%w: no enabled connection named %q", automations.ErrMCPNotAvailable, server)
 	}
 	c := conns[i]
+	// The organization's policy (#608): refused before tools, credentials or
+	// any process; the SDK turns it into a PolicyError.
+	if err := connectionPolicyError(c.Name, c.Kind, c.URL, c.Command); err != nil {
+		return nil, err
+	}
 	if externalmcp.ReservedName(c.Name) {
 		recordReservedName(m.database, c)
 		return nil, fmt.Errorf("%w: %q: %w", automations.ErrMCPNotAvailable, server, errReservedName)

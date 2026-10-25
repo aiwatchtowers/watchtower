@@ -90,6 +90,10 @@ func runConnectionsTools(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if connectionsToolsFlagRefresh {
+		// Listing starts the server: never for a connection the policy forbids (#608).
+		if err := connectionPolicyError(conn.Name, conn.Kind, conn.URL, conn.Command); err != nil {
+			return err
+		}
 		if err := listConnectionTools(cfg, database, &conn); err != nil {
 			return fmt.Errorf("listing tools: %w", err)
 		}

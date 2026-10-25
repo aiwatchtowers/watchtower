@@ -235,6 +235,15 @@ func loadExternalMCPServersFrom(cfg *config.Config, database *db.DB, codexEnv []
 		recordReservedName(database, c)
 		return true
 	})
+	// The organization's policy (#608) next, before any secret is read or
+	// server started; the QC-02 checks below still apply to the rest.
+	conns = slices.DeleteFunc(conns, func(c db.ExternalConnection) bool {
+		err := connectionPolicyError(c.Name, c.Kind, c.URL, c.Command)
+		if err != nil {
+			log.Printf("external connection %d (%s): not mounted: %v", c.ID, c.Name, err)
+		}
+		return err != nil
+	})
 	var skipped map[int64]string
 	if codexEnv != nil {
 		skipped = codexEnvSkips(cfg, conns, codexEnv)
