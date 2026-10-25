@@ -94,6 +94,38 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
         XCTAssertNil(pendingRow(fresh))
     }
 
+    /// The pass fails on launch 1 (no database for it); a recording made in
+    /// launch 1 whose row never landed is still this version's at launch 2:
+    /// the cutoff stamped on launch 1 keeps it recoverable.
+    func testARecordingOfALaunchWhosePassFailedIsNotTombstoned() async throws {
+        let defaults = try isolatedDefaults()
+        let launch1 = Date().addingTimeInterval(-600)
+        let launch1Clock = { launch1 }
+        _ = MeetingRecorderCenter(
+            pendingStore: FailingPendingStore(),
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: defaults,
+            recordingsDirectory: recordingsDir,
+            now: launch1Clock
+        )
+        let legacy = try oldAudio("rec_20260801_080000.caf") // an hour old: before launch 1
+        let madeInLaunch1 = recordingsDir.appendingPathComponent("rec_20260801_085500.caf")
+        try Data([0x00]).write(to: madeInLaunch1)
+        try FileManager.default.setAttributes([.modificationDate: launch1.addingTimeInterval(60)],
+                                              ofItemAtPath: madeInLaunch1.path)
+        XCTAssertFalse(defaults.bool(forKey: MeetingRecorderCenter.legacyAudioTombstonedKey))
+
+        let launch2 = try center(defaults: defaults)
+        await launch2.restorePendingOnLaunch()
+        XCTAssertEqual(launch2.recoverable.map(\.audioURL), [madeInLaunch1])
+        XCTAssertEqual(pendingRow(legacy)?.dismissed, true)
+        XCTAssertTrue(defaults.bool(forKey: MeetingRecorderCenter.legacyAudioTombstonedKey))
+    }
+
     /// A failed `removePending` after a save must not bring the recording back.
     func testARowOfASavedRecordingIsNotOffered() async throws {
         let saved = try oldAudio("rec_20260801_140000.caf")

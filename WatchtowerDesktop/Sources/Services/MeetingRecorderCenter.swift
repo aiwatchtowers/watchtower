@@ -531,6 +531,7 @@ final class MeetingRecorderCenter {
         self.clock = now
         self.launchedAt = now()
         self.meetingsProvider = meetingsProvider
+        recordLegacyAudioCutoff()
     }
 
     /// Production factory: resolves the provider+model chosen in Settings
