@@ -531,7 +531,7 @@ func (p *Pipeline) gatherDigests(date string) string {
 		return ""
 	}
 	from := float64(t.AddDate(0, 0, -1).Unix())
-	to := float64(t.Add(24 * time.Hour).Unix())
+	to := float64(t.AddDate(0, 0, 1).Unix()) // the next midnight: a DST day is 23 or 25 hours
 
 	digests, err := p.db.GetDigests(db.DigestFilter{
 		Type:     "channel",

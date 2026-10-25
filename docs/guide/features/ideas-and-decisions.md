@@ -23,9 +23,9 @@ A mention of something you rejected, dropped or put on **Not now** brings it bac
 
 ### Review what was found
 
-Open the Inbox. Ideas and notes waiting for your verdict, fresh ones and ones brought up again, sit under **Needs your decision** on **All** and **Ideas**. The **Ideas** filter also lists the rest of the registry, newest update first, each row labelled like "Idea · active" or "Decision · superseded"; only merged items are left out.
+Open the Inbox. Ideas and notes waiting for your verdict (and decisions found only in chats), fresh ones and ones brought up again, sit under **Needs your decision** on **All** and **Ideas**. The **Ideas** filter also lists the rest of the registry, newest update first, each row labelled like "Idea · active" or "Decision · superseded", with "· Chat" added for one found in a chat; only merged items are left out.
 
-Click one to see its essence, a thumbs-up and thumbs-down, and every mention with a link back to Slack, the transcript, the mail thread or the Jira issue. The buttons depend on its kind and status:
+Click one to see its essence, a thumbs-up and thumbs-down, and every mention with a link back to Slack, the transcript, the mail thread, the Jira issue or the chat (**Open in Chat**; "Chat deleted" once it is gone). The buttons depend on its kind and status:
 
 - **Approve** or **Reject** an item waiting for a verdict. An idea also offers **Make a Task** and **Not now**.
 - **Not now** parks an idea for **1 week**, **1 month** or **No date**. The date is only a note: nothing brings it back on that day, only a new mention does. **Activate** returns it.
@@ -66,7 +66,7 @@ An empty **Ideas** filter says "No ideas yet" and "Ideas and decisions picked up
 - **In about N h.** The last pass was recent; the line counts whole hours to the next.
 - **Didn't work yet — retries automatically.** The last run failed; the reason is in the line.
 - **Nothing from mail, Jira or Linear.** Turn on Stream Digests and connect the account.
-- **The badge differs from the list.** It counts ideas and notes waiting for a verdict, never decisions or items you already judged.
+- **The badge differs from the list.** It counts ideas and notes waiting for a verdict, and decisions found only in your AI chats; never other decisions or items you already judged.
 
 Filter still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md). A parked idea not returning is a [known issue](../troubleshooting/known-issues.md).
 

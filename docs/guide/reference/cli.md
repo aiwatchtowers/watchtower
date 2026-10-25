@@ -63,7 +63,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 
 ### Why the app asks you to confirm a command
 
-Some commands are yours alone: `actions approve`, `apply` and `propose --approve`, `actions trust … execute`, `tracks start`, `tracks instruction`, `automations confirm`, `enable`, `delete`, `reset`, `reply` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
+Some commands are yours alone: `actions approve`, `dismiss`, `apply` and `propose --approve`, `actions trust … execute`, `tracks start`, `tracks watch`, `tracks instruction` and `tracks enable` of a watch, `automations confirm`, `enable`, `delete`, `reset`, `reply`, `auto … on` and `dry-run` of a recipe not confirmed yet, review Undo, lessons, send and approve, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
 
 - The buttons in the app never ask: the app confirms its own commands.
 - With the app closed, the command is refused with **open Watchtower to confirm this**.

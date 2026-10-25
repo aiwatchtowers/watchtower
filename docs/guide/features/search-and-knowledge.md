@@ -25,13 +25,13 @@ Memory is not part of this index; the assistant reads it separately. A deleted s
 
 **Images.** New images in Slack messages, Confluence pages and attachments, mail, and the images you attach in **AI Chat** or to a workbench target get an AI description: what it shows, the text on it, and keys like `PROJ-123`. It joins the message, page or mail as a section labelled "Image (AI description of an attached image)", so a screenshot is found by what it shows, and a key on it links the thread to that issue. Tiny images, tracking pixels and repeated mail logos are skipped. Chat images feed Ideas & Decisions; target images reach the agent with the target.
 
-**Links.** New links in Slack and Confluence are opened and summarized: "Link (AI summary of a fetched public page)". Never opened: links in mail, links whose address carries a token, key or signature or reads like `/reset`, `/invite` or `/login`, addresses on your Mac or local network, and Slack, Atlassian, Linear and Google links (already synced). Login pages are not summarized.
+**Links.** New links in Slack and Confluence are opened and summarized: "Link (AI summary of a fetched public page)". Never opened: links in mail, links whose address carries a token, key or signature or reads like `/reset`, `/invite` or `/login`, addresses on your Mac or local network, Slack, Atlassian, Linear, Gmail and Google Calendar links (already synced), Google Docs and Drive links, and addresses with a port other than the usual web ones. Login pages are not summarized.
 
 Only images and links that arrive while Knowledge search is on are processed, never older ones. Images need Claude or Codex as the provider (with Ollama they wait); near your Claude plan limit the work pauses.
 
 - Opening a link fetches the page from your Mac like a browser visit: the site sees your Mac's address and the time, and a tracking link can tell its author the link was opened.
 - Text read off a screenshot is stored and searchable as it is, passwords and tokens included.
-- Links to your own company: the domains of the work addresses you connected (Gmail, mail, Jira, Linear; not public mail like gmail.com) and their subdomains are never opened. Hosts listed under `knowledge.link_fetch_deny_hosts` in the config are never opened either.
+- Links to your own company: the domains of the work addresses you connected (Gmail, mail, Jira, Linear; not public mail like gmail.com) and their subdomains are never opened. Hosts listed under `knowledge.link_fetch_deny_hosts` in `config.yaml` are never opened either.
 
 **Confluence in search** uses your Jira sign-in. It is read-only: Watchtower never writes to Confluence from the index. Nothing is fetched until you select a space; after that each cycle loads a bounded amount (about 90 seconds of work), so a big space takes several cycles to arrive.
 

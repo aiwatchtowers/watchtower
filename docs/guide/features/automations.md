@@ -46,7 +46,7 @@ The **Automations** badge counts automations whose last run failed, until you op
 
 ### Where results land
 
-- Inbox: cards in **Actions**, with their own buttons, **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**, until you open them; a click there opens the card.
+- Inbox: cards in the **Automations** filter, with their own buttons, **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**, until you open them; a click there opens the card.
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 

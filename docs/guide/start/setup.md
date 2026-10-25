@@ -13,7 +13,7 @@ Each goal turns on a fixed set of features; the goals are not permissions. All f
 | **Meetings** | Daily Briefing (meeting prep rides on it) | Google |
 | **Development in Workbench** | nothing, because Workbench, the chat and Targets need no switch | nothing |
 
-Knowledge search and Attention detection are always switched on, whatever you tick. You can still turn either off in **Settings → Features**, and if you do, running setup again leaves it off. What each feature does and costs is on [Turning features on and off](../concepts/features-on-and-off.md).
+Knowledge search and Attention detection are always switched on, whatever you tick (Knowledge search uses some AI for images and links). You can still turn either off in **Settings → Features**, and if you do, running setup again leaves it off. What each feature does and costs is on [Turning features on and off](../concepts/features-on-and-off.md).
 
 **Customize features →** shows the same features as switches. Once you flip one, your choice wins over the goals until you press **Reset**.
 
@@ -27,7 +27,7 @@ If the check fails, a box shows the install command and three helpers: **Check a
 
 ## What the Connect step shows
 
-Only the sources your goals need, as cards: Slack, Google ("Mail and calendar"), Jira and Linear.
+Only the sources your goals need, as cards: Slack, Google ("Mail and calendar"), Jira and Linear. A source your company's profile does not allow is not offered.
 
 A Google account always brings mail and calendar together here. **Connect** opens the same sheet as **Settings → Connections**, and a connected card shows a check mark and the account name. The Jira sheet's **Also connect Confluence** box (ticked) adds Confluence to the same sign-in and selects up to five spaces you wrote in or viewed lately. After Jira connects, the sheet asks which boards to sync (**Choose Boards**); only those boards sync, and **Skip** leaves Jira's tabs saying "Choose Jira boards to get this" until you pick some. The Linear sheet signs in with Linear in the browser or takes a personal API key. The step says "You can continue without any" and **Continue** is on even with nothing connected.
 

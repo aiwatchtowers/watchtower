@@ -22,7 +22,7 @@ The other two messages come from the database. If Watchtower cannot write a step
 1. **More than 2000 SDK calls.** This usually means a loop that never ends. The script cannot catch this error. Fix the loop, or split the work across runs: keep what is done in `state`.
 2. **50 outputs or 10 sessions.** The script can catch these errors. Put several items in one output, or leave the rest for the next run, as the PR review rounds template does.
 3. **Journal is incomplete.** Nothing to fix in the recipe. The run's results were saved; only some steps are missing from **History**. If it keeps happening, another program is holding the database busy: check `watchtower db lockstats`.
-4. **Could not be finished.** The run's state and its Inbox, report and briefing outputs were not saved, so the next run starts from the previous state. What the run already did outside Watchtower is not undone: its `shell()` commands ran, its sessions started, and its proposed writes wait in **Actions**. The next run may do them again, so check **Actions** before you approve a second copy.
+4. **Could not be finished.** The run's state and its Inbox, report and briefing outputs were not saved, so the next run starts from the previous state. What the run already did outside Watchtower is not undone: its `shell()` commands ran, its sessions started, and its proposed writes wait in the Inbox's **Automations** filter. The next run may do them again, so check there before you approve a second copy.
 
 ## How to check
 

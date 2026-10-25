@@ -134,9 +134,13 @@ private struct HomeSuggestionRow: View {
         .homeZoneInset()
     }
 
-    /// "You keep telling agents: “…”. Add to your instructions?"
+    /// "You keep telling agents: “…”. Add to your instructions?"; a chat-only
+    /// suggestion names the chat and the chat instructions it is added to.
     static func line(_ suggestion: HomeInstructionSuggestion) -> String {
-        "You keep telling agents: \u{201C}\(suggestion.text)\u{201D}. Add to your instructions?"
+        let quoted = "\u{201C}\(suggestion.text)\u{201D}"
+        return suggestion.field == "chat"
+            ? "You keep telling the chat: \(quoted). Add to your chat instructions?"
+            : "You keep telling agents: \(quoted). Add to your instructions?"
     }
 
     private func decide(add: Bool) {

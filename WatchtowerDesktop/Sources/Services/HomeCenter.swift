@@ -17,6 +17,9 @@ protocol HomeEnvironment: AnyObject {
     var linksAllowed: Set<HomeLinkKind> { get }
     /// `AppState.homeFeedSourcesAllowed`.
     var feedSourcesAllowed: Set<FeedSource> { get }
+    /// The organization's policy (`AppState.managedPolicy.policy`): Getting
+    /// ready offers no Connect row for a source it forbids.
+    var managedPolicy: ManagedPolicy { get }
     /// The live session states (`SessionAgentStateCenter.statuses`), read
     /// under observation tracking: a state change rebuilds without a read.
     var workbenchSessions: [SessionAgentStatus] { get }
@@ -358,6 +361,7 @@ final class HomeCenter {
                 briefingHour: readiness.briefingHour,
                 ownerKnown: environment.ownerKnown,
                 ownerPendingSource: environment.ownerPendingSource,
+                policy: environment.managedPolicy,
                 firstSync: environment.firstSync,
                 links: environment.linksAllowed,
                 feedSources: environment.feedSourcesAllowed,
@@ -386,6 +390,7 @@ final class HomeCenter {
         let briefingHour: Int
         let ownerKnown: Bool
         let ownerPendingSource: String?
+        let policy: ManagedPolicy
         let firstSync: FirstSyncLine?
         let links: Set<HomeLinkKind>
         let feedSources: Set<FeedSource>
@@ -398,7 +403,7 @@ final class HomeCenter {
         let memory = store.memory
         let step = GettingReadyPolicy.step(
             readiness: inputs.readiness, ownerKnown: inputs.ownerKnown, ownerPendingSource: inputs.ownerPendingSource,
-            memory: memory, sawUnready: sawUnready,
+            policy: inputs.policy, memory: memory, sawUnready: sawUnready,
             now: now, briefingHour: inputs.briefingHour)
         sawUnready = step.sawUnready
         if step.memory != memory { store.memory = step.memory }
@@ -467,6 +472,7 @@ final class LiveHomeEnvironment: HomeEnvironment {
     var firstSync: FirstSyncLine? { appState?.firstSyncLine }
     var linksAllowed: Set<HomeLinkKind> { appState?.homeLinksAllowed ?? [] }
     var feedSourcesAllowed: Set<FeedSource> { appState?.homeFeedSourcesAllowed ?? AppState.homeFeedAlwaysAllowed }
+    var managedPolicy: ManagedPolicy { appState?.managedPolicy.policy ?? .none }
     var workbenchSessions: [SessionAgentStatus] {
         appState?.sessionAgentStateCenter.map { Array($0.statuses.values) } ?? []
     }

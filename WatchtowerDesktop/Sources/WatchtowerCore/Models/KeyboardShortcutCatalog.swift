@@ -127,6 +127,9 @@ package enum KeyboardShortcutCatalog {
             Entry("Return", "Run the highlighted automation"),
             Entry("Esc", "Close")
         ]),
+        Area("Automation Editor", [
+            Entry("⌥⌘0", "Hide or show the draft column")
+        ]),
         Area("Voices", note: "On the active card.", [
             Entry("Space", "Play the first clip"),
             Entry("Return", "Confirm"),

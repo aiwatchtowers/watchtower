@@ -2347,3 +2347,12 @@ Entry format:
 - weak-dimension: 8 (Go↔Swift wire shape). A non-omitempty struct field paired with a Swift `decodeIfPresent` optional makes the `if let` dead, and the only test decodes `{}`. This is rule §8's empty-state wire-shape check, applied to a struct rather than a slice.
 - rule-gap (candidate, dim 8): *a Go struct field that can be "empty" and that Swift decodes as an optional is either `omitempty` with a pointer, or Swift treats the all-empty value as nil, and a test decodes the Go-marshalled empty value (not `{}`).*
 - outcome: TBD
+
+## 2026-10-25 — fix/release-0.25-docs (0.25 release docs sweep + Home: chat-only instruction suggestions name the chat, Getting ready drops Connect rows whose every source the MDM policy forbids (#608); 41 files +205/−111; panel: prosecutor (7) + codex (1), 3 specialists DOWN (not installed); judge verified against b7f854c8e by reading and grep, no runs) — verdict: changes-needed
+
+- contested: codex's "keep the Jira row when only Linear is allowed". The `.jira` row belongs to the bare Jira-sync feature (featureID nil, `isConnected(.jira)` = Jira only), so connecting Linear does not satisfy it and keeping the row would offer a forbidden source. Downgraded to minor and sent to Needs human: whether Home should offer Linear when Jira is forbidden is a product call. [6]
+- false-positive: none dismissed outright. Every docs claim held when checked against the code (`ChatModelPicker` iterates `AIProvider.allCases`; `linkrule.SyncedHosts` lists docs/drive.google.com, which Watchtower does not sync; `actions dismiss` / unconfirmed dry-run / `tracks watch enable` call `confirmWithOwner`).
+- miss: codex did not raise the false-green policy test (F1). Neither lane checked the new zone-hiding branch with a goal-switched feature. [7]
+- weak-dimension: 7 (test quality). A "stays hidden" assertion built on a feature that is never goal-switched passes before and after the change.
+- rule-gap (candidate, dim 7): *a test asserting a guard suppresses something (hidden/none/refused) carries a no-guard control in the same test that asserts the opposite, so it cannot pass vacuously.* Docs sweeps: a guide sentence that cites a code allowlist ("already synced", "owner-only: …") is checked against the list's current members.
+- outcome: TBD

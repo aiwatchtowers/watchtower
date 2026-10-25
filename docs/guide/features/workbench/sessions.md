@@ -4,7 +4,7 @@ A session is one Claude Code or Codex conversation running in an embedded termin
 
 ## Why use it
 
-With several sessions running, the terminals tell you nothing until you open each one. Watchtower reads each session's state from the agent's own hooks, so the panel shows which session works, which needs a permission and which is waiting for you.
+With several sessions running, the terminals say nothing until you open each one. Watchtower reads each session's state from the agent's own hooks, so the panel shows which session works, which needs a permission and which is waiting for you.
 
 ## How it works
 
@@ -38,19 +38,19 @@ When no helper has reported for 30 minutes, Watchtower asks Claude Code whether 
 
 ### Where the agent works
 
-A line under the caption shows the agent's place: **main folder · main**, or **⑂ name · branch** when it moved into a git worktree, or **worktree removed** when that worktree is gone. Until Watchtower knows where a session works, it shows the main folder.
+A line under the caption shows the agent's place: **main folder · main**, or **⑂ name · branch** when it moved into a git worktree, or **worktree removed** when that worktree is gone. Until Watchtower knows the place, it shows the main folder.
 
 ### Sessions an automation opens
 
-A workbench automation can start an agent session to do part of its work, such as a review round. It appears in SESSIONS like any other, titled "⚙ <name> · run #N", and starts in the background so it does not take the page from you. You can watch it, type into it, stop it or resume it.
+A workbench automation can start an agent session to do part of its work, such as a review round. It shows in SESSIONS like any other, titled "⚙ <name> · run #N", and starts in the background, not taking the page from you. You can watch it, type into it, stop it or resume it.
 
-The run waits until the session finishes. If you stop it or its process ends, the run carries on knowing the session stopped. If Watchtower was not open when the automation asked, the session starts the next time it is.
+The run waits until the session finishes. If you stop it or it exits, the run goes on, knowing it stopped. If Watchtower was not open when the automation asked, the session starts the next time it is.
 
 ## Using it
 
 ### Start, resume and restart
 
-- **+** in the sessions panel starts a session of the default agent. Hold it to pick the agent. ⌘T does the same on a workbench page.
+- **+** in the sessions panel starts a session of the default agent (hold it to pick one; ⌘T on a workbench page). It is on screen at once and reads **Starting…** while it is set up (and its [worktree](worktrees-and-cleanup.md) made, when it gets one).
 - **Work on It** on a board card starts a session for that target. See [Board and targets](board-and-targets.md).
 - **Resume** continues a stopped session where it left off. **Restart** appears when one exits and **Start fresh** when it cannot be resumed.
 - **Settings → System → Workbench → Default Agent** picks the agent for new sessions. Codex differs in a few ways; see [Codex](codex.md).

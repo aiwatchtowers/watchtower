@@ -140,6 +140,12 @@ With a workbench page on screen; the Navigate menu lists most of these.
 | **Return** | Run the highlighted automation |
 | **Esc** | Close |
 
+### Automation Editor
+
+| Keys | Action |
+|---|---|
+| **⌥⌘0** | Hide or show the draft column |
+
 ### Voices
 
 On the active card.

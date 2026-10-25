@@ -24,6 +24,8 @@ Slack and Jira rows have an **Enabled** switch that stops syncing an account wit
 
 A red dot on a service means at least one of its accounts has a problem. An expired or revoked sign-in is the usual cause.
 
+A source your company's profile forbids is listed as **Blocked by your organization**: its accounts stop syncing and keep their data, and nothing new can be connected.
+
 Use **Reconnect Slack** or **Re-login** on the row. Your data stays and syncing resumes. More in [Troubleshooting](../troubleshooting/README.md).
 
 ## What removing an account does
