@@ -114,7 +114,8 @@ struct MobileHubStorage {
         return Self(
             transport: transport,
             sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
-            sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
+            sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true),
+                                         descriptors: sidecar),
             shares: CloudKitShareService(hubID: hubID),
             registerForPushes: registerForCloudKitPushes,
             keyring: keyring,

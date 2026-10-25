@@ -189,9 +189,9 @@ func TestClaudeBackend_CancelInterruptsAndProcessStaysWarm(t *testing.T) {
 	assert.Len(t, argvRuns(t, f.argv), 1)
 }
 
-func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnResumes(t *testing.T) {
+func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnReplays(t *testing.T) {
 	opts, f := fakeClaude(t, "ignore_interrupt")
-	opts.ResumeSessionID = "sess-0"
+	opts.Replay = func(string) (string, error) { return replayHeader + "\nOwner: long\n" + replayFooter + "\n\n", nil }
 	h := startSession(t, NewClaudeBackend(opts), nil)
 	h.next(EventSessionReady)
 
@@ -208,84 +208,38 @@ func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnResumes(t *testing.T) {
 
 	runs := argvRuns(t, f.argv)
 	require.Len(t, runs, 2)
-	assert.True(t, contains(runs[1], "--resume"), "the respawn resumes the session")
+	assert.False(t, contains(runs[1], "--resume"), "nothing to resume: no session is stored")
+	assert.True(t, contains(runs[1], "--no-session-persistence"))
+	lines := stdinLines(t, f.stdin)
+	last := lines[len(lines)-1]
+	assert.Contains(t, last, "CONVERSATION SO FAR", "the new child gets the history replayed")
+	assert.Contains(t, last, "next")
 }
 
-// A fresh (replayed) session killed after a cancel must not lose the
-// conversation: the next turn — sent without replay, since the app counts
-// the stopped turn as seen — resumes the session the killed child reported
-// on its init line, and the interrupted turn_done carries that id.
-func TestClaudeBackend_CancelKillOnFreshSessionResumesItsOwnSession(t *testing.T) {
-	opts, f := fakeClaude(t, "ignore_interrupt")
-	opts.Env = append(opts.Env, "FAKE_INIT_SID=sess-new")
-	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long", Replay: true})
-	h.next(EventTextDelta)
-	h.send(Command{Type: CommandCancel})
-	done := h.next(EventTurnDone)
-	assert.Equal(t, StatusInterrupted, done.Status)
-	assert.Equal(t, "sess-new", done.SessionID, "the app records the fresh session it can resume")
-
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
-
-	runs := argvRuns(t, f.argv)
-	last := runs[len(runs)-1]
-	idx := indexOf(last, "--resume")
-	require.GreaterOrEqual(t, idx, 0, "the respawn after the kill resumes, never a blank session")
-	assert.Equal(t, "sess-new", last[idx+1])
-}
-
-// A replaced child's late line must not overwrite the session the next
-// spawn resumes: only the live child's id counts.
+// A replaced child's late line must not change the session id the turn
+// events report: only the live child's id counts.
 func TestClaudeBackend_NoteSessionIDIgnoresAReplacedChild(t *testing.T) {
 	b := &claudeBackend{}
 	old, live := &claudeProc{}, &claudeProc{}
 	b.proc = live
 	b.noteSessionID(old, "sess-old")
-	assert.Empty(t, b.sessionToResume())
+	assert.Empty(t, b.currentSession())
 	b.noteSessionID(live, "sess-live")
-	assert.Equal(t, "sess-live", b.sessionToResume())
+	assert.Equal(t, "sess-live", b.currentSession())
 	b.noteSessionID(old, "sess-old")
-	assert.Equal(t, "sess-live", b.sessionToResume())
+	assert.Equal(t, "sess-live", b.currentSession())
 }
 
-// The reader never waits on b.mu: rejectedResume holds b.mu while it waits
-// for the reader to reach EOF, so a reader that took b.mu to note the
-// rejection's session id stalled that wait to its bound, missed the
-// rejection, and the dead --resume was respawned (the CI flake: three spawns
-// instead of two). Here the reader runs while the test holds b.mu.
-func TestClaudeBackend_RejectedResumeSeenWhileHoldingTheLock(t *testing.T) {
-	b := &claudeBackend{}
-	b.curTurn.Store("")
-	b.tr = NewClaudeTranslator(func() string { return "" })
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	_, err = w.WriteString(`{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-x","usage":{"input_tokens":0,"output_tokens":0},"errors":["No conversation found with session ID: gone"]}` + "\n")
-	require.NoError(t, err)
-	require.NoError(t, w.Close())
-	p := &claudeProc{resumed: true, events: make(chan Event, 256), outDone: make(chan struct{}),
-		errDone: make(chan struct{}), stop: make(chan struct{}), stderr: &boundedBuffer{limit: 1 << 10}}
-	close(p.errDone)
-
-	b.mu.Lock()
-	b.proc = p
-	go b.read(p, r)
-	start := time.Now()
-	msg := p.rejectedResume()
-	b.mu.Unlock()
-
-	assert.Contains(t, msg, "No conversation found")
-	assert.Less(t, time.Since(start), exitedOutputWait, "the reader reached EOF without waiting on b.mu")
-}
-
-func TestClaudeBackend_CrashThenNextTurnRespawnsWithResume(t *testing.T) {
+// TestClaudeBackend_RespawnReplays (#604 Review Focus 2): the child dies
+// mid-conversation; the next turn goes to a new child carrying the replayed
+// history, never to a blank session.
+func TestClaudeBackend_RespawnReplays(t *testing.T) {
 	opts, f := fakeClaude(t, "crash_once")
-	opts.ResumeSessionID = "sess-0"
+	var replayed []string
+	opts.Replay = func(turnID string) (string, error) {
+		replayed = append(replayed, turnID)
+		return replayHeader + "\nOwner: x\n" + replayFooter + "\n\n", nil
+	}
 	h := startSession(t, NewClaudeBackend(opts), nil)
 	h.next(EventSessionReady)
 
@@ -302,9 +256,37 @@ func TestClaudeBackend_CrashThenNextTurnRespawnsWithResume(t *testing.T) {
 
 	runs := argvRuns(t, f.argv)
 	require.Len(t, runs, 2)
-	idx := indexOf(runs[1], "--resume")
-	require.GreaterOrEqual(t, idx, 0)
-	assert.Equal(t, "sess-0", runs[1][idx+1])
+	assert.False(t, contains(runs[1], "--resume"))
+	lines := stdinLines(t, f.stdin)
+	last := lines[len(lines)-1]
+	assert.Contains(t, last, replayHeader, "the new child's first message starts with the replayed history")
+	assert.Contains(t, last, "Owner: x", "it carries the earlier turn")
+	assert.Contains(t, last, "retry")
+	assert.Equal(t, []string{"t1", "t2"}, replayed, "every new child's first turn replays")
+}
+
+// Every spawn gets fresh pipes: the child that replaces a crashed one reads
+// the system prompt and the MCP config again (#604 G7).
+func TestClaudeBackend_RespawnReadsPromptPipesAgain(t *testing.T) {
+	opts, f := fakeClaude(t, "crash_once")
+	read := filepath.Join(t.TempDir(), "read")
+	opts.Env = append(opts.Env, "FAKE_PROMPT="+read+".prompt", "FAKE_MCP="+read+".mcp")
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
+	h.next(EventError)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	require.NoError(t, h.finish())
+
+	require.Len(t, argvRuns(t, f.argv), 2)
+	prompt, err := os.ReadFile(read + ".prompt")
+	require.NoError(t, err)
+	assert.Equal(t, strings.Repeat("SYSTEM-PROMPT-SECRET\n--\n", 2), string(prompt))
+	mcp, err := os.ReadFile(read + ".mcp")
+	require.NoError(t, err)
+	assert.Equal(t, strings.Repeat(opts.MCPConfig+"\n--\n", 2), string(mcp))
 }
 
 func indexOf(list []string, s string) int {
@@ -316,40 +298,8 @@ func indexOf(list []string, s string) int {
 	return -1
 }
 
-// TestClaudeBackend_SessionLostRetriesWithReplay: a rejected --resume is
-// retried once as a fresh session carrying the replayed history — the owner
-// sees an answer, not an error (spec §5, Review Focus 5).
-func TestClaudeBackend_SessionLostRetriesWithReplay(t *testing.T) {
-	opts, f := fakeClaude(t, "lost")
-	opts.ResumeSessionID = "gone"
-	opts.Replay = func(turnID string) (string, error) {
-		assert.Equal(t, "t1", turnID)
-		return "=== CONVERSATION SO FAR ===\nOwner: earlier question\n=== END ===\n\n", nil
-	}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
-	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
-	for e := range h.events {
-		assert.NotEqual(t, EventError, e.Type, "session_lost is recovered silently")
-	}
-
-	runs := argvRuns(t, f.argv)
-	last := runs[len(runs)-1]
-	assert.False(t, contains(last, "--resume"), "the retry starts a fresh session")
-	assert.True(t, contains(last, "--system-prompt-file"), "a fresh session gets the system prompt")
-	stdin, err := os.ReadFile(f.stdin)
-	require.NoError(t, err)
-	assert.Contains(t, string(stdin), "CONVERSATION SO FAR")
-	assert.Contains(t, string(stdin), "hello")
-}
-
 func TestClaudeBackend_ReplayCommandStartsFreshSession(t *testing.T) {
 	opts, f := fakeClaude(t, "normal")
-	opts.ResumeSessionID = "sess-0"
 	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
 	h := startSession(t, NewClaudeBackend(opts), nil)
 	h.next(EventSessionReady)
@@ -362,18 +312,28 @@ func TestClaudeBackend_ReplayCommandStartsFreshSession(t *testing.T) {
 
 	runs := argvRuns(t, f.argv)
 	require.Len(t, runs, 2, "the warm process is replaced by a fresh one")
-	assert.True(t, contains(runs[0], "--resume"))
-	assert.False(t, contains(runs[1], "--resume"))
+	for _, run := range runs {
+		assert.False(t, contains(run, "--resume"))
+	}
 }
 
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
 // TestChat04_ClaudeArgvCarriesNoContent: CHAT-04 — the system prompt, the
 // owner's text and attachment paths never appear on any process's argv; the
-// prompt travels in a 0600 file, the text on stdin — in claude.ai mode too.
+// prompt and the MCP config travel over inherited pipes (/dev/fd/N; #604 G7/G8
+// — no temp file holds them, not even while the child runs), the text on
+// stdin — in claude.ai mode too.
 func TestChat04_ClaudeArgvCarriesNoContent(t *testing.T) {
 	forEachClaudeAIMode(t, func(t *testing.T, mode ClaudeAIMode) {
 		opts, f := fakeClaude(t, "normal")
 		opts.ClaudeAI = mode
+		tmp := t.TempDir()
+		t.Setenv("TMPDIR", tmp)
+		// The temp-file checks below watch the directory a prompt file
+		// would land in (os.CreateTemp("") = os.TempDir()), not a vacuous one.
+		require.Equal(t, tmp, os.TempDir())
+		read := filepath.Join(t.TempDir(), "read")
+		opts.Env = append(opts.Env, "FAKE_PROMPT="+read+".prompt", "FAKE_MCP="+read+".mcp")
 		h := startSession(t, NewClaudeBackend(opts), nil)
 		h.next(EventSessionReady)
 
@@ -392,31 +352,37 @@ func TestChat04_ClaudeArgvCarriesNoContent(t *testing.T) {
 		}
 		i := indexOf(runs[0], "--system-prompt-file")
 		require.GreaterOrEqual(t, i, 0)
-		promptFile := runs[0][i+1]
-		data, err := os.ReadFile(promptFile)
+		assert.Regexp(t, `^/dev/fd/\d+$`, runs[0][i+1], "the prompt rides an inherited pipe")
+		data, err := os.ReadFile(read + ".prompt")
 		require.NoError(t, err)
-		assert.Equal(t, "SYSTEM-PROMPT-SECRET", string(data))
-		info, err := os.Stat(promptFile)
-		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		assert.Equal(t, "SYSTEM-PROMPT-SECRET\n--\n", string(data), "the child read the prompt from it")
 
 		j := indexOf(runs[0], "--mcp-config")
 		require.GreaterOrEqual(t, j, 0)
-		mcpFile := runs[0][j+1]
-		info, err = os.Stat(mcpFile)
+		assert.Regexp(t, `^/dev/fd/\d+$`, runs[0][j+1], "the mcp config (connection secrets) rides an inherited pipe")
+		data, err = os.ReadFile(read + ".mcp")
 		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the mcp config can hold connection secrets")
+		assert.Equal(t, opts.MCPConfig+"\n--\n", string(data))
+
+		// While the child runs, no temp file holds the prompt or the config.
+		assertNoWTTemp(t, tmp)
 
 		stdin, err := os.ReadFile(f.stdin)
 		require.NoError(t, err)
 		assert.Contains(t, string(stdin), "USER-TEXT-SECRET", "the owner's text travels on stdin")
 		require.NoError(t, h.finish())
-
-		_, err = os.Stat(promptFile)
-		assert.True(t, os.IsNotExist(err), "the prompt file is deleted when the session exits")
-		_, err = os.Stat(mcpFile)
-		assert.True(t, os.IsNotExist(err), "the mcp config file (secrets) is deleted when the session exits")
+		assertNoWTTemp(t, tmp)
 	})
+}
+
+// assertNoWTTemp fails when dir holds a wt-* file (a prompt or config temp).
+func assertNoWTTemp(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.False(t, strings.HasPrefix(e.Name(), "wt-"), "temp file %s exists", e.Name())
+	}
 }
 
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
@@ -457,19 +423,43 @@ func TestChat04_ClaudeSendsRealAttachmentAsContentBlock(t *testing.T) {
 }
 
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
-func TestChat04_ClaudeArgsOnResume(t *testing.T) {
+// TestChat04_ClaudeArgsNeverResume (#604 G11, ask #571; replaces
+// TestChat04_ClaudeArgsOnResume): every spawn — the first, and every one
+// after a child exit — passes --no-session-persistence and never --resume,
+// so the prompt is always handed over; nothing on argv but paths.
+func TestChat04_ClaudeArgsNeverResume(t *testing.T) {
 	forEachClaudeAIMode(t, func(t *testing.T, mode ClaudeAIMode) {
 		args := claudeArgs(ClaudeOptions{Model: "sonnet", AllowedTools: "mcp__watchtower", DisallowedTools: "Bash",
-			ClaudeAI: mode}, "/tmp/p", "/tmp/m", "sess-9")
-		assert.True(t, contains(args, "--resume"))
-		assert.False(t, contains(args, "--system-prompt-file"), "a resumed session reuses its recorded prompt")
+			ClaudeAI: mode}, "/dev/fd/4", "/dev/fd/3")
+		assert.True(t, contains(args, "--no-session-persistence"))
+		assert.False(t, contains(args, "--resume"))
+		assert.True(t, contains(args, "--system-prompt-file"), "every child gets the prompt")
 		assert.True(t, contains(args, "--input-format"))
 		assert.True(t, contains(args, "--include-partial-messages"))
-		assert.True(t, contains(args, "/tmp/m"), "mcp config travels as a file path")
+		assert.True(t, contains(args, "/dev/fd/3"), "mcp config travels as a path")
 		if mode.On {
-			assert.True(t, contains(args, "--permission-prompt-tool"), "a resumed claude.ai session keeps its gate")
+			assert.True(t, contains(args, "--permission-prompt-tool"), "a claude.ai session keeps its gate")
 		} else {
-			assert.True(t, contains(args, "--strict-mcp-config"), "a resumed session also sees only Watchtower's MCP servers")
+			assert.True(t, contains(args, "--strict-mcp-config"), "a session sees only Watchtower's MCP servers")
+		}
+
+		// End to end: a child that crashed is replaced by one with the same
+		// shape.
+		opts, f := fakeClaude(t, "crash_once")
+		opts.ClaudeAI = mode
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
+		h.next(EventError)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "again"})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
+		runs := argvRuns(t, f.argv)
+		require.Len(t, runs, 2)
+		for _, run := range runs {
+			assert.True(t, contains(run, "--no-session-persistence"))
+			assert.False(t, contains(run, "--resume"))
+			assert.True(t, contains(run, "--system-prompt-file"))
 		}
 	})
 }
@@ -490,15 +480,13 @@ func forEachClaudeAIMode(t *testing.T, f func(t *testing.T, mode ClaudeAIMode)) 
 // later CLI release adds is never visible by default.
 func TestClaudeArgs_ToolsAllowlistAlwaysPassed(t *testing.T) {
 	for _, tools := range []string{"ToolSearch,WebSearch", ""} {
-		for _, resume := range []string{"", "sess-9"} {
-			args := claudeArgs(ClaudeOptions{Tools: tools, AllowedTools: "mcp__watchtower", DisallowedTools: "Bash"},
-				"/tmp/p", "/tmp/m", resume)
-			i := indexOf(args, "--tools")
-			require.GreaterOrEqual(t, i, 0, "tools=%q resume=%q", tools, resume)
-			require.Less(t, i+1, len(args))
-			assert.Equal(t, tools, args[i+1])
-			assert.Equal(t, i, lastIndexOf(args, "--tools"), "--tools passed once")
-		}
+		args := claudeArgs(ClaudeOptions{Tools: tools, AllowedTools: "mcp__watchtower", DisallowedTools: "Bash"},
+			"/tmp/p", "/tmp/m")
+		i := indexOf(args, "--tools")
+		require.GreaterOrEqual(t, i, 0, "tools=%q", tools)
+		require.Less(t, i+1, len(args))
+		assert.Equal(t, tools, args[i+1])
+		assert.Equal(t, i, lastIndexOf(args, "--tools"), "--tools passed once")
 	}
 }
 
@@ -646,7 +634,6 @@ func TestClaudeBackend_RefusesAGroupWritableWorkDirWithOpenContents(t *testing.T
 // Retry.
 func TestClaudeBackend_RespawnIntoAnUnsafeWorkDirFailsTheTurn(t *testing.T) {
 	opts, f := fakeClaude(t, "crash_once")
-	opts.ResumeSessionID = "sess-0"
 	h := startSession(t, NewClaudeBackend(opts), nil)
 	h.next(EventSessionReady)
 	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
@@ -746,86 +733,6 @@ func TestClaudeBackend_MissingBinaryIsProviderUnavailable(t *testing.T) {
 	assert.True(t, e.Retryable)
 }
 
-// A --resume rejected only through the result's "errors" array on stdout (the
-// real CLI's shape, no stderr needed) is recovered with a replay too.
-func TestClaudeBackend_SessionLostFromResultErrorsRetriesWithReplay(t *testing.T) {
-	opts, f := fakeClaude(t, "lost_result")
-	opts.ResumeSessionID = "gone"
-	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
-	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
-	for e := range h.events {
-		assert.NotEqual(t, EventError, e.Type, "session_lost is recovered silently")
-	}
-	runs := argvRuns(t, f.argv)
-	assert.False(t, contains(runs[len(runs)-1], "--resume"))
-}
-
-// The CI flake behind SessionLostFromResultErrorsRetriesWithReplay, made
-// deterministic: the warm --resume child reports the rejection BEFORE the
-// owner's turn and is still alive when the turn is written. Sending drains
-// the child's buffered events, so the session_lost error is gone by then; the
-// recorded rejection (lostMsg) must still turn the exit into the fresh
-// retry, not an internal error.
-func TestClaudeBackend_ResumeRejectedBeforeTheTurnOnALiveChildRetriesFresh(t *testing.T) {
-	opts, f := fakeClaude(t, "lost_result_linger")
-	opts.ResumeSessionID = "gone"
-	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
-	be := NewClaudeBackend(opts).(*claudeBackend)
-	h := startSession(t, be, nil)
-	h.next(EventSessionReady)
-	be.mu.Lock()
-	p := be.proc
-	be.mu.Unlock()
-	require.NotNil(t, p)
-	deadline := time.Now().Add(10 * time.Second)
-	for m, _ := p.lostMsg.Load().(string); m == ""; m, _ = p.lostMsg.Load().(string) {
-		require.True(t, time.Now().Before(deadline), "the child reports the rejected --resume")
-		time.Sleep(10 * time.Millisecond)
-	}
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
-	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
-	for e := range h.events {
-		assert.NotEqual(t, EventError, e.Type, "session_lost is recovered silently")
-	}
-	runs := argvRuns(t, f.argv)
-	assert.False(t, contains(runs[len(runs)-1], "--resume"))
-}
-
-// The two halves of that fix, each pinned on its own. A live resumed child
-// that already reported the rejection is never written to: the turn goes
-// straight to the fresh retry.
-func TestClaudeBackend_LiveChildWithReportedRejectionIsNotReused(t *testing.T) {
-	p := &claudeProc{resumed: true, exited: make(chan struct{})}
-	p.lostMsg.Store("No conversation found with session ID: gone")
-	b := &claudeBackend{proc: p, resume: "gone"}
-	_, err := b.ensureProcLocked()
-	var rejected *resumeRejectedError
-	require.ErrorAs(t, err, &rejected)
-	assert.Contains(t, rejected.msg, "No conversation found")
-}
-
-// And a child whose rejection event was drained before the turn was sent
-// (claimForSend drains stale events) still exits as session lost, never as
-// a plain exit.
-func TestClaudeBackend_ExitAfterADrainedRejectionIsSessionLost(t *testing.T) {
-	p := &claudeProc{resumed: true, events: make(chan Event, 1),
-		outDone: make(chan struct{}), errDone: make(chan struct{}), stderr: &boundedBuffer{limit: 1 << 10}}
-	close(p.outDone)
-	close(p.errDone)
-	p.lostMsg.Store("No conversation found with session ID: gone")
-	p.gotResult.Store(true)
-	out := exitOutcome(p, func(Event) (outcome, bool) { return outcome{}, false })
-	assert.Equal(t, outcomeLost, out.kind)
-}
-
 // ToolSearch never surfaces as a step through the whole backend either, and
 // is not hidden from the model (it must stay usable to load MCP tools).
 func TestClaudeBackend_InternalToolsAreNotSteps(t *testing.T) {
@@ -864,7 +771,6 @@ func blockingReplay() (replay func(string) (string, error), entered chan struct{
 // Close — it would run the turn unreaped (review Important #1).
 func TestChat03_CloseDuringReplayNeverRespawns(t *testing.T) {
 	opts, f := fakeClaude(t, "normal")
-	opts.ResumeSessionID = "sess-0"
 	var entered, release chan struct{}
 	opts.Replay, entered, release = blockingReplay()
 	h := startSession(t, NewClaudeBackend(opts), nil)

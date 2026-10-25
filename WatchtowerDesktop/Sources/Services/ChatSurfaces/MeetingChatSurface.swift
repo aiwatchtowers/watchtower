@@ -51,12 +51,9 @@ enum MeetingChatSurface {
             toolAccess: .draftOnly,
             ownerInstructions: true,
             systemPrompt: { buildSystemPrompt(transcript: transcript, recapContent: recapContent, dbPool: dbPool) },
-            // Resumed sessions drop the system prompt (CLI --resume); carry the
-            // meeting context with the message so an expired session never
-            // loses track of what is being discussed.
-            turnPrompt: {
-                $0.isResumed ? "\(meetingContextBlock(transcript, recapContent: recapContent))\n\n\($0.text)" : $0.text
-            },
+            // Every turn carries the system prompt (no session is resumed,
+            // #604 G11), so the meeting context is there.
+            turnPrompt: { $0.text },
             emptyHint: "Ask about this meeting — what was decided, who said what, or draft a follow-up.",
             starterPrompts: starterPrompts
         )

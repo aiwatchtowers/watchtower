@@ -355,7 +355,7 @@ struct AutomationsView: View {
 
     private func discardHandler(_ target: AutomationEditorTarget) -> (() -> Void)? {
         guard case let .newDraft(contextID, _, _) = target else { return nil }
-        return { vm.discardDraft(contextID: contextID) }
+        return { Task { await vm.discardDraft(contextID: contextID) } }
     }
 
     private func workbenchName(_ id: Int64) -> String? {

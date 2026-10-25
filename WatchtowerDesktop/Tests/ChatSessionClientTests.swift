@@ -46,23 +46,25 @@ final class ChatSessionClientTests: XCTestCase {
     }
 
     func testArgumentsCarryOnlyFlags() {
-        var cfg = ChatSessionConfig(conversationID: 7, provider: "claude", model: "model-b", resumeSessionID: "s1")
+        var cfg = ChatSessionConfig(conversationID: 7, provider: "claude", model: "model-b")
         XCTAssertEqual(ChatSessionClient.arguments(for: cfg, dbPath: "/tmp/w.db"),
                        ["ai", "session", "--conversation", "7", "--provider", "claude", "--surface", "main",
-                        "--model", "model-b", "--resume", "s1", "--db-path", "/tmp/w.db"])
+                        "--model", "model-b", "--db-path", "/tmp/w.db"])
         cfg.model = nil
-        cfg.resumeSessionID = ""
         XCTAssertEqual(ChatSessionClient.arguments(for: cfg, dbPath: nil),
                        ["ai", "session", "--conversation", "7", "--provider", "claude", "--surface", "main"])
     }
 
     /// CHAT-04 (Swift half): the session argv is built from the config
     /// alone — the turn text and attachment paths exist only in the stdin
-    /// command.
+    /// command. No session resumes a stored provider session (#604 G11,
+    /// ask #571): the argv never carries `--resume`.
     /// BEHAVIOR CHAT-04 — see docs/inventory/chat.md
     func testChat04SessionArgvNeverCarriesContent() throws {
-        let cfg = ChatSessionConfig(conversationID: 7, provider: "claude", model: nil, resumeSessionID: "s1")
-        let args = ChatSessionClient.arguments(for: cfg, dbPath: "/tmp/w.db").joined(separator: " ")
+        let cfg = ChatSessionConfig(conversationID: 7, provider: "claude", model: nil)
+        let argv = ChatSessionClient.arguments(for: cfg, dbPath: "/tmp/w.db")
+        XCTAssertFalse(argv.contains("--resume"))
+        let args = argv.joined(separator: " ")
         let turn = ChatCommand.turn(ChatTurnCommand(
             turnID: "t", text: "SECRET-TEXT",
             attachments: [ChatCommandAttachment(path: "/tmp/SECRET.pdf", mime: "application/pdf", name: "SECRET.pdf")],
@@ -99,10 +101,9 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertEqual(flag.map { args[$0 + 1] }, "42")
     }
 
-    func testConfigCompatibilityIgnoresOnlyTheResumeHint() {
-        let base = ChatSessionConfig(conversationID: 1, provider: "claude", model: "m", resumeSessionID: "a")
-        XCTAssertTrue(base.isCompatible(with: ChatSessionConfig(conversationID: 1, provider: "claude", model: "m",
-                                                                resumeSessionID: "b")))
+    func testConfigCompatibility() {
+        let base = ChatSessionConfig(conversationID: 1, provider: "claude", model: "m")
+        XCTAssertTrue(base.isCompatible(with: ChatSessionConfig(conversationID: 1, provider: "claude", model: "m")))
         XCTAssertFalse(base.isCompatible(with: ChatSessionConfig(conversationID: 2, provider: "claude", model: "m")))
         XCTAssertFalse(base.isCompatible(with: ChatSessionConfig(conversationID: 1, provider: "codex", model: "m")))
         XCTAssertFalse(base.isCompatible(with: ChatSessionConfig(conversationID: 1, provider: "claude", model: nil)))
@@ -306,14 +307,12 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertTrue(client.isAlive)
     }
 
-    func testAdoptInitialContinuityOnlyBeforeTheFirstTurn() {
+    /// A new session has seen nothing: its first turn replays (#604 G11).
+    func testANewSessionHasNoContinuousLeaf() {
         let fake = FakeChatSessionProcess(arguments: [])
         let client = makeClient { fake }
-        client.adoptInitialContinuity(41)
-        XCTAssertEqual(client.continuousLeafID, 41)
-        client.startTurn(request())
-        client.adoptInitialContinuity(99)
-        XCTAssertEqual(client.continuousLeafID, 41)
+        XCTAssertNil(client.continuousLeafID)
+        XCTAssertTrue(ChatContinuity.replayNeeded(historyTipID: 41, continuousLeafID: client.continuousLeafID))
     }
 
     func testCloseSendsCloseThenTerminatesAfterGrace() async {

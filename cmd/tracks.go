@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/customtracks"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
@@ -157,14 +158,14 @@ func init() {
 		tracksEventsCmd, tracksEnableCmd, tracksDisableCmd, tracksStartCmd, tracksInstructionCmd)
 	tracksStartCmd.Flags().BoolVar(&tracksStartFlagJSON, "json", false, "print {track_id, automation_id} as JSON")
 	tracksInstructionCmd.Flags().StringVar(&tracksInstructionFlagText, "text", "", "the new watch instruction")
-	tracksInstructionCmd.Flags().StringVar(&tracksInstructionFlagTextFile, "text-file", "", "read the instruction from this file instead of --text")
+	tracksInstructionCmd.Flags().StringVar(&tracksInstructionFlagTextFile, "text-file", "", "read the instruction from this file (- = stdin) instead of --text")
 	tracksInstructionCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagText, "text", "", "description of what to watch")
-	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file instead of --text")
+	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file (- = stdin) instead of --text")
 	tracksCreateCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	tracksCreateCmd.Flags().IntVar(&tracksCreateFlagTarget, "target", 0, "optional linked target id")
 	tracksWatchCmd.Flags().StringVar(&tracksCreateFlagText, "text", "", "description of what to watch")
-	tracksWatchCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file instead of --text")
+	tracksWatchCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file (- = stdin) instead of --text")
 	tracksWatchCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	tracksScanCmd.Flags().StringVar(&tracksScanFlagSince, "since", "", "scan history from this ISO8601 instant")
 	tracksCmd.Flags().StringVar(&tracksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
@@ -755,7 +756,7 @@ func runTracksGenerate(cmd *cobra.Command, _ []string) error {
 			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
 			errMsg := ""
 			if runErr != nil {
-				errMsg = runErr.Error()
+				errMsg = logredact.Full(runErr)
 			}
 			var pFrom, pTo *float64
 			if pipe.LastFrom > 0 {
@@ -783,7 +784,7 @@ func runTracksGenerate(cmd *cobra.Command, _ []string) error {
 		inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
 		p := tracksProgressJSON{Pipeline: "tracks", Finished: true, InputTokens: inTok, OutputTokens: outTok, TotalAPITokens: totalAPI}
 		if err != nil {
-			p.Error = err.Error()
+			p.Error = logredact.Full(err)
 		} else {
 			p.ItemsFound = created + updated
 		}
@@ -834,7 +835,7 @@ const msgConfirmInAutomations = "Confirm it in Automations."
 // unconfirmed (it scans nothing until the owner confirms it) and the JSON
 // says so.
 func runTracksCreate(cmd *cobra.Command, _ []string) error {
-	text, err := textFlagValue(tracksCreateFlagText, tracksCreateFlagTextFile)
+	text, err := textFlagValue(cmd.InOrStdin(), tracksCreateFlagText, tracksCreateFlagTextFile)
 	if err != nil {
 		return err
 	}
@@ -1001,7 +1002,7 @@ func runTracksInstruction(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	text, err := textFlagValue(tracksInstructionFlagText, tracksInstructionFlagTextFile)
+	text, err := textFlagValue(cmd.InOrStdin(), tracksInstructionFlagText, tracksInstructionFlagTextFile)
 	if err != nil {
 		return err
 	}

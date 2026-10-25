@@ -212,14 +212,12 @@ func (g *ClaudeGenerator) GenerateWithImage(ctx context.Context, systemPrompt, u
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
-	systemPromptFile, cleanup, err := writeSystemPromptFile(systemPrompt)
-	if err != nil {
-		return "", nil, err
-	}
-	defer cleanup()
+	// The system prompt over an inherited pipe, never a temp file (#604 G7).
+	systemPromptFile, payloads := systemPromptPayload(systemPrompt)
 
 	model := g.modelForContext(ctx)
-	resp, err := g.runClaude(ctx, imageArgs(model, systemPromptFile), bytes.NewReader(line), dir, parseStreamResult)
+	resp, err := g.runClaude(ctx, imageArgs(model, systemPromptFile), bytes.NewReader(line), dir, parseStreamResult,
+		payloads...)
 	if err != nil {
 		return "", nil, err
 	}

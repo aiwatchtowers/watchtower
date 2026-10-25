@@ -88,7 +88,7 @@ Since 2026-10-12, every record the hub and a phone exchange through CloudKit is 
 
 - **The hub** (`SlicePublisher` through `MobileHubStorage.secure`) seals each DataZone record as `data` (or `alert` for `ask_alert`), signed, one record at a time. One record that cannot be sealed, such as a keybox without a recipient key, is skipped alone and never blocks its batch.
   - Slice hashes stay hashes of the plaintext (random nonces make every envelope differ).
-  - Staged slice assets (`SliceAssetStore`) are sealed files with a `<fileName>.desc` descriptor beside them. The Mac keeps `K_asset` next to its own plaintext; FileVault is the at-rest story there. A crash between the file and its descriptor reads as "not staged" and is staged again.
+  - Staged slice assets (`SliceAssetStore`) are sealed files; each one's descriptor (with `K_asset`) is a row of `hubstate.db`'s `slice_assets` (#604 S12, `SliceAssetDescriptorStoring`), never a `.desc` file — one an earlier build left is moved into a row at init. FileVault is the at-rest story on the Mac. A crash between the file and its row reads as "not staged" and is staged again.
 - **The phone writes RelayZone only.** `device` records, actions and uploads are sealed `relayToHub` under the phone's p2h key. The hub's echoes come back sealed `relayToPhone` to the authenticated sender (F16).
   - The hub opens a p2h record only from a linked phone, in an accepted epoch: the current one, or the previous one for 7 days (D10).
   - The hub opens its own h2p echoes by trying each linked phone's key (F2, `relayDeviceIDs`).

@@ -218,21 +218,20 @@ package final class AutomationsViewModel {
     // MARK: - Reads
 
     /// Re-reads the list, the badge and the open card, and with `drafts`
-    /// the draft rows (their cache files are read after the database read).
+    /// the draft rows (with their newest cached draft, in the same read).
     package func refresh(drafts: Bool = true) {
         do {
             let selected = selectedID
             let expanded = expandedRuns
             let date = now()
             let failures = failureWatch != nil
-            let databasePath = dbPool.path
             let snapshot = try dbPool.read { db in
                 try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures,
                                   drafts: drafts)
             }
             apply(snapshot)
             if let conversations = snapshot.draftConversations {
-                let rows = AutomationDraftRows.rows(conversations, databasePath: databasePath,
+                let rows = AutomationDraftRows.rows(conversations,
                                                     liveWorkbenchIDs: snapshot.workbenchIDs,
                                                     openDrafts: openNewDrafts())
                     .filter { !savedDraftConversations.contains($0.conversationID) }
@@ -258,7 +257,7 @@ package final class AutomationsViewModel {
         var allIDs: Set<Int64>
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
-        /// Read only with `drafts`; their cache files are read after the read.
+        /// Read only with `drafts`, with each newest cached draft.
         var draftConversations: [AutomationDraftRows.Conversation]?
         var workbenchIDs: Set<Int64>
 
@@ -468,27 +467,23 @@ package final class AutomationsViewModel {
         showCard(id)
     }
 
-    /// **Discard Draft** of a new draft: its cache file goes (so it is no
+    /// **Discard Draft** of a new draft: its cached drafts go (so it is no
     /// longer a row) and the panel empties. A draft never drafted by the
-    /// assistant has no file; its in-memory draft is the editor center's.
-    package func discardDraft(contextID: String) {
-        if let row = draftRows.first(where: { $0.contextID == contextID }) {
-            let url = AutomationDraftEntry.cacheURL(databasePath: dbPool.path, conversationID: row.conversationID)
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch CocoaError.fileNoSuchFile {
-                // Already gone.
-            } catch {
-                lastError = "Could not remove the draft: \(error.localizedDescription)"
-                lastErrorIsRead = false
-            }
-            draftRows.removeAll { $0.contextID == contextID }
-        }
+    /// assistant has no cached draft; its in-memory draft is the editor center's.
+    package func discardDraft(contextID: String) async {
         if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
+        guard let row = draftRows.first(where: { $0.contextID == contextID }) else { return }
+        draftRows.removeAll { $0.contextID == contextID }
+        do {
+            try await dbPool.write { try AutomationDraftCacheQueries.delete($0, conversationID: row.conversationID) }
+        } catch {
+            lastError = "Could not remove the draft: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
     }
 
     /// A new draft's save landed as automation `automationID` (spec
-    /// 2026-10-24 §4): its row leaves the list and its cache file goes at
+    /// 2026-10-24 §4): its row leaves the list and its cached drafts go at
     /// once, with the editor's draft; once the draft's chat engine is idle
     /// and let go of, its conversation becomes the automation's editor chat
     /// (ask #528). The selection is the caller's: this never empties the panel.
@@ -496,7 +491,7 @@ package final class AutomationsViewModel {
         savedDraftConversations.insert(conversationID)
         defer { savedDraftConversations.remove(conversationID) }
         discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
-        removeDraftCache(conversationID)
+        await removeDraftCache(conversationID)
         draftRows.removeAll { $0.conversationID == conversationID }
         let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
                                   conversationID: conversationID)
@@ -510,15 +505,12 @@ package final class AutomationsViewModel {
             lastErrorIsRead = false
         }
         // The turn waited for may have drafted again.
-        removeDraftCache(conversationID)
+        await removeDraftCache(conversationID)
     }
 
-    private func removeDraftCache(_ conversationID: Int64) {
-        let url = AutomationDraftEntry.cacheURL(databasePath: dbPool.path, conversationID: conversationID)
+    private func removeDraftCache(_ conversationID: Int64) async {
         do {
-            try FileManager.default.removeItem(at: url)
-        } catch CocoaError.fileNoSuchFile {
-            // Never drafted, or already gone.
+            try await dbPool.write { try AutomationDraftCacheQueries.delete($0, conversationID: conversationID) }
         } catch {
             lastError = "Could not remove the saved draft: \(error.localizedDescription)"
             lastErrorIsRead = false

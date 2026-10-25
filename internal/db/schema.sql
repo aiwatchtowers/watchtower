@@ -3372,3 +3372,39 @@ BEGIN
     VALUES ('image', 'target', 'target:' || NEW.id, NEW.id, NEW.path, NEW.file_name,
             NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END;
+
+-- Automation editor draft cache (00157, #604): the newest draft_automation
+-- results of an automation_editor conversation (the Draft panel's history),
+-- oldest first by seq, at most a handful kept (AppendDraftCache). entry_json
+-- is one DraftCacheEntry. Replaces <workspace>/automation-drafts/<id>.jsonl.
+-- Deleting the conversation (Go or the Desktop) drops its rows by cascade.
+CREATE TABLE IF NOT EXISTS automation_draft_cache (
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    entry_json      TEXT NOT NULL,
+    at              TEXT NOT NULL,                       -- RFC 3339 UTC
+    PRIMARY KEY (conversation_id, seq)
+);
+
+-- Recordings not yet saved as a transcript (00157, #604). Written by the
+-- Desktop only; Go never reads it. recording is the audio file's base name
+-- (rec_<ts>.caf); transcript and meta_json stay NULL until transcription
+-- succeeds. A row present = not saved yet (replaces the rec_* sidecars).
+CREATE TABLE IF NOT EXISTS pending_transcripts (
+    recording      TEXT PRIMARY KEY,
+    event_id       TEXT,
+    title          TEXT,
+    transcript     TEXT,
+    meta_json      TEXT,
+    started_at     REAL NOT NULL,
+    transcribed_at REAL
+);
+
+-- An embedded chat's owner message queued but not yet sent (00157, #604;
+-- CHAT-01: it survives a quit). Written by the Desktop only; Go never reads
+-- it. surface_key is EmbeddedChatKey.description.
+CREATE TABLE IF NOT EXISTS chat_queued_drafts (
+    surface_key TEXT PRIMARY KEY,
+    text        TEXT NOT NULL,
+    at          REAL NOT NULL
+);

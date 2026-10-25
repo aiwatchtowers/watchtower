@@ -38,6 +38,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Search indexes | [search-indexes.md](search-indexes.md) | `internal/db/migrations/00147_fts_rowid.sql`, `internal/db/fts_rebuild.go`, `internal/db/messages.go`, `internal/db/search.go` |
 | Organization policy (MDM) | [policy.md](policy.md) | `internal/policy/`, `cmd/policy.go`, `cmd/accounts.go` (`guardSource`, `applySourceGuards`), `cmd/provider_policy.go`, `internal/providers/policy.go`, `internal/automations/policy_check.go`, `WatchtowerDesktop/Sources/WatchtowerCore/Models/ManagedPolicy.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/ManagedPolicy*.swift`, `WatchtowerDesktop/Sources/Services/MobileHub/MobileSyncPolicy.swift` |
 | Backup exclusion (Time Machine) | [backup.md](backup.md) | `internal/backupexclude/`, `cmd/backup_exclude.go`, `cmd/workspace.go`, `cmd/db.go`, `cmd/sync.go` (`runSyncDaemon`), `internal/config/config.go` (`AppSupportDir`) |
+| Files outside the database (logs, temp files) | [files.md](files.md) | `internal/logredact/`, `internal/logcanary/`, `internal/fsutil/prompt_pipe.go`, `internal/fsutil/private_temp.go`, `internal/{sync,meeting,digest,tracks,targets,briefing,guide,ai,codex,jira,ollama}/*files01_test.go` |
 
 (Other modules will be added as their inventories are written.)
 

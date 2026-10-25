@@ -12,8 +12,10 @@ package struct AutomationsCLI {
         case run(Int64, rerunOf: Int64? = nil)
         case dryRun(Int64)
         case show(Int64)
-        case validate(file: String, against: Int64?, workbench: Int64? = nil)
-        case save(file: String, path: String, confirmHash: String, expectContentHash: String)
+        /// The recipe text travels on stdin (`validate -`, #604 S6).
+        case validate(slug: String, against: Int64?, workbench: Int64? = nil)
+        /// The recipe text travels on stdin (`--file -`).
+        case save(path: String, confirmHash: String, expectContentHash: String)
         case confirm(Int64, hash: String)
         case setEnabled(Int64, Bool)
         case auto(Int64, tool: String, on: Bool, hash: String?)
@@ -39,8 +41,8 @@ package struct AutomationsCLI {
         case showWatch(Int64)
         /// Binds an unbound custom track to a new watch recipe (owner only).
         case trackStart(Int)
-        /// Rewrites a bound watch's instruction line from `file` (owner only).
-        case trackInstruction(Int, file: String)
+        /// Rewrites a bound watch's instruction line from stdin (owner only).
+        case trackInstruction(Int)
     }
 
     /// How a `session()` step's session ended, as `session-ended --status`
@@ -67,15 +69,15 @@ package struct AutomationsCLI {
             return ["automations", "dry-run", String(id), "--json"]
         case let .show(id):
             return ["automations", "show", String(id), "--json"]
-        case let .validate(file, against, workbench):
+        case let .validate(slug, against, workbench):
             precondition(against == nil || workbench == nil, "validate takes --against or --workbench, not both")
-            var out = ["automations", "validate", file]
+            var out = ["automations", "validate", "-", "--slug", slug]
             if let against { out += ["--against", String(against)] }
             if let workbench { out += ["--workbench", String(workbench)] }
             return out + ["--json"]
-        case let .save(file, path, confirmHash, expectContentHash):
+        case let .save(path, confirmHash, expectContentHash):
             // --expect-content-hash is always passed: "" means the file must not exist.
-            return ["automations", "save", "--file", file, "--path", path, "--confirm-hash", confirmHash,
+            return ["automations", "save", "--file", "-", "--path", path, "--confirm-hash", confirmHash,
                     "--expect-content-hash", expectContentHash, "--json"]
         case let .confirm(id, hash):
             return ["automations", "confirm", String(id), "--hash", hash]
@@ -120,8 +122,8 @@ package struct AutomationsCLI {
             return ["automations", "show", String(id), "--json"]
         case let .trackStart(trackID):
             return ["tracks", "start", String(trackID), "--json"]
-        case let .trackInstruction(trackID, file):
-            return ["tracks", "instruction", String(trackID), "--text-file", file]
+        case let .trackInstruction(trackID):
+            return ["tracks", "instruction", String(trackID), "--text-file", "-"]
         }
     }
 
@@ -150,14 +152,16 @@ package struct AutomationsCLI {
         try await decode(.show(id))
     }
 
-    package func validate(file: URL, against: Int64?, workbench: Int64? = nil) async throws -> ValidateResult {
-        try await decode(.validate(file: file.path, against: against, workbench: workbench))
+    /// Validates `text` as the recipe `slug` (the name its file would have).
+    package func validate(text: String, slug: String, against: Int64?, workbench: Int64? = nil) async throws
+        -> ValidateResult {
+        try await decode(.validate(slug: slug, against: against, workbench: workbench), stdin: Data(text.utf8))
     }
 
-    package func save(file: URL, path: String, confirmHash: String, expectContentHash: String) async throws
+    package func save(text: String, path: String, confirmHash: String, expectContentHash: String) async throws
         -> SaveResult {
-        try await decode(.save(file: file.path, path: path, confirmHash: confirmHash,
-                               expectContentHash: expectContentHash))
+        try await decode(.save(path: path, confirmHash: confirmHash, expectContentHash: expectContentHash),
+                         stdin: Data(text.utf8))
     }
 
     package func confirm(_ id: Int64, hash: String) async throws {
@@ -257,13 +261,16 @@ package struct AutomationsCLI {
     /// Rewrites bound track `trackID`'s watch instruction and confirms the new
     /// text; refused (stderr) for a recipe changed in the chat.
     package func trackInstruction(_ trackID: Int, text: String) async throws {
-        _ = try await CLITextFile.with(text) { path in
-            try await runner.run(args: Self.args(.trackInstruction(trackID, file: path)))
-        }
+        _ = try await runner.run(args: Self.args(.trackInstruction(trackID)), stdin: Data(text.utf8))
     }
 
     private func decode<T: Decodable>(_ op: Op) async throws -> T {
         let data = try await runner.run(args: Self.args(op))
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func decode<T: Decodable>(_ op: Op, stdin: Data) async throws -> T {
+        let data = try await runner.run(args: Self.args(op), stdin: stdin)
         return try JSONDecoder().decode(T.self, from: data)
     }
 }

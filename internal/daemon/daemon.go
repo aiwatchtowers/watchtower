@@ -39,7 +39,9 @@ import (
 	"watchtower/internal/media"
 	"watchtower/internal/memory"
 
+	"watchtower/internal/automations/authoring"
 	"watchtower/internal/customtracks"
+	"watchtower/internal/logredact"
 	"watchtower/internal/reactioncmd"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
@@ -495,7 +497,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadRollupAttempts()
 	d.loadPeopleAttempts()
 	d.reapStalePipelineRuns()
-	d.sweepStaleSystemPrompts()
+	d.sweepStaleTemp()
+	d.importLegacyDraftCache()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -712,7 +715,7 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 	}
 	errMsg := ""
 	if stats.err != nil {
-		errMsg = stats.err.Error()
+		errMsg = logredact.Full(stats.err)
 	}
 	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
 		d.logger.Printf("pipeline_runs: %s run %d not completed: %v", name, runID, err)
@@ -761,21 +764,46 @@ const stalePipelineRunAfter = 24 * time.Hour
 // stalePipelineRunError is the error_msg a reaped run carries.
 const stalePipelineRunError = "interrupted: the process running it exited before it finished"
 
-// staleSystemPromptAge is how old a system-prompt temp file must be before
-// the startup sweep removes it: a live claude/codex call deletes its own file
-// as soon as the child exits, well within this.
-const staleSystemPromptAge = 10 * time.Minute
+// staleTempAge is how old a prompt temp file or an extract spool file must
+// be before the startup sweep removes it: a live call removes its own long
+// before (fsutil.StaleTempPatterns, extract.StaleTempAge).
+const staleTempAge = 10 * time.Minute
 
-// sweepStaleSystemPrompts removes the 0600 system-prompt files a killed
-// process left in the temp dir (they hold the owner's data). Best-effort:
-// a failure is logged and never keeps the daemon from starting.
-func (d *Daemon) sweepStaleSystemPrompts() {
-	n, err := fsutil.SweepStalePrivateTemp(fsutil.SystemPromptTempPrefix, staleSystemPromptAge, time.Now())
+// sweepStaleTemp removes what a killed process left holding the owner's
+// data: the prompt and MCP-config temp files (fsutil.SweepStaleTemp, every
+// CLI start does the same) and the <ws>/tmp/extract spool. Best-effort: a
+// failure is logged and never keeps the daemon from starting.
+func (d *Daemon) sweepStaleTemp() {
+	now := time.Now()
+	n, err := fsutil.SweepStaleTemp(staleTempAge, now)
 	if n > 0 {
-		d.logger.Printf("removed %d stale system prompt temp file(s)", n)
+		d.logger.Printf("removed %d stale prompt temp file(s)", n)
 	}
 	if err != nil {
-		d.logger.Printf("sweeping system prompt temp files: %v", err)
+		d.logger.Printf("sweeping prompt temp files: %v", err)
+	}
+	n, err = fsutil.SweepStaleDir(filepath.Join(d.config.WorkspaceDir(), "tmp", "extract"), staleTempAge, now)
+	if n > 0 {
+		d.logger.Printf("removed %d stale extract spool file(s)", n)
+	}
+	if err != nil {
+		d.logger.Printf("sweeping the extract spool: %v", err)
+	}
+}
+
+// importLegacyDraftCache moves an older version's automation editor draft
+// cache files into the database once (#604 G2). Best-effort: a failure is
+// logged and the files stay for the next start.
+func (d *Daemon) importLegacyDraftCache() {
+	if d.db == nil {
+		return
+	}
+	n, err := authoring.ImportLegacyDraftCache(d.db, d.config.WorkspaceDir())
+	if n > 0 {
+		d.logger.Printf("imported %d automation draft cache file(s) into the database", n)
+	}
+	if err != nil {
+		d.logger.Printf("importing automation draft cache files: %v", err)
 	}
 }
 
@@ -1140,7 +1168,7 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 				d.logger.Printf("jira: account %d: sync cancelled, leaving auth state untouched", s.AccountID())
 			case errors.Is(err, jira.ErrAuthRevoked):
 				if d.db != nil {
-					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", err.Error()); dbErr != nil {
+					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", logredact.Full(err)); dbErr != nil {
 						d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
 					}
 				}

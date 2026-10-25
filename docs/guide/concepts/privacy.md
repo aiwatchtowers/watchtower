@@ -29,6 +29,15 @@ An APFS backup disk (the default since macOS 11) has no such item and deletes on
 
 Other backup tools may ignore Time Machine's flag: exclude the two folders there by hand.
 
+## What Watchtower keeps outside its database
+
+Most of what Watchtower knows lives in the database; a few things are files beside it.
+
+- **Logs** name channels, people and meetings by id and record counts and errors, never message text, titles or AI answers. Log files from an earlier version may hold text until they rotate out.
+- **AI calls leave no session files.** Watchtower's own Claude calls write nothing to Claude Code's history folder; a chat picks up again from its saved messages.
+- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest.
+- **What you paste into a session's Workchat** is deleted when that session ends.
+
 ## What goes to your AI provider
 
 Every AI feature sends the relevant text to the provider you chose in [AI providers, models and cost](ai-providers-and-cost.md), and it arrives under the terms of your own Claude, Codex or other account. Watchtower does not control that provider's retention.

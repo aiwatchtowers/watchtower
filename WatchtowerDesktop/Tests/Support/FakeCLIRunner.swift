@@ -40,8 +40,9 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         return recordedInvocations
     }
 
-    /// What each `--text-file` held when its call ran (`nil` when the file
-    /// was unreadable) — the file is gone once the call returns.
+    /// What each `--text-file` carried: the stdin text for `--text-file -`
+    /// (how the services send it, #604 S6), else the file's text when the
+    /// call ran (`nil` when unreadable).
     package var textFileContents: [String?] {
         lock.lock()
         defer { lock.unlock() }
@@ -68,7 +69,11 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     package func run(args: [String]) async throws -> Data {
-        record(args)
+        try await run(args: args, recordedStdin: nil)
+    }
+
+    private func run(args: [String], recordedStdin stdin: Data?) async throws -> Data {
+        record(args, stdin: stdin)
         if let onRun { await onRun(args) }
         if blockUntilCancelled {
             await waitForCancellation()
@@ -82,15 +87,17 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     package func run(args: [String], stdin: Data) async throws -> Data {
         lock.withLock { recordedStdin.append(stdin) }
-        return try await run(args: args)
+        return try await run(args: args, recordedStdin: stdin)
     }
 
-    private func record(_ args: [String]) {
+    private func record(_ args: [String], stdin: Data?) {
         lock.lock()
         defer { lock.unlock() }
         recordedInvocations.append(args)
         if let flag = args.firstIndex(of: "--text-file"), args.indices.contains(flag + 1) {
-            recordedTextFiles.append(try? String(contentsOfFile: args[flag + 1], encoding: .utf8))
+            let path = args[flag + 1]
+            recordedTextFiles.append(path == "-" ? stdin.flatMap { String(bytes: $0, encoding: .utf8) }
+                                                 : try? String(contentsOfFile: path, encoding: .utf8))
         }
     }
 

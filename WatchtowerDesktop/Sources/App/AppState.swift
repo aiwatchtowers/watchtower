@@ -768,9 +768,13 @@ final class AppState {
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
         managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
-        // Surface a recording captured before a crash/relaunch so the global
-        // indicator can offer to (re-)transcribe it. No DB needed.
-        meetingRecorderCenter.restorePendingOnLaunch()
+        // Text older versions handed the CLI through temp files (now stdin).
+        Task.detached(priority: .utility) {
+            StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
+        }
+        // A recording captured before a crash/relaunch is surfaced once the
+        // pool opens (`wireMeetingRecorderLoaders`): its pending row lives in
+        // the database.
         // Neither direction of this handshake needs the DB, so it is wired
         // unconditionally rather than inside the DB-dependent Task below.
         dictationCenter.meetingBusy = { [meetingRecorderCenter] in meetingRecorderCenter.isBusy }
@@ -1327,7 +1331,7 @@ final class AppState {
                 await vm?.loadDetail(id)
             }
         )
-        // A new draft the editor holds is a list row, cache file or not.
+        // A new draft the editor holds is a list row, cached draft rows or not.
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }

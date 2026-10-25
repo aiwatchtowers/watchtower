@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/logredact"
 	"watchtower/internal/mcpoauth"
 	"watchtower/internal/netsec"
 	"watchtower/internal/ollama"
@@ -518,7 +519,7 @@ func applyOAuthCredentials(
 ) bool {
 	fail := func(status, what string, err error) bool {
 		log.Printf("external connection %d (%s): %s, skipping: %v", c.ID, c.Name, what, err)
-		if serr := database.SetExternalConnectionStatus(c.ID, status, err.Error()); serr != nil {
+		if serr := database.SetExternalConnectionStatus(c.ID, status, logredact.Full(err)); serr != nil {
 			log.Printf("external connection %d (%s): recording %s status: %v", c.ID, c.Name, status, serr)
 		}
 		return false

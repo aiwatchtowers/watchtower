@@ -46,7 +46,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
-    private var folder: URL!
+    var folder: URL!
     private var processes: [FakeTerminalSession] = []
     private var center: TerminalCenter!
     private var transcripts = true
@@ -78,7 +78,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
+    func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults,
                                       terminalCenter: center)
         vm.titleService = { [weak self] id in

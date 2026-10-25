@@ -134,8 +134,7 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
     }
 
     func testSavePassesABuiltinPathUnchanged() {
-        let args = AutomationsCLI.args(.save(file: "/tmp/acme/d.md", path: "builtin:morning-brief", confirmHash: "h",
-                                             expectContentHash: ""))
+        let args = AutomationsCLI.args(.save(path: "builtin:morning-brief", confirmHash: "h", expectContentHash: ""))
         XCTAssertEqual(args[5], "builtin:morning-brief")
     }
 }

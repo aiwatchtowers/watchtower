@@ -12,15 +12,15 @@ package struct MeetingRecapService {
     }
 
     package func generate(eventID: String, text: String) async throws {
-        try await CLITextFile.with(text) { path in
-            let args = [
-                "meeting-prep", "recap",
-                "--event-id", eventID,
-                "--text-file", path,
-                "--json"
-            ]
-            // Discard stdout — caller refetches from DB.
-            _ = try await runner.run(args: args)
-        }
+        // The text travels on stdin (`--text-file -`, #604 S6): off argv
+        // (ARG_MAX, `ps`) and never in a temp file.
+        let args = [
+            "meeting-prep", "recap",
+            "--event-id", eventID,
+            "--text-file", "-",
+            "--json"
+        ]
+        // Discard stdout — caller refetches from DB.
+        _ = try await runner.run(args: args, stdin: Data(text.utf8))
     }
 }

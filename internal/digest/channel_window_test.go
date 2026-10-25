@@ -560,7 +560,7 @@ func TestChannelWindow_CeilingBreachAdvancesLoudly(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	assert.Contains(t, logBuf.String(), "ERROR: #ceiling",
+	assert.Contains(t, logBuf.String(), "ERROR: channel C_CEILING",
 		"a breach of the row ceiling must be loud, naming the channel")
 	assert.Contains(t, logBuf.String(), fmt.Sprintf("in second %d", sec),
 		"and naming the second it could not get past")

@@ -14,6 +14,7 @@ import (
 
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/logredact"
 )
 
 // CodexGenerator implements digest.Generator by calling the Codex CLI.
@@ -55,11 +56,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	if err != nil {
 		return "", nil, "", err
 	}
-	if promptFile != "" {
-		defer os.Remove(promptFile)
-	}
-
-	result, usage, err := g.run(ctx, codexBin, model, args, stdin, os.TempDir())
+	result, usage, err := g.run(ctx, codexBin, model, args, stdin, os.TempDir(), promptFile)
 	return result, usage, "", err
 }
 
@@ -91,15 +88,16 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 	if err != nil {
 		return "", nil, err
 	}
-	if promptFile != "" {
-		defer os.Remove(promptFile)
-	}
-	result, usage, err := g.run(ctx, codexBin, g.modelStrong, args, stdin, dir)
+	result, usage, err := g.run(ctx, codexBin, g.modelStrong, args, stdin, dir, promptFile)
 	return result, usage, err
 }
 
-// run starts codex with args in dir and parses its JSONL reply.
-func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args []string, stdin, dir string) (string, *digest.Usage, error) {
+// run starts codex with args in dir and parses its JSONL reply. promptFile
+// (the 0600 model_instructions_file, "" for none) is removed at codex's first
+// output, or when run returns: codex refuses a pipe there (see Client.Query).
+func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args []string, stdin, dir, promptFile string) (string, *digest.Usage, error) {
+	removePrompt := fsutil.RemoveOnce(promptFile)
+	defer removePrompt()
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Cancel = func() error {
@@ -124,7 +122,7 @@ func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args [
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
-	output, err := cmd.Output()
+	output, err := outputRemovingPrompt(cmd, removePrompt)
 	if err != nil {
 		return "", nil, runError(model, output, err, stderrBuf.String(), codexBin)
 	}
@@ -312,7 +310,7 @@ func classifyError(err error, stderr, codexBin string) error {
 			stderrMsg = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		if stderrMsg != "" {
-			return digest.WithCause(fmt.Errorf("codex CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg), exitErr)
+			return digest.WithCause(logredact.Errorf("codex CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Text(stderrMsg)), exitErr)
 		}
 		return digest.WithCause(fmt.Errorf("codex CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 	}

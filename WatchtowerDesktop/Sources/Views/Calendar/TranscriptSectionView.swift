@@ -136,12 +136,13 @@ struct TranscriptSectionView: View {
     private func reTranscribe(_ transcript: MeetingTranscript) {
         guard let audioPath = transcript.audioPath else { return }
         let center = appState.meetingRecorderCenter
-        center.prepareRetry(
-            audioURL: URL(fileURLWithPath: audioPath),
-            eventID: transcript.eventID,
-            title: transcript.title
-        )
         Task {
+            // The kept transcript is cleared before the retry reads it.
+            await center.prepareRetry(
+                audioURL: URL(fileURLWithPath: audioPath),
+                eventID: transcript.eventID,
+                title: transcript.title
+            )
             await center.retryTranscription(config: .fromDefaults())
             load()
             onChanged()

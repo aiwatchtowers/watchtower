@@ -742,7 +742,7 @@ func TestStoreTrackItems(t *testing.T) {
 	}
 
 	usage := &digest.Usage{InputTokens: 200, OutputTokens: 100, CostUSD: 0}
-	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", "general", usage, 1, 1000, 2000)
+	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", usage, 1, 1000, 2000)
 	require.NoError(t, storeErr)
 	assert.Equal(t, 2, stored)
 
@@ -767,7 +767,7 @@ func TestStoreTrackItems_WriteFailureIsReturned(t *testing.T) {
 	stored, storeErr := pipe.storeTrackItems([]aiItem{
 		{Text: "Lost track", Context: "first", Priority: "high", Category: "task", Ownership: "mine"},
 		{Text: "Kept track", Context: "second", Priority: "high", Category: "bug_fix", Ownership: "mine"},
-	}, "U1", "C1", "general", nil, 1, 1000, 2000)
+	}, "U1", "C1", nil, 1, 1000, 2000)
 	require.Error(t, storeErr)
 	assert.Contains(t, storeErr.Error(), "injected track write failure")
 	assert.Equal(t, 1, stored, "only the landed track counts")
@@ -1117,7 +1117,7 @@ func TestTextSimilarityDedupInStoreTrackItems(t *testing.T) {
 		},
 	}
 
-	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", "incidents", nil, 1, from, to)
+	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", nil, 1, from, to)
 	require.NoError(t, storeErr)
 	assert.Equal(t, 1, stored)
 
@@ -1289,7 +1289,7 @@ func TestAutoExtractionFoldsIntoCustomTrack(t *testing.T) {
 		Text: "Decide HashBank refund owner", Context: "who owns the hashbank refund",
 		Priority: "high", Ownership: "mine",
 		SourceRefs: json.RawMessage(`[{"ts":"1","author":"a","text":"x"}]`),
-	}}, "U1", "C1", "general", nil, 1, 0, 0)
+	}}, "U1", "C1", nil, 1, 0, 0)
 	require.NoError(t, storeErr)
 
 	// The auto item folded into the custom track → no new auto track created.

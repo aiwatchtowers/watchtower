@@ -34,22 +34,17 @@ final class DictationCleanServiceTests: XCTestCase {
         XCTAssertEqual(DictationMode.note.cleanupMode, .note)
     }
 
-    func testTranscriptTravelsViaTempFileRemovedAfterCall() async throws {
-        let runner = TranscriptCapturingRunner(stdout: Data("""
+    /// #604 S6: the transcript travels on stdin (`--transcript-file -`).
+    func testTranscriptTravelsOnStdin() async throws {
+        let runner = FakeCLIRunner(stdout: Data("""
         {"mode":"note","markdown":"reply text"}
         """.utf8))
         let service = DictationCleanService(runner: runner)
 
         _ = try await service.clean(transcript: "captured transcript text", mode: .note)
 
-        XCTAssertEqual(runner.savedTranscripts, ["captured transcript text"])
-        guard let invocation = runner.invocations.first,
-              let idx = invocation.firstIndex(of: "--transcript-file"), idx + 1 < invocation.count else {
-            XCTFail("expected --transcript-file argument")
-            return
-        }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: invocation[idx + 1]),
-                       "temp transcript file should be removed after the call")
+        XCTAssertEqual(runner.invocations, [["dictate", "clean", "--mode", "note", "--transcript-file", "-"]])
+        XCTAssertEqual(runner.stdinInputs, [Data("captured transcript text".utf8)])
     }
 
     func testRunnerThrowPropagates() async {

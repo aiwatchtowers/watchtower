@@ -36,6 +36,7 @@ import (
 	"watchtower/internal/issuekey"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
+	"watchtower/internal/logredact"
 	"watchtower/internal/media"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
@@ -445,7 +446,7 @@ func runSyncDetach(cfg *config.Config) error {
 
 	// Re-exec ourselves with the detach env var set.
 	child := exec.Command(exe, os.Args[1:]...)
-	child.Env = append(os.Environ(), daemon.DetachEnvKey+"=1")
+	child.Env = detachedChildEnv(os.Environ())
 	child.Stdout = logFile
 	child.Stderr = logFile
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -457,6 +458,19 @@ func runSyncDetach(cfg *config.Config) error {
 	fmt.Printf("Daemon started (PID %d)\n", child.Process.Pid)
 	fmt.Printf("Log: %s\n", logPath)
 	return nil
+}
+
+// detachedChildEnv is the detached daemon's environment: the parent's,
+// without GOTRACEBACK (the default, single, prints the panicking stack but
+// not the other goroutines' frames), plus the detach marker.
+func detachedChildEnv(environ []string) []string {
+	env := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if !strings.HasPrefix(kv, "GOTRACEBACK=") {
+			env = append(env, kv)
+		}
+	}
+	return append(env, daemon.DetachEnvKey+"=1")
 }
 
 // validateSyncConfig checks what a sync needs from config.yaml: a usable
@@ -1065,7 +1079,7 @@ func recordSlackWireError(database *db.DB, logger *log.Logger, accountID int64, 
 	if currentStatus != "ok" {
 		return
 	}
-	if dbErr := database.SetSlackAccountAuthState(accountID, "error", err.Error()); dbErr != nil {
+	if dbErr := database.SetSlackAccountAuthState(accountID, "error", logredact.Full(err)); dbErr != nil {
 		logger.Printf("slack: account %d: record auth state: %v", accountID, dbErr)
 	}
 }
@@ -1312,7 +1326,7 @@ func recordGoogleWireError(database *db.DB, logger *log.Logger, accountID int64,
 	if revoked {
 		status = "revoked"
 	}
-	if dbErr := database.SetGoogleAccountAuthState(accountID, status, err.Error()); dbErr != nil {
+	if dbErr := database.SetGoogleAccountAuthState(accountID, status, logredact.Full(err)); dbErr != nil {
 		logger.Printf("%s: account %d: record auth state: %v", svc, accountID, dbErr)
 	}
 }
@@ -1353,7 +1367,7 @@ func imapAccountAuth(cfg *config.Config, database *db.DB, acct db.EmailAccount, 
 		creds, err := store.Load()
 		if err != nil {
 			logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
-			if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+			if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
 				logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
 			}
 			return accountCfg, nil
@@ -1387,7 +1401,7 @@ func wireCalDAVSyncers(cfg *config.Config, database *db.DB, logger *log.Logger) 
 		creds, err := store.Load()
 		if err != nil {
 			logger.Printf("caldav: account %d: failed to load credentials: %v", acct.ID, err)
-			if dbErr := database.SetCalendarAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+			if dbErr := database.SetCalendarAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
 				logger.Printf("caldav: account %d: record auth state: %v", acct.ID, dbErr)
 			}
 			continue
@@ -1408,7 +1422,7 @@ func outlookAuthenticator(cfg *config.Config, database *db.DB, acct db.EmailAcco
 	store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
 	if _, err := store.Load(); err != nil {
 		logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
-		if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+		if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
 			logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
 		}
 		return nil
@@ -1424,7 +1438,7 @@ func outlookAuthenticator(cfg *config.Config, database *db.DB, acct db.EmailAcco
 			}
 			accessToken, newRefreshToken, err := refreshOutlookAccessToken(ctx, msCfg, creds.RefreshToken)
 			if err != nil {
-				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
 					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
 				}
 				return "", fmt.Errorf("refreshing outlook token for account %d: %w", acct.ID, err)

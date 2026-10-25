@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 )
 
 // turnFailureCase is one entry of testdata/turn_failures.json, the fixture
@@ -51,7 +52,7 @@ func TestFailedTurn_SharedFixture(t *testing.T) {
 			err := failedTurn(tc.Model, []byte(tc.JSONL))
 			got := ""
 			if err != nil {
-				got = err.Error()
+				got = logredact.Full(err)
 			}
 			if got != tc.Want {
 				t.Errorf("failedTurn = %q, want %q", got, tc.Want)
@@ -134,7 +135,7 @@ func TestRefusedModel_HonestErrorOnEveryPath(t *testing.T) {
 			t.Errorf("%s error = %v, want the needs-update refusal for gpt-6-astra", name, err)
 			continue
 		}
-		if err.Error() != tc.Want {
+		if logredact.Full(err) != tc.Want {
 			t.Errorf("%s error = %q, want %q", name, err, tc.Want)
 		}
 	}
@@ -149,7 +150,7 @@ func TestRunError_KeepsStderr(t *testing.T) {
 	bin := fakeCodexRun(t, fixtureCase(t, "rate limit").JSONL, "warning: config ignored", 1)
 
 	_, _, _, err := NewCodexGenerator("gpt-5.6-sol", "gpt-5.6-sol", bin).Generate(context.Background(), "sys", "msg", "")
-	if err == nil || !strings.HasSuffix(err.Error(), "(stderr: warning: config ignored)") {
+	if err == nil || !strings.HasSuffix(logredact.Full(err), "(stderr: warning: config ignored)") {
 		t.Fatalf("Generate error = %v, want the turn error plus the stderr", err)
 	}
 }
@@ -163,7 +164,7 @@ func TestRunError_RefusalIgnoresStderr(t *testing.T) {
 	_, _, _, err := digest.WithCallTimeout(NewCodexGenerator("gpt-5.4", "gpt-5.4", bin), time.Minute).
 		Generate(context.Background(), "sys", "msg", "")
 	var refused *ModelUnavailableError
-	if !errors.As(err, &refused) || err.Error() != tc.Want || errors.Is(err, digest.ErrAICall) {
+	if !errors.As(err, &refused) || logredact.Full(err) != tc.Want || errors.Is(err, digest.ErrAICall) {
 		t.Fatalf("Generate error = %v, want exactly %q and no ErrAICall", err, tc.Want)
 	}
 }
@@ -177,7 +178,7 @@ func TestTurnError_RateLimitStaysTransportFailure(t *testing.T) {
 
 	_, _, _, err := digest.WithCallTimeout(NewCodexGenerator("gpt-5.6-sol", "gpt-5.6-sol", limited), time.Minute).
 		Generate(context.Background(), "sys", "msg", "")
-	if !errors.Is(err, digest.ErrAICall) || !strings.Contains(err.Error(), "rate_limit_error, status code 429") {
+	if !errors.Is(err, digest.ErrAICall) || !strings.Contains(logredact.Full(err), "rate_limit_error, status code 429") {
 		t.Errorf("rate-limited Generate error = %v, want an ErrAICall naming the rate limit", err)
 	}
 	_, _, _, err = digest.WithCallTimeout(NewCodexGenerator("gpt-6-astra", "gpt-6-astra", refused), time.Minute).

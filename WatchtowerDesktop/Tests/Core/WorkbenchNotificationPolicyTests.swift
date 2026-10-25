@@ -21,6 +21,63 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
         Policy.Question(id: id, targetID: target, targetTitle: "Task \(target)", body: "Which queue should retry?")
     }
 
+    // MARK: persisted form (#604 S16)
+
+    private let rawPairs: [(Policy.Snapshot, Policy.Snapshot)] = {
+        func snap(
+            last: Int64 = 0,
+            questions: [Policy.Question] = [],
+            targets: [Int64: Policy.TargetState] = [:],
+            asks: [Int64: Policy.OpenAsk] = [:],
+            lastActionID: Int64 = 0,
+            actions: [Policy.PendingAction] = []
+        ) -> Policy.Snapshot {
+            Policy.Snapshot(projectID: 1, projectName: "acme", lastAgentCommentID: last, questions: questions,
+                            targets: targets, ownerTouched: [], openAsks: asks, lastActionID: lastActionID,
+                            pendingActions: actions)
+        }
+        let question = Policy.Question(id: 5, targetID: 10, targetTitle: "Ship the acme importer",
+                                       body: "Which queue should retry?")
+        return [
+            (snap(last: 4), snap(last: 5, questions: [question])),
+            (snap(targets: [1: .init(title: "Ship the acme importer", status: "in_progress"),
+                            2: .init(title: "Rotate example.com keys", status: "todo")]),
+             snap(targets: [1: .init(title: "Ship the acme importer", status: "done"),
+                            2: .init(title: "Rotate example.com keys", status: "done")])),
+            (snap(asks: [3: .init(title: "Pick a launch date", kind: .question)]),
+             snap(asks: [3: .init(title: "Pick a launch date", kind: .question),
+                         4: .init(title: "Review the acme diff", sessionID: 9, kind: .review)])),
+            (snap(lastActionID: 2),
+             snap(lastActionID: 3, actions: [.init(id: 3, tool: "send_slack_message", summary: "Post the acme recap")]))
+        ]
+    }()
+
+    func testPersistedSnapshotHoldsNoText() throws {
+        for (previous, current) in rawPairs {
+            for snapshot in [previous, current] {
+                let json = try XCTUnwrap(String(data: try JSONEncoder().encode(snapshot.persisted), encoding: .utf8))
+                for text in ["acme", "Ship the", "example.com", "Pick a launch", "Review the", "Which queue", "Post the"] {
+                    XCTAssertFalse(json.contains(text), "\(text) in \(json)")
+                }
+            }
+        }
+        let persisted = try XCTUnwrap(rawPairs.first?.0.persisted)
+        XCTAssertEqual(persisted.projectName, ContentDigest.of("acme"))
+        XCTAssertTrue(persisted.projectName.hasPrefix("sha256:"))
+    }
+
+    func testDecideFromPersistedEqualsDecideFromRaw() throws {
+        for (previous, current) in rawPairs {
+            let raw = Policy.decide(previous: previous, current: current)
+            XCTAssertFalse(raw.isEmpty, "each fixture announces something")
+            XCTAssertEqual(Policy.decide(previous: previous.persisted, current: current), raw)
+            // Through a save and a load, as the center does.
+            let reloaded = try JSONDecoder().decode(Policy.Snapshot.self,
+                                                    from: try JSONEncoder().encode(previous.persisted))
+            XCTAssertEqual(Policy.decide(previous: reloaded, current: current), raw)
+        }
+    }
+
     // MARK: each kind
 
     func testAgentQuestionNotifiesWithABoardDeepLink() {
@@ -94,7 +151,8 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
         XCTAssertTrue(current.persisted.questions.isEmpty)
         XCTAssertTrue(current.persisted.ownerTouched.isEmpty)
         XCTAssertEqual(current.persisted.lastAgentCommentID, 3)
-        XCTAssertEqual(current.persisted.openAsks, [4: ask("Review")], "the open asks are what the next poll compares")
+        XCTAssertEqual(Array(current.persisted.openAsks.keys), [4], "the open asks are what the next poll compares")
+        XCTAssertEqual(current.persisted.openAsks[4]?.title, ContentDigest.of("Review"), "by id; the title is a digest")
     }
 
     // MARK: proposals from the project terminal (#166)

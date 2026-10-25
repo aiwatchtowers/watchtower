@@ -40,8 +40,7 @@ type Orchestrator struct {
 	account              db.SlackAccount
 	logger               *log.Logger
 	progress             *Progress
-	channelNames         map[string]string // namespaced channel ID -> name, populated during message sync
-	discoveredChannelIDs map[string]bool   // namespaced channel IDs found active by discovery phase
+	discoveredChannelIDs map[string]bool // namespaced channel IDs found active by discovery phase
 
 	// now is the clock the auxiliary-refresh throttles read; nil means
 	// time.Now (a test injects a fake to step through the cadence).
@@ -809,7 +808,7 @@ func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
 		return fmt.Errorf("loading slack account %d: %w", o.accountID, err)
 	}
 	if acct.TeamID != "" {
-		o.logger.Printf("workspace: %s (%s) [cached]", acct.TeamName, acct.TeamID)
+		o.logger.Printf("workspace: account %d team %s [cached]", o.accountID, acct.TeamID)
 		o.account = acct
 		o.slackClient.SetTeamDomain(acct.TeamDomain)
 		return nil
@@ -825,7 +824,7 @@ func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
 	acct.TeamID, acct.TeamName, acct.TeamDomain = info.ID, info.Name, info.Domain
 	o.account = acct
 	o.slackClient.SetTeamDomain(acct.TeamDomain)
-	o.logger.Printf("workspace: %s (%s)", acct.TeamName, acct.TeamID)
+	o.logger.Printf("workspace: account %d team %s", o.accountID, acct.TeamID)
 	return nil
 }
 
@@ -843,7 +842,7 @@ func (o *Orchestrator) syncCurrentUser(ctx context.Context) {
 		return
 	}
 	o.account.CurrentUserID = namespaced
-	o.logger.Printf("current user: @%s (%s)", authResp.User, authResp.UserID)
+	o.logger.Printf("current user: %s", namespaced)
 }
 
 // syncMetadata fetches workspace info, users, and channels from Slack and upserts into DB.
@@ -858,7 +857,7 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 	}
 	o.account.TeamID, o.account.TeamName, o.account.TeamDomain = teamInfo.ID, teamInfo.Name, teamInfo.Domain
 	o.slackClient.SetTeamDomain(teamInfo.Domain)
-	o.logger.Printf("workspace: %s (%s)", teamInfo.Name, teamInfo.ID)
+	o.logger.Printf("workspace: account %d team %s", o.accountID, teamInfo.ID)
 
 	// Identify the current user
 	o.syncCurrentUser(ctx)
@@ -892,7 +891,7 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 		if u.IsBot {
 			tag = " [bot]"
 		}
-		o.logger.Printf("  user %d/%d: @%s (%s)%s", i+1, len(activeUsers), u.Name, u.RealName, tag)
+		o.logger.Printf("  user %d/%d: %s%s", i+1, len(activeUsers), watchtowerslack.Namespace(o.accountID, u.ID), tag)
 		profileJSON, err := json.Marshal(u.Profile)
 		if err != nil {
 			o.logger.Printf("warning: failed to marshal profile for user %s: %v", u.ID, err)
@@ -938,11 +937,7 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 		if ch.IsMember {
 			flags = append(flags, "member")
 		}
-		name := ch.Name
-		if name == "" {
-			name = ch.ID
-		}
-		o.logger.Printf("  channel %d/%d: #%s [%s] %d members", i+1, len(channels), name, strings.Join(flags, ","), ch.NumMembers)
+		o.logger.Printf("  channel %d/%d: %s [%s] %d members", i+1, len(channels), watchtowerslack.Namespace(o.accountID, ch.ID), strings.Join(flags, ","), ch.NumMembers)
 		dmUserID := ch.User
 		if dmUserID != "" {
 			dmUserID = watchtowerslack.Namespace(o.accountID, dmUserID)
@@ -1044,14 +1039,6 @@ func isRateLimitError(err error) bool {
 	}
 	var rlErr *slack.RateLimitedError
 	return errors.As(err, &rlErr)
-}
-
-// channelName returns a human-readable channel identifier for logging.
-func (o *Orchestrator) channelName(id string) string {
-	if name, ok := o.channelNames[id]; ok && name != "" {
-		return fmt.Sprintf("#%s (%s)", name, id)
-	}
-	return id
 }
 
 // slackChannelType maps a Slack channel object to our type string.

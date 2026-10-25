@@ -20,6 +20,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/textutil"
@@ -617,7 +618,7 @@ func (p *Pipeline) stampConsidered(channelID string, tsUnix float64) {
 		return
 	}
 	if err := p.db.SetChannelDigestConsideredTS(channelID, tsUnix); err != nil {
-		p.logger.Printf("digest: warning: stamping considered mark for #%s: %v", p.channelName(channelID), err)
+		p.logger.Printf("digest: warning: stamping considered mark for channel %s: %v", channelID, err)
 	}
 }
 
@@ -850,8 +851,8 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 			p.stampConsidered(channelID, loadedThrough)
 			return batchEntry{}, batchEntrySkipBotOnly
 		}
-		p.logger.Printf("digest: #%s is bot-heavy, extracted %d context messages around human replies",
-			p.channelName(channelID), visible)
+		p.logger.Printf("digest: channel %s is bot-heavy, extracted %d context messages around human replies",
+			channelID, visible)
 	}
 
 	// Normally the mark records exactly what will be rendered. The exception is
@@ -890,8 +891,8 @@ func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) (msgs []
 	}
 
 	if trimmed, ok := trimPartialBoundarySecond(msgs); ok && advancesWindow(trimmed, w.since) {
-		p.logger.Printf("digest: #%s hit the message limit (%d): digesting its oldest %d message(s), the rest follows next cycle",
-			p.channelName(w.channelID), db.DefaultTimeRangeLimit, len(trimmed))
+		p.logger.Printf("digest: channel %s hit the message limit (%d): digesting its oldest %d message(s), the rest follows next cycle",
+			w.channelID, db.DefaultTimeRangeLimit, len(trimmed))
 		return trimmed, 0, nil
 	}
 
@@ -923,19 +924,19 @@ func (p *Pipeline) loadOpeningSecondOverCap(w channelWindow, nowUnix float64) ([
 		}
 	}
 
-	name := p.channelName(w.channelID)
+	name := w.channelID
 	if advancesWindow(msgs, w.since) {
-		p.logger.Printf("digest: #%s holds more than %d message(s) in the second its window opens on: digesting %d message(s) over the limit",
+		p.logger.Printf("digest: channel %s holds more than %d message(s) in the second its window opens on: digesting %d message(s) over the limit",
 			name, db.DefaultTimeRangeLimit, len(msgs))
 		return msgs, 0, nil
 	}
 
 	second := int64(w.since)
 	if total, cerr := p.db.CountMessagesInChannelRange(w.channelID, w.since, w.since); cerr == nil {
-		p.logger.Printf("digest: ERROR: #%s holds %d message(s) in second %d, past the %d-row ceiling: digesting %d, leaving %d unrendered, and advancing past that second — the alternative is a channel frozen on it forever",
+		p.logger.Printf("digest: ERROR: channel %s holds %d message(s) in second %d, past the %d-row ceiling: digesting %d, leaving %d unrendered, and advancing past that second — the alternative is a channel frozen on it forever",
 			name, total, second, db.BoundarySecondRowLimit, len(msgs), max(total-len(msgs), 0))
 	} else {
-		p.logger.Printf("digest: ERROR: #%s holds more than the %d-row ceiling in second %d: digesting %d, leaving the rest unrendered, and advancing past that second — the alternative is a channel frozen on it forever (counting the second failed: %v)",
+		p.logger.Printf("digest: ERROR: channel %s holds more than the %d-row ceiling in second %d: digesting %d, leaving the rest unrendered, and advancing past that second — the alternative is a channel frozen on it forever (counting the second failed: %v)",
 			name, db.BoundarySecondRowLimit, second, len(msgs), cerr)
 	}
 	return msgs, w.since + 1, nil
@@ -1128,7 +1129,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	stepStart := time.Now()
 	result, usage, pv, err := p.generateChannelDigest(ctx, e.channelID, e.channelName, e.msgs, sinceUnix, nowUnix)
 	if err != nil {
-		p.logger.Printf("digest: error generating digest for #%s: %v", e.channelName, err)
+		p.logger.Printf("digest: error generating digest for channel %s: %v", e.channelID, err)
 		agg.recordError(err)
 		p.markBackfillFailed(err, e.channelID)
 		done := int(agg.completed.Add(1))
@@ -1146,7 +1147,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	}
 
 	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv, false); err != nil {
-		p.logger.Printf("digest: error storing digest for #%s: %v", e.channelName, err)
+		p.logger.Printf("digest: error storing digest for channel %s: %v", e.channelID, err)
 		agg.recordError(err)
 		p.markBackfillFailed(err, e.channelID)
 		done := int(agg.completed.Add(1))
@@ -1183,10 +1184,10 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	}
 	p.lastStepMu.Unlock()
 	if usage != nil {
-		p.logger.Printf("digest: generated for #%s (%d messages, %d+%d tokens)",
-			e.channelName, len(e.msgs), usage.InputTokens, usage.OutputTokens)
+		p.logger.Printf("digest: generated for channel %s (%d messages, %d+%d tokens)",
+			e.channelID, len(e.msgs), usage.InputTokens, usage.OutputTokens)
 	} else {
-		p.logger.Printf("digest: generated for #%s (%d messages)", e.channelName, len(e.msgs))
+		p.logger.Printf("digest: generated for channel %s (%d messages)", e.channelID, len(e.msgs))
 	}
 }
 
@@ -1363,7 +1364,7 @@ func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult
 		RunningSummary: r.RunningSummary,
 	}
 	if n := blankInventedMessageRefs(dr.Topics, entry.msgs); n > 0 {
-		p.logger.Printf("digest: blanked %d invented message_ts ref(s) in #%s", n, entry.channelName)
+		p.logger.Printf("digest: blanked %d invented message_ts ref(s) in channel %s", n, entry.channelID)
 	}
 
 	lastMsgTS := sinceUnix
@@ -1374,7 +1375,7 @@ func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult
 	}
 
 	if err := p.storeDigest(entry.channelID, "channel", sinceUnix, lastMsgTS, dr, len(entry.msgs), resultUsage, promptVersion, false); err != nil {
-		p.logger.Printf("digest: error storing batch digest for #%s: %v", entry.channelName, err)
+		p.logger.Printf("digest: error storing batch digest for channel %s: %v", entry.channelID, err)
 		agg.recordError(err)
 		p.markBackfillFailed(err, entry.channelID)
 		return false
@@ -1746,7 +1747,7 @@ func (p *Pipeline) generateChannelDigest(ctx context.Context, channelID, channel
 		return nil, usage, pv, err
 	}
 	if n := blankInventedMessageRefs(result.Topics, msgs); n > 0 {
-		p.logger.Printf("digest: blanked %d invented message_ts ref(s) in #%s", n, channelName)
+		p.logger.Printf("digest: blanked %d invented message_ts ref(s) in channel %s", n, channelID)
 	}
 	return result, usage, pv, nil
 }
@@ -2042,7 +2043,7 @@ func parseBatchDigestResult(raw string) ([]BatchChannelResult, error) {
 
 	var results []BatchChannelResult
 	if err := json.Unmarshal([]byte(cleaned), &results); err != nil {
-		return nil, fmt.Errorf("parsing batch digest JSON: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("parsing batch digest JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 
 	// Filter out entries with missing required fields.
@@ -2556,7 +2557,7 @@ func parseDigestResult(raw string) (*DigestResult, error) {
 		RunningSummary json.RawMessage `json:"running_summary,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(cleaned), &lenient); err != nil {
-		return nil, fmt.Errorf("parsing digest JSON: %w (raw: %.500s)", err, raw)
+		return nil, fmt.Errorf("parsing digest JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 
 	result := DigestResult{

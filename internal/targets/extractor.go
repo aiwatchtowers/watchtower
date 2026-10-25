@@ -215,7 +215,7 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 
 	var result []ProposedTarget
 	emptyText := 0
-	for _, item := range resp.Extracted {
+	for i, item := range resp.Extracted {
 		text := strings.TrimSpace(item.Text)
 		if text == "" {
 			// A target with no text is noise, and one bad row must not reach
@@ -257,7 +257,7 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 		links := item.SecondaryLinks
 		if len(links) > 3 {
 			if logger != nil {
-				logger.Printf("targets/extractor: target %.80q has %d secondary links, truncating to 3", item.Text, len(links))
+				logger.Printf("targets/extractor: extracted item %d has %d secondary links, truncating to 3", i, len(links))
 			}
 			links = links[:3]
 		}
@@ -266,7 +266,7 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 			// Validate relation.
 			if !validRelations[sl.Relation] {
 				if logger != nil {
-					logger.Printf("targets/extractor: unknown relation %q — dropping link", sl.Relation)
+					logger.Printf("targets/extractor: extracted item %d: unknown relation (%d chars) — dropping link", i, len(sl.Relation))
 				}
 				continue
 			}
@@ -274,7 +274,7 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 			// Validate external_ref allowlist before building the link.
 			if sl.ExternalRef != "" && !IsValidExternalRef(sl.ExternalRef) {
 				if logger != nil {
-					logger.Printf("targets/extractor: invalid external_ref %q (must start with jira:, linear: or slack:) — dropping link", sl.ExternalRef)
+					logger.Printf("targets/extractor: extracted item %d: invalid external_ref (%d chars, must start with jira:, linear: or slack:) — dropping link", i, len(sl.ExternalRef))
 				}
 				continue
 			}
@@ -311,7 +311,7 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 		subs := item.SubItems
 		if len(subs) > 15 {
 			if logger != nil {
-				logger.Printf("targets/extractor: target %.80q has %d sub_items, truncating to 15", item.Text, len(subs))
+				logger.Printf("targets/extractor: extracted item %d has %d sub_items, truncating to 15", i, len(subs))
 			}
 			subs = subs[:15]
 		}

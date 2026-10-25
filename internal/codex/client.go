@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/fsutil"
 )
 
 // Client wraps the Codex CLI for AI queries (ask/chat).
@@ -264,11 +266,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			errCh <- buildErr
 			return
 		}
-		if promptFile != "" {
-			// Every return below comes after the child is reaped or never
-			// started, so the file is never removed while codex reads it.
-			defer os.Remove(promptFile)
-		}
+		// codex refuses a pipe for model_instructions_file (it stats the
+		// file), so the prompt is a 0600 file that lives only until codex's
+		// first output line — it has read the file by then — and is removed
+		// on every return as well.
+		removePrompt := fsutil.RemoveOnce(promptFile)
+		defer removePrompt()
 
 		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
 		cmd.Stdin = strings.NewReader(promptStdin)
@@ -299,6 +302,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		var errLines []byte
 
 		for scanner.Scan() {
+			removePrompt()
 			line := scanner.Text()
 			if line == "" {
 				continue
@@ -375,9 +379,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if err != nil {
 		return "", nil, err
 	}
-	if promptFile != "" {
-		defer os.Remove(promptFile)
-	}
+	removePrompt := fsutil.RemoveOnce(promptFile) // see Query
+	defer removePrompt()
 
 	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
 	cmd.Stdin = strings.NewReader(promptStdin)
@@ -389,7 +392,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
-	output, err := cmd.Output()
+	output, err := outputRemovingPrompt(cmd, removePrompt)
 	if err != nil {
 		return "", nil, runError(c.model, output, err, stderrBuf.String(), c.codexCmd)
 	}
@@ -405,4 +408,13 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 
 	return result, usage, nil
+}
+
+// outputRemovingPrompt is cmd.Output with removePrompt run at the child's
+// first stdout write, when codex has read its model_instructions_file.
+func outputRemovingPrompt(cmd *exec.Cmd, removePrompt func()) ([]byte, error) {
+	var out bytes.Buffer
+	cmd.Stdout = fsutil.OnFirstWrite(&out, removePrompt)
+	err := cmd.Run()
+	return out.Bytes(), err
 }

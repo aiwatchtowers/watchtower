@@ -43,10 +43,9 @@ enum IdeaChatSurface {
             toolAccess: .draftOnly,
             ownerInstructions: true,
             systemPrompt: { buildSystemPrompt(idea: idea, mentions: mentions, dbPool: dbPool) },
-            // Resumed sessions drop the system prompt (CLI --resume); carry the
-            // idea context with the message so an expired session never loses
-            // track of what is being discussed.
-            turnPrompt: { $0.isResumed ? "\(ideaContextBlock(idea, mentions: mentions))\n\n\($0.text)" : $0.text },
+            // Every turn carries the system prompt (no session is resumed,
+            // #604 G11), so the idea context is there.
+            turnPrompt: { $0.text },
             emptyHint: "Ask me about this idea — I can pull related messages, people, and other ideas.",
             starterPrompts: starterPrompts
         )

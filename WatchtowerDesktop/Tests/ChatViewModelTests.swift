@@ -223,7 +223,38 @@ final class ChatViewModelTests: XCTestCase {
         let sent = await vm.send(text: "again")
         XCTAssertTrue(sent)
         XCTAssertEqual(fakes.count, 2, "a dead session is respawned")
-        XCTAssertEqual(try lastFake().argument(after: "--resume"), "sess-1")
+        // #604 G11 (ask #571): the new session resumes nothing; the next turn
+        // replays the history, the saved partial included, from the database.
+        XCTAssertNil(try lastFake().argument(after: "--resume"))
+        XCTAssertEqual(try lastFake().turns.last?.replay, true)
+    }
+
+    /// A stopped reply's last save lands before the next turn's rows: the
+    /// next session replays the history from the database (#604 G11), so it
+    /// must already hold the stopped text.
+    func testSendAfterAStopReplaysTheStoppedReplysSavedText() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        await vm.send(text: "q")
+        let fake = try lastFake()
+        fake.emit(.textDelta(turnID: "turn-1", text: "half"))
+        let streamed = await waitForCondition { vm.liveTurn?.fullText == "half" }
+        XCTAssertTrue(streamed)
+        vm.stop()
+        fake.emit(.turnDone(turnID: "turn-1", status: .interrupted, sessionID: nil))
+        let stopped = await waitForCondition { !vm.isBusy }
+        XCTAssertTrue(stopped)
+        let sent = await vm.send(text: "again")
+        XCTAssertTrue(sent)
+        let rows = try await dbManager.dbPool.read { d in
+            try ChatMessageRecord.fetchAll(d, sql: """
+                SELECT * FROM chat_messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY id
+                """, arguments: [convID])
+        }
+        XCTAssertEqual(rows.first?.text, "half")
+        XCTAssertEqual(rows.first?.status, "partial")
+        XCTAssertNil(try lastFake().argument(after: "--resume"))
     }
 
     /// Controller ruling 1: regenerate inserts its assistant row under the NEW
@@ -491,7 +522,9 @@ final class ChatViewModelTests: XCTestCase {
 
     // MARK: - Legacy (skeleton Review Focus #1)
 
-    func testContinuingLegacyConversationResumesItsSession() async throws {
+    /// A stored session id (a legacy or pre-#604 conversation) is never
+    /// resumed: the new session replays the history (#604 G11).
+    func testContinuingLegacyConversationReplaysInsteadOfResuming() async throws {
         let (convID, lastID) = try await dbManager.dbPool.write { d in
             let conv = try TestDatabase.insertChatConversation(d, title: "Old", sessionID: "sess-legacy")
             let user = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "user", text: "old q")
@@ -505,49 +538,10 @@ final class ChatViewModelTests: XCTestCase {
         let sent = await vm.send(text: "next")
         XCTAssertTrue(sent)
         let fake = try lastFake()
-        XCTAssertEqual(fake.argument(after: "--resume"), "sess-legacy")
-        XCTAssertEqual(fake.turns.last?.replay, false, "the resumed session already holds this history")
+        XCTAssertNil(fake.argument(after: "--resume"))
+        XCTAssertEqual(fake.turns.last?.replay, true, "the new session has seen none of this history")
         let user = try XCTUnwrap(vm.thread.first { $0.message.text == "next" })
         XCTAssertEqual(user.message.parentID, lastID)
-    }
-
-    /// The stored claude session saw only the claude turns: when another
-    /// provider answered last, resuming it without a replay would skip them.
-    func testResumedSessionReplaysWhenAnotherProviderAnsweredLast() async throws {
-        let convID = try await dbManager.dbPool.write { d in
-            let conv = try TestDatabase.insertChatConversation(d, sessionID: "sess-1", provider: "claude")
-            let user = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "user", text: "q")
-            let asst = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "a", parentID: user)
-            try d.execute(sql: "UPDATE chat_messages SET provider = 'codex' WHERE id = ?", arguments: [asst])
-            return conv
-        }
-        let vm = try makeViewModel()
-        vm.select(conversationID: convID)
-        let sent = await vm.send(text: "next")
-        XCTAssertTrue(sent)
-        XCTAssertEqual(try lastFake().argument(after: "--resume"), "sess-1")
-        XCTAssertEqual(try lastFake().turns.last?.replay, true)
-    }
-
-    /// A newest reply that failed, or was cut before any text, may never
-    /// have reached the provider: a `--resume` spawn must replay past it.
-    func testResumedSessionReplaysWhenTheNewestReplyNeverProvablyArrived() async throws {
-        for status in ["error", "partial"] {
-            let convID = try await dbManager.dbPool.write { d in
-                let conv = try TestDatabase.insertChatConversation(d, sessionID: "sess-\(status)", provider: "claude")
-                let user = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "user", text: "q")
-                let asst = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "",
-                                                              parentID: user, status: status)
-                try d.execute(sql: "UPDATE chat_messages SET provider = 'claude' WHERE id = ?", arguments: [asst])
-                return conv
-            }
-            let vm = try makeViewModel()
-            vm.select(conversationID: convID)
-            let sent = await vm.send(text: "next")
-            XCTAssertTrue(sent)
-            XCTAssertEqual(try lastFake().argument(after: "--resume"), "sess-\(status)")
-            XCTAssertEqual(try lastFake().turns.last?.replay, true, "newest reply is \(status)")
-        }
     }
 
     // MARK: - Branches
@@ -1174,7 +1168,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(try lastFake().argument(after: "--resume"), "codex replays instead of resuming")
     }
 
-    func testChangingModelKeepsClaudeResume() async throws {
+    func testChangingModelRespawnsWithoutResume() async throws {
         let convID = try await dbManager.dbPool.write { d in
             try TestDatabase.insertChatConversation(d, sessionID: "s1", provider: "claude")
         }
@@ -1189,7 +1183,7 @@ final class ChatViewModelTests: XCTestCase {
         let spawned = await waitForCondition { self.fakes.count == 2 }
         XCTAssertTrue(spawned)
         XCTAssertEqual(try lastFake().argument(after: "--model"), "model-b")
-        XCTAssertEqual(try lastFake().argument(after: "--resume"), "s1")
+        XCTAssertNil(try lastFake().argument(after: "--resume"))
     }
 
     /// Restoring a conversation's own provider/model on select is not a change.

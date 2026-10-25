@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -265,4 +266,24 @@ func TestDictateCleanFencedJSON(t *testing.T) {
 
 	env := rawEnvelopeFrom(t, buf.Bytes())
 	assert.Equal(t, "cleaned up text", env["markdown"])
+}
+
+// TestDictateCleanStdinTranscript (#604 S6): --transcript-file - reads stdin.
+func TestDictateCleanStdinTranscript(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetDictateFlags(t)
+	gen := &dictateMockGen{response: `{"title":"Ship v2","body":"We should ship v2 next week."}`}
+	stubDictateGenerator(t, gen)
+
+	var buf bytes.Buffer
+	dictateCleanCmd.SetOut(&buf)
+	dictateCleanCmd.SetIn(strings.NewReader("so um we should ship v2 next week I think"))
+	t.Cleanup(func() { dictateCleanCmd.SetIn(nil) })
+	dictateCleanFlagMode = "idea"
+	dictateCleanFlagFile = "-"
+	require.NoError(t, dictateCleanCmd.RunE(dictateCleanCmd, nil))
+
+	assert.Equal(t, "Ship v2", rawEnvelopeFrom(t, buf.Bytes())["title"])
+	assert.Contains(t, gen.lastUserMessage, "ship v2 next week")
 }

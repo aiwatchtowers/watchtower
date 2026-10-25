@@ -2,7 +2,10 @@ import Foundation
 
 /// Where the Workchat keeps what the owner pastes: bytes land under
 /// `<root>/<sessionID>/`, and the agent gets the path (#711). Nothing here is
-/// a database row; a launch sweep removes old files.
+/// a database row. The files are the owner's only (0600 in a 0700 folder)
+/// and live as long as their session (#604 S9): a session's exit removes its
+/// folder, and the launch sweep removes the folder of every session that is
+/// not running.
 package struct WorkchatAttachmentStore {
     /// `<workspace>/workchat-attachments`.
     package let root: URL
@@ -16,29 +19,34 @@ package struct WorkchatAttachmentStore {
     }
 
     /// Writes `data` as `<root>/<sessionID>/<yyyyMMdd-HHmmss UTC>-<n>.<ext>`
-    /// and returns the file; `n` is the first number whose name is free, and
-    /// the extension is `name`'s.
+    /// (0600, the folders 0700) and returns the file; `n` is the first number
+    /// whose name is free, and the extension is `name`'s.
     package func save(_ data: Data, name: String, sessionID: Int64) throws -> URL {
         let folder = root.appendingPathComponent(String(sessionID), isDirectory: true)
-        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let owner: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true, attributes: owner)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true, attributes: owner)
         let stamp = Self.stamp(now())
         let ext = (name as NSString).pathExtension
         var n = 1
         while true {
             let file = folder.appendingPathComponent("\(stamp)-\(n)" + (ext.isEmpty ? "" : ".\(ext)"))
             if !fileManager.fileExists(atPath: file.path) {
-                try data.write(to: file, options: .withoutOverwriting)
+                // Created 0600 (no window with wider bits); a name taken
+                // meanwhile fails instead of overwriting.
+                guard fileManager.createFile(atPath: file.path, contents: data,
+                                             attributes: [.posixPermissions: 0o600]) else {
+                    throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: file.path])
+                }
                 return file
             }
             n += 1
         }
     }
 
-    /// Removes files older than `olderThan` from the folders of sessions not
-    /// in `live`, and a folder left empty. Best effort: a failure is logged
-    /// and the rest goes on.
-    package func sweep(olderThan age: TimeInterval = 7 * 86_400, keepingSessions live: Set<Int64>) {
-        let cutoff = now().addingTimeInterval(-age)
+    /// Removes the folder of every session not in `live`, whatever its age.
+    /// Best effort: a failure is logged and the rest goes on.
+    package func sweep(keepingSessions live: Set<Int64>) {
         let folders: [URL]
         do {
             guard fileManager.fileExists(atPath: root.path) else { return }
@@ -49,22 +57,22 @@ package struct WorkchatAttachmentStore {
         }
         for folder in folders {
             guard let id = Int64(folder.lastPathComponent), !live.contains(id) else { continue }
-            do {
-                let files = try fileManager.contentsOfDirectory(
-                    at: folder, includingPropertiesForKeys: [.contentModificationDateKey]
-                )
-                var left = files.count
-                for file in files {
-                    let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?
-                        .contentModificationDate
-                    guard let modified, modified < cutoff else { continue }
-                    try fileManager.removeItem(at: file)
-                    left -= 1
-                }
-                if left == 0 { try fileManager.removeItem(at: folder) }
-            } catch {
-                NSLog("WorkchatAttachmentStore: sweep of %@ failed: %@", folder.path, String(describing: error))
-            }
+            remove(folder)
+        }
+    }
+
+    /// Removes one session's folder (its run ended). A missing one is fine.
+    package func remove(sessionID: Int64) {
+        remove(root.appendingPathComponent(String(sessionID), isDirectory: true))
+    }
+
+    private func remove(_ folder: URL) {
+        do {
+            try fileManager.removeItem(at: folder)
+        } catch CocoaError.fileNoSuchFile {
+            return
+        } catch {
+            NSLog("WorkchatAttachmentStore: removing %@ failed: %@", folder.path, String(describing: error))
         }
     }
 

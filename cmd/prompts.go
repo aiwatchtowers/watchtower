@@ -8,6 +8,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
 
@@ -243,7 +244,7 @@ func runTune(cmd *cobra.Command, args []string) error {
 	defer func() {
 		errMsg := ""
 		if tuneErr != nil {
-			errMsg = tuneErr.Error()
+			errMsg = logredact.Full(tuneErr)
 		}
 		if runID > 0 {
 			_ = database.CompletePipelineRun(runID, itemsFound, totalInTok, totalOutTok, 0, totalAPITok, nil, nil, errMsg)

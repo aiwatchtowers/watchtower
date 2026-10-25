@@ -10,6 +10,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"watchtower/internal/logredact"
 )
 
 // maxCommandBytes bounds one stdin command line (a long pasted message).
@@ -229,11 +231,11 @@ func startErrorEvent(err error) Event {
 	if ev, ok := workDirErrorEvent("", err); ok {
 		return ev
 	}
-	code, retry := ClassifyClaudeError(err.Error())
+	code, retry := ClassifyClaudeError(logredact.Full(err))
 	if code == CodeInternal {
 		code = CodeProviderUnavailable
 	}
-	return Event{Type: EventError, Code: code, Message: err.Error(), Retryable: retry}
+	return Event{Type: EventError, Code: code, Message: logredact.Full(err), Retryable: retry}
 }
 
 // fallbackTerminal is the terminal event for a turn whose backend returned
@@ -253,8 +255,8 @@ func fallbackTerminal(ctx context.Context, turnID string, err error) Event {
 	case err == nil:
 		return errorEvent(turnID, CodeInternal, "the turn ended without a result", true)
 	default:
-		code, retry := ClassifyClaudeError(err.Error())
-		return errorEvent(turnID, code, err.Error(), retry)
+		code, retry := ClassifyClaudeError(logredact.Full(err))
+		return errorEvent(turnID, code, logredact.Full(err), retry)
 	}
 }
 

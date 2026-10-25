@@ -715,6 +715,11 @@ extension WorkbenchesViewModel {
     /// qualifies.
     func sessionExited(_ id: Int64, code: Int32?, closedByApp: Bool = false) {
         if !closedByApp { startPlacedCleanup(sessionID: id) }
+        // The run ended: what the owner pasted into its Workchat goes with it
+        // (#604 S9), off the main thread.
+        if let store = attachmentStore {
+            Task.detached(priority: .utility) { store.remove(sessionID: id) }
+        }
         guard let started = resumeStarts.removeValue(forKey: id) else { return }
         if let code, code != 0, code != 127, now().timeIntervalSince(started) < Self.resumeFailureWindow {
             resumeFailed.insert(id)
@@ -737,9 +742,10 @@ extension WorkbenchesViewModel {
         }
     }
 
-    /// The launch sweep of old pasted Workchat files (#711), once the
-    /// launch's reattach is done (`hostReattach`): only then does `liveIDs`
-    /// hold every run that survived the restart, and those keep theirs.
+    /// The launch sweep of pasted Workchat files (#711, #604 S9: every
+    /// session not running loses its folder), once the launch's reattach is
+    /// done (`hostReattach`): only then does `liveIDs` hold every run that
+    /// survived the restart, and those keep theirs.
     func sweepAttachmentsAfterReattach() async {
         await hostReattach?.value
         guard let store = attachmentStore, let center = terminalCenter else { return }

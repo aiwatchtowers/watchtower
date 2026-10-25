@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 )
 
 // Generator implements digest.Generator using the Ollama OpenAI-compatible API.
@@ -66,7 +67,7 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", nil, "", fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, string(b))
+		return "", nil, "", logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
 	}
 
 	var result chatResponse

@@ -264,7 +264,7 @@ func init() {
 
 	// extract flags
 	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractText, "text", "", "raw text to extract targets from")
-	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractTextFile, "text-file", "", "read the raw text from this file instead of --text")
+	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractTextFile, "text-file", "", "read the raw text from this file (- = stdin) instead of --text")
 	targetsExtractCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractSourceRef, "source-ref", "", "source reference (e.g. slack:C123:ts, inbox:42)")
 	targetsExtractCmd.Flags().IntVar(&targetsFlagExtractFromInbox, "from-inbox", 0, "load raw text from inbox item with this ID")

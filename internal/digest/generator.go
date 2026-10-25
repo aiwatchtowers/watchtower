@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/logredact"
 )
 
 // limitedWriter wraps a writer and stops writing after limit bytes.
@@ -141,7 +142,7 @@ func (g *ClaudeGenerator) ValidateModel() error {
 		return fmt.Errorf("model validation: unexpected response for %q: %w", g.modelStrong, err)
 	}
 	if resp.IsError {
-		return fmt.Errorf("model %q is not available: %s", g.modelStrong, resp.Result)
+		return logredact.Errorf("model %q is not available: %s", g.modelStrong, logredact.Text(resp.Result))
 	}
 	return nil
 }
@@ -171,17 +172,17 @@ type cliResponse struct {
 // errorEnvelopeMessage returns the CLI's own message for a failed run, falling
 // back to a fixed string when the envelope carries none — an error whose tail
 // is empty tells a reader nothing.
-func errorEnvelopeMessage(resp *cliResponse) string {
+func errorEnvelopeMessage(resp *cliResponse) logredact.Text {
 	msg := strings.TrimSpace(resp.Result)
 	if msg == "" {
-		return "no message in the CLI result envelope"
+		return logredact.Text("no message in the CLI result envelope")
 	}
 	// On subtype=error_max_turns the envelope's result carries the model's own
 	// partial output rather than a short diagnostic, so bound what reaches the
 	// log the way the sibling stderr path is bounded by limitedWriter.
 	const maxEnvelopeMessage = 4096
 	if len(msg) <= maxEnvelopeMessage {
-		return msg
+		return logredact.Text(msg)
 	}
 	// Back off to a rune boundary: this text is model output and routinely
 	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
@@ -189,7 +190,7 @@ func errorEnvelopeMessage(resp *cliResponse) string {
 	for cut > 0 && !utf8.RuneStart(msg[cut]) {
 		cut--
 	}
-	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
+	return logredact.Text(msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut))
 }
 
 // parseCLIOutput handles both output formats from the Claude CLI:
@@ -231,36 +232,28 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
 	model := g.modelForContext(ctx)
 
-	// The system prompt goes to a 0600 file and the user message to stdin
-	// (generateArgs): both carry the owner's data, which on argv would sit
-	// readable in `ps` for the run (and a large payload would overflow
-	// ARG_MAX).
-	systemPromptFile, cleanup, err := writeSystemPromptFile(systemPrompt)
-	if err != nil {
-		return "", nil, "", err
-	}
-	defer cleanup()
+	// The system prompt goes over an inherited pipe (/dev/fd/3) and the user
+	// message to stdin (generateArgs): both carry the owner's data, which on
+	// argv would sit readable in `ps` for the run (and a large payload would
+	// overflow ARG_MAX), and in a temp file would outlive a crash (#604 G7).
+	systemPromptFile, payloads := systemPromptPayload(systemPrompt)
 	args, stdin := generateArgs(model, systemPromptFile, userMessage)
 
-	resp, err := g.runClaude(ctx, args, strings.NewReader(stdin), generateDir(), parseCLIOutput)
+	resp, err := g.runClaude(ctx, args, strings.NewReader(stdin), generateDir(), parseCLIOutput, payloads...)
 	if err != nil {
 		return "", nil, "", err
 	}
 	return resp.Result, cliUsageOf(model, resp), resp.SessionID, nil
 }
 
-// writeSystemPromptFile writes a non-empty system prompt to a 0600 temp file
-// for --system-prompt-file and returns its path ("" for an empty prompt) and
-// the cleanup that removes it.
-func writeSystemPromptFile(systemPrompt string) (string, func(), error) {
+// systemPromptPayload returns --system-prompt-file's path for a non-empty
+// system prompt — the first inherited pipe runClaude attaches, /dev/fd/3 —
+// and the payloads to hand runClaude; "" and none for an empty prompt.
+func systemPromptPayload(systemPrompt string) (string, []string) {
 	if systemPrompt == "" {
-		return "", func() {}, nil
+		return "", nil
 	}
-	path, err := fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
-	if err != nil {
-		return "", nil, fmt.Errorf("writing system prompt file: %w", err)
-	}
-	return path, func() { _ = os.Remove(path) }, nil
+	return fsutil.PayloadPath(0), []string{systemPrompt}
 }
 
 // generateDir is Generate's working directory: ~/.config/watchtower, a
@@ -295,9 +288,17 @@ func cliUsageOf(model string, resp *cliResponse) *Usage {
 // on cancel (or the isolated child's group kill), bounded stderr — and
 // returns the result envelope parse finds in its stdout. A failed run, an
 // error envelope and an empty result are errors.
-func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io.Reader, dir string, parse func([]byte) (*cliResponse, error)) (*cliResponse, error) {
+func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io.Reader, dir string,
+	parse func([]byte) (*cliResponse, error), payloads ...string) (*cliResponse, error) {
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
+	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
+	if err != nil {
+		return nil, err
+	}
+	// cmd.Output starts the child before it blocks; the child holds its own
+	// read end, so the parent's copies close once Output returns.
+	defer closePayloads()
 	cmd.Stdin = stdin
 	// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 	cmd.Cancel = func() error {
@@ -344,7 +345,7 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io
 			// behind kilobytes of usage telemetry. Parse it so the error
 			// carries that message instead of the whole blob.
 			if resp, perr := parse(output); perr == nil && resp.IsError {
-				return nil, WithCause(fmt.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
+				return nil, WithCause(logredact.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
 					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp)), exitErr)
 			}
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
@@ -357,7 +358,7 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io
 				stderrMsg = "unparseable stdout: " + claude.DescribeOutput(output)
 			}
 			if stderrMsg != "" {
-				return nil, WithCause(fmt.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg), exitErr)
+				return nil, WithCause(logredact.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Text(stderrMsg)), exitErr)
 			}
 			return nil, WithCause(fmt.Errorf("claude CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 		}
@@ -372,7 +373,7 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io
 	if resp.IsError {
 		// Same envelope, same empty-result trap as the non-zero-exit branch
 		// above — the CLI can flag is_error and still exit 0.
-		return nil, fmt.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
+		return nil, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
 	}
 
 	if strings.TrimSpace(resp.Result) == "" {
