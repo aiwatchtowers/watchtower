@@ -56,7 +56,7 @@ Show the list to the user with a one-line "does the guide need an update?" for e
 Then stamp the new Learn cards (Home's Learn zone, `docs/guide/WRITING.md` "Learn cards") with the version being released, and list new feature sections that have no card:
 
 ```bash
-grep -rl '^since: next$' docs/guide | xargs -r sed -i '' 's/^since: next$/since: <version>/'
+grep -rl --exclude=WRITING.md '^since: next$' docs/guide | xargs -r sed -i '' 's/^since: next$/since: <version>/'
 git diff --unified=0 "$prev" -- docs/guide/features | grep -E '^\+##' || true
 ```
 
