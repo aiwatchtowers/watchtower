@@ -31,6 +31,9 @@ extension AppState {
             Task { await turnOnFeatureFromEmptyState(featureID) }
         case .connect(let source):
             openConnections(ConnectionService(readinessSource: source))
+        case .openSettings("connections", _):
+            // The services moved to the main window's Connections tab (#899).
+            openConnections()
         case .openSettings(let name, _):
             if let tab = SettingsTab(emptyStateTab: name) { settingsTab = tab }
             openSettingsWindow?()

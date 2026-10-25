@@ -59,7 +59,7 @@ package enum AccountPurgeNoticePolicy {
             + "Any new attempt comes with a new notice."
     }
 
-    /// The line of a `purged` account in Settings → Connections: the done line
+    /// The line of a `purged` account in the Connections tab: the done line
     /// when its row is at hand, and the way back, which is Re-login (adding the
     /// same workspace again says it is already connected).
     package static func purgedLine(_ done: AccountPurge?, zone: TimeZone = .current) -> String {

@@ -3,7 +3,7 @@ import GRDB
 import WatchtowerCore
 
 /// Drives the multi-account Google connections (Calendar and/or Gmail) shown
-/// in Settings → Google Accounts and the add-account sheet. Each row is a
+/// in Connections → Google Accounts and the add-account sheet. Each row is a
 /// DB-backed `google_accounts` record — any number of Google accounts side by
 /// side, each independently granting Calendar and/or Gmail access via its own
 /// OAuth consent flow. Owned by AppState so the accounts list and any

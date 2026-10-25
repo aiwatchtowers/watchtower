@@ -3,7 +3,7 @@ import GRDB
 import WatchtowerCore
 
 /// Drives the multi-account IMAP/Outlook email connections shown in
-/// Settings → Email Accounts and the AddEmailAccountView sheet. Unlike Gmail
+/// Connections → Email Accounts and the AddEmailAccountView sheet. Unlike Gmail
 /// (a single OAuth token file owned by `GmailAuthService`), each row here is a
 /// DB-backed `email_accounts` record — any number of IMAP mailboxes plus
 /// Outlook OAuth accounts side by side. Owned by AppState so the accounts

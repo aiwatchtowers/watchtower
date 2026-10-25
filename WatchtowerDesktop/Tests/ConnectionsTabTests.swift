@@ -142,6 +142,32 @@ final class ConnectionsTabTests: XCTestCase {
         XCTAssertTrue(appState.slackAuthFlow.reconnecting)
     }
 
+    // MARK: - Removed tabs (#899)
+
+    /// `search` and `boards` may sit in `sidebar.hiddenItems` from an older
+    /// build: they decode to nothing, hide nothing that shows now, and a
+    /// `watchtower-nav://` link naming one opens nothing.
+    func testRemovedTabsInStoredValuesAreIgnored() throws {
+        XCTAssertNil(SidebarDestination(rawValue: "search"))
+        XCTAssertNil(SidebarDestination(rawValue: "boards"))
+        let stale: Set<String> = ["search", "boards"]
+        for section in SidebarSection.ordered {
+            XCTAssertEqual(section.partition(hidden: stale).visible, section.items, section.title)
+        }
+
+        let appState = AppState.isolated()
+        appState.selectedDestination = .inbox
+        XCTAssertFalse(appState.visibleHelpScreenIDs.contains("search"))
+        XCTAssertFalse(appState.visibleHelpScreenIDs.contains("boards"))
+        XCTAssertTrue(appState.visibleHelpScreenIDs.contains("connections"))
+        for screen in ["search", "boards"] {
+            appState.openNavLink(try XCTUnwrap(URL(string: "watchtower-nav://\(screen)")))
+            XCTAssertEqual(appState.selectedDestination, .inbox, screen)
+        }
+        appState.openNavLink(try XCTUnwrap(URL(string: "watchtower-nav://connections")))
+        XCTAssertEqual(appState.selectedDestination, .connections)
+    }
+
     // MARK: - Jira detail
 
     /// The Boards tab's sections live in the Jira detail once a site is

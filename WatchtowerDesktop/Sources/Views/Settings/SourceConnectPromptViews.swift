@@ -11,10 +11,9 @@ extension View {
 }
 
 /// The sidebar's quiet "+ Connect Slack, Mail, Jira…" row: what is still
-/// missing, opening Settings → Connections; × hides it for good.
+/// missing, opening the Connections tab; × hides it for good.
 struct SidebarConnectRow: View {
     @Environment(AppState.self) private var appState
-    @Environment(\.openSettings) private var openSettings
     @AppStorage(SourceConnectPrompt.dismissedKey) private var dismissed = false
 
     var body: some View {
@@ -24,8 +23,7 @@ struct SidebarConnectRow: View {
         ) {
             HStack(spacing: 4) {
                 Button {
-                    appState.settingsTab = .connections
-                    openSettings()
+                    appState.openConnections()
                 } label: {
                     Text(title)
                         .font(.caption)

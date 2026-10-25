@@ -17,7 +17,6 @@ import WatchtowerCore
 /// when the Inbox is on screen, which drives its 30 s poll.
 struct ActionStripView: View {
     @Environment(AppState.self) private var appState
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Group {
@@ -49,10 +48,7 @@ struct ActionStripView: View {
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
                     sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
                     emptyState: appState.emptyStateContext,
-                    onOpenConnections: {
-                        appState.settingsTab = .connections
-                        openSettings()
-                    },
+                    onOpenConnections: { appState.openConnections() },
                     ownerKnown: appState.owner.isKnown,
                     learnedRulesDB: appState.databaseManager?.dbPool,
                     profile: appState.secretaryProfileViewModel,
@@ -98,10 +94,7 @@ struct ActionStripView: View {
             onMakeTask: makeTask,
             briefing: appState.briefingViewModel,
             emptyState: appState.emptyStateContext,
-            onOpenConnections: {
-                appState.settingsTab = .connections
-                openSettings()
-            },
+            onOpenConnections: { appState.openConnections() },
             onMade: { await vm.refresh() },
             briefingOn: vm.feed.briefingOn,
             dayPlanOn: vm.feed.dayPlanOn

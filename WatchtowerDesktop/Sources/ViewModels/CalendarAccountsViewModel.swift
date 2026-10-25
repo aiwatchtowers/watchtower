@@ -3,7 +3,7 @@ import GRDB
 import WatchtowerCore
 
 /// Drives the multi-account CalDAV/ICS calendar connections shown in
-/// Settings → Calendar Accounts and the AddCalendarAccountView sheet. Unlike
+/// Connections → Calendar Accounts and the AddCalendarAccountView sheet. Unlike
 /// Google Calendar (a single OAuth token file owned by `GoogleAuthService`),
 /// each row here is a DB-backed `calendar_accounts` record — any number of
 /// CalDAV servers plus secret ICS feeds side by side. Owned by AppState so the

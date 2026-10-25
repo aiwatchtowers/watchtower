@@ -82,7 +82,7 @@ final class AppState {
     private(set) var ownerPendingSource: String?
 
     /// The Settings window's selected tab: an in-app link opens Settings on it.
-    var settingsTab: SettingsTab = .connections
+    var settingsTab: SettingsTab = .general
     /// A section the tab scrolls to once it shows (the tab clears it).
     var settingsAnchor: SettingsAnchor?
     /// The Connections tab's open service (nil: the overview), so a link opens a service.
@@ -306,7 +306,7 @@ final class AppState {
     /// Linear Accounts ViewModel — held here so an in-flight consent survives leaving Settings.
     private(set) var linearAccountsViewModel: LinearAccountsViewModel?
 
-    /// Confluence spaces pickers (Settings → Jira), one per Jira account id —
+    /// Confluence spaces pickers (Connections → Jira), one per Jira account id —
     /// held here so a select/unselect or re-consent still running when the
     /// Settings pane goes away finishes and is visible on return.
     private(set) var confluenceSpacesViewModels: [Int64: ConfluenceSpacesViewModel] = [:]
@@ -316,7 +316,7 @@ final class AppState {
     /// the Settings window.
     private(set) var externalConnectionsViewModel: ExternalConnectionsViewModel?
 
-    /// Reaction Dictionary ViewModel (Settings → Slack "Reaction commands"
+    /// Reaction Dictionary ViewModel (Connections → Slack "Reaction commands"
     /// editor) — persists across tab switches like its sibling account VMs
     /// above.
     private(set) var reactionDictionaryViewModel: ReactionDictionaryViewModel?

@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
-/// Drives the multi-site Jira connections shown in Settings → Jira and the
+/// Drives the multi-site Jira connections shown in Connections → Jira and the
 /// add-site sheet. Each row is a DB-backed `jira_accounts` record — any number
 /// of Atlassian sites side by side, each independently granting access via its
 /// own OAuth consent flow and carrying its own token file. Owned by AppState
@@ -241,7 +241,7 @@ final class JiraAccountsViewModel {
         await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
     }
 
-    /// Settings → Jira → Confluence "Grant Confluence access": the same
+    /// Connections → Jira → Confluence "Grant Confluence access": the same
     /// re-consent flow with `--with-confluence`, so the new grant carries the
     /// Confluence scopes.
     func reloginWithConfluence(accountID: Int) async {
@@ -252,7 +252,7 @@ final class JiraAccountsViewModel {
         )
     }
 
-    /// Settings → Jira → Confluence "Allow editing": the same re-consent flow
+    /// Connections → Jira → Confluence "Allow editing": the same re-consent flow
     /// with `--with-confluence-write`, so the new grant also carries the
     /// Confluence write scopes the assistant's page edits need.
     func reloginWithConfluenceWrite(accountID: Int) async {

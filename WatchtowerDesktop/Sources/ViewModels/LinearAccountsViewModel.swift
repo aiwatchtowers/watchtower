@@ -1,7 +1,7 @@
 import Foundation
 import WatchtowerCore
 
-/// Drives Settings → Linear and the Add Linear sheet (shared with
+/// Drives Connections → Linear and the Add Linear sheet (shared with
 /// onboarding's Connect step): the connected workspaces, connecting one by
 /// OAuth (`linear add --app-return`, a browser consent like Jira's) or by a
 /// personal API key (`linear add --api-key`, the key written to the CLI's

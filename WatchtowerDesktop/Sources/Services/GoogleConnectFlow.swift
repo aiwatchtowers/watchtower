@@ -75,7 +75,7 @@ final class GoogleConnectFlow {
     /// oldest account, matching the Go-side alias semantics in cmd/google.go's
     /// `resolveAccountOneForLogin`/`disconnectGoogleService`, which also
     /// always operate on the oldest surviving row. Connecting a second,
-    /// independent account is a Settings → Google Accounts action
+    /// independent account is a Connections → Google Accounts action
     /// (AddGoogleAccountView / GoogleAccountsViewModel.addAccount), not this flow.
     static func connectArgs(accounts: [GoogleAccount], wantCalendar: Bool, wantGmail: Bool) -> [String] {
         // --app-return: the CLI opens watchtower-auth:// once the browser step

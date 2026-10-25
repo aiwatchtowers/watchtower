@@ -119,7 +119,7 @@ func appGuideSection(o PromptOptions) string {
 }
 
 // appGuideNavRule lists WatchtowerDesktop's SidebarDestination raw values.
-const appGuideNavRule = "To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, inbox (your day, messages, tracks and ideas are its filters), calendar, targets, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, boards, usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text."
+const appGuideNavRule = "To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, inbox (your day, messages, tracks and ideas are its filters), calendar, targets, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, connections (Slack, Google, Jira and the other accounts), usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text."
 
 const responseStyle = `=== RESPONSE STYLE ===
 - Give the answer first and keep it short. Do not narrate your search steps — the app already shows them.

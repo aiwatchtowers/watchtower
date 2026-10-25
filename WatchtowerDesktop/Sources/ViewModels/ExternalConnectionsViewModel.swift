@@ -3,7 +3,7 @@ import GRDB
 import WatchtowerCore
 
 /// Drives the "Quick Connections" list of owner-managed external MCP servers
-/// shown in Settings → Connections. Each row is a DB-backed
+/// shown in the Connections tab. Each row is a DB-backed
 /// `external_connections` record read directly via GRDB; mutations shell out
 /// to the `watchtower connections` CLI (the DB never gets a direct write from
 /// Desktop) so the same validation/config-writing path serves both the CLI
