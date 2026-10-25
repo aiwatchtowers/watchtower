@@ -13,14 +13,14 @@ package enum SpecReviewQueries {
         var out: [String: SpecReviewMark] = [:]
         let rows = try Row.fetchAll(
             db,
-            sql: "SELECT item_key, state, body FROM spec_review_marks WHERE ask_id = ?",
+            sql: "SELECT item_key, state, body, about FROM spec_review_marks WHERE ask_id = ?",
             arguments: [askID]
         )
         for row in rows {
             let key: String = row["item_key"]
             let raw: String = row["state"]
             guard let state = SpecReviewMarkState(rawValue: raw) else { continue }
-            out[key] = SpecReviewMark(key: key, state: state, storedBody: row["body"])
+            out[key] = SpecReviewMark(key: key, state: state, body: row["body"], about: row["about"])
         }
         return out
     }
@@ -28,12 +28,13 @@ package enum SpecReviewQueries {
     package static func setMark(_ db: Database, askID: Int64, mark: SpecReviewMark, now: Date) throws {
         try db.execute(
             sql: """
-                INSERT INTO spec_review_marks (ask_id, item_key, state, body, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(ask_id, item_key) DO UPDATE SET
-                    state = excluded.state, body = excluded.body, updated_at = excluded.updated_at
+                    state = excluded.state, body = excluded.body, about = excluded.about,
+                    updated_at = excluded.updated_at
                 """,
-            arguments: [askID, mark.key, mark.state.rawValue, mark.storedBody, timestamp(now)]
+            arguments: [askID, mark.key, mark.state.rawValue, mark.body, mark.about, timestamp(now)]
         )
     }
 

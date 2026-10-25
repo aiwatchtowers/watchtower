@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -31,16 +30,11 @@ type SpecReview struct {
 }
 
 // SpecReviewMark is the owner's mark on one item (Desktop-written). About is
-// a comment's finding text, stored after SpecReviewMarkAboutSeparator in the
-// body column so a comment whose finding a re-run drops still says what it
-// was about.
+// a comment's finding text, kept so a comment whose finding a re-run drops
+// still says what it was about.
 type SpecReviewMark struct {
 	State, Body, About, UpdatedAt string
 }
-
-// SpecReviewMarkAboutSeparator splits the body column into the owner's text
-// and the finding text (Swift's `SpecReviewMark.aboutSeparator`).
-const SpecReviewMarkAboutSeparator = "\x1f"
 
 func specReviewTime(t time.Time) string { return t.UTC().Format(automationTimeLayout) }
 
@@ -223,7 +217,7 @@ func (db *DB) SpecReviewsToSweep(now time.Time) (queued []int64, running []SpecR
 
 // ListSpecReviewMarks returns the owner's marks of the ask by item key.
 func (db *DB) ListSpecReviewMarks(askID int64) (map[string]SpecReviewMark, error) {
-	rows, err := db.Query(`SELECT item_key, state, body, updated_at FROM spec_review_marks WHERE ask_id = ?`, askID)
+	rows, err := db.Query(`SELECT item_key, state, body, about, updated_at FROM spec_review_marks WHERE ask_id = ?`, askID)
 	if err != nil {
 		return nil, fmt.Errorf("listing spec review marks: %w", err)
 	}
@@ -232,10 +226,9 @@ func (db *DB) ListSpecReviewMarks(askID int64) (map[string]SpecReviewMark, error
 	for rows.Next() {
 		var key string
 		var m SpecReviewMark
-		if err := rows.Scan(&key, &m.State, &m.Body, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&key, &m.State, &m.Body, &m.About, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
-		m.Body, m.About, _ = strings.Cut(m.Body, SpecReviewMarkAboutSeparator)
 		marks[key] = m
 	}
 	return marks, rows.Err()

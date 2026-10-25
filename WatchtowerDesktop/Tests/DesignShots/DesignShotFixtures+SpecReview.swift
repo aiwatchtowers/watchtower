@@ -137,12 +137,9 @@ enum SpecReviewShotFixtures {
             if withResult {
                 // A comment from the previous run, whose finding the re-run dropped.
                 try db.execute(sql: """
-                    INSERT INTO spec_review_marks (ask_id, item_key, state, body, updated_at)
-                    VALUES (?, 'ag:old', 'comment', ?, '2026-10-25T09:00:00Z')
-                    """, arguments: [id, SpecReviewMark(
-                        key: "ag:old", state: .comment, body: "Say what a mention does while muted.",
-                        about: "Mentions are not covered"
-                    ).storedBody])
+                    INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at)
+                    VALUES (?, 'ag:old', 'comment', ?, ?, '2026-10-25T09:00:00Z')
+                    """, arguments: [id, "Say what a mention does while muted.", "Mentions are not covered"])
             }
             return (project, id)
         }

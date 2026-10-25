@@ -139,9 +139,14 @@ final class SpecReviewTests: XCTestCase {
             try SpecReviewQueries.setMark(db, askID: 1, mark: .init(key: "ag:1", state: .comment, body: "a"), now: now)
             try SpecReviewQueries.setMark(db, askID: 1, mark: .init(key: "ch:1", state: .viewed), now: now)
             try SpecReviewQueries.setMark(db, askID: 1, mark: .init(key: "ag:1", state: .ok), now: now)
+            try SpecReviewQueries.setMark(
+                db, askID: 1, mark: .init(key: "ag:2", state: .comment, body: "old note", about: "Threads stay muted"), now: now
+            )
         }
         var marks = try db.read { try SpecReviewQueries.marks($0, askID: 1) }
         XCTAssertEqual(marks["ag:1"], SpecReviewMark(key: "ag:1", state: .ok))
+        XCTAssertEqual(marks["ag:2"], SpecReviewMark(key: "ag:2", state: .comment, body: "old note", about: "Threads stay muted"))
+        try db.write { try SpecReviewQueries.clearMark($0, askID: 1, key: "ag:2") }
         XCTAssertEqual(marks["ch:1"]?.state, .viewed)
         try db.write { try SpecReviewQueries.clearMark($0, askID: 1, key: "ag:1") }
         marks = try db.read { try SpecReviewQueries.marks($0, askID: 1) }
@@ -216,10 +221,6 @@ final class SpecReviewTests: XCTestCase {
         let marks = ["ag:gone": SpecReviewMark(key: "ag:gone", state: .comment, body: "old note", about: "Threads stay muted")]
         let a = SpecReviewAnswer.build(result: r, marks: marks, verdict: .changes, snapshot: snapshot)
         XCTAssertEqual(a.comments.last?.body, "From the previous run: Threads stay muted — old note")
-        let stored = SpecReviewMark(key: "k", state: .comment, storedBody: marks["ag:gone"]?.storedBody ?? "")
-        XCTAssertEqual(stored.body, "old note")
-        XCTAssertEqual(stored.about, "Threads stay muted")
-        XCTAssertEqual(SpecReviewMark(key: "k", state: .comment, storedBody: "plain").about, "")
     }
 
     func testDecisionsListFromTheSnapshot() {

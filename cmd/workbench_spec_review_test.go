@@ -70,7 +70,7 @@ func runSpecReview(t *testing.T, args ...string) (string, error) {
 
 func TestSpecReviewShow_JSONKeysPinned(t *testing.T) {
 	database, id, _ := specReviewAsk(t)
-	_, err := database.Exec(`INSERT INTO spec_review_marks (ask_id, item_key, state, body, updated_at) VALUES (?, 'ag:0123456789ab', 'comment', 'why?', '2026-10-25T10:00:00Z'), (?, 'ag:ba9876543210', 'comment', 'keep'||char(31)||'Threads stay unmuted', '2026-10-25T10:00:00Z')`, id, id)
+	_, err := database.Exec(`INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at) VALUES (?, 'ag:0123456789ab', 'comment', 'why?', '', '2026-10-25T10:00:00Z'), (?, 'ag:ba9876543210', 'comment', 'keep', 'Threads stay unmuted', '2026-10-25T10:00:00Z')`, id, id)
 	require.NoError(t, err)
 
 	out, err := runSpecReview(t, "show", "--ask", itoa(id), "--json")

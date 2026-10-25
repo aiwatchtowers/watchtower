@@ -3,7 +3,9 @@
 -- owner_asks.doc_type is the kind of a review ask's document ('' for a
 -- non-review ask, else spec|plan|other); spec_reviews holds one reviewer
 -- agent run per review ask; spec_review_marks are the owner's per-item
--- marks (the Desktop writes them, Go only reads them for `show`).
+-- marks (the Desktop writes them, Go only reads them for `show`); a
+-- comment's about is the finding text, so a comment whose finding a
+-- re-run drops still says what it was about.
 ALTER TABLE owner_asks ADD COLUMN doc_type TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE spec_reviews (
@@ -27,6 +29,7 @@ CREATE TABLE spec_review_marks (
     item_key   TEXT NOT NULL,
     state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
     body       TEXT NOT NULL DEFAULT '',
+    about      TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );

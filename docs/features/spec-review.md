@@ -12,7 +12,7 @@ Migration `00156_spec_reviews.sql` (mirrored in `schema.sql`); access in `intern
 
 - `owner_asks.doc_type` — `''` (not a review), `spec`, `plan`, `other`.
 - `spec_reviews(ask_id PK, status queued|running|done|failed|skipped, reason, result, provider, model, doc_sha, dropped, pid, attempt, queued_at, started_at, finished_at)` — one reviewer run per review ask. `QueueSpecReview` upserts to `queued`, clears the result and adds one to `attempt`; `RelaunchQueuedSpecReview` is the sweep's conditional re-queue (only `WHERE status='queued' AND attempt < 3`); `RequeueSpecReview` (the owner's `start`) resets `attempt` to 1; `ClaimSpecReview` moves queued to running under the reviewer's pid; `FinishSpecReview` / `FailSpecReview` act only on a running row of that pid; `SkipSpecReview` records why no review runs.
-- `spec_review_marks(ask_id, item_key, state, body, updated_at)` — the owner's per-item marks; the Desktop writes them, Go only reads them for `show`. A comment's `body` is `<owner text>\x1f<finding text>` (Go `db.SpecReviewMarkAboutSeparator`, Swift `SpecReviewMark.aboutSeparator`), so a comment whose finding a re-run drops still says what it was about; a body without the separator has no finding text.
+- `spec_review_marks(ask_id, item_key, state, body, about, updated_at)` — the owner's per-item marks; the Desktop writes them, Go only reads them for `show` (`about` key). A comment's `about` is the finding text, so a comment whose finding a re-run drops still says what it was about; `''` when there is none.
 
 ## Starting a review
 

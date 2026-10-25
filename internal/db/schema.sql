@@ -2767,6 +2767,7 @@ CREATE TABLE IF NOT EXISTS spec_review_marks (
     item_key   TEXT NOT NULL,
     state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
     body       TEXT NOT NULL DEFAULT '',
+    about      TEXT NOT NULL DEFAULT '',   -- a comment's finding text, kept when a re-run drops the finding
     updated_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );

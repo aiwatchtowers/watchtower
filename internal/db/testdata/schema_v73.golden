@@ -2723,6 +2723,7 @@ ask_id INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
 item_key TEXT NOT NULL,
 state TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
 body TEXT NOT NULL DEFAULT '',
+about TEXT NOT NULL DEFAULT '',
 updated_at TEXT NOT NULL,
 PRIMARY KEY (ask_id, item_key)
 )
@@ -5621,7 +5622,8 @@ GROUP BY up.ancestor
 1	item_key	TEXT	notnull=1	dflt=NULL	pk=2
 2	state	TEXT	notnull=1	dflt=NULL	pk=0
 3	body	TEXT	notnull=1	dflt=''	pk=0
-4	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+4	about	TEXT	notnull=1	dflt=''	pk=0
+5	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## spec_reviews
 0	ask_id	INTEGER	notnull=0	dflt=NULL	pk=1

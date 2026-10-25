@@ -81,7 +81,7 @@ func TestSpecReview_RequeueKeepsMarks(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.NoError(t, d.FinishSpecReview(askID, 7, SpecReview{Result: "{}"}, now))
-	_, err = d.Exec(`INSERT INTO spec_review_marks (ask_id, item_key, state, body, updated_at) VALUES (?, 'f1', 'comment', 'hi', 'x')`, askID)
+	_, err = d.Exec(`INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at) VALUES (?, 'f1', 'comment', 'hi', 'Threads stay muted', 'x')`, askID)
 	require.NoError(t, err)
 
 	queueSpecReview(t, d, askID, now.Add(time.Minute))
@@ -93,7 +93,7 @@ func TestSpecReview_RequeueKeepsMarks(t *testing.T) {
 	assert.Equal(t, 0, got.PID)
 	marks, err := d.ListSpecReviewMarks(askID)
 	require.NoError(t, err)
-	assert.Equal(t, SpecReviewMark{State: "comment", Body: "hi", UpdatedAt: "x"}, marks["f1"])
+	assert.Equal(t, SpecReviewMark{State: "comment", Body: "hi", About: "Threads stay muted", UpdatedAt: "x"}, marks["f1"])
 }
 
 func TestSpecReview_CascadeOnAskDelete(t *testing.T) {
