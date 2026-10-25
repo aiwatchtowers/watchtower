@@ -123,8 +123,23 @@ struct OwnerAskDrawer: View {
     @State private var cursor: Int?
     @State private var fieldFocus: OwnerAskFieldFocus?
     @State private var commentStep: OwnerAskCommentStep?
+    /// The open review ask's spec review (spec 2026-10-25 §7); nil for
+    /// other asks, a closed one, or without the CLI.
+    @State private var specReview: SpecReviewModel?
+    /// **Read the spec** was pressed, or the drawer opened before the
+    /// reviewer's row existed: the classic view stays put, a finished
+    /// review only offers a banner.
+    @State private var showClassic = false
 
     private var asks: OwnerAsksViewModel { vm.asks }
+
+    private var specReviewMode: SpecReviewPresentation.DrawerMode {
+        SpecReviewPresentation.drawerMode(row: specReview?.row, showClassic: showClassic)
+    }
+
+    /// The spec review screen is up: its own Send and Approve answer the
+    /// ask, so the footer's verdict buttons and their keys stand aside.
+    private var showsSpecReview: Bool { specReview != nil && ask.isOpen && specReviewMode == .review }
 
     /// Input goes to the draft only while the ask is open and no answer is
     /// being written (`OwnerAsksViewModel.editDraft`).
@@ -139,7 +154,7 @@ struct OwnerAskDrawer: View {
         ScrollViewReader { proxy in
             content
                 .background(OwnerAskKeyCatcher(
-                    onPress: { keys.press($0) },
+                    onPress: { showsSpecReview ? false : keys.press($0) },
                     onMouseDown: { [asks, projectID = ask.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
                     resizeEdge: asks.drawerExpanded ? 0 : PanelResizeHandle.thickness,
                     canHandBack: { [asks, projectID = ask.projectID] in asks.drawerAskIDs[projectID] == nil },
@@ -152,6 +167,8 @@ struct OwnerAskDrawer: View {
         }
         .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID, sessionID: ask.sessionID))
         .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
+        .task(id: ask.id) { await loadSpecReview() }
+        .onDisappear { specReview?.stopPolling() }
         // "k of N ›" swaps the ask under the same drawer.
         .onChange(of: ask.id) { _, _ in
             scrollTarget = nil
@@ -183,6 +200,7 @@ struct OwnerAskDrawer: View {
             OwnerAskAnswerBar(
                 asks: asks,
                 ask: ask,
+                showsVerdicts: !showsSpecReview,
                 statusLine: OwnerAskPresentation.askStatusLine(ask, replacedBy: asks.replacements[ask.projectID]?[ask.id])
             )
         }
@@ -223,7 +241,52 @@ struct OwnerAskDrawer: View {
     /// A review's document scrolls by itself (a snapshot may be 2 MiB, too
     /// much for a SwiftUI scroll view): the top sections scroll above it in
     /// at most 40% of the height, the note sits below it.
+    @ViewBuilder
     private var reviewLayout: some View {
+        if let specReview, showsSpecReview {
+            SpecReviewView(model: specReview) { showClassic = true }
+        } else {
+            if let specReview, ask.isOpen, case let .classic(strip?) = specReviewMode {
+                SpecReviewStatusView(
+                    model: specReview,
+                    style: .strip,
+                    onOpenFindings: strip == .banner ? { showClassic = false } : nil
+                )
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.regular)
+                Divider()
+            }
+            classicReviewLayout
+        }
+    }
+
+    /// Opens the spec review of an open review ask: its row and marks, the
+    /// poll while the reviewer runs. The reviewer is queued just after the
+    /// ask is filed, so a missing row is looked for again a few times; one
+    /// that turns up later leaves the classic view in place.
+    private func loadSpecReview() async {
+        specReview?.stopPolling()
+        specReview = nil
+        showClassic = false
+        guard ask.kind == .review, ask.isOpen, let cli = vm.cli else { return }
+        let model = SpecReviewModel(ask: ask, db: DatabaseManager(pool: vm.dbPool), cli: cli, asks: asks)
+        await model.load()
+        guard !Task.isCancelled else { return }
+        specReview = model
+        showClassic = model.row == nil
+        for _ in 0..<Self.missingRowChecks where model.row == nil {
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await model.load()
+        }
+        guard !Task.isCancelled else { return }
+        model.startPolling()
+    }
+
+    /// How many times a missing reviewer row is looked for (every 3 s).
+    private static let missingRowChecks = 10
+
+    private var classicReviewLayout: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 if hasTopSections {
@@ -249,6 +312,7 @@ struct OwnerAskDrawer: View {
     /// #90): the answer button the key names, pressed as a click would —
     /// nothing while it is off.
     private func pressAnswerKey(_ shift: Bool) {
+        guard !showsSpecReview else { return }
         asks.pressKey(on: ask, shift: shift)
     }
 

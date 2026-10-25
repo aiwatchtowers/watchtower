@@ -235,6 +235,19 @@ final class SpecReviewModel {
         return SpecReviewAnswer.orphanMarks(result: result, marks: marks)
     }
 
+    /// The reviewed document's file name, for the screen's title.
+    var docName: String { (ask.docPath as NSString).lastPathComponent }
+
+    /// The answer's note: the ask's draft note, shared with the classic
+    /// view, so switching views keeps it.
+    var note: String {
+        get { asks.drafts.askDraft(for: ask.id).note }
+        set { asks.editDraft(ask.id) { $0.note = newValue } }
+    }
+
+    /// An answer to the ask is being written: Send and Approve are off.
+    var isAnswering: Bool { asks.isAnswering(ask.id) }
+
     // MARK: - Send and approve
 
     private var commentCount: Int {
