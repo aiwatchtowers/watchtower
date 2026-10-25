@@ -3,9 +3,11 @@ package media
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"regexp"
 
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/media/webfetch"
 )
 
@@ -73,6 +75,24 @@ func ClassifyError(err error) string {
 		return "open_failed"
 	}
 	return "other"
+}
+
+// modelUnavailable reports a failed model call that says nothing about the
+// item: the provider or its CLI could not serve any request (digest.ErrAICall
+// — the network, an outage, a login —, the CLI not found or not started, the
+// process killed by a signal before it replied). Such a call spends no
+// attempt. A per-item timeout (the call's own deadline) and a malformed
+// reply (ErrBadOutput) are about the item and do.
+func modelUnavailable(err error) bool {
+	var model modelError
+	if !errors.As(err, &model) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, ErrBadOutput) {
+		return false
+	}
+	var execErr *exec.Error
+	var exitErr *exec.ExitError
+	return errors.Is(err, digest.ErrAICall) || errors.Is(err, exec.ErrNotFound) || errors.As(err, &execErr) ||
+		(errors.As(err, &exitErr) && !exitErr.Exited()) || digest.NetworkFailure(err)
 }
 
 // urlQueryRe matches the query and fragment of a URL inside a text.

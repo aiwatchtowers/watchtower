@@ -158,6 +158,9 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 			}
 			cursor = db.MediaCursor{FromOwner: it.FromOwner, ID: it.ID}
 			r.item(ctx, it)
+			if r.stop {
+				return st, nil
+			}
 		}
 	}
 }
@@ -190,6 +193,9 @@ type run struct {
 	ig     digest.ImageGenerator
 	vision bool
 	files  []string // the current item's temp files
+	// stop: the model is unavailable (modelUnavailable); the run ends and
+	// the rest waits for the next cycle.
+	stop bool
 }
 
 // outcome is what working one item produced: a result to store, a failed
@@ -221,6 +227,13 @@ func (r *run) item(ctx context.Context, it db.MediaItem) {
 	if o.fail != nil {
 		if ctx.Err() != nil {
 			return // shutdown: no attempt is spent
+		}
+		if modelUnavailable(o.fail) {
+			// Not the item's fault: no attempt is spent, and no other
+			// item is tried against a provider that cannot answer.
+			r.stop = true
+			r.p.logf("media: item %d: the model is unavailable, the pass resumes next cycle: %s", it.ID, redactURLs(o.fail.Error()))
+			return
 		}
 		r.fail(ctx, it, o.fail)
 		return
@@ -666,9 +679,10 @@ func (r *run) convert(ctx context.Context, path, failStatus string, args ...stri
 // callModel runs one model call under its own deadline. A call that
 // ignores the deadline is abandoned when it passes; a panic is an error.
 // Every error is a modelError (its class still reads timeout or
-// bad_output through the chain).
-func callModel[T any](ctx context.Context, timeout time.Duration, fn func(context.Context) (T, *digest.Usage, error)) (T, *digest.Usage, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+// bad_output through the chain); a call that failed after its own deadline
+// passed (a CLI killed by it) is a timeout, never an unavailable model.
+func callModel[T any](parent context.Context, timeout time.Duration, fn func(context.Context) (T, *digest.Usage, error)) (T, *digest.Usage, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	type result struct {
 		v   T
@@ -688,6 +702,9 @@ func callModel[T any](ctx context.Context, timeout time.Duration, fn func(contex
 	select {
 	case res := <-ch:
 		if res.err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil {
+				return res.v, res.u, modelError{fmt.Errorf("%w: %v", context.DeadlineExceeded, res.err)}
+			}
 			return res.v, res.u, modelError{res.err}
 		}
 		return res.v, res.u, nil

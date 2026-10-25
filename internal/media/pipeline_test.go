@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1372,4 +1373,64 @@ func TestPipeline_FinishFailureCountsAnAttempt(t *testing.T) {
 	assert.Equal(t, "other", r.Error)
 	assert.Equal(t, "pending", r.Status)
 	assert.Equal(t, 1, st.Failed)
+}
+
+// A model call that failed for a reason outside the item (the provider
+// down, the CLI missing, the process killed) spends no attempt and ends the
+// run; a malformed reply and a per-item timeout still count.
+func TestPipeline_ModelUnavailableSpendsNoAttempt(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		err  error
+	}{
+		{"transport", digest.WithCause(errors.New("API Error: Connection error"), digest.ErrAICall)},
+		{"cli not found", &exec.Error{Name: "claude", Err: exec.ErrNotFound}},
+		{"network", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.gen.describe = func(context.Context, string, string) (string, error) { return "", c.err }
+			a := e.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
+			b := e.image("1:C1", "1758000000.000200", "F2", noisePNG(t, 64, 64, 2))
+
+			st := e.run()
+
+			for _, id := range []int64{a, b} {
+				r := e.row(id)
+				assert.Equal(t, "pending", r.Status)
+				assert.Zero(t, r.Attempts)
+				assert.Empty(t, r.Error)
+			}
+			img, _ := e.gen.calls()
+			assert.Equal(t, 1, img, "the run stops at the first unavailable call")
+			assert.Zero(t, st.Failed)
+			has, err := e.p.HasPending(context.Background())
+			require.NoError(t, err)
+			assert.True(t, has, "the rows are worked again next cycle")
+		})
+	}
+}
+
+func TestPipeline_BadReplyAndOwnTimeoutCountAttempts(t *testing.T) {
+	e := newEnv(t)
+	e.gen.describe = func(context.Context, string, string) (string, error) { return "not json", nil }
+	bad := e.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
+	e.run()
+	assert.Equal(t, 1, e.row(bad).Attempts)
+	assert.Equal(t, "bad_output", e.row(bad).Error)
+
+	// A CLI killed by the call's own deadline reports a transport-looking
+	// error: it is the item's timeout.
+	e2 := newEnv(t)
+	prev := describeTimeout
+	describeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { describeTimeout = prev })
+	e2.gen.describe = func(ctx context.Context, _, _ string) (string, error) {
+		<-ctx.Done()
+		return "", digest.WithCause(errors.New("signal: killed"), digest.ErrAICall)
+	}
+	slow := e2.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
+	e2.run()
+	assert.Equal(t, 1, e2.row(slow).Attempts)
+	assert.Equal(t, "timeout", e2.row(slow).Error)
 }
