@@ -9,6 +9,7 @@ import (
 	"github.com/dop251/goja"
 
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/tools"
 )
 
 // MCPModule defines mcp(server, tool, args?) (spec §5): the manifest check
@@ -77,6 +78,9 @@ func budgetedMCPCall(env *Env, b Backends, req mcpCall) (json.RawMessage, error)
 	switch {
 	case callErr != nil:
 		return nil, mcpError(req, callErr)
+	case errors.Is(err, tools.ErrResultTooLarge):
+		// Over the per-response cap: the result is dropped, never handed on.
+		return nil, &SDKError{Name: ErrNameResultTooLarge, Message: err.Error()}
 	case err != nil:
 		// The budget's refusal, always a tools.ValidationError.
 		return nil, &SDKError{Name: ErrNameValidation, Message: err.Error()}

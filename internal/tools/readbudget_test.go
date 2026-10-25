@@ -402,3 +402,19 @@ func TestReadExternal_RecordsEveryOutcome(t *testing.T) {
 	}
 	assert.EqualValues(t, 10, got[0]["bytes"])
 }
+
+func TestReadExternal_RefusesOverTheByteCap(t *testing.T) {
+	lines := captureAudit(t)
+	reg := New(nil)
+	reg.SetReadLimits(ReadLimits{Calls: 10, Rows: 1000, ResponseRows: MaxListLimit, ResponseBytes: 100})
+	err := reg.ReadExternal(Binding{AutomationRunID: 7}, "mcp:acme/list", func() (int, error) { return 101, nil })
+	require.ErrorIs(t, err, ErrResultTooLarge)
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Equal(t, "the result is 101 bytes; the limit is 100 — narrow the request", ve.Msg)
+	require.NoError(t, reg.ReadExternal(Binding{AutomationRunID: 7}, "mcp:acme/list", func() (int, error) { return 100, nil }))
+	got := lines()
+	require.Len(t, got, 2)
+	assert.Equal(t, "too_large", got[0]["result"])
+	assert.Equal(t, "ok", got[1]["result"])
+}

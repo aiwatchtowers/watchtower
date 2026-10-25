@@ -131,3 +131,16 @@ func TestAuto08_MCPLineOutcomes(t *testing.T) {
 		})
 	}
 }
+
+// A result over the registry's (lowered) byte cap is refused as
+// ResultTooLarge and never reaches the script.
+func TestAuto08_MCPOverTheByteCapIsDropped(t *testing.T) {
+	captureLines(t)
+	m := &automationstest.FakeMCP{Result: json.RawMessage(`{"prs":[1,2,3,4,5,6,7,8,9]}`)}
+	l := readLimits(5)
+	l.ResponseBytes = 10
+	mustReturn(t, `let got = "none";
+		try { got = mcp("github", "list_prs", {}).prs.length; } catch (e) { return e.name + "|" + got }
+		return "served " + got`,
+		budgetCase(t, l, m, "mcp:github/*"), "ResultTooLarge|none")
+}

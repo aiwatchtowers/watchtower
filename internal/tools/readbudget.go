@@ -91,8 +91,10 @@ func (r *Registry) ReadSessionKey(b Binding) string {
 // is refused with a ValidationError wrapping ErrReadLimit and fn never
 // runs), then writes the call's one audit line: error when fn fails or
 // panics (the panic is re-raised), too_large when size passes the
-// per-response byte cap, else ok. No rows are counted: the result's shape is
-// not the registry's. fn's error is returned unchanged.
+// per-response byte cap — refused like a registry read, with a
+// ValidationError wrapping ErrResultTooLarge, and the caller drops the
+// result — else ok. No rows are counted: the result's shape is not the
+// registry's. fn's error is returned unchanged.
 func (r *Registry) ReadExternal(b Binding, name string, fn func() (size int, err error)) error {
 	key := r.ReadSessionKey(b)
 	if err := r.admitRead(b, key, name, nil); err != nil {
@@ -114,6 +116,10 @@ func (r *Registry) ReadExternal(b Binding, name string, fn func() (size int, err
 		r.recordRead(b, key, name, nil, 0, 0, auditlog.ResultError)
 	case size > maxBytes:
 		r.recordRead(b, key, name, nil, 0, size, auditlog.ResultTooLarge)
+		return &ValidationError{
+			Msg: fmt.Sprintf("the result is %d bytes; the limit is %d — narrow the request", size, maxBytes),
+			Err: ErrResultTooLarge,
+		}
 	default:
 		r.recordRead(b, key, name, nil, 0, size, auditlog.ResultOK)
 	}
