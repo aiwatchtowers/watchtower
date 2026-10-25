@@ -6,7 +6,7 @@ import GRDB
 package enum LearnQueries {
     /// Tables the reads use, for a ValueObservation region.
     package static let observedTables = [
-        "learn_seen", "meeting_transcripts", "chat_messages", "projects", "reaction_commands", "automations",
+        "learn_seen", "meeting_transcripts", "chat_conversations", "chat_messages", "projects", "reaction_commands", "automations",
         "ext_sources"
     ]
 
@@ -36,16 +36,22 @@ package enum LearnQueries {
         try db.execute(sql: "DELETE FROM learn_seen WHERE item_id = ?", arguments: [id])
     }
 
-    /// The row-backed signals, in one read: Confluence counts while a space
-    /// syncs (an enabled `ext_sources` row). The others (memory, the other
-    /// sources, the phone, dictation) come from `LearnInputs`.
+    /// The row-backed signals, in one read: the owner's message in the main
+    /// chat (an embedded chat has a `context_type`), a reaction that ran (the
+    /// seed's `skipped` rows for reactions older than the feature never
+    /// count), Confluence while a space syncs (an enabled `ext_sources` row).
+    /// The others (memory, the other sources, the phone, dictation) come from
+    /// `LearnInputs`.
     package static func rowSignals(_ db: Database) throws -> Set<LearnSignal> {
         guard let row = try Row.fetchOne(db, sql: """
             SELECT
               EXISTS (SELECT 1 FROM meeting_transcripts) AS meeting,
-              EXISTS (SELECT 1 FROM chat_messages WHERE role = 'user') AS chat,
+              EXISTS (
+                SELECT 1 FROM chat_messages m JOIN chat_conversations c ON c.id = m.conversation_id
+                WHERE m.role = 'user' AND c.context_type IS NULL
+              ) AS chat,
               EXISTS (SELECT 1 FROM projects) AS workbench,
-              EXISTS (SELECT 1 FROM reaction_commands) AS reaction,
+              EXISTS (SELECT 1 FROM reaction_commands WHERE status = 'dispatched') AS reaction,
               EXISTS (SELECT 1 FROM automations WHERE origin = 'owner') AS automation,
               EXISTS (SELECT 1 FROM ext_sources WHERE provider = 'confluence' AND enabled = 1) AS confluence
             """)
