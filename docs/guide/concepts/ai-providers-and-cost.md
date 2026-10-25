@@ -10,7 +10,7 @@ Watchtower has no AI of its own and no API key to paste. It calls a provider you
 | **Codex** | The Codex command-line tool | Installed and signed in |
 | **Ollama / Local** | Any OpenAI-compatible server (Ollama, LM Studio, vLLM), at `http://localhost:11434` unless you change it | A running server and a chosen model |
 
-Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "auto-detect"), then press **Test Connection**. The main AI Chat also has a provider and model pill for switching per chat. If your company's profile limits providers, the picker lists only those; a configured provider it forbids shows "(not allowed)" and every AI call fails until you pick another.
+Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "auto-detect"), then press **Test Connection**. The main AI Chat also has a provider and model pill for switching per chat. If your company's profile limits providers, the provider picker in **Settings → System → AI** lists only those; a configured provider it forbids shows "(not allowed)" there, and every AI call fails until you pick another.
 
 ## Light and strong models
 

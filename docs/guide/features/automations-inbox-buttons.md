@@ -8,7 +8,7 @@ A recipe that watches your Jira board leaves a card, "PAY-12 has been blocked fo
 
 ## How it works
 
-A card is written by `output.inbox({title, body, priority?, link?, actions?})`; `priority` is `"high"`, `"medium"` or `"low"`, and any other value fails the run. `actions` holds up to four buttons, each with a `label` of at most 40 characters and exactly one kind:
+A card is written by `output.inbox({title, body, priority?, link?, actions?})`; `priority` is `"high"`, `"medium"` or `"low"`, and any other value throws a validation error (the run fails unless the script catches it). `actions` holds up to four buttons, each with a `label` of at most 40 characters and exactly one kind:
 
 | Kind | Key | A press does |
 |---|---|---|

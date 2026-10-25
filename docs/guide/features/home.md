@@ -64,7 +64,7 @@ On a new install a **Getting ready** zone sits above the columns, its header cou
 
 While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan lines say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead.
 
-A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button; a source your company forbids gets none. A connected Jira with no board picked keeps a line with **Choose Jira boards**, which opens **Boards**.
+A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button. A row goes only when your company forbids every source behind it: "Connect Jira or mail" stays while mail is allowed. A connected Jira with no board picked keeps a line with **Choose Jira boards**, which opens **Boards**.
 
 When every feature is ready or retrying on its own, the zone shrinks to "Everything's ready" for the rest of that launch. It folds three days after it first showed, whatever still waits. An install that was already ready never sees it.
 

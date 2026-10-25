@@ -111,9 +111,11 @@ final class GettingReadyTests: XCTestCase {
     }
 
     /// The forbidden rows were the only reason to open the zone: it stays hidden.
+    /// `.digests` is goal-switched, so its Connect row alone opens the zone.
     func testOnlyForbiddenRowsKeepTheZoneHidden() {
-        let result = step(readinessMap([.jira: .needsSource(.jira)]), policy: policy(allowing: []))
-        XCTAssertEqual(result.zone, .hidden)
+        let readiness = readinessMap([.digests: .needsSource(.slack)])
+        XCTAssertEqual(sourceRows(step(readiness).zone), [GettingReadySourceRow(source: .slack, features: [.digests])])
+        XCTAssertEqual(step(readiness, policy: policy(allowing: ["jira"])).zone, .hidden)
     }
 
     func testCollapsesToAllReadyWhenEveryCardReadyOrError() {
