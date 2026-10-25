@@ -16,6 +16,16 @@ type Message struct {
 	BodyText     string
 	InternalDate string // ISO8601
 	IsUnread     bool
+	Images       []ImagePart // every leaf image/* part, in walk order
+}
+
+// ImagePart is one leaf image/* part of a message: Index is its place among
+// the message's image parts in walk order (from 0). ContentID is the
+// Content-ID without its angle brackets.
+type ImagePart struct {
+	Index                          int
+	Filename, MediaType, ContentID string
+	Size                           int64
 }
 
 // Security is the transport security mode for an IMAP connection.

@@ -1312,37 +1312,44 @@ func wireImapSyncers(cfg *config.Config, database *db.DB, logger *log.Logger) []
 	}
 	var syncers []*imap.Syncer
 	for _, acct := range accounts {
-		accountCfg := imap.AccountConfig{
-			Host: acct.Host, Port: acct.Port,
-			Security: imap.Security(acct.Security), Folder: acct.Folder,
-		}
-
-		var auth imap.Authenticator
-		switch acct.Provider {
-		case "imap":
-			store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
-			creds, err := store.Load()
-			if err != nil {
-				logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
-				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
-					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
-				}
-				continue
-			}
-			auth = imap.PasswordAuth{Username: acct.EmailAddress, Password: creds.Password}
-		case "outlook":
-			auth = outlookAuthenticator(cfg, database, acct, logger)
-			if auth == nil {
-				continue
-			}
-		default:
-			logger.Printf("imap: account %d: unknown provider %q, skipping", acct.ID, acct.Provider)
+		accountCfg, auth := imapAccountAuth(cfg, database, acct, logger)
+		if auth == nil {
 			continue
 		}
-
 		syncers = append(syncers, imap.NewSyncer(acct, accountCfg, auth, database, cfg, logger))
 	}
 	return syncers
+}
+
+// imapAccountAuth is one email_accounts row's connection settings and
+// authenticator; a nil authenticator (credentials unreadable, recorded as
+// the account's auth error, or an unknown provider) means the account is
+// skipped.
+func imapAccountAuth(cfg *config.Config, database *db.DB, acct db.EmailAccount, logger *log.Logger) (imap.AccountConfig, imap.Authenticator) {
+	accountCfg := imap.AccountConfig{
+		Host: acct.Host, Port: acct.Port,
+		Security: imap.Security(acct.Security), Folder: acct.Folder,
+	}
+	switch acct.Provider {
+	case "imap":
+		store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
+		creds, err := store.Load()
+		if err != nil {
+			logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
+			if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
+				logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
+			}
+			return accountCfg, nil
+		}
+		return accountCfg, imap.PasswordAuth{Username: acct.EmailAddress, Password: creds.Password}
+	case "outlook":
+		if auth := outlookAuthenticator(cfg, database, acct, logger); auth != nil {
+			return accountCfg, auth
+		}
+		return accountCfg, nil
+	}
+	logger.Printf("imap: account %d: unknown provider %q, skipping", acct.ID, acct.Provider)
+	return accountCfg, nil
 }
 
 // wireCalDAVSyncers builds one caldav.Syncer per connected calendar_accounts
@@ -1590,7 +1597,7 @@ func newMediaPipeline(cfg *config.Config, database *db.DB, gen digest.Generator,
 		Gen:          gen,
 		Prompts:      prompts.New(database, nil),
 		DenyHosts:    media.DenyHosts(cfg),
-		Openers:      map[string]media.Opener{"chat": local, "target": local},
+		Openers:      map[string]media.Opener{"chat": local, "target": local, "gmail": gmailMediaOpener(cfg, database), "imap": imapMediaOpener(cfg, database, logger)},
 		WorkspaceDir: wd,
 		Logger:       logger,
 	}

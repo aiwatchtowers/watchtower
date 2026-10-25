@@ -16,4 +16,12 @@ type Message struct {
 	Labels       []string
 	IsUnread     bool
 	Permalink    string
+	Images       []ImagePart // every leaf image/* part, in walk order
+}
+
+// ImagePart is one leaf image/* part of a message. ContentID is the
+// Content-ID without its angle brackets (an inline image's reference).
+type ImagePart struct {
+	PartID, Filename, MediaType, ContentID string
+	Size                                   int64
 }

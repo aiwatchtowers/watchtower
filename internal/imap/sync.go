@@ -8,6 +8,8 @@ import (
 	"log"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -28,12 +30,11 @@ type Syncer struct {
 	appConfig *config.Config
 	logger    *log.Logger
 
-	// upsertImapMessage stores one message row. Defaults to s.db.UpsertImapMessage
-	// (wired lazily in Sync, since db is only known at construction) — tests
-	// override it to force a failure for a specific UID, exercising the
-	// partial-batch-failure watermark behavior without needing a real DB error
-	// (see sync_test.go).
-	upsertImapMessage func(db.ImapMessage, string) error
+	// upsertImapMessage stores one message row with the images found on it.
+	// Defaults to s.storeMessage — tests override it to force a failure for
+	// a specific UID, exercising the partial-batch-failure watermark
+	// behavior without needing a real DB error (see sync_test.go).
+	upsertImapMessage func(ctx context.Context, m db.ImapMessage, syncedAt string, images []db.MediaFound) error
 
 	// firstSyncFrom is the window start of the last Sync when it was the
 	// account's first (no last UID and no UIDVALIDITY recorded) and its
@@ -87,7 +88,7 @@ func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error
 		}
 		for _, m := range msgs {
 			// Each row keeps its own date as synced_at (backfillSyncedAt).
-			if err := upsert(s.messageRow(m, uidValidity, maxBody), backfillSyncedAt(m.InternalDate, from)); err != nil {
+			if err := upsert(ctx, s.messageRow(m, uidValidity, maxBody), backfillSyncedAt(m.InternalDate, from), mediaFound(m.Images)); err != nil {
 				return count, fmt.Errorf("account %d: upsert uid %d: %w", s.account.ID, m.UID, err)
 			}
 			count++
@@ -109,11 +110,36 @@ func (s *Syncer) messageRow(m Message, uidValidity uint32, maxBody int) db.ImapM
 	}
 }
 
-func (s *Syncer) upsertFunc() func(db.ImapMessage, string) error {
+func (s *Syncer) upsertFunc() func(context.Context, db.ImapMessage, string, []db.MediaFound) error {
 	if s.upsertImapMessage != nil {
 		return s.upsertImapMessage
 	}
-	return s.db.UpsertImapMessage
+	return s.storeMessage
+}
+
+// storeMessage upserts m with its images; FromOwner = the sender is the
+// account's own address.
+func (s *Syncer) storeMessage(ctx context.Context, m db.ImapMessage, syncedAt string, images []db.MediaFound) error {
+	own := strings.TrimSpace(s.account.EmailAddress)
+	fromOwner := own != "" && strings.EqualFold(strings.TrimSpace(m.FromEmail), own)
+	return s.db.UpsertImapMessageMedia(ctx, m, syncedAt, fromOwner, images)
+}
+
+// mediaFound turns a message's image parts into media rows (locator
+// img:<index>); a part without a filename carries its Content-ID in the
+// name as cid:<id>, which the pass's mail junk rule reads. Mail links are
+// never recorded.
+func mediaFound(images []ImagePart) []db.MediaFound {
+	out := make([]db.MediaFound, 0, len(images))
+	for _, im := range images {
+		name := im.Filename
+		if name == "" && im.ContentID != "" {
+			name = "cid:" + im.ContentID
+		}
+		out = append(out, db.MediaFound{Kind: "image", Locator: "img:" + strconv.Itoa(im.Index), Name: name,
+			MediaType: im.MediaType, Size: im.Size})
+	}
+	return out
 }
 
 // backfillSyncedAt is a backfilled row's synced_at: the message's own date
@@ -238,7 +264,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if ctx.Err() != nil {
 			break
 		}
-		if err := upsert(s.messageRow(m, newUIDValidity, maxBody), syncedAt); err != nil {
+		if err := upsert(ctx, s.messageRow(m, newUIDValidity, maxBody), syncedAt, mediaFound(m.Images)); err != nil {
 			s.logger.Printf("imap account %d: upsert uid %d: %v", s.account.ID, m.UID, err)
 			stalled = true
 			continue

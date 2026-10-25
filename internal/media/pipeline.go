@@ -512,6 +512,15 @@ func (r *run) describeBody(ctx context.Context, it db.MediaItem, body io.Reader)
 		return failed(err)
 	}
 	key := "sha256:" + sum
+	if it.ParentKind == "gmail" || it.ParentKind == "imap" {
+		junk, err := MailJunk(ctx, r.p.DB, it, size, sum)
+		if err != nil {
+			return failed(err)
+		}
+		if junk {
+			return outcome{res: &db.MediaResult{Status: "skipped_junk", ContentKey: key}}
+		}
+	}
 	if o, ok := r.copyFrom(ctx, it, key); ok {
 		if o.res != nil {
 			o.res.ContentKey = key
