@@ -10,6 +10,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower status` | Sync status and statistics |
 | `watchtower logs` | Sync log output |
 | `watchtower version` | Version |
+| `watchtower guide learn` | The Learn cards Home shows, read from this guide and checked; `--json` for scripts |
 | `watchtower workspace init` | Create the local workspace (data directory and database) |
 | `watchtower db migrate` | Apply database migrations |
 | `watchtower db compact` | Shrink the database file after an update freed space, first finishing a pending search index rebuild (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short (twice the file's size for compacting, 64 MiB for the rebuild) unless `--force` |
