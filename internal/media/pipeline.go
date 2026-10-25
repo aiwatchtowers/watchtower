@@ -29,6 +29,7 @@ import (
 var (
 	mediaBatch           = 10
 	imageDownloadTimeout = 60 * time.Second
+	linkFetchTimeout     = 15 * time.Second
 	describeTimeout      = 120 * time.Second
 	summaryTimeout       = 60 * time.Second
 )
@@ -63,8 +64,9 @@ type Pipeline struct {
 	Now            func() time.Time
 	Logger         *log.Logger
 
-	// newWeb builds the run's web fetcher over check; nil = webfetch.New.
-	newWeb func(check func(string) bool) webGetter
+	// newWeb builds one of the run's web fetchers over check with the given
+	// whole-fetch timeout; nil = webfetch.New.
+	newWeb func(check func(string) bool, timeout time.Duration) webGetter
 }
 
 // webGetter is the web fetch the pass needs (webfetch.Fetcher).
@@ -115,11 +117,17 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 	}
 	check := func(u string) bool { _, ok := Fetchable(u, refused); return ok }
 	r := &run{p: p, dir: dir, st: &st, ext: &extract.Extractor{}}
-	if p.newWeb != nil {
-		r.web = p.newWeb(check)
-	} else {
-		r.web = webfetch.New(check) // one per run: own addresses read afresh
+	// Built per run, so the own addresses are read afresh: pages under the
+	// 15 s link timeout, images under the 60 s download timeout.
+	newWeb := p.newWeb
+	if newWeb == nil {
+		newWeb = func(check func(string) bool, timeout time.Duration) webGetter {
+			f := webfetch.New(check)
+			f.Timeout = timeout
+			return f
+		}
 	}
+	r.web, r.imageWeb = newWeb(check, linkFetchTimeout), newWeb(check, imageDownloadTimeout)
 	r.ig, r.vision = digest.ImageCapable(p.Gen)
 
 	var cursor db.MediaCursor
@@ -148,6 +156,17 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 	}
 }
 
+// HasPending reports whether Run has any row to work now (a pending row;
+// an unavailable image too once a vision-capable provider is configured).
+func (p *Pipeline) HasPending(ctx context.Context) (bool, error) {
+	_, vision := digest.ImageCapable(p.Gen)
+	items, err := p.DB.ListPendingMedia(ctx, vision, db.MediaCursor{}, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(items) > 0, nil
+}
+
 // refusedHosts is this run's refused-host set: the synced sources, the
 // connected Jira/Confluence sites and the deny list.
 func (p *Pipeline) refusedHosts(ctx context.Context) (map[string]bool, error) {
@@ -164,14 +183,15 @@ func (p *Pipeline) refusedHosts(ctx context.Context) (map[string]bool, error) {
 
 // run is one pass's state.
 type run struct {
-	p      *Pipeline
-	dir    string
-	st     *Stats
-	web    webGetter
-	ext    *extract.Extractor
-	ig     digest.ImageGenerator
-	vision bool
-	files  []string // the current item's temp files
+	p        *Pipeline
+	dir      string
+	st       *Stats
+	web      webGetter // pages (linkFetchTimeout)
+	imageWeb webGetter // images (imageDownloadTimeout)
+	ext      *extract.Extractor
+	ig       digest.ImageGenerator
+	vision   bool
+	files    []string // the current item's temp files
 }
 
 // outcome is what working one item produced: a result to store, a failed
@@ -207,14 +227,17 @@ func (r *run) item(ctx context.Context, it db.MediaItem) {
 	if o.res == nil {
 		return
 	}
-	// The parent's document is computed now, never reused: a Slack message
-	// that gained replies renders into its thread document since.
-	src, ref, err := kb.MediaParentRef(ctx, r.p.DB, it)
-	if err != nil {
-		r.fail(ctx, it, err)
-		return
+	// An ok row's document is computed now, never reused: a Slack message
+	// that gained replies renders into its thread document since. Other
+	// statuses render nothing and store no new ref.
+	if o.res.Status == "ok" {
+		src, ref, err := kb.MediaParentRef(ctx, r.p.DB, it)
+		if err != nil {
+			r.fail(ctx, it, err)
+			return
+		}
+		o.res.KBSource, o.res.KBRef = src, ref
 	}
-	o.res.KBSource, o.res.KBRef = src, ref
 	if err := r.p.DB.FinishMedia(ctx, it.ID, *o.res); err != nil {
 		r.p.logf("media: item %d: %v", it.ID, err)
 		return
@@ -326,12 +349,14 @@ func (r *run) link(ctx context.Context, it db.MediaItem) outcome {
 	}
 	defer resp.Body.Close()
 	if strings.HasPrefix(resp.MediaType, "image/") {
-		if !r.vision {
-			o := terminal("unavailable", "")
-			o.res.Kind = "image"
-			return o
+		// An image: fetched again under the image download timeout.
+		_ = resp.Body.Close()
+		var o outcome
+		if r.vision {
+			o = r.webImage(ctx, it, u)
+		} else {
+			o = terminal("unavailable", "")
 		}
-		o := r.describeBody(ctx, it, resp.Body)
 		if o.res != nil {
 			o.res.Kind = "image"
 		}
@@ -431,45 +456,48 @@ func (r *run) image(ctx context.Context, it db.MediaItem) outcome {
 		case target != nil:
 			switch target.Status {
 			case "ok":
-				return outcome{copied: true, res: &db.MediaResult{Status: "ok", Title: target.Title,
-					Body: target.Body, ImageText: target.ImageText, Keys: target.Keys}}
+				return outcome{copied: true, res: &db.MediaResult{Status: "ok", ContentKey: target.ContentKey,
+					Title: target.Title, Body: target.Body, ImageText: target.ImageText, Keys: target.Keys}}
 			case "pending", "unavailable":
 				return outcome{}
 			}
 			return terminal("unreachable", "not_found")
 		}
 	}
+	if strings.HasPrefix(it.Locator, "url:") {
+		return r.webImage(ctx, it, linkURL(it))
+	}
+	op := r.p.Openers[it.ParentKind]
+	if op == nil {
+		return outcome{} // no opener wired for this source yet: wait
+	}
 	dctx, cancel := context.WithTimeout(ctx, imageDownloadTimeout)
 	defer cancel()
-	var body io.ReadCloser
-	if strings.HasPrefix(it.Locator, "url:") {
-		resp, err := r.web.Get(dctx, linkURL(it), maxMediaDownload)
-		if err != nil {
-			return fetchOutcome(err)
-		}
-		if !strings.HasPrefix(resp.MediaType, "image/") {
-			_ = resp.Body.Close()
-			return terminal("unreachable", "unsupported")
-		}
-		body = resp.Body
-	} else {
-		op := r.p.Openers[it.ParentKind]
-		if op == nil {
-			return outcome{} // no opener wired for this source yet: wait
-		}
-		var err error
-		body, _, err = op.Open(dctx, it, maxMediaDownload)
-		switch {
-		case errors.Is(err, ErrGone):
-			return terminal("unreachable", "not_found")
-		case errors.Is(err, ErrTooLarge):
-			return terminal("too_large", "too_large")
-		case err != nil:
-			return failed(err)
-		}
+	body, _, err := op.Open(dctx, it, maxMediaDownload)
+	switch {
+	case errors.Is(err, ErrGone):
+		return terminal("unreachable", "not_found")
+	case errors.Is(err, ErrTooLarge):
+		return terminal("too_large", "too_large")
+	case err != nil:
+		return failed(err)
 	}
 	defer body.Close()
 	return r.describeBody(ctx, it, body)
+}
+
+// webImage fetches an image URL through the image fetcher (its whole-fetch
+// deadline is the download timeout) and describes it.
+func (r *run) webImage(ctx context.Context, it db.MediaItem, u string) outcome {
+	resp, err := r.imageWeb.Get(ctx, u, maxMediaDownload)
+	if err != nil {
+		return fetchOutcome(err)
+	}
+	defer resp.Body.Close()
+	if !strings.HasPrefix(resp.MediaType, "image/") {
+		return terminal("unreachable", "unsupported")
+	}
+	return r.describeBody(ctx, it, resp.Body)
 }
 
 // describeBody spools body into a temp file (≤ maxMediaDownload), then
@@ -541,13 +569,14 @@ func (r *run) prepare(ctx context.Context, path string, size int64) (send, media
 	if err != nil {
 		return "", "", failed(err)
 	}
+	orig := size // the junk rule judges the bytes as they came
 	if mt == typeHEIC || mt == typeTIFF {
 		path, size, mt, w, h, o = r.convert(ctx, path, "skipped_type", "-s", "format", "jpeg")
 		if o.res != nil || o.fail != nil {
 			return "", "", o
 		}
 	}
-	if isJunk(size, w, h) {
+	if isJunk(orig, w, h) {
 		return "", "", terminal("skipped_junk", "")
 	}
 	if !fitsModel(size, w, h) {

@@ -15,6 +15,7 @@ var ErrorClasses = db.MediaErrorClasses
 var (
 	// ErrGone: the item's bytes are no longer there (the file, message or
 	// attachment is gone, or the locator points outside what may be read).
+	// The pass ends such an item 'unreachable' and stores class not_found.
 	ErrGone = errors.New("media: the item is gone")
 	// ErrTooLarge: the item is over the download cap.
 	ErrTooLarge = errors.New("media: the item is too large")

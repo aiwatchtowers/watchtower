@@ -71,7 +71,9 @@ func seedPendingMedia(t *testing.T, database *db.DB) (imageID, linkID int64) {
 	p := db.MediaParent{Kind: "slack", SlackChannelID: "1:CM", SlackTS: "1758000000.000100", ContentAt: time.Now()}
 	_, err = db.RecordMedia(context.Background(), database, p, []db.MediaFound{
 		{Kind: "image", Locator: "F1", MediaType: "image/png"},
-		{Kind: "link", Locator: "url:https://public.example/a", FetchURL: "https://public.example/a", ContentKey: "url:https://public.example/a"},
+		// A synced host: the fetcher's check refuses it before any DNS
+		// lookup or socket, so no test touches the network.
+		{Kind: "link", Locator: "url:https://linear.app/a", FetchURL: "https://linear.app/a", ContentKey: "url:https://linear.app/a"},
 	})
 	require.NoError(t, err)
 	require.NoError(t, database.QueryRow(`SELECT id FROM media_items WHERE kind = 'image'`).Scan(&imageID))
@@ -156,4 +158,30 @@ func TestPhaseMediaDescribe_ErrorDoesNotStopKnowledgeIndex(t *testing.T) {
 	var errMsg string
 	require.NoError(t, database.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs WHERE pipeline = 'media-describe'`).Scan(&errMsg))
 	assert.Empty(t, errMsg, "media errors are logged only")
+}
+
+func TestPhaseMediaDescribe_IdleCycleWritesNoRun(t *testing.T) {
+	d, database := newKnowledgeTestDaemon(t)
+	d.config.Knowledge.Enabled = true
+	gen := &mediaTestGen{}
+	newMediaTestPipeline(d, database, gen, &mediaTestOpener{})
+
+	d.phaseMediaDescribe(context.Background())
+
+	assert.Zero(t, countPipelineRuns(t, database, "media-describe"), "nothing pending: no run row")
+	assert.Zero(t, gen.calls.Load())
+}
+
+func TestPhaseMediaDescribe_RefusedLinkNeverFetched(t *testing.T) {
+	d, database := newKnowledgeTestDaemon(t)
+	d.config.Knowledge.Enabled = true
+	_, link := seedPendingMedia(t, database)
+	newMediaTestPipeline(d, database, &mediaTestGen{}, &mediaTestOpener{})
+
+	d.phaseMediaDescribe(context.Background())
+
+	var status, class string
+	require.NoError(t, database.QueryRow(`SELECT status, error FROM media_items WHERE id = ?`, link).Scan(&status, &class))
+	assert.Equal(t, "unreachable", status)
+	assert.Equal(t, "refused", class)
 }

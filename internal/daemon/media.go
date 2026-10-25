@@ -15,7 +15,8 @@ const mediaCycleBudget = 2 * time.Minute
 // links (internal/media). Part of Knowledge search: off = no fetch, no model
 // call, no row and no pipeline_runs row. Near the Claude plan limit the pass
 // makes no call and fetches nothing this cycle. Errors are logged only: the
-// knowledge index runs next whatever happened here.
+// knowledge index runs next whatever happened here. A cycle with nothing to
+// work writes no pipeline_runs row.
 func (d *Daemon) phaseMediaDescribe(ctx context.Context) {
 	if !d.config.Knowledge.Enabled || d.mediaPipe == nil || d.db == nil || ctx.Err() != nil {
 		return
@@ -26,6 +27,14 @@ func (d *Daemon) phaseMediaDescribe(ctx context.Context) {
 	} else if planusage.NearLimit(st) {
 		d.logger.Printf("media: Claude plan limit near, skipped this cycle")
 		return
+	}
+	pending, err := d.mediaPipe.HasPending(ctx)
+	if err != nil {
+		d.logger.Printf("media: %v", err)
+		return
+	}
+	if !pending {
+		return // idle cycle: no pipeline_runs row
 	}
 	d.trackedPipelineRun("media-describe", func() pipelineRunStats {
 		st, err := d.mediaPipe.Run(ctx, mediaCycleBudget)

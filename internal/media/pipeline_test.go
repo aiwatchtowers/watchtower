@@ -298,11 +298,17 @@ func readLog(t *testing.T, path string) string {
 // named by host (any port), with the pass's check run on the first URL and
 // on every redirect hop, as webfetch.Fetcher does.
 type testWeb struct {
-	check func(string) bool
-	hosts map[string]*httptest.Server
+	check   func(string) bool
+	hosts   map[string]*httptest.Server
+	timeout time.Duration
+	gets    *[]string // "<timeout> <url>" per Get
+	mu      *sync.Mutex
 }
 
 func (w *testWeb) Get(ctx context.Context, raw string, maxBytes int64) (*webfetch.Response, error) {
+	w.mu.Lock()
+	*w.gets = append(*w.gets, w.timeout.String()+" "+raw)
+	w.mu.Unlock()
 	if !w.check(raw) {
 		return nil, webfetch.ErrRefused
 	}
@@ -340,8 +346,18 @@ func (w *testWeb) Get(ctx context.Context, raw string, maxBytes int64) (*webfetc
 	return &webfetch.Response{FinalURL: resp.Request.URL.String(), MediaType: mt, Body: resp.Body}, nil
 }
 
-func (e *env) web(hosts map[string]*httptest.Server) {
-	e.p.newWeb = func(check func(string) bool) webGetter { return &testWeb{check: check, hosts: hosts} }
+// web serves the run's fetches from hosts and returns the log of Gets.
+func (e *env) web(hosts map[string]*httptest.Server) func() []string {
+	var gets []string
+	var mu sync.Mutex
+	e.p.newWeb = func(check func(string) bool, timeout time.Duration) webGetter {
+		return &testWeb{check: check, hosts: hosts, timeout: timeout, gets: &gets, mu: &mu}
+	}
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), gets...)
+	}
 }
 
 func page(text string) string {
@@ -418,17 +434,25 @@ func TestPipeline_LinkToImageDescribedAsImage(t *testing.T) {
 		_, _ = w.Write(img)
 	}))
 	t.Cleanup(srv.Close)
-	e.web(map[string]*httptest.Server{"public.example": srv})
+	gets := e.web(map[string]*httptest.Server{"public.example": srv})
 	id := e.link("1:C1", "1758000000.000100", "http://public.example/chart.png")
+	urlImg := e.add("1:C1", "1758000000.000200", db.MediaFound{Kind: "image", Locator: "url:http://public.example/inline.png",
+		FetchURL: "http://public.example/inline.png"}, false)
 
 	e.run()
+
+	assert.Equal(t, []string{
+		"15s http://public.example/chart.png", "1m0s http://public.example/chart.png",
+		"1m0s http://public.example/inline.png",
+	}, gets(), "images are fetched under the 60 s download timeout")
+	assert.Equal(t, "ok", e.row(urlImg).Status)
 
 	r := e.row(id)
 	assert.Equal(t, "ok", r.Status)
 	assert.Equal(t, "image", r.Kind)
 	assert.True(t, strings.HasPrefix(r.ContentKey, "sha256:"))
 	img1, text := e.gen.calls()
-	assert.Equal(t, 1, img1)
+	assert.Equal(t, 1, img1, "the same bytes are described once")
 	assert.Zero(t, text)
 }
 
@@ -785,6 +809,10 @@ func TestPipeline_StoresOnlyErrorClass(t *testing.T) {
 	assert.Contains(t, e.log.String(), "https://x.example/")
 }
 
+// TestPipeline_DenyHostRefusedOnRedirect is a unit test of the composition:
+// the pass's check holds the deny list and refuses a redirect hop to a denied
+// host. The test fetcher runs that check the way webfetch.Fetcher does
+// (Task 3's tests pin the fetcher's own redirect re-check).
 func TestPipeline_DenyHostRefusedOnRedirect(t *testing.T) {
 	e := newEnv(t)
 	e.p.DenyHosts = []string{"Denied.Example"}
@@ -1128,4 +1156,153 @@ func TestClassifyError(t *testing.T) {
 		assert.Contains(t, ErrorClasses, got)
 	}
 	assert.Equal(t, "GET https://x.example/a?… boom", redactURLs("GET https://x.example/a?token=s3cret#f: boom"))
+}
+
+// fakeResolver answers every item with target/err.
+type fakeResolver struct {
+	target *db.MediaItem
+	err    error
+}
+
+func (f fakeResolver) Resolve(context.Context, db.MediaItem) (*db.MediaItem, error) {
+	return f.target, f.err
+}
+
+func TestPipeline_Resolver(t *testing.T) {
+	for _, c := range []struct {
+		name            string
+		res             fakeResolver
+		status, errCls  string
+		attempts, opens int
+		described       bool
+	}{
+		{name: "nil target opens as usual", status: "ok", opens: 1, described: true},
+		{name: "ok target copied", res: fakeResolver{target: &db.MediaItem{Status: "ok", ContentKey: "sha256:abc",
+			Title: "Diagram", Body: "The image shows a flow.", ImageText: "A -> B", Keys: []string{}}}, status: "ok"},
+		{name: "pending target waits", res: fakeResolver{target: &db.MediaItem{Status: "pending"}}, status: "pending"},
+		{name: "unavailable target waits", res: fakeResolver{target: &db.MediaItem{Status: "unavailable"}}, status: "pending"},
+		{name: "failed target unreachable", res: fakeResolver{target: &db.MediaItem{Status: "failed"}}, status: "unreachable", errCls: "not_found"},
+		{name: "gone unreachable", res: fakeResolver{err: ErrGone}, status: "unreachable", errCls: "not_found"},
+		{name: "other error is an attempt", res: fakeResolver{err: errors.New("db busy")}, status: "pending", errCls: "other", attempts: 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.p.Resolvers = map[string]Resolver{"slack": c.res}
+			id := e.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
+
+			e.run()
+
+			r := e.row(id)
+			assert.Equal(t, c.status, r.Status)
+			assert.Equal(t, c.errCls, r.Error)
+			assert.Equal(t, c.attempts, r.Attempts)
+			assert.Equal(t, c.opens, e.op.count())
+			img, _ := e.gen.calls()
+			assert.Equal(t, c.described, img == 1)
+			if c.res.target != nil && c.res.target.Status == "ok" {
+				assert.Equal(t, "sha256:abc", r.ContentKey, "the copy carries the target's content key")
+				assert.Equal(t, "The image shows a flow.", r.Body)
+				assert.Equal(t, "A -> B", r.ImageText)
+				assert.NotEmpty(t, r.KBRef, "the copy computes its own parent's document")
+			}
+		})
+	}
+}
+
+func TestPipeline_NonOKStoresNoKBRef(t *testing.T) {
+	e := newEnv(t)
+	gone := e.image("1:C1", "1758000000.000100", "gone", nil)
+	e.op.errs["gone"] = ErrGone
+	junk := e.image("1:C1", "1758000000.000200", "junk", solidPNG(t, 1, 1))
+
+	e.run()
+
+	for _, id := range []int64{gone, junk} {
+		r := e.row(id)
+		assert.NotEqual(t, "ok", r.Status)
+		assert.Empty(t, r.KBRef)
+		assert.Empty(t, r.KBSource)
+	}
+}
+
+func TestPipeline_HEICJunkJudgesOriginalSize(t *testing.T) {
+	e := newEnv(t)
+	stubSips(t, noiseJPEG(t, 64, 64)) // the converted JPEG is well over 2 KiB
+	tiny := append([]byte{0, 0, 0, 0x18}, []byte("ftypheic")...)
+	tiny = append(tiny, bytes.Repeat([]byte{7}, 1000)...)
+	id := e.image("1:C1", "1758000000.000100", "tiny", tiny)
+
+	e.run()
+
+	assert.Equal(t, "skipped_junk", e.row(id).Status)
+	img, _ := e.gen.calls()
+	assert.Zero(t, img)
+}
+
+func TestPipeline_OpenerPanicIsAFailedAttempt(t *testing.T) {
+	e := newEnv(t)
+	id := e.image("1:C1", "1758000000.000100", "F1", nil)
+	e.op.read["F1"] = func() io.Reader { return panicReader{} }
+
+	st := e.run()
+
+	r := e.row(id)
+	assert.Equal(t, "pending", r.Status)
+	assert.Equal(t, 1, r.Attempts)
+	assert.Equal(t, "other", r.Error)
+	assert.Equal(t, 1, st.Failed)
+	assert.Empty(t, e.tempEntries(), "the temp file is removed after the panic")
+}
+
+type panicReader struct{}
+
+func (panicReader) Read([]byte) (int, error) { panic("opener blew up") }
+
+func TestPipeline_AfterDescribedHooks(t *testing.T) {
+	e := newEnv(t)
+	var seen []db.MediaItem
+	e.p.AfterDescribed = []func(context.Context, db.MediaItem) error{
+		func(_ context.Context, it db.MediaItem) error { seen = append(seen, it); return nil },
+		func(context.Context, db.MediaItem) error { return errors.New("hook failed") },
+	}
+	ok := e.image("1:C1", "1758000000.000100", "ok", noisePNG(t, 64, 64, 1))
+	e.image("1:C1", "1758000000.000200", "junk", solidPNG(t, 1, 1))
+
+	e.run()
+
+	require.Len(t, seen, 1, "hooks run for ok results only")
+	got := seen[0]
+	assert.Equal(t, ok, got.ID)
+	assert.Equal(t, "ok", got.Status)
+	assert.Equal(t, "Q3 PROJ-7", got.ImageText)
+	assert.Equal(t, []string{"PROJ-7"}, got.Keys)
+	assert.Equal(t, e.row(ok).KBRef, got.KBRef)
+	assert.True(t, strings.HasPrefix(got.ContentKey, "sha256:"))
+	assert.Contains(t, e.log.String(), "hook failed", "a hook error is logged")
+	assert.Equal(t, "ok", e.row(ok).Status, "a hook error changes nothing stored")
+}
+
+func TestPipeline_HasPending(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	has, err := e.p.HasPending(ctx)
+	require.NoError(t, err)
+	assert.False(t, has)
+
+	e.p.Gen = textOnlyGen{e.gen}
+	id := e.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
+	has, err = e.p.HasPending(ctx)
+	require.NoError(t, err)
+	assert.True(t, has)
+
+	e.run()
+	require.Equal(t, "unavailable", e.row(id).Status)
+	has, err = e.p.HasPending(ctx)
+	require.NoError(t, err)
+	assert.False(t, has, "an unavailable image waits while there is no vision")
+
+	e.p.Gen = e.gen
+	has, err = e.p.HasPending(ctx)
+	require.NoError(t, err)
+	assert.True(t, has, "it is pending work once vision is configured")
 }
