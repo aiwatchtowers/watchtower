@@ -15,8 +15,8 @@ import (
 	watchtowerslack "watchtower/internal/slack"
 )
 
-// maxSlackFileLookups bounds the conversations.history calls one account's
-// cycle spends on search matches that shared a file but came without it.
+// maxSlackFileLookups bounds the conversations.history / conversations.replies
+// calls one account's cycle spends on search matches that shared a file but came without it.
 const maxSlackFileLookups = 20
 
 // Media kinds a Slack message's re-upsert replaces.
@@ -115,7 +115,8 @@ func (o *Orchestrator) recordSlackMedia(ctx context.Context, tx *sql.Tx, w slack
 }
 
 // slackFileLookup is a search match that shared a file without listing it.
-type slackFileLookup struct{ channelID, ts string } // channel namespaced
+// threadTS is the thread a reply belongs to ("" for a top-level message).
+type slackFileLookup struct{ channelID, ts, threadTS string } // channel namespaced
 
 // needsFileLookup reports a search match that shared a file but came
 // without its files: only history lists them.
@@ -123,20 +124,18 @@ func needsFileLookup(m watchtowerslack.SearchMatch) bool {
 	return len(m.Files) == 0 && m.Subtype != "tombstone" && (m.Upload || m.Subtype == "file_share")
 }
 
-// lookUpFileShares fetches each message through conversations.history and
-// saves it on the history path, which records its files. At most
-// maxSlackFileLookups per cycle; a failed lookup is logged and skipped, and
-// a rate limit ends the lookups for the cycle.
+// lookUpFileShares fetches each message — a thread reply through
+// conversations.replies of its thread, any other through
+// conversations.history — and saves it on the history path, which records
+// its files. At most maxSlackFileLookups per cycle; a failed lookup is
+// logged and skipped, and a rate limit ends the lookups for the cycle.
 func (o *Orchestrator) lookUpFileShares(ctx context.Context, lookups []slackFileLookup) {
 	for _, l := range lookups {
 		if ctx.Err() != nil || o.fileLookups >= maxSlackFileLookups {
 			return
 		}
 		o.fileLookups++
-		_, rawID, _ := watchtowerslack.SplitAccountID(l.channelID)
-		resp, err := o.slackClient.GetConversationHistory(ctx, watchtowerslack.HistoryOptions{
-			ChannelID: rawID, Oldest: l.ts, Latest: l.ts, Limit: 1, Inclusive: true,
-		})
+		msgs, err := o.fetchFileShare(ctx, l)
 		if err != nil {
 			o.logger.Printf("warning: looking up the files of %s/%s: %v", l.channelID, l.ts, err)
 			if isRateLimitError(err) {
@@ -144,7 +143,7 @@ func (o *Orchestrator) lookUpFileShares(ctx context.Context, lookups []slackFile
 			}
 			continue
 		}
-		for _, m := range resp.Messages {
+		for _, m := range msgs {
 			if m.Timestamp != l.ts {
 				continue
 			}
@@ -154,4 +153,20 @@ func (o *Orchestrator) lookUpFileShares(ctx context.Context, lookups []slackFile
 			break
 		}
 	}
+}
+
+// fetchFileShare reads the messages that hold l: its thread for a reply
+// (history never lists replies), else the one history entry at its ts.
+func (o *Orchestrator) fetchFileShare(ctx context.Context, l slackFileLookup) ([]goslack.Message, error) {
+	_, rawID, _ := watchtowerslack.SplitAccountID(l.channelID)
+	if l.threadTS != "" && l.threadTS != l.ts {
+		return o.slackClient.GetConversationReplies(ctx, rawID, l.threadTS)
+	}
+	resp, err := o.slackClient.GetConversationHistory(ctx, watchtowerslack.HistoryOptions{
+		ChannelID: rawID, Oldest: l.ts, Latest: l.ts, Limit: 1, Inclusive: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Messages, nil
 }

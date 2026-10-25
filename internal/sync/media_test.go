@@ -318,3 +318,59 @@ func TestSearchPage_FileShareFallbackCapped(t *testing.T) {
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
 	assert.EqualValues(t, maxSlackFileLookups, calls.Load())
 }
+
+// A file-share thread reply is looked up in its thread (conversations.replies
+// matched by ts), not in channel history, inside the same per-cycle cap.
+func TestSearchPage_FileShareReplyLookedUpInThread(t *testing.T) {
+	const parentTS = "1700000050.000100"
+	var list []map[string]any
+	for i := range 25 {
+		m := map[string]any{
+			"ts": fmt.Sprintf("17000001%02d.000100", i), "user": "U001", "text": "",
+			"channel": map[string]any{"id": "C001", "name": "general"}, "subtype": "file_share",
+			"permalink": fmt.Sprintf("https://acme.slack.com/archives/C001/p17000001%02d000100", i),
+		}
+		if i%2 == 0 { // a thread reply
+			m["permalink"] = m["permalink"].(string) + "?thread_ts=" + parentTS + "&cid=C001"
+		}
+		list = append(list, m)
+	}
+	var historyCalls, replyCalls atomic.Int32
+	var bad atomic.Value
+	history := func(r *http.Request) []map[string]any {
+		ts := r.Form.Get("oldest")
+		return []map[string]any{{"ts": ts, "user": "U001", "type": "message", "subtype": "file_share", "files": []map[string]any{fileJSON("F" + ts)}}}
+	}
+	var matches atomic.Value
+	matches.Store(list)
+	mux := searchMediaMux(&matches, &historyCalls, history)
+	mux.HandleFunc("/conversations.replies", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		replyCalls.Add(1)
+		if r.Form.Get("ts") != parentTS || r.Form.Get("channel") != "C001" {
+			bad.Store(r.Form.Encode())
+		}
+		msgs := []map[string]any{{"ts": parentTS, "user": "U002", "type": "message", "text": "parent", "thread_ts": parentTS}}
+		for i := 0; i < 25; i += 2 {
+			ts := fmt.Sprintf("17000001%02d.000100", i)
+			msgs = append(msgs, map[string]any{"ts": ts, "user": "U001", "type": "message", "subtype": "file_share",
+				"thread_ts": parentTS, "files": []map[string]any{fileJSON("F" + ts)}})
+		}
+		jsonOK(w, map[string]any{"ok": true, "messages": msgs, "has_more": false})
+	})
+	ts := newMediaSetup(t, mux)
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	assert.Nil(t, bad.Load(), "a reply is looked up in its own thread")
+	assert.EqualValues(t, maxSlackFileLookups, historyCalls.Load()+replyCalls.Load(), "replies count toward the same cap")
+	assert.EqualValues(t, 10, replyCalls.Load(), "the first 20 matches hold 10 replies")
+
+	ch := ts.ns("C001")
+	for i := range 20 {
+		mts := fmt.Sprintf("17000001%02d.000100", i)
+		rows := slackMediaRows(t, ts.db, ch, mts)
+		require.Len(t, rows, 1, mts)
+		assert.Equal(t, "F"+mts, rows[0].Locator)
+	}
+	assert.Empty(t, slackMediaRows(t, ts.db, ch, parentTS), "only the matched reply is saved")
+}

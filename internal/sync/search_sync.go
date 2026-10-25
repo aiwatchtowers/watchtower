@@ -373,7 +373,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 			if plan != nil && plan.isNew(msg.Timestamp) {
 				writes = append(writes, searchMediaWrite(msg, namespacedChannelID, namespacedUserID, plan))
 				if needsFileLookup(msg) {
-					lookups = append(lookups, slackFileLookup{channelID: namespacedChannelID, ts: msg.Timestamp})
+					lookups = append(lookups, slackFileLookup{channelID: namespacedChannelID, ts: msg.Timestamp, threadTS: threadTS.String})
 				}
 			}
 		}
