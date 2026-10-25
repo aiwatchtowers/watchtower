@@ -70,9 +70,12 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 // under the digest.WithWorkDir root, removed when the call returns. The
 // image is passed by path; mediaType is not needed (codex sniffs the file).
 func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, _ string) (string, *digest.Usage, error) {
-	root, _ := digest.WorkDirFromContext(ctx)
-	if root == "" {
+	root, ok := digest.WorkDirFromContext(ctx)
+	if !ok {
 		return "", nil, errors.New("image call without a work directory (digest.WithWorkDir)")
+	}
+	if err := digest.CheckImageFile(imagePath); err != nil {
+		return "", nil, err
 	}
 	if err := fsutil.MakePrivateDir(root); err != nil {
 		return "", nil, fmt.Errorf("creating the media work root: %w", err)
@@ -84,7 +87,7 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	codexBin := FindBinary(g.codexPath)
-	args, stdin, promptFile, err := buildImageArgs(codexBin, g.modelStrong, systemPrompt, userMessage, imagePath)
+	args, stdin, promptFile, err := buildImageArgs(codexBin, g.modelStrong, systemPrompt, userMessage, imagePath, dir)
 	if err != nil {
 		return "", nil, err
 	}
@@ -196,14 +199,36 @@ func buildArgs(bin, model, systemPrompt, userMessage string) (args []string, std
 	return append(append(execArgs(model), instr...), "-"), stdin, promptFile, nil
 }
 
-// buildImageArgs is buildArgs with `--image <path>` ahead of the trailing "-".
-func buildImageArgs(bin, model, systemPrompt, userMessage, imagePath string) (args []string, stdin, promptFile string, err error) {
+// buildImageArgs is buildArgs for an image call. Beyond execArgs it turns
+// off web search, every MCP server of the owner's codex config (fail closed
+// when the config cannot be read) and the default-on features that reach
+// outside the call (multi_agent, image_generation, skill_search, hooks), and
+// adds `--image=<path>` (one value: --image splits on commas, so a comma in
+// the path is refused) ahead of the instructions override and the "-".
+// Residual risk: a codex feature that becomes default-on later is not on
+// this list.
+func buildImageArgs(bin, model, systemPrompt, userMessage, imagePath, workDir string) (args []string, stdin, promptFile string, err error) {
+	if strings.Contains(imagePath, ",") {
+		return nil, "", "", errors.New("the image path contains a comma")
+	}
+	owner, err := ownerServerNames(OwnerHome(), workDir)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("reading the codex MCP config: %w", err)
+	}
 	instr, stdin, promptFile, err := promptArgs(bin, systemPrompt, userMessage)
 	if err != nil {
 		return nil, "", "", err
 	}
-	args = append(append(execArgs(model), instr...), "--image", imagePath, "-")
-	return args, stdin, promptFile, nil
+	override, _, _ := mcpOverride("", nil, nil, nil, owner, nil)
+	args = append(execArgs(model),
+		"-c", `web_search="disabled"`,
+		"-c", override,
+		"-c", "features.multi_agent=false",
+		"-c", "features.image_generation=false",
+		"-c", "features.skill_search=false",
+		"-c", "features.hooks=false",
+		"--image="+imagePath)
+	return append(append(args, instr...), "-"), stdin, promptFile, nil
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message

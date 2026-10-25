@@ -147,6 +147,27 @@ func parseStreamResult(output []byte) (*cliResponse, error) {
 	return nil, fmt.Errorf("no result event in claude CLI stream-json output (%d lines)", len(lines))
 }
 
+// CheckImageFile requires path to be a regular file within the image input
+// cap, so a missing or oversized image fails before any model call starts.
+func CheckImageFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("opening the image: %w", err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("reading the image: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return errors.New("the image is not a regular file")
+	}
+	if st.Size() > maxImageInput {
+		return fmt.Errorf("the image is over %d bytes", maxImageInput)
+	}
+	return nil
+}
+
 // readImage reads the image file, refusing one over maxImageInput.
 func readImage(path string) ([]byte, error) {
 	f, err := os.Open(path)
