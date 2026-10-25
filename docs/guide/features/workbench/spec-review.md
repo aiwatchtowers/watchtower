@@ -19,12 +19,12 @@ Only your comments reach the agent. The reviewer's notes and your marks stay on 
 Open the review ask. The drawer shows three steps.
 
 1. **Meaning.** Your idea next to the document's goal, with a verdict, counts and a summary. On a later round it also shows which of your earlier comments are resolved.
-2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spots**. Press **Fine as is** on a card you accept, or **Comment** to tell the author what to change. Each chapter also lists its checks. Mark the chapter **Viewed** when you are done with it.
+2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**. Press **Fine as is** on a card you accept, or **Comment** to tell the author what to change. Each chapter also has a **Checklist**. Mark the chapter **Viewed** when you are done with it.
 3. **Wrap-up.** Everything you marked, **From the previous run**, and a note for the author. **Send round to the author** returns your comments; **Approve** accepts the document. If items are still unmarked, approving asks once before it goes ahead.
 
 **Read the spec** always opens the classic document view with margin comments, whatever state the reviewer is in. While the reviewer is working, or if it failed or was skipped, that view is fully usable.
 
-**Re-run reviewer** starts a fresh review of the same document. **Run reviewer** does the same when none ran.
+**Re-run reviewer** starts a fresh review of the same document. **Run reviewer** appears instead when the reviewer failed or was skipped.
 
 The spec screen opens only for open asks. A closed ask shows the classic read-only view.
 
