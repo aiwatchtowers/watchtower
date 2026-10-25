@@ -24,6 +24,9 @@ import (
 // to their stdin-only mode (CHAT-04: owner text is never on argv; the
 // cmd.terminalTitleGeneratorFactory precedent, which the daemon cannot import).
 var instructionGeneratorFactory = func(cfg *config.Config) digest.Generator {
+	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return refusedGenerator{err: err} // #608: the run fails with the policy error, no fallback
+	}
 	light, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	var gen digest.Generator
 	switch cfg.AI.Provider {
@@ -38,6 +41,14 @@ var instructionGeneratorFactory = func(cfg *config.Config) digest.Generator {
 		s.SetStdinOnly(true)
 	}
 	return digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
+}
+
+// refusedGenerator fails every call with err: the provider the
+// organization's policy forbids is never started.
+type refusedGenerator struct{ err error }
+
+func (r refusedGenerator) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	return "", nil, "", r.err
 }
 
 // instructionSuggestionsDirs is the test seam for the transcript directories

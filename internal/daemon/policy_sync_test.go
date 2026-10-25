@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"watchtower/internal/config"
+	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -76,4 +78,10 @@ func TestPolicySync_SourceAllowedNoProfile(t *testing.T) {
 	for _, src := range []string{"slack", "google", "imap", "caldav", "jira", "linear"} {
 		assert.True(t, d.sourceAllowed(src), src)
 	}
+}
+
+func TestProviderPolicy_InstructionMinerRefused(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowedAIProviders": []any{"codex"}})
+	_, _, _, err := instructionGeneratorFactory(&config.Config{}).Generate(context.Background(), "", "", "")
+	assert.ErrorIs(t, err, policy.ErrNotAllowed)
 }

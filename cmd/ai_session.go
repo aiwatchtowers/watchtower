@@ -81,6 +81,9 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := notifyShutdownContext(ctx, stderrLogf)
 	defer cancel()
 
+	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return fail(chat.CodeProviderUnavailable, err.Error())
+	}
 	model := aiSessionFlagModel
 	if model == "" {
 		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
@@ -115,7 +118,8 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
 
-	s := chat.NewSession(backend, out)
+	// The policy is asked again at every turn (#608).
+	s := chat.NewSession(policyCheckedBackend{Backend: backend, provider: cfg.AI.Provider}, out)
 	s.Provider = providers.ByID(cfg.AI.Provider).ID
 	s.Model = model
 	s.TurnFile = turnFile
