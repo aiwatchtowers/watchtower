@@ -126,6 +126,23 @@ one budget per `agent()` call (and a `session()` child is a workbench session
 with its own); the log ties all of them to one run id. Restarting a process (a reconnected MCP server) starts
 a fresh counter; the log shows both.
 
+**v1 limit: the budget is per process** (owner, 2026-10-25, ask #595: keep
+the in-memory counter, no sidecar). Paths where one session key spans
+several processes, accepted as such:
+
+- embedded chats with tools (the target chat, the automation editor) run
+  one `ai query` process per turn, so their `conversation:<id>` budget is
+  per turn;
+- `watchtower tools call` is one process per invocation, so its budget is
+  per invocation (its lines carry `terminal:<id>` under the marker);
+- a restarted MCP server and an `agent()` child, as above.
+
+The audit log, tied to the `terminal:`/`conversation:`/`run:` keys, is the
+control that covers these; and an agent's own Bash can already read the
+database directly until #603 encrypts it. `draft_automation`'s dry run is
+not one of them: it spends the calling process's budget under the calling
+conversation's key.
+
 ### 3. The unified log
 
 A new package `internal/auditlog` with one function, `Read(Event)`, and a

@@ -79,6 +79,23 @@ fresh, and an `agent()` child keeps its own counter under its run's key. No
 database row is written, so a `query_only` handle serves the gate (DEV-01,
 AGENT-02).
 
+## v1 limit: the budget is per process
+
+Owner decision 2026-10-25 (ask #595): the counter stays in memory, no
+sidecar. So the budget is per process, and some keys span processes:
+
+- embedded chats with tools (the target chat, the automation editor) start
+  one `ai query` process per turn — their `conversation:<id>` budget is per
+  turn;
+- `watchtower tools call` is one process per invocation — per invocation,
+  its lines keyed `terminal:<id>` under the marker (`mcpProcessSessionKey`);
+- a restarted MCP server starts fresh; an `agent()` child keeps its own
+  counter under its run's key.
+
+The audit log, tied to the `terminal:`/`conversation:`/`run:` keys, is the
+control that covers these, and an agent's own Bash can already read the
+database directly until #603 encrypts it.
+
 ## The audit log
 
 `internal/auditlog`: `os_log_create("com.watchtower.audit", "read")` once,
