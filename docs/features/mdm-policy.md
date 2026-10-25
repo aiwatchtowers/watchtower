@@ -29,7 +29,7 @@ Reserved, read and shown only (`reserved_not_enforced`): `RequireDatabaseEncrypt
 
 - A policy-forbidden source is not synced and its data is kept (POLICY-03, Q2): its PURGE-01 lease is held (`purge.PlanWith` with `leaseHeld`, ask #572) — no lease purge is scheduled for its accounts and an open lease row is cancelled. A revoked account still follows the revoked rule.
 - `MobileSync = off` disables the hub, which deletes its zones and forgets the linked phones: loosening the policy later starts the hub again (when the owner's toggle is on), but the phone must be paired again.
-- A forbidden source's assistant tools refuse at their client factories (`jiraAccountClient` for Jira and Confluence, Linear writes, `slackSenderFactory` for `send_slack_message` and `output.slack`), and the reaction poll (`phaseReactionCommands`, `reaction-commands poll`) skips a forbidden Slack without reseeding.
+- A forbidden source's assistant tools refuse at their client factories (`jiraAccountClient` for Jira and Confluence, Linear writes, `slackSenderFactory` for `send_slack_message` and `output.slack`), and the reaction poll (`phaseReactionCommands`, `reaction-commands poll`) skips a forbidden Slack and clears the event seed stamps, so reactions placed while it was forbidden never fire later.
 - Resuming a running terminal of a forbidden agent shows it; starting its process (resume, fresh) is refused.
 
 ## Manual checks

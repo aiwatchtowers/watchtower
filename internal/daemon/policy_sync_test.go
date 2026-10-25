@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"testing"
@@ -11,10 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
-	"watchtower/internal/reactioncmd"
 )
 
 type policyMailSyncer struct {
@@ -89,24 +90,27 @@ func TestProviderPolicy_InstructionMinerRefused(t *testing.T) {
 }
 
 // A forbidden Slack source (#608): the reaction poll lists nothing and
-// leaves the event seed stamps alone (a forbidden period never reseeds).
+// clears the event seed stamps, so a reaction placed while Slack was
+// forbidden is not published once it is allowed again (the first allowed
+// poll reseeds).
 func TestPolicySync_ReactionCommandsSkipForbiddenSlack(t *testing.T) {
-	cfg := &config.Config{ReactionCommands: config.ReactionCommandsConfig{Enabled: true, IntervalHours: 1}}
-	d, _ := newReactionTestDaemon(t, cfg)
-	calls := 0
-	accountsFn := func(context.Context) ([]reactioncmd.Account, error) {
-		return []reactioncmd.Account{{AccountID: 1, OwnerID: "1:UOWNER", Lister: countingReactionLister{&calls}}}, nil
-	}
-	d.SetReactionCommandsPipeline(reactioncmd.New(d.db, cfg, nil, nil, accountsFn, nil))
-	_, err := d.db.Exec(`UPDATE slack_accounts SET reaction_events_seeded_at = '2026-10-25T00:00:00Z'`)
-	require.NoError(t, err)
-	d.lastReactionCmd = time.Now() // a throttled cycle would reset the seeds
+	f := newReactionsFixture(t)
+	bus := newRecordingEvents(automations.SlackReactionAdded)
+	f.d.SetAutomationEvents(bus)
+	f.d.cycleEvents = bus
+	f.poll() // seeds the event ledger
+	var seeded string
+	require.NoError(t, f.db.QueryRow(`SELECT reaction_events_seeded_at FROM slack_accounts WHERE id = 1`).Scan(&seeded))
+	require.NotEmpty(t, seeded, "seeded by the allowed poll")
 
 	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
-	d.phaseReactionCommands(context.Background())
+	f.lister.set(ownerReaction(fmt.Sprintf("%d.000100", time.Now().Unix()+5), "eyes"))
+	f.d.phaseReactionCommands(context.Background())
+	require.NoError(t, f.db.QueryRow(`SELECT reaction_events_seeded_at FROM slack_accounts WHERE id = 1`).Scan(&seeded))
+	assert.Empty(t, seeded, "the seed stamps are reset")
+	assert.Zero(t, published(bus), "nothing is published while forbidden")
 
-	assert.Zero(t, calls, "nothing is polled")
-	var seeded string
-	require.NoError(t, d.db.QueryRow(`SELECT reaction_events_seeded_at FROM slack_accounts WHERE id = 1`).Scan(&seeded))
-	assert.Equal(t, "2026-10-25T00:00:00Z", seeded, "the seed stamps are untouched")
+	policytest.Set(t, nil)
+	f.poll()
+	assert.Zero(t, published(bus), "the forbidden period's reaction is not replayed")
 }

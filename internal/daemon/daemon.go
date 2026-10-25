@@ -1940,8 +1940,11 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		return
 	}
 	// A Slack source the organization's policy forbids (#608) polls
-	// nothing — and reseeds nothing, so its period never replays later.
+	// nothing; like a disabled feature it clears the event seed stamps, so
+	// reactions placed while it was forbidden never fire once it is allowed
+	// again.
 	if !d.sourceAllowed("slack") {
+		d.resetReactionEventSeeds()
 		return
 	}
 	if d.reactionCmdPipe == nil || d.db == nil {
