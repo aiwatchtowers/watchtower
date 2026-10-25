@@ -18,8 +18,8 @@
 #   - FLAVOR_SUFFIX derivation, empty vs non-empty
 #   - ambient BUILD_FLAVOR without any profile        → still honored (default
 #     profile path applies no flavor requirement)
-#   - a flavour without WATCHTOWER_LINK_FETCH_DENY_HOSTS → exit 1 (the corp
-#     build must seed the media pass's link deny list); no flavour → no need
+#   - WATCHTOWER_LINK_FETCH_DENY_HOSTS is optional for every build (the
+#     owner's company domains are derived from the accounts, ask #598)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -63,7 +63,7 @@ EOF
 # 1. No ENV_FILE, .env present → sourced, flavor + suffix derived.
 ROOT1="$WORK_DIR/root1"
 mkdir -p "$ROOT1"
-printf 'BUILD_FLAVOR=b2\nWATCHTOWER_LINK_FETCH_DENY_HOSTS=intranet.example\nPROFILE_MARKER=default-env\n' > "$ROOT1/.env"
+printf 'BUILD_FLAVOR=b2\nPROFILE_MARKER=default-env\n' > "$ROOT1/.env"
 OUT=$(env -u ENV_FILE -u BUILD_FLAVOR bash "$RUNNER" "$ROOT1")
 if grep -q "RESULT_FLAVOR=b2" <<< "$OUT" && grep -q "RESULT_SUFFIX=-b2" <<< "$OUT" && grep -q "RESULT_MARKER=default-env" <<< "$OUT"; then
     echo "ok: default .env sourced, flavor and suffix derived"
@@ -91,7 +91,7 @@ fi
 # 4. Explicit relative profile resolves against PROJECT_ROOT, not CWD.
 ROOT4="$WORK_DIR/root4"
 mkdir -p "$ROOT4"
-printf 'BUILD_FLAVOR=rel\nWATCHTOWER_LINK_FETCH_DENY_HOSTS=intranet.example\nPROFILE_MARKER=relative\n' > "$ROOT4/.env.rel"
+printf 'BUILD_FLAVOR=rel\nPROFILE_MARKER=relative\n' > "$ROOT4/.env.rel"
 OUT=$(cd "$WORK_DIR" && env -u BUILD_FLAVOR ENV_FILE=.env.rel bash "$RUNNER" "$ROOT4")
 if grep -q "RESULT_MARKER=relative" <<< "$OUT" && grep -q "RESULT_SUFFIX=-rel" <<< "$OUT"; then
     echo "ok: relative ENV_FILE resolves against PROJECT_ROOT"
@@ -137,29 +137,20 @@ else
 fi
 
 # 9. Ambient BUILD_FLAVOR with no profile file → honored (default path).
-OUT=$(env -u ENV_FILE BUILD_FLAVOR=ambient WATCHTOWER_LINK_FETCH_DENY_HOSTS=intranet.example bash "$RUNNER" "$ROOT2")
+OUT=$(env -u ENV_FILE BUILD_FLAVOR=ambient bash "$RUNNER" "$ROOT2")
 if grep -q "RESULT_SUFFIX=-ambient" <<< "$OUT"; then
     echo "ok: ambient BUILD_FLAVOR honored on the default path"
 else
     note_fail "ambient BUILD_FLAVOR (got: $OUT)"
 fi
 
-# 10. A flavour without the link deny list → exit 1, naming the variable.
+# 10. The link deny list is optional: a flavour without it still builds.
 printf 'BUILD_FLAVOR=corp\n' > "$ROOT4/.env.nodeny"
-if ERR=$(env -u BUILD_FLAVOR -u WATCHTOWER_LINK_FETCH_DENY_HOSTS ENV_FILE=.env.nodeny bash "$RUNNER" "$ROOT4" 2>&1); then
-    note_fail "a flavour without WATCHTOWER_LINK_FETCH_DENY_HOSTS must exit 1"
-elif grep -q "WATCHTOWER_LINK_FETCH_DENY_HOSTS" <<< "$ERR"; then
-    echo "ok: a flavour without the link deny list hard-fails, naming the variable"
+if OUT=$(env -u BUILD_FLAVOR -u WATCHTOWER_LINK_FETCH_DENY_HOSTS ENV_FILE=.env.nodeny bash "$RUNNER" "$ROOT4") && grep -q "RESULT_SUFFIX=-corp" <<< "$OUT"; then
+    echo "ok: a flavour without WATCHTOWER_LINK_FETCH_DENY_HOSTS builds"
 else
-    note_fail "deny-list error must name the variable (got: $ERR)"
+    note_fail "a flavour must not need WATCHTOWER_LINK_FETCH_DENY_HOSTS"
 fi
-if env -u ENV_FILE -u WATCHTOWER_LINK_FETCH_DENY_HOSTS BUILD_FLAVOR=ambient bash "$RUNNER" "$ROOT2" > /dev/null 2>&1; then
-    note_fail "an ambient flavour without the link deny list must exit 1"
-else
-    echo "ok: an ambient flavour without the link deny list hard-fails"
-fi
-
-# 11. No flavour (the public build) needs no deny list.
 if env -u ENV_FILE -u BUILD_FLAVOR -u WATCHTOWER_LINK_FETCH_DENY_HOSTS bash "$RUNNER" "$ROOT2" > /dev/null 2>&1; then
     echo "ok: the public build needs no link deny list"
 else

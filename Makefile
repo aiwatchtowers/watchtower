@@ -38,17 +38,9 @@ PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS)"
 
-.PHONY: golangci-version-check flavor-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check
+.PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check
 
-# A flavoured build (the corp build) must seed the media pass's link deny
-# list (scripts/build-app.sh checks the same for `make app`).
-flavor-check:
-	@if [ -n "$(strip $(BUILD_FLAVOR))" ] && [ -z "$(strip $(LINK_FETCH_DENY_HOSTS))" ]; then \
-	  echo "ERROR: BUILD_FLAVOR '$(BUILD_FLAVOR)' requires WATCHTOWER_LINK_FETCH_DENY_HOSTS — the comma-separated hosts (the corp domains) whose links the media pass never fetches" >&2; \
-	  exit 1; \
-	fi
-
-build: flavor-check
+build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
 
 app dmg:
@@ -359,7 +351,7 @@ lint-swift:
 
 lint-all: lint lint-swift
 
-install: flavor-check
+install:
 	go install $(LDFLAGS) .
 
 clean:
