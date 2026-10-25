@@ -556,6 +556,8 @@ final class DictationCenter {
         micLevel = 0
         activeTargetID = nil
         engineBecameIdle()
+        // Real use for Home's Learn zone (`dictation.used`): text came out.
+        if !result.text.isEmpty { defaults.set(true, forKey: LearnInputs.dictationUsedKey) }
         onResult(result)
     }
 

@@ -20,13 +20,13 @@ enum HomeShotFixtures {
     private static let now = Date(timeIntervalSince1970: 1_792_406_400) // 2026-10-19 10:40 UTC
 
     /// `gettingReady`: a first run still preparing, as on a new install.
-    static func home(gettingReady: Bool = false, purges: [AccountPurge] = []) -> AnyView {
+    static func home(gettingReady: Bool = false, purges: [AccountPurge] = [], learn: LearnSelection? = nil) -> AnyView {
         do {
             return AnyView(HomeContent(
                 snapshot: try snapshot(gettingReady: gettingReady ? Self.gettingReady : .hidden),
                 today: now, calendar: calendar,
                 feedErrors: [.target(4): "The database is locked."],
-                onLink: { _ in }, onHideGettingReady: {}, purges: purges))
+                onLink: { _ in }, onHideGettingReady: {}, purges: purges, learn: learn))
         } catch {
             XCTFail("home shot fixture failed: \(error)")
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))

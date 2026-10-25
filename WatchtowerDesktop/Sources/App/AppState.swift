@@ -75,6 +75,15 @@ final class AppState {
         performer: AppHomeFeedPerformer(appState: self)
     )
 
+    /// Home's Learn Watchtower zone (#718): the guide's cards and the seen
+    /// state. Started with the main app's DB wiring, after `homeCenter`.
+    @ObservationIgnored private(set) lazy var learnCenter = LearnCenter(environment: LiveLearnEnvironment(appState: self)) {
+        try await LiveLearnEnvironment.loadCatalog()
+    }
+    /// Onboarding was finished before this launch (`LearnVersionPolicy`):
+    /// read at init, before this launch's onboarding may finish.
+    @ObservationIgnored let learnOnboardingFinishedAtLaunch: Bool
+
     /// The owner (`OwnerQueries.resolve`, OWNER-01); unknown → `NoOwnerEmptyState` (OWNER-02). Re-read on
     /// DB open, account reloads and Day Plan/Briefings/Inbox appear (the daemon fills Jira's cross-process).
     private(set) var owner: Owner = .unknown
@@ -499,6 +508,7 @@ final class AppState {
         let features = featureManager ?? FeatureManagerService()
         self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
+        learnOnboardingFinishedAtLaunch = onboarding.currentStep == .complete
         self.workbenchDefaults = workbenchDefaults
         codeUsagesCenter = CodeUsagesCenter(defaults: workbenchDefaults)
         self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
@@ -722,6 +732,7 @@ final class AppState {
                     self?.automationsViewModel?.stop()
                     self?.automationSessionCenter?.stop()
                     self?.homeCenter.endReading()
+                    self?.learnCenter.stop()
                     self?.readinessCenter.stop()
                 }
             }
@@ -1005,26 +1016,6 @@ final class AppState {
     /// says.
     var onboardingHasSlackAccount: Bool {
         databaseManager != nil && featureVisibility.connectedSources.slack
-    }
-
-    private enum ProfileOnboarding {
-        /// Profile missing or onboarding_done == false.
-        case pending
-        case done
-        /// The read failed (logged).
-        case unreadable
-    }
-
-    private func checkProfileOnboarding(dbPool: DatabasePool) async -> ProfileOnboarding {
-        do {
-            return try await dbPool.read { db in
-                guard let profile = try ProfileQueries.fetchCurrentProfile(db) else { return .pending }
-                return profile.onboardingDone ? .done : .pending
-            }
-        } catch {
-            print("[AppState] onboarding check failed: \(error.localizedDescription)")
-            return .unreadable
-        }
     }
 
     /// Every daemon start or restart the app makes runs on this queue
@@ -1550,6 +1541,7 @@ final class AppState {
         startWarmEnginePolicy(dbPool: manager.dbPool)
         readinessCenter.start(pool: manager.dbPool)
         homeCenter.beginReading(pool: manager.dbPool)
+        startLearn(pool: manager.dbPool)
         // So the quit path always has a pool to close, even before the Chat
         // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
         // creating the pool here only starts its idle-eviction poll; it never

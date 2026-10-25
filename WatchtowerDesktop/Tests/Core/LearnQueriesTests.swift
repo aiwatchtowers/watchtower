@@ -61,4 +61,16 @@ final class LearnQueriesTests: XCTestCase {
             try db.read(LearnQueries.rowSignals),
             [.meetingRecorded, .workbenchBound, .reactionUsed, .chatUsed, .automationCreated])
     }
+
+    /// Confluence counts while a space syncs; a turned-off space does not.
+    func testConfluenceSignal() throws {
+        try db.write { d in
+            try d.execute(sql: "INSERT INTO jira_accounts (id, status) VALUES (10, 'ok')")
+            try TestDatabase.insertExtSource(d, jiraAccountID: 10, containerKey: "ENG")
+            try d.execute(sql: "UPDATE ext_sources SET enabled = 0")
+        }
+        XCTAssertEqual(try db.read(LearnQueries.rowSignals), [])
+        try db.write { try $0.execute(sql: "UPDATE ext_sources SET enabled = 1") }
+        XCTAssertEqual(try db.read(LearnQueries.rowSignals), [.confluenceConnected])
+    }
 }
