@@ -56,6 +56,9 @@ final class SpecReviewModel {
     @ObservationIgnored private let sleep: (Duration) async throws -> Void
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored nonisolated(unsafe) private var pollTask: Task<Void, Never>?
+    /// Bumped on every start and stop, so a finishing Task clears `pollTask`
+    /// only when it is still the current one.
+    @ObservationIgnored private var pollGeneration = 0
 
     init(
         ask: OwnerAsk,
@@ -103,6 +106,8 @@ final class SpecReviewModel {
     /// `stopPolling` and deinit.
     func startPolling() {
         guard pollTask == nil, isReviewerActive else { return }
+        pollGeneration += 1
+        let generation = pollGeneration
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let interval = self?.pollInterval, let sleep = self?.sleep else { return }
@@ -111,11 +116,12 @@ final class SpecReviewModel {
                 await self.load()
                 if !self.isReviewerActive { break }
             }
-            self?.pollTask = nil
+            if let self, self.pollGeneration == generation { self.pollTask = nil }
         }
     }
 
     func stopPolling() {
+        pollGeneration += 1
         pollTask?.cancel()
         pollTask = nil
     }
@@ -232,7 +238,9 @@ final class SpecReviewModel {
     // MARK: - Send and approve
 
     private var commentCount: Int {
-        marks.values.filter { $0.state == .comment }.count
+        marks.values.filter {
+            $0.state == .comment && !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
     }
 
     /// Send round to the author needs at least one comment.

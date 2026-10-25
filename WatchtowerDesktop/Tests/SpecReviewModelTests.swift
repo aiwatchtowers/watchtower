@@ -172,4 +172,57 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertEqual(stored?["status"] as String?, "answered")
         XCTAssertTrue((stored?["answer"] as String?)?.contains("Mute lasts a day") == true)
     }
+
+    func testBlankCommentDoesNotEnableSend() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let model = try await makeModel()
+        await model.load()
+        await model.mark("ag:1", .comment, body: "  \n")
+        XCTAssertFalse(model.canSend)
+    }
+
+    func testRestartedPollingSurvivesTheOldTaskEnding() async throws {
+        try setRow(status: "running")
+        let model = try await makeModel { _ in try await Task.sleep(for: .seconds(3600)) }
+        await model.load()
+        model.startPolling()
+        model.stopPolling()
+        model.startPolling()
+        await Task.yield()
+        await Task.yield()
+        XCTAssertTrue(model.isPolling)
+        model.stopPolling()
+    }
+
+    func testApproveWithResultSendsApprovedAndOnlyComments() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let model = try await makeModel()
+        await model.load()
+        await model.mark("ag:1", .comment, body: "name the period")
+        await model.mark("da:1", .ok)
+        let sent = await model.approve(note: "ship it")
+        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        let answer = try await storedAnswer()
+        XCTAssertTrue(answer.contains("\"approved\""), answer)
+        XCTAssertTrue(answer.contains("Mute lasts a day"))
+        XCTAssertFalse(answer.contains("Local db"), "an ok mark is not sent")
+    }
+
+    func testApproveWithoutResultStillAnswers() async throws {
+        try setRow(status: "failed")
+        let model = try await makeModel()
+        await model.load()
+        XCTAssertNil(model.row?.result)
+        let sent = await model.approve(note: "")
+        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        let answer = try await storedAnswer()
+        XCTAssertTrue(answer.contains("\"approved\""))
+    }
+
+    private func storedAnswer() async throws -> String {
+        let id = askID
+        return try await pool.read { d in
+            try String.fetchOne(d, sql: "SELECT answer FROM owner_asks WHERE id = ?", arguments: [id]) ?? ""
+        }
+    }
 }
