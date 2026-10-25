@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
+
+	"watchtower/internal/auditlog"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/automations/builtin"
@@ -495,5 +498,49 @@ func TestDraftAutomation_WatchRecipeDryRuns(t *testing.T) {
 	bad, _ := f.call(t, map[string]any{"recipe_text": watchDraftRecipe, "workbench_id": 3})
 	if bad.OK || !strings.Contains(strings.Join(bad.Errors, " "), `"track:scan" is allowed only in a personal automation`) {
 		t.Errorf("workbench watch draft = %+v; want the personal-only refusal", bad)
+	}
+}
+
+// READ-01: a draft's dry run spends its conversation's read budget in the
+// calling process, so draft after draft in one conversation reaches the cap
+// although each dry run builds its own registry.
+func TestDraftAutomation_DryRunsShareTheConversationsReadBudget(t *testing.T) {
+	f := newDraftFixture(t)
+	t.Cleanup(auditlog.SetSinkForTest(func(string) {}))
+	caller := tools.New(f.d)
+	caller.SetReadLimits(tools.ReadLimits{Calls: 2, Rows: 1000, ResponseRows: tools.MaxListLimit, ResponseBytes: tools.MaxReadResultBytes})
+	tool := NewDraftAutomation(Deps{
+		DB: f.d,
+		Backends: func() automations.Backends {
+			reg := tools.New(f.d)
+			if err := reg.Register(&tools.Tool{
+				Name: "co_read", Description: "company read", Access: tools.AccessRead, CompanyData: true,
+				InputSchema: &jsonschema.Schema{Type: "object"},
+				Execute: func(context.Context, *db.DB, tools.Call) (any, error) {
+					return []map[string]any{{"id": 1}}, nil
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			reg.ShareReadBudget(caller)
+			return automations.Backends{Generator: f.gen, Registry: reg}
+		},
+		Clock: automationstest.NewFakeClock(draftNow),
+	})
+	args, err := json.Marshal(map[string]any{"recipe_text": recipeText([]string{"tool:co_read"}, "",
+		`try { tool("co_read", {}); return "read" } catch (e) { return e.name }`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := make([]string, 0, 4)
+	for _, conv := range []int64{5, 5, 5, 6} {
+		out, err := tool.Execute(context.Background(), f.d, tools.Call{Args: args, Binding: tools.Binding{Surface: "main", ConversationID: conv}})
+		if err != nil {
+			t.Fatalf("draft_automation: %v", err)
+		}
+		statuses = append(statuses, stepStatuses(out.(*DraftResult).DryRun.Steps))
+	}
+	if want := []string{"tool:ok", "tool:ok", "tool:error", "tool:ok"}; !slices.Equal(statuses, want) {
+		t.Fatalf("dry run steps = %v; want %v (two reads, the cap, then another conversation's own budget)", statuses, want)
 	}
 }

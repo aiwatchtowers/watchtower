@@ -199,6 +199,7 @@ func NewGetJiraStatusHistory() *Tool {
 			"history has not been synced yet; stale means the issue changed after it was synced.",
 		InputSchema: mustSchema[getJiraStatusHistoryArgs]("get_jira_status_history"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getJiraStatusHistoryArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -371,6 +372,7 @@ func NewGetJiraTimeInStatus() *Tool {
 			"answer. Done-category statuses are left out unless include_done or named in statuses.",
 		InputSchema: mustSchema[jiraTimeInStatusArgs]("get_jira_time_in_status"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a jiraTimeInStatusArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {

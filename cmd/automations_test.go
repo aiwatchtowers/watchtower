@@ -997,7 +997,7 @@ func (c *autoCLI) assistantSave(t *testing.T, slug, text string) {
 	t.Helper()
 	cfg, err := loadAutomationsConfig()
 	require.NoError(t, err)
-	deps := automationAuthoringDeps(cfg, c.d)
+	deps := automationAuthoringDeps(cfg, c.d, nil)
 	reg := tools.New(c.d)
 	require.NoError(t, reg.Register(authoring.NewSaveAutomation(deps)))
 	raw, err := json.Marshal(map[string]any{"recipe_text": text, "slug": slug, "reason": "the owner asked"})

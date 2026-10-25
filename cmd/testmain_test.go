@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"watchtower/internal/auditlog"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -57,6 +58,8 @@ import (
 // binary, which would ignore the unknown arguments and run the whole suite
 // again — so a cmd test that syncs a PDF must be served the parse here.
 func TestMain(m *testing.M) {
+	// Read tests' audit lines stay out of the machine's unified log.
+	auditlog.SetSinkForTest(func(string) {})
 	if len(os.Args) == 3 && os.Args[1] == extractPDFTextCmd.Name() {
 		if err := extract.ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
 			os.Exit(1)

@@ -55,3 +55,6 @@ func SetBusBeforeMerge(b *Bus, hook func(runID int64)) { b.beforeMerge = hook }
 
 // CheckTemplateParamForTest exposes checkTemplateParam to the external tests.
 var CheckTemplateParamForTest = checkTemplateParam
+
+// RegistryErrorForTest exposes registryError to the external tests.
+var RegistryErrorForTest = registryError
