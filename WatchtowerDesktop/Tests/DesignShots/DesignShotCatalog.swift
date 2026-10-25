@@ -218,6 +218,9 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
             },
+            DesignShot(name: "branch-review-chat-panel", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.changesWithChat()
+            },
             DesignShot(name: "branch-review-empty", size: NSSize(width: 1180, height: 520)) {
                 ReviewShotFixtures.empty()
             },
@@ -226,6 +229,20 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
+            },
+            // Approve / Request changes (#964, mockup 3).
+            DesignShot(name: "branch-review-approve-popover", size: NSSize(width: 400, height: 260)) {
+                ReviewShotFixtures.approvePopover()
+            },
+            DesignShot(name: "branch-review-approved", size: NSSize(width: 1180, height: 560)) {
+                ReviewShotFixtures.approved()
+            },
+            // Branch review polish (#958–#962): the preview and the chapter's risks.
+            DesignShot(name: "branch-review-preview", size: NSSize(width: 1180, height: 560)) {
+                ReviewShotFixtures.preview()
+            },
+            DesignShot(name: "branch-review-chapter-risks", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.chapterRisks()
             },
             // Search while the messages index is rebuilt (#892).
             DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {

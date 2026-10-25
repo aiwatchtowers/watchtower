@@ -130,6 +130,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
+	// No cmd test writes a real Time Machine exclusion (BACKUP-01); the
+	// backup_exclude tests record the calls through this seam.
+	backupExcludeApply = func([]string) []error { return nil }
 	// No test runs the owner's login shell (connections import).
 	loginShellEnv = func() map[string]string { return nil }
 	code := m.Run()

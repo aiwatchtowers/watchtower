@@ -166,7 +166,10 @@ struct WorkspacePaneView: View {
                     model: model,
                     identity: reviewIdentity(sessionID: id),
                     agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind },
-                    lessons: vm.reviewLessonsModel(projectID: project.id)
+                    lessons: vm.reviewLessonsModel(projectID: project.id),
+                    chat: ReviewAgentChat(vm: vm, projectID: project.id, sessionID: id),
+                    codeRoot: vm.codeRoot(sessionID: id, project: project),
+                    workbenches: vm
                 )
                 .id(id)
             } else {
@@ -192,7 +195,8 @@ extension WorkspacePaneView {
             mainStatus: vm.gitStatus[projectID],
             agentName: session?.kind.agent?.displayName ?? "Agent",
             openSession: { [vm] in Task { await vm.showSession(id: id) } },
-            openTerminal: { [vm] in Task { await vm.showTerminal(sessionID: id, projectID: projectID) } }
+            openTerminal: { [vm] in Task { await vm.showTerminal(sessionID: id, projectID: projectID) } },
+            openWorkchat: { [vm] in Task { await vm.showWorkchat(sessionID: id, projectID: projectID) } }
         )
     }
 }
