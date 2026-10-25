@@ -106,40 +106,81 @@ func readMediaSections(ctx context.Context, q Queryer, parentKind string, keys [
 		if err := rows.Scan(&key, &kind, &locator, &fetchURL, &anchor, &title, &body, &imageText); err != nil {
 			return err
 		}
-		out[key] = append(out[key], Section{Text: mediaText(kind, locator, fetchURL, title, body, imageText), Anchor: anchor})
+		for _, text := range mediaTexts(kind, locator, fetchURL, title, body, imageText) {
+			out[key] = append(out[key], Section{Text: text, Anchor: anchor})
+		}
 	}
 	return rows.Err()
 }
 
-// mediaText renders one row:
+// mediaTexts renders one row as one or more section texts, each starting
+// with its label and none longer than ChunkChars, so every chunk that holds
+// media text says who wrote it:
 //
-//	Image (…): <title> — <description>[\nText: <image text>]
+//	Image (…): <title> — <description>
+//	Image (…): Text: <image text>
 //	Image (…): <title> — <description> (attachment <filename>)   (Confluence inline "att:")
-//	Link (…): <page title> (<url>) — <summary>
-func mediaText(kind, locator, fetchURL, title, body, imageText string) string {
+//	Link (…): <url> — <page title> — <summary>
+//
+// A piece over the budget continues as "<label> (continued): …". Line
+// breaks in the stored text fold into spaces, so model or image text can
+// never start a line that reads as a section, a "name:" line or a
+// Watchtower line of its own.
+func mediaTexts(kind, locator, fetchURL, title, body, imageText string) []string {
+	title, body, imageText = foldLines(title), foldLines(body), foldLines(imageText)
 	if kind == "link" {
 		u := fetchURL
 		if u == "" {
 			u = strings.TrimPrefix(locator, "url:")
 		}
-		head := u
+		head := foldLines(u)
 		if title != "" {
-			head = title + " (" + u + ")"
+			head += " — " + title
 		}
-		return MediaLinkLabel + ": " + head + " — " + body
+		return labelled(MediaLinkLabel, head+" — "+body)
 	}
-	text := MediaImageLabel + ": " + body
+	text := body
 	if title != "" {
-		text = MediaImageLabel + ": " + title + " — " + body
+		text = title + " — " + body
 	}
 	if file, inline := strings.CutPrefix(locator, "att:"); inline {
 		// the attachment's own document carries the image text
-		return text + " (attachment " + file + ")"
+		return labelled(MediaImageLabel, text+" (attachment "+foldLines(file)+")")
 	}
+	out := labelled(MediaImageLabel, text)
 	if imageText != "" {
-		text += "\nText: " + imageText
+		out = append(out, labelled(MediaImageLabel, "Text: "+imageText)...)
 	}
-	return text
+	return out
+}
+
+// foldLines collapses every run of whitespace (line breaks included) into
+// one space.
+func foldLines(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// labelled splits "<label>: <text>" into sections of at most ChunkChars
+// runes at whitespace (hard split when there is none); every piece after the
+// first starts "<label> (continued): ".
+func labelled(label, text string) []string {
+	prefix := []rune(label + ": ")
+	rest := []rune(text)
+	var out []string
+	for {
+		budget := ChunkChars - len(prefix)
+		if len(rest) <= budget {
+			return append(out, string(prefix)+string(rest))
+		}
+		cut := budget
+		for i := budget; i > budget/2; i-- {
+			if rest[i-1] == ' ' {
+				cut = i
+				break
+			}
+		}
+		out = append(out, strings.TrimRight(string(prefix)+string(rest[:cut]), " "))
+		rest = []rune(strings.TrimLeft(string(rest[cut:]), " "))
+		prefix = []rune(label + " (continued): ")
+	}
 }
 
 // withMedia appends the media sections of key after sections; an empty row

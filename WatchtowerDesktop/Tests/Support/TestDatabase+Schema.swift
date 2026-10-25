@@ -2583,6 +2583,7 @@ CREATE INDEX IF NOT EXISTS idx_media_items_gmail ON media_items(gmail_account_id
 CREATE INDEX IF NOT EXISTS idx_media_items_imap ON media_items(imap_account_id, imap_uidvalidity, imap_uid);
 CREATE INDEX IF NOT EXISTS idx_media_items_chat ON media_items(chat_attachment_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_target ON media_items(target_image_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

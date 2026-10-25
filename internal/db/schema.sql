@@ -2364,7 +2364,7 @@ CREATE TABLE IF NOT EXISTS ext_users (
 );
 
 CREATE TABLE IF NOT EXISTS doc_links (
-  from_kind TEXT NOT NULL,   -- 'confluence' | 'slack' | 'gmail' | 'jira'
+  from_kind TEXT NOT NULL,   -- 'confluence' | 'slack' | 'gmail' | 'imap' | 'jira' (a described image's link: its parent document's source)
   from_ref  TEXT NOT NULL,   -- kb-style ref of the mentioning document
   to_kind   TEXT NOT NULL,   -- 'jira_issue' | 'confluence_page'
   to_ref    TEXT NOT NULL,   -- 'PROJ-123' | '<cloud_id>:<page_id>'
@@ -2374,8 +2374,8 @@ CREATE TABLE IF NOT EXISTS doc_links (
 CREATE INDEX IF NOT EXISTS idx_doc_links_to ON doc_links(to_kind, to_ref);
 
 CREATE TABLE IF NOT EXISTS ext_link_state (          -- doc_links detection watermark per scanned kind
-  from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'ext_relink'
-  cursor    TEXT NOT NULL DEFAULT ''   -- slack: messages.rowid; gmail/imap/jira_*: '<synced_at>|<rowid>' of the last row read; ext_relink: '<source_id>|<ext_id>' resume point, then 'done'
+  from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'media' | 'ext_relink'
+  cursor    TEXT NOT NULL DEFAULT ''   -- slack: messages.rowid; gmail/imap/jira_*: '<synced_at>|<rowid>' of the last row read; media: '<described_at>|<rowid>'; ext_relink: '<source_id>|<ext_id>' resume point, then 'done'
 );
 
 -- Chat (see 00076). Adopted from the Desktop app; conversations form a tree via
@@ -3333,6 +3333,7 @@ CREATE INDEX IF NOT EXISTS idx_media_items_gmail ON media_items(gmail_account_id
 CREATE INDEX IF NOT EXISTS idx_media_items_imap ON media_items(imap_account_id, imap_uidvalidity, imap_uid);
 CREATE INDEX IF NOT EXISTS idx_media_items_chat ON media_items(chat_attachment_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_target ON media_items(target_image_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at);
 
 CREATE TRIGGER IF NOT EXISTS media_items_kb_dirty_upd AFTER UPDATE OF status, body, kb_source, kb_ref ON media_items
 WHEN (OLD.status = 'ok' OR NEW.status = 'ok') AND (NEW.kb_ref != '' OR OLD.kb_ref != '')

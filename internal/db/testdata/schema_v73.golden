@@ -362,6 +362,9 @@ CREATE INDEX idx_media_items_chat ON media_items(chat_attachment_id)
 index	idx_media_items_content
 CREATE INDEX idx_media_items_content ON media_items(content_key, scope)
 
+index	idx_media_items_described
+CREATE INDEX idx_media_items_described ON media_items(described_at)
+
 index	idx_media_items_ext
 CREATE INDEX idx_media_items_ext ON media_items(ext_source_id, ext_id)
 

@@ -341,6 +341,9 @@ func TestScanSources_QueryPlansSeekIndexes(t *testing.T) {
 		assert.Contains(t, plan, "USING INDEX "+c.index+" (synced_at>? AND synced_at<?)", name)
 		assert.NotContains(t, plan, "TEMP B-TREE", name)
 	}
+	media := explainDetails(t, d, mediaScanQuery, "", "2026-09-20T10:00:00Z", "", 0, 1000)
+	assert.Contains(t, media, "USING INDEX idx_media_items_described (described_at>? AND described_at<?)", "media")
+	assert.NotContains(t, media, "TEMP B-TREE", "media")
 }
 
 func TestScanSources_CancelledContextStops(t *testing.T) {
