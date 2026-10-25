@@ -17,7 +17,7 @@ import (
 
 	"watchtower/internal/extsync"
 	"watchtower/internal/jira"
-	"watchtower/internal/media"
+	"watchtower/internal/media/linkrule"
 )
 
 // MentionPrefix is the fixed prefix of a user-mention token. The full token
@@ -64,7 +64,7 @@ func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, 
 // (ri:attachment ri:filename) is {image, "att:<filename>"}; one of an
 // external URL (ri:url ri:value) is {image, "url:<normalized>", URL} and an
 // <a href> is {link, "url:<normalized>", URL}, both only when
-// media.Fetchable accepts the URL. An attachment of another page (an
+// linkrule.Fetchable accepts the URL. An attachment of another page (an
 // ri:page or ri:blog-post inside ri:attachment) is not recorded: it cannot
 // be resolved under this page. The fallback path of StorageToSections
 // parses no element, so it names no media.
@@ -376,7 +376,7 @@ func (c *converter) addImage(n *html.Node) {
 	}
 	if u := firstChildByTag(n, "ri:url"); u != nil {
 		raw := strings.TrimSpace(attrValue(u, "ri:value"))
-		if norm, ok := media.Fetchable(raw, nil); ok {
+		if norm, ok := linkrule.Fetchable(raw, nil); ok {
 			c.addMedia(extsync.MediaRef{Kind: "image", Locator: "url:" + norm, URL: raw})
 		}
 	}
@@ -385,7 +385,7 @@ func (c *converter) addImage(n *html.Node) {
 // addLink records an <a href> when its URL is fetchable.
 func (c *converter) addLink(n *html.Node) {
 	raw := strings.TrimSpace(attrValue(n, "href"))
-	if norm, ok := media.Fetchable(raw, nil); ok {
+	if norm, ok := linkrule.Fetchable(raw, nil); ok {
 		c.addMedia(extsync.MediaRef{Kind: "link", Locator: "url:" + norm, URL: raw})
 	}
 }

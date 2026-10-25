@@ -1,7 +1,7 @@
 // The link rules: which URLs are extracted from text, how they are normalized,
 // and which ones Watchtower must never fetch.
 
-package media
+package linkrule
 
 import (
 	"net"

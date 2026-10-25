@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/extract"
 	"watchtower/internal/kb"
+	"watchtower/internal/media/linkrule"
 	"watchtower/internal/media/webfetch"
 	"watchtower/internal/prompts"
 )
@@ -114,7 +115,7 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 	if err != nil {
 		return st, err
 	}
-	check := func(u string) bool { _, ok := Fetchable(u, refused); return ok }
+	check := func(u string) bool { _, ok := linkrule.Fetchable(u, refused); return ok }
 	r := &run{p: p, dir: dir, st: &st, ext: &extract.Extractor{}}
 	// Built per run, so the own addresses are read afresh: pages under the
 	// 15 s link timeout, images under the 60 s download timeout.

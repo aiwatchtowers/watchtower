@@ -14,6 +14,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/extsync"
+	"watchtower/internal/media/linkrule"
 )
 
 // Confluence media: a page's inline images (attachments of the page by file
@@ -54,7 +55,7 @@ func ConfluenceRecorder(denyHosts []string) extsync.MediaRecorder {
 						return err
 					}
 				}
-				norm, ok := Fetchable(r.URL, refused)
+				norm, ok := linkrule.Fetchable(r.URL, refused)
 				if !ok {
 					continue
 				}

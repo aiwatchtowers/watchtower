@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/net/dns/dnsmessage"
 
-	"watchtower/internal/media"
+	"watchtower/internal/media/linkrule"
 	"watchtower/internal/media/webfetch"
 )
 
@@ -215,7 +215,7 @@ func TestGet_StopsAfterFiveRedirects(t *testing.T) {
 }
 
 func TestGet_RedirectRerunsCheck(t *testing.T) {
-	refused := media.NormalizeHostSet([]string{"denied.example"})
+	refused := linkrule.NormalizeHostSet([]string{"denied.example"})
 	rows := []string{
 		"https://example.com/?token=x",
 		"https://example.com/reset/abc",
@@ -259,7 +259,7 @@ func TestGet_RedirectRerunsCheck(t *testing.T) {
 	}
 }
 
-// fetchableExcept is media.Fetchable over refused as the Check hook, with the
+// fetchableExcept is linkrule.Fetchable over refused as the Check hook, with the
 // one httptest start URL exempt (Fetchable refuses IP-literal hosts and
 // non-web ports, so the local first hop could not start otherwise).
 func fetchableExcept(start string, refused map[string]bool) func(string) bool {
@@ -267,14 +267,14 @@ func fetchableExcept(start string, refused map[string]bool) func(string) bool {
 		if u == start {
 			return true
 		}
-		_, ok := media.Fetchable(u, refused)
+		_, ok := linkrule.Fetchable(u, refused)
 		return ok
 	}
 }
 
 func TestGet_RefusesNonWebPort(t *testing.T) {
 	res, lookups := fakeResolver(t, "93.184.215.14")
-	f := webfetch.New(func(u string) bool { _, ok := media.Fetchable(u, nil); return ok })
+	f := webfetch.New(func(u string) bool { _, ok := linkrule.Fetchable(u, nil); return ok })
 	f.Resolver = res
 	if _, err := get(t, f, "http://example.com:6379/"); !errors.Is(err, webfetch.ErrRefused) {
 		t.Fatalf("err = %v, want ErrRefused", err)

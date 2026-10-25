@@ -36,6 +36,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/kb"
+	"watchtower/internal/media/linkrule"
 	"watchtower/internal/media/webfetch"
 )
 
@@ -192,7 +193,7 @@ func (e *env) image(ch, ts, locator string, data []byte) int64 {
 
 func (e *env) link(ch, ts, raw string) int64 {
 	e.t.Helper()
-	norm, ok := NormalizeURL(raw)
+	norm, ok := linkrule.NormalizeURL(raw)
 	require.True(e.t, ok)
 	return e.add(ch, ts, db.MediaFound{Kind: "link", Locator: "url:" + norm, FetchURL: raw, ContentKey: "url:" + norm}, false)
 }
@@ -1127,9 +1128,9 @@ func TestDenyHosts_ConfigUnitesWithBuildSeed(t *testing.T) {
 	assert.Equal(t, []string{"corp.example", "tenant.example"}, DenyHosts(&config.Config{}))
 	assert.Equal(t, []string{"corp.example", "tenant.example"}, DenyHosts(nil))
 
-	set := NormalizeHostSet(DenyHosts(withList))
+	set := linkrule.NormalizeHostSet(DenyHosts(withList))
 	for _, raw := range []string{"https://corp.example/x", "https://wiki.tenant.example/", "https://EXTRA.example./a"} {
-		_, ok := Fetchable(raw, set)
+		_, ok := linkrule.Fetchable(raw, set)
 		assert.False(t, ok, raw)
 	}
 }

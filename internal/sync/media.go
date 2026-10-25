@@ -11,6 +11,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/media"
+	"watchtower/internal/media/linkrule"
 	watchtowerslack "watchtower/internal/slack"
 )
 
@@ -78,8 +79,8 @@ func slackMediaFound(text, subtype string, files []goslack.File, refused map[str
 		}
 		out = append(out, mf)
 	}
-	for _, raw := range media.SlackLinks(text) {
-		norm, ok := media.Fetchable(raw, refused)
+	for _, raw := range linkrule.SlackLinks(text) {
+		norm, ok := linkrule.Fetchable(raw, refused)
 		if !ok || seen["url:"+norm] {
 			continue
 		}

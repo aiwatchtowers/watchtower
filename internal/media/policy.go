@@ -7,6 +7,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/doclinks"
+	"watchtower/internal/media/linkrule"
 )
 
 // BuildDenyHosts is the build's seed of hosts whose links are never fetched,
@@ -44,9 +45,9 @@ func RefusedHosts(ctx context.Context, q doclinks.Queryer, deny []string) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("media: %w", err)
 	}
-	hosts := append([]string{}, SyncedHosts...)
+	hosts := append([]string{}, linkrule.SyncedHosts...)
 	for h := range sites {
 		hosts = append(hosts, h)
 	}
-	return NormalizeHostSet(append(hosts, deny...)), nil
+	return linkrule.NormalizeHostSet(append(hosts, deny...)), nil
 }
