@@ -78,9 +78,10 @@ final class WatchTrackControlsTests: XCTestCase {
         XCTAssertEqual(calls[3], ["automations", "run", "42", "--since", "2026-10-01T00:00:00Z", "--json"])
 
         // Nothing wrote the track row from Swift.
-        let row = try XCTUnwrap(pool.read { db in
+        let fetched = try await pool.read { db in
             try Row.fetchOne(db, sql: "SELECT enabled, instruction FROM tracks WHERE id = ?", arguments: [track.id])
-        })
+        }
+        let row = try XCTUnwrap(fetched)
         XCTAssertEqual(row["enabled"] as Int?, 1)
         XCTAssertEqual(row["instruction"] as String?, "old")
     }
