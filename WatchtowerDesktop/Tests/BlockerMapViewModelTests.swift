@@ -9,7 +9,11 @@ import WatchtowerTestSupport
 /// the same key exists on both trackers.
 @MainActor
 final class BlockerMapViewModelTests: XCTestCase {
-    private func daysAgo(_ days: Double) -> Date { Date().addingTimeInterval(-days * 86400) }
+    /// Calendar days, as `daysSince` counts them: 3 × 86 400 s is only two
+    /// calendar days across a 25-hour DST day.
+    private func daysAgo(_ days: Int) -> Date {
+        Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
+    }
 
     private struct Fixture {
         let jira: Int64
