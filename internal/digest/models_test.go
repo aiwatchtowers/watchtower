@@ -31,6 +31,8 @@ func TestTierForSource(t *testing.T) {
 		"automation.llm.strong",
 		// The diff reviewer's overview: strong by absence from the light switch.
 		"workbench.review_overview", "workbench.review_lessons",
+		// The spec reviewer (spec 2026-10-25-spec-review-design §3).
+		"workbench.spec_review",
 	}
 	for _, src := range strong {
 		if got := TierForSource(src); got != TierStrong {

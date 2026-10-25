@@ -129,3 +129,37 @@ func TestSpecReview_SweepPicksStale(t *testing.T) {
 	assert.Equal(t, run, running[0].AskID)
 	assert.Equal(t, 5, running[0].PID)
 }
+
+func TestRequeueSpecReview_States(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 25, 10, 0, 0, 0, time.UTC)
+
+	require.NoError(t, d.RequeueSpecReview(askID, false, now), "no row: queued")
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "queued", got.Status)
+	assert.Equal(t, 1, got.Attempt)
+	require.NoError(t, d.RequeueSpecReview(askID, true, now), "queued: left as is")
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, got.Attempt)
+
+	ok, err := d.ClaimSpecReview(askID, 7, now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	err = d.RequeueSpecReview(askID, true, now)
+	require.ErrorIs(t, err, ErrSpecReviewBusy)
+	assert.Contains(t, err.Error(), "already running")
+
+	require.NoError(t, d.FailSpecReview(askID, 7, "boom", now))
+	err = d.RequeueSpecReview(askID, false, now)
+	require.ErrorIs(t, err, ErrSpecReviewBusy)
+	assert.Contains(t, err.Error(), "failed")
+	require.NoError(t, d.RequeueSpecReview(askID, true, now))
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "queued", got.Status)
+	assert.Equal(t, 2, got.Attempt)
+	assert.Empty(t, got.Reason)
+}

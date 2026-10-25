@@ -13,6 +13,10 @@ import (
 // ErrSpecReviewNotFound is returned when an ask has no spec_reviews row.
 var ErrSpecReviewNotFound = errors.New("spec review not found")
 
+// ErrSpecReviewBusy refuses RequeueSpecReview: the row is running, or it is
+// finished and force was not given. Its text names the status.
+var ErrSpecReviewBusy = errors.New("spec review not re-queued")
+
 // queuedStaleAfter is how long a queued row waits before the sweep picks it up.
 const queuedStaleAfter = 60 * time.Second
 
@@ -58,6 +62,29 @@ func (db *DB) QueueSpecReview(tx *sql.Tx, askID int64, now time.Time) error {
 		return fmt.Errorf("queueing spec review: %w", err)
 	}
 	return nil
+}
+
+// RequeueSpecReview queues the ask's review for a run the owner asked for, in
+// one transaction: no row is queued anew, a queued row is left as is (it is
+// launched again), a running row is refused, and a done|failed|skipped row is
+// re-queued only with force. A refusal wraps ErrSpecReviewBusy.
+func (db *DB) RequeueSpecReview(askID int64, force bool, now time.Time) error {
+	return db.WithTx(func(tx *sql.Tx) error {
+		var status string
+		err := tx.QueryRow(`SELECT status FROM spec_reviews WHERE ask_id = ?`, askID).Scan(&status)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return fmt.Errorf("reading spec review: %w", err)
+		case status == "queued":
+			return nil
+		case status == "running":
+			return fmt.Errorf("%w: already running", ErrSpecReviewBusy)
+		case !force:
+			return fmt.Errorf("%w: it is %s (--force runs it again)", ErrSpecReviewBusy, status)
+		}
+		return db.QueueSpecReview(tx, askID, now)
+	})
 }
 
 // SkipSpecReview records that no review runs for the ask, and why.

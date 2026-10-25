@@ -249,6 +249,19 @@ func (db *DB) GetOwnerAsk(workbenchID, id int64) (*OwnerAsk, error) {
 	return getOwnerAsk(db, ownerAskCols, workbenchID, id)
 }
 
+// GetOwnerAskByID returns ask id of any workbench, snapshot included, or
+// ErrAskNotFound: for a caller that knows only the id (the spec reviewer).
+func (db *DB) GetOwnerAskByID(id int64) (*OwnerAsk, error) {
+	a, err := scanOwnerAsk(db.QueryRow(`SELECT `+ownerAskCols+` FROM owner_asks a WHERE a.id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("ask %d: %w", id, ErrAskNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading ask %d: %w", id, err)
+	}
+	return a, nil
+}
+
 func getOwnerAsk(q targetsQuerier, cols string, workbenchID, id int64) (*OwnerAsk, error) {
 	a, err := scanOwnerAsk(q.QueryRow(`SELECT `+cols+` FROM owner_asks a WHERE a.id = ? AND a.project_id = ?`, id, workbenchID))
 	if errors.Is(err, sql.ErrNoRows) {
