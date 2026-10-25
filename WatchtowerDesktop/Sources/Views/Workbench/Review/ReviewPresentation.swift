@@ -108,15 +108,18 @@ enum ReviewPresentation {
     }
 }
 
-/// High red, medium orange; low and unknown show nothing.
+/// High red, medium orange; low shows only with `showsLow` (a list of every
+/// risk), unknown never.
 struct ReviewRiskBadge: View {
     let level: ReviewOverview.Risk.Level?
     var why = ""
+    var showsLow = false
 
     var body: some View {
         switch level {
-        case .high: badge("High risk", .red)
-        case .medium: badge("Medium risk", .orange)
+        case .high: badge("High risk", Tone.error)
+        case .medium: badge("Medium risk", Tone.warning)
+        case .low where showsLow: badge("Low risk", .secondary)
         case .low, nil: EmptyView()
         }
     }
@@ -125,8 +128,8 @@ struct ReviewRiskBadge: View {
         Text(text)
             .font(.caption2.weight(.semibold))
             .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .background(color.opacity(0.15), in: Capsule())
+            .padding(.horizontal, Spacing.small)
+            .background(color.opacity(ChipTint.fillOpacity), in: Capsule())
             .help(why.isEmpty ? text : why)
             .accessibilityLabel(text)
     }
