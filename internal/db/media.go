@@ -142,8 +142,8 @@ type MediaCursor struct {
 	ID        int64
 }
 
-// MediaResult is the outcome FinishMedia stores. An empty ContentKey or
-// Kind keeps the stored value; ErrorClass is "" or a MediaErrorClasses value.
+// MediaResult is the outcome FinishMedia stores. An empty ContentKey, Kind
+// or KBRef keeps the stored value (KBRef keeps KBSource with it); ErrorClass is "" or a MediaErrorClasses value.
 type MediaResult struct {
 	Status, ContentKey, Kind, Title, Body, ImageText, ErrorClass string
 	Keys                                                         []string
@@ -188,6 +188,9 @@ func RecordMedia(ctx context.Context, q ContextQueryer, p MediaParent, found []M
 	key, scope := p.Key(), p.Scope()
 	if key == "" {
 		return 0, fmt.Errorf("recording media: unknown parent kind %q", p.Kind)
+	}
+	if p.ContentAt.IsZero() {
+		return 0, fmt.Errorf("recording media on %s: content time is not set", key)
 	}
 	for _, f := range found {
 		if f.Kind != "image" && f.Kind != "link" {
@@ -372,12 +375,13 @@ func (db *DB) FinishMedia(ctx context.Context, id int64, r MediaResult) error {
 			content_key = CASE WHEN ? = '' THEN content_key ELSE ? END,
 			kind = CASE WHEN ? = '' THEN kind ELSE ? END,
 			title = ?, body = ?, image_text = ?, error = ?, keys_json = ?,
-			kb_source = ?, kb_ref = ?,
+			kb_source = CASE WHEN ? = '' THEN kb_source ELSE ? END,
+			kb_ref = CASE WHEN ? = '' THEN kb_ref ELSE ? END,
 			described_at = ?
 		WHERE id = ?`,
 		r.Status, r.ContentKey, r.ContentKey, r.Kind, r.Kind,
 		r.Title, r.Body, r.ImageText, r.ErrorClass, string(keysJSON),
-		r.KBSource, r.KBRef, mediaTime(time.Now()), id)
+		r.KBRef, r.KBSource, r.KBRef, r.KBRef, mediaTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("finishing media item %d: %w", id, err)
 	}

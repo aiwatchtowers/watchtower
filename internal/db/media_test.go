@@ -473,7 +473,51 @@ func TestFinishMedia(t *testing.T) {
 	if it := mediaRow(t, d, 1); it.ContentKey != "sha256:bb" || it.Status != "too_large" || it.Error != "too_large" {
 		t.Fatalf("second finish: %+v", it)
 	}
+	if it := mediaRow(t, d, 1); it.KBSource != "slack" || it.KBRef != "slack:thread:1:C1:1.0" {
+		t.Fatalf("an empty KBRef dropped the stored document: %+v", it)
+	}
 	if err := d.FinishMedia(ctx, 999, MediaResult{Status: "ok"}); err == nil {
 		t.Fatal("finishing a missing row succeeded")
+	}
+}
+
+func TestMediaKBDirty_MovedRefMarksOldDocument(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	mediaFixtures(t, d)
+	if err := d.FinishMedia(ctx, 1, MediaResult{Status: "ok", Body: "B", KBSource: "slack", KBRef: "slack:day:1:C1:2026-10-25"}); err != nil {
+		t.Fatal(err)
+	}
+	mustExecAll(t, d, `DELETE FROM kb_dirty`)
+	if err := d.FinishMedia(ctx, 1, MediaResult{Status: "ok", Body: "B", KBSource: "slack", KBRef: "slack:thread:1:C1:1.0"}); err != nil {
+		t.Fatal(err)
+	}
+	got := kbDirtyKeys(t, d)
+	for _, k := range []string{"slack|slack:day:1:C1:2026-10-25", "slack|slack:thread:1:C1:1.0"} {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("moving the ref did not mark %s: %v", k, got)
+		}
+	}
+	// a plain kb_ref change on an ok row marks both too
+	mustExecAll(t, d, `DELETE FROM kb_dirty`, `UPDATE media_items SET kb_ref = 'slack:thread:1:C1:9.0' WHERE id = 1`)
+	got = kbDirtyKeys(t, d)
+	for _, k := range []string{"slack|slack:thread:1:C1:1.0", "slack|slack:thread:1:C1:9.0"} {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("a kb_ref update did not mark %s: %v", k, got)
+		}
+	}
+	// a pending row's ref change marks nothing
+	mustExecAll(t, d, `DELETE FROM kb_dirty`, `UPDATE media_items SET kb_ref = 'slack:thread:1:C1:3.0' WHERE id = 2`)
+	if got := kbDirtyKeys(t, d); len(got) != 0 {
+		t.Fatalf("a pending row's ref change marked: %v", got)
+	}
+}
+
+func TestRecordMedia_RefusesZeroContentAt(t *testing.T) {
+	d := openTestDB(t)
+	mediaFixtures(t, d)
+	p := MediaParent{Kind: "slack", SlackChannelID: "1:C1", SlackTS: "1.0"}
+	if _, err := RecordMedia(context.Background(), d, p, []MediaFound{{Kind: "link", Locator: "https://example.com/z"}}); err == nil {
+		t.Fatal("a zero ContentAt was accepted")
 	}
 }

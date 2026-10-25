@@ -3334,10 +3334,15 @@ CREATE INDEX IF NOT EXISTS idx_media_items_imap ON media_items(imap_account_id, 
 CREATE INDEX IF NOT EXISTS idx_media_items_chat ON media_items(chat_attachment_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_target ON media_items(target_image_id);
 
-CREATE TRIGGER IF NOT EXISTS media_items_kb_dirty_upd AFTER UPDATE OF status, body ON media_items
-WHEN (OLD.status = 'ok' OR NEW.status = 'ok') AND NEW.kb_ref != ''
+CREATE TRIGGER IF NOT EXISTS media_items_kb_dirty_upd AFTER UPDATE OF status, body, kb_source, kb_ref ON media_items
+WHEN (OLD.status = 'ok' OR NEW.status = 'ok') AND (NEW.kb_ref != '' OR OLD.kb_ref != '')
 BEGIN
-    INSERT INTO kb_dirty (source, key) VALUES (NEW.kb_source, NEW.kb_ref)
+    INSERT INTO kb_dirty (source, key) SELECT NEW.kb_source, NEW.kb_ref WHERE NEW.kb_ref != ''
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    -- an ok row moved to another document: the old one loses its section
+    INSERT INTO kb_dirty (source, key) SELECT OLD.kb_source, OLD.kb_ref
+        WHERE OLD.status = 'ok' AND OLD.kb_ref != ''
+          AND (OLD.kb_source != NEW.kb_source OR OLD.kb_ref != NEW.kb_ref)
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END;
 CREATE TRIGGER IF NOT EXISTS media_items_kb_dirty_del AFTER DELETE ON media_items
