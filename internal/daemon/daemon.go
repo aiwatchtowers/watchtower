@@ -171,6 +171,8 @@ type Daemon struct {
 	lastJira                   time.Time
 	linearSyncers              []linearAccountSyncer
 	purgeHold                  map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
+	policySkipMu               gosync.Mutex
+	policySkipping             map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
 	lastLinear                 time.Time
 	lastPeople                 time.Time // when people cards last ran (once per day)
 	lastBriefing               time.Time // when briefing last ran (once per day)
@@ -802,6 +804,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
 		return nil, nil
 	}
+	if !d.sourceAllowed("slack") {
+		return nil, nil
+	}
 	var firstErr error
 	var freezing []error
 	snaps := make([]sync.Snapshot, 0, len(d.orchestrators))
@@ -947,6 +952,9 @@ func (d *Daemon) startupCalendarSync(ctx context.Context) {
 // account — a per-account failure is logged and skipped rather than
 // aborting the rest of the accounts.
 func (d *Daemon) phaseCalendarSync(ctx context.Context) {
+	if len(d.calendarSyncers) == 0 || !d.sourceAllowed("google") {
+		return
+	}
 	for _, s := range d.calendarSyncers {
 		if d.purgeHeld("google", s.AccountID()) {
 			continue
@@ -965,6 +973,9 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 // over one syncer per account — a per-account failure is logged and skipped
 // rather than aborting the rest of the accounts.
 func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
+	if len(d.calDAVSyncers) == 0 || !d.sourceAllowed("caldav") {
+		return
+	}
 	for _, s := range d.calDAVSyncers {
 		n, err := s.Sync(ctx)
 		if err != nil {
@@ -981,6 +992,9 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 // account — a per-account failure is logged and skipped rather than
 // aborting the rest of the accounts.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
+	if len(d.gmailSyncers) == 0 || !d.sourceAllowed("google") {
+		return
+	}
 	for _, s := range d.gmailSyncers {
 		if d.purgeHeld("google", s.AccountID()) {
 			continue
@@ -1014,6 +1028,9 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 // this loops over one syncer per account — a per-account failure is logged
 // and skipped rather than aborting the rest of the accounts.
 func (d *Daemon) phaseImapSync(ctx context.Context) {
+	if len(d.imapSyncers) == 0 || !d.sourceAllowed("imap") {
+		return
+	}
 	for _, s := range d.imapSyncers {
 		var n int
 		var err error
@@ -1053,6 +1070,9 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 // jira-boards pipeline_runs row records.
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if len(d.jiraSyncers) == 0 {
+		return
+	}
+	if !d.sourceAllowed("jira") {
 		return
 	}
 	interval := time.Duration(d.config.Jira.SyncIntervalMins) * time.Minute
@@ -1172,6 +1192,9 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 // cycle's fetches) is checked first.
 func (d *Daemon) phaseLinearSync(ctx context.Context) {
 	if len(d.linearSyncers) == 0 {
+		return
+	}
+	if !d.sourceAllowed("linear") {
 		return
 	}
 	interval := time.Duration(d.config.Linear.SyncIntervalMins) * time.Minute
@@ -1443,6 +1466,9 @@ func (d *Daemon) phaseKnowledgeIndex(ctx context.Context) {
 // every cycle.
 func (d *Daemon) phaseExternalSync(ctx context.Context) {
 	if !d.config.Knowledge.Connectors.Enabled || d.externalSync == nil || d.db == nil {
+		return
+	}
+	if !d.sourceAllowed("jira") { // Confluence comes with the jira source
 		return
 	}
 	if ctx.Err() != nil {

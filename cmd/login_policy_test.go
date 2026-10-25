@@ -72,3 +72,20 @@ func TestPolicyLogin_NoProfileRestrictsNothing(t *testing.T) {
 	policytest.Set(t, nil)
 	assert.NoError(t, refuseSourceByPolicy("linear"))
 }
+
+// A one-shot `watchtower sync` (and --users-only) syncs Slack in this
+// process: a forbidden slack source is refused before anything opens.
+func TestPolicySync_OneShotSlackRefused(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgFile := home + "/config.yaml"
+	require.NoError(t, os.WriteFile(cfgFile, []byte("active_workspace: test\n"), 0o600))
+	orig := flagConfig
+	flagConfig = cfgFile
+	t.Cleanup(func() { flagConfig = orig })
+
+	err := runSync(&cobra.Command{}, nil)
+	require.ErrorIs(t, err, policy.ErrNotAllowed)
+	assert.Contains(t, err.Error(), "source slack is not allowed by your organization (allowed: google)")
+}

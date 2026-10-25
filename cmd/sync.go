@@ -494,6 +494,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// A one-shot or --users-only sync is a Slack sync in this process; the
+	// daemon checks the policy per phase and cycle instead.
+	if !syncFlagDaemon && !syncFlagStop && !syncFlagNow {
+		if err := refuseSourceByPolicy("slack"); err != nil {
+			return err
+		}
+	}
+
 	// --stop only needs workspace validation (no Slack token).
 	if syncFlagStop {
 		if err := cfg.ValidateWorkspace(); err != nil {
