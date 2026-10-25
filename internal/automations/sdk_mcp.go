@@ -8,7 +8,9 @@ import (
 
 	"github.com/dop251/goja"
 
+	"watchtower/internal/auditlog"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/tools"
 )
 
 // MCPModule defines mcp(server, tool, args?) (spec §5): the manifest check
@@ -48,9 +50,9 @@ func MCPModule(b Backends) Module {
 			if b.MCP == nil {
 				return nil, notAvailable("no Quick Connection caller is configured")
 			}
-			res, err := b.MCP.Call(env.Ctx, req.server, req.tool, req.args)
+			res, err := budgetedMCPCall(env, b, req)
 			if err != nil {
-				return nil, mcpError(req, err)
+				return nil, err
 			}
 			if len(res) == 0 {
 				return jsonValue(nil), nil
@@ -58,6 +60,37 @@ func MCPModule(b Backends) Module {
 			return res, nil
 		})
 	}}}
+}
+
+// budgetedMCPCall makes the Quick Connection call inside the run's read
+// budget (READ-01): it counts as one call (no rows — the result's shape is
+// the server's), a spent budget refuses it as a catchable ValidationError
+// before anything is sent, and it leaves one audit line named
+// mcp:<server>/<tool>.
+func budgetedMCPCall(env *Env, b Backends, req mcpCall) (json.RawMessage, error) {
+	name := "mcp:" + req.server + "/" + req.tool
+	bind := env.Binding()
+	if b.Registry == nil {
+		return nil, notAvailable("no tool registry is configured")
+	}
+	if err := b.Registry.AdmitRead(bind, name); err != nil {
+		var ve *tools.ValidationError
+		if errors.As(err, &ve) {
+			return nil, &SDKError{Name: ErrNameValidation, Message: ve.Msg}
+		}
+		return nil, &SDKError{Name: ErrNameTool, Message: fmt.Sprintf("%s: %v", name, err)}
+	}
+	res, err := b.MCP.Call(env.Ctx, req.server, req.tool, req.args)
+	switch {
+	case err != nil:
+		b.Registry.RecordRead(bind, name, nil, 0, 0, auditlog.ResultError)
+		return nil, mcpError(req, err)
+	case len(res) > MaxSDKResultBytes:
+		b.Registry.RecordRead(bind, name, nil, 0, len(res), auditlog.ResultTooLarge)
+	default:
+		b.Registry.RecordRead(bind, name, nil, 0, len(res), auditlog.ResultOK)
+	}
+	return res, nil
 }
 
 // MCPDraftStop is why a draft's dry run ended at its first mcp() call: the

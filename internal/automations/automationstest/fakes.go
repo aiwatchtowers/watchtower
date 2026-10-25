@@ -168,6 +168,12 @@ func (r *FakeRegistry) Propose(_ context.Context, name string, args json.RawMess
 	return rc, nil
 }
 
+// AdmitRead admits every call: a FakeRegistry keeps no read budget.
+func (r *FakeRegistry) AdmitRead(tools.Binding, string) error { return nil }
+
+// RecordRead records nothing.
+func (r *FakeRegistry) RecordRead(tools.Binding, string, []string, int, int, string) {}
+
 // ReadCalls returns a copy of the reads received so far.
 func (r *FakeRegistry) ReadCalls() []FakeRead {
 	r.mu.Lock()

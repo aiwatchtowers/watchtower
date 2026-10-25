@@ -13,13 +13,18 @@ import (
 
 // ToolRegistry is the part of the tool registry the SDK calls: Get and
 // CallRead for reads, Propose for writes (ToolWriteModule), List for
-// agent()'s effective tool set (EffectiveAgentTools).
+// agent()'s effective tool set (EffectiveAgentTools), AdmitRead/RecordRead
+// for mcp()'s share of the read budget.
 // *tools.Registry satisfies it.
 type ToolRegistry interface {
 	Get(name string) (*tools.Tool, bool)
 	List(surface string) []*tools.Tool
 	CallRead(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (any, error)
 	Propose(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (tools.Receipt, error)
+	// AdmitRead and RecordRead are the run's read budget (READ-01): mcp()
+	// spends it like a company-data tool() read and leaves its audit line.
+	AdmitRead(b tools.Binding, tool string) error
+	RecordRead(b tools.Binding, tool string, filters []string, rows, size int, result string)
 }
 
 var _ ToolRegistry = (*tools.Registry)(nil)
