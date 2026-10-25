@@ -274,3 +274,148 @@ func assertNoReplyWritten(t *testing.T, d *DB) {
 		t.Fatalf("replies written = %d %v", n, err)
 	}
 }
+
+func approveRoundState(t *testing.T, d *DB, id int64) (status, outcome string, sentAt sql.NullString) {
+	t.Helper()
+	if err := d.QueryRow(`SELECT status, outcome, sent_at FROM review_rounds WHERE id = ?`, id).Scan(&status, &outcome, &sentAt); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func commentStatuses(t *testing.T, d *DB, id int64) []string {
+	t.Helper()
+	cs, err := d.ReviewRoundComments(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.Status)
+	}
+	return out
+}
+
+func TestReview04_ApproveIsGuardedAndStoredBeforeTheLine(t *testing.T) {
+	d := openTestDB(t)
+	pid, sid := seedReviewSession(t, d)
+	id, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.ApproveReviewRound(pid, id, false); err != nil || !ok {
+		t.Fatalf("approve = %v %v", ok, err)
+	}
+	status, outcome, sentAt := approveRoundState(t, d, id)
+	if status != "sent" || outcome != "approved" || !sentAt.Valid {
+		t.Fatalf("state = %q %q %v", status, outcome, sentAt)
+	}
+	if ok, err := d.ApproveReviewRound(pid, id, false); err != nil || ok {
+		t.Fatalf("second approve = %v %v", ok, err)
+	}
+	if s, o, at := approveRoundState(t, d, id); s != status || o != outcome || at != sentAt {
+		t.Fatal("a refused approve changed the round")
+	}
+	r, err := d.GetReviewRound(pid, id)
+	if err != nil || r.Outcome != "approved" {
+		t.Fatalf("round = %+v %v", r, err)
+	}
+}
+
+func TestApproveReviewRound_Refusals(t *testing.T) {
+	cases := []struct {
+		name        string
+		comments    []string // statuses to insert
+		resolveOpen bool
+		otherWB     bool
+		sent        bool
+		noSession   bool
+	}{
+		{name: "drafts present", comments: []string{"draft"}, resolveOpen: true},
+		{name: "carried without resolveOpen", comments: []string{"carried"}},
+		{name: "outdated without resolveOpen", comments: []string{"outdated"}},
+		{name: "another workbench", otherWB: true},
+		{name: "round not open", sent: true},
+		{name: "no session", noSession: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			pid, sid := seedReviewSession(t, d)
+			session := nullInt(sid)
+			if tc.noSession {
+				session = sql.NullInt64{}
+			}
+			id, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: session, FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, st := range tc.comments {
+				if _, err := d.Exec(`INSERT INTO review_comments (round_id, body, status) VALUES (?, 'c', ?)`, id, st); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.sent {
+				if _, err := d.Exec(`UPDATE review_rounds SET status = 'sent' WHERE id = ?`, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeStatus, beforeOutcome, beforeSent := approveRoundState(t, d, id)
+			beforeComments := commentStatuses(t, d, id)
+			callPID := pid
+			if tc.otherWB {
+				callPID = pid + 100
+			}
+			if ok, err := d.ApproveReviewRound(callPID, id, tc.resolveOpen); err != nil || ok {
+				t.Fatalf("approve = %v %v", ok, err)
+			}
+			s, o, at := approveRoundState(t, d, id)
+			if s != beforeStatus || o != beforeOutcome || at != beforeSent {
+				t.Fatal("a refused approve changed the round")
+			}
+			after := commentStatuses(t, d, id)
+			if len(after) != len(beforeComments) {
+				t.Fatal("comment count changed")
+			}
+			for i := range after {
+				if after[i] != beforeComments[i] {
+					t.Fatalf("comments = %v, was %v", after, beforeComments)
+				}
+			}
+		})
+	}
+}
+
+func TestApproveReviewRound_ResolveOpen(t *testing.T) {
+	d := openTestDB(t)
+	pid, sid := seedReviewSession(t, d)
+	id, _ := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t"})
+	for _, st := range []string{"carried", "outdated", "resolved"} {
+		if _, err := d.Exec(`INSERT INTO review_comments (round_id, body, status) VALUES (?, 'c', ?)`, id, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, err := d.ApproveReviewRound(pid, id, true); err != nil || !ok {
+		t.Fatalf("approve = %v %v", ok, err)
+	}
+	for i, st := range commentStatuses(t, d, id) {
+		if st != "resolved" {
+			t.Fatalf("comment %d status = %q", i, st)
+		}
+	}
+	if _, o, _ := approveRoundState(t, d, id); o != "approved" {
+		t.Fatalf("outcome = %q", o)
+	}
+}
+
+func TestReviewRounds_SendSetsOutcomeChanges(t *testing.T) {
+	d := openTestDB(t)
+	pid, sid := seedReviewSession(t, d)
+	id, _ := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/r", BaseSHA: "b", TreeSHA: "t"})
+	if _, ok, err := d.SendReviewRound(pid, id); err != nil || !ok {
+		t.Fatalf("send = %v %v", ok, err)
+	}
+	if _, o, _ := approveRoundState(t, d, id); o != "changes" {
+		t.Fatalf("outcome = %q", o)
+	}
+}

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 import WebKit
 
 /// The Changes pane's read-only Monaco diff (board #328), served from the
@@ -11,6 +12,8 @@ struct MonacoDiffView: NSViewRepresentable {
         var original: String
         var modified: String
         var inline: Bool
+        /// The whole file, not the changes with unchanged runs folded.
+        var fullFile = false
         var comments: [Comment]
         /// The agent's placed notes on the new side.
         var notes: [Note] = []
@@ -43,22 +46,33 @@ struct MonacoDiffView: NSViewRepresentable {
         /// The `wt.showDiff` argument, for JSONSerialization.
         var argument: [String: Any] {
             [
-                "path": path, "original": original, "modified": modified, "inline": inline,
+                "path": path, "original": original, "modified": modified, "inline": inline, "fullFile": fullFile,
                 "comments": comments.map(\.argument), "notes": notes.map(\.argument), "hunks": hunks.map(\.argument)
             ]
         }
     }
 
     var payload: Payload?
+    /// A line to put on screen once its file is shown (board #960); sent
+    /// once per serial.
+    var focus: ReviewChangesModel.FocusRequest?
+    /// Go to definition and Usages from the new side (board #960): the
+    /// pane's destination, through which the page's messages reach the
+    /// centres and the menu's commands reach the page; nil = none.
+    var navigation: ReviewNavigationDestination?
     /// The owner chose Comment on a selection: its lines and side ("old"/"new").
     var onComment: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void
+    /// The owner chose Ask agent on a selection: its lines and side ("old"/"new").
+    var onAsk: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void = { _, _, _ in }
     /// The owner pressed Undo on a hunk of the shown file (its id was checked).
     var onUndo: (_ hunkID: String) -> Void = { _ in }
     /// The page reported an error (also logged).
     var onError: (String) -> Void = { _ in }
+    /// The focus request was sent to the page (the model clears it).
+    var onFocusSent: (Int) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onComment: onComment, onUndo: onUndo, onError: onError)
+        Coordinator(onComment: onComment, onAsk: onAsk, onUndo: onUndo, onError: onError)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -76,40 +90,65 @@ struct MonacoDiffView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onComment = onComment
+        context.coordinator.onAsk = onAsk
         context.coordinator.onUndo = onUndo
         context.coordinator.onError = onError
-        context.coordinator.show(payload)
+        context.coordinator.onFocusSent = onFocusSent
+        context.coordinator.navigation = navigation
+        // The preview may have held the menu's page: the diff is back.
+        if navigation?.page !== context.coordinator { navigation?.page = context.coordinator }
+        context.coordinator.show(payload, focus: focus)
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeDefinitionPage, CodeUsagesPage {
         weak var webView: WKWebView?
+        weak var navigation: ReviewNavigationDestination?
         var onComment: (Int, Int, String) -> Void
+        var onAsk: (Int, Int, String) -> Void
         var onUndo: (String) -> Void
         var onError: (String) -> Void
+        var onFocusSent: (Int) -> Void = { _ in }
         private var ready = false
         /// What the page should show, and what it was last told.
         private var wanted: Payload?
         private var told: Payload?
+        private var wantedFocus: ReviewChangesModel.FocusRequest?
+        private var sentFocusSerial: Int?
 
         init(
             onComment: @escaping (Int, Int, String) -> Void,
+            onAsk: @escaping (Int, Int, String) -> Void,
             onUndo: @escaping (String) -> Void,
             onError: @escaping (String) -> Void
         ) {
             self.onComment = onComment
+            self.onAsk = onAsk
             self.onUndo = onUndo
             self.onError = onError
         }
 
-        func show(_ payload: Payload?) {
+        func show(_ payload: Payload?, focus: ReviewChangesModel.FocusRequest?) {
             wanted = payload
+            wantedFocus = focus
             push()
+            pushFocus()
+        }
+
+        /// `wt.focus(line)` once the page shows the request's file; the page
+        /// holds it until the diff is computed (diff.js).
+        private func pushFocus() {
+            guard ready, let focus = wantedFocus, focus.serial != sentFocusSerial, told?.path == focus.path else { return }
+            sentFocusSerial = focus.serial
+            call("wt.focus", focus.line)
+            // Not during the view update that carried it.
+            let sent = onFocusSent
+            Task { @MainActor in sent(focus.serial) }
         }
 
         /// Sends `wanted` once the page is ready and when it changed; only
-        /// the comments, notes or hunks changed → their setters, the view
-        /// keeps its scroll.
+        /// the comments, notes, hunks or Full file changed → their setters,
+        /// the view keeps its scroll.
         private func push() {
             guard ready, wanted != told else { return }
             defer { told = wanted }
@@ -122,7 +161,9 @@ struct MonacoDiffView: NSViewRepresentable {
                 same.comments = wanted.comments
                 same.notes = wanted.notes
                 same.hunks = wanted.hunks
+                same.fullFile = wanted.fullFile
                 if same == wanted {
+                    if previous.fullFile != wanted.fullFile { call("wt.setFullFile", wanted.fullFile) }
                     if previous.comments != wanted.comments { call("wt.setComments", wanted.comments.map(\.argument)) }
                     if previous.notes != wanted.notes { call("wt.setNotes", wanted.notes.map(\.argument)) }
                     if previous.hunks != wanted.hunks { call("wt.setHunks", wanted.hunks.map(\.argument)) }
@@ -150,6 +191,7 @@ struct MonacoDiffView: NSViewRepresentable {
                 ready = true
                 told = nil
                 push()
+                pushFocus()
             case "comment":
                 guard let start = body["startLine"] as? Int, let end = body["endLine"] as? Int,
                       let side = body["side"] as? String else {
@@ -157,16 +199,86 @@ struct MonacoDiffView: NSViewRepresentable {
                     return
                 }
                 onComment(start, end, side)
+            case "ask":
+                guard let start = body["startLine"] as? Int, let end = body["endLine"] as? Int,
+                      let side = body["side"] as? String else {
+                    NSLog("ReviewDiff: an ask message without its lines was dropped")
+                    return
+                }
+                onAsk(start, end, side)
             case "undo":
                 guard let id = Self.undoTarget(body["hunkId"], shown: told?.hunks ?? []) else {
                     NSLog("ReviewDiff: an undo message for an unknown hunk was dropped")
                     return
                 }
                 onUndo(id)
+            case "definition":
+                Task { await definitionRequested(body) }
+            case "usages":
+                usagesRequested(body)
             case "error":
                 report((body["message"] as? String) ?? "The diff view reported an error.")
             default:
                 break
+            }
+        }
+
+        // MARK: Code navigation (board #960)
+
+        /// ⌘-click or the menu's Go to Definition: the centre in the
+        /// session's root, then `definitionDone(req)` on every path.
+        func definitionRequested(_ body: [String: Any]) async {
+            guard let req = body["req"] as? Int else {
+                NSLog("ReviewDiff: a definition message without req was dropped")
+                return
+            }
+            defer { call("wt.definitionDone", req) }
+            guard let origin = origin(body), let word = body["word"] as? String,
+                  let navigation, let root = navigation.root, let definitions = navigation.definitions else { return }
+            let request = CodeDefinitionRequest(req: req, word: word, origin: origin)
+            await definitions.goToDefinition(request, root: root, anchor: menuAnchor(x: body["x"] as? Double, y: body["y"] as? Double))
+        }
+
+        /// Show All Usages: the list of the word in the session's root.
+        func usagesRequested(_ body: [String: Any]) {
+            guard origin(body) != nil, let word = body["word"] as? String,
+                  let navigation, let root = navigation.root, let usages = navigation.usages else {
+                NSLog("ReviewDiff: a usages message was dropped")
+                return
+            }
+            usages.showUsages(of: word, root: root)
+        }
+
+        /// The root-relative place a message names; nil for a file other
+        /// than the one shown or outside the workbench folder.
+        private func origin(_ body: [String: Any]) -> CodeNavLocation? {
+            guard let id = body["id"] as? String, let line = body["line"] as? Int, let col = body["col"] as? Int else { return nil }
+            return navigation?.model?.diffNavigationOrigin(path: id, line: line, col: col)
+        }
+
+        /// The page's point (CSS px from the top left) in the web view.
+        private func menuAnchor(x: Double?, y: Double?) -> DefinitionMenuAnchor? {
+            guard let webView, let x, let y else { return nil }
+            let flippedY = webView.isFlipped ? y : webView.bounds.height - y
+            return DefinitionMenuAnchor(view: webView, point: NSPoint(x: x, y: flippedY))
+        }
+
+        func requestDefinitionAtCursor() async -> Bool {
+            await ask("wt.definitionAtCursor()")
+        }
+
+        func requestUsagesAtCursor() async -> Bool {
+            await ask("wt.usagesAtCursor()")
+        }
+
+        /// A page call answering true or false; false when the page cannot be asked.
+        private func ask(_ script: String) async -> Bool {
+            guard ready, let webView else { return false }
+            do {
+                return try await webView.evaluateJavaScript(script) as? Bool ?? false
+            } catch {
+                NSLog("ReviewDiff: %@ failed: %@", script, error.localizedDescription)
+                return false
             }
         }
 
