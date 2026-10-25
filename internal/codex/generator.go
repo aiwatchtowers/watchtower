@@ -227,6 +227,9 @@ func buildImageArgs(bin, model, systemPrompt, userMessage, imagePath, workDir st
 		"-c", "features.image_generation=false",
 		"-c", "features.skill_search=false",
 		"-c", "features.hooks=false",
+		"-c", "features.in_app_browser=false",
+		"-c", "features.skill_mcp_dependency_install=false",
+		"-c", "features.tool_suggest=false",
 		"--image="+imagePath)
 	return append(append(args, instr...), "-"), stdin, promptFile, nil
 }

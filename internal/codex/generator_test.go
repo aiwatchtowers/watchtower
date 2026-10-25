@@ -377,6 +377,7 @@ func TestCodexImageArgs(t *testing.T) {
 		`"alpha"={enabled=false}`, `"beta"={enabled=false}`,
 		"features.multi_agent=false", "features.image_generation=false",
 		"features.skill_search=false", "features.hooks=false",
+		"features.in_app_browser=false", "features.skill_mcp_dependency_install=false", "features.tool_suggest=false",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args missing %q: %v", want, args)
