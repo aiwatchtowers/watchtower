@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, whenever you start work on a target or a group, whenever you need the owner's answer, decision, check or review, and when you finish a session. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v13
+x-watchtower-pack: v14
 ---
 
 # Watchtower Workbench
@@ -74,7 +74,7 @@ The owner answers asks from one stack in Watchtower. A question has one of three
 
 Anything beyond a Chat question is an `ask_owner` call — never text in the terminal, and never as a target comment. The `AskUserQuestion` tool is blocked here, and so is Codex's `request_user_input` (with the ask guard `soft` only while the owner is away, with `off` not at all — still use `ask_owner` for anything beyond a Chat question). Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): with the ask guard `strict` the end-of-turn check sends a review, a check or several decisions left as plain text back to you, and the named ask is how it knows you filed it; with `soft` such a request is not sent back but raised as a Full ask with your text — a poorer ask than one you file.
 
-- **When to ask:** a spec, plan or design before you build on it (`kind: review`, `doc_path` = the file, relative to this folder); a decision with no sensible default (`kind: question`); a manual check you cannot run yourself (`kind: check`, one `checklist` step per thing to try).
+- **When to ask:** a spec, plan or design before you build on it (`kind: review`, `doc_path` = the file, relative to this folder; add `doc_type: spec | plan | other` (another value is refused; without it the type is inferred from the path) — an independent reviewer reads it first, and the owner's comments come from the reviewer's findings); a decision with no sensible default (`kind: question`); a manual check you cannot run yourself (`kind: check`, one `checklist` step per thing to try).
 - **What not to ask:** process questions with a sensible default (which branch name, whether to run the tests, whether to commit, the order of independent tasks) — state the default you took and go on; anything you can find out yourself — run the command, read the file, take the screenshot, check the log; clarifications the conversation already answers; progress reports and "shall I continue?".
 - **Collect decisions:** when several decisions are pending, file one ask with up to 4 questions instead of a series. While an ask of yours is open, add a related decision not as a second ask but as a revision of it: `previous_ask_id` = the open ask, `questions` = its questions plus the new one (up to 4), `changes` = what you added — the open ask is withdrawn as superseded; a `hint` in the result says when you are starting a series.
 - **A review re-round:** after revising the document, file a new review ask with `previous_ask_id` = the earlier ask and `changes` = what you changed (the earlier ask, if still open, is withdrawn as superseded). The owner sees the document as it was when you asked, so ask again after every revision they should read.
