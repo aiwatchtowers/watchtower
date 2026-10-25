@@ -60,8 +60,8 @@ package enum SpecReviewAnswer {
         return OwnerAskAnswer.Comment(anchor: anchor, body: body)
     }
 
-    /// The chapter heading with the chapter's first non-blank line as quote.
-    /// Offsets are UTF-8 bytes; an unknown chapter or bad range is nil.
+    /// The chapter heading (no `#`s) with the chapter's first body line as the
+    /// quote. Offsets are UTF-8 bytes; an unknown chapter or bad range is nil.
     private static func chapterAnchor(
         result: SpecReviewResult, key: String, snapshot: String
     ) -> (String, String)? {
@@ -71,24 +71,76 @@ package enum SpecReviewAnswer {
         let from = bytes.index(bytes.startIndex, offsetBy: chapter.start)
         let to = bytes.index(bytes.startIndex, offsetBy: chapter.end)
         guard let slice = String(bytes[from..<to]) else { return nil }
-        guard let line = firstNonBlankLine(slice) else { return nil }
-        return (chapter.heading, line)
+        return headingAndQuote(slice, fallbackHeading: chapter.heading)
     }
 
-    private static func firstNonBlankLine(_ text: String) -> String? {
-        text.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty }
-    }
-
-    /// The document's first heading line (title without its `#`s) and the
-    /// line itself; with no heading, no heading and the first non-blank line.
+    /// The document's first heading and that section's first body line; with
+    /// no heading, no heading and the first body line of the document.
     private static func firstHeadingAnchor(_ snapshot: String) -> (String, String) {
-        let lines = snapshot.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        if let line = lines.first(where: { $0.hasPrefix("#") }) {
-            let title = line.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)
-            return (title, line)
+        var inFence = false
+        var offset = 0
+        for line in snapshot.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { inFence.toggle() }
+            if !inFence, headingTitle(trimmed) != nil {
+                let rest = snapshot.index(snapshot.startIndex, offsetBy: offset)
+                return headingAndQuote(String(snapshot[rest...]), fallbackHeading: "")
+            }
+            offset += line.count + 1
         }
-        return ("", lines.first { !$0.isEmpty } ?? "")
+        return headingAndQuote(snapshot, fallbackHeading: "")
+    }
+
+    /// Anchors match the document as rendered, where the markers are gone:
+    /// the heading is its title and the quote the first body line (heading
+    /// lines and fenced code skipped), leading list/quote markers and inline
+    /// emphasis rendered away. A section with no body line quotes its title.
+    private static func headingAndQuote(_ slice: String, fallbackHeading: String) -> (String, String) {
+        var heading = ""
+        var inFence = false
+        for line in slice.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { inFence.toggle(); continue }
+            if inFence || trimmed.isEmpty { continue }
+            if let title = headingTitle(trimmed) {
+                if heading.isEmpty { heading = title }
+                continue
+            }
+            if let quote = renderedQuote(trimmed) {
+                return (heading.isEmpty ? plainTitle(fallbackHeading) : heading, quote)
+            }
+        }
+        let title = heading.isEmpty ? plainTitle(fallbackHeading) : heading
+        return (title, title)
+    }
+
+    private static func plainTitle(_ heading: String) -> String {
+        String(heading.trimmingCharacters(in: .whitespaces).drop { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The title of an ATX heading line ("## Title"), else nil.
+    private static func headingTitle(_ line: String) -> String? {
+        let hashes = line.prefix { $0 == "#" }
+        guard (1...6).contains(hashes.count) else { return nil }
+        let rest = line.dropFirst(hashes.count)
+        guard rest.first == " " || rest.first == "\t" else { return nil }
+        let title = rest.trimmingCharacters(in: .whitespaces)
+        return title.isEmpty ? nil : title
+    }
+
+    private static func renderedQuote(_ line: String) -> String? {
+        var text = Substring(line)
+        while let first = text.first, first == ">" || first == " " { text = text.dropFirst() }
+        if let first = text.first, "-*+".contains(first), text.dropFirst().first == " " {
+            text = text.dropFirst(2)
+        } else if let dot = text.firstIndex(of: "."), text[..<dot].allSatisfy(\.isNumber), !text[..<dot].isEmpty,
+                  text[text.index(after: dot)...].first == " " {
+            text = text[text.index(dot, offsetBy: 2)...]
+        }
+        let rendered = DocumentRendering.render(String(text)).text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = rendered.split(whereSeparator: \.isNewline).first else { return nil }
+        let quote = first.trimmingCharacters(in: .whitespaces)
+        return quote.isEmpty ? nil : quote
     }
 }

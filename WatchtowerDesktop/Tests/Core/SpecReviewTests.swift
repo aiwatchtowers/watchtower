@@ -99,7 +99,7 @@ final class SpecReviewTests: XCTestCase {
         let a = SpecReviewAnswer.build(result: r, marks: marks, note: "", verdict: .changes, snapshot: snapshot)
         let comment = try XCTUnwrap(a.comments.first)
         XCTAssertEqual(comment.heading, "Behaviour")
-        XCTAssertEqual(comment.quote, "## Behaviour")
+        XCTAssertEqual(comment.quote, "Muting lasts twenty-four hours")
         XCTAssertTrue(snapshot.contains(comment.quote))
     }
 
@@ -117,7 +117,7 @@ final class SpecReviewTests: XCTestCase {
         let sent = try XCTUnwrap(a.comments.last)
         XCTAssertEqual(sent.body, "From the previous run: old note")
         XCTAssertEqual(sent.heading, "Title")
-        XCTAssertEqual(sent.quote, "# Title")
+        XCTAssertEqual(sent.quote, "Intro text")
     }
 
     func testMarksRoundTrip() throws {
@@ -143,5 +143,26 @@ final class SpecReviewTests: XCTestCase {
         marks = try db.read { try SpecReviewQueries.marks($0, askID: 1) }
         XCTAssertEqual(Array(marks.keys), ["ch:1"])
         XCTAssertNil(try db.read { try SpecReviewQueries.row($0, askID: 1) })
+    }
+
+    func testUnanchoredQuoteIsRenderedBodyLineWithMultibyteText() throws {
+        let doc = "# Заголовок\nВступ\n## Поведение ✓\n\n- **Тихий** режим на сутки\n"
+        let start = doc.utf8.count - "## Поведение ✓\n\n- **Тихий** режим на сутки\n".utf8.count
+        let json = """
+        {"chapters":[{"key":"ch:1","heading":"Поведение ✓","start":\(start),"end":\(doc.utf8.count)},
+        {"key":"ch:2","heading":"## Пусто","start":\(doc.utf8.count),"end":\(doc.utf8.count)}],
+        "blind_spots":[{"key":"bs:1","text":"t","chapter":"ch:1"},{"key":"bs:2","text":"u","chapter":"ch:2"}]}
+        """
+        let r = try JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8))
+        let marks = [
+            "bs:1": SpecReviewMark(key: "bs:1", state: .comment, body: "a"),
+            "bs:2": SpecReviewMark(key: "bs:2", state: .comment, body: "b")
+        ]
+        let a = SpecReviewAnswer.build(result: r, marks: marks, note: "", verdict: .changes, snapshot: doc)
+        XCTAssertEqual(a.comments[0].heading, "Поведение ✓")
+        XCTAssertEqual(a.comments[0].quote, "Тихий режим на сутки")
+        // A chapter with no body line quotes its title.
+        XCTAssertEqual(a.comments[1].heading, "Пусто")
+        XCTAssertEqual(a.comments[1].quote, "Пусто")
     }
 }

@@ -258,9 +258,8 @@ package struct SpecReviewFinding: Equatable, Sendable {
 }
 
 extension SpecReviewResult {
-    /// Agreements, decided-alone items and blind spots as markable findings,
-    /// in that order. Checks are answers to lens questions, not findings, but
-    /// a concern can be commented on, so they are listed separately.
+    /// Agreements, decided-alone items, blind spots and checks (text = the
+    /// question) as markable findings, in that order.
     package var findings: [SpecReviewFinding] {
         agreements.map { SpecReviewFinding(key: $0.key, chapter: $0.chapter, text: $0.text, anchor: $0.anchor) }
             + decidedAlone.map { SpecReviewFinding(key: $0.key, chapter: $0.chapter, text: $0.text, anchor: $0.anchor) }
