@@ -171,7 +171,7 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 	if src.Folder != "" {
 		if r, err := os.OpenRoot(src.Folder); err == nil {
 			v.root = r
-			defer r.Close()
+			defer func() { _ = r.Close() }()
 		}
 	}
 
