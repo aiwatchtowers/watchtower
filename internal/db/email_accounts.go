@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -123,11 +124,15 @@ func (db *DB) DeleteEmailAccount(id int64) error {
 // after the server recreates the mailbox) is stored as its own row rather
 // than overwriting the pre-reset message that happened to share the same UID.
 func (db *DB) UpsertImapMessage(m ImapMessage, syncedAt string) error {
+	return upsertImapMessage(context.Background(), db, m, syncedAt)
+}
+
+func upsertImapMessage(ctx context.Context, q ContextQueryer, m ImapMessage, syncedAt string) error {
 	unread := 0
 	if m.IsUnread {
 		unread = 1
 	}
-	_, err := db.Exec(`INSERT INTO imap_messages
+	_, err := q.ExecContext(ctx, `INSERT INTO imap_messages
         (account_id, uid, uidvalidity, from_email, from_name, to_json, cc_json, subject, snippet,
          body_text, internal_date, is_unread, permalink, synced_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)

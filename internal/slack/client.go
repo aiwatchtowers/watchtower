@@ -3,18 +3,33 @@ package slack
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/slack-go/slack"
+
+	"watchtower/internal/netsec"
 )
 
-// Client wraps the slack-go client with rate limiting.
+// Client wraps the slack-go client with rate limiting. It keeps the token,
+// API URL and HTTP client itself for the calls it makes without slack-go
+// (search.messages decoded raw, file downloads).
 type Client struct {
 	api         *slack.Client
+	token       string
+	apiURL      string
+	http        *http.Client
+	files       *http.Client // file downloads: no whole-request timeout, the Slack-host redirect rule
+	teamDomain  atomic.Pointer[string]
 	rateLimiter *RateLimiter
 	logger      *log.Logger
 	answered    atomic.Uint64 // AnsweredCalls
@@ -82,28 +97,32 @@ func CloseIdleConnections() {
 
 // NewClient creates a new rate-limited Slack client.
 func NewClient(token string) *Client {
-	return &Client{
-		api:         slack.New(token, slack.OptionHTTPClient(newHTTPClient())),
-		rateLimiter: NewRateLimiter(),
-	}
+	return newClient(token, slack.APIURL, NewRateLimiter())
 }
 
-// NewClientWithAPI creates a client with a pre-configured slack.Client
-// (useful for testing with custom HTTP endpoints).
-func NewClientWithAPI(api *slack.Client) *Client {
-	return &Client{
-		api:         api,
-		rateLimiter: NewRateLimiter(),
-	}
+// NewClientWithAPIURL creates a client whose API calls go to apiURL (with a
+// trailing slash; a test's httptest server).
+func NewClientWithAPIURL(token, apiURL string) *Client {
+	return newClient(token, apiURL, NewRateLimiter())
 }
 
-// NewClientWithAPIUnlimited creates a client with a pre-configured slack.Client
-// and an unlimited rate limiter (for testing).
-func NewClientWithAPIUnlimited(api *slack.Client) *Client {
-	return &Client{
-		api:         api,
-		rateLimiter: NewUnlimitedRateLimiter(),
+// NewClientWithAPIURLUnlimited is NewClientWithAPIURL with an unlimited rate
+// limiter (for testing).
+func NewClientWithAPIURLUnlimited(token, apiURL string) *Client {
+	return newClient(token, apiURL, NewUnlimitedRateLimiter())
+}
+
+func newClient(token, apiURL string, rl *RateLimiter) *Client {
+	hc := newHTTPClient()
+	c := &Client{
+		api:         slack.New(token, slack.OptionAPIURL(apiURL), slack.OptionHTTPClient(hc)),
+		token:       token,
+		apiURL:      apiURL,
+		http:        hc,
+		rateLimiter: rl,
 	}
+	c.files = &http.Client{Timeout: fileDownloadTimeout, Transport: transport, CheckRedirect: c.fileRedirect}
+	return c
 }
 
 // SetLogger sets a logger for the client and its rate limiter.
@@ -285,6 +304,8 @@ type HistoryOptions struct {
 	Oldest    string
 	Latest    string
 	Limit     int
+	// Inclusive includes the messages at Oldest and Latest themselves.
+	Inclusive bool
 }
 
 // HistoryResponse contains messages and pagination info from conversation history.
@@ -311,6 +332,7 @@ func (c *Client) GetConversationHistory(ctx context.Context, opts HistoryOptions
 			Oldest:    opts.Oldest,
 			Latest:    opts.Latest,
 			Limit:     limit,
+			Inclusive: opts.Inclusive,
 		})
 		return err
 	})
@@ -402,40 +424,230 @@ func (c *Client) OpenDM(ctx context.Context, userID string) (string, error) {
 	return ch.ID, nil
 }
 
+// SearchMatch is one search.messages match with the fields slack-go's
+// SearchMessage drops: the message's files, subtype and upload flag.
+type SearchMatch struct {
+	slack.SearchMessage
+	Files   []slack.File `json:"files"`
+	Subtype string       `json:"subtype"`
+	Upload  bool         `json:"upload"`
+}
+
 // SearchResult holds one page of search.messages results.
 type SearchResult struct {
-	Messages []slack.SearchMessage
+	Messages []SearchMatch
 	Total    int
 	Page     int
 	Pages    int
 }
 
+// searchResponse is search.messages' answer, decoded raw.
+type searchResponse struct {
+	slack.SlackResponse
+	Messages struct {
+		Matches []SearchMatch `json:"matches"`
+		Paging  slack.Paging  `json:"paging"`
+		Total   int           `json:"total"`
+	} `json:"messages"`
+}
+
 // SearchMessages searches for messages matching the query. (Tier 2)
 // Returns one page of results; use page parameter for pagination (1-indexed).
+// The call is made here rather than through slack-go, whose SearchMessage
+// drops each match's files; a 429 and a Slack error come back as slack-go's
+// own error types, so the retry and backoff in doRequest are unchanged.
 func (c *Client) SearchMessages(ctx context.Context, query string, page int) (*SearchResult, error) {
-	var result *slack.SearchMessages
+	var result searchResponse
 	err := c.doRequest(ctx, Tier2, func() error {
 		c.logf("slack API: search.messages query=%q page=%d", query, page)
-		var err error
-		result, err = c.api.SearchMessagesContext(ctx, query, slack.SearchParameters{
-			Sort:          "timestamp",
-			SortDirection: "asc",
-			Count:         100,
-			Page:          page,
-		})
-		return err
+		result = searchResponse{}
+		return c.postAPI(ctx, "search.messages", url.Values{
+			"query":    {query},
+			"sort":     {"timestamp"},
+			"sort_dir": {"asc"},
+			"count":    {"100"},
+			"page":     {strconv.Itoa(page)},
+		}, &result)
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	return &SearchResult{
-		Messages: result.Matches,
-		Total:    result.Total,
-		Page:     result.Paging.Page,
-		Pages:    result.Paging.Pages,
+		Messages: result.Messages.Matches,
+		Total:    result.Messages.Total,
+		Page:     result.Messages.Paging.Page,
+		Pages:    result.Messages.Paging.Pages,
 	}, nil
 }
+
+// postAPI posts a form to one Web API method with the token as a bearer
+// header and decodes the JSON answer into dst. A non-200 status is slack-go's
+// RateLimitedError (429 with Retry-After) or StatusCodeError; ok:false is
+// dst.Err(), a SlackErrorResponse.
+func (c *Client) postAPI(ctx context.Context, method string, form url.Values, dst interface{ Err() error }) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL+method, strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := statusError(resp); err != nil {
+		return err
+	}
+	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
+		return err
+	}
+	return dst.Err()
+}
+
+// statusError maps a non-200 answer the way slack-go does: a 429 with a
+// parsable Retry-After is a RateLimitedError, any other a StatusCodeError.
+func statusError(resp *http.Response) error {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if secs, err := strconv.ParseInt(resp.Header.Get("Retry-After"), 10, 64); err == nil {
+			return &slack.RateLimitedError{RetryAfter: time.Duration(secs) * time.Second}
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return slack.StatusCodeError{Code: resp.StatusCode, Status: resp.Status}
+	}
+	return nil
+}
+
+// fileDownloadTimeout backstops one file download, body included (the
+// caller's context is the working bound).
+const fileDownloadTimeout = 2 * time.Minute
+
+// File download errors.
+var (
+	// ErrTooLarge: the file is larger than the caller's limit.
+	ErrTooLarge = errors.New("slack: file larger than the download limit")
+	// ErrFileGone: Slack answered 404 or 410 for the file.
+	ErrFileGone = errors.New("slack: file not found")
+	// ErrFileURLRefused: the URL, or a redirect, is not one of the account's
+	// Slack file hosts over https. No request carries the token there.
+	ErrFileURLRefused = errors.New("slack: file URL refused")
+)
+
+// SetTeamDomain sets the account's workspace domain (slack_accounts.team_domain),
+// whose <domain>.slack.com host DownloadFile accepts beside files.slack.com.
+func (c *Client) SetTeamDomain(domain string) {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	c.teamDomain.Store(&d)
+}
+
+// fileHostAllowed reports an https URL, no userinfo, default port, on
+// files.slack.com or the account's own <team_domain>.slack.com.
+func (c *Client) fileHostAllowed(u *url.URL) bool {
+	if u == nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "files.slack.com" {
+		return true
+	}
+	d := c.teamDomain.Load()
+	return d != nil && validDomainLabel(*d) && host == *d+".slack.com"
+}
+
+// validDomainLabel reports one DNS label (a Slack workspace domain).
+func validDomainLabel(s string) bool {
+	if s == "" || len(s) > 63 || s[0] == '-' || s[len(s)-1] == '-' {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// fileRedirect is the download client's CheckRedirect: netsec.SecretRedirect
+// (https, the first request's host) and the Slack file host allowlist.
+func (c *Client) fileRedirect(req *http.Request, via []*http.Request) error {
+	if err := netsec.SecretRedirect("Slack file download")(req, via); err != nil {
+		return fmt.Errorf("%w: %v", ErrFileURLRefused, err)
+	}
+	if !c.fileHostAllowed(req.URL) {
+		return fmt.Errorf("%w: redirect to a host other than the Slack file hosts", ErrFileURLRefused)
+	}
+	return nil
+}
+
+// DownloadFile opens a file's url_private(_download) with the account's
+// token as a bearer header. (Tier 4, the gate GetUserInfo shares.) Only
+// https://files.slack.com and https://<team_domain>.slack.com are fetched;
+// any other URL is ErrFileURLRefused before a request is made, and so is a
+// redirect off the first request's host. A size over limit is ErrTooLarge,
+// at the headers or while reading. The type returned is the declared one.
+func (c *Client) DownloadFile(ctx context.Context, fileURL string, limit int64) (io.ReadCloser, string, error) {
+	u, err := url.Parse(fileURL)
+	if err != nil || !c.fileHostAllowed(u) {
+		return nil, "", ErrFileURLRefused
+	}
+	var resp *http.Response
+	err = c.doRequest(ctx, Tier4, func() error {
+		c.logf("slack API: file download")
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		r, err := c.files.Do(req)
+		if err != nil {
+			return err
+		}
+		if err := statusError(r); err != nil {
+			_ = r.Body.Close()
+			return err
+		}
+		resp = r
+		return nil
+	})
+	if err != nil {
+		var sc slack.StatusCodeError
+		if errors.As(err, &sc) && (sc.Code == http.StatusNotFound || sc.Code == http.StatusGone) {
+			return nil, "", ErrFileGone
+		}
+		return nil, "", err
+	}
+	if resp.ContentLength > limit {
+		_ = resp.Body.Close()
+		return nil, "", ErrTooLarge
+	}
+	return &limitedBody{rc: resp.Body, limit: limit}, resp.Header.Get("Content-Type"), nil
+}
+
+// limitedBody fails with ErrTooLarge once more than limit bytes are read:
+// that Read returns the bytes up to the limit, and every later Read 0 and
+// ErrTooLarge (the error is latched).
+type limitedBody struct {
+	rc          io.ReadCloser
+	limit, read int64
+	err         error
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	n, err := b.rc.Read(p)
+	b.read += int64(n)
+	if b.read > b.limit {
+		b.err = ErrTooLarge
+		return n - int(b.read-b.limit), b.err
+	}
+	return n, err
+}
+
+func (b *limitedBody) Close() error { return b.rc.Close() }
 
 // GetUserInfo fetches a single user's profile. (Tier 4)
 func (c *Client) GetUserInfo(ctx context.Context, userID string) (*slack.User, error) {

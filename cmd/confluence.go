@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/extract"
 	"watchtower/internal/extsync"
 	"watchtower/internal/jira"
+	"watchtower/internal/media"
 )
 
 // providerConfluence is the ext_sources.provider every confluence command
@@ -591,10 +592,38 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 		Hints:    confluenceHints,
 		// Jira keys in stored Confluence text → doc_links (spec §10). Wired
 		// here so the engine stays free of link/Atlassian packages.
-		Relink: func(ctx context.Context, q extsync.Queryer, ref string, texts ...string) error {
-			return doclinks.LinkConfluenceDoc(ctx, q, ref, texts...)
-		},
+		Relink: confluenceRelink,
+		// Inline images, image attachments and links → media_items, in the
+		// item's write transaction (the media pass describes them).
+		Media: media.ConfluenceRecorder(media.DenyHosts(cfg)),
 	}
+}
+
+// confluenceRelink records the Jira keys of a stored Confluence document.
+func confluenceRelink(ctx context.Context, q extsync.Queryer, ref string, texts ...string) error {
+	return doclinks.LinkConfluenceDoc(ctx, q, ref, texts...)
+}
+
+// registerConfluenceMedia gives the media pass what Confluence media need:
+// the opener over the external sync's own per-account fetchers (one client
+// and token refresh per account), the resolver of a page's inline images,
+// and the hook that relinks a document once one of its images is
+// described. A nil pass (not set before the external sync was wired)
+// registers nothing and is logged, once per daemon start.
+func registerConfluenceMedia(p *media.Pipeline, database *db.DB, fetchers map[int64]extsync.Fetcher, logger *log.Logger) {
+	if p == nil {
+		logger.Printf("confluence: no media pass to register with; Confluence images and links stay undescribed")
+		return
+	}
+	if p.Openers == nil {
+		p.Openers = map[string]media.Opener{}
+	}
+	if p.Resolvers == nil {
+		p.Resolvers = map[string]media.Resolver{}
+	}
+	p.Openers["confluence"] = media.ConfluenceOpener{DB: database, Fetchers: fetchers}
+	p.Resolvers["confluence"] = media.ConfluenceResolver{DB: database, Logger: p.Logger}
+	p.AfterDescribed = append(p.AfterDescribed, media.ConfluenceRelinkHook(database, confluenceRelink))
 }
 
 // syncConfluenceSources runs every source in turn, like the daemon's

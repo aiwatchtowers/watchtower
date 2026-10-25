@@ -41,14 +41,15 @@ func (db *DB) LiveSlackMessageKeys(accountID int64, from, to float64) ([]SlackMe
 
 // TombstoneSlackMessages turns each live message into a tombstone in one
 // transaction: is_deleted = 1, empty text and raw_json = "{}" (ts, user and
-// thread_ts stay so threads and ids still resolve), and deletes its reactions
-// and files rows. The inbox items made from the message stay, but their copies
-// of its text (snippet, context, raw_text, and its entry in a channel item's
-// mentions list) are blanked. FTS and kb_dirty follow through triggers. A key
-// that is already a tombstone, or not stored, is skipped. Keys are written in
-// transactions of at most tombstoneBatch, so no write holds the lock long. It
-// returns how many rows were tombstoned (those of committed batches when a
-// later batch fails).
+// thread_ts stay so threads and ids still resolve), and deletes its reactions,
+// files and media_items rows (image and link descriptions). The inbox items
+// made from the message stay, but their copies of its text (snippet, context,
+// raw_text, and its entry in a channel item's mentions list) are blanked.
+// FTS and kb_dirty follow through triggers. A key that is already a
+// tombstone, or not stored, is skipped. Keys are written in transactions of
+// at most tombstoneBatch, so no write holds the lock long. It returns how
+// many rows were tombstoned (those of committed batches when a later batch
+// fails).
 func (db *DB) TombstoneSlackMessages(keys []SlackMessageKey) (int, error) {
 	total := 0
 	for start := 0; start < len(keys); start += tombstoneBatch {
@@ -74,6 +75,14 @@ func (db *DB) tombstoneSlackBatch(keys []SlackMessageKey) (int, error) {
 	stmts := []string{
 		`DELETE FROM reactions WHERE channel_id = ? AND message_ts = ?`,
 		`DELETE FROM files WHERE message_channel_id = ? AND message_ts = ?`,
+		// A tombstone is an UPDATE, so the media_items cascade never fires:
+		// the image and link descriptions go explicitly. media_items_kb_dirty_del
+		// marks each ok row's stored kb_ref, which can be stale (a top-level
+		// message that gained replies moved from its day document to its
+		// thread); messages_kb_dirty marks the document the message renders
+		// into now (the SQL twin of kb.MediaParentRef). A fetch that returns
+		// the message lets discovery record its media again.
+		`DELETE FROM media_items WHERE slack_channel_id = ? AND slack_ts = ?`,
 		`UPDATE inbox_items SET snippet = '', context = '', raw_text = ''
 		 WHERE channel_id = ? AND message_ts = ? AND (snippet != '' OR context != '' OR raw_text != '')`,
 		// A channel-level item lists folded messages in mentions (ts deduped,

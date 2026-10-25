@@ -1,0 +1,21 @@
+{
+  "jiraKeys": [
+    "PROJ-7"
+  ],
+  "sections": [
+    {
+      "text": "Intro with a public guide and an anchor."
+    },
+    {
+      "heading": "Release plan",
+      "anchor": "Release-plan",
+      "text": "Release plan\nSee inline, PROJ-7.\nSigned:\nspec | "
+    },
+    {
+      "heading": "Other page image",
+      "anchor": "Other-page-image",
+      "text": "Other page image\nand site mail"
+    }
+  ],
+  "userIDs": null
+}

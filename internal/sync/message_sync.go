@@ -303,7 +303,7 @@ func (o *Orchestrator) syncChannel(ctx context.Context, channelID string, full b
 		}
 
 		// Upsert messages in a transaction
-		count, err := o.upsertMessagePage(channelID, resp.Messages)
+		count, err := o.upsertMessagePage(ctx, channelID, resp.Messages)
 		if err != nil {
 			return fmt.Errorf("upserting messages: %w", err)
 		}
@@ -388,8 +388,11 @@ func (o *Orchestrator) computeOldest(state *db.SyncState, full bool) string {
 	return fmt.Sprintf("%d.000000", cutoff.Unix())
 }
 
-// upsertMessagePage inserts/updates a page of messages in a single transaction.
-func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Message) (int, error) {
+// upsertMessagePage inserts/updates a page of messages in a single
+// transaction, with each new message's images and links: a re-upsert (an
+// edit, a Slack tombstone) replaces both kinds.
+func (o *Orchestrator) upsertMessagePage(ctx context.Context, channelID string, messages []goslack.Message) (int, error) {
+	plan := o.mediaPlan(ctx) // read once per run, before the write transaction
 	tx, err := o.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("beginning transaction: %w", err)
@@ -437,6 +440,19 @@ func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Me
 	}
 	if err := o.db.UpsertReactionBatch(tx, reactions); err != nil {
 		return 0, fmt.Errorf("upserting reactions: %w", err)
+	}
+
+	if plan != nil {
+		for _, msg := range messages {
+			if !plan.isNew(msg.Timestamp) {
+				continue
+			}
+			o.recordSlackMedia(ctx, tx, slackMediaWrite{
+				channelID: channelID, ts: msg.Timestamp, user: watchtowerslack.Namespace(o.accountID, msg.User),
+				found:   slackMediaFound(msg.Text, msg.SubType, msg.Files, plan.refused),
+				replace: slackReplaceAll,
+			})
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

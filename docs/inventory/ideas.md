@@ -77,9 +77,13 @@ Floors are seeded at install time: migration 00050 stamps the three original `wo
 - `internal/db/ideas_test.go::TestIdeas01_JiraWindowBoundaryDrainKeepsSameTimestampIssues`
 - `internal/db/ideas_test.go::TestIdeas01_JiraWindowIsDeterministicWithinATimestamp`
 - `internal/digest/topic_ideas_test.go::TestStoreDigest_EmptyIdeasAndDecisionsPersistAsEmptyArrays`
+- `internal/db/chat_knowledge_test.go::TestIdeas01_PendingChatImageHoldsTheFloor` (2026-10-25: a turn whose attached image is still being described is not consumed — the listing stops below it)
+- `internal/db/chat_knowledge_test.go::TestIdeas01_ChatImageHoldIsBounded` (2026-10-25: the hold lasts at most 2 h, and only for content after the media start mark, so a pass that never runs cannot freeze chat mining)
 - `internal/ideas/consolidate_floors_test.go::TestIdeas01_ChatFloorStopsAtBudgetDroppedTurn`
 - `internal/ideas/consolidate_floors_test.go::TestIdeas01_ChatTurnsInsideQuietWindowNotConsumed`
 - `internal/ideas/consolidate_floors_test.go::TestIdeas01_ChatPrefixedTurnsConsumedNotRendered`
+
+**Chat images (2026-10-25, asks #576/#590/#594).** An owner chat turn carries one line per described image attachment (`ChatTurnForIdeas.ImageLines`, see IDEA-02). So that a screenshot's description is in the material, the chat listing also **stops below the first turn with an image attachment still `pending`** — only an item with `content_at` at or after `media_state.start_at`, younger than 2 hours (`maxChatImageHold`), in a conversation the listing would mine; past 2 h the turn is mined without the line. A description that lands after the floor passed its turn is not re-mined (accepted v1 limit). An image-only owner turn is still skipped: a description alone is not the owner deciding.
 
 **Locked since:** 2026-08-07
 
@@ -98,6 +102,8 @@ The validation has a write-time twin one layer down, so the exact-match gate is 
 **Test guards:**
 - `internal/ideas/consolidate_test.go::TestIdeas02_InventedRefPartiallyDropped`
 - `internal/ideas/consolidate_test.go::TestIdeas02_InventedRefAllDroppedOpDiscarded`
+- `internal/ideas/consolidate_test.go::TestConsolidate_ChatImageLinesRenderedButNeverStoredAsQuote` (2026-10-25: an image line is in the material, the stored quote is the typed text only)
+- `internal/db/chat_knowledge_test.go::TestListChatTurnsForIdeas_AppendsImageDescriptions`, `TestListChatTurnsForIdeas_AssistantTurnsGetNoImageLines`, `internal/kb/media_test.go::TestChatImageLabelMatchesKnowledgeLabel` (2026-10-25, support)
 - `internal/ideas/consolidate_test.go::TestIdeas02_SlackRefMissingFromMessages_NotRenderedNotCitable`
 - `internal/ideas/consolidate_test.go::TestIdeas02_SlackRefDeletedMessage_Dropped`
 - `internal/ideas/consolidate_test.go::TestIdeas02_SlackRefRealMessage_SurvivesValidation`
@@ -111,6 +117,8 @@ The validation has a write-time twin one layer down, so the exact-match gate is 
 - `internal/ideas/stage1_bounds_test.go::TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags`
 - `internal/ideas/stage1_bounds_test.go::TestRenderJiraBlock_BudgetDropsIssueFromBlockAndTags`
 - `internal/ideas/consolidate_test.go::TestIdeas02_ChatInventedRefDropped`
+
+**Chat image lines (2026-10-25, asks #576/#590/#594).** A described image attached to an owner turn renders after the turn's text as `[image "<name>" — Image (AI description of an attached image): <title> — <description>]` (`db.ChatImageLabel` = `kb.MediaImageLabel`, capped at 700 runes); assistant turns get none. The line is machine text, never the owner's words: a chat mention's stored quote stays the turn's typed text (`chatTurnText`), and prompt `ideas.consolidate` v6 tells the model that labelled image lines are data. The ref is still the turn's `chat:<conversation_id>:<message_id>`.
 
 **Locked since:** 2026-08-07
 
@@ -176,6 +184,8 @@ The check is a lookup per mention inside `applyConsolidateOps`, backed by `idx_i
 **Locked since:** 2026-08-08
 
 ## Changelog
+
+- 2026-10-25 (images and links become knowledge, board #907, spec `docs/superpowers/specs/2026-10-25-media-knowledge-design.md`, **IDEA-01 and IDEA-02 extended, owner approved in asks #576, #590 and #594**): owner chat turns carry labelled image description lines; a pending image holds the chat floor below its turn for at most 2 h (IDEA-01); the stored quote stays the typed text and `ideas.consolidate` is v6 (IDEA-02). Guards added: `TestIdeas01_PendingChatImageHoldsTheFloor`, `TestIdeas01_ChatImageHoldIsBounded`, `TestConsolidate_ChatImageLinesRenderedButNeverStoredAsQuote`, with support tests listed. No guard relaxed.
 
 - 2026-10-24 (AI chats feed the knowledge base, spec `docs/superpowers/specs/2026-10-24-chat-knowledge-design.md`, **IDEA-01/02/05 extended to the chat source, owner approved in ask #551**): AI chat turns are a fifth consolidator source. IDEA-01: the `workspace.ideas_chat_floor` (migration 00154 seeds it at the newest `chat_messages` id, so old chats are never mined; the Feature Manager re-enable fast-forwards it, FEAT-03), a 30-minute quiet window, `error` replies skipped and `partial` kept. IDEA-02: a chat mention ref is `chat:<conversation_id>:<message_id>` and must name a real `chat_messages` row of that run's input; a mention's `said_at`, author and quote are set by Go from the turn (the quote is the turn's text as rendered), never from the model; the `new_note` op is accepted only when every mention is a chat ref; prompt `ideas.consolidate` v5. IDEA-05: the ref-level dedup covers `chat` refs unchanged. **Exception to "decisions are born active" (2026-08-12 entry below):** an item whose evidence is chat only is `chat_born = 1` and born `proposed`, decisions included, because the owner's talk with the assistant is not yet a record; it waits for Approve, and the review queue (Go `CountIdeasForReview`, Swift `reviewKindCond`) admits chat-born decisions although it excludes every other decision. **Hidden until approved:** `chat_born = 1 AND status IN ('proposed','not_now','rejected','dropped')` is hidden from `search_knowledge`, `list_ideas`/`get_idea`, `get_task_context`, Catch-Up decisions, the `ideas list` CLI and the Desktop Decisions ledger with its badges (`db.KnowledgeVisibleIdeaCond`, Swift `knowledgeVisibleSQL`); the consolidator's own prompt readers (`ListIdeasForPrompt`, `ListIdeaVerdictExamples`) still see them, so a repeat is attached instead of proposed again. **Assistant words never reach an agent:** a chat mention authored by `assistant` is stored (the owner's card shows it while judging) but left out of every agent-facing reader — the idea document in the knowledge index, `get_idea`'s mentions, `list_ideas`'s quote match and Catch-Up's decision quote (`db.AgentVisibleMentionCond`), and on the Desktop the Discuss in Chat context and the Inbox card's Discuss/Hand to Agent body (Swift `IdeaMention.isAgentVisible`) — because a chat `attach_mention` onto an active item lands without the owner's press (ask #516). Owner-authored chat quotes are the owner's verbatim words and stay. Owner-written items from the `решили:`/`факт:` prefixes are `chat_born` and born `active`, so they are visible at once. **`code_question` conversations are excluded** from every chat path (spec 2026-10-02 §9.4, owner decision 2). Nothing relaxed; guards added: `TestConsolidate_ChatMentionAuthorAndTimeFromTurn` (author, time and quote from the turn), `TestConsolidate_ChatAttachOnActiveItem_AssistantQuoteNotIndexed`, `TestCatchupDecisions_SkipAssistantChatMentions`, `TestGetIdea_SkipsAssistantChatMentions`, `TestIdeas01_ChatFloorStopsAtBudgetDroppedTurn`, `TestIdeas01_ChatTurnsInsideQuietWindowNotConsumed`, `TestIdeas01_ChatPrefixedTurnsConsumedNotRendered`, `TestIdeas02_ChatInventedRefDropped`.
 - 2026-10-23 (board #801, C3 Task 9): the stage-2 consolidator runs as the Idea finder built-in automation at its slot (`phaseIdeaFinder`, replacing `phaseIdeas`; its gate probes the backfill lock and the throttle, the primitive takes the lock and the throttle advances whenever it ran, as before). Contracts unchanged; enforced by the `ideas.consolidate` primitive over the same Go pipeline; guards unchanged, no guard relaxed.

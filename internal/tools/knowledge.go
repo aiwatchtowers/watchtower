@@ -42,7 +42,7 @@ func NewSearchKnowledge() *Tool {
 			"document there with from_chunk) with its chunk_anchor (e.g. the Slack message ts), and a source " +
 			"anchor and permalink for links. In a workbench session or a chat project's chat, hits from its own " +
 			"Slack/Jira/Confluence sources rank first and carry in_scope (workbench_scope: only or off to change " +
-			"that); a workbench folder's text files (source project_doc) are searchable too.",
+			"that); a workbench folder's text files (source project_doc) are searchable too. " + kb.MediaReaderLine,
 		InputSchema: mustSchema[searchKnowledgeArgs]("search_knowledge"),
 		Access:      AccessRead,
 		CompanyData: true,

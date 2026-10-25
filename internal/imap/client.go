@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"watchtower/internal/netsec"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-message"
 	"github.com/emersion/go-message/mail"
 )
 
@@ -250,7 +252,7 @@ func messageFromBuffer(buf *imapclient.FetchMessageBuffer) Message {
 		}
 	}
 	if raw := buf.FindBodySection(&imap.FetchItemBodySection{}); raw != nil {
-		m.BodyText = extractPlainText(raw)
+		m.BodyText, m.Images = parseMIME(raw)
 		// truncateUTF8 (sync.go) backs off to the last valid rune boundary — a
 		// raw byte slice here could split a multibyte character and store
 		// invalid UTF-8 in imap_messages.snippet.
@@ -259,11 +261,13 @@ func messageFromBuffer(buf *imapclient.FetchMessageBuffer) Message {
 	return m
 }
 
-// extractPlainText walks the MIME tree for the first inline text/plain part.
-// Any parse failure (unknown charset, malformed MIME) falls back to an empty
-// body rather than failing the whole sync — the subject/snippet still carry
-// enough signal for triage.
-func extractPlainText(raw []byte) string {
+// walkMIME walks raw's MIME tree once (mail.CreateReader): it returns the
+// first inline text/plain body and calls image, if set, for each leaf
+// image/* part in walk order (Index 0, 1, …) with its decoded body; image
+// returning false stops the walk. Any parse failure (unknown charset,
+// malformed MIME) ends the walk with what was found — the subject/snippet
+// still carry enough signal for triage.
+func walkMIME(raw []byte, image func(ImagePart, io.Reader) bool) string {
 	r, err := mail.CreateReader(bytes.NewReader(raw))
 	if r == nil {
 		return ""
@@ -271,27 +275,131 @@ func extractPlainText(raw []byte) string {
 	defer func() { _ = r.Close() }()
 	_ = err // CreateReader returns a usable Reader alongside unknown-charset errors
 
+	text, haveText, index := "", false, 0
 	for {
 		part, err := r.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
+		if err != nil { // io.EOF or a malformed part
+			return text
 		}
-		if err != nil {
-			break
-		}
-		inline, ok := part.Header.(*mail.InlineHeader)
-		if !ok {
+		var h message.Header
+		inline := false
+		switch ph := part.Header.(type) {
+		case *mail.InlineHeader:
+			h, inline = ph.Header, true
+		case *mail.AttachmentHeader:
+			h = ph.Header
+		default:
 			continue
 		}
-		ct, _, _ := inline.ContentType()
-		if ct != "" && ct != "text/plain" {
+		ct, ctParams, _ := h.ContentType()
+		if inline && !haveText && (ct == "" || ct == "text/plain") {
+			if body, err := io.ReadAll(part.Body); err == nil {
+				text, haveText = string(body), true
+			}
 			continue
 		}
-		body, err := io.ReadAll(part.Body)
-		if err != nil {
+		if !strings.HasPrefix(ct, "image/") {
 			continue
 		}
-		return string(body)
+		_, dispParams, _ := h.ContentDisposition()
+		name := dispParams["filename"]
+		if name == "" {
+			name = ctParams["name"]
+		}
+		ip := ImagePart{Index: index, Filename: name, MediaType: ct,
+			ContentID: strings.Trim(strings.TrimSpace(h.Get("Content-Id")), "<>")}
+		index++
+		if image != nil && !image(ip, part.Body) {
+			return text
+		}
 	}
-	return ""
+}
+
+// parseMIME returns raw's first inline text/plain body and its image parts.
+func parseMIME(raw []byte) (string, []ImagePart) {
+	var images []ImagePart
+	text := walkMIME(raw, func(ip ImagePart, body io.Reader) bool {
+		ip.Size, _ = io.Copy(io.Discard, body)
+		images = append(images, ip)
+		return true
+	})
+	return text, images
+}
+
+// ErrImagePartGone: the message has no image part at that index.
+// ErrMessageGone: no message with that UID. ErrMessageTooLarge: over the
+// caller's limit.
+var (
+	ErrImagePartGone   = errors.New("imap: image part is gone")
+	ErrMessageGone     = errors.New("imap: message is gone")
+	ErrMessageTooLarge = errors.New("imap: message is too large")
+)
+
+// ImagePartAt returns the decoded bytes of image part index of raw (at most
+// limit, else ErrMessageTooLarge), in memory.
+func ImagePartAt(raw []byte, index int, limit int64) ([]byte, error) {
+	var data []byte
+	var readErr error
+	found := false
+	walkMIME(raw, func(ip ImagePart, body io.Reader) bool {
+		if ip.Index != index {
+			return true
+		}
+		found = true
+		data, readErr = io.ReadAll(io.LimitReader(body, limit+1))
+		return false
+	})
+	switch {
+	case !found:
+		return nil, ErrImagePartGone
+	case readErr != nil:
+		return nil, fmt.Errorf("imap: reading image part %d: %w", index, readErr)
+	case int64(len(data)) > limit:
+		return nil, ErrMessageTooLarge
+	}
+	return data, nil
+}
+
+// FetchRaw returns the whole raw message uid of the selected folder, in
+// memory only (never written anywhere): its RFC822.SIZE is checked against
+// limit first, so an oversized message is never downloaded. The fetch
+// peeks, so the message's \Seen flag is untouched.
+func (cl *Client) FetchRaw(uid uint32, limit int64) ([]byte, error) {
+	set := imap.UIDSetNum(imap.UID(uid))
+	bufs, err := cl.c.Fetch(set, &imap.FetchOptions{UID: true, RFC822Size: true}).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetching the size of uid %d: %w", uid, err)
+	}
+	buf := findUID(bufs, uid)
+	if buf == nil {
+		return nil, ErrMessageGone
+	}
+	if buf.RFC822Size > limit {
+		return nil, ErrMessageTooLarge
+	}
+	section := &imap.FetchItemBodySection{Peek: true}
+	bufs, err = cl.c.Fetch(set, &imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap: fetching uid %d: %w", uid, err)
+	}
+	if buf = findUID(bufs, uid); buf == nil {
+		return nil, ErrMessageGone
+	}
+	raw := buf.FindBodySection(&imap.FetchItemBodySection{})
+	if raw == nil {
+		return nil, ErrMessageGone
+	}
+	if int64(len(raw)) > limit {
+		return nil, ErrMessageTooLarge
+	}
+	return raw, nil
+}
+
+func findUID(bufs []*imapclient.FetchMessageBuffer, uid uint32) *imapclient.FetchMessageBuffer {
+	for _, b := range bufs {
+		if uint32(b.UID) == uid {
+			return b
+		}
+	}
+	return nil
 }

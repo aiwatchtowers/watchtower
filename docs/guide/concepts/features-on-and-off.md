@@ -18,7 +18,7 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Feature | Cost | Feeds into |
 |---|---|---|
 | Attention detection (no AI) | None | Briefing |
-| Knowledge search (no AI) | None | |
+| Knowledge search | Medium (images and links) | |
 | Confluence in search (no AI) | None | Knowledge search |
 | Slack Digests | Heavy | Tracks, People Cards, Ideas, Briefing |
 | Stream Digests (mail and Jira) | Medium | Ideas, Attention detection |

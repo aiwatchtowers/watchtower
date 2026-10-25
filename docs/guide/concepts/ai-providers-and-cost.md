@@ -29,7 +29,7 @@ Override either tier in **Light Model** and **Strong Model**, or press **Default
 
 ## What drives cost
 
-- **Features, not tabs.** Slack Digests and Tracks are the heavy ones, every cycle. People Cards, Stream Digests, Ideas, Memory and Next Step are medium. Briefing and Day Plan are light, once a day. Attention detection, Knowledge search and Claude plan limits spend nothing. The badge is in **Settings → Features** ([Turning features on and off](features-on-and-off.md)).
+- **Features, not tabs.** Slack Digests and Tracks are the heavy ones, every cycle. People Cards, Stream Digests, Ideas, Memory, Next Step and Knowledge search (its images and links) are medium. Briefing and Day Plan are light, once a day. Attention detection and Claude plan limits spend nothing. The badge is in **Settings → Features** ([Turning features on and off](features-on-and-off.md)).
 - **Channels.** Digests are per channel, so a bot-heavy channel burns tokens. In **Statistics** you can **Mute for AI** a channel or a person; muted ones are skipped by digests, tracks and the briefing, but the chat, Catch Up and Memory can still read them.
 - **Chat and Workbench.** They cost nothing until you send a message or start a session. One exception: in [Branch review](../features/workbench/diff-review.md), **Deep** mode makes a strong-model AI overview when a round opens and after each **Refresh** that finds new changes; **Quick** mode makes one only when you press **Make overview**.
 - **A fresh connection.** The first month of history is processed by AI too. See [History backfill](history-backfill.md).
