@@ -356,6 +356,30 @@ CREATE INDEX idx_linear_teams_key ON linear_teams(key)
 index	idx_linear_user_map_slack
 CREATE INDEX idx_linear_user_map_slack ON linear_user_map(slack_user_id)
 
+index	idx_media_items_chat
+CREATE INDEX idx_media_items_chat ON media_items(chat_attachment_id)
+
+index	idx_media_items_content
+CREATE INDEX idx_media_items_content ON media_items(content_key, scope)
+
+index	idx_media_items_ext
+CREATE INDEX idx_media_items_ext ON media_items(ext_source_id, ext_id)
+
+index	idx_media_items_gmail
+CREATE INDEX idx_media_items_gmail ON media_items(gmail_account_id, gmail_message_id)
+
+index	idx_media_items_imap
+CREATE INDEX idx_media_items_imap ON media_items(imap_account_id, imap_uidvalidity, imap_uid)
+
+index	idx_media_items_pending
+CREATE INDEX idx_media_items_pending ON media_items(status, from_owner, content_at)
+
+index	idx_media_items_slack
+CREATE INDEX idx_media_items_slack ON media_items(slack_channel_id, slack_ts)
+
+index	idx_media_items_target
+CREATE INDEX idx_media_items_target ON media_items(target_image_id)
+
 index	idx_meeting_notes_event
 CREATE INDEX idx_meeting_notes_event ON meeting_notes(event_id)
 
@@ -2014,6 +2038,70 @@ position REAL NOT NULL DEFAULT 0,
 PRIMARY KEY (account_id, id)
 )
 
+table	media_items
+CREATE TABLE media_items (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+kind TEXT NOT NULL CHECK (kind IN ('image','link')),
+parent_kind TEXT NOT NULL CHECK (parent_kind IN ('slack','confluence','gmail','imap','chat','target')),
+parent_key TEXT NOT NULL,
+slack_channel_id TEXT,
+slack_ts TEXT,
+ext_source_id INTEGER,
+ext_id TEXT,
+gmail_account_id INTEGER,
+gmail_message_id TEXT,
+imap_account_id INTEGER,
+imap_uidvalidity INTEGER,
+imap_uid INTEGER,
+chat_attachment_id INTEGER REFERENCES chat_attachments(id) ON DELETE CASCADE,
+target_image_id INTEGER REFERENCES project_target_images(id) ON DELETE CASCADE,
+anchor TEXT NOT NULL DEFAULT '',
+locator TEXT NOT NULL,
+fetch_url TEXT NOT NULL DEFAULT '',
+name TEXT NOT NULL DEFAULT '',
+media_type TEXT NOT NULL DEFAULT '',
+size_bytes INTEGER NOT NULL DEFAULT 0,
+content_key TEXT NOT NULL DEFAULT '',
+scope TEXT NOT NULL,
+from_owner INTEGER NOT NULL DEFAULT 0,
+content_at TEXT NOT NULL,
+status TEXT NOT NULL DEFAULT 'pending'
+CHECK (status IN ('pending','ok','skipped_type','skipped_junk','too_large','unreachable','unavailable','failed')),
+attempts INTEGER NOT NULL DEFAULT 0,
+error TEXT NOT NULL DEFAULT '',
+title TEXT NOT NULL DEFAULT '',
+body TEXT NOT NULL DEFAULT '',
+image_text TEXT NOT NULL DEFAULT '',
+keys_json TEXT NOT NULL DEFAULT '[]',
+kb_source TEXT NOT NULL DEFAULT '',
+kb_ref TEXT NOT NULL DEFAULT '',
+discovered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+described_at TEXT NOT NULL DEFAULT '',
+UNIQUE (parent_key, kind, locator),
+FOREIGN KEY (slack_channel_id, slack_ts) REFERENCES messages(channel_id, ts) ON DELETE CASCADE,
+FOREIGN KEY (ext_source_id, ext_id) REFERENCES ext_documents(source_id, ext_id) ON DELETE CASCADE,
+FOREIGN KEY (gmail_account_id, gmail_message_id) REFERENCES gmail_messages(account_id, id) ON DELETE CASCADE,
+FOREIGN KEY (imap_account_id, imap_uidvalidity, imap_uid) REFERENCES imap_messages(account_id, uidvalidity, uid) ON DELETE CASCADE,
+-- exactly the parent kind's columns are set
+CHECK ((slack_channel_id IS NOT NULL) = (parent_kind = 'slack')
+AND (slack_ts IS NOT NULL) = (parent_kind = 'slack')
+AND (ext_source_id IS NOT NULL) = (parent_kind = 'confluence')
+AND (ext_id IS NOT NULL) = (parent_kind = 'confluence')
+AND (gmail_account_id IS NOT NULL) = (parent_kind = 'gmail')
+AND (gmail_message_id IS NOT NULL) = (parent_kind = 'gmail')
+AND (imap_account_id IS NOT NULL) = (parent_kind = 'imap')
+AND (imap_uidvalidity IS NOT NULL) = (parent_kind = 'imap')
+AND (imap_uid IS NOT NULL) = (parent_kind = 'imap')
+AND (chat_attachment_id IS NOT NULL) = (parent_kind = 'chat')
+AND (target_image_id IS NOT NULL) = (parent_kind = 'target'))
+)
+
+table	media_state
+CREATE TABLE media_state (
+id INTEGER PRIMARY KEY CHECK (id = 1),
+start_at TEXT NOT NULL
+)
+
 table	meeting_notes
 CREATE TABLE meeting_notes (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3192,6 +3280,17 @@ DELETE FROM automation_run_replay WHERE run_id = NEW.id;
 UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
 END
 
+trigger	chat_attachments_media
+CREATE TRIGGER chat_attachments_media AFTER INSERT ON chat_attachments
+WHEN NEW.conversation_id IS NOT NULL
+AND NEW.mime IN ('image/png','image/jpeg','image/gif','image/webp')
+BEGIN
+INSERT INTO media_items (kind, parent_kind, parent_key, chat_attachment_id, locator, name,
+media_type, size_bytes, scope, from_owner, content_at)
+VALUES ('image', 'chat', 'chat:' || NEW.id, NEW.id, NEW.path, NEW.name,
+NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END
+
 trigger	chat_conversations_fts_ad
 CREATE TRIGGER chat_conversations_fts_ad AFTER DELETE ON chat_conversations BEGIN
 INSERT INTO chat_title_fts(chat_title_fts, rowid, title) VALUES ('delete', OLD.id, OLD.title);
@@ -3253,6 +3352,22 @@ trigger	kb_chunks_au
 CREATE TRIGGER kb_chunks_au AFTER UPDATE ON kb_chunks BEGIN
 INSERT INTO kb_fts(kb_fts, rowid, title, body, meta) VALUES ('delete', OLD.id, OLD.title, OLD.body, OLD.meta);
 INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
+END
+
+trigger	media_items_kb_dirty_del
+CREATE TRIGGER media_items_kb_dirty_del AFTER DELETE ON media_items
+WHEN OLD.status = 'ok' AND OLD.kb_ref != ''
+BEGIN
+INSERT INTO kb_dirty (source, key) VALUES (OLD.kb_source, OLD.kb_ref)
+ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END
+
+trigger	media_items_kb_dirty_upd
+CREATE TRIGGER media_items_kb_dirty_upd AFTER UPDATE OF status, body ON media_items
+WHEN (OLD.status = 'ok' OR NEW.status = 'ok') AND NEW.kb_ref != ''
+BEGIN
+INSERT INTO kb_dirty (source, key) VALUES (NEW.kb_source, NEW.kb_ref)
+ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END
 
 trigger	meeting_transcripts_ad
@@ -3317,6 +3432,15 @@ INSERT INTO kb_dirty (source, key) VALUES ('slack',
 CASE WHEN COALESCE(OLD.thread_ts, '') != '' THEN 'slack:thread:' || OLD.channel_id || ':' || OLD.thread_ts
 ELSE 'slack:day:' || OLD.channel_id || ':' || date(OLD.ts_unix, 'unixepoch') END)
 ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END
+
+trigger	project_target_images_media
+CREATE TRIGGER project_target_images_media AFTER INSERT ON project_target_images
+BEGIN
+INSERT INTO media_items (kind, parent_kind, parent_key, target_image_id, locator, name,
+media_type, size_bytes, scope, from_owner, content_at)
+VALUES ('image', 'target', 'target:' || NEW.id, NEW.id, NEW.path, NEW.file_name,
+NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END
 
 trigger	targets_board_column_check_ai
@@ -4967,6 +5091,48 @@ GROUP BY up.ancestor
 3	name	TEXT	notnull=1	dflt=''	pk=0
 4	type	TEXT	notnull=1	dflt=''	pk=0
 5	position	REAL	notnull=1	dflt=0	pk=0
+
+## media_items
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	kind	TEXT	notnull=1	dflt=NULL	pk=0
+2	parent_kind	TEXT	notnull=1	dflt=NULL	pk=0
+3	parent_key	TEXT	notnull=1	dflt=NULL	pk=0
+4	slack_channel_id	TEXT	notnull=0	dflt=NULL	pk=0
+5	slack_ts	TEXT	notnull=0	dflt=NULL	pk=0
+6	ext_source_id	INTEGER	notnull=0	dflt=NULL	pk=0
+7	ext_id	TEXT	notnull=0	dflt=NULL	pk=0
+8	gmail_account_id	INTEGER	notnull=0	dflt=NULL	pk=0
+9	gmail_message_id	TEXT	notnull=0	dflt=NULL	pk=0
+10	imap_account_id	INTEGER	notnull=0	dflt=NULL	pk=0
+11	imap_uidvalidity	INTEGER	notnull=0	dflt=NULL	pk=0
+12	imap_uid	INTEGER	notnull=0	dflt=NULL	pk=0
+13	chat_attachment_id	INTEGER	notnull=0	dflt=NULL	pk=0
+14	target_image_id	INTEGER	notnull=0	dflt=NULL	pk=0
+15	anchor	TEXT	notnull=1	dflt=''	pk=0
+16	locator	TEXT	notnull=1	dflt=NULL	pk=0
+17	fetch_url	TEXT	notnull=1	dflt=''	pk=0
+18	name	TEXT	notnull=1	dflt=''	pk=0
+19	media_type	TEXT	notnull=1	dflt=''	pk=0
+20	size_bytes	INTEGER	notnull=1	dflt=0	pk=0
+21	content_key	TEXT	notnull=1	dflt=''	pk=0
+22	scope	TEXT	notnull=1	dflt=NULL	pk=0
+23	from_owner	INTEGER	notnull=1	dflt=0	pk=0
+24	content_at	TEXT	notnull=1	dflt=NULL	pk=0
+25	status	TEXT	notnull=1	dflt='pending'	pk=0
+26	attempts	INTEGER	notnull=1	dflt=0	pk=0
+27	error	TEXT	notnull=1	dflt=''	pk=0
+28	title	TEXT	notnull=1	dflt=''	pk=0
+29	body	TEXT	notnull=1	dflt=''	pk=0
+30	image_text	TEXT	notnull=1	dflt=''	pk=0
+31	keys_json	TEXT	notnull=1	dflt='[]'	pk=0
+32	kb_source	TEXT	notnull=1	dflt=''	pk=0
+33	kb_ref	TEXT	notnull=1	dflt=''	pk=0
+34	discovered_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+35	described_at	TEXT	notnull=1	dflt=''	pk=0
+
+## media_state
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	start_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## meeting_notes
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
