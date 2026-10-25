@@ -49,6 +49,8 @@ struct AutomationsView: View {
     var reactionDictionary: ReactionDictionaryViewModel?
     /// The feature manager is applying a change: a built-in's Turn On/Off waits.
     var isApplyingFeatures = false
+    /// Whether the organization's policy blocks an automation (#608).
+    var policyBlocked: (Automation) -> Bool = { _ in false }
 
     @State private var searchText = ""
 
@@ -160,7 +162,8 @@ struct AutomationsView: View {
                                 item: item,
                                 changes: vm.details[item.id]?.changes,
                                 isSelected: vm.selectedID == item.id,
-                                now: now
+                                now: now,
+                                policyBlocked: policyBlocked(item.automation)
                             ) { vm.select(item.id) }
                         }
                     }

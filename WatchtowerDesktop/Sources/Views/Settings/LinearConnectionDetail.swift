@@ -7,6 +7,9 @@ import WatchtowerCore
 /// non-destructive like Jira's: the token goes, synced issues stay.
 struct LinearConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// The organization's policy forbids this source (#608): nothing new
+    /// connects; existing accounts keep their data.
+    private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("linear") }
     @State private var showAddSheet = false
     @State private var pendingRemoval: LinearAccount?
     /// The API-key account whose key is being replaced.
@@ -111,6 +114,7 @@ struct LinearConnectionDetail: View {
                                 Task { await vm.relogin(account) }
                             }
                         }
+                        .managedByOrganization(sourceBlocked)
                         .help(reloginBlocked(account.id) ?? "")
                         .disabled(vm.isBusy || reloginBlocked(account.id) != nil)
                     }
@@ -130,6 +134,7 @@ struct LinearConnectionDetail: View {
 
             HStack {
                 Button("Add Linear Workspace") { showAddSheet = true }
+                    .managedByOrganization(sourceBlocked)
                     .disabled(vm.isBusy)
                 if vm.isBusy, !showAddSheet {
                     ProgressView().controlSize(.small)

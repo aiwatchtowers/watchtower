@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
+	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -303,6 +304,14 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	if strings.ToLower(key) == "workbench.default_agent" && !agentkind.IsAgent(value) {
 		return fmt.Errorf("workbench.default_agent must be %s or %s, got %q; nothing was written",
 			agentkind.Claude, agentkind.Codex, value)
+	}
+
+	// A provider or agent the organization's policy forbids is refused
+	// (#608); the agent kinds are their providers.
+	if lk := strings.ToLower(key); lk == "ai.provider" || lk == "workbench.default_agent" {
+		if err := providers.Allowed(value); err != nil {
+			return fmt.Errorf("%w; nothing was written", err)
+		}
 	}
 
 	// Warn on unrecognized keys (allow workspace-level keys like workspaces.*.slack_token)

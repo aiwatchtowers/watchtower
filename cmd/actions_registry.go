@@ -17,7 +17,13 @@ import (
 
 // jiraAccountClient builds a per-account Jira client the way the sync wiring
 // does: the account's token file + the resolved OAuth client credentials.
+//
+// A jira source the organization's policy forbids (#608) is refused first,
+// for every Jira and Confluence tool client.
 func jiraAccountClient(cfg *config.Config, account db.JiraAccount) (*jira.Client, error) {
+	if err := sourceRefusal("jira"); err != nil {
+		return nil, err
+	}
 	store := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID)
 	if !store.Exists() {
 		return nil, fmt.Errorf("jira account #%d has no token; run 'watchtower jira login --account %d'", account.ID, account.ID)
@@ -64,6 +70,9 @@ func (w linearWriter) RefreshIssue(ctx context.Context, issueID string) error {
 // linearWriteClientFactory serves the Linear write tools.
 func linearWriteClientFactory(cfg *config.Config, database *db.DB) tools.LinearWriteClientFactory {
 	return func(account db.LinearAccount) (tools.LinearWriteClient, error) {
+		if err := sourceRefusal("linear"); err != nil {
+			return nil, err // #608
+		}
 		if !linear.NewTokenStore(cfg.WorkspaceDir(), account.ID).Exists() {
 			return nil, fmt.Errorf("linear account #%d has no token; run 'watchtower linear login --account %d'", account.ID, account.ID)
 		}
@@ -102,7 +111,7 @@ func jiraConnectFactory(cfg *config.Config, database *db.DB) tools.JiraConnectFa
 		if err != nil {
 			return tools.JiraConnect{}, err
 		}
-		analyzer := jira.NewBoardAnalyzer(client, database, newAIClient(cfg, cfg.DBPath()), account.ID)
+		analyzer := jira.NewBoardAnalyzer(client, database, checkedAIClient(cfg, cfg.DBPath()), account.ID)
 		analyzer.SetLanguage(cfg.Digest.Language)
 		return tools.JiraConnect{Client: client, Profiler: analyzer}, nil
 	}
@@ -152,6 +161,9 @@ const slackLandedCheckPages = 5
 // and the scopes it records (empty for a token saved before they were).
 func slackSenderFactory(cfg *config.Config) tools.SlackSenderFactory {
 	return func(account db.SlackAccount) (tools.SlackSender, string, error) {
+		if err := sourceRefusal("slack"); err != nil {
+			return nil, "", err // #608: a forbidden Slack source sends nothing
+		}
 		tok, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), account.ID).Load()
 		if err != nil {
 			return nil, "", fmt.Errorf("reading slack account #%d token: %w", account.ID, err)

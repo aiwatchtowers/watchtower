@@ -351,7 +351,14 @@ struct MainNavigationView: View {
                     hooks: automationHooks(vm),
                     reactionDictionary: appState.reactionDictionaryViewModel,
                     isApplyingFeatures: appState.featureManager.isApplying
-                )
+                ) { [appState] automation in
+                    AutomationPolicyBlock.isBlocked(
+                        automation, policy: appState.managedPolicy.policy,
+                        connections: appState.externalConnectionsViewModel?.connections
+                    )
+                }
+                // The policy check needs the Quick Connections (#608).
+                .onAppear { appState.externalConnectionsViewModel?.refresh() }
             } else {
                 Text("Automations unavailable")
                     .foregroundStyle(.secondary)

@@ -41,7 +41,18 @@ func validateModel(_ *config.Config) error {
 // The provider comes from cfg.AI.Provider; the per-tier models resolve
 // through the provider registry (config overrides win, registry defaults
 // otherwise — see providers.ResolveModelsFor).
+//
+// A provider the organization's policy forbids yields a refusedProvider
+// (#608): every call fails with the policy error, no fallback.
 func cliGenerator(cfg *config.Config) digest.Generator {
+	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return newRefusedProvider(err)
+	}
+	return buildGenerator(cfg)
+}
+
+// buildGenerator is the configured provider's generator, unchecked.
+func buildGenerator(cfg *config.Config) digest.Generator {
 	light, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	switch cfg.AI.Provider {
 	case "codex":
@@ -61,7 +72,7 @@ func cliGenerator(cfg *config.Config) digest.Generator {
 // the one AI path left unbounded. It is a var so the wiring test can pin that
 // the factory sources its generator here rather than building a bare one.
 var cliBoundedGenerator = func(cfg *config.Config) digest.Generator {
-	return digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
+	return digest.WithCallTimeout(checkedGenerator(cfg), digest.DaemonAICallTimeout)
 }
 
 // cliPooledGenerator creates a PooledGenerator backed by a concurrency pool.
@@ -79,7 +90,7 @@ var cliBoundedGenerator = func(cfg *config.Config) digest.Generator {
 // ask/chat) deliberately does NOT get this wrapper: those calls are already
 // bounded by the user.
 func cliPooledGenerator(cfg *config.Config) (digest.Generator, func()) {
-	rawGen := digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
+	rawGen := digest.WithCallTimeout(checkedGenerator(cfg), digest.DaemonAICallTimeout)
 	poolSize := cfg.AI.Workers
 	if poolSize <= 0 {
 		poolSize = config.DefaultAIWorkers
@@ -104,6 +115,14 @@ func newAIClient(cfg *config.Config, dbPath string) ai.Provider {
 // (e.g. the --model flag of `watchtower ai query`); empty means the
 // resolved strong-tier model.
 func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.Provider {
+	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return newRefusedProvider(err) // #608: no fallback to an allowed provider
+	}
+	return buildAIClient(cfg, dbPath, modelOverride)
+}
+
+// buildAIClient is the configured provider's client, unchecked.
+func buildAIClient(cfg *config.Config, dbPath, modelOverride string) ai.Provider {
 	model := modelOverride
 	if model == "" {
 		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
@@ -126,6 +145,9 @@ func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.P
 // the tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
 func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
 	noop := func() {}
+	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return nil, noop, err
+	}
 	// Runtime B: the ollama provider on a tool-bearing chat surface gets the
 	// in-process loop — it has no MCP subprocess. Handled first so we never build
 	// (and discard) a plain ollama client, nor resolve the model twice.
@@ -217,6 +239,15 @@ func loadExternalMCPServersFrom(cfg *config.Config, database *db.DB, codexEnv []
 		}
 		recordReservedName(database, c)
 		return true
+	})
+	// The organization's policy (#608) next, before any secret is read or
+	// server started; the QC-02 checks below still apply to the rest.
+	conns = slices.DeleteFunc(conns, func(c db.ExternalConnection) bool {
+		err := connectionPolicyError(c.Name, c.Kind, c.URL, c.Command)
+		if err != nil {
+			log.Printf("external connection %d (%s): not mounted: %v", c.ID, c.Name, err)
+		}
+		return err != nil
 	})
 	var skipped map[int64]string
 	if codexEnv != nil {

@@ -18,6 +18,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [AI providers, models and cost](concepts/ai-providers-and-cost.md) — Claude, Codex or Ollama, light and strong models, what costs tokens, and your Claude plan limits
 - [Privacy](concepts/privacy.md) — what stays on your Mac, what goes to your AI provider, and what goes to iCloud
 - [Revoked access deletes an account's data](concepts/revoked-access.md) — when a revoked or long-unreached account's synced data is deleted, what is kept, and how to stop it
+- [Managed by your organization](concepts/managed-by-your-organization.md) — what a locked control means, what your company can decide, and that your data stays
 
 ## Troubleshooting
 
@@ -110,3 +111,4 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Keyboard shortcuts](reference/keyboard-shortcuts.md) — every key equivalent, by area
 - [Command line](reference/cli.md) — the `watchtower` commands, grouped
 - [Glossary](reference/glossary.md) — the terms the guide uses, one line each
+- [Organization policy for admins](reference/organization-policy.md) — the configuration profile keys an MDM can force, what each does, and how to check a Mac

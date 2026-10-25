@@ -536,6 +536,14 @@ extension WorkbenchesViewModel {
         // Clean Up closed — its worktree being removed — is refused
         // (board #535). A Clean Up… apply does not stop a resume.
         guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
+        // An agent the organization's policy forbids (#608) is not resumed;
+        // a terminal still running shows as it is.
+        if let refusal = agentPolicyRefusal(session) {
+            throw TargetStartError.failed(
+                await failed(session, "Could not open the session", PolicyRefusal(text: refusal), ticket: ticket,
+                             background: ticket == nil)
+            )
+        }
         // A new row whose start is still placing it launches from that start,
         // in its own place, never from here in the folder.
         if preparingSessions.contains(session.id) {
@@ -573,6 +581,10 @@ extension WorkbenchesViewModel {
         let ticket = beginSwitch(projectID: session.projectID)
         guard let agent = session.kind.agent else {
             await open(session, placement: placement, ticket: ticket)
+            return
+        }
+        if let refusal = agentPolicyRefusal(session, evenIfLive: true) {
+            await failed(session, "Could not start the session", PolicyRefusal(text: refusal), ticket: ticket)
             return
         }
         clearSwitchError(projectID: session.projectID, ticket: ticket)
@@ -824,6 +836,14 @@ extension WorkbenchesViewModel {
         placing: SessionPlacing? = nil
     ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
+        // Every new agent session passes here (New Session, Work on It, the
+        // phone, drift Fix, an automation's session()): an agent the
+        // organization's policy forbids (#608) is never started.
+        if let agent = new.kind.agent,
+           let refusal = ConnectionTest.policyRefusal(provider: agent.rawValue, policy: managedPolicy()) {
+            reportStartError(refusal, projectID: new.projectID, ticket: ticket)
+            throw TargetStartError.failed(refusal)
+        }
         // A failed insert leaves no notice of an earlier start beside its error.
         if placing != nil, let projectID = new.projectID { startNotice[projectID] = nil }
         var row = try await insertSession(new, ticket: ticket)
@@ -1169,6 +1189,15 @@ extension WorkbenchesViewModel {
         return message
     }
 
+    /// The policy refusal of starting `session`'s agent (#608); nil for a
+    /// shell, an allowed agent, or (unless `evenIfLive`) a running terminal.
+    private func agentPolicyRefusal(_ session: TerminalSession, evenIfLive: Bool = false) -> String? {
+        guard let agent = session.kind.agent, evenIfLive || terminalCenter?.liveIDs.contains(session.id) != true else {
+            return nil
+        }
+        return ConnectionTest.policyRefusal(provider: agent.rawValue, policy: managedPolicy())
+    }
+
     func forgetInLayout(_ sessionID: Int64, projectID: Int64) {
         var updated = layout(projectID: projectID)
         updated.forgetSession(sessionID, fallback: .board)
@@ -1209,4 +1238,10 @@ extension WorkbenchesViewModel.TargetStartError: LocalizedError {
         case .cleaningUp: "The session is being cleaned up."
         }
     }
+}
+
+/// The organization's refusal of an agent, as an error for `failed`.
+struct PolicyRefusal: LocalizedError {
+    let text: String
+    var errorDescription: String? { text }
 }

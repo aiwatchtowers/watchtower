@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/policy"
 	"watchtower/internal/purge"
 )
 
@@ -157,6 +159,97 @@ func purgeLine(p accountPurgeJSON) string {
 // running: the purge would delete the credentials it writes when it finishes.
 var errLoginDuringPurge = errors.New("watchtower is deleting this account's data; " +
 	"log in again once it finishes (see 'watchtower accounts purges')")
+
+// guardSource refuses, before run starts, a command of a source the
+// organization's policy (AllowedSources, #608) forbids: no network call,
+// browser or write happens.
+func guardSource(src string, run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if err := sourceRefusal(src); err != nil {
+			return err
+		}
+		return run(cmd, args)
+	}
+}
+
+// sourceRefusal is the organization's refusal of src (AllowedSources,
+// #608); nil when it may be used. The commands (guardSource), the one-shot
+// sync and the assistant's tool clients ask it.
+func sourceRefusal(src string) error {
+	if p := policy.Current(); !p.SourceAllowed(src) {
+		return p.SourceError(src)
+	}
+	return nil
+}
+
+// sourceCommandGroups are the command groups of each policy source (google
+// = Gmail + Calendar, imap includes Outlook, jira includes Confluence; auth
+// is the Slack OAuth login, reaction-commands polls Slack reactions).
+var sourceCommandGroups = map[string]string{
+	"auth": "slack", "slack": "slack", "reaction-commands": "slack",
+	"google": "google", "gmail": "google", "calendar": "google",
+	"imap": "imap", "outlook": "imap",
+	"caldav": "caldav",
+	"jira":   "jira", "confluence": "jira",
+	"linear": "linear",
+}
+
+// sourceGuardExempt are the source commands a forbidden source keeps: they
+// make no call to the source and connect nothing — local reads, local
+// settings, and taking an account away (logout, remove, disable, purge).
+var sourceGuardExempt = map[string]bool{
+	"auth check-cert": true, "auth trust-cert": true, "auth logout": true, "reaction-commands list": true,
+	"slack accounts": true, "slack disable": true, "slack remove": true, "slack rename": true,
+	"google accounts": true, "google remove": true, "google rename": true,
+	"gmail logout": true, "gmail purge": true, "gmail status": true,
+	"calendar logout": true, "calendar status": true, "calendar list": true, "calendar events": true, "calendar select": true,
+	"imap list": true, "imap remove": true, "imap rename": true,
+	"outlook logout": true, "outlook rename": true,
+	"caldav list": true, "caldav remove": true, "caldav rename": true,
+	"jira accounts": true, "jira disable": true, "jira remove": true, "jira rename": true, "jira logout": true,
+	"jira status": true, "jira blockers": true, "jira workload": true, "jira project-map": true, "jira releases": true,
+	"jira features enable": true, "jira features disable": true, "jira features reset": true,
+	"jira boards override": true, "jira boards deselect": true, "jira users map": true,
+	"confluence status": true, "confluence unselect": true,
+	"linear accounts": true, "linear disable": true, "linear remove": true, "linear status": true,
+	"linear teams deselect": true,
+}
+
+// sourceGuarded records the commands applySourceGuards wrapped, by source.
+var sourceGuarded = map[*cobra.Command]string{}
+
+var sourceGuardsOnce sync.Once
+
+// applySourceGuards wraps every runnable command of sourceCommandGroups,
+// except sourceGuardExempt, in guardSource — new subcommands are guarded by
+// default. It runs once, after every init has added its subcommands: from
+// cobra's initializers (any Execute) and from the cmd tests' TestMain.
+func applySourceGuards() {
+	sourceGuardsOnce.Do(func() {
+		var walk func(c *cobra.Command, src string)
+		walk = func(c *cobra.Command, src string) {
+			if c.RunE != nil && !sourceGuardExempt[sourceCommandKey(c)] {
+				c.RunE = guardSource(src, c.RunE)
+				sourceGuarded[c] = src
+			}
+			for _, sub := range c.Commands() {
+				walk(sub, src)
+			}
+		}
+		for _, c := range rootCmd.Commands() {
+			if src, ok := sourceCommandGroups[c.Name()]; ok {
+				walk(c, src)
+			}
+		}
+	})
+}
+
+// sourceCommandKey is c's path below the root ("jira boards select").
+func sourceCommandKey(c *cobra.Command) string {
+	return strings.TrimPrefix(c.CommandPath(), rootCmd.Name()+" ")
+}
+
+func init() { cobra.OnInitialize(applySourceGuards) }
 
 // refuseLoginDuringPurge returns errLoginDuringPurge when the account's purge
 // is running. Every login path calls it before its first write.

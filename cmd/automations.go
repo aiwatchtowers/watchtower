@@ -307,6 +307,8 @@ type automationJSON struct {
 	Builtin *builtin.CardInfo `json:"builtin"`
 	// Watch is a watch recipe's block (watchJSON); null otherwise.
 	Watch *watchJSON `json:"watch"`
+	// PolicyBlocked is automationPolicyBlocked: "", "shell" or "mcp" (#608).
+	PolicyBlocked string `json:"policy_blocked"`
 }
 
 // watchJSON is `show --json`'s block of a watch recipe: its bound track (0
@@ -445,6 +447,11 @@ func newAutomationJSON(database *db.DB, a *db.Automation, grants []db.Automation
 	j.Description, j.Script = r.Description, r.Script
 	if man, perr := automations.ParseManifest(r.Permissions, r.Outputs, r.Scope); perr == nil {
 		j.FeedsSourcesToLLM = man.FeedsSourcesToLLM()
+		lookup, err := automations.ConnectionLookup(database)
+		if err != nil {
+			return automationJSON{}, err
+		}
+		j.PolicyBlocked = automationPolicyBlocked(a, lookup)
 	}
 	if !automationConfirmed(a) {
 		j.Widening = automations.Covers(nil, perms)

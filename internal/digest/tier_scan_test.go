@@ -78,12 +78,13 @@ var allowedStrongSources = []allowedStrongSource{
 
 // skipGenerateCallFiles are decorator implementations of digest.Generator
 // that forward whatever ctx they were handed unchanged (PooledGenerator,
-// timeoutGenerator) — the source tag, if any, was already applied by the
+// timeoutGenerator, cmd's policyCheckedGenerator) — the source tag, if any, was already applied by the
 // caller before it reached the decorator. They are not new AI-call
 // origination points, so the scan does not require them to re-tag.
 var skipGenerateCallFiles = map[string]bool{
 	filepath.Join("internal", "digest", "pooled.go"):            true,
 	filepath.Join("internal", "digest", "timeout_generator.go"): true,
+	filepath.Join("cmd", "provider_policy.go"):                  true,
 }
 
 // TestTierForSource_EveryGenerateCallIsTagged is a property scan, not an

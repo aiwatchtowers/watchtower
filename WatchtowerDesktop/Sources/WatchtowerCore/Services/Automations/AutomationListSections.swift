@@ -226,10 +226,11 @@ package enum AutomationListSections {
 
 /// A row's chip. "Disabled" is none: the dot and the "Off · " line say it.
 package enum AutomationRowChip: Equatable, Sendable {
-    case needsConfirmation, paused, cantRead, draft
+    case needsConfirmation, paused, cantRead, draft, blockedByPolicy
 
     package var title: String {
         switch self {
+        case .blockedByPolicy: "Blocked by your organization's policy"
         case .needsConfirmation: "Needs confirmation"
         case .paused: "Paused"
         case .cantRead: "Can't read"

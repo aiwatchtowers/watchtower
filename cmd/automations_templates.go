@@ -176,7 +176,7 @@ func renderTemplateJSON(tpl automations.Template, scope automations.Scope, param
 	for _, slug := range tpl.Files {
 		data := files[slug]
 		out.Files = append(out.Files, renderFileJSON{Slug: slug, Text: string(data),
-			Validate: validateRecipe(slug, data, automations.ContentHash(data), scope, nil)})
+			Validate: validateRecipe(slug, data, automations.ContentHash(data), scope, nil, nil)})
 	}
 	return out
 }

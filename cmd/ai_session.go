@@ -81,6 +81,9 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := notifyShutdownContext(ctx, stderrLogf)
 	defer cancel()
 
+	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return fail(chat.CodeProviderUnavailable, err.Error())
+	}
 	model := aiSessionFlagModel
 	if model == "" {
 		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
@@ -106,16 +109,21 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	}
 	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, chatProjectID)
 
+	var mounted []ai.ExternalMCPServer
 	backend, err := newSessionBackend(sessionWiring{
 		cfg: cfg, database: database, dbPath: dbPath, conv: conv,
 		model: model, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile,
 		project: project, chatProjectID: chatProjectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI,
+		onMounted: func(ext []ai.ExternalMCPServer) { mounted = ext },
 	})
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
 
-	s := chat.NewSession(backend, out)
+	// The policy is asked again at every turn (#608).
+	s := chat.NewSession(policyCheckedBackend{
+		Backend: backend, provider: cfg.AI.Provider, mounted: mounted, claudeAIOn: claudeAI.mode.On, end: cancel,
+	}, out)
 	s.Provider = providers.ByID(cfg.AI.Provider).ID
 	s.Model = model
 	s.TurnFile = turnFile
@@ -215,6 +223,9 @@ type sessionWiring struct {
 	chatProjectID int64                  // 0 = not a project chat; bound into the ollama registry
 	warn          io.Writer              // skipped project files are named here
 	claudeAI      claudeAISetup          // zero = claude.ai mode off
+	// onMounted hears the Quick Connections a warm Claude session mounts for
+	// its whole life (the per-turn policy check, #608); nil = nobody.
+	onMounted func([]ai.ExternalMCPServer)
 }
 
 // newSessionBackend picks the provider backend for `ai session`.
@@ -237,6 +248,9 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		return chat.NewTurnBackend(loop, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
 	default:
 		ext := loadExternalMCPServers(w.cfg, w.dbPath)
+		if w.onMounted != nil {
+			w.onMounted(ext)
+		}
 		opts := claudeSessionOptions(w, ext)
 		if w.claudeAI.mode.On {
 			sink := newRegistrySink(buildToolRegistry(w.cfg, w.database), w.database, w.conv, w.warn)
