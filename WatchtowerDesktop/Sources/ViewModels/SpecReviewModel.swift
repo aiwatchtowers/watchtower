@@ -59,6 +59,11 @@ final class SpecReviewModel {
     /// Bumped on every start and stop, so a finishing Task clears `pollTask`
     /// only when it is still the current one.
     @ObservationIgnored private var pollGeneration = 0
+    @ObservationIgnored private let render: (String) -> RenderedDocument
+    /// The ask's snapshot rendered once (the ask, and so its snapshot, is
+    /// fixed for the model's life): the marks' comments are placed on it on
+    /// every poll load and mark change.
+    @ObservationIgnored private var renderedSnapshot: RenderedDocument?
 
     init(
         ask: OwnerAsk,
@@ -67,7 +72,8 @@ final class SpecReviewModel {
         asks: OwnerAsksViewModel,
         pollInterval: Duration = .seconds(3),
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        render: @escaping (String) -> RenderedDocument = { DocumentRendering.render($0) }
     ) {
         self.ask = ask
         self.db = db
@@ -76,6 +82,7 @@ final class SpecReviewModel {
         self.pollInterval = pollInterval
         self.sleep = sleep
         self.now = now
+        self.render = render
     }
 
     deinit { pollTask?.cancel() }
@@ -271,9 +278,18 @@ final class SpecReviewModel {
     /// Approve send these comments with the draft (`OwnerAsksViewModel`).
     private func publishComments() {
         let comments = row?.result.map {
-            SpecReviewAnswer.comments(result: $0, marks: marks, snapshot: ask.docSnapshot)
+            SpecReviewAnswer.comments(result: $0, marks: marks, snapshot: ask.docSnapshot, rendered: renderedDocument)
         } ?? []
         asks.setSpecReviewComments(comments, askID: ask.id)
+    }
+
+    /// The snapshot rendered: this model's cache, else the drawer's
+    /// (`reviewDocuments`, the same snapshot), else rendered now and kept.
+    private func renderedDocument() -> RenderedDocument {
+        if let renderedSnapshot { return renderedSnapshot }
+        let doc = asks.reviewDocuments.rendered[ask.id] ?? render(ask.docSnapshot)
+        renderedSnapshot = doc
+        return doc
     }
 
     private var commentCount: Int {
@@ -304,15 +320,20 @@ final class SpecReviewModel {
     func answer(verdict: OwnerAskAnswer.Verdict) -> OwnerAskAnswer {
         SpecReviewAnswer.build(
             result: row?.result ?? Self.emptyResult, marks: marks, base: draft.answer(for: ask),
-            verdict: verdict, snapshot: ask.docSnapshot
+            verdict: verdict, snapshot: ask.docSnapshot, rendered: renderedDocument
         )
     }
 
     /// Why Send and Approve are off, in the owner's words: the ask's
     /// questions are not all answered (they sit on Meaning), or the note is
-    /// too long. Nil when the answer can go.
+    /// too long. Nil when the answer can go. Read on every Wrap-up body
+    /// evaluation, so it checks the draft alone: the marks' comments always
+    /// carry their finding's text, never a blank body, so they add no
+    /// problem, and placing them would cost a pass over the document.
     var answerBlocker: String? {
-        guard let problem = answer(verdict: .approved).problem(kind: ask.kind, payload: ask.payload) else { return nil }
+        var answer = draft.answer(for: ask)
+        answer.verdict = .approved
+        guard let problem = answer.problem(kind: ask.kind, payload: ask.payload) else { return nil }
         switch problem {
         case .questionUnanswered, .emptyQuestionAnswer: return "Answer the ask's questions on Meaning first"
         case .noteTooLong: return "Shorten the note to \(OwnerAskAnswerProblem.maxNoteRunes) characters"

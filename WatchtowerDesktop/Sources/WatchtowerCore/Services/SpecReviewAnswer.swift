@@ -8,31 +8,35 @@ package enum SpecReviewAnswer {
     /// `base` is the ask's draft answer — its margin comments made under
     /// **Read the spec**, its question answers, its note — so the one
     /// answer carries both screens' input; the marks' comments follow its
-    /// comments and `verdict` replaces its verdict.
+    /// comments and `verdict` replaces its verdict. `rendered` hands over
+    /// the snapshot already rendered (a caller's cache); nil renders it here.
     package static func build(
         result: SpecReviewResult,
         marks: [String: SpecReviewMark],
         base: OwnerAskAnswer = OwnerAskAnswer(),
         verdict: OwnerAskAnswer.Verdict,
-        snapshot: String
+        snapshot: String,
+        rendered: (() -> RenderedDocument)? = nil
     ) -> OwnerAskAnswer {
         var answer = base
         answer.verdict = verdict
-        answer.comments += comments(result: result, marks: marks, snapshot: snapshot)
+        answer.comments += comments(result: result, marks: marks, snapshot: snapshot, rendered: rendered)
         return answer
     }
 
     /// The comments the marks give, in findings order, then the comments of
-    /// findings the re-run no longer has.
+    /// findings the re-run no longer has. The snapshot is rendered (or
+    /// `rendered` called) only when there is a comment to place.
     package static func comments(
         result: SpecReviewResult,
         marks: [String: SpecReviewMark],
-        snapshot: String
+        snapshot: String,
+        rendered render: (() -> RenderedDocument)? = nil
     ) -> [OwnerAskAnswer.Comment] {
         let marked = result.findings.filter { marks[$0.key]?.state == .comment }
         let orphans = orphanMarks(result: result, marks: marks)
         guard !marked.isEmpty || !orphans.isEmpty else { return [] }
-        let rendered = DocumentRendering.render(snapshot)
+        let rendered = render?() ?? DocumentRendering.render(snapshot)
         var comments: [OwnerAskAnswer.Comment] = []
         for finding in marked {
             guard let mark = marks[finding.key] else { continue }

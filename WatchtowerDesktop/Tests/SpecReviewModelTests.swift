@@ -52,7 +52,10 @@ final class SpecReviewModelTests: XCTestCase {
         }
     }
 
-    private func makeModel(sleep: @escaping (Duration) async throws -> Void = { _ in await Task.yield() }) async throws -> SpecReviewModel {
+    private func makeModel(
+        sleep: @escaping (Duration) async throws -> Void = { _ in await Task.yield() },
+        render: @escaping (String) -> RenderedDocument = { DocumentRendering.render($0) }
+    ) async throws -> SpecReviewModel {
         let dbm = DatabaseManager(pool: pool)
         let asks = OwnerAsksViewModel(
             dbPool: pool, terminalCenter: nil, lineDelivery: SessionLineDelivery(terminalCenter: nil), defaults: defaults
@@ -60,7 +63,31 @@ final class SpecReviewModelTests: XCTestCase {
         self.asks = asks
         await asks.load(projectID: projectID)
         let ask = try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID })
-        return SpecReviewModel(ask: ask, db: dbm, cli: WorkbenchCLI(runner: runner), asks: asks, sleep: sleep)
+        return SpecReviewModel(ask: ask, db: dbm, cli: WorkbenchCLI(runner: runner), asks: asks, sleep: sleep, render: render)
+    }
+
+    /// The snapshot is rendered once for the model's life: poll loads and
+    /// mark changes reuse it, and the Wrap-up's answerBlocker (read on every
+    /// body evaluation, so on every keystroke of the note) never renders.
+    func testSnapshotIsRenderedOnceAndAnswerBlockerNeverRenders() async throws {
+        try setRow(status: "done", result: resultJSON())
+        var renders = 0
+        let countingRender: (String) -> RenderedDocument = { renders += 1; return DocumentRendering.render($0) }
+        let model = try await makeModel(render: countingRender)
+        await model.load()
+        XCTAssertEqual(renders, 0, "no comment yet: nothing to place")
+        for _ in 0..<5 { _ = model.answerBlocker }
+        XCTAssertEqual(renders, 0, "answerBlocker must not render the snapshot")
+        await model.mark("ag:1", .comment, body: "keep")
+        XCTAssertEqual(renders, 1)
+        await model.load()
+        await model.load()
+        await model.mark("da:1", .comment, body: "why?")
+        for _ in 0..<5 { _ = model.answerBlocker }
+        XCTAssertEqual(renders, 1, "the rendered snapshot is cached")
+        XCTAssertEqual(asks.specReviewComments[askID]?.count, 2)
+        XCTAssertEqual(model.answer(verdict: .changes).comments.count, 2)
+        XCTAssertEqual(renders, 1)
     }
 
     func testChaptersGroupFindingsAndOther() async throws {
