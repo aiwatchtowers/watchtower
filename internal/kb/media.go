@@ -1,0 +1,155 @@
+package kb
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"watchtower/internal/db"
+)
+
+// Images and web links (media_items, migration 00155) render as labelled
+// sections of the document their parent renders into. The descriptions are
+// written by the daemon's media pass (internal/media); this package only
+// renders stored rows (KB-02). The label says who wrote the text, and the
+// description follows it verbatim: it is section text, never a title, link
+// or section boundary of its own.
+const (
+	MediaImageLabel = "Image (AI description of an attached image)"
+	MediaLinkLabel  = "Link (AI summary of a fetched public page)"
+)
+
+// mediaKeyBatch bounds the parent keys of one media query (SQLite's
+// variable limit; a channel-day can hold thousands of messages).
+const mediaKeyBatch = 500
+
+// MediaParentRef returns the knowledge document (source name and ref) the
+// item's parent renders into now — the key the media pass stores in
+// kb_source/kb_ref, which the kb_dirty triggers mark. Chat and target items
+// are never indexed and a parent that is gone has no document: both return
+// ("", "", nil).
+func MediaParentRef(ctx context.Context, q Queryer, it db.MediaItem) (source, ref string, err error) {
+	switch it.ParentKind {
+	case "slack":
+		var thread string
+		var tsUnix float64
+		err = q.QueryRowContext(ctx, `SELECT COALESCE(thread_ts, ''), ts_unix FROM messages WHERE channel_id = ? AND ts = ?`,
+			it.SlackChannelID, it.SlackTS).Scan(&thread, &tsUnix)
+		if err == nil {
+			return "slack", slackKeyFor(it.SlackChannelID, thread, tsUnix), nil
+		}
+	case "gmail":
+		err = q.QueryRowContext(ctx, `SELECT `+gmailKeyExpr+` FROM gmail_messages WHERE account_id = ? AND id = ?`,
+			it.GmailAccountID, it.GmailMessageID).Scan(&ref)
+		if err == nil {
+			return "gmail", ref, nil
+		}
+	case "imap":
+		err = q.QueryRowContext(ctx, `SELECT `+imapKeyExpr+` FROM imap_messages WHERE account_id = ? AND uidvalidity = ? AND uid = ?`,
+			it.IMAPAccountID, it.IMAPUIDValidity, it.IMAPUID).Scan(&ref)
+		if err == nil {
+			return "imap", ref, nil
+		}
+	case "confluence":
+		err = q.QueryRowContext(ctx, `SELECT s.provider FROM ext_documents d JOIN ext_sources s ON s.id = d.source_id
+			WHERE d.source_id = ? AND d.ext_id = ?`, it.ExtSourceID, it.ExtID).Scan(&source)
+		if err == nil {
+			return source, source + ":" + strconv.FormatInt(it.ExtSourceID, 10) + ":" + it.ExtID, nil
+		}
+	default: // chat, target: never indexed
+		return "", "", nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	return "", "", fmt.Errorf("kb: media item %d parent: %w", it.ID, err)
+}
+
+// mediaSectionsQuery reads the ok rows of n parent keys; it seeks the
+// UNIQUE (parent_key, kind, locator) index (TestMediaSections_QueryPlan).
+// The unary "+" on status is load-bearing: without it the planner picks
+// idx_media_items_pending (status, …) and walks every ok row.
+func mediaSectionsQuery(n int) string {
+	return `SELECT parent_key, kind, locator, fetch_url, anchor, title, body, image_text
+		FROM media_items WHERE parent_kind = ? AND +status = 'ok'
+		AND parent_key IN (?` + strings.Repeat(", ?", n-1) + `) ORDER BY id`
+}
+
+// mediaSections returns the sections of the 'ok' media rows of parentKind
+// hanging off keys (media_items.parent_key), per key in id order. Anchor is
+// the row's own anchor (possibly empty; callers place it).
+func mediaSections(ctx context.Context, q Queryer, parentKind string, keys []string) (map[string][]Section, error) {
+	out := map[string][]Section{}
+	for start := 0; start < len(keys); start += mediaKeyBatch {
+		if err := readMediaSections(ctx, q, parentKind, keys[start:min(start+mediaKeyBatch, len(keys))], out); err != nil {
+			return nil, fmt.Errorf("kb: media sections: %w", err)
+		}
+	}
+	return out, nil
+}
+
+func readMediaSections(ctx context.Context, q Queryer, parentKind string, keys []string, out map[string][]Section) error {
+	args := []any{parentKind}
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	rows, err := q.QueryContext(ctx, mediaSectionsQuery(len(keys)), args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, kind, locator, fetchURL, anchor, title, body, imageText string
+		if err := rows.Scan(&key, &kind, &locator, &fetchURL, &anchor, &title, &body, &imageText); err != nil {
+			return err
+		}
+		out[key] = append(out[key], Section{Text: mediaText(kind, locator, fetchURL, title, body, imageText), Anchor: anchor})
+	}
+	return rows.Err()
+}
+
+// mediaText renders one row:
+//
+//	Image (…): <title> — <description>[\nText: <image text>]
+//	Image (…): <title> — <description> (attachment <filename>)   (Confluence inline "att:")
+//	Link (…): <page title> (<url>) — <summary>
+func mediaText(kind, locator, fetchURL, title, body, imageText string) string {
+	if kind == "link" {
+		u := fetchURL
+		if u == "" {
+			u = strings.TrimPrefix(locator, "url:")
+		}
+		head := u
+		if title != "" {
+			head = title + " (" + u + ")"
+		}
+		return MediaLinkLabel + ": " + head + " — " + body
+	}
+	text := MediaImageLabel + ": " + body
+	if title != "" {
+		text = MediaImageLabel + ": " + title + " — " + body
+	}
+	if file, inline := strings.CutPrefix(locator, "att:"); inline {
+		// the attachment's own document carries the image text
+		return text + " (attachment " + file + ")"
+	}
+	if imageText != "" {
+		text += "\nText: " + imageText
+	}
+	return text
+}
+
+// withMedia appends the media sections of key after sections; an empty row
+// anchor becomes fallback (the parent row's own locator).
+func withMedia(sections []Section, media map[string][]Section, key, fallback string) []Section {
+	for _, s := range media[key] {
+		if s.Anchor == "" {
+			s.Anchor = fallback
+		}
+		sections = append(sections, s)
+	}
+	return sections
+}

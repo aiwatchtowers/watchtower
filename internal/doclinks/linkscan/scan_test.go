@@ -353,3 +353,60 @@ func TestScanSources_CancelledContextStops(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Zero(t, linkCount(t, d))
 }
+
+// seedDescribedMedia records one item of kind on the Slack thread reply
+// 1758000100.000200 and stores an ok result with its knowledge key.
+func seedDescribedMedia(t *testing.T, d *db.DB, kind, locator, title, body, imageText string) {
+	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, d.SetMediaStartAt(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+	exec(t, d, `INSERT OR IGNORE INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES
+		('1:C1', '1758000000.000100', '1:U1', 'kickoff', '1758000000.000100'),
+		('1:C1', '1758000100.000200', '1:U2', 'see the screenshot', '1758000000.000100')`)
+	p := db.MediaParent{Kind: "slack", SlackChannelID: "1:C1", SlackTS: "1758000100.000200",
+		ContentAt: time.Date(2025, 9, 16, 0, 0, 0, 0, time.UTC)}
+	_, err := db.RecordMedia(ctx, d, p, []db.MediaFound{{Kind: kind, Locator: locator}})
+	require.NoError(t, err)
+	var it db.MediaItem
+	require.NoError(t, d.QueryRow(`SELECT id, parent_kind, slack_channel_id, slack_ts FROM media_items WHERE locator = ?`, locator).
+		Scan(&it.ID, &it.ParentKind, &it.SlackChannelID, &it.SlackTS))
+	src, ref, err := kb.MediaParentRef(ctx, d, it)
+	require.NoError(t, err)
+	require.NoError(t, d.FinishMedia(ctx, it.ID, db.MediaResult{Status: "ok", Title: title, Body: body, ImageText: imageText,
+		KBSource: src, KBRef: ref}))
+}
+
+// A Confluence page URL read off an image links the Slack thread the image
+// renders into to the page.
+func TestScanSources_MediaLinksConfluenceURLOnImage(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedSite(t, d)
+	seedDescribedMedia(t, d, "image", "F1", "Browser tab", "A browser showing a wiki page.", "Payments design\n"+pageURL+"1001/Payments")
+
+	st, err := scan(ctx, d, scanOptions{batch: 1000, now: time.Now().Add(2 * time.Second)})
+	require.NoError(t, err)
+	assert.Equal(t, 1, st.Linked)
+	links, err := d.DocLinksTo(doclinks.ToConfluencePage, "c1:1001", 10)
+	require.NoError(t, err)
+	require.Len(t, links, 1)
+	assert.Equal(t, "slack", links[0].FromKind)
+	assert.Equal(t, "slack:thread:1:C1:1758000000.000100", links[0].FromRef)
+	assert.NotEmpty(t, cursors(t, d)["media"])
+}
+
+// A link summary is a page's own words: it never creates a link, and the
+// scan still moves past it.
+func TestScanSources_MediaIgnoresLinkSummaries(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedSite(t, d)
+	seedDescribedMedia(t, d, "link", "url:https://example.com/a", "ABC-1 "+pageURL+"1001",
+		"The page says ABC-1 is tracked at "+pageURL+"1001", "")
+
+	st, err := scan(ctx, d, scanOptions{batch: 1000, now: time.Now().Add(2 * time.Second)})
+	require.NoError(t, err)
+	assert.Zero(t, st.Linked)
+	assert.Zero(t, linkCount(t, d))
+	assert.NotEmpty(t, cursors(t, d)["media"], "the cursor moved past the link row")
+}

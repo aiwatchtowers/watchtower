@@ -63,6 +63,9 @@ func slackThreadRef(channelID, threadTS string) string {
 	return "slack:thread:" + channelID + ":" + threadTS
 }
 
+// slackMediaKey is media_items.parent_key of a Slack message (db.MediaParent.Key).
+func slackMediaKey(channelID, ts string) string { return "slack:" + channelID + ":" + ts }
+
 func slackDayRef(channelID, day string) string { return "slack:day:" + channelID + ":" + day }
 
 // parseSlackRef splits a Slack ref from the right: channel ids contain ':'.
@@ -249,6 +252,14 @@ func (s *slackSource) Build(ctx context.Context, q Queryer, key string) (*Doc, e
 	if len(rows) == 0 {
 		return nil, nil
 	}
+	parentKeys := make([]string, len(rows))
+	for i, r := range rows {
+		parentKeys[i] = slackMediaKey(channelID, r.ts)
+	}
+	media, err := mediaSections(ctx, q, "slack", parentKeys)
+	if err != nil {
+		return nil, fmt.Errorf("kb slack %s: %w", key, err)
+	}
 	acct, _, _ := slack.SplitAccountID(channelID)
 	chTitle, err := s.channelTitle(ctx, q, channelID)
 	if err != nil {
@@ -277,6 +288,7 @@ func (s *slackSource) Build(ctx context.Context, q Queryer, key string) (*Doc, e
 			threadHeadline, headlineSet = line, true
 		}
 		doc.Sections = append(doc.Sections, Section{Text: name + ": " + text, Anchor: r.ts})
+		doc.Sections = withMedia(doc.Sections, media, slackMediaKey(channelID, r.ts), r.ts)
 		if !seen[name] {
 			seen[name] = true
 			metaNames = append(metaNames, name)
