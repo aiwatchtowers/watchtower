@@ -123,7 +123,7 @@ func TestSpecReviewStart_ForceRequeuesFinished(t *testing.T) {
 	row, err := database.GetSpecReview(id)
 	require.NoError(t, err)
 	assert.Equal(t, "queued", row.Status)
-	assert.Equal(t, 2, row.Attempt)
+	assert.Equal(t, 1, row.Attempt, "the owner's run starts the sweep's launch count over")
 }
 
 func TestSpecReviewStart_NotASpecRefused(t *testing.T) {

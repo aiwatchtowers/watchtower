@@ -160,6 +160,69 @@ func TestRequeueSpecReview_States(t *testing.T) {
 	got, err = d.GetSpecReview(askID)
 	require.NoError(t, err)
 	assert.Equal(t, "queued", got.Status)
-	assert.Equal(t, 2, got.Attempt)
+	assert.Equal(t, 1, got.Attempt, "the owner's run starts the launch count over")
 	assert.Empty(t, got.Reason)
+}
+
+// The owner's start resets the sweep's launch count, on a forced re-run and
+// on a row still queued after automatic relaunches.
+func TestRequeueSpecReview_ResetsAttempt(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 25, 10, 0, 0, 0, time.UTC)
+	queueSpecReview(t, d, askID, now)
+	for range 2 {
+		ok, err := d.RelaunchQueuedSpecReview(askID, 3, now)
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	require.Equal(t, 3, got.Attempt)
+	require.NoError(t, d.RequeueSpecReview(askID, false, now))
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, got.Attempt, "start on a queued row")
+
+	ok, err := d.ClaimSpecReview(askID, 7, now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, d.FailSpecReview(askID, 7, "could not start", now))
+	require.NoError(t, d.RequeueSpecReview(askID, true, now))
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "queued", got.Status)
+	assert.Equal(t, 1, got.Attempt, "start --force")
+}
+
+// The sweep's re-queue never touches a row that is no longer queued, and stops
+// at the launch cap.
+func TestRelaunchQueuedSpecReview_OnlyQueued(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 25, 10, 0, 0, 0, time.UTC)
+	queueSpecReview(t, d, askID, now)
+	later := now.Add(5 * time.Minute)
+
+	ok, err := d.RelaunchQueuedSpecReview(askID, 2, later)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.Attempt)
+	assert.Equal(t, specReviewTime(later), got.QueuedAt)
+	ok, err = d.RelaunchQueuedSpecReview(askID, 2, later)
+	require.NoError(t, err)
+	assert.False(t, ok, "out of launches")
+
+	ok, err = d.ClaimSpecReview(askID, 9, later)
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = d.RelaunchQueuedSpecReview(askID, 10, later)
+	require.NoError(t, err)
+	assert.False(t, ok, "a claimed row is never re-queued")
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "running", got.Status)
+	assert.Equal(t, 9, got.PID)
 }

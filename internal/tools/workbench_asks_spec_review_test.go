@@ -62,6 +62,28 @@ func TestSpecReview02_AskOwnerLaunchFailureStillFiles(t *testing.T) {
 	assert.Equal(t, "skipped", sr.Status)
 }
 
+// SPECREVIEW-02: a failed spec_reviews write never fails the ask either — the
+// queue write runs after the ask's own transaction.
+func TestSpecReview02_AskOwnerQueueFailureStillFiles(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	called := false
+	reg := askRegistryWith(t, fx.d, "", func(int64) error { called = true; return nil })
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/plans/p.md", "# Plan\n")
+	_, err := fx.d.Exec(`CREATE TRIGGER spec_reviews_injected BEFORE INSERT ON spec_reviews
+		BEGIN SELECT RAISE(ABORT, 'injected failure'); END`)
+	require.NoError(t, err)
+
+	out := mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, "docs/plans/p.md"))
+	id := askID(t, out)
+
+	assert.Contains(t, out["spec_review"], "skipped: could not queue: ")
+	assert.Contains(t, out["spec_review"], "injected failure")
+	assert.False(t, called, "no reviewer without a queued row")
+	assert.Equal(t, "open", storedAsk(t, fx.d, fx.a, id).Status)
+	_, err = fx.d.GetSpecReview(id)
+	assert.ErrorIs(t, err, db.ErrSpecReviewNotFound)
+}
+
 func TestAskOwner_LauncherSkipRecordedVerbatim(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := askRegistryWith(t, fx.d, "", func(int64) error { return ErrSpecReviewSkipped{Reason: "plan near limit"} })

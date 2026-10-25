@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 
@@ -123,6 +125,74 @@ func TestSpecReviewSweep_FailsOverdueRunning(t *testing.T) {
 	row, err := database.GetSpecReview(id)
 	require.NoError(t, err)
 	assert.Equal(t, "failed", row.Status, "a live pid does not save a run past its timeout")
+	assert.NoError(t, helper.Process.Signal(syscall.Signal(0)),
+		"a process that does not lead its own group, or started after the claim, is not the reviewer: never signalled")
+}
+
+// An overdue reviewer that still runs is stopped (SIGTERM to its process
+// group) before its row is failed.
+func TestSpecReviewSweep_StopsOverdueReviewer(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	recordLaunches(d)
+	id := specReviewAsk(t, database, time.Now().Add(-time.Hour))
+	helper := exec.Command("sleep", "60")
+	helper.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // as LaunchSpecReview starts it
+	require.NoError(t, helper.Start())
+	exited := make(chan error, 1)
+	go func() { exited <- helper.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-helper.Process.Pid, syscall.SIGKILL)
+		<-exited
+	})
+	ok, err := database.ClaimSpecReview(id, helper.Process.Pid, time.Now())
+	require.NoError(t, err)
+	require.True(t, ok)
+	prev := specReviewOverdueAfter
+	specReviewOverdueAfter = -time.Second // started_at has whole seconds
+	t.Cleanup(func() { specReviewOverdueAfter = prev })
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	row, err := database.GetSpecReview(id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	select {
+	case err := <-exited:
+		var ee *exec.ExitError
+		require.True(t, errors.As(err, &ee), "the reviewer was stopped: %v", err)
+		ws, _ := ee.Sys().(syscall.WaitStatus)
+		assert.Equal(t, syscall.SIGTERM, ws.Signal())
+		exited <- err // for the cleanup
+	case <-time.After(10 * time.Second):
+		t.Fatal("the overdue reviewer is still running")
+	}
+}
+
+// A reviewer that claims the row between the sweep's listing and its
+// re-queue keeps it: the row stays running under its pid and no second
+// reviewer is launched.
+func TestSpecReviewSweep_ClaimBeforeRequeueWins(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	launched := recordLaunches(d)
+	id := specReviewAsk(t, database, time.Now().Add(-5*time.Minute))
+	helper := exec.Command("sleep", "30")
+	require.NoError(t, helper.Start())
+	t.Cleanup(func() { _ = helper.Process.Kill(); _ = helper.Wait() })
+	specReviewBeforeRelaunch = func(askID int64) {
+		ok, err := database.ClaimSpecReview(askID, helper.Process.Pid, time.Now())
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	t.Cleanup(func() { specReviewBeforeRelaunch = nil })
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	assert.Empty(t, *launched, "no second reviewer")
+	row, err := database.GetSpecReview(id)
+	require.NoError(t, err)
+	assert.Equal(t, "running", row.Status)
+	assert.Equal(t, helper.Process.Pid, row.PID)
+	assert.Equal(t, 1, row.Attempt)
 }
 
 func TestSpecReviewSweep_GivesUpAfterThreeAttempts(t *testing.T) {
