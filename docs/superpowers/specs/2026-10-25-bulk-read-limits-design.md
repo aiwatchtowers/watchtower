@@ -169,9 +169,11 @@ collecting is the EDR's job.
   run's budget.
 - **CLI commands that print synced content** (`kb search`, `digest`,
   `gmail`, `jira`, `people`, `tracks`, `catchup`, `briefing`, `memory`, …):
-  one line with `proc: "cli:<path>"` when the process runs under an agent
-  marker (`WATCHTOWER_TERMINAL_SESSION_ID` or `WATCHTOWER_AUTOMATION_RUN_ID`),
-  i.e. when an agent's Bash ran them. No cap: the CLI is the owner's tool and
+  one line with `proc: "cli:<path>"` (the path's words joined by `/`, e.g.
+  `cli:kb/search`) when the command actually ran under an agent marker
+  (`WATCHTOWER_TERMINAL_SESSION_ID` or `WATCHTOWER_AUTOMATION_RUN_ID`),
+  i.e. when an agent's Bash ran them — not for `--help`, a usage error or
+  an unknown command. No cap: the CLI is the owner's tool and
   the owner said no export commands, not no reads.
 
 ### 5. What cannot be capped (honestly)

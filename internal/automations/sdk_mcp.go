@@ -8,9 +8,7 @@ import (
 
 	"github.com/dop251/goja"
 
-	"watchtower/internal/auditlog"
 	"watchtower/internal/externalmcp"
-	"watchtower/internal/tools"
 )
 
 // MCPModule defines mcp(server, tool, args?) (spec §5): the manifest check
@@ -50,6 +48,9 @@ func MCPModule(b Backends) Module {
 			if b.MCP == nil {
 				return nil, notAvailable("no Quick Connection caller is configured")
 			}
+			if b.Registry == nil {
+				return nil, notAvailable("no tool registry is configured")
+			}
 			res, err := budgetedMCPCall(env, b, req)
 			if err != nil {
 				return nil, err
@@ -63,32 +64,22 @@ func MCPModule(b Backends) Module {
 }
 
 // budgetedMCPCall makes the Quick Connection call inside the run's read
-// budget (READ-01): it counts as one call (no rows — the result's shape is
-// the server's), a spent budget refuses it as a catchable ValidationError
-// before anything is sent, and it leaves one audit line named
-// mcp:<server>/<tool>.
+// budget (READ-01, Registry.ReadExternal): one call, no rows (the result's
+// shape is the server's), one audit line named mcp:<server>/<tool>. A spent
+// budget refuses it as a catchable ValidationError before anything is sent.
 func budgetedMCPCall(env *Env, b Backends, req mcpCall) (json.RawMessage, error) {
-	name := "mcp:" + req.server + "/" + req.tool
-	bind := env.Binding()
-	if b.Registry == nil {
-		return nil, notAvailable("no tool registry is configured")
-	}
-	if err := b.Registry.AdmitRead(bind, name); err != nil {
-		var ve *tools.ValidationError
-		if errors.As(err, &ve) {
-			return nil, &SDKError{Name: ErrNameValidation, Message: ve.Msg}
-		}
-		return nil, &SDKError{Name: ErrNameTool, Message: fmt.Sprintf("%s: %v", name, err)}
-	}
-	res, err := b.MCP.Call(env.Ctx, req.server, req.tool, req.args)
+	var res json.RawMessage
+	var callErr error
+	err := b.Registry.ReadExternal(env.Binding(), "mcp:"+req.server+"/"+req.tool, func() (int, error) {
+		res, callErr = b.MCP.Call(env.Ctx, req.server, req.tool, req.args)
+		return len(res), callErr
+	})
 	switch {
+	case callErr != nil:
+		return nil, mcpError(req, callErr)
 	case err != nil:
-		b.Registry.RecordRead(bind, name, nil, 0, 0, auditlog.ResultError)
-		return nil, mcpError(req, err)
-	case len(res) > MaxSDKResultBytes:
-		b.Registry.RecordRead(bind, name, nil, 0, len(res), auditlog.ResultTooLarge)
-	default:
-		b.Registry.RecordRead(bind, name, nil, 0, len(res), auditlog.ResultOK)
+		// The budget's refusal, always a tools.ValidationError.
+		return nil, &SDKError{Name: ErrNameValidation, Message: err.Error()}
 	}
 	return res, nil
 }

@@ -18,7 +18,7 @@ import (
 // docs/superpowers/specs/2026-10-25-bulk-read-limits-design.md §2): Calls and
 // Rows per session, ResponseRows and ResponseBytes per response. Calls is
 // exact; Rows is soft — rows are debited after each read, so reads admitted
-// in parallel may together pass it (RecordRead).
+// in parallel may together pass it (recordRead).
 type ReadLimits struct{ Calls, Rows, ResponseRows, ResponseBytes int }
 
 // DefaultReadLimits are the built-in limits (approved 2026-10-25, ask #567).
@@ -85,15 +85,45 @@ func (r *Registry) ReadSessionKey(b Binding) string {
 	return r.reads.process
 }
 
-// AdmitRead counts a company-data call against b's session now — reserving
-// its slot before the read runs, so parallel calls never pass the cap — or
-// refuses it with a ValidationError wrapping ErrReadLimit and logs the
-// refusal. A caller that reads outside CallRead (automations' mcp()) pairs it
-// with RecordRead.
-func (r *Registry) AdmitRead(b Binding, tool string) error {
-	return r.admitRead(b, r.ReadSessionKey(b), tool, nil)
+// ReadExternal runs fn — a read of company data outside the registry's
+// tools, such as an automation's mcp() call named "mcp:<server>/<tool>" —
+// inside b's read budget: it counts the call before fn runs (a spent budget
+// is refused with a ValidationError wrapping ErrReadLimit and fn never
+// runs), then writes the call's one audit line: error when fn fails or
+// panics (the panic is re-raised), too_large when size passes the
+// per-response byte cap, else ok. No rows are counted: the result's shape is
+// not the registry's. fn's error is returned unchanged.
+func (r *Registry) ReadExternal(b Binding, name string, fn func() (size int, err error)) error {
+	key := r.ReadSessionKey(b)
+	if err := r.admitRead(b, key, name, nil); err != nil {
+		return err
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			r.recordRead(b, key, name, nil, 0, 0, auditlog.ResultError)
+		}
+	}()
+	size, err := fn()
+	finished = true
+	r.reads.mu.Lock()
+	maxBytes := r.reads.limits.ResponseBytes
+	r.reads.mu.Unlock()
+	switch {
+	case err != nil:
+		r.recordRead(b, key, name, nil, 0, 0, auditlog.ResultError)
+	case size > maxBytes:
+		r.recordRead(b, key, name, nil, 0, size, auditlog.ResultTooLarge)
+	default:
+		r.recordRead(b, key, name, nil, 0, size, auditlog.ResultOK)
+	}
+	return err
 }
 
+// admitRead counts a company-data call against the session key now —
+// reserving its slot before the read runs, so parallel calls never pass the
+// cap — or refuses it with a ValidationError wrapping ErrReadLimit and logs
+// the refusal.
 func (r *Registry) admitRead(b Binding, key, tool string, filters []string) error {
 	r.reads.mu.Lock()
 	l := r.reads.limits
@@ -112,16 +142,12 @@ func (r *Registry) admitRead(b Binding, key, tool string, filters []string) erro
 	return nil
 }
 
-// RecordRead adds an admitted call's rows to b's session and writes its
+// recordRead adds an admitted call's rows to the session and writes its
 // audit line. result is one of the auditlog.Result* values.
 //
 // The row cap is soft: rows are debited here, after the read, so calls
 // admitted in parallel while the session was under the cap may together pass
-// it. The call cap is exact — AdmitRead reserves the slot before the read.
-func (r *Registry) RecordRead(b Binding, tool string, filters []string, rows, size int, result string) {
-	r.recordRead(b, r.ReadSessionKey(b), tool, filters, rows, size, result)
-}
-
+// it. The call cap is exact — admitRead reserves the slot before the read.
 func (r *Registry) recordRead(b Binding, key, tool string, filters []string, rows, size int, result string) {
 	r.reads.mu.Lock()
 	u := r.reads.usage(key)

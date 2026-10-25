@@ -76,11 +76,11 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 func Execute() int {
 	role := roleFor(os.Args[1:])
 	lockmetrics.SetProcessRole(role)
-	auditlog.SetProcess(role)
+	auditlog.SetProcess(auditPath(role))
+	wrapContentCommands()
+	contentRan.Store(nil)
 	err := rootCmd.Execute()
-	if e, ok := cliAuditEvent(cliCommandPath(os.Args[1:]), os.Getenv, err); ok {
-		auditlog.Read(e)
-	}
+	auditCLIRun(os.Getenv, err)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		var ec *exitCodeError

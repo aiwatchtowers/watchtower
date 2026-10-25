@@ -101,3 +101,33 @@ func TestAuto08_MCPCountsAgainstRunBudget(t *testing.T) {
 		t.Fatalf("lines = %v; want one ok line for mcp:github/list_prs in run:42", got)
 	}
 }
+
+// Each mcp() outcome leaves exactly one line: the refusal limit_reached, a
+// failed call error, a result over the SDK cap too_large.
+func TestAuto08_MCPLineOutcomes(t *testing.T) {
+	big, _ := json.Marshal(map[string]string{"text": strings.Repeat("x", automations.MaxSDKResultBytes)})
+	cases := []struct {
+		name   string
+		limits tools.ReadLimits
+		mcp    *automationstest.FakeMCP
+		want   string
+	}{
+		{"refused", readLimits(0), &automationstest.FakeMCP{Result: json.RawMessage(`{}`)}, `"result":"limit_reached"`},
+		{"error", readLimits(5), &automationstest.FakeMCP{Err: errors.New("boom")}, `"result":"error"`},
+		{"too large", readLimits(5), &automationstest.FakeMCP{Result: big}, `"result":"too_large"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lines := captureLines(t)
+			runSDK(t, `try { mcp("github", "list_prs", {}); return "called" } catch (e) { return e.name }`,
+				budgetCase(t, c.limits, c.mcp, "mcp:github/*"))
+			got := lines()
+			if len(got) != 1 || !strings.Contains(got[0], c.want) || !strings.Contains(got[0], `"tool":"mcp:github/list_prs"`) {
+				t.Fatalf("lines = %v; want one line with %s", got, c.want)
+			}
+			if c.name == "refused" && len(c.mcp.Calls()) != 0 {
+				t.Fatalf("a refused call reached the server")
+			}
+		})
+	}
+}

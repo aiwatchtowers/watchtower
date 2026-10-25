@@ -375,3 +375,30 @@ func TestRead02_WritesNoRow(t *testing.T) {
 	require.NoError(t, err, "the gate writes nothing, so a query_only handle serves it (DEV-01, AGENT-02)")
 	assert.EqualValues(t, 1, n.Load())
 }
+
+func TestReadExternal_RecordsEveryOutcome(t *testing.T) {
+	lines := captureAudit(t)
+	reg := New(nil)
+	reg.SetReadLimits(testLimits(3, 1000))
+	b := Binding{AutomationRunID: 7}
+
+	require.NoError(t, reg.ReadExternal(b, "mcp:acme/list", func() (int, error) { return 10, nil }))
+	boom := errors.New("boom")
+	require.ErrorIs(t, reg.ReadExternal(b, "mcp:acme/list", func() (int, error) { return 0, boom }), boom)
+	assert.PanicsWithValue(t, "p", func() {
+		_ = reg.ReadExternal(b, "mcp:acme/list", func() (int, error) { panic("p") })
+	})
+	ran := false
+	err := reg.ReadExternal(b, "mcp:acme/list", func() (int, error) { ran = true; return 0, nil })
+	require.ErrorIs(t, err, ErrReadLimit)
+	assert.False(t, ran, "a spent budget never runs fn")
+
+	got := lines()
+	require.Len(t, got, 4)
+	for i, want := range []string{"ok", "error", "error", "limit_reached"} {
+		assert.Equal(t, want, got[i]["result"], i)
+		assert.Equal(t, "run:7", got[i]["session"])
+		assert.Equal(t, "mcp:acme/list", got[i]["tool"])
+	}
+	assert.EqualValues(t, 10, got[0]["bytes"])
+}

@@ -168,11 +168,11 @@ func (r *FakeRegistry) Propose(_ context.Context, name string, args json.RawMess
 	return rc, nil
 }
 
-// AdmitRead admits every call: a FakeRegistry keeps no read budget.
-func (r *FakeRegistry) AdmitRead(tools.Binding, string) error { return nil }
-
-// RecordRead records nothing.
-func (r *FakeRegistry) RecordRead(tools.Binding, string, []string, int, int, string) {}
+// ReadExternal runs fn: a FakeRegistry keeps no read budget.
+func (r *FakeRegistry) ReadExternal(_ tools.Binding, _ string, fn func() (int, error)) error {
+	_, err := fn()
+	return err
+}
 
 // ReadCalls returns a copy of the reads received so far.
 func (r *FakeRegistry) ReadCalls() []FakeRead {
