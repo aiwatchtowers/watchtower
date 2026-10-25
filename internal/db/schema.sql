@@ -3242,3 +3242,38 @@ CREATE TABLE IF NOT EXISTS account_purges (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
     ON account_purges(source, account_id) WHERE state IN ('scheduled','running');
+
+-- Automation editor draft cache (00156, #604): the newest draft_automation
+-- results of an automation_editor conversation (the Draft panel's history),
+-- oldest first by seq, at most a handful kept (AppendDraftCache). entry_json
+-- is one DraftCacheEntry. Replaces <workspace>/automation-drafts/<id>.jsonl.
+CREATE TABLE IF NOT EXISTS automation_draft_cache (
+    conversation_id INTEGER NOT NULL,
+    seq             INTEGER NOT NULL,
+    entry_json      TEXT NOT NULL,
+    at              TEXT NOT NULL,                       -- RFC 3339 UTC
+    PRIMARY KEY (conversation_id, seq)
+);
+
+-- Recordings not yet saved as a transcript (00156, #604). Written by the
+-- Desktop only; Go never reads it. recording is the audio file's base name
+-- (rec_<ts>.caf); transcript and meta_json stay NULL until transcription
+-- succeeds. A row present = not saved yet (replaces the rec_* sidecars).
+CREATE TABLE IF NOT EXISTS pending_transcripts (
+    recording      TEXT PRIMARY KEY,
+    event_id       TEXT,
+    title          TEXT,
+    transcript     TEXT,
+    meta_json      TEXT,
+    started_at     REAL NOT NULL,
+    transcribed_at REAL
+);
+
+-- An embedded chat's owner message queued but not yet sent (00156, #604;
+-- CHAT-01: it survives a quit). Written by the Desktop only; Go never reads
+-- it. surface_key is EmbeddedChatKey.description.
+CREATE TABLE IF NOT EXISTS chat_queued_drafts (
+    surface_key TEXT PRIMARY KEY,
+    text        TEXT NOT NULL,
+    at          REAL NOT NULL
+);

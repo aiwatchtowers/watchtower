@@ -2175,6 +2175,27 @@ CREATE TABLE IF NOT EXISTS instruction_chat_lines (
     message_id      INTEGER NULL,
     added_at        TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS automation_draft_cache (
+    conversation_id INTEGER NOT NULL,
+    seq             INTEGER NOT NULL,
+    entry_json      TEXT NOT NULL,
+    at              TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, seq)
+);
+CREATE TABLE IF NOT EXISTS pending_transcripts (
+    recording      TEXT PRIMARY KEY,
+    event_id       TEXT,
+    title          TEXT,
+    transcript     TEXT,
+    meta_json      TEXT,
+    started_at     REAL NOT NULL,
+    transcribed_at REAL
+);
+CREATE TABLE IF NOT EXISTS chat_queued_drafts (
+    surface_key TEXT PRIMARY KEY,
+    text        TEXT NOT NULL,
+    at          REAL NOT NULL
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,

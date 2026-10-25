@@ -686,6 +686,15 @@ ended_at TEXT NOT NULL,
 reported_cost_usd REAL
 )
 
+table	automation_draft_cache
+CREATE TABLE automation_draft_cache (
+conversation_id INTEGER NOT NULL,
+seq INTEGER NOT NULL,
+entry_json TEXT NOT NULL,
+at TEXT NOT NULL,
+PRIMARY KEY (conversation_id, seq)
+)
+
 table	automation_outputs
 CREATE TABLE automation_outputs (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1066,6 +1075,13 @@ instructions TEXT NOT NULL DEFAULT '',
 created_at REAL NOT NULL,
 updated_at REAL NOT NULL,
 archived_at REAL
+)
+
+table	chat_queued_drafts
+CREATE TABLE chat_queued_drafts (
+surface_key TEXT PRIMARY KEY,
+text TEXT NOT NULL,
+at REAL NOT NULL
 )
 
 table	chat_title_fts
@@ -2264,6 +2280,17 @@ CREATE TABLE owner_presence (
 id INTEGER PRIMARY KEY CHECK (id = 1),
 session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
 seen_at TEXT NOT NULL DEFAULT ''
+)
+
+table	pending_transcripts
+CREATE TABLE pending_transcripts (
+recording TEXT PRIMARY KEY,
+event_id TEXT,
+title TEXT,
+transcript TEXT,
+meta_json TEXT,
+started_at REAL NOT NULL,
+transcribed_at REAL
 )
 
 table	people_card_summaries
@@ -3790,6 +3817,12 @@ GROUP BY up.ancestor
 10	ended_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	reported_cost_usd	REAL	notnull=0	dflt=NULL	pk=0
 
+## automation_draft_cache
+0	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	seq	INTEGER	notnull=1	dflt=NULL	pk=2
+2	entry_json	TEXT	notnull=1	dflt=NULL	pk=0
+3	at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## automation_outputs
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	automation_id	INTEGER	notnull=1	dflt=NULL	pk=0
@@ -4135,6 +4168,11 @@ GROUP BY up.ancestor
 3	created_at	REAL	notnull=1	dflt=NULL	pk=0
 4	updated_at	REAL	notnull=1	dflt=NULL	pk=0
 5	archived_at	REAL	notnull=0	dflt=NULL	pk=0
+
+## chat_queued_drafts
+0	surface_key	TEXT	notnull=0	dflt=NULL	pk=1
+1	text	TEXT	notnull=1	dflt=NULL	pk=0
+2	at	REAL	notnull=1	dflt=NULL	pk=0
 
 ## chat_title_fts
 0	title		notnull=0	dflt=NULL	pk=0
@@ -5191,6 +5229,15 @@ GROUP BY up.ancestor
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	session_id	INTEGER	notnull=0	dflt=NULL	pk=0
 2	seen_at	TEXT	notnull=1	dflt=''	pk=0
+
+## pending_transcripts
+0	recording	TEXT	notnull=0	dflt=NULL	pk=1
+1	event_id	TEXT	notnull=0	dflt=NULL	pk=0
+2	title	TEXT	notnull=0	dflt=NULL	pk=0
+3	transcript	TEXT	notnull=0	dflt=NULL	pk=0
+4	meta_json	TEXT	notnull=0	dflt=NULL	pk=0
+5	started_at	REAL	notnull=1	dflt=NULL	pk=0
+6	transcribed_at	REAL	notnull=0	dflt=NULL	pk=0
 
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
