@@ -206,7 +206,7 @@ func TestAllTablesExist(t *testing.T) {
 		"linear_issue_history", "linear_cycles", "linear_projects", "linear_relations", "linear_user_map",
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
 		"automation_tool_grants", "linear_workflow_states", "linear_labels", "builtin_migrations",
-		"db_maintenance", "account_purges",
+		"db_maintenance", "account_purges", "spec_reviews", "spec_review_marks",
 	}
 
 	for _, table := range expectedTables {

@@ -2235,7 +2235,7 @@ withdrawn_reason TEXT NOT NULL DEFAULT '' CHECK(withdrawn_reason IN ('','agent',
 answer TEXT NOT NULL DEFAULT '', -- JSON, Desktop-written
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 answered_at TEXT NOT NULL DEFAULT '',
-delivered_at TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '', automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
+delivered_at TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '', automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, doc_type TEXT NOT NULL DEFAULT '',
 CHECK ((kind = 'review') = (doc_path != '')),
 CHECK ((status IN ('answered','delivered')) = (answer != ''))
 )
@@ -2695,6 +2695,33 @@ enabled INTEGER NOT NULL DEFAULT 1,
 search_last_date TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
+
+table	spec_review_marks
+CREATE TABLE spec_review_marks (
+ask_id INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+item_key TEXT NOT NULL,
+state TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
+body TEXT NOT NULL DEFAULT '',
+updated_at TEXT NOT NULL,
+PRIMARY KEY (ask_id, item_key)
+)
+
+table	spec_reviews
+CREATE TABLE spec_reviews (
+ask_id INTEGER PRIMARY KEY REFERENCES owner_asks(id) ON DELETE CASCADE,
+status TEXT NOT NULL CHECK (status IN ('queued','running','done','failed','skipped')),
+reason TEXT NOT NULL DEFAULT '',
+result TEXT NOT NULL DEFAULT '',
+provider TEXT NOT NULL DEFAULT '',
+model TEXT NOT NULL DEFAULT '',
+doc_sha TEXT NOT NULL DEFAULT '',
+dropped INTEGER NOT NULL DEFAULT 0,
+pid INTEGER NOT NULL DEFAULT 0,
+attempt INTEGER NOT NULL DEFAULT 0,
+queued_at TEXT NOT NULL,
+started_at TEXT NOT NULL DEFAULT '',
+finished_at TEXT NOT NULL DEFAULT ''
+)
 
 table	stream_digests
 CREATE TABLE "stream_digests" (
@@ -5162,6 +5189,7 @@ GROUP BY up.ancestor
 20	chat_asked_at	TEXT	notnull=1	dflt=''	pk=0
 21	withdrawn_at	TEXT	notnull=1	dflt=''	pk=0
 22	automation_run_id	INTEGER	notnull=0	dflt=NULL	pk=0
+23	doc_type	TEXT	notnull=1	dflt=''	pk=0
 
 ## owner_instructions
 0	scope	TEXT	notnull=0	dflt=NULL	pk=1
@@ -5551,6 +5579,28 @@ GROUP BY up.ancestor
 14	deletion_sweep_day	TEXT	notnull=1	dflt=''	pk=0
 15	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
+
+## spec_review_marks
+0	ask_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	item_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	state	TEXT	notnull=1	dflt=NULL	pk=0
+3	body	TEXT	notnull=1	dflt=''	pk=0
+4	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+
+## spec_reviews
+0	ask_id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	status	TEXT	notnull=1	dflt=NULL	pk=0
+2	reason	TEXT	notnull=1	dflt=''	pk=0
+3	result	TEXT	notnull=1	dflt=''	pk=0
+4	provider	TEXT	notnull=1	dflt=''	pk=0
+5	model	TEXT	notnull=1	dflt=''	pk=0
+6	doc_sha	TEXT	notnull=1	dflt=''	pk=0
+7	dropped	INTEGER	notnull=1	dflt=0	pk=0
+8	pid	INTEGER	notnull=1	dflt=0	pk=0
+9	attempt	INTEGER	notnull=1	dflt=0	pk=0
+10	queued_at	TEXT	notnull=1	dflt=NULL	pk=0
+11	started_at	TEXT	notnull=1	dflt=''	pk=0
+12	finished_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## stream_digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
