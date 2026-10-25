@@ -17,9 +17,16 @@ const testDoc = "# Title\n\nGoal: the owner can mute a channel for a day.\n\n## 
 
 func testSources() Sources {
 	return Sources{
-		Doc:          testDoc,
-		Conversation: map[string]string{"entry:1": "Please let me mute a channel for a day, nothing more."},
-		Asks:         map[string]string{"ask:1": "Yes, keep the state local to this Mac."},
+		Doc: testDoc,
+		Conversation: map[string]string{
+			"entry:1": "Please let me mute a channel for a day, nothing more.",
+			"entry:2": "I propose the mute also covers every thread of the channel.",
+		},
+		Asks: map[string]string{"ask:1": "Answers:\n- Where does the mute state live? → Yes, keep the state local to this Mac."},
+		OwnerWords: map[string][]string{
+			"entry:1": {"Please let me mute a channel for a day, nothing more."},
+			"ask:1":   {"Yes, keep the state local to this Mac."},
+		},
 	}
 }
 
@@ -293,11 +300,11 @@ func TestResult_JSONKeysPinned(t *testing.T) {
 		Idea: Idea{
 			OwnerQuote: "mute a channel for a day", GoalQuote: "the owner can mute a channel for a day",
 			Verdict: "matches", Note: "Same scope.",
-			OwnerSource: Source{Kind: "conversation", Ref: "entry:1", Quote: "mute a channel for a day"},
+			OwnerSource: Source{Kind: "conversation", Ref: "entry:1", Quote: "mute a channel for a day", Speaker: SpeakerOwner},
 		},
 		Agreements: []Agreement{{
 			Key: "ag:0123456789ab", Text: "A mute lasts one day", Status: "as_agreed", Note: "Stated in Behaviour.", Chapter: "ch:1",
-			Source: Source{Kind: "ask", Ref: "ask:1", Quote: "keep the state local"},
+			Source: Source{Kind: "ask", Ref: "ask:1", Quote: "keep the state local", Speaker: SpeakerOwner},
 			Where:  &Anchor{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours"},
 		}},
 		DecidedAlone: []DecidedAlone{{
@@ -367,5 +374,73 @@ func TestParse_DecisionsSourceNeedsDecisionsSection(t *testing.T) {
 	src.Doc = "## Behaviour\n\nMuting lasts twenty-four hours.\n"
 	if r := parseOne(t, mk("Muting lasts twenty-four hours"), src); len(r.Agreements) != 0 {
 		t.Errorf("no Decisions section, entry kept: %+v", r)
+	}
+}
+
+func agreementFrom(kind, ref, quote string) string {
+	b, _ := json.Marshal(map[string]any{
+		"text": "agreed: " + quote, "status": "as_agreed", "note": "n",
+		"source": map[string]string{"kind": kind, "ref": ref, "quote": quote, "speaker": "owner"},
+		"where":  map[string]string{"heading": "## Behaviour", "quote": "Muting lasts twenty-four hours"},
+	})
+	return string(b)
+}
+
+// The owner's words are checked for their speaker, not only for existence.
+func TestSpecReview03_IdeaNeedsOwnerWords(t *testing.T) {
+	mk := func(ref, quote string) string {
+		return `{"summary":"s","idea":{"owner_quote":"` + quote + `","goal_quote":"the owner can mute a channel for a day",` +
+			`"verdict":"matches","owner_source":{"kind":"conversation","ref":"` + ref + `","quote":"` + quote + `"}}}`
+	}
+	r := parseOne(t, mk("entry:2", "the mute also covers every thread"), testSources())
+	if r.Idea != (Idea{}) || r.Dropped != 1 {
+		t.Fatalf("an idea quoting the agent was kept: %+v", r.Idea)
+	}
+	r = parseOne(t, mk("entry:1", "mute a channel for a day"), testSources())
+	if r.Idea.Verdict != "matches" || r.Idea.OwnerSource.Speaker != SpeakerOwner {
+		t.Fatalf("an owner idea: %+v", r.Idea)
+	}
+	// the target is the author's side: never the owner's idea
+	src := testSources()
+	src.Target = "Mute a channel for a day from its header\n"
+	tr := `{"summary":"s","idea":{"owner_quote":"Mute a channel for a day","goal_quote":"the owner can mute a channel for a day",` +
+		`"verdict":"matches","owner_source":{"kind":"target","ref":"target","quote":"Mute a channel for a day"}}}`
+	if r := parseOne(t, tr, src); r.Idea != (Idea{}) {
+		t.Fatalf("an idea from the target was kept: %+v", r.Idea)
+	}
+}
+
+func TestSpecReview03_AgreementSpeakers(t *testing.T) {
+	src := testSources()
+	src.Comments = map[string]string{"comment:1": "Threads are muted along with the channel.", "comment:2": "Threads follow the channel mute too."}
+	src.OwnerWords["comment:2"] = []string{"Threads follow the channel mute too."}
+	src.Target = "Mute a channel for a day\n"
+	raw := `{"summary":"s","agreements":[` +
+		agreementFrom("conversation", "entry:2", "the mute also covers every thread") + "," + // agent line: dropped
+		agreementFrom("ask", "ask:1", "Where does the mute state live?") + "," + // the agent's question: dropped
+		agreementFrom("comment", "comment:1", "Threads are muted along with") + "," + // agent comment: dropped
+		agreementFrom("comment", "comment:2", "Threads follow the channel mute") + "," + // owner comment
+		agreementFrom("ask", "ask:1", "keep the state local to this Mac") + "," + // owner answer
+		agreementFrom("target", "target", "Mute a channel for a day") + "," + // author side, kept as agent
+		agreementFrom("decisions", "", "Mute state lives in the local database") + `]}`
+	r := parseOne(t, raw, src)
+	if r.Dropped != 3 {
+		t.Fatalf("dropped %d, want 3: %+v", r.Dropped, r.Agreements)
+	}
+	got := map[string]string{}
+	for _, a := range r.Agreements {
+		got[a.Source.Kind+":"+a.Source.Ref] = a.Source.Speaker
+	}
+	want := map[string]string{
+		"comment:comment:2": SpeakerOwner, "ask:ask:1": SpeakerOwner,
+		"target:target": SpeakerAgent, "decisions:": SpeakerAgent,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kept %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("speaker of %s = %q, want %q", k, got[k], v)
+		}
 	}
 }

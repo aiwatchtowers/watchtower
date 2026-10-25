@@ -65,9 +65,11 @@ func (db *DB) QueueSpecReview(tx *sql.Tx, askID int64, now time.Time) error {
 }
 
 // RequeueSpecReview queues the ask's review for a run the owner asked for, in
-// one transaction: no row is queued anew, a queued row is left as is (it is
+// one transaction: no row is queued anew, a queued row stays queued (it is
 // launched again), a running row is refused, and a done|failed|skipped row is
-// re-queued only with force. A refusal wraps ErrSpecReviewBusy.
+// re-queued only with force. A refusal wraps ErrSpecReviewBusy. The owner's
+// run starts the launch count over (attempt = 1): the sweep's cap counts its
+// own relaunches only.
 func (db *DB) RequeueSpecReview(askID int64, force bool, now time.Time) error {
 	return db.WithTx(func(tx *sql.Tx) error {
 		var status string
@@ -77,14 +79,39 @@ func (db *DB) RequeueSpecReview(askID int64, force bool, now time.Time) error {
 		case err != nil:
 			return fmt.Errorf("reading spec review: %w", err)
 		case status == "queued":
-			return nil
 		case status == "running":
 			return fmt.Errorf("%w: already running", ErrSpecReviewBusy)
 		case !force:
 			return fmt.Errorf("%w: it is %s (--force runs it again)", ErrSpecReviewBusy, status)
 		}
-		return db.QueueSpecReview(tx, askID, now)
+		if status != "queued" {
+			if err := db.QueueSpecReview(tx, askID, now); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`UPDATE spec_reviews SET attempt = 1 WHERE ask_id = ?`, askID); err != nil {
+			return fmt.Errorf("resetting spec review attempts: %w", err)
+		}
+		return nil
 	})
+}
+
+// RelaunchQueuedSpecReview is the sweep's re-queue: it counts one more launch
+// (attempt + 1, the minute restarts) only while the row is still queued and
+// has launches left (attempt < maxAttempts), so a row a slow reviewer has just
+// claimed is never reset. True when the row was re-queued and is to be
+// launched; false when it is no longer queued or out of launches.
+func (db *DB) RelaunchQueuedSpecReview(askID int64, maxAttempts int, now time.Time) (bool, error) {
+	res, err := db.Exec(`UPDATE spec_reviews SET attempt = attempt + 1, queued_at = ?, pid = 0
+		WHERE ask_id = ? AND status = 'queued' AND attempt < ?`, specReviewTime(now), askID, maxAttempts)
+	if err != nil {
+		return false, fmt.Errorf("re-queueing spec review: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // SkipSpecReview records that no review runs for the ask, and why.

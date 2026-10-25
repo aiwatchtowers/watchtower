@@ -8,7 +8,8 @@
     "owner_source": {
       "kind": "conversation",
       "ref": "entry:1",
-      "quote": "mute a channel for a day"
+      "quote": "mute a channel for a day",
+      "speaker": "owner"
     }
   },
   "agreements": [
@@ -21,7 +22,8 @@
       "source": {
         "kind": "ask",
         "ref": "ask:1",
-        "quote": "keep the state local"
+        "quote": "keep the state local",
+        "speaker": "owner"
       },
       "where": {
         "heading": "Behaviour",

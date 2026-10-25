@@ -353,13 +353,8 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	}
 	var id, superseded int64
 	err = d.WithTx(func(tx *sql.Tx) error {
-		if id, superseded, err = d.InsertOwnerAsk(tx, ask); err != nil {
-			return err
-		}
-		if reviewed {
-			return d.QueueSpecReview(tx, id, time.Now())
-		}
-		return nil
+		id, superseded, err = d.InsertOwnerAsk(tx, ask)
+		return err
 	})
 	switch {
 	case errors.Is(err, db.ErrTooManyOpenAsks):
@@ -386,10 +381,14 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	return out, nil
 }
 
-// launchSpecReview starts the reviewer of a just-queued review. A launcher
-// that is absent, refuses or fails never fails the ask: the row is skipped
-// with the reason and the owner opens the document unreviewed.
+// launchSpecReview queues the review of a just-filed ask, after the ask's own
+// transaction, and starts its reviewer. A queue write that fails, or a
+// launcher that is absent, refuses or fails, never fails the ask: the row is
+// skipped with the reason and the owner opens the document unreviewed.
 func launchSpecReview(d *db.DB, askID int64, launch SpecReviewLauncher) string {
+	if err := d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, time.Now()) }); err != nil {
+		return skipSpecReview(d, askID, "could not queue: "+err.Error())
+	}
 	if launch == nil {
 		return skipSpecReview(d, askID, "no reviewer on this surface")
 	}

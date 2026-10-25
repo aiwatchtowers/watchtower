@@ -303,3 +303,19 @@ func TestSpecReview01_RunWritesOnlyItsRow(t *testing.T) {
 	require.Error(t, Run(context.Background(), f2.deps(&fakeAgent{err: errors.New("boom")}), askID2))
 	assert.Equal(t, before2, dumpTables(t, f2.d))
 }
+
+// A review whose ask was withdrawn (or superseded) before the reviewer
+// claimed it does not run: the row fails with "ask withdrawn".
+func TestRun_AskWithdrawnBeforeClaimDoesNotRun(t *testing.T) {
+	f, askID := runFixture(t)
+	require.NoError(t, f.d.WithdrawOwnerAsk(f.wb, askID, "agent"))
+	agent := &fakeAgent{out: runReply}
+	require.Error(t, Run(context.Background(), f.deps(agent), askID))
+
+	assert.Zero(t, agent.calls)
+	assert.Zero(t, f.feedCalls)
+	row, err := f.d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Equal(t, "ask withdrawn", row.Reason)
+}

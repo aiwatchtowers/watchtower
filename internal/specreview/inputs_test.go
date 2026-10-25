@@ -305,3 +305,41 @@ func TestBuildInputs_PreviousFindings(t *testing.T) {
 	assert.Contains(t, block, "agreement [missing] A mute lasts a day — no duration")
 	assert.Contains(t, block, "blind spot: Muted threads")
 }
+
+// Who said what is kept with the sources: owner lines and owner comments
+// whole, an ask (in the asks block or as a conversation entry) only by the
+// owner's own answer texts; agent text and agent comments have none.
+func TestBuildInputs_OwnerWordsBySpeaker(t *testing.T) {
+	f := newFixture(t)
+	tid := sql.NullInt64{Int64: f.tgt, Valid: true}
+	owner, err := f.d.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: f.wb, TargetID: tid, Author: "owner", Body: "Keep the mute local to this Mac"})
+	require.NoError(t, err)
+	agent, err := f.d.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: f.wb, TargetID: tid, Author: "agent", Body: "I will also mute threads"})
+	require.NoError(t, err)
+	var qid int64
+	require.NoError(t, f.d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		qid, _, err = f.d.InsertOwnerAsk(tx, db.OwnerAsk{WorkbenchID: f.wb, SessionID: sql.NullInt64{Int64: f.session, Valid: true},
+			Kind: "question", Title: "Scope?", Payload: `{"questions":[{"id":"q1","question":"How long should a mute last?","options":[{"label":"One day"},{"label":"A week"}]}]}`})
+		return err
+	}))
+	_, err = f.d.Exec(`UPDATE owner_asks SET status = 'answered', answer = ? WHERE id = ?`,
+		`{"answers":[{"id":"q1","labels":["One day"],"other":"and never longer"}],"checklist":[],"comments":[],"note":"ship it","verdict":""}`, qid)
+	require.NoError(t, err)
+	f.feed = []sessionfeed.Entry{
+		{ID: "o1", Kind: sessionfeed.KindOwner, Text: "Let me mute a channel"},
+		{ID: "a1", Kind: sessionfeed.KindAgent, Text: "I propose muting threads too"},
+		{ID: "q1", Kind: sessionfeed.KindAskAnswer, AskID: qid, Title: "Scope?", Text: "How long should a mute last? → One day / Other: and never longer"},
+	}
+	a := f.ask(t, "spec", "# Spec\n\n## Goals\n\nMute.\n")
+
+	src, _, _, err := BuildInputs(context.Background(), f.deps(nil), a, f.folder)
+	require.NoError(t, err)
+	want := []string{"One day", "and never longer", "ship it"}
+	assert.Equal(t, []string{"Let me mute a channel"}, src.OwnerWords["entry:o1"])
+	assert.NotContains(t, src.OwnerWords, "entry:a1")
+	assert.Equal(t, want, src.OwnerWords["entry:q1"])
+	assert.Equal(t, want, src.OwnerWords[fmt.Sprintf("ask:%d", qid)])
+	assert.Equal(t, []string{"Keep the mute local to this Mac"}, src.OwnerWords[fmt.Sprintf("comment:%d", owner)])
+	assert.NotContains(t, src.OwnerWords, fmt.Sprintf("comment:%d", agent))
+}

@@ -46,8 +46,12 @@ type Deps struct {
 	Model    string
 }
 
+// errAskWithdrawn fails a review whose ask was withdrawn (or superseded by a
+// new round) before the reviewer claimed it: nobody will read the result.
+var errAskWithdrawn = errors.New("ask withdrawn")
+
 // Run reviews ask askID: it claims the queued row (a lost claim does nothing),
-// builds the inputs, calls the agent under RunTimeout, validates the reply
+// fails it at once when the ask is already withdrawn, builds the inputs, calls the agent under RunTimeout, validates the reply
 // and stores it. Any failure after the claim marks the row failed with a
 // one-line reason. Run writes nothing but the ask's spec_reviews row.
 func Run(ctx context.Context, d Deps, askID int64) error {
@@ -72,6 +76,11 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	ask, err := d.DB.GetOwnerAskByID(askID)
 	if err != nil {
 		return db.SpecReview{}, err
+	}
+	// Checked once, at the start: an ask withdrawn while the agent works
+	// still gets its result.
+	if ask.Status == "withdrawn" {
+		return db.SpecReview{}, errAskWithdrawn
 	}
 	t := DocType(ask.DocType)
 	if ask.Kind != "review" || (t != Spec && t != Plan) {
