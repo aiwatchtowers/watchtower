@@ -47,10 +47,9 @@ extension AppState {
             return "Slack accounts are not loaded yet — open Connections → Slack."
         }
         if vm.accounts.isEmpty {
-            vm.error = nil
             await vm.refreshAsync()
             // A failed read is not "no longer connected": say what failed.
-            if vm.accounts.isEmpty, let error = vm.error { return error }
+            if vm.accounts.isEmpty, let readError = vm.readError { return readError }
         }
         guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
             return "Slack account #\(accountID) is no longer connected."
@@ -80,13 +79,13 @@ extension AppState {
 
     private func connectionReadError(_ service: ConnectionService) -> String? {
         switch service {
-        case .slack: slackAccountsViewModel?.error
-        case .google: googleAccountsViewModel?.error
-        case .email: emailAccountsViewModel?.error
-        case .calendar: calendarAccountsViewModel?.error
-        case .jira: jiraAccountsViewModel?.error
-        case .linear: linearAccountsViewModel?.error
-        case .quickConnections: externalConnectionsViewModel?.error
+        case .slack: slackAccountsViewModel?.readError
+        case .google: googleAccountsViewModel?.readError
+        case .email: emailAccountsViewModel?.readError
+        case .calendar: calendarAccountsViewModel?.readError
+        case .jira: jiraAccountsViewModel?.readError
+        case .linear: linearAccountsViewModel?.readError
+        case .quickConnections: externalConnectionsViewModel?.readError
         }
     }
 

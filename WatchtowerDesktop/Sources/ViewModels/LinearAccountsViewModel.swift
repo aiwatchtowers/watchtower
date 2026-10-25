@@ -21,6 +21,10 @@ final class LinearAccountsViewModel {
     private(set) var teamErrors: [Int64: String] = [:]
     var isBusy = false
     var error: String?
+    /// The last account read failed; nil once one succeeds. Only the read:
+    /// an action's failure stays in `error` (the Connections tab's
+    /// "Couldn't read accounts" reads this).
+    private(set) var readError: String?
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
@@ -92,19 +96,23 @@ final class LinearAccountsViewModel {
     func refreshAsync() async {
         guard let path = cliPath() else {
             error = "Watchtower CLI not found"
+            readError = error
             return
         }
         let result = await Self.run(path: path, arguments: Self.accountsArgs)
         guard result.exitCode == 0 else {
             error = Self.failure("Failed to load Linear workspaces", result)
+            readError = error
             return
         }
         do {
             accounts = try LinearAccount.decodeList(Data(result.stdout.utf8))
+            readError = nil
             teams = teams.filter { id, _ in accounts.contains { $0.id == id } }
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to read Linear workspaces: \(error.localizedDescription)"
+            readError = self.error
         }
     }
 

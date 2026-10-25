@@ -845,4 +845,43 @@ struct ConfigServiceTests {
         try svc.save()
         #expect(!svc.hasUnsavedEdits, "saved: nothing waits")
     }
+
+    /// A Google connect turns its sync switches on from the CLI: adopting
+    /// them is not an edit, so later reloads still run; an edit elsewhere
+    /// still counts.
+    @Test("adopting the Google switches from disk moves only them into the baseline")
+    func adoptedSwitchesAreNoEdit() throws {
+        let path = makeTempConfig("calendar:\n  enabled: false\ngmail:\n  enabled: false\n")
+        let svc = ConfigService(configPath: path)
+        #expect(!svc.calendarEnabled)
+
+        try "calendar:\n  enabled: true\ngmail:\n  enabled: true\n".write(toFile: path, atomically: true, encoding: .utf8)
+        svc.adoptGoogleSyncSwitchesFromDisk()
+        #expect(svc.calendarEnabled && svc.gmailEnabled)
+        #expect(!svc.hasUnsavedEdits, "what came from disk is no edit")
+
+        try "calendar:\n  enabled: true\ngmail:\n  enabled: true\nclaude_path: /opt/new\n"
+            .write(toFile: path, atomically: true, encoding: .utf8)
+        svc.reloadUnlessEdited()
+        #expect(svc.claudePath == "/opt/new", "a later reload still runs")
+
+        svc.codexPath = "/opt/mine"
+        try "calendar:\n  enabled: false\ngmail:\n  enabled: true\n".write(toFile: path, atomically: true, encoding: .utf8)
+        svc.adoptGoogleSyncSwitchesFromDisk()
+        #expect(svc.hasUnsavedEdits, "the unsaved edit elsewhere still counts")
+    }
+
+    /// An equal dictionary in another key order is no edit (`jiraFeatures`
+    /// prints its keys in hash order).
+    @Test("a dictionary field rebuilt with the same values is no edit")
+    func dictionaryFieldComparedByValue() {
+        let keys = (0..<40).map { "signal_\($0)" }
+        let path = makeTempConfig("jira:\n  features:\n" + keys.map { "    \($0): true\n" }.joined())
+        let svc = ConfigService(configPath: path)
+        #expect(svc.jiraFeatures.count == 40)
+        svc.jiraFeatures = Dictionary(uniqueKeysWithValues: keys.reversed().map { ($0, true) })
+        #expect(!svc.hasUnsavedEdits)
+        svc.jiraFeatures["signal_0"] = false
+        #expect(svc.hasUnsavedEdits)
+    }
 }

@@ -16,6 +16,10 @@ final class SlackAccountsViewModel {
     private(set) var accounts: [SlackAccount] = []
     var isConnecting = false
     var error: String?
+    /// The last account read failed; nil once one succeeds. Only the read:
+    /// an action's failure stays in `error` (the Connections tab's
+    /// "Couldn't read accounts" reads this).
+    private(set) var readError: String?
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
@@ -62,9 +66,11 @@ final class SlackAccountsViewModel {
         do {
             let rows = try await dbPool.read { db in try SlackAccountQueries.fetchAll(db) }
             self.accounts = rows
+            readError = nil
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
+            readError = self.error
         }
     }
 

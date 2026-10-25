@@ -292,16 +292,34 @@ final class ConnectionsTabTests: XCTestCase {
         XCTAssertEqual(listed.statusLine, "Connected")
     }
 
-    /// A Slack read that fails lights nothing: the badge counts only what it read.
-    func testFailedReadDoesNotLightTheBadge() async throws {
+    /// Only a failed account read makes a service unknown, and the next good
+    /// read clears it; an action's failure (a wrong password, a failed
+    /// connect) beside no account is still "Not connected". Neither lights
+    /// the badge.
+    func testOnlyAFailedReadMakesAccountsUnknown() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let appState = AppState.isolated()
-        appState.initSlackAccounts(dbPool: pool)
-        await appState.slackAccountsViewModel?.refreshAsync()
-        appState.slackAccountsViewModel?.error = "Failed to load accounts: disk I/O error"
-        XCTAssertTrue(appState.connectionSummary(.slack).unknown)
+        appState.initEmailAccounts(dbPool: pool)
+        let vm = try XCTUnwrap(appState.emailAccountsViewModel)
+        await vm.refreshAsync()
+
+        vm.error = "Add failed: authentication failed"
+        XCTAssertFalse(appState.connectionSummary(.email).unknown)
+        XCTAssertEqual(appState.connectionSummary(.email).countLine, "Not connected")
+
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE email_accounts RENAME TO email_accounts_away") }
+        await vm.refreshAsync()
+        XCTAssertNotNil(vm.readError)
+        XCTAssertTrue(appState.connectionSummary(.email).unknown)
+        XCTAssertEqual(appState.connectionSummary(.email).statusLine, "Couldn't read accounts")
         XCTAssertEqual(appState.connectionsAttentionCount, 0)
+
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE email_accounts_away RENAME TO email_accounts") }
+        await vm.refreshAsync()
+        XCTAssertNil(vm.readError)
+        XCTAssertFalse(appState.connectionSummary(.email).unknown)
+        XCTAssertEqual(appState.connectionSummary(.email).countLine, "Not connected")
     }
 
     func testProblemWithNoStatusOrErrorStillSaysSo() {

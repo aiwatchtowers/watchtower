@@ -16,6 +16,10 @@ final class CalendarAccountsViewModel {
     private(set) var accounts: [CalendarAccount] = []
     var isRunning = false
     var error: String?
+    /// The last account read failed; nil once one succeeds. Only the read:
+    /// an action's failure stays in `error` (the Connections tab's
+    /// "Couldn't read accounts" reads this).
+    private(set) var readError: String?
 
     private let dbPool: DatabasePool
     /// Resolves the CLI binary for `rename`; injectable so tests can run a stand-in.
@@ -46,9 +50,11 @@ final class CalendarAccountsViewModel {
         do {
             let rows = try await dbPool.read { db in try CalendarAccountQueries.fetchAll(db) }
             self.accounts = rows
+            readError = nil
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
+            readError = self.error
         }
     }
 

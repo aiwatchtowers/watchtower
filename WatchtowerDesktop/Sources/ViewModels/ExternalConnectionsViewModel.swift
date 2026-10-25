@@ -16,6 +16,10 @@ final class ExternalConnectionsViewModel {
     private(set) var connections: [ExternalConnection] = []
     var isBusy = false
     var error: String?
+    /// The last account read failed; nil once one succeeds. Only the read:
+    /// an action's failure stays in `error` (the Connections tab's
+    /// "Couldn't read accounts" reads this).
+    private(set) var readError: String?
 
     /// Per-connection tool lists (QC-02), loaded when the owner opens a
     /// connection's Tools; keyed by connection id.
@@ -67,8 +71,10 @@ final class ExternalConnectionsViewModel {
         do {
             let rows = try await dbPool.read { db in try ExternalConnectionQueries.fetchAll(db) }
             self.connections = rows
+            readError = nil
         } catch {
             self.error = "Failed to load connections: \(error.localizedDescription)"
+            readError = self.error
         }
     }
 

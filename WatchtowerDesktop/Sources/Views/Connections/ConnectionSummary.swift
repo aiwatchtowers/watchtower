@@ -89,8 +89,9 @@ struct ConnectionSummary: Identifiable, Equatable {
     /// an error, unless the policy blocks it.
     var needsAttention: Bool { status == .error && !blocked }
 
-    /// `accounts` nil = its view model is not loaded; `readError` is the
-    /// view model's error, which with no account listed means its read failed.
+    /// `accounts` nil = its view model is not loaded; `readError` is its
+    /// last failed account read (never an action's failure), which with no
+    /// account listed leaves the accounts unknown.
     init(service: ConnectionService, accounts: [ConnectionAccountState]?, readError: String? = nil, blocked: Bool) {
         self.service = service
         self.blocked = blocked
