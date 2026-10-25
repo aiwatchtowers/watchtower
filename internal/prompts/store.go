@@ -60,6 +60,8 @@ const (
 	ReviewOverview             = "review.overview"
 	ReviewLessons              = "review.lessons"
 	InstructionSuggestions     = "instructions.suggest"
+	MediaDescribe              = "media.describe"
+	MediaSummarizeLink         = "media.summarize_link"
 )
 
 // Store loads, caches, and persists prompt templates.

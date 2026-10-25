@@ -40,3 +40,12 @@ func TestTierForSource(t *testing.T) {
 
 	assert.Equal(t, TierStrong, TierForSource("catchup.compose"))
 }
+
+func TestTierForSource_Media(t *testing.T) {
+	if got := TierForSource(prompts.MediaDescribe); got != TierStrong {
+		t.Errorf("TierForSource(media.describe) = %q, want strong", got)
+	}
+	if got := TierForSource(prompts.MediaSummarizeLink); got != TierLight {
+		t.Errorf("TierForSource(media.summarize_link) = %q, want light", got)
+	}
+}
