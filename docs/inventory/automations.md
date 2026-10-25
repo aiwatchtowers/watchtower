@@ -433,6 +433,14 @@ on/off mirror (`db.SetBuiltinEnabled`) never turns a row with a
 `disabled_reason` on, and only the owner's turn-on (`features enable` of one
 of its features — the card's Turn On —, owner-only under AI-agent markers)
 clears it (`db.ResumeBuiltin`).
+A run is also bounded by the read budget (READ-01 in
+`docs/inventory/agent-actions.md`, key `run:<id>`; approved 2026-10-25, ask
+#567): every company-data `tool()` read and every `mcp()` call counts as one
+call, and reaching the budget is a catchable `ValidationError` on that call,
+not an interrupt — the run goes on (a result over the per-response cap is a
+catchable `ResultTooLarge`). An `agent()` CLI child keeps its own counter
+under the same key, so a run can read its own budget plus one per `agent()`
+call; the audit log ties them to one run id.
 
 **Why locked:** An automation runs unattended; a run that never ends holds a
 concurrency slot forever, and one that never stops spending burns the owner's
@@ -451,6 +459,7 @@ model quota.
 - C2 built-ins: `internal/db/automation_builtins_test.go` — `TestMarkInterrupted_BuiltinRunsSweptApart`, `TestMarkInterruptedBuiltinRuns_LiveManualRunSurvives` (a CLI inline run is swept only past its deadline), `TestSetBuiltinEnabled_NeverTurnsOnARunawayStop`; `internal/automations/builtin/runner_test.go` — `TestRunner_RunawayStoppedBuiltinStaysOff`; `cmd/builtins_test.go` — `TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn`
 - `internal/automations/run_limits_test.go` — `TestAuto08_StepCapEndsTheRun`, `TestAuto08_FinishFailureRetries`, `TestAuto08_FinishFailureEndsTheRunFailed`, `TestAuto08_FinishFailureWithoutCommitKeepsItsEnd`, `TestAuto08_FinishSkipsRetriesWhenStopping`, `TestAuto08_FinishDoesNotRetryAnInvalidFinish`, `TestOutputs_CapPerRun`, `TestSession_CapPerRun` (board #562); `internal/automations/workbench_e2e_test.go` — `TestPRReviewRounds_MorePRsThanTheSessionCap`
 - C2 built-ins (more): `internal/daemon/morning_brief_test.go` — `TestMorningBrief_InterruptedRunDoesNotBlockNextCycle`; `internal/automations/sdk_builtin_test.go` — `TestBuiltinSDK_UsageCountsAgainstBudget` (a primitive's reported usage is debited from the run's budget)
+- `internal/automations/sdk_readlimit_test.go` — `TestAuto08_ReadLimitIsCatchable`, `TestAuto08_MCPCountsAgainstRunBudget`, `TestAuto08_ToolResultTooLargeName`, `TestAuto08_MCPLineOutcomes` (board #606: the read budget bounds a run)
 - `internal/automations/sdk_output_card_test.go` — `TestAuto08_ResumeRebuildsInboxCard` (2026-10-21: a resumed run's replayed `output.inbox` rebuilds its card with the link and actions)
 
 **Locked since:** 2026-10-14
@@ -660,6 +669,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-25 (board #606, ask #567): **AUTO-08 amended** — a run is also bounded by the read budget (READ-01, key `run:<id>`, `mcp()` counts as a call); reaching it is a catchable `ValidationError`, not an interrupt; an `agent()` CLI child keeps its own counter under the same key. Strengthening, no guard relaxed. Guards added: `TestAuto08_ReadLimitIsCatchable`, `TestAuto08_MCPCountsAgainstRunBudget`, `TestAuto08_ToolResultTooLargeName`, `TestAuto08_MCPLineOutcomes`.
 - 2026-10-23 (board #801, C2 final review fix batch 1): **AUTO-08 strengthened** — a runaway-disabled built-in stays off until the owner turns it on (the slot runner, Run Now and `automations run` check `disabled_reason`; the built-in sync's mirror never turns such a row on; only the owner's `features enable` — the card's Turn On — clears it, and not under AI-agent markers), and a CLI inline built-in run (a running `manual` run) is swept at daemon start only past its deadline, as a live CLI dry run is. No guard relaxed. Guards added: `TestMarkInterruptedBuiltinRuns_LiveManualRunSurvives`, `TestSetBuiltinEnabled_NeverTurnsOnARunawayStop`, `TestRunner_RunawayStoppedBuiltinStaysOff`, `TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn`.
 - 2026-10-22 (board #801, plan C3 Task 8, spec §6.3/§8): **AUTO-06 amended** — the one Personal exception to "only built-in recipes declare a `sync` trigger" (a recipe with `track:scan` and `trigger: {sync: custom_tracks}`, Watch for something) and how it runs: only after the owner confirms it, at the `custom_tracks` slot on the slot executor, never in the executor's queue; the owner-only `tracks create|watch|start|instruction` commands and the one-time custom-tracks upgrade confirm only the recipes they render; the watch slot never runs a removed or unconfirmed recipe and `builtin.CapturePrompts` lends only confirmed text. amended (spec §6.3, ask #500); no guard relaxed. Guards added as listed under AUTO-06 ("C3 watch recipes": Tasks 2, 3, 8, 11 and 12).
 - 2026-10-22 (board #801, plan C2 Task 8, within ask #500's AUTO-06 amendment): the one-time upgrade step is the fourth `ConfirmAutomation` caller: it confirms only the owner copy it rendered from a customised prompt-store row that was already running. **AUTO-08** notes that built-in runs are swept at daemon start by `db.MarkInterruptedBuiltinRuns`; the guarantee is unchanged. No guard relaxed. Its Retry, `automations upgrade-builtins`, refuses under AI-agent markers like the other CLI paths to `ConfirmAutomation`; the daemon's step runs under them. Guards added: `TestAuto06_UpgradeConfirmsOnlyCarriedPrompt`, `TestBuiltinUpgrade_RetryRefusedUnderAgentMarkers` (AUTO-06); `TestMarkInterrupted_BuiltinRunsSweptApart` listed under AUTO-08.
