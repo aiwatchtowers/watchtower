@@ -72,41 +72,61 @@ func init() {
 	workbenchCmd.AddCommand(workbenchSpecReviewCmd)
 }
 
-// specReviewAgentFactory builds the reviewer agent reading folder; tests
-// swap it so no test reaches claude or codex.
-var specReviewAgentFactory = func(cfg *config.Config, dbPath, folder string) specreview.Agent {
+// specReviewAgentFactory builds the reviewer agent; tests swap it so no test
+// reaches claude or codex.
+var specReviewAgentFactory = func(cfg *config.Config) specreview.Agent {
 	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	return &specReviewCLIAgent{cfg: cfg, dbPath: dbPath, folder: folder, model: strong}
+	return &specReviewCLIAgent{cfg: cfg, model: strong}
 }
 
-// specReviewCLIAgent is the configured provider in read-folder mode: claude
-// with Read/Grep/Glob/LS only and no folder settings, codex under its
-// read-only sandbox, both in their own process group. Ollama has no file
-// tools: the same prompt, answered from the data alone.
+// specReviewCLIAgent is the configured provider in read-folder mode with no
+// MCP server at all (no watchtower tools, none of the owner's): claude with
+// Read/Grep/Glob/LS only and no folder settings, codex under its read-only
+// sandbox, both in their own process group. Ollama has no file tools: the
+// same prompt, answered from the data alone.
 type specReviewCLIAgent struct {
-	cfg                   *config.Config
-	dbPath, folder, model string
+	cfg   *config.Config
+	model string
 }
 
-func (a *specReviewCLIAgent) Review(ctx context.Context, system, user string) (string, bool, error) {
-	switch a.cfg.AI.Provider {
-	case "codex":
-		c := codex.NewClient(a.model, a.dbPath, a.cfg.CodexPath)
-		c.SetReadFolder(a.folder)
-		c.SetProcessGroup(true)
-		out, _, err := c.QuerySync(ctx, system, user, "")
-		return out, true, err
-	case "ollama":
-		out, _, _, err := cliBoundedGenerator(a.cfg).Generate(digest.WithSource(ctx, specreview.ModelSource), system, user, "")
+func (a *specReviewCLIAgent) Review(ctx context.Context, folder, system, user string) (string, bool, error) {
+	ctx = digest.WithSource(ctx, specreview.ModelSource)
+	if a.cfg.AI.Provider == "ollama" {
+		out, _, _, err := cliBoundedGenerator(a.cfg).Generate(ctx, system, user, "")
 		return out, false, err
-	default:
-		c := ai.NewClient(a.model, a.dbPath, a.cfg.ClaudePath)
-		c.SetReadFolder(a.folder)
-		c.SetMaxTurns(specreview.MaxTurns)
-		c.SetProcessGroup(true)
-		out, _, err := c.QuerySync(ctx, system, user, "")
-		return out, true, err
 	}
+	if folder == "" {
+		// Never a claude or codex run outside read-folder mode.
+		return "", false, errors.New("no folder to read")
+	}
+	var out string
+	var err error
+	if a.cfg.AI.Provider == "codex" {
+		out, _, err = specReviewCodexClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
+	} else {
+		out, _, err = specReviewClaudeClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
+	}
+	return out, true, err
+}
+
+// specReviewClaudeClient: no database path, so no --mcp-config; with
+// --strict-mcp-config claude then mounts no server.
+func specReviewClaudeClient(cfg *config.Config, model, folder string) *ai.Client {
+	c := ai.NewClient(model, "", cfg.ClaudePath)
+	c.SetReadFolder(folder)
+	c.SetMaxTurns(specreview.MaxTurns)
+	c.SetProcessGroup(true)
+	return c
+}
+
+// specReviewCodexClient: SetNoMCPServers disables the owner's codex servers
+// and mounts none (an empty database path alone would leave them on).
+func specReviewCodexClient(cfg *config.Config, model, folder string) *codex.Client {
+	c := codex.NewClient(model, "", cfg.CodexPath)
+	c.SetReadFolder(folder)
+	c.SetNoMCPServers()
+	c.SetProcessGroup(true)
+	return c
 }
 
 func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
@@ -122,14 +142,6 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 
 	id := specReviewFlagAsk
-	// A failed lookup leaves the folder empty: Run repeats it after its claim
-	// and records the failure on the row before any agent call.
-	folder := ""
-	if ask, err := database.GetOwnerAskByID(id); err == nil {
-		if f, err := specreview.Folder(database, ask); err == nil {
-			folder = f
-		}
-	}
 	provider := cfg.AI.Provider
 	if provider == "" {
 		provider = "claude"
@@ -138,7 +150,7 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 	store := prompts.New(database, nil)
 	deps := specreview.Deps{
 		DB:    database,
-		Agent: specReviewAgentFactory(cfg, cfg.DBPath(), folder),
+		Agent: specReviewAgentFactory(cfg),
 		Prompt: func() string {
 			tmpl, _, err := prompts.Resolve(store, prompts.SpecReview, "")
 			if err != nil {

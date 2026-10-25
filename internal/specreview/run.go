@@ -27,10 +27,11 @@ const ModelSource = "workbench.spec_review"
 // maxReasonRunes bounds a failure reason: one line on the screen.
 const maxReasonRunes = 300
 
-// Agent is the reviewer model: a read-only run over system and user that
-// returns the raw reply and whether it could open files in the folder.
+// Agent is the reviewer model: a read-only run in folder (the one Run
+// resolved, never empty) over system and user that returns the raw reply and
+// whether it could open files in the folder.
 type Agent interface {
-	Review(ctx context.Context, system, user string) (raw string, codeRead bool, err error)
+	Review(ctx context.Context, folder, system, user string) (raw string, codeRead bool, err error)
 }
 
 // Deps is what a run needs. Provider and Model are stored with the result.
@@ -76,7 +77,7 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	if ask.Kind != "review" || (t != Spec && t != Plan) {
 		return db.SpecReview{}, fmt.Errorf("ask %d is not a spec or plan review", askID)
 	}
-	folder, err := Folder(d.DB, ask)
+	folder, err := readFolder(d.DB, ask)
 	if err != nil {
 		return db.SpecReview{}, err
 	}
@@ -86,7 +87,7 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	}
 	callCtx, cancel := context.WithTimeout(ctx, RunTimeout)
 	defer cancel()
-	raw, codeRead, err := d.Agent.Review(callCtx, d.Prompt(), user)
+	raw, codeRead, err := d.Agent.Review(callCtx, folder, d.Prompt(), user)
 	if err != nil {
 		if errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 			return db.SpecReview{}, fmt.Errorf("the reviewer ran out of time (%s): %w", RunTimeout, err)
@@ -113,10 +114,10 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	}, nil
 }
 
-// Folder is where the reviewer reads: the session's working directory (its
+// readFolder is where the reviewer reads: the session's working directory (its
 // worktree) when it is recorded and still a directory, else the workbench
-// folder.
-func Folder(d *db.DB, ask *db.OwnerAsk) (string, error) {
+// folder, which must be a directory too: the reviewer never runs without one.
+func readFolder(d *db.DB, ask *db.OwnerAsk) (string, error) {
 	if ask.SessionID.Valid {
 		cwd, err := d.TerminalAgentCwd(ask.SessionID.Int64)
 		if err != nil {
@@ -131,6 +132,12 @@ func Folder(d *db.DB, ask *db.OwnerAsk) (string, error) {
 	wb, err := d.GetWorkbench(ask.WorkbenchID)
 	if err != nil {
 		return "", err
+	}
+	if wb.FolderPath == "" {
+		return "", fmt.Errorf("workbench %d has no folder to read", ask.WorkbenchID)
+	}
+	if st, err := os.Stat(wb.FolderPath); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("the workbench folder %s is not a readable directory", wb.FolderPath)
 	}
 	return wb.FolderPath, nil
 }

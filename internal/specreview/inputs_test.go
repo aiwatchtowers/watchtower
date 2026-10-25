@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -236,4 +237,71 @@ func hasNote(notes []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestBuildInputs_HugeNewestEntryIsCut(t *testing.T) {
+	f := newFixture(t)
+	f.feed = []sessionfeed.Entry{
+		{ID: "old", Kind: sessionfeed.KindOwner, Text: "an older line"},
+		{ID: "big", Kind: sessionfeed.KindOwner, Text: "START " + strings.Repeat("word ", MaxConversationRunes)},
+	}
+	a := f.ask(t, "spec", "# Spec\n\n## Goals\n\nMute.\n")
+
+	src, user, notes, err := BuildInputs(context.Background(), f.deps(nil), a, f.folder)
+	require.NoError(t, err)
+	conv := between(t, user, "<<<conversation", ">>>")
+	assert.LessOrEqual(t, utf8.RuneCountInString(conv), MaxConversationRunes)
+	assert.Contains(t, conv, "START word", "the newest entry is kept, cut")
+	assert.NotContains(t, conv, "an older line")
+	require.Contains(t, src.Conversation, "entry:big")
+	assert.True(t, strings.HasPrefix(src.Conversation["entry:big"], "START word"))
+	assert.Less(t, utf8.RuneCountInString(src.Conversation["entry:big"]), MaxConversationRunes)
+	assert.True(t, hasNote(notes, "the newest entry was cut"), "notes = %v", notes)
+}
+
+// reround files a second round on top of the fixture's first ask.
+func (f *fixture) reround(t *testing.T, prev int64) *db.OwnerAsk {
+	t.Helper()
+	var id int64
+	require.NoError(t, f.d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		id, _, err = f.d.InsertOwnerAsk(tx, db.OwnerAsk{
+			WorkbenchID: f.wb, Kind: "review", Title: "Round 2", DocPath: "docs/specs/x-design.md",
+			DocSnapshot: "# Spec\n\n## Goals\n\nMute, now for a day.\n", DocType: "spec",
+			PreviousAskID: sql.NullInt64{Int64: prev, Valid: true},
+		})
+		return err
+	}))
+	a, err := f.d.GetOwnerAskByID(id)
+	require.NoError(t, err)
+	return a
+}
+
+func TestBuildInputs_PreviousFindings(t *testing.T) {
+	f := newFixture(t)
+	first := f.ask(t, "spec", "# Spec\n\n## Goals\n\nMute.\n")
+	_, err := f.d.Exec(`UPDATE owner_asks SET status = 'answered', answer = ? WHERE id = ?`,
+		`{"answers":[],"checklist":[],"comments":[{"body":"Say how long a mute lasts","heading":"Goals","prefix":"","quote":"Mute.","suffix":""}],"note":"","verdict":"changes"}`, first.ID)
+	require.NoError(t, err)
+
+	// Without a done review of round 1: no findings block.
+	second := f.reround(t, first.ID)
+	src, user, _, err := BuildInputs(context.Background(), f.deps(nil), second, f.folder)
+	require.NoError(t, err)
+	assert.NotContains(t, user, "<<<previous_findings")
+	assert.Equal(t, []string{"Say how long a mute lasts"}, src.PrevComments)
+	assert.Contains(t, user, "<<<previous_comments")
+
+	ok, err := f.d.ClaimSpecReview(first.ID, 1, runNow)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, f.d.FinishSpecReview(first.ID, 1, db.SpecReview{
+		Result: `{"summary":"Round one summary.","agreements":[{"text":"A mute lasts a day","status":"missing","note":"no duration"}],"blind_spots":[{"text":"Muted threads"}]}`,
+	}, runNow))
+	_, user, _, err = BuildInputs(context.Background(), f.deps(nil), second, f.folder)
+	require.NoError(t, err)
+	block := between(t, user, "<<<previous_findings ask:"+strconv.FormatInt(first.ID, 10), ">>>")
+	assert.Contains(t, block, "Round one summary.")
+	assert.Contains(t, block, "agreement [missing] A mute lasts a day — no duration")
+	assert.Contains(t, block, "blind spot: Muted threads")
 }

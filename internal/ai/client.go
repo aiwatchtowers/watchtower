@@ -275,6 +275,23 @@ func (c *Client) SetExternalMCPServers(s []ExternalMCPServer) { c.externalServer
 // already be resolved to a workbench folder (cmd's resolveReadFolder).
 func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
+// ArgsForTest returns the argv a QuerySync would run (tests outside this
+// package: cmd's spec reviewer wiring). The temp files it may write are
+// removed.
+func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
+	args, _, promptFile, err := c.buildArgs(systemPrompt, userMessage, "json", "")
+	if c.mcpConfigTempPath != "" {
+		_ = os.Remove(c.mcpConfigTempPath)
+	}
+	if promptFile != "" {
+		_ = os.Remove(promptFile)
+	}
+	if err != nil {
+		return nil
+	}
+	return args
+}
+
 // ExternalServersForTest exposes the registered external MCP servers for
 // tests outside this package (e.g. cmd's chat-wiring tests) — the field
 // itself stays unexported since nothing else needs to read it back.

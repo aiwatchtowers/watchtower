@@ -21,12 +21,14 @@ type fakeAgent struct {
 	codeRead     bool
 	calls        int
 	system, user string
+	folder       string
 	during       func()
 	sawDeadline  bool
 }
 
-func (a *fakeAgent) Review(ctx context.Context, system, user string) (string, bool, error) {
+func (a *fakeAgent) Review(ctx context.Context, folder, system, user string) (string, bool, error) {
 	a.calls++
+	a.folder = folder
 	a.system, a.user = system, user
 	_, a.sawDeadline = ctx.Deadline()
 	if a.during != nil {
@@ -167,4 +169,36 @@ func TestRun_FeedErrorIsANote(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(row.Result), &res))
 	assert.True(t, hasNote(res.Notes, "conversation not read: transcript gone"), "notes = %v", res.Notes)
 	assert.True(t, hasNote(res.Notes, "model note"))
+}
+
+func TestRun_AgentGetsTheResolvedFolder(t *testing.T) {
+	f, askID := runFixture(t)
+	agent := &fakeAgent{out: runReply}
+	require.NoError(t, Run(context.Background(), f.deps(agent), askID))
+	assert.Equal(t, f.folder, agent.folder, "no agent_cwd: the workbench folder")
+}
+
+func TestRun_AgentCwdWorktreeWins(t *testing.T) {
+	f, askID := runFixture(t)
+	wt := t.TempDir()
+	_, err := f.d.Exec(`UPDATE terminal_sessions SET agent_cwd = ? WHERE id = ?`, wt, f.session)
+	require.NoError(t, err)
+	agent := &fakeAgent{out: runReply}
+	require.NoError(t, Run(context.Background(), f.deps(agent), askID))
+	assert.Equal(t, wt, agent.folder)
+}
+
+// No readable folder: the run fails before any agent call, never runs the
+// agent outside a read folder.
+func TestRun_NoReadableFolderFails(t *testing.T) {
+	f, askID := runFixture(t)
+	_, err := f.d.Exec(`UPDATE projects SET folder_path = ? WHERE id = ?`, f.folder+"/gone", f.wb)
+	require.NoError(t, err)
+	agent := &fakeAgent{out: runReply}
+	require.Error(t, Run(context.Background(), f.deps(agent), askID))
+	assert.Zero(t, agent.calls)
+	row, err := f.d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.Reason, "not a readable directory")
 }

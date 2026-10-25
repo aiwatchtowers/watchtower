@@ -5,7 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,8 +28,9 @@ type fakeSpecReviewAgent struct {
 	folder string
 }
 
-func (a *fakeSpecReviewAgent) Review(context.Context, string, string) (string, bool, error) {
+func (a *fakeSpecReviewAgent) Review(_ context.Context, folder, _, _ string) (string, bool, error) {
 	a.calls++
+	a.folder = folder
 	return a.out, true, nil
 }
 
@@ -32,10 +38,7 @@ func (a *fakeSpecReviewAgent) Review(context.Context, string, string) (string, b
 func useSpecReviewAgent(t *testing.T, a *fakeSpecReviewAgent) {
 	t.Helper()
 	old := specReviewAgentFactory
-	specReviewAgentFactory = func(_ *config.Config, _, folder string) specreview.Agent {
-		a.folder = folder
-		return a
-	}
+	specReviewAgentFactory = func(*config.Config) specreview.Agent { return a }
 	t.Cleanup(func() { specReviewAgentFactory = old })
 }
 
@@ -158,4 +161,56 @@ func TestSpecReviewRun_StoresResultThroughTheAgent(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
 	assert.Equal(t, "Looks right.", m.Result.Summary)
+}
+
+// Ruling 8: the claude reviewer mounts no MCP server and runs read-only in
+// the folder within the turn cap.
+func TestSpecReviewClaudeClient_NoMCPReadFolder(t *testing.T) {
+	folder := t.TempDir()
+	// /usr/bin/false: argv building never reaches a real claude.
+	args := specReviewClaudeClient(&config.Config{ClaudePath: "/usr/bin/false"}, "strong", folder).ArgsForTest("sys", "user")
+	require.NotNil(t, args)
+	assert.NotContains(t, args, "--mcp-config")
+	assert.Contains(t, args, "--strict-mcp-config")
+	turns := slices.Index(args, "--max-turns")
+	require.GreaterOrEqual(t, turns, 0)
+	assert.Equal(t, strconv.Itoa(specreview.MaxTurns), args[turns+1])
+	src := slices.Index(args, "--setting-sources")
+	require.GreaterOrEqual(t, src, 0)
+	assert.Equal(t, "", args[src+1], "a read-folder run loads no settings")
+	tools := slices.Index(args, "--tools")
+	require.GreaterOrEqual(t, tools, 0)
+	assert.Contains(t, args[tools+1], "Read")
+	assert.NotContains(t, args[tools+1], "Bash")
+}
+
+// Ruling 8: the codex reviewer disables the owner's servers and mounts none.
+func TestSpecReviewCodexClient_NoMCPServers(t *testing.T) {
+	home := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte("[mcp_servers.mine]\ncommand = \"npx\"\n"), 0o600))
+	t.Setenv("CODEX_HOME", home)
+	folder := t.TempDir()
+	// /usr/bin/false: the version probe never runs a real codex.
+	args := specReviewCodexClient(&config.Config{CodexPath: "/usr/bin/false"}, "strong", folder).ArgsForTest("sys", "user")
+	require.NotNil(t, args)
+	joined := strings.Join(args, "\x00")
+	assert.Contains(t, joined, `"mine"={enabled=false}`, "the owner's server is switched off")
+	assert.NotContains(t, joined, "--db-path")
+	assert.NotContains(t, joined, "enabled=true")
+	sandbox := slices.Index(args, "--sandbox")
+	require.GreaterOrEqual(t, sandbox, 0)
+	assert.Equal(t, "read-only", args[sandbox+1])
+	cd := slices.Index(args, "--cd")
+	require.GreaterOrEqual(t, cd, 0)
+	assert.Equal(t, folder, args[cd+1])
+}
+
+// No claude or codex run ever starts without a read folder.
+func TestSpecReviewCLIAgent_EmptyFolderRefused(t *testing.T) {
+	for _, p := range []string{"claude", "codex"} {
+		a := &specReviewCLIAgent{cfg: &config.Config{AI: config.AIConfig{Provider: p}}, model: "m"}
+		_, codeRead, err := a.Review(context.Background(), "", "sys", "user")
+		require.Error(t, err, p)
+		assert.False(t, codeRead, p)
+	}
 }

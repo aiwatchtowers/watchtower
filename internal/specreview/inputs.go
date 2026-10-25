@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -187,8 +188,7 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 		in.note("conversation not read: %v", err)
 		return
 	}
-	var items []string
-	var refs, texts []string
+	var heads, refs, texts []string
 	for _, e := range entries {
 		if strings.TrimSpace(e.Text) == "" {
 			continue
@@ -206,8 +206,11 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 		if !e.At.IsZero() {
 			head += " " + e.At.UTC().Format(time.RFC3339)
 		}
-		items = append(items, indentLines("["+ref+"] "+head+"\n"+indentLines(e.Text, blockIndent), blockIndent))
-		refs, texts = append(refs, ref), append(texts, e.Text)
+		heads, refs, texts = append(heads, "["+ref+"] "+head), append(refs, ref), append(texts, e.Text)
+	}
+	items := make([]string, len(texts))
+	for i := range texts {
+		items[i] = convItem(heads[i], texts[i])
 	}
 	budget, first := MaxConversationRunes-conversationHeadLen-len(">>>\n"), len(items)
 	for first > 0 {
@@ -218,6 +221,13 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 		budget -= n
 		first--
 	}
+	if first == len(items) && first > 0 {
+		// The newest entry alone is over the cap: keep its beginning.
+		last := first - 1
+		texts[last], items[last] = cutToFit(heads[last], texts[last], budget)
+		first = last
+		in.note("conversation trimmed: the newest entry was cut to %d characters", utf8.RuneCountInString(texts[last]))
+	}
 	if first > 0 {
 		in.note("conversation trimmed to the last %d of %d entries", len(items)-first, len(items))
 	}
@@ -226,6 +236,25 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 	}
 	// Items are already indented: fence them as they are.
 	in.blocks = append(in.blocks, "<<<conversation\n"+strings.Join(items[first:], "")+">>>\n")
+}
+
+// convItem is one conversation entry as fenced: its head line, then its text
+// one level deeper.
+func convItem(head, text string) string {
+	return indentLines(head+"\n"+indentLines(text, blockIndent), blockIndent)
+}
+
+// cutToFit cuts text from its end until its item fits budget runes.
+func cutToFit(head, text string, budget int) (string, string) {
+	r := []rune(text)
+	for {
+		item := convItem(head, string(r))
+		over := utf8.RuneCountInString(item) - budget
+		if over <= 0 || len(r) == 0 {
+			return string(r), item
+		}
+		r = r[:max(0, len(r)-over)]
+	}
 }
 
 // asks renders the answered asks of the session and of the target (not the
@@ -392,6 +421,9 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 		in.note("the previous round's document was trimmed to %d characters", maxPrevDocRunes)
 	}
 	in.add("previous_round ask:"+strconv.FormatInt(prev.ID, 10), doc)
+	if err := in.previousFindings(d, prev.ID); err != nil {
+		return err
+	}
 	if prev.Status != "answered" && prev.Status != "delivered" {
 		return nil
 	}
@@ -412,6 +444,48 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 	if b.Len() > 0 {
 		in.add("previous_comments", b.String())
 	}
+	return nil
+}
+
+// previousFindings renders the previous round's stored reviewer result, when
+// that review is done, so the reviewer can tell what changed.
+func (in *inputs) previousFindings(d *db.DB, prevID int64) error {
+	row, err := d.GetSpecReview(prevID)
+	if errors.Is(err, db.ErrSpecReviewNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if row.Status != "done" || row.Result == "" {
+		return nil
+	}
+	var r Result
+	if err := json.Unmarshal([]byte(row.Result), &r); err != nil {
+		in.note("the previous round's findings left out: %v", err)
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("summary: " + oneLineText(r.Summary) + "\n")
+	for _, a := range r.Agreements {
+		fmt.Fprintf(&b, "- agreement [%s] %s", a.Status, oneLineText(a.Text))
+		if a.Note != "" {
+			b.WriteString(" — " + oneLineText(a.Note))
+		}
+		b.WriteString("\n")
+	}
+	for _, x := range r.DecidedAlone {
+		fmt.Fprintf(&b, "- decided alone: %s\n", oneLineText(x.Text))
+	}
+	for _, x := range r.BlindSpots {
+		fmt.Fprintf(&b, "- blind spot: %s\n", oneLineText(x.Text))
+	}
+	for _, c := range r.Checks {
+		if c.Answer == "concern" {
+			fmt.Fprintf(&b, "- concern (%s, %s): %s\n", c.Lens, c.Chapter, oneLineText(c.Note))
+		}
+	}
+	in.add("previous_findings ask:"+strconv.FormatInt(prevID, 10), b.String())
 	return nil
 }
 
