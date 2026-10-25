@@ -56,6 +56,14 @@ cap may together pass it.
 refers to it). On for every install and surface, the main chat included. No
 config key: `Registry.SetReadLimits` is the seam for #608's managed policy.
 
+## draft_automation's dry run
+
+Each draft builds its own backends (a fresh registry), so
+`automationAuthoringDeps(cfg, db, reg)` makes that registry spend the
+calling registry's budget (`Registry.ShareReadBudget`), and the dry run's
+binding carries the caller's `ConversationID` (`DryRunOptions` →
+`Env.ConversationID`): drafts in one conversation share one budget.
+
 ## Session keys
 
 | Binding | Key |
@@ -83,7 +91,8 @@ One line per counted call and per refusal, one-line JSON in the pinned key
 order `v proc surface session workbench agent tool filters rows bytes calls
 rows_total result` (`v` = 1, `workbench`/`agent` omitted when unset,
 `result` ∈ `ok`, `limit_reached`, `too_large`, `error`). `filters` holds the
-names of the set arguments, sorted, never values. Strings are clipped and
+names of the set arguments the tool's schema declares, sorted, never values;
+any other key shows as one `_other` (a key may itself be content). Strings are clipped and
 keep only `[A-Za-z0-9_.:/-]`, at most 8 filter names: a line stays under
 ~760 bytes, well inside os_log's public-argument limit. Read it with
 `log show --predicate 'subsystem == "com.watchtower.audit"'`; retention is
@@ -95,7 +104,8 @@ package TestMain whose tests reach `CallRead`.
 - **Automations `mcp()`** — `Registry.ReadExternal` admits the call in the
   run's budget (a refusal is a catchable `ValidationError`, nothing is sent),
   runs it and records `mcp:<server>/<tool>` with bytes and no rows (`error`
-  on a failure or panic, `too_large` past the byte cap). A registry
+  on a failure or panic; past the byte cap `too_large`, and the result is
+  refused like a registry read). A registry
   `ErrResultTooLarge` reaches a script as `ResultTooLarge`, `ErrReadLimit` as
   `ValidationError` (AUTO-08).
 - **CLI content commands** (`cliContentCommands` in `cmd/audit_cli.go`) —

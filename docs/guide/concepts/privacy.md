@@ -51,7 +51,7 @@ A phone pairs only after you confirm it on the Mac with a four-digit code. An iP
 
 ## How much an assistant can read in one session
 
-An assistant can read your synced data at most 300 times, or 5,000 rows, in one session, and one read returns at most 200 rows or 256 KB. The limit holds for AI Chat, workbench agents, automation runs and any app connected to `watchtower mcp`. Past it the read is refused with **this session's read limit is reached (300 calls / 5000 rows); the owner can start a new session**; a new chat, session or run starts a fresh count. Your own board, asks and skills do not count.
+An assistant can read your synced data at most 300 times, or 5,000 rows, in one session. One read returns at most 256 KB, and a list at most 200 rows. The limit holds for AI Chat, workbench agents, automation runs and any app connected to `watchtower mcp`. Past it the read is refused with **this session's read limit is reached (300 calls / 5000 rows); the owner can start a new session**; a new chat, session or run starts a fresh count. Your own board, asks and skills do not count.
 
 Every such read leaves one line in the Mac's system log: the tool, the session and the row count, never the text. Your company's security tools can collect it; to look yourself, run `log show --last 1h --predicate 'subsystem == "com.watchtower.audit"'`. The system keeps it a few days, and Watchtower sends it nowhere.
 

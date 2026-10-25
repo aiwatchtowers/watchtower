@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/google/jsonschema-go/jsonschema"
+
 	"watchtower/internal/auditlog"
 )
 
@@ -61,6 +63,11 @@ func (r *Registry) SetReadLimits(l ReadLimits) {
 	r.reads.limits = l
 	r.reads.mu.Unlock()
 }
+
+// ShareReadBudget makes r spend owner's read budget — its counters, limits
+// and process key — so a registry built per call (draft_automation's dry
+// run) counts against the calling process's sessions, never a fresh budget.
+func (r *Registry) ShareReadBudget(owner *Registry) { r.reads = owner.reads }
 
 // SetProcessSession sets the session key of calls that carry neither an
 // automation run nor a conversation: one per MCP server process
@@ -187,7 +194,7 @@ func readEvent(b Binding, key, tool string, filters []string, rows, size, calls,
 // already normalized to valid JSON.
 func (r *Registry) callCompanyRead(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (any, error) {
 	key := r.ReadSessionKey(b)
-	filters := argNames(args)
+	filters := argNames(args, t.InputSchema)
 	record := func(rows, size int, result string) {
 		r.recordRead(b, key, t.Name, filters, rows, size, result)
 	}
@@ -301,18 +308,36 @@ func countRows(raw []byte) (rows, largest int) {
 }
 
 // argNames is the sorted names of the arguments that are set (not JSON
-// null) — never their values, which may be content (READ-02).
-func argNames(args json.RawMessage) []string {
+// null) — never their values, which may be content (READ-02). Only names the
+// tool's schema declares are kept: a key the schema does not know may itself
+// be content (an address used as a key), so all such keys show as one
+// otherArgName.
+func argNames(args json.RawMessage, schema *jsonschema.Schema) []string {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(args, &fields) != nil {
 		return nil
 	}
 	names := make([]string, 0, len(fields))
+	other := false
 	for k, v := range fields {
-		if string(bytes.TrimSpace(v)) != "null" {
-			names = append(names, k)
+		if string(bytes.TrimSpace(v)) == "null" {
+			continue
 		}
+		if schema != nil {
+			if _, known := schema.Properties[k]; known {
+				names = append(names, k)
+				continue
+			}
+		}
+		other = true
+	}
+	if other {
+		names = append(names, otherArgName)
 	}
 	slices.Sort(names)
 	return names
 }
+
+// otherArgName stands in the audit line for every argument the schema does
+// not declare.
+const otherArgName = "_other"

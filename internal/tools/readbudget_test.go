@@ -361,8 +361,28 @@ func TestRead02_LineCarriesNoContent(t *testing.T) {
 }
 
 func TestRead02_FiltersSkipNull(t *testing.T) {
-	assert.Equal(t, []string{"a", "c"}, argNames(json.RawMessage(`{"c":0,"b":null,"a":"x"}`)))
-	assert.Empty(t, argNames(json.RawMessage(`{}`)))
+	schema := &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{
+		"a": {Type: "string"}, "b": {Type: "string"}, "c": {Type: "integer"},
+	}}
+	assert.Equal(t, []string{"a", "c"}, argNames(json.RawMessage(`{"c":0,"b":null,"a":"x"}`), schema))
+	assert.Empty(t, argNames(json.RawMessage(`{}`), schema))
+}
+
+// A key the schema does not declare may itself be content: it never reaches
+// the line, only one placeholder does.
+func TestRead02_UnknownArgNamesNeverReachTheLine(t *testing.T) {
+	raw := rawAudit(t)
+	var n atomic.Int64
+	tool := newCompanyTool(t, "co", true, &n, func() (any, error) { return rowsOf(1), nil })
+	reg := newBudgetRegistry(t, testLimits(10, 1000), tool)
+	_, _ = reg.CallRead(context.Background(), "co",
+		json.RawMessage(`{"query":"q","colleague.a@example.com":"x","other_key":1}`), Binding{ConversationID: 1})
+	got := raw()
+	require.Len(t, got, 1)
+	assert.NotContains(t, got[0], "example")
+	assert.NotContains(t, got[0], "colleague")
+	assert.NotContains(t, got[0], "other_key")
+	assert.Contains(t, got[0], `"filters":["_other","query"]`)
 }
 
 func TestRead02_WritesNoRow(t *testing.T) {

@@ -16,14 +16,23 @@ import (
 // WATCHTOWER_AUTOMATION_RUN_ID — each leaves one audit line; nothing caps
 // them (the CLI is the owner's tool). Every key must resolve through rootCmd
 // (TestCLIAudit_ListedPathsExist). `tools call` is not here: it reads through
-// the registry, whose gate already budgets and logs each call.
+// the registry, whose gate already logs each call (keyed per invocation's
+// process, see cliExcludedCommands).
 var cliContentCommands = map[string]bool{
 	"ask":                              true,
+	"automations outputs":              true,
+	"automations steps":                true,
 	"briefing":                         true,
+	"briefing generate":                true,
 	"briefing list":                    true,
+	"calendar":                         true,
 	"calendar events":                  true,
 	"catchup list":                     true,
+	"catchup run":                      true,
 	"catchup show":                     true,
+	"day-plan":                         true,
+	"day-plan generate":                true,
+	"day-plan list":                    true,
 	"day-plan show":                    true,
 	"decisions":                        true,
 	"digest":                           true,
@@ -34,23 +43,28 @@ var cliContentCommands = map[string]bool{
 	"jira blockers":                    true,
 	"jira project-map":                 true,
 	"jira releases":                    true,
+	"jira users":                       true,
 	"jira workload":                    true,
 	"kb search":                        true,
 	"meeting-prep":                     true,
-	"memory index":                     true,
-	"memory open":                      true,
-	"memory recall":                    true,
 	"meeting-prep transcript chapters": true,
 	"meeting-prep transcript followup": true,
 	"meeting-prep transcript list":     true,
 	"meeting-prep transcript notes":    true,
 	"meeting-prep transcript recap":    true,
 	"meeting-prep transcript show":     true,
+	"memory digest-compare":            true,
+	"memory index":                     true,
+	"memory open":                      true,
+	"memory recall":                    true,
+	"memory retrieve-compare":          true,
 	"people":                           true,
+	"profile style-sample":             true,
 	"tracks":                           true,
 	"tracks events":                    true,
 	"tracks show":                      true,
 	"trends":                           true,
+	"users":                            true,
 }
 
 // contentRan is the path of the content command whose Run started in this
