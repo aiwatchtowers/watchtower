@@ -19,6 +19,8 @@ A recipe that runs a shell command (`shell:`) is confirmed by the command text o
 
 Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. There is no daily cap across runs. At most two runs execute at the same time.
 
+A run also has one read budget for your synced data, shared by its `tool()` reads and `mcp()` calls: 300 reads or 5,000 rows. Past it a read throws a **ValidationError** the script can catch, and the run goes on.
+
 ### What a run can write
 
 Reads are free within the recipe's permissions. Writes (a Jira comment, a Slack message, a new target) are proposals. They appear in **Inbox**, **Actions**, labelled with the automation and run number, and wait for your approval.
