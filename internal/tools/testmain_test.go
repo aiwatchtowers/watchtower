@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"watchtower/internal/auditlog"
 	"watchtower/internal/db"
 	"watchtower/internal/gittest"
 )
@@ -16,9 +17,11 @@ import (
 // -race.
 //
 // It also turns off git's background maintenance in the repositories the
-// review tests create (see gittest.DisableBackgroundGit).
+// review tests create (see gittest.DisableBackgroundGit), and keeps the
+// read tests' audit lines out of the machine's unified log.
 func TestMain(m *testing.M) {
 	gittest.DisableBackgroundGit()
+	auditlog.SetSinkForTest(func(string) {})
 	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)

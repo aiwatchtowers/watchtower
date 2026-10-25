@@ -286,11 +286,13 @@ type Registry struct {
 	db    *db.DB
 	tools map[string]*Tool
 	order []string
+	// reads is the per-session company-data read budget (READ-01).
+	reads *readBudget
 }
 
 // New creates a registry backed by d.
 func New(d *db.DB) *Registry {
-	return &Registry{db: d, tools: map[string]*Tool{}}
+	return &Registry{db: d, tools: map[string]*Tool{}, reads: newReadBudget()}
 }
 
 // Register adds a tool; names are unique and write tools need a schema.
@@ -943,6 +945,8 @@ func (r *Registry) applyTrusted(ctx context.Context, id int64, live Binding) (Re
 // tool is refused with ErrNotReadable, so the proposal flow can never be
 // bypassed by calling a write through the read path. b reaches Execute as
 // Call.Binding, so a read can scope itself (list_targets in a workbench session).
+// A CompanyData tool also passes the session's read budget and writes one
+// audit line (callCompanyRead, READ-01..02).
 func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessage, b Binding) (any, error) {
 	t, ok := r.Get(name)
 	if !ok {
@@ -963,6 +967,9 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 	}
 	if !json.Valid(args) {
 		return nil, &ValidationError{Msg: "arguments are not valid JSON"}
+	}
+	if t.CompanyData {
+		return r.callCompanyRead(ctx, t, args, b)
 	}
 	if err := t.validateSchema(args); err != nil {
 		return nil, err
