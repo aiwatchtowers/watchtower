@@ -33,7 +33,7 @@ extension AppState {
             now: Date())
     }
 
-    /// Opens the popup with `prefill` in its composer (Search's Ask in chat); an existing draft is kept.
+    /// Opens the popup with `prefill` in its composer (an analytics hint's Discuss); an existing draft is kept.
     func openHelpChat(prefill: String) {
         ensureChatViewModels()
         guard let chatViewModel else { return }

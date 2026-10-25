@@ -24,7 +24,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case projectMap
     case releases
     case statistics
-    case search
     case boards
     case usage
     case mcpServer
@@ -49,7 +48,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .projectMap: "Project Map"
         case .releases: "Releases"
         case .statistics: "Statistics"
-        case .search: "Search"
         case .boards: "Boards"
         case .usage: "Usage"
         case .mcpServer: "MCP Server"
@@ -74,7 +72,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .projectMap: "map"
         case .releases: "shippingbox"
         case .statistics: "chart.bar.xaxis"
-        case .search: "magnifyingglass"
         case .boards: "rectangle.on.rectangle.angled"
         case .usage: "chart.bar"
         case .mcpServer: "terminal"
@@ -97,9 +94,9 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         [.chat]
     }
 
-    /// Tool items (shown below the separator). Search lives here too.
+    /// Tool items (shown below the separator).
     static var toolItems: [Self] {
-        [.search, .boards, .usage, .mcpServer]
+        [.boards, .usage, .mcpServer]
     }
 }
 

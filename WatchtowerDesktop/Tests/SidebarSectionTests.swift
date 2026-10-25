@@ -85,7 +85,7 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertNil(SidebarSection.containing(.targets))
         XCTAssertNil(SidebarSection.containing(.calendar))
         XCTAssertNil(SidebarSection.containing(.chat))
-        XCTAssertNil(SidebarSection.containing(.search))
+        XCTAssertNil(SidebarSection.containing(.usage))
     }
 
     // MARK: - Auto-expand on navigation
@@ -255,7 +255,7 @@ final class SidebarSectionTests: XCTestCase {
         }
         // Automations' feature is unmanaged by onboarding, so a dev-only
         // install keeps whatever state it has (here: on).
-        XCTAssertEqual(Set(visible), [.home, .inbox, .workbench, .automations, .chat, .targets, .search, .usage, .mcpServer])
+        XCTAssertEqual(Set(visible), [.home, .inbox, .workbench, .automations, .chat, .targets, .usage, .mcpServer])
     }
 
     func testDevOnlyFallbackIsHome() {

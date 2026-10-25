@@ -695,8 +695,7 @@ func TestMessagesSearchPendingAt(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestMessagesSearchPending_States pins the pending rule over the states the
-// Swift twin (SearchIndexRebuildPendingTests) tests too.
+// TestMessagesSearchPending_States pins the pending rule over its states.
 func TestMessagesSearchPending_States(t *testing.T) {
 	pending := func(d *DB) bool {
 		t.Helper()

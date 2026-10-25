@@ -131,7 +131,7 @@ final class HomeLinkTests: XCTestCase {
     /// about that feature (or its sibling: stream digests on Digests, Linear
     /// on Blockers, whose row speaks for both trackers, Jira on its views,
     /// the day plan on the Day filter, which speaks for the brief); Knowledge
-    /// search opens Search, which keeps its own empty state.
+    /// search opens AI Chat, which keeps its own empty state.
     func testEveryFeatureHasADestination() throws {
         let siblings: [ReadinessFeature: ReadinessFeature] = [.streamDigests: .digests, .linear: .jira, .dayPlan: .briefing]
         for feature in ReadinessFeature.allCases {
@@ -144,7 +144,7 @@ final class HomeLinkTests: XCTestCase {
             guard let copy = EmptyStateCopyTable.copy(for: key, briefingHour: 8),
                   let copyFeature = copy.feature else {
                 XCTAssertEqual(feature, .knowledgeIndex, "\(feature) → \(key) has no empty state")
-                XCTAssertEqual(key, SidebarDestination.search.rawValue)
+                XCTAssertEqual(key, SidebarDestination.chat.rawValue)
                 continue
             }
             XCTAssertEqual(copyFeature, siblings[feature] ?? feature, "\(feature) → \(key)")

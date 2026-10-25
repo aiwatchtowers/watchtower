@@ -144,7 +144,8 @@ extension AppState {
         case .peopleCards: .people
         case .memory: .memory
         case .inbox: .inbox
-        case .knowledgeIndex: .search
+        // The index is the assistant's to search (`search_knowledge`).
+        case .knowledgeIndex: .chat
         case .calendar: .calendar
         case .jira: .boards
         case .linear: .blockers

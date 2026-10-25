@@ -72,9 +72,9 @@ package enum EmptyStateCopyTable {
         )
     }
 
-    /// Raw values with intentionally no shared empty state (search, usage,
+    /// Raw values with intentionally no shared empty state (usage,
     /// mcpServer, chat keep theirs; home is never empty).
-    package static let exempt: Set<String> = ["search", "usage", "mcpServer", "chat", "home"]
+    package static let exempt: Set<String> = ["usage", "mcpServer", "chat", "home"]
 
     private static func jira(_ icon: String, _ title: String, _ landsHere: String) -> EmptyStateCopy {
         EmptyStateCopy(icon: icon, title: title, landsHere: landsHere, feature: .jira, primaryAction: .connect(.jira))
