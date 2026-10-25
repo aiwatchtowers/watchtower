@@ -1,7 +1,16 @@
 # Company content in files outside the database — design (board #604)
 
-Part of board group #595 (corporate data on the Mac). Status: draft for the
-owner, 2026-10-25; no code yet. Depends on #603 (database encryption,
+Part of board group #595 (corporate data on the Mac). Status: approved by the
+owner 2026-10-25 (ask #571) with the recommended answer to every question:
+Q1 (a) the memory vault moves into the database; Q2 (a) meeting audio is
+sealed once recording stops; Q3 (a) no CLI session store for any Watchtower
+call, chats replay from the database, agent-read files stay plaintext 0600
+and are deleted at session end / target archive; Q4 (a) tokens and
+credentials move into the encrypted database in Stage B. The contract
+changes are approved with it: MEM-02 inverted, the chat drops `--resume`,
+new FILES-01 and FILES-02. Stage A plan:
+`docs/superpowers/plans/2026-10-25-files-outside-db-stage-a.md`; Stages B
+and C are later work. Depends on #603 (database encryption,
 `docs/superpowers/specs/2026-10-21-db-encryption-design.md`, Stage 1 merged:
 engine only, every file still plaintext). Sibling of #601 (revoke purge,
 `docs/superpowers/specs/2026-10-21-revoke-purge-design.md`).
