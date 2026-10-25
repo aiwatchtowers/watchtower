@@ -70,7 +70,7 @@ func runSpecReview(t *testing.T, args ...string) (string, error) {
 
 func TestSpecReviewShow_JSONKeysPinned(t *testing.T) {
 	database, id, _ := specReviewAsk(t)
-	_, err := database.Exec(`INSERT INTO spec_review_marks (ask_id, item_key, state, body, updated_at) VALUES (?, 'ag:0123456789ab', 'comment', 'why?', '2026-10-25T10:00:00Z')`, id)
+	_, err := database.Exec(`INSERT INTO spec_review_marks (ask_id, item_key, state, body, updated_at) VALUES (?, 'ag:0123456789ab', 'comment', 'why?', '2026-10-25T10:00:00Z'), (?, 'ag:ba9876543210', 'comment', 'keep'||char(31)||'Threads stay unmuted', '2026-10-25T10:00:00Z')`, id, id)
 	require.NoError(t, err)
 
 	out, err := runSpecReview(t, "show", "--ask", itoa(id), "--json")
@@ -85,7 +85,8 @@ func TestSpecReviewShow_JSONKeysPinned(t *testing.T) {
 	assert.Equal(t, []string{"ask_id", "attempt", "dropped", "finished_at", "marks", "model", "provider",
 		"queued_at", "reason", "result", "started_at", "status"}, keys)
 	assert.Equal(t, "null", string(m["result"]), "no result yet")
-	assert.JSONEq(t, `{"ag:0123456789ab":{"state":"comment","body":"why?","updated_at":"2026-10-25T10:00:00Z"}}`, string(m["marks"]))
+	assert.JSONEq(t, `{"ag:0123456789ab":{"state":"comment","body":"why?","updated_at":"2026-10-25T10:00:00Z"},`+
+		`"ag:ba9876543210":{"state":"comment","body":"keep","about":"Threads stay unmuted","updated_at":"2026-10-25T10:00:00Z"}}`, string(m["marks"]))
 }
 
 func TestSpecReviewStart_RunningRefused(t *testing.T) {

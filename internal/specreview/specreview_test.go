@@ -154,6 +154,29 @@ func TestParse_SourceRefMustExist(t *testing.T) {
 	}
 }
 
+// A missing agreement and an unanchored blind spot keep the chapter the
+// reviewer named, by key or heading, when the document has it; an unknown
+// one leaves the chapter empty (the Desktop's Other).
+func TestParse_UnanchoredFindingKeepsItsChapter(t *testing.T) {
+	missing := func(text, chapter string) string {
+		return `{"text":"` + text + `","status":"missing","source":{"kind":"ask","ref":"ask:1","quote":"keep the state local"},"where":null,"chapter":"` + chapter + `"}`
+	}
+	raw := `{"summary":"s","agreements":[` + missing("by key", "ch:1") + "," + missing("by heading", "## Decisions") + "," +
+		missing("unknown", "ch:99") + `],"blind_spots":[{"text":"threads","why":"w","chapter":"Behaviour"},` +
+		`{"text":"anchored","why":"w","chapter":"ch:2","where":{"heading":"Behaviour","quote":"Muting lasts twenty-four hours"}}]}`
+	r := parseOne(t, raw, testSources())
+	got := []string{}
+	for _, a := range r.Agreements {
+		got = append(got, a.Chapter)
+	}
+	if strings.Join(got, ",") != "ch:1,ch:2," || r.Dropped != 0 {
+		t.Fatalf("agreement chapters = %q dropped %d", got, r.Dropped)
+	}
+	if len(r.BlindSpots) != 2 || r.BlindSpots[0].Chapter != "ch:1" || r.BlindSpots[1].Chapter != "ch:1" {
+		t.Fatalf("blind spots = %+v", r.BlindSpots)
+	}
+}
+
 func TestParse_KeysStable(t *testing.T) {
 	a := agreementJSON("lasts a day", "Muting lasts twenty-four hours")
 	b := agreementJSON("button in header", "The mute button sits in the channel header")
@@ -306,6 +329,10 @@ func TestResult_JSONKeysPinned(t *testing.T) {
 			Key: "ag:0123456789ab", Text: "A mute lasts one day", Status: "as_agreed", Note: "Stated in Behaviour.", Chapter: "ch:1",
 			Source: Source{Kind: "ask", Ref: "ask:1", Quote: "keep the state local", Speaker: SpeakerOwner},
 			Where:  &Anchor{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours"},
+		}, {
+			// A missing agreement has no where; its chapter is the one the reviewer named.
+			Key: "ag:ba9876543210", Text: "Threads stay unmuted", Status: "missing", Note: "Not in the document.", Chapter: "ch:1",
+			Source: Source{Kind: "conversation", Ref: "entry:1", Quote: "nothing more", Speaker: SpeakerOwner},
 		}},
 		DecidedAlone: []DecidedAlone{{
 			Key: "da:0123456789ab", Text: "State is kept in the local database", Note: "Nobody asked for it.", Chapter: "ch:2",

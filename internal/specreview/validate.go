@@ -173,6 +173,17 @@ func (v *validator) chapterKeyFor(ref string) (string, bool) {
 	return "", false
 }
 
+// unanchoredChapter is the chapter the reviewer named (key or heading) for a
+// finding with no where-quote, kept only when it is one of the document's
+// chapters; "" (the Desktop's Other) otherwise.
+func (v *validator) unanchoredChapter(ref string) string {
+	if strings.TrimSpace(ref) == "" {
+		return ""
+	}
+	key, _ := v.chapterKeyFor(ref)
+	return key
+}
+
 // Parse validates a reviewer reply against what it may quote. A wrong enum, a
 // missing or unfound anchor, an unknown source ref, an unreadable evidence
 // path, a duplicate or an entry over the cap drops that entry (counted in
@@ -253,7 +264,7 @@ func (v *validator) agreements(in []Agreement) []Agreement {
 			}
 			a.Chapter, a.Where.Heading, anchorQuote = ch, h, a.Where.Quote
 		} else {
-			a.Chapter = ""
+			a.Chapter = v.unanchoredChapter(a.Chapter)
 		}
 		a.Key = itemKey("ag:", a.Text, anchorQuote)
 		if seen[a.Key] {
@@ -298,7 +309,7 @@ func (v *validator) blindSpots(in []BlindSpot) []BlindSpot {
 			continue
 		}
 		anchorQuote, bad := "", false
-		b.Chapter = ""
+		b.Chapter = v.unanchoredChapter(b.Chapter)
 		if b.Where != nil {
 			ch, h, ok := v.anchor(*b.Where)
 			bad = !ok

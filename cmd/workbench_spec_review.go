@@ -50,7 +50,8 @@ var workbenchSpecReviewShowCmd = &cobra.Command{
 	Short: "Show the spec review of ask N and the owner's marks",
 	Long: "--json prints {ask_id, status, reason, provider, model, dropped, attempt, queued_at,\n" +
 		"started_at, finished_at, result, marks}: result is the validated reviewer result or null,\n" +
-		"marks maps each item key to {state, body, updated_at}. The database is opened read-only.",
+		"marks maps each item key to {state, body, about, updated_at} (about: a comment's finding\n" +
+		"text, left out when not known). The database is opened read-only.",
 	Args: cobra.NoArgs,
 	RunE: runSpecReviewShow,
 }
@@ -258,6 +259,7 @@ type specReviewShowJSON struct {
 type specReviewMarkJSON struct {
 	State     string `json:"state"`
 	Body      string `json:"body"`
+	About     string `json:"about,omitempty"`
 	UpdatedAt string `json:"updated_at"`
 }
 
@@ -293,7 +295,7 @@ func runSpecReviewShow(cmd *cobra.Command, _ []string) error {
 		out.Result = json.RawMessage(row.Result)
 	}
 	for k, m := range marks {
-		out.Marks[k] = specReviewMarkJSON{State: m.State, Body: m.Body, UpdatedAt: m.UpdatedAt}
+		out.Marks[k] = specReviewMarkJSON{State: m.State, Body: m.Body, About: m.About, UpdatedAt: m.UpdatedAt}
 	}
 	w := cmd.OutOrStdout()
 	if specReviewFlagJSON {
