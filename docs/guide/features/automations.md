@@ -17,6 +17,17 @@ A recipe never runs until you confirm it, every run has its own token and time b
 ## Using it
 
 ### Make one
+<!-- learn
+id: automations-make-one
+title: Make an automation in words
+text: In **Automations** click **+**, describe the chore, and the assistant drafts a recipe with a dry run before you save.
+area: automations
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:automations
+done_when: automation.created
+-->
 
 1. Open **Automations** in the sidebar and click **+**.
 2. Under **What is it for?** pick **Personal** or one of your workbenches. This decides what the automation can see and where its recipe lives, and it can't be moved later. A workbench's ⚡ menu has **New Automation…**, which skips this step.
@@ -27,6 +38,27 @@ A recipe never runs until you confirm it, every run has its own token and time b
 A draft you leave is kept at the top of its section until you save it or choose **Discard Draft**. A draft you edited only in **Form** is lost if you relaunch before saving. Once you save a draft, its chat goes on as that automation's chat.
 
 ### Run one now
+<!-- learn
+id: automations-quick-run
+title: Run an automation from anywhere
+text: Press ⌃⌘R on any tab, type a few letters of its name and press Return.
+area: automations
+level: next
+kind: shortcut
+since: 0.24.0
+action: hotkey:quick-run
+-->
+
+<!-- learn
+id: automations-dry-run
+title: Try a recipe without writing
+text: Press **Dry Run** on an automation's card to see what it would do; it works even before you confirm.
+area: automations
+level: next
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
 
 1. Press **⌃⌘R** (menu item **Run Automation…**) on any tab, type a few letters and press Return. The tray menu has the same list under **Run automation**.
 2. Unconfirmed or disabled recipes are dimmed, and Return opens their card instead of running. A recipe set to **Ask before running** shows a "Run “<name>”?" prompt first.
@@ -41,10 +73,30 @@ A scheduled, event or Inbox **Reply** run that fails brings "<name> failed", at 
 The **Automations** badge counts automations whose last run failed, until you open the card or a later run succeeds.
 
 ### Change one
+<!-- learn
+id: automations-edit-in-chat
+title: Change an automation by asking
+text: Press **Edit** on a card and tell the assistant what to change; the column shows what is new since you confirmed.
+area: automations
+level: next
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
 
 **Edit** on the card opens the same panel on **Chat**, with **Form** and **Script** beside it. Ask the assistant for the change, or edit by hand; the column shows the hashed fields that changed since you confirmed ("New since you confirmed"). Saving brings it back to the card. A recipe stays where it was made: you can't move it between Personal and a workbench.
 
 ### Where results land
+<!-- learn
+id: automations-results
+title: Find what your automations made
+text: Automation cards land in the **Inbox** under **Automations**, reports on the card, and notes in the next briefing.
+area: automations
+level: basics
+kind: tip
+since: 0.24.0
+action: nav:inbox
+-->
 
 - Inbox: cards in **Actions**, with their own buttons, **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**, until you open them; a click there opens the card.
 - Reports: **Latest reports** on the card.

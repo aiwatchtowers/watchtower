@@ -7,6 +7,26 @@ The assistant in the [AI Chat](ai-chat.md) can do more than answer: it can creat
 "Tell #ops the deploy is done" or "move PROJ-123 to In Review" takes one sentence instead of a trip through three apps. You still see exactly what will happen before it does, and you can change the text.
 
 ## How it works
+<!-- learn
+id: actions-approve-proposals
+title: Let the chat do it, you approve
+text: Ask the chat to make a task or comment on an issue; it shows a card and acts only when you press **Approve**.
+area: assistant
+level: basics
+kind: feature
+since: 0.24.0
+action: chat:Make a target to follow up on the release notes by Friday
+-->
+
+<!-- learn
+id: actions-run-without-approval
+title: Skip approval for safe tools
+text: In **Settings → Profile → Assistant tools**, tick **Run without approval in:** for tools you trust.
+area: assistant
+level: power
+kind: tip
+since: 0.24.0
+-->
 
 **A proposal, not an action.** A write tool never acts by itself. Calling it records a proposal and shows a card saying what it wants to do and why. **Approve** runs it once; **Reject** discards it.
 
@@ -19,6 +39,17 @@ A failed card offers **Retry**, and a done card links to what was created or cha
 ## Using it
 
 ### Send a Slack message
+<!-- learn
+id: actions-slack-send
+title: Send a Slack message from chat
+text: Say "tell #ops the deploy is done": the chat drafts it in your style and sends only after **Approve & send**.
+area: assistant
+level: next
+kind: feature
+since: 0.24.0
+action: nav:chat
+requires: source:slack
+-->
 
 1. Ask: "tell #ops the deploy is done", "reply in this thread: <link>", "DM Alice that I'll be late".
 2. The assistant reads your writing style first (the one **Settings → Profile** builds from your own messages), then shows a card with the recipient ("To: #ops in Acme") and the text in an editable box.
@@ -28,6 +59,17 @@ A failed card offers **Retry**, and a done card links to what was created or cha
 Only channels and people Watchtower has synced can be addressed. **Retry** after a failure first checks whether the message reached Slack and posts only if it did not.
 
 ### Edit a Confluence page
+<!-- learn
+id: actions-confluence-edit
+title: Edit a Confluence page
+text: Ask the chat to rewrite a section of a page; you see a word-by-word diff and **Approve** saves a new version.
+area: assistant
+level: power
+kind: feature
+since: 0.24.0
+action: nav:chat
+requires: source:confluence
+-->
 
 1. Ask the assistant to read a page (by link, id or exact title) and change a passage or rewrite a section.
 2. The card shows a word-by-word diff: removed words struck through, added words in green.
@@ -42,6 +84,15 @@ Describe the routine ("every weekday at 9, summarise the mail that needs a reply
 A new recipe stays off until you turn it on in the Automations tab. See [Automations](automations.md).
 
 ### claude.ai connectors
+<!-- learn
+id: actions-claude-ai-connectors
+title: Use your claude.ai connectors
+text: On Claude the chat can use your claude.ai connectors; manage them in **Settings → Profile → claude.ai tools**.
+area: assistant
+level: power
+kind: feature
+since: 0.24.0
+-->
 
 On the Claude provider, the main chat can also use the connectors of your claude.ai account. Reading through one is a step in the reply. A write through one waits for your Approve like every other external tool; the one exception is a private Claude Docs doc the chat made itself.
 
