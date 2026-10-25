@@ -81,6 +81,7 @@ struct ConnectionsDetailSplit: View {
             }
             ConnectionStatusMark(summary: summary)
         }
+        .listRowSeparator(.hidden)
     }
 
     @ViewBuilder
