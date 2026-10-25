@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
 	watchtowerslack "watchtower/internal/slack"
@@ -343,7 +344,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 						p.logger.Printf("people: fallback card error for %s: %v", entry.stats.UserID, ferr)
 					}
 					newVal := int(completed.Add(1))
-					p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (insufficient)", p.userName(entry.stats.UserID)))
+					p.progress(newVal, totalUsers, fmt.Sprintf("%s done (insufficient)", entry.stats.UserID))
 				}
 				continue
 			}
@@ -381,7 +382,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				p.LastStepOutputTokens = outTokPer
 
 				newVal := int(completed.Add(1))
-				p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (batch)", p.userName(entry.stats.UserID)))
+				p.progress(newVal, totalUsers, fmt.Sprintf("%s done (batch)", entry.stats.UserID))
 			}
 		}
 	}
@@ -425,7 +426,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 						aiCards++
 					}
 					newVal := int(completed.Add(1))
-					p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (fallback)", p.userName(entry.stats.UserID)))
+					p.progress(newVal, totalUsers, fmt.Sprintf("%s done (fallback)", entry.stats.UserID))
 				}
 				continue
 			}
@@ -463,7 +464,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				p.LastStepOutputTokens = outTokPer
 
 				newVal := int(completed.Add(1))
-				p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (batch)", p.userName(entry.stats.UserID)))
+				p.progress(newVal, totalUsers, fmt.Sprintf("%s done (batch)", entry.stats.UserID))
 			}
 		}
 	}
@@ -832,7 +833,7 @@ func parseBatchCardResult(raw string) ([]BatchCardResult, error) {
 
 	var results []BatchCardResult
 	if err := json.Unmarshal([]byte(cleaned), &results); err != nil {
-		return nil, fmt.Errorf("parsing batch card JSON: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("parsing batch card JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 
 	// Filter out entries with missing required fields.
@@ -1205,7 +1206,7 @@ func parsePeopleCardResult(raw string) (*PeopleCardResult, error) {
 	cleaned := extractJSON(raw)
 	var result PeopleCardResult
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, fmt.Errorf("parsing people card JSON: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("parsing people card JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 	return &result, nil
 }
@@ -1214,7 +1215,7 @@ func parseTeamSummaryResult(raw string) (*TeamSummaryResult, error) {
 	cleaned := extractJSON(raw)
 	var result TeamSummaryResult
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, fmt.Errorf("parsing team summary JSON: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("parsing team summary JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 	return &result, nil
 }

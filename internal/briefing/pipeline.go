@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/textutil"
@@ -255,7 +256,7 @@ func (p *Pipeline) RunForDateWith(ctx context.Context, date string, opts RunOpti
 	}
 
 	// Generate.
-	p.logger.Printf("briefing: generating for %s on %s", userName, date)
+	p.logger.Printf("briefing: generating for %s on %s", currentUserID, date)
 
 	response, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "briefing.daily"), systemPrompt, "Generate the daily briefing.", "")
 	if err != nil {
@@ -791,7 +792,7 @@ func parseBriefingResult(response string) (*BriefingResult, error) {
 
 	var result BriefingResult
 	if err := json.Unmarshal([]byte(response), &result); err != nil {
-		return nil, fmt.Errorf("JSON parse error: %w (response: %.200s)", err, response)
+		return nil, fmt.Errorf("JSON parse error: %w (%s)", err, logredact.Body([]byte(response)))
 	}
 	return &result, nil
 }
