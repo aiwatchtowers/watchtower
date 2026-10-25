@@ -36,6 +36,7 @@ import (
 	"watchtower/internal/jira"
 	"watchtower/internal/kb"
 	"watchtower/internal/linear"
+	"watchtower/internal/media"
 	"watchtower/internal/memory"
 
 	"watchtower/internal/customtracks"
@@ -156,6 +157,7 @@ type Daemon struct {
 	imapSyncers      []mailSyncer
 	jiraSyncers      []jiraAccountSyncer
 	externalSync     ExternalSyncRunner
+	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner
 	// mbMu guards what the Morning brief's gate and primitives read and write
 	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
@@ -416,6 +418,12 @@ func (d *Daemon) SetExternalSync(e ExternalSyncRunner) {
 	d.externalSync = e
 }
 
+// SetMediaPipeline sets the media describe pass (images and links become
+// knowledge). nil disables the media-describe phase.
+func (d *Daemon) SetMediaPipeline(p *media.Pipeline) {
+	d.mediaPipe = p
+}
+
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
 func (d *Daemon) SetPeoplePipeline(p *guide.Pipeline) {
 	d.peoplePipe = p
@@ -602,6 +610,8 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
 	d.phaseTranscriptAudioCleanup()
+	// Before the index, so this cycle's descriptions are searchable now.
+	d.phaseMediaDescribe(ctx)
 	d.phaseKnowledgeIndex(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index

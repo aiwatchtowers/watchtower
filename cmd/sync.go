@@ -36,6 +36,7 @@ import (
 	"watchtower/internal/issuekey"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
+	"watchtower/internal/media"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -931,6 +932,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	dayPlanPipe := dayplan.New(database, cfg, gen, logger)
 	dayPlanPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetDayPlanPipeline(dayPlanPipe)
+	d.SetMediaPipeline(newMediaPipeline(cfg, database, gen, logger))
 	// Seed jira_accounts from a pre-multi-account legacy token file
 	// before wiring, so a single-account install keeps syncing without
 	// a re-login.
@@ -1574,4 +1576,22 @@ func buildLinearSyncers(cfg *config.Config, database *db.DB, logger *log.Logger)
 		syncers = append(syncers, s)
 	}
 	return syncers
+}
+
+// newMediaPipeline builds the media describe pass: the owner's uploads open
+// through the local opener (chat_files, project_files only); the run builds
+// its own web fetcher over the synced and denied hosts. Source openers are
+// added as each source records media.
+func newMediaPipeline(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) *media.Pipeline {
+	wd := cfg.WorkspaceDir()
+	local := media.LocalOpener{Roots: []string{filepath.Join(wd, "chat_files"), filepath.Join(wd, "project_files")}}
+	return &media.Pipeline{
+		DB:           database,
+		Gen:          gen,
+		Prompts:      prompts.New(database, nil),
+		DenyHosts:    media.DenyHosts(cfg),
+		Openers:      map[string]media.Opener{"chat": local, "target": local},
+		WorkspaceDir: wd,
+		Logger:       logger,
+	}
 }

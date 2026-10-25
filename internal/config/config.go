@@ -112,6 +112,10 @@ type KnowledgeConfig struct {
 	// into ext_* for the index). Mechanical, no AI; does nothing until a
 	// space is selected.
 	Connectors KnowledgeConnectorsConfig `mapstructure:"connectors"`
+	// LinkFetchDenyHosts are hosts (subdomains included) whose links the
+	// media pass never fetches. They add to the build's seed list
+	// (media.BuildDenyHosts), never replace it.
+	LinkFetchDenyHosts []string `mapstructure:"link_fetch_deny_hosts"`
 }
 
 // KnowledgeConnectorsConfig holds the knowledge-connectors feature switch.
