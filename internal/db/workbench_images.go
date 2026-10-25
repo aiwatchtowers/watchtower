@@ -32,17 +32,6 @@ type WorkbenchTargetImage struct {
 	Description string `json:"description,omitempty"`
 }
 
-// MediaDescription renders a described item as "title — body".
-func MediaDescription(title, body string) string {
-	switch {
-	case title == "":
-		return body
-	case body == "":
-		return title
-	}
-	return title + " — " + body
-}
-
 // AddWorkbenchTargetImageTx attaches img to its target. The target must be on
 // img.WorkbenchID's board (ErrNotInWorkbench otherwise). Attaching content the
 // target already carries is a no-op that returns the existing row's id; a new

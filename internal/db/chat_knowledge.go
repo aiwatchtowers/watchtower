@@ -41,9 +41,21 @@ type ChatTurnForIdeas struct {
 	ID, ConversationID int64
 	ConversationTitle  string
 	Role               string
-	Text               string
-	CreatedAt          string
+	Text               string // the typed text only
+	// ImageLines describes the turn's attached images (machine text,
+	// labelled), one per image in attachment order; never the owner's words.
+	ImageLines []string
+	CreatedAt  string
 }
+
+// maxChatImageHold bounds how long a still-pending image holds the chat
+// floor (IDEA-01); past it the turn is mined without the image line, so a
+// pass that never runs cannot freeze mining.
+const maxChatImageHold = 2 * time.Hour
+
+// ChatImageLabel is the label of an image description; it equals
+// kb.MediaImageLabel (pinned by a test there; db cannot import kb).
+const ChatImageLabel = "Image (AI description of an attached image)"
 
 // ListChatTurnsForIdeas returns up to limit owner and assistant messages with
 // id > afterID, on each conversation's active branch, outside Discuss-an-idea
@@ -70,12 +82,18 @@ func (db *DB) ListChatTurnsForIdeas(afterID int64, cutoffISO string, limit int) 
 		JOIN chat_conversations c ON c.id = m.conversation_id
 		WHERE m.id > ? AND m.role IN ('user', 'assistant') AND m.status != 'error'
 		  AND m.id < COALESCE((SELECT MIN(f.id) FROM chat_messages f WHERE f.id > ? AND f.created_at > ?), 9223372036854775807)
-		  AND m.id < COALESCE((SELECT MIN(a.message_id) FROM chat_attachments a
+		  AND m.id < COALESCE((SELECT MIN(m.id) FROM chat_messages m
+		        JOIN chat_conversations c ON c.id = m.conversation_id
+		        JOIN chat_attachments a ON a.message_id = m.id
 		        JOIN media_items mi ON mi.chat_attachment_id = a.id
-		        WHERE a.message_id > ? AND mi.status = 'pending'), 9223372036854775807)
+		        WHERE m.id > ? AND m.role IN ('user', 'assistant') AND m.status != 'error'
+		          AND COALESCE(c.context_type, '') NOT IN ('idea', 'code_question') AND `+onActiveBranch+`
+		          AND mi.status = 'pending'
+		          AND mi.content_at >= (SELECT start_at FROM media_state WHERE id = 1)
+		          AND mi.content_at > ?), 9223372036854775807)
 		  AND COALESCE(c.context_type, '') NOT IN ('idea', 'code_question') AND `+onActiveBranch+`
 		ORDER BY m.id
-		LIMIT ?`, afterID, afterID, at, afterID, limit)
+		LIMIT ?`, afterID, afterID, at, afterID, mediaTime(time.Now().Add(-maxChatImageHold)), limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing chat turns for ideas: %w", err)
 	}
@@ -129,7 +147,8 @@ func (db *DB) appendChatImageLines(turns []ChatTurnForIdeas) error {
 			return fmt.Errorf("scanning chat image description: %w", err)
 		}
 		if i, ok := idx[msg]; ok && turns[i].Role == "user" {
-			turns[i].Text += fmt.Sprintf("\n[image %q: %s]", name, MediaDescription(title, body))
+			turns[i].ImageLines = append(turns[i].ImageLines,
+				fmt.Sprintf("[image %q — %s: %s]", name, ChatImageLabel, MediaDescription(title, body)))
 		}
 	}
 	return rows.Err()

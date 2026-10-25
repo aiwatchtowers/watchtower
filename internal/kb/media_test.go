@@ -507,3 +507,8 @@ func TestKB_LongMediaEveryChunkLabelled(t *testing.T) {
 			"chunk %d carries media text without a label before it", i)
 	}
 }
+
+// db cannot import kb, so the chat-image line label is a copy; they must agree.
+func TestChatImageLabelMatchesKnowledgeLabel(t *testing.T) {
+	assert.Equal(t, MediaImageLabel, db.ChatImageLabel)
+}

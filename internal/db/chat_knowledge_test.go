@@ -248,13 +248,18 @@ func TestListChatTurnsForIdeas_AppendsImageDescriptions(t *testing.T) {
 	got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 10)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
-	assert.Equal(t, "see these\n[image \"b.png\": Chart — revenue by month]\n[image \"a.png\": Error dialog — disk full]", got[0].Text)
+	assert.Equal(t, "see these", got[0].Text, "the typed text stays the owner's alone")
+	assert.Equal(t, []string{
+		`[image "b.png" — ` + ChatImageLabel + `: Chart — revenue by month]`,
+		`[image "a.png" — ` + ChatImageLabel + `: Error dialog — disk full]`,
+	}, got[0].ImageLines)
+	assert.Empty(t, got[1].ImageLines)
 	assert.Equal(t, other, got[1].ID)
 	assert.Equal(t, "no images", got[1].Text)
 }
 
 // IDEA-01: the floor never passes material that is not complete.
-func TestIdea01_PendingChatImageHoldsTheFloor(t *testing.T) {
+func TestIdeas01_PendingChatImageHoldsTheFloor(t *testing.T) {
 	d := openTestDB(t)
 	cutoff := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	old := float64(cutoff.Add(-time.Hour).Unix())
@@ -279,11 +284,88 @@ func TestIdea01_PendingChatImageHoldsTheFloor(t *testing.T) {
 	assert.Equal(t, []int64{before, held, after}, ids())
 	got, err := d.ListChatTurnsForIdeas(held-1, cutoff.Format(time.RFC3339), 10)
 	require.NoError(t, err)
-	assert.Contains(t, got[0].Text, "[image \"shot.png\": Chart — numbers]")
+	assert.Equal(t, []string{`[image "shot.png" — ` + ChatImageLabel + `: Chart — numbers]`}, got[0].ImageLines)
 
 	setChatImageStatus(t, d, att, "failed", "", "")
 	got, err = d.ListChatTurnsForIdeas(held-1, cutoff.Format(time.RFC3339), 10)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, "with a screenshot", got[0].Text, "a failed image holds nothing and adds no line")
+	assert.Empty(t, got[0].ImageLines)
+}
+
+// The hold is bounded: it must never freeze mining when the describe pass
+// cannot run (IDEA-01 floor honesty without a forever-stuck floor).
+func TestIdeas01_ChatImageHoldIsBounded(t *testing.T) {
+	cutoff := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	old := float64(cutoff.Add(-time.Hour).Unix())
+	pastStart := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	type setup func(t *testing.T, d *DB, conv, msg, att int64)
+	for name, tc := range map[string]struct {
+		ctx   string
+		setup setup
+	}{
+		"holds when fresh, in range and in a plain chat": {setup: func(t *testing.T, d *DB, _, _, _ int64) {
+			require.NoError(t, d.SetMediaStartAt(pastStart))
+		}},
+		"older than start_at does not hold": {setup: func(t *testing.T, d *DB, _, _, _ int64) {
+			require.NoError(t, d.SetMediaStartAt(time.Now().Add(time.Hour)))
+		}},
+		"past the max age does not hold": {setup: func(t *testing.T, d *DB, _, _, att int64) {
+			require.NoError(t, d.SetMediaStartAt(pastStart))
+			_, err := d.Exec(`UPDATE media_items SET content_at = ? WHERE chat_attachment_id = ?`,
+				mediaTime(time.Now().Add(-maxChatImageHold-time.Minute)), att)
+			require.NoError(t, err)
+		}},
+		"an unavailable item does not hold": {setup: func(t *testing.T, d *DB, _, _, att int64) {
+			require.NoError(t, d.SetMediaStartAt(pastStart))
+			setChatImageStatus(t, d, att, "unavailable", "", "")
+		}},
+		"a code_question chat does not hold the main floor": {ctx: "code_question", setup: func(t *testing.T, d *DB, _, _, _ int64) {
+			require.NoError(t, d.SetMediaStartAt(pastStart))
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := openTestDB(t)
+			plain := insertChatConversation(t, d, "", "")
+			before := insertChatMessage(t, d, plain, "user", "before", old)
+			conv := plain
+			if tc.ctx != "" {
+				conv = insertChatConversation(t, d, tc.ctx, "4:main.go")
+			}
+			msg := insertChatMessage(t, d, conv, "user", "with a screenshot", old)
+			after := insertChatMessage(t, d, plain, "user", "after", old)
+			att := attachChatImage(t, d, conv, msg, "shot.png")
+			tc.setup(t, d, conv, msg, att)
+
+			got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 10)
+			require.NoError(t, err)
+			var ids []int64
+			for _, g := range got {
+				ids = append(ids, g.ID)
+			}
+			if name == "holds when fresh, in range and in a plain chat" {
+				assert.Equal(t, []int64{before}, ids)
+				return
+			}
+			assert.Contains(t, ids, after, "mining goes on past the image")
+			for _, g := range got {
+				assert.Empty(t, g.ImageLines, "an undescribed image adds no line")
+			}
+		})
+	}
+}
+
+func TestListChatTurnsForIdeas_AssistantTurnsGetNoImageLines(t *testing.T) {
+	d := openTestDB(t)
+	cutoff := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	conv := insertChatConversation(t, d, "", "")
+	msg := insertChatMessage(t, d, conv, "assistant", "reply", float64(cutoff.Add(-time.Hour).Unix()))
+	att := attachChatImage(t, d, conv, msg, "x.png")
+	setChatImageStatus(t, d, att, "ok", "T", "B")
+	got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].ImageLines)
 }
