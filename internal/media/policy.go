@@ -1,9 +1,12 @@
 package media
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
 	"watchtower/internal/config"
+	"watchtower/internal/doclinks"
 )
 
 // BuildDenyHosts is the build's seed of hosts whose links are never fetched,
@@ -31,4 +34,19 @@ func DenyHosts(cfg *config.Config) []string {
 		}
 	}
 	return out
+}
+
+// RefusedHosts is the refused-host set Fetchable takes, read afresh: the
+// synced sources, the connected Jira/Confluence sites and deny (DenyHosts).
+// Discovery and the pass build it the same way.
+func RefusedHosts(ctx context.Context, q doclinks.Queryer, deny []string) (map[string]bool, error) {
+	sites, err := doclinks.SiteHosts(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("media: %w", err)
+	}
+	hosts := append([]string{}, SyncedHosts...)
+	for h := range sites {
+		hosts = append(hosts, h)
+	}
+	return NormalizeHostSet(append(hosts, deny...)), nil
 }

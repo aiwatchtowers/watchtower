@@ -50,7 +50,7 @@ func ConfluenceRecorder(denyHosts []string) extsync.MediaRecorder {
 			if r.Kind == "link" || strings.HasPrefix(r.Locator, "url:") {
 				if refused == nil {
 					var err error
-					if refused, err = refusedHostSet(ctx, q, denyHosts); err != nil {
+					if refused, err = RefusedHosts(ctx, q, denyHosts); err != nil {
 						return err
 					}
 				}

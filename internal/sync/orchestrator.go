@@ -83,6 +83,11 @@ type Orchestrator struct {
 	// reads it via FirstSyncFrom to start a history backfill.
 	firstSyncFrom time.Time
 
+	// fileLookups counts the current Run's conversations.history lookups of
+	// search matches that shared a file without listing it
+	// (maxSlackFileLookups). Run resets it.
+	fileLookups int
+
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
 	jiraKeyDetector interface {
@@ -186,6 +191,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchRateLimited = false
 	o.searchIncomplete = false
 	o.firstSyncFrom = time.Time{}
+	o.fileLookups = 0
 	err := o.run(ctx, opts)
 	if ctx.Err() != nil {
 		o.slackClient.ResetAPIStats()
@@ -251,6 +257,10 @@ func (o *Orchestrator) fetchRoster(ctx context.Context) error {
 
 // AccountID is the slack_accounts row this orchestrator syncs.
 func (o *Orchestrator) AccountID() int64 { return o.accountID }
+
+// SlackClient is the account's Slack client (the media pass downloads the
+// account's files through it, inside the same rate limiter).
+func (o *Orchestrator) SlackClient() *watchtowerslack.Client { return o.slackClient }
 
 // SlackCallsAnswered is the Slack client's AnsweredCalls: it moves with every
 // API call Slack answers, including the passes that move no Progress counter
@@ -792,6 +802,7 @@ func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
 	if acct.TeamID != "" {
 		o.logger.Printf("workspace: %s (%s) [cached]", acct.TeamName, acct.TeamID)
 		o.account = acct
+		o.slackClient.SetTeamDomain(acct.TeamDomain)
 		return nil
 	}
 
@@ -804,6 +815,7 @@ func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
 	}
 	acct.TeamID, acct.TeamName, acct.TeamDomain = info.ID, info.Name, info.Domain
 	o.account = acct
+	o.slackClient.SetTeamDomain(acct.TeamDomain)
 	o.logger.Printf("workspace: %s (%s)", acct.TeamName, acct.TeamID)
 	return nil
 }
@@ -836,6 +848,7 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 		return fmt.Errorf("updating slack account %d: %w", o.accountID, err)
 	}
 	o.account.TeamID, o.account.TeamName, o.account.TeamDomain = teamInfo.ID, teamInfo.Name, teamInfo.Domain
+	o.slackClient.SetTeamDomain(teamInfo.Domain)
 	o.logger.Printf("workspace: %s (%s)", teamInfo.Name, teamInfo.ID)
 
 	// Identify the current user

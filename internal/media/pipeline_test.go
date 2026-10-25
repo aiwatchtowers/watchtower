@@ -913,15 +913,17 @@ func dumpKB(t *testing.T, d *db.DB) string {
 		`SELECT id || '|' || source || '|' || title || '|' || content_hash || '|' || chunk_count FROM kb_documents WHERE source <> 'guide' ORDER BY id`,
 		`SELECT c.doc_id || '|' || c.idx || '|' || c.body FROM kb_chunks c JOIN kb_documents k ON k.id = c.doc_id WHERE k.source <> 'guide' ORDER BY c.doc_id, c.idx`,
 	} {
-		rows, err := d.Query(q)
-		require.NoError(t, err)
-		for rows.Next() {
-			var s string
-			require.NoError(t, rows.Scan(&s))
-			b.WriteString(s + "\n")
-		}
-		require.NoError(t, rows.Err())
-		rows.Close()
+		func() {
+			rows, err := d.Query(q)
+			require.NoError(t, err)
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var s string
+				require.NoError(t, rows.Scan(&s))
+				b.WriteString(s + "\n")
+			}
+			require.NoError(t, rows.Err())
+		}()
 		b.WriteString("--\n")
 	}
 	return b.String()

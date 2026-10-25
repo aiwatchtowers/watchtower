@@ -18,7 +18,6 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
-	"watchtower/internal/doclinks"
 	"watchtower/internal/extract"
 	"watchtower/internal/kb"
 	"watchtower/internal/media/webfetch"
@@ -170,21 +169,7 @@ func (p *Pipeline) HasPending(ctx context.Context) (bool, error) {
 // refusedHosts is this run's refused-host set: the synced sources, the
 // connected Jira/Confluence sites and the deny list.
 func (p *Pipeline) refusedHosts(ctx context.Context) (map[string]bool, error) {
-	return refusedHostSet(ctx, p.DB, p.DenyHosts)
-}
-
-// refusedHostSet is the refused-host set Fetchable is given: SyncedHosts,
-// the connected Jira/Confluence sites (read through q) and denyHosts.
-func refusedHostSet(ctx context.Context, q doclinks.Queryer, denyHosts []string) (map[string]bool, error) {
-	sites, err := doclinks.SiteHosts(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("media: %w", err)
-	}
-	hosts := append([]string{}, SyncedHosts...)
-	for h := range sites {
-		hosts = append(hosts, h)
-	}
-	return NormalizeHostSet(append(hosts, denyHosts...)), nil
+	return RefusedHosts(ctx, p.DB, p.DenyHosts)
 }
 
 // run is one pass's state.
