@@ -386,11 +386,13 @@ final class AppState {
     private(set) var mobileHubInitError: String?
     /// Where the toggle lives; tests pass a throwaway suite.
     @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
+    /// The policy's `MobileSync` mode for the hub's background parts (#608).
+    @ObservationIgnored let mobileSyncPolicy = MobileSyncPolicyBox()
     /// Opens the hub's transport and sidecar; tests pass a stub.
     @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
-    @ObservationIgnored private var mobileHubPool: DatabasePool?
+    @ObservationIgnored private(set) var mobileHubPool: DatabasePool?
     /// Built with the first hub and kept across rebuilds, so a QR on screen
     /// keeps its link when `initWorkbenches` replaces the hub.
     @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
@@ -518,6 +520,7 @@ final class AppState {
         daemonManager.onSyncFinished = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
+        managedPolicy.onChange = { [weak self] in self?.managedPolicyChanged($0) }
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
@@ -1863,8 +1866,10 @@ final class AppState {
 
     private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
 
+    /// The owner's toggle, outvoted by the organization's `MobileSync = off`
+    /// (#608); the stored toggle itself is never rewritten by the policy.
     var isMobileSyncEnabled: Bool {
-        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey)
+        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey) && managedPolicy.policy.mobileSyncMode != "off"
     }
 
     /// Tears down the previous hub and, while the toggle is on, builds and
