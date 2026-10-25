@@ -19,6 +19,12 @@ var (
 	ErrGone = errors.New("media: the item is gone")
 	// ErrTooLarge: the item is over the download cap.
 	ErrTooLarge = errors.New("media: the item is too large")
+	// ErrSourceOff: the item's source is turned off or its account cannot
+	// sign in now (Gmail off, revoked, credentials unusable). Like an image
+	// waiting for a vision-capable provider, the row waits as it is — no
+	// attempt is spent — and is listed again next cycle. A removed account
+	// is ErrGone instead.
+	ErrSourceOff = errors.New("media: the item's source is off")
 )
 
 // modelError marks a failed model call; convertError a failed sips run;
