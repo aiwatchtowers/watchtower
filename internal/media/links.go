@@ -1,6 +1,6 @@
-// Package media turns images and web links into knowledge. This file holds the
-// link rules: which URLs are extracted from text, how they are normalized, and
-// which ones Watchtower must never fetch.
+// The link rules: which URLs are extracted from text, how they are normalized,
+// and which ones Watchtower must never fetch.
+
 package media
 
 import (
