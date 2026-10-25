@@ -306,30 +306,15 @@ func TestGet_RefusesNonWebPort(t *testing.T) {
 }
 
 func TestGet_IgnoresEnvProxy(t *testing.T) {
-	proxyHandler, proxyHits := counting(html)
-	proxy := httptest.NewServer(proxyHandler)
-	defer proxy.Close()
+	// The transport's Proxy field is the real check: with it nil, no
+	// environment variable can route a fetch through a proxy. (An end-to-end
+	// probe cannot tell: Go never proxies loopback targets, and a proxy dial
+	// would itself be refused by the connect-time gate.)
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
-		t.Setenv(k, proxy.URL)
+		t.Setenv(k, "http://proxy.example:8080")
 	}
-	t.Setenv("NO_PROXY", "")
-	t.Setenv("no_proxy", "")
-
-	f := webfetch.New(allowAll)
-	if f.TransportForTest().Proxy != nil {
+	if webfetch.New(allowAll).TransportForTest().Proxy != nil {
 		t.Fatal("Transport.Proxy is set")
-	}
-	target, targetHits := counting(html)
-	srv := httptest.NewServer(target)
-	defer srv.Close()
-	if _, err := get(t, webfetch.NewForTest(allowAll), srv.URL); err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	res, _ := fakeResolver(t, "127.0.0.1")
-	f.Resolver = res
-	_, _ = get(t, f, "http://site.example/")
-	if proxyHits.Load() != 0 || targetHits.Load() != 1 {
-		t.Errorf("proxy hits %d, target hits %d; want 0 and 1", proxyHits.Load(), targetHits.Load())
 	}
 }
 
@@ -374,6 +359,44 @@ func TestGet_SendsNoCookiesOrAuth(t *testing.T) {
 		if h.Get("Cookie") != "" || h.Get("Authorization") != "" {
 			t.Errorf("hop %d sent Cookie %q Authorization %q", i+1, h.Get("Cookie"), h.Get("Authorization"))
 		}
+	}
+
+	// Userinfo is refused by the fetcher itself, whatever Check says: Go
+	// would send it as Authorization: Basic on that request.
+	var hops recorder
+	var srvURL string
+	ui := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hops.add(r.Header)
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, strings.Replace(srvURL, "http://", "http://u:p@", 1)+"/second", http.StatusFound)
+			return
+		}
+		html(w, r)
+	}))
+	defer ui.Close()
+	srvURL = ui.URL
+	if _, err := get(t, webfetch.NewForTest(allowAll), ui.URL+"/"); !errors.Is(err, webfetch.ErrRefused) {
+		t.Errorf("redirect to userinfo: err = %v, want ErrRefused", err)
+	}
+	if _, err := get(t, webfetch.NewForTest(allowAll), strings.Replace(ui.URL, "http://", "http://u:p@", 1)+"/second"); !errors.Is(err, webfetch.ErrRefused) {
+		t.Errorf("initial userinfo: err = %v, want ErrRefused", err)
+	}
+	if len(hops.seen) != 1 {
+		t.Errorf("%d requests reached the server, want 1 (the redirecting hop)", len(hops.seen))
+	}
+	for i, h := range hops.seen {
+		if h.Get("Authorization") != "" {
+			t.Errorf("request %d sent Authorization %q", i+1, h.Get("Authorization"))
+		}
+	}
+}
+
+func TestGet_OwnAddressFailureFailsClosed(t *testing.T) {
+	restore := webfetch.FailInterfaceAddrsForTest(errors.New("no interfaces"))
+	defer restore()
+	err := webfetch.New(allowAll).ControlForTest("tcp", "93.184.215.14:443")
+	if !errors.Is(err, webfetch.ErrRefused) || !strings.Contains(err.Error(), "own addresses: no interfaces") {
+		t.Fatalf("err = %v, want ErrRefused explaining the own-address failure", err)
 	}
 }
 
@@ -428,10 +451,11 @@ func TestGet_CapsBodyAndTime(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(h)
 			defer srv.Close()
-			resp, err := get(t, webfetch.NewForTest(allowAll), srv.URL)
+			resp, err := webfetch.NewForTest(allowAll).Get(context.Background(), srv.URL, 0)
 			if err == nil {
 				var n int64
 				n, err = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close() // before srv.Close, which waits for the blocked handler
 				if n > 2<<20 {
 					t.Errorf("read %d bytes past the 2 MiB cap", n)
 				}
@@ -492,6 +516,16 @@ func TestGet_StatusAndType(t *testing.T) {
 			w.Header()["Content-Type"] = nil
 			_, _ = w.Write([]byte{0, 1, 2})
 		}, webfetch.ErrUnsupported},
+		"gzip": {func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Content-Encoding", "gzip")
+			_, _ = w.Write([]byte{0x1f, 0x8b, 0, 0})
+		}, webfetch.ErrUnsupported},
+		"br": {func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Content-Encoding", "br")
+			_, _ = io.WriteString(w, "x")
+		}, webfetch.ErrUnsupported},
 		"404": {func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }, webfetch.ErrNotFound},
 		"500": {func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) }, webfetch.ErrNotFound},
 	}
@@ -507,6 +541,7 @@ func TestGet_StatusAndType(t *testing.T) {
 	for _, ct := range []string{"image/png", "application/xhtml+xml; charset=utf-8", "TEXT/HTML"} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Content-Encoding", "identity")
 			_, _ = io.WriteString(w, "x")
 		}))
 		resp, err := get(t, webfetch.NewForTest(allowAll), srv.URL)

@@ -86,9 +86,12 @@ func isOwn(ip netip.Addr, own []netip.Addr) bool {
 	return false
 }
 
+// interfaceAddrs is net.InterfaceAddrs (a var so a test can make it fail).
+var interfaceAddrs = net.InterfaceAddrs
+
 // ownAddrs lists the host's interface addresses (unmapped, no zone).
 func ownAddrs() ([]netip.Addr, error) {
-	addrs, err := net.InterfaceAddrs()
+	addrs, err := interfaceAddrs()
 	if err != nil {
 		return nil, err
 	}

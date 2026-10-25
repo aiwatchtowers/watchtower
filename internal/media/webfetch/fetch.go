@@ -30,8 +30,8 @@ const (
 
 // Defaults of New.
 const (
-	DefaultTimeout  = 15 * time.Second
-	DefaultMaxBytes = 2 << 20
+	defaultTimeout  = 15 * time.Second
+	defaultMaxBytes = 2 << 20
 	maxRedirects    = 5
 )
 
@@ -55,8 +55,8 @@ var (
 // a Fetcher must not be copied after first use.
 type Fetcher struct {
 	Resolver *net.Resolver // nil = the system resolver
-	Timeout  time.Duration // whole fetch, body included; 0 = DefaultTimeout
-	MaxBytes int64         // body cap when Get's maxBytes is 0; 0 = DefaultMaxBytes
+	Timeout  time.Duration // whole fetch, body included; 0 = defaultTimeout
+	MaxBytes int64         // body cap when Get's maxBytes is 0; 0 = defaultMaxBytes
 	Check    func(rawURL string) bool
 
 	// allowPrivateForTest lets the dial to the initial URL's literal
@@ -70,7 +70,7 @@ type Fetcher struct {
 
 // New is a Fetcher with the 15 s timeout and the 2 MiB HTML cap.
 func New(check func(string) bool) *Fetcher {
-	return &Fetcher{Timeout: DefaultTimeout, MaxBytes: DefaultMaxBytes, Check: check}
+	return &Fetcher{Timeout: defaultTimeout, MaxBytes: defaultMaxBytes, Check: check}
 }
 
 // Response is a successful fetch. The caller must close Body; reading past
@@ -89,18 +89,18 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, maxBytes int64) (*Resp
 		return nil, ErrRefused
 	}
 	u, err := url.Parse(rawURL)
-	if err != nil || !webScheme(u.Scheme) {
-		return nil, ErrRefused
+	if err != nil || !webScheme(u.Scheme) || u.User != nil {
+		return nil, ErrRefused // userinfo would become an Authorization header
 	}
 	if maxBytes <= 0 {
 		maxBytes = f.MaxBytes
 	}
 	if maxBytes <= 0 {
-		maxBytes = DefaultMaxBytes
+		maxBytes = defaultMaxBytes
 	}
 	timeout := f.Timeout
 	if timeout <= 0 {
-		timeout = DefaultTimeout
+		timeout = defaultTimeout
 	}
 	testAllow := ""
 	if f.allowPrivateForTest {
@@ -139,6 +139,9 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, maxBytes int64) (*Resp
 	if err != nil || !(mt == "text/html" || mt == "application/xhtml+xml" || strings.HasPrefix(mt, "image/")) {
 		return fail(ErrUnsupported)
 	}
+	if ce := strings.TrimSpace(resp.Header.Get("Content-Encoding")); ce != "" && !strings.EqualFold(ce, "identity") {
+		return fail(ErrUnsupported) // an encoding we never asked for
+	}
 	if resp.ContentLength > maxBytes {
 		return fail(ErrTooLarge)
 	}
@@ -152,10 +155,11 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, maxBytes int64) (*Resp
 func webScheme(s string) bool { return s == "http" || s == "https" }
 
 // checkRedirect drops the Referer Go's client has just set, stops after five
-// redirects, and re-runs the scheme rule and Check on the hop's URL.
+// redirects, refuses userinfo (Go would send it as Authorization) and re-runs
+// the scheme rule and Check on the hop's URL.
 func (f *Fetcher) checkRedirect(req *http.Request, via []*http.Request) error {
 	req.Header.Del("Referer")
-	if len(via) > maxRedirects || !webScheme(req.URL.Scheme) || f.Check == nil || !f.Check(req.URL.String()) {
+	if len(via) > maxRedirects || !webScheme(req.URL.Scheme) || req.URL.User != nil || f.Check == nil || !f.Check(req.URL.String()) {
 		return ErrRefused
 	}
 	return nil
@@ -191,7 +195,10 @@ func (f *Fetcher) control(testAllow string) func(network, address string, _ sysc
 			return ErrRefused
 		}
 		f.ownOnce.Do(func() { f.own, f.ownErr = ownAddrs() })
-		if f.ownErr != nil || !IsPublic(ap.Addr(), f.own) {
+		if f.ownErr != nil {
+			return fmt.Errorf("%w: own addresses: %v", ErrRefused, f.ownErr)
+		}
+		if !IsPublic(ap.Addr(), f.own) {
 			return ErrRefused
 		}
 		return nil

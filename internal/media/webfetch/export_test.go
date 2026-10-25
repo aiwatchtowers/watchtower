@@ -1,6 +1,9 @@
 package webfetch
 
-import "net/http"
+import (
+	"net"
+	"net/http"
+)
 
 // NewForTest is New with the test-only escape hatch on: the dial to the
 // initial URL's literal host:port (an httptest server) is allowed; every
@@ -20,4 +23,12 @@ func (f *Fetcher) ControlForTest(network, address string) error {
 // TransportForTest is the transport a production Get builds.
 func (f *Fetcher) TransportForTest() *http.Transport {
 	return f.transport("")
+}
+
+// FailInterfaceAddrsForTest makes the own-address read fail with err until
+// the returned restore runs. Fetchers made afterwards see the failure.
+func FailInterfaceAddrsForTest(err error) (restore func()) {
+	prev := interfaceAddrs
+	interfaceAddrs = func() ([]net.Addr, error) { return nil, err }
+	return func() { interfaceAddrs = prev }
 }
