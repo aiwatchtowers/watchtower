@@ -31,10 +31,54 @@ In the Inbox, today's **Your day** card is first under **Today** until you press
 
 ### Work the plan
 
+<!-- learn
+id: dayplan-work
+title: Tick off today's plan
+text: Click an item's circle on today's **Your day** card to mark it done; the **Plan** header counts progress.
+area: planning
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:dayPlan
+-->
+
+<!-- learn
+id: dayplan-conflicts
+title: Catch overlapping meetings
+text: A red **Calendar conflicts detected** banner on the plan warns you when two events overlap.
+area: planning
+level: next
+kind: tip
+since: 0.24.0
+action: nav:dayPlan
+-->
+
 - Click an item's circle to mark it done, or use its **⋯**: **Mark Done** or **Mark Pending**, **Open source** (the target, event or issue behind it) and **Delete**. The source badge opens the source too.
 - A red **Calendar conflicts detected** banner appears when events overlap: **Regenerate** opens the feedback row below, **Check again** re-runs detection.
 
 ### Change today's plan
+
+<!-- learn
+id: dayplan-add
+title: Add your own item to the plan
+text: Press **+** on today's plan, pick **Time block** or **Backlog**, and press **Add**.
+area: planning
+level: next
+kind: tip
+since: 0.24.0
+action: nav:dayPlan
+-->
+
+<!-- learn
+id: dayplan-regenerate
+title: Regenerate the plan with feedback
+text: Choose **Regenerate with feedback…** and say what should change; items you added by hand stay.
+area: planning
+level: next
+kind: tip
+since: 0.24.0
+action: nav:dayPlan
+-->
 
 These show on today's card only; an older day's plan is read-only. Each opens an inline row under the plan.
 

@@ -10,6 +10,17 @@ You open the Inbox at 09:00. Your day sits on top with the plan and the brief, t
 
 ### Filters and sections
 
+<!-- learn
+id: inbox-filters
+title: Filter the Inbox to one kind
+text: Pick **Day**, **Messages**, **Tracks**, **Ideas** or **Automations** above the list to see just that; it stays picked.
+area: communication
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:inbox
+-->
+
 The bar above the list has six filters. The one you picked is remembered.
 
 | Filter | Shows |
@@ -28,6 +39,29 @@ The list has up to three sections: **Needs your decision** (proposals, a propose
 The sidebar badge counts what needs your decision, unread messages, one for an unread latest brief, and due reminders. Tracks, automation cards and ideas of the decision kind never count (everything under **Needs your decision** does); they show only an unread dot in the list.
 
 ### Reaction commands
+
+<!-- learn
+id: inbox-reactions
+title: React with an emoji to act
+text: React to a Slack message with :eyes:, :bulb: or :ticket: and a track, an idea or a draft issue comes back as a card.
+area: communication
+level: basics
+kind: feature
+since: 0.24.0
+requires: source:slack
+done_when: reaction.used
+-->
+
+<!-- learn
+id: inbox-reaction-dictionary
+title: Edit your reaction dictionary
+text: Choose which emoji do what on the **Reactions** card in Automations → **Built in**.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
 
 Reacting to a Slack message with an emoji from your dictionary makes the assistant gather the thread, compose an action and bring it back as a card. Reactions are checked on every sync cycle, so **Sync Now** in the menu bar picks one up at once. The built-in **Reactions** runs it, on by default.
 
@@ -48,9 +82,31 @@ An issue reaction drafts the issue in the tracker whose keys the channel mention
 
 ### Proposals from everywhere
 
+<!-- learn
+id: inbox-proposals
+title: Approve what the assistant proposes
+text: Actions from reactions, chats and automations wait under **Needs your decision** for your **Approve** or **Reject**.
+area: communication
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:inbox
+-->
+
 **Needs your decision** holds every action waiting for you, whatever started it: a reaction, the AI Chat, a target's chat, an automation or a Workbench terminal. Actions that touch an outside system, such as Jira, always wait for **Approve**.
 
 ### Attention detection
+
+<!-- learn
+id: inbox-messages
+title: See every message aimed at you
+text: The **Messages** filter lists mentions, DMs, replies, mail and issues for you; a card closes when you answer.
+area: communication
+level: next
+kind: feature
+since: 0.24.0
+action: nav:inbox
+-->
 
 **Attention detection** collects the mentions, DMs, thread replies, Jira and Linear issues assigned to you or mentioning you, calendar invites and mail to you. They are the **Messages** cards, and they also feed Catch Up's **For you** list and the brief. An item closes on its own when you answer in the source.
 
@@ -59,6 +115,28 @@ Messages for you in one channel outside threads stay one card that lists each me
 ## Using it
 
 ### Handle a card
+
+<!-- learn
+id: inbox-snooze
+title: Snooze a message until later
+text: Press **Snooze** on a message card and pick **Tomorrow**, **In 3 days** or **Next week**; it stays away until then.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:inbox
+-->
+
+<!-- learn
+id: inbox-hand-to-agent
+title: Hand a message to an agent
+text: Press **Hand to Agent…** on a message card to give the work to a Workbench agent.
+area: communication
+level: power
+kind: feature
+since: 0.24.0
+action: nav:inbox
+-->
 
 Click a card to open it on the right. **Up** and **Down** move between cards, **Esc** closes the card. The list re-reads every 30 seconds while the Inbox is on screen.
 
@@ -74,6 +152,17 @@ Click a card to open it on the right. **Up** and **Down** move between cards, **
 **Hand to Agent…** asks which workbench when it can't tell. A done action links to its result, such as **Open →** or **Open ABC-7 →**; reaction cards and reminders also show **Slack message ↗**.
 
 ### Teach it your preferences
+
+<!-- learn
+id: inbox-learned-rules
+title: Mute or boost a sender or channel
+text: Open **⋯** → **Learned Rules** above the Inbox list; the brief and recaps follow your **Mutes** and **Boosts**.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:inbox
+-->
 
 The **⋯** button above the list opens these in the reading pane, and **?** opens the reaction cheat sheet there:
 

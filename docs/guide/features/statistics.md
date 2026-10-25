@@ -28,6 +28,39 @@ Pending inbox items or open targets block both muting and leaving suggestions; a
 
 ## Using it
 
+<!-- learn
+id: statistics-recommendations
+title: Cut AI cost on noisy channels
+text: Open **Statistics** → **Channels** and press **Mute** on the suggestions; the AI stops reading them.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:statistics
+-->
+
+<!-- learn
+id: statistics-mute
+title: Mute a channel or person for AI
+text: Toggle **Mute for AI** on a channel or user in **Statistics**; syncing goes on, digests skip it.
+area: communication
+level: next
+kind: feature
+since: 0.24.0
+action: nav:statistics
+-->
+
+<!-- learn
+id: statistics-mark-bot
+title: Mark a bot Slack missed
+text: On **Statistics** → **Users**, press **Mark as bot** on an account Slack doesn't flag as one.
+area: communication
+level: power
+kind: tip
+since: 0.24.0
+action: nav:statistics
+-->
+
 1. Open **Statistics** and pick **Channels**. Read the recommendations, then press **Mute** or **Favorite** on each row you agree with.
 2. In the table, the speaker button toggles **Mute for AI** and the star toggles favorite. The filter offers All, Muted, Favorites and Recommendations. Sort by Messages, Name, Bot % or Activity.
 3. The **Digest** column shows each channel's status: **Up to date**, **N pending**, **Not processed**, **Too few msgs** or **Muted**. The chart above the table counts them as OK, Pending, New, Few and Muted.

@@ -20,6 +20,40 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 
 ## Using it
 
+<!-- learn
+id: people-cards
+title: Read a colleague's card before a 1:1
+text: Open **People** for each colleague's style, decision role, red flags and how best to work with them.
+area: communication
+level: next
+kind: feature
+since: 0.24.0
+action: nav:people
+requires: feature:people-cards
+-->
+
+<!-- learn
+id: people-team-summary
+title: Check the Team Summary
+text: Select **Team Summary** in **People** for who needs attention across your team, with tips.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:people
+-->
+
+<!-- learn
+id: people-connections
+title: Tell it who your manager is
+text: Use **Edit Connections** on **My Card** to set your manager, reports and peers; the briefing uses them.
+area: communication
+level: power
+kind: tip
+since: 0.24.0
+action: nav:people
+-->
+
 1. Open **People**. **My Card** is pinned first, then everyone else. Select **Team Summary** for the team view.
 2. A card shows the summary, **Communication Guide**, **Decision Style**, **Tactics**, **Red Flags**, **Highlights**, **Accomplishments**, an activity-hours chart and a week-by-week history. When Jira is connected and the person has work there, a **Delivery** box adds closed issues, cycle time, velocity and open issues, plus **Expertise** tags.
 3. On **My Card**, the **Connections** tab draws your manager, reports and peers around you. Its interaction scores stay empty today (see [Known issues](../troubleshooting/known-issues.md)). **Edit Connections** changes who they are; the briefing and other cards use that.

@@ -37,6 +37,39 @@ Opening a day card marks its briefing read, the same mark **I'm caught up** in [
 
 ## Using it
 
+<!-- learn
+id: briefings-read
+title: Read your morning brief
+text: Open the Inbox at the start of the day: today's **Your day** card holds the brief, under today's plan.
+area: planning
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:briefings
+-->
+
+<!-- learn
+id: briefings-make-task
+title: Make a task from the brief
+text: Press **Make a Task** on a brief item that suggests new work; the target is created and opens.
+area: planning
+level: next
+kind: tip
+since: 0.24.0
+action: nav:briefings
+-->
+
+<!-- learn
+id: briefings-time
+title: Change when the brief arrives
+text: Set **Time** under **When** on the **Morning brief** card in Automations → **Built in**.
+area: planning
+level: next
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
+
 - In the Inbox, today's card is first under **Today** on **All**. The **Day** filter lists one card per date, the last 30 dates, and **Show older** adds 30 more. A briefing notification and Home's **Briefing** link open today's card.
 - Click an item to jump to its track, digest, target or person. Items that suggest new work show **Make a Task**, which creates the target and opens it.
 - The card's header has **Discuss in Chat** and **Done**.
