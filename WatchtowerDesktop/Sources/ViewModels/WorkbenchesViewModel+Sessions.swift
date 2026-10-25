@@ -226,6 +226,11 @@ extension WorkbenchesViewModel {
     /// mechanically and never gets an AI title. Codex is never offered here:
     /// its launch arguments come from a workbench (`launch-args`).
     func newStandalone(kind: TerminalSession.Kind, folder: URL) async {
+        if kind != .shell,
+           let refusal = ConnectionTest.policyRefusal(provider: kind.rawValue, policy: managedPolicy()) {
+            errorMessage = refusal
+            return
+        }
         let title = switch kind {
         case .claude, .codex: TerminalSessionNaming.provisional(now: now())
         case .shell: TerminalSessionNaming.shell(shellPath: terminalCenter?.shell(), folder: folder.path)
@@ -253,7 +258,11 @@ extension WorkbenchesViewModel {
         agent: AgentKind,
         worktree: WorktreeChoice = .auto
     ) async -> TerminalSession? {
-        await createAndStart(
+        if let refusal = ConnectionTest.policyRefusal(provider: agent.rawValue, policy: managedPolicy()) {
+            errorMessage = refusal
+            return nil
+        }
+        return await createAndStart(
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
                   folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
             prompt: prompt,

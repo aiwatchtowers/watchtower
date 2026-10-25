@@ -3,6 +3,16 @@ import Foundation
 /// Pure logic behind Settings' Test Connection button: which tier models to
 /// exercise and how to fold the per-model outcomes into one result line.
 package enum ConnectionTest {
+    /// Test Connection's refusal of a provider the organization's policy
+    /// forbids (#608), worded as Go's `policy.ProviderError`; nil when it may
+    /// be tested. The CLI is never run for a refused provider.
+    package static func policyRefusal(provider: String, policy: ManagedPolicy) -> String? {
+        guard !policy.providerAllowed(provider) else { return nil }
+        let allowed = policy.allowedAIProviders ?? []
+        return "policy: AI provider \(provider) is not allowed by your organization (allowed: "
+            + (allowed.isEmpty ? "none" : allowed.joined(separator: ", ")) + ")"
+    }
+
     /// The models one test run should exercise, tier order (light first),
     /// deduped so light == strong costs a single call. Empty/unresolved
     /// tiers drop out.

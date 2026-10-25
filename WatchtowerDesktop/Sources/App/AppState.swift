@@ -48,7 +48,7 @@ final class AppState {
     /// The organization policy forced through the MDM (#608). Read only once
     /// `initialize()` starts it, so a test that never initializes never reads
     /// this Mac's managed preferences.
-    let managedPolicy = ManagedPolicyCenter { ManagedPolicyReader.readForced() }
+    let managedPolicy: ManagedPolicyCenter
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -474,7 +474,8 @@ final class AppState {
     /// (design shots have no installed CLI); nil finds the installed one.
     @ObservationIgnored var trackActionRunnerOverride: (any CLIRunnerProtocol)?
 
-    /// `onboardingDefaults` backs the onboarding step and goals,
+    /// `managedPolicyRead` reads the organization policy (design shots pass a
+    /// fixture). `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `migrateDatabase` and
     /// `openDatabase` the database migration and open, `databaseCompaction`
     /// the launch's compaction step (nil: the real one), `peopleRosterRun`
@@ -488,8 +489,10 @@ final class AppState {
         databaseCompaction: DatabaseCompactionStep? = nil,
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
         featureManager: FeatureManagerService? = nil,
-        onboardingGoals: OnboardingGoalsModel? = nil
+        onboardingGoals: OnboardingGoalsModel? = nil,
+        managedPolicyRead: @escaping () -> [String: Any] = { ManagedPolicyReader.readForced() }
     ) {
+        managedPolicy = ManagedPolicyCenter(read: managedPolicyRead)
         let features = featureManager ?? FeatureManagerService()
         self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
@@ -1784,6 +1787,7 @@ final class AppState {
         )
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
+        vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in

@@ -74,13 +74,13 @@ final class AccountPurgeViewTests: XCTestCase {
         let policy = PrivacySettingsContent(
             isOn: .constant(true), status: AccountPurgeStatus(enabled: true, enabledBy: "policy"), statusError: nil)
         let inspected = try policy.inspect()
-        XCTAssertNoThrow(try inspected.find(text: "Set by your organisation"))
+        XCTAssertNoThrow(try inspected.find(text: "Managed by your organization"))
         XCTAssertTrue(try inspected.find(ViewType.Toggle.self).isDisabled())
 
         let owner = PrivacySettingsContent(
             isOn: .constant(false), status: AccountPurgeStatus(enabled: false, enabledBy: "default"), statusError: nil)
         XCTAssertFalse(try owner.inspect().find(ViewType.Toggle.self).isDisabled())
-        XCTAssertThrowsError(try owner.inspect().find(text: "Set by your organisation"))
+        XCTAssertThrowsError(try owner.inspect().find(text: "Managed by your organization"))
     }
 
     func testFootnoteUsesGoNumbers() {

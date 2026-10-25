@@ -213,3 +213,15 @@ extension HomeShotFixtures {
         .formStyle(.grouped))
     }
 }
+
+extension HomeShotFixtures {
+    /// Settings → Connections with Jira forbidden by a sample profile: the
+    /// row's lock, the notice and the locked Add button.
+    @MainActor static func connectionsBlocked() -> AnyView {
+        let appState = AppState(managedPolicyRead: { ["AllowedSources": ["slack", "google"]] })
+        appState.managedPolicy.refresh()
+        appState.settingsConnection = .jira
+        let config = ConfigService(configPath: NSTemporaryDirectory() + "watchtower-shots-config.yaml")
+        return AnyView(ConnectionsSettings(config: config).environment(appState))
+    }
+}

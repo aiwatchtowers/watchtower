@@ -13,9 +13,15 @@ struct PrivacySettings: View {
     @ViewBuilder var body: some View {
         PrivacySettingsContent(
             isOn: Binding(
-                get: { config.purgeRevokedData ?? appState.accountPurgeCenter?.status?.enabled ?? false },
+                // A forced PurgeRevokedData (#608) shows its value; the
+                // owner's stored setting is kept, outvoted.
+                get: {
+                    appState.managedPolicy.policy.purgeRevokedData
+                        ?? config.purgeRevokedData ?? appState.accountPurgeCenter?.status?.enabled ?? false
+                },
                 set: { config.purgeRevokedData = $0 }
             ),
+            lockedByPolicy: appState.managedPolicy.policy.isLocked(.purgeRevokedData),
             status: appState.accountPurgeCenter?.status,
             statusError: appState.accountPurgeCenter?.statusError
         )
@@ -27,6 +33,7 @@ struct PrivacySettings: View {
 /// Environment-free half (the `DaemonSettingsContent` split, for ViewInspector).
 struct PrivacySettingsContent: View {
     @Binding var isOn: Bool
+    var lockedByPolicy = false
     let status: AccountPurgeStatus?
     let statusError: String?
 
@@ -35,7 +42,7 @@ struct PrivacySettingsContent: View {
             SettingRow(title: "Delete an account's data when its access is revoked", caption: caption) {
                 Toggle("", isOn: $isOn)
                     .labelsHidden()
-                    .disabled(status?.isSetByPolicy ?? false)
+                    .managedByOrganization(lockedByPolicy || (status?.isSetByPolicy ?? false))
             }
             Text(Self.footnote(status))
                 .font(.caption)
@@ -47,8 +54,7 @@ struct PrivacySettingsContent: View {
     }
 
     private var caption: String? {
-        if status?.isSetByPolicy == true { return "Set by your organisation" }
-        return statusError
+        statusError
     }
 
     /// The grace and lease numbers come from Go; the defaults stand in until it answers.

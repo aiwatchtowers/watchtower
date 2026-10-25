@@ -351,7 +351,12 @@ struct MainNavigationView: View {
                     hooks: automationHooks(vm),
                     reactionDictionary: appState.reactionDictionaryViewModel,
                     isApplyingFeatures: appState.featureManager.isApplying
-                )
+                ) { [appState] automation in
+                    AutomationPolicyBlock.isBlocked(
+                        automation, policy: appState.managedPolicy.policy,
+                        connections: appState.externalConnectionsViewModel?.connections ?? []
+                    )
+                }
             } else {
                 Text("Automations unavailable")
                     .foregroundStyle(.secondary)

@@ -200,10 +200,27 @@ struct SystemSettings: View {
                 }
             )
         ) {
-            Text("Claude").tag("claude")
-            Text("Codex").tag("codex")
-            Text("Ollama / Local").tag("ollama")
+            // Only the providers the organization's policy allows (#608); a
+            // stored provider it forbids stays visible, so the picker shows
+            // what is configured, but is locked.
+            ForEach(Self.providerChoices.filter { policy.providerAllowed($0.id) || $0.id == selectedProviderID },
+                    id: \.id) { choice in
+                Text(choice.title).tag(choice.id)
+            }
         }
+        .managedByOrganization(providerLocked)
+    }
+
+    private static let providerChoices: [(id: String, title: String)] = [
+        ("claude", "Claude"), ("codex", "Codex"), ("ollama", "Ollama / Local")
+    ]
+
+    private var policy: ManagedPolicy { appState.managedPolicy.policy }
+
+    /// Locked when the policy leaves one provider, or forbids the stored one.
+    private var providerLocked: Bool {
+        guard let allowed = policy.allowedAIProviders else { return false }
+        return allowed.count <= 1 || !allowed.contains(selectedProviderID)
     }
 
     private var aiWorkersField: some View {
@@ -472,6 +489,11 @@ struct SystemSettings: View {
     }
 
     private func testConnection() {
+        if let refusal = ConnectionTest.policyRefusal(provider: selectedProviderID, policy: policy) {
+            connectionTestResult = refusal
+            connectionTestSuccess = false
+            return
+        }
         if selectedProviderID == "ollama" {
             testOllamaConnection()
             return

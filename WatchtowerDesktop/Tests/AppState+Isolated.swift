@@ -37,7 +37,9 @@ extension AppState {
             ),
             peopleRosterRun: peopleRosterRun,
             featureManager: FeatureManagerService(runner: featuresRunner),
-            onboardingGoals: onboardingGoals?(defaults)
+            onboardingGoals: onboardingGoals?(defaults),
+            // Never this Mac's managed preferences.
+            managedPolicyRead: { [:] }
         )
         appState.daemonControlOverride = FakeDaemon()
         appState.daemonStartQueue = DaemonStartQueue()

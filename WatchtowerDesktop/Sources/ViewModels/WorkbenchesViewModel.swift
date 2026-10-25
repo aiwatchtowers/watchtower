@@ -86,6 +86,9 @@ final class WorkbenchesViewModel {
     /// Reads `workbench.default_agent`; AppState wires the config file. A
     /// test VM launches Claude Code unless it sets this.
     @ObservationIgnored var readDefaultAgent: @MainActor () -> AgentKind = { .claude }
+    /// The organization policy (#608); AppState wires its center. An agent
+    /// whose provider it forbids is neither offered nor started.
+    @ObservationIgnored var managedPolicy: @MainActor () -> ManagedPolicy = { .none }
     /// The Codex home a relaunch looks for rollouts in: the login shell's
     /// CODEX_HOME (spec 2026-10-12 §7), resolved off the main thread; nil when
     /// the login shell did not answer (asked again on the next relaunch) —

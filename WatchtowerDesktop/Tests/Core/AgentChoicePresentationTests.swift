@@ -33,6 +33,15 @@ final class AgentChoicePresentationTests: XCTestCase {
         XCTAssertEqual(missing.map(\.isAvailable), [false])
     }
 
+    func testPolicyDropsDisallowedAgent() {
+        let claudeOnly = ManagedPolicy.normalize(["AllowedAIProviders": ["claude"]])
+        XCTAssertEqual(AgentChoicePresentation.newSessionAgentChoices(policy: claudeOnly) { _ in true }.map(\.agent), [.claude])
+        XCTAssertEqual(AgentChoicePresentation.workOnOthers(defaultAgent: .claude, policy: claudeOnly) { _ in true }, [])
+        let none = ManagedPolicy.normalize(["AllowedAIProviders": [String]()])
+        XCTAssertEqual(AgentChoicePresentation.newSessionAgentChoices(policy: none) { _ in true }, [])
+        XCTAssertEqual(AgentChoicePresentation.newSessionAgentChoices(policy: .none) { _ in true }.count, 2)
+    }
+
     /// Strings per agent: nothing on a Codex path names Claude Code, and the
     /// Claude Code wording is what it always was.
     func testNoClaudeCodeStringOnCodexPaths() {
