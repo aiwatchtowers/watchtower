@@ -114,6 +114,8 @@ func initWorkspace(configPath, override, name string) (*workspaceInitResult, err
 	if err := os.MkdirAll(cfg.WorkspaceDir(), 0o700); err != nil {
 		return nil, fmt.Errorf("creating workspace directory: %w", err)
 	}
+	// A recreated data folder lost its Time Machine exclusion (BACKUP-01).
+	applyBackupExclusion()
 	database, err := db.Open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
