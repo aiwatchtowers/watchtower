@@ -271,8 +271,10 @@ func folderState(t *testing.T, root string) map[string]string {
 func TestProj03_AskOwnerNeverWritesTheFolder(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	mine := seedTerminalSession(t, fx.d, fx.a)
-	// A launcher is installed: queueing a spec review writes nothing here.
-	reg := askRegistryWith(t, fx.d, strconv.FormatInt(mine, 10), func(int64) error { return nil })
+	// A launcher is installed; docs/spec.md classifies as other, so the spec
+	// ask below is what queues a review and calls it.
+	var launched []int64
+	reg := askRegistryWith(t, fx.d, strconv.FormatInt(mine, 10), func(id int64) error { launched = append(launched, id); return nil })
 	p, err := fx.d.GetWorkbench(fx.a)
 	require.NoError(t, err)
 	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n\nBody.\n")
@@ -288,6 +290,9 @@ func TestProj03_AskOwnerNeverWritesTheFolder(t *testing.T) {
 	callReadIn(t, reg, fx.a, "list_asks", `{"status":"all"}`)
 	third := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAsk))
 	mustApply(t, reg, fx.a, "withdraw_ask", fmt.Sprintf(`{"ask_id":%d,"reason":"moot"}`, third))
+	specAsk := askID(t, mustApply(t, reg, fx.a, "ask_owner",
+		`{"kind":"review","title":"Spec review","doc_path":"docs/spec.md","doc_type":"spec","reason":"r"}`))
+	require.Equal(t, []int64{specAsk}, launched)
 
 	assert.Equal(t, before, folderState(t, p.FolderPath))
 }

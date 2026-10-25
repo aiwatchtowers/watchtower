@@ -13,6 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// No cmd test may launch the real executable, which here is the test binary.
+func init() { specReviewExe = func() (string, error) { return "/usr/bin/false", nil } }
+
 func TestEnvWithoutAgentMarkers(t *testing.T) {
 	got := envWithoutAgentMarkers([]string{"PATH=/bin", "WATCHTOWER_TERMINAL_SESSION_ID=4", "WATCHTOWER_AUTOMATION_RUN_ID=9", "HOME=/h"})
 	assert.Equal(t, []string{"PATH=/bin", "HOME=/h"}, got)

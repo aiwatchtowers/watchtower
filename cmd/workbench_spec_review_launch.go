@@ -15,19 +15,23 @@ import (
 	"watchtower/internal/tools"
 )
 
+// specReviewExe names the binary the reviewer runs; tests replace it so a
+// test binary never launches itself.
+var specReviewExe = os.Executable
+
 // specReviewLauncher returns the launcher ask_owner starts the independent
 // spec reviewer with (docs/features/spec-review.md). It skips, rather than
 // launches, when the Claude plan is near its limit: the reviewer is
 // background work and the ask is filed either way.
 func specReviewLauncher(cfg *config.Config, database *db.DB) tools.SpecReviewLauncher {
 	return func(askID int64) error {
-		if cfg.AI.Provider == "claude" {
+		if p := cfg.AI.Provider; p == "" || p == "claude" {
 			// An unreadable status does not block (planusage.NearLimit's rule).
 			if st, err := database.GetPlanUsageStatus(); err == nil && planusage.NearLimit(st) {
 				return tools.ErrSpecReviewSkipped{Reason: "plan near limit"}
 			}
 		}
-		exe, err := os.Executable()
+		exe, err := specReviewExe()
 		if err != nil {
 			return fmt.Errorf("locating the watchtower binary: %w", err)
 		}
@@ -37,7 +41,7 @@ func specReviewLauncher(cfg *config.Config, database *db.DB) tools.SpecReviewLau
 
 // LaunchSpecReview starts `workbench spec-review run --ask N` detached in its
 // own session, its output appended to <logDir>/spec-review.log. It does not
-// wait: the reviewer outlives the MCP server call that started it.
+// wait for the reviewer, which outlives the call that started it.
 func LaunchSpecReview(exe string, askID int64, logDir string) error {
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return fmt.Errorf("creating log dir: %w", err)
@@ -54,7 +58,10 @@ func LaunchSpecReview(exe string, askID int64, logDir string) error {
 	if err := c.Start(); err != nil {
 		return fmt.Errorf("starting the reviewer: %w", err)
 	}
-	return c.Process.Release()
+	// Reaped in the background so a finished reviewer is no zombie of this
+	// long-lived server; ask_owner never waits for it.
+	go func() { _ = c.Wait() }()
+	return nil
 }
 
 // envWithoutAgentMarkers drops the variables that make a process look like

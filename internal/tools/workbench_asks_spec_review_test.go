@@ -89,3 +89,19 @@ func TestAskOwner_DocTypeOnlyOnReview(t *testing.T) {
 		`"questions":[{"question":"q","options":[{"label":"a"},{"label":"b"}]}],"reason":"r"}`)
 	assert.Contains(t, refusal(t, err), "doc_type")
 }
+
+func TestAskOwner_UnknownDocTypeRefused(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/plans/p.md", "# Plan\n")
+	_, err := proposeIn(t, reg, fx.a, "ask_owner", `{"kind":"review","title":"x","doc_path":"docs/plans/p.md","doc_type":"memo","reason":"r"}`)
+	assert.Contains(t, refusal(t, err), "doc_type")
+}
+
+func TestAskOwner_LauncherSkipPointerRecordedVerbatim(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistryWith(t, fx.d, "", func(int64) error { return fmt.Errorf("wrapped: %w", &ErrSpecReviewSkipped{Reason: "plan near limit"}) })
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/plans/p.md", "# Plan\n")
+	out := mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, "docs/plans/p.md"))
+	assert.Equal(t, "skipped: plan near limit", out["spec_review"])
+}

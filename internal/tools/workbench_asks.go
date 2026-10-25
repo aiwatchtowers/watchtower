@@ -395,11 +395,14 @@ func launchSpecReview(d *db.DB, askID int64, launch SpecReviewLauncher) string {
 	}
 	err := launch(askID)
 	var skipped ErrSpecReviewSkipped
+	var skippedPtr *ErrSpecReviewSkipped
 	switch {
 	case err == nil:
 		return "queued"
 	case errors.As(err, &skipped):
 		return skipSpecReview(d, askID, skipped.Reason)
+	case errors.As(err, &skippedPtr):
+		return skipSpecReview(d, askID, skippedPtr.Reason)
 	default:
 		return skipSpecReview(d, askID, "launch failed: "+err.Error())
 	}
