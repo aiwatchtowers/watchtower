@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/policy"
 )
 
 // BuildDefault is the build-time default of the purge switch, set by ldflags
@@ -38,14 +39,15 @@ const (
 	MaxChunkFailures = 3
 )
 
-// policy is the seam an MDM policy (#608) feeds later: set reports whether a
-// policy decides the switch, on its value. Unset today.
-var policy = func() (on, set bool) { return false, false }
+// policySwitch is the MDM policy's PurgeRevokedData (#608): set reports
+// whether a forced value decides the switch, on its value. A seam for tests.
+var policySwitch = policy.PurgeRevokedData
 
-// Enabled returns the effective purge switch and its origin: a policy first,
+// Enabled returns the effective purge switch and its origin: a managed
+// policy first,
 // then the owner's privacy.purge_revoked_data setting, then the build default.
 func Enabled(cfg *config.Config) (bool, Origin) {
-	if on, set := policy(); set {
+	if on, set := policySwitch(); set {
 		return on, OriginPolicy
 	}
 	if cfg != nil && cfg.Privacy.PurgeRevokedData != nil {
