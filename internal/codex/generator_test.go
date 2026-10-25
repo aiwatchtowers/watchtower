@@ -332,3 +332,68 @@ func TestCodexArgs_DashLeadingMessageViaStdin(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexImageArgs(t *testing.T) {
+	img := filepath.Join(t.TempDir(), "x.png")
+	args, stdin, promptFile, err := buildImageArgs("codex", "strong", "", "describe it", img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promptFile != "" {
+		defer os.Remove(promptFile)
+	}
+	n := len(args)
+	if n < 3 || args[n-1] != "-" || args[n-2] != img || args[n-3] != "--image" {
+		t.Fatalf("args tail = %v, want --image <path> -", args)
+	}
+	if stdin != "describe it" {
+		t.Errorf("stdin = %q", stdin)
+	}
+	joined := strings.Join(args, "\x00")
+	if strings.Contains(joined, "describe it") {
+		t.Error("prompt text on argv")
+	}
+	if !strings.Contains(joined, "features.view_image=false") || !strings.Contains(joined, "sandbox_mode=read-only") {
+		t.Errorf("hardening flags missing: %v", args)
+	}
+}
+
+func TestImageCapable_Codex(t *testing.T) {
+	if _, ok := digest.ImageCapable(NewCodexGenerator("l", "s", "")); !ok {
+		t.Fatal("codex generator should take images")
+	}
+}
+
+// The child runs in a fresh work dir under the WithWorkDir root, removed
+// afterwards; a call without the root fails before starting anything.
+func TestCodexGenerateWithImage_WorkDir(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "media")
+	script := filepath.Join(dir, "fake-codex")
+	body := "#!/bin/sh\npwd -P > '" + dir + "/cwd'\necho \"$@\" > '" + dir + "/argv'\ncat > /dev/null\n" +
+		"echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Red\"}}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gen := NewCodexGenerator("light", "strong", script)
+	if _, _, err := gen.GenerateWithImage(context.Background(), "s", "u", "/x.png", "image/png"); err == nil {
+		t.Fatal("want an error without a work directory")
+	}
+	ctx := digest.WithWorkDir(context.Background(), root)
+	reply, _, err := gen.GenerateWithImage(ctx, "s", "u", "/x.png", "image/png")
+	if err != nil || reply != "Red" {
+		t.Fatalf("reply %q, err %v", reply, err)
+	}
+	cwd, _ := os.ReadFile(filepath.Join(dir, "cwd"))
+	rootReal, _ := filepath.EvalSymlinks(root)
+	if !strings.HasPrefix(strings.TrimSpace(string(cwd)), rootReal+"/media-call-") {
+		t.Errorf("cwd = %q, want a media-call dir under %q", cwd, rootReal)
+	}
+	if left, _ := os.ReadDir(root); len(left) != 0 {
+		t.Errorf("work dir left behind: %v", left)
+	}
+	argv, _ := os.ReadFile(filepath.Join(dir, "argv"))
+	if !strings.Contains(string(argv), "--image /x.png -") {
+		t.Errorf("argv = %s", argv)
+	}
+}

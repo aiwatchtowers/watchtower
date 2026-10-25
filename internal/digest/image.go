@@ -41,6 +41,13 @@ func WithWorkDir(ctx context.Context, root string) context.Context {
 	return context.WithValue(ctx, workDirKey{}, root)
 }
 
+// WorkDirFromContext returns the root WithWorkDir set, for an image
+// generator outside this package.
+func WorkDirFromContext(ctx context.Context) (string, bool) {
+	root, ok := ctx.Value(workDirKey{}).(string)
+	return root, ok && root != ""
+}
+
 // generatorWrapper is a decorator around another Generator.
 type generatorWrapper interface {
 	wrappedGenerator() Generator
@@ -163,8 +170,8 @@ func readImage(path string) ([]byte, error) {
 // base64 content block on stdin, the system prompt a 0600 file: neither
 // reaches argv. The reply and usage come from the final result event.
 func (g *ClaudeGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, mediaType string) (string, *Usage, error) {
-	root, _ := ctx.Value(workDirKey{}).(string)
-	if root == "" {
+	root, ok := WorkDirFromContext(ctx)
+	if !ok {
 		return "", nil, errors.New("image call without a work directory (digest.WithWorkDir)")
 	}
 	data, err := readImage(imagePath)

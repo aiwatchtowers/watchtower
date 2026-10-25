@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 )
 
 // CodexGenerator implements digest.Generator by calling the Codex CLI.
@@ -58,13 +59,51 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 		defer os.Remove(promptFile)
 	}
 
+	result, usage, err := g.run(ctx, codexBin, model, args, stdin, os.TempDir())
+	return result, usage, "", err
+}
+
+// GenerateWithImage is Generate with one image on the call (`--image`): the
+// same tool-less, read-only argv (features.view_image=false stays: that flag
+// is the model's disk-reading tool, not image input), the prompts on stdin
+// or in a 0600 file, and the child started in a fresh empty 0700 directory
+// under the digest.WithWorkDir root, removed when the call returns. The
+// image is passed by path; mediaType is not needed (codex sniffs the file).
+func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, _ string) (string, *digest.Usage, error) {
+	root, _ := digest.WorkDirFromContext(ctx)
+	if root == "" {
+		return "", nil, errors.New("image call without a work directory (digest.WithWorkDir)")
+	}
+	if err := fsutil.MakePrivateDir(root); err != nil {
+		return "", nil, fmt.Errorf("creating the media work root: %w", err)
+	}
+	dir, err := os.MkdirTemp(root, "media-call-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating the call's work directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	codexBin := FindBinary(g.codexPath)
+	args, stdin, promptFile, err := buildImageArgs(codexBin, g.modelStrong, systemPrompt, userMessage, imagePath)
+	if err != nil {
+		return "", nil, err
+	}
+	if promptFile != "" {
+		defer os.Remove(promptFile)
+	}
+	result, usage, err := g.run(ctx, codexBin, g.modelStrong, args, stdin, dir)
+	return result, usage, err
+}
+
+// run starts codex with args in dir and parses its JSONL reply.
+func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args []string, stdin, dir string) (string, *digest.Usage, error) {
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 5 * time.Second
-	cmd.Dir = os.TempDir()
+	cmd.Dir = dir
 
 	// Build clean environment with enriched PATH.
 	var env []string
@@ -84,17 +123,17 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", nil, "", runError(model, output, err, stderrBuf.String(), codexBin)
+		return "", nil, runError(model, output, err, stderrBuf.String(), codexBin)
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
 	result, usage, parseErr := parseJSONLOutput(output)
 	if parseErr != nil {
-		return "", nil, "", parseErr
+		return "", nil, parseErr
 	}
 
 	if strings.TrimSpace(result) == "" {
-		return "", nil, "", fmt.Errorf("codex returned empty result")
+		return "", nil, fmt.Errorf("codex returned empty result")
 	}
 
 	digestUsage := &digest.Usage{
@@ -103,7 +142,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 		OutputTokens: usage.OutputTokens,
 	}
 
-	return result, digestUsage, "", nil
+	return result, digestUsage, nil
 }
 
 // execArgs is the common `codex exec` prefix every Watchtower call starts
@@ -155,6 +194,16 @@ func buildArgs(bin, model, systemPrompt, userMessage string) (args []string, std
 		return nil, "", "", err
 	}
 	return append(append(execArgs(model), instr...), "-"), stdin, promptFile, nil
+}
+
+// buildImageArgs is buildArgs with `--image <path>` ahead of the trailing "-".
+func buildImageArgs(bin, model, systemPrompt, userMessage, imagePath string) (args []string, stdin, promptFile string, err error) {
+	instr, stdin, promptFile, err := promptArgs(bin, systemPrompt, userMessage)
+	if err != nil {
+		return nil, "", "", err
+	}
+	args = append(append(execArgs(model), instr...), "--image", imagePath, "-")
+	return args, stdin, promptFile, nil
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message
