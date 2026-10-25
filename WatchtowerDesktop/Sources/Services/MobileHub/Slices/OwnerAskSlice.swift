@@ -140,7 +140,7 @@ struct OwnerAskSlice: SliceSource {
         var specReview: SpecReviewLine?
         if askKind == "review", let reviewRow = try SpecReviewQueries.row(db, askID: id),
            let summary = SpecReviewSummary.phoneLine(reviewRow) {
-            specReview = SpecReviewLine(status: summary.status, line: summary.line)
+            specReview = SpecReviewLine(status: summary.status, line: SliceClip.text(summary.line, limit: 300).text)
         }
         return Payload(
             id: id,

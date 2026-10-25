@@ -156,11 +156,9 @@ enum SpecReviewPresentation {
     /// The reviewer's state in one line; nil when there is no row.
     static func statusLine(_ row: SpecReviewRow?) -> String? {
         guard let row else { return nil }
+        if let line = SpecReviewSummary.stateLine(row) { return line }
         switch row.status {
-        case .queued: return "Reviewer is waiting to start…"
-        case .running: return "Reviewer is reading the spec and the discussion…"
-        case .failed: return row.reason.isEmpty ? "Reviewer failed" : "Reviewer failed: \(row.reason)"
-        case .skipped: return row.reason.isEmpty ? "Reviewer skipped" : "Reviewer skipped: \(row.reason)"
+        case .queued, .running, .failed, .skipped: return nil
         case .done:
             if row.result == nil { return "The reviewer's result could not be read" }
             return row.model.isEmpty ? "Reviewer finished" : "Reviewer finished · \(row.model)"
