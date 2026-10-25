@@ -20,96 +20,76 @@ import (
 )
 
 // recordBackupExclude replaces the Apply seam with a recorder that returns
-// errs, and gives the once-per-process log a fresh state and a buffer.
+// errs, runs as darwin, and captures the failure lines in a buffer.
 func recordBackupExclude(t *testing.T, errs []error) (calls *[][]string, stderr *bytes.Buffer) {
 	t.Helper()
 	var got [][]string
-	origApply, origOut, origLogged := backupExcludeApply, backupExclusionStderr, backupExclusionLogged
+	origApply, origOut, origGOOS := backupExcludeApply, backupExclusionStderr, backupExclusionGOOS
 	backupExcludeApply = func(dirs []string) []error {
 		got = append(got, append([]string(nil), dirs...))
 		return errs
 	}
 	buf := &bytes.Buffer{}
 	backupExclusionStderr = buf
-	backupExclusionLogged = map[string]bool{}
+	backupExclusionGOOS = "darwin"
 	t.Cleanup(func() {
-		backupExcludeApply, backupExclusionStderr, backupExclusionLogged = origApply, origOut, origLogged
+		backupExcludeApply, backupExclusionStderr, backupExclusionGOOS = origApply, origOut, origGOOS
 	})
 	return &got, buf
 }
 
+// backupRootAndAS returns the two BACKUP-01 folders under the current HOME,
+// spelled out literally (not through backupDirs).
 func backupRootAndAS(t *testing.T) (root, as string) {
 	t.Helper()
-	root, err := config.DataRoot()
+	home, err := os.UserHomeDir()
 	require.NoError(t, err)
-	as, err = config.AppSupportDir()
-	require.NoError(t, err)
-	return root, as
+	return filepath.Join(home, ".local", "share", "watchtower"),
+		filepath.Join(home, "Library", "Application Support", "Watchtower")
 }
 
-func TestBackupDirs_DefaultRecordingsNotDuplicated(t *testing.T) {
+func TestBackupDirs_DataRootAndAppSupport(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	root, as := backupRootAndAS(t)
-	assert.Equal(t, []string{root, as}, backupDirs(&config.Config{}))
-}
-
-func TestBackupDirs_CustomRecordingsOutside(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	root, as := backupRootAndAS(t)
-	rec := filepath.Join(t.TempDir(), "rec")
-	cfg := &config.Config{}
-	cfg.Transcripts.RecordingsDir = rec
-	assert.Equal(t, []string{root, as, rec}, backupDirs(cfg))
-}
-
-func TestBackupDirs_CustomRecordingsInsideAS(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	root, as := backupRootAndAS(t)
-	cfg := &config.Config{}
-	cfg.Transcripts.RecordingsDir = filepath.Join(as, "sub") + "/"
-	assert.Equal(t, []string{root, as}, backupDirs(cfg))
-
-	// A sibling whose name only starts like <as> is outside it.
-	cfg.Transcripts.RecordingsDir = as + "-other"
-	assert.Equal(t, []string{root, as, as + "-other"}, backupDirs(cfg))
+	assert.Equal(t, []string{root, as}, backupDirs())
 }
 
 func TestBackup01_WorkspaceInitApplies(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
+	root, as := backupRootAndAS(t)
 	var workspaceExisted bool
 	calls, _ := recordBackupExclude(t, nil)
 	inner := backupExcludeApply
 	backupExcludeApply = func(dirs []string) []error {
 		cfg, err := config.Load(configPath)
-		if err == nil {
-			cfg.ActiveWorkspace = "default"
-			_, statErr := os.Stat(cfg.WorkspaceDir())
-			workspaceExisted = statErr == nil
-		}
+		require.NoError(t, err)
+		cfg.ActiveWorkspace = "default"
+		_, statErr := os.Stat(cfg.WorkspaceDir())
+		workspaceExisted = statErr == nil
 		return inner(dirs)
 	}
 
 	_, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 	require.Len(t, *calls, 1)
-	assert.Equal(t, backupDirs(&config.Config{}), (*calls)[0])
+	assert.Equal(t, []string{root, as}, (*calls)[0])
 	assert.True(t, workspaceExisted, "the workspace folder must exist when the exclusion runs")
 }
 
 func TestBackup01_DBMigrateApplies(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
+	root, as := backupRootAndAS(t)
 	calls, _ := recordBackupExclude(t, nil)
-	cfg, err := config.Load(flagConfig)
-	require.NoError(t, err)
 
 	require.NoError(t, dbMigrateCmd.RunE(dbMigrateCmd, nil))
 	require.Len(t, *calls, 1)
-	assert.Equal(t, backupDirs(cfg), (*calls)[0])
+	assert.Equal(t, []string{root, as}, (*calls)[0])
 }
 
 func TestBackup01_DaemonStartApplies(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
+	root, as := backupRootAndAS(t)
 	_, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 	cfg, err := config.Load(configPath)
@@ -130,7 +110,7 @@ func TestBackup01_DaemonStartApplies(t *testing.T) {
 		t.Fatal("the daemon did not stop on a cancelled context")
 	}
 	require.Len(t, *calls, 1)
-	assert.Equal(t, backupDirs(cfg), (*calls)[0])
+	assert.Equal(t, []string{root, as}, (*calls)[0])
 }
 
 func TestApplyBackupExclusion_FailureKeepsExitCode(t *testing.T) {
@@ -139,9 +119,22 @@ func TestApplyBackupExclusion_FailureKeepsExitCode(t *testing.T) {
 	_, stderr := recordBackupExclude(t, []error{errors.New("/x/root: operation not supported")})
 
 	require.NoError(t, dbMigrateCmd.RunE(dbMigrateCmd, nil))
-	require.NoError(t, dbMigrateCmd.RunE(dbMigrateCmd, nil))
 	assert.Equal(t, "backup exclusion: /x/root: operation not supported\n", stderr.String())
-	assert.Equal(t, 1, strings.Count(stderr.String(), "backup exclusion:"))
+}
+
+func TestApplyBackupExclusion_MakeDirFailureLoggedExitZero(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	calls, stderr := recordBackupExclude(t, nil)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	// A file where the Library folder belongs makes MakePrivateDir fail.
+	require.NoError(t, os.WriteFile(filepath.Join(home, "Library"), []byte("x"), 0o600))
+
+	require.NoError(t, dbMigrateCmd.RunE(dbMigrateCmd, nil))
+	_, as := backupRootAndAS(t)
+	assert.Equal(t, 1, strings.Count(stderr.String(), "backup exclusion: "+as+": "), stderr.String())
+	assert.Len(t, *calls, 1, "Apply still runs for the other folder")
 }
 
 func TestApplyBackupExclusion_CreatesAS0700(t *testing.T) {
@@ -149,9 +142,22 @@ func TestApplyBackupExclusion_CreatesAS0700(t *testing.T) {
 	recordBackupExclude(t, nil)
 	_, as := backupRootAndAS(t)
 
-	applyBackupExclusion(&config.Config{})
+	applyBackupExclusion()
 	info, err := os.Stat(as)
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
+func TestApplyBackupExclusion_NoOpOffDarwin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	calls, stderr := recordBackupExclude(t, nil)
+	backupExclusionGOOS = "linux"
+	_, as := backupRootAndAS(t)
+
+	applyBackupExclusion()
+	_, err := os.Stat(as)
+	assert.True(t, os.IsNotExist(err), "Application Support must not be created off macOS: %v", err)
+	assert.Empty(t, *calls)
+	assert.Empty(t, stderr.String())
 }

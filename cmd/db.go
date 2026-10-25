@@ -23,7 +23,7 @@ var dbMigrateCmd = &cobra.Command{
 			return err
 		}
 		// The Desktop runs db migrate at every launch (BACKUP-01).
-		applyBackupExclusion(cfg)
+		applyBackupExclusion()
 		database, err := db.Open(cfg.DBPath())
 		if err != nil {
 			return fmt.Errorf("opening database: %w", err)

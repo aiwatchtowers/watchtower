@@ -2278,3 +2278,12 @@ Entry format:
 - weak-dimension: 7 — the guard shipped without a boundary (8 accepted / 9 refused) test
 - rule-gap: a guard helper whose comment says it reads "the same line" another parser picks must share that parser's line selection (here `cleanChatTitle` skips `---`/`#`/quote-only lines and strips `Title:`; `firstReplyLine` does not) — an invariant comment checked against both code paths
 - outcome: TBD
+
+## 2026-10-25 — feature/605-time-machine-exclusion (board #605: `internal/backupexclude` item-exclusion xattr on the data root, App Support and a custom `recordings_dir`, applied by `workspace init`, `db migrate` and the daemon start; BACKUP-01; panel: prosecutor (10) + codex (2) + one sonnet stand-in for the 3 specialists (11); judge verified by reading and grep, no runs) — verdict: changes-needed
+
+- contested (F1, downgraded from P0 to major): the TCC framing does not hold. The daemon already runs `os.ReadDir(cfg.RecordingsDir())` in `cleanupOrphanRecordings` every cleanup pass, so a `recordings_dir` under ~/Documents was reaching TCC before this PR. What holds is that no recorder writes there (`MeetingRecorderCenter.defaultRecordingsDirectory` is fixed). So BACKUP-01 locks in a folder that does not exist in practice, and that third entry also opens codex's symlink hole (C1). **Before grading a "new TCC prompt" finding, grep for an existing access to the same path in the same process.** [9]
+- false-positive (downgraded to nit): F6/S1, "the failure is lost on the Desktop path". The Desktop starts the daemon right after `db migrate`, the daemon runs the same exclusion, and its stderr is `daemon.log`. [9]
+- miss: codex alone saw that `MakePrivateDir` runs on !darwin, where `Apply` is a no-op, and creates `~/Library/...` there. A platform no-op has to cover the whole step, not only its last call. [8]
+- weak-dimension: 7. The entry-point guards compare against `backupDirs(cfg)` itself. Only a supporting test pins the literal folder list.
+- rule-gap (candidate, dim 7): *an inventory guard asserts literal expected values, never the output of the function under guard.*
+- outcome: TBD

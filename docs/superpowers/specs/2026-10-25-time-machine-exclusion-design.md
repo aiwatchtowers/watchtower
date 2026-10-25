@@ -4,7 +4,9 @@ Part of board group #595 (corporate data on the Mac must not be easy to carry
 away). Status: approved by the owner 2026-10-25 (ask #574) with the
 recommended answer to every question: Q1 (a) everyone, always, no switch;
 Q2 (a) the data folder, Application Support/Watchtower and a custom
-recordings folder, settings stay in backups; Q3 (a) the guide says how to
+recordings folder, settings stay in backups (narrowed at the final-PR review
+to two folders: no recorder honours a custom recordings folder, see §2);
+Q3 (a) the guide says how to
 delete old backups, nothing automatic. New inventory entry BACKUP-01 is
 approved with it. Plan:
 `docs/superpowers/plans/2026-10-25-time-machine-exclusion.md`. Siblings: #601
@@ -25,7 +27,7 @@ itself whenever a folder is recreated.
 Out of scope: other backup tools (Backblaze, Arq, Carbon Copy Cloner, corporate
 backup agents: some honour the same flag, most have their own lists, and #608's
 MDM profile can add paths for them), iCloud Drive (none of our folders sits in
-it unless the owner points `transcripts.recordings_dir` there), APFS local
+it), APFS local
 snapshots (whole-volume, on the same FileVault disk, kept ≤ 24 h), and backups
 made before this change (see Q3).
 
@@ -60,7 +62,7 @@ made before this change (see Q3).
 | Folder | What is in it | Created by |
 |---|---|---|
 | `<root>/<workspace>/` | `watchtower.db` + `-wal`/`-shm`, `agentlog.db`, `*.db.bak-*`, `memory/` (+ `.git`), `chat_files/`, `project_files/`, `workchat-attachments/`, `automation-drafts/`, `tmp/extract/`, `watchtower.log`, `daemon.log`, `sessions.log`, `dblock.jsonl`, `*_token.json` and other credential files, stamp/pid files | Go: `workspace init` (`cmd/workspace.go`), `db.Open`/`OpenSidecar` (`MkdirAll`), every writer under it |
-| `<as>/recordings/` (or `transcripts.recordings_dir`) | Meeting audio, transcript sidecars, `.meta` | Swift: `MeetingRecorderCenter`, `SystemAudioRecorder` |
+| `<as>/recordings/` | Meeting audio, transcript sidecars, `.meta` | Swift: `MeetingRecorderCenter`, `SystemAudioRecorder` |
 | `<as>/MobileHub/` | `hubstate.db`, `transport.db`, `SliceAssets/`, `transport-assets/` | Swift: `MobileHubService`, `HubSyncState`, `TransportStore` |
 | `<as>/` itself | `session-host.log`, `bin/` (the CLI copy), `code-languages.yaml` | Swift: `SessionHostClient`, `CLIBinaryStore`, `CodeIndexCenter` |
 | `~/.config/watchtower/` | `config.yaml` (settings, workspace names; no tokens) | Go: `workspace init` |
@@ -103,12 +105,17 @@ One function, `backupexclude.Apply(dirs []string) []error`
 (`internal/backupexclude`, darwin build tag; a no-op elsewhere), over:
 
 1. `<root>` — every workspace, current and future, as a whole;
-2. `<as>` — recordings, MobileHub, logs; created `0700` if missing so a
-   recording made before the daemon's first start is covered too;
-3. `cfg.RecordingsDir()` when it is set outside `<as>`.
+2. `<as>` — recordings, MobileHub, logs; created `0700` on macOS if missing so
+   a recording made before the daemon's first start is covered too.
 
-`~/.config/watchtower/` stays in backups (Q2): it holds settings, no content,
-and is the one thing worth restoring on a new Mac.
+Two folders only. `transcripts.recordings_dir` is not excluded: the Desktop
+recorder (`MeetingRecorderCenter`) never reads it and always writes
+`<as>/recordings`, so excluding the configured path would cover nothing real
+and add a lexical-path/symlink hole.
+
+`~/.config/watchtower/` stays in backups (Q2): it holds mostly settings (an
+unmigrated config can still carry a legacy `slack_token`), and is the one
+thing worth restoring on a new Mac.
 
 For each folder: resolve symlinks (`<root>` may be one, see
 `TestWorkspaceDirsWithDatabase_FollowsSymlinks`), read the attribute, and set it
@@ -127,7 +134,7 @@ Hooks, MCP servers and other commands do not call it: three entry points cover
 every install, and the check is a `getxattr` per folder (microseconds).
 
 A failure (an exotic filesystem, a folder owned by someone else) never fails
-the command: it is logged once per process as `backup exclusion: <dir>: <err>`
+the command: it is logged to stderr as `backup exclusion: <dir>: <err>`
 and the next start tries again.
 
 ### 4. What the owner sees
@@ -146,7 +153,7 @@ backup tools are told which two folders to exclude by hand.
   nothing; a deleted and recreated folder is excluded again; a symlinked
   `<root>` excludes its target.
 - `cmd` tests: `workspace init`, `db migrate` and the daemon start call `Apply`
-  with the three folders (a seam, no real attribute); a failing `Apply` does not
+  with the two folders (a seam, no real attribute); a failing `Apply` does not
   change the command's exit code.
 - New inventory entry **BACKUP-01** (the three entry points exclude `<root>` and
   `<as>`; the setting of Q1 if one is chosen).
@@ -171,5 +178,7 @@ backup tools are told which two folders to exclude by hand.
 
 - #608: the MDM profile adds the same folders as path exclusions (root-level,
   survives recreation) and covers third-party backup agents.
-- If #604 leaves any plaintext exception in a folder outside these three, it
+- If #604 leaves any plaintext exception in a folder outside these two, it
   joins the `Apply` list.
+- A configurable recordings folder must first be honoured by the recorder;
+  then the exclusion applies to its resolved target.

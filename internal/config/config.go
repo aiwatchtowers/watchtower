@@ -282,7 +282,7 @@ type TargetsConfig struct {
 // TranscriptsConfig holds settings for meeting transcript storage.
 type TranscriptsConfig struct {
 	AudioRetentionDays int    `mapstructure:"audio_retention_days"` // delete recording audio after N days (default 30); transcript text is kept forever
-	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the Desktop recorder writes rec_* files into; empty → the default computed by Config.RecordingsDir
+	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the daemon orphan cleanup scans for rec_* files; empty → the default computed by Config.RecordingsDir. The Desktop recorder does not read it (it always writes Application Support/Watchtower/recordings), so BACKUP-01 does not exclude it
 }
 
 // DayPlanConfig holds settings for the daily plan generation pipeline.
