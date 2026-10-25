@@ -23,10 +23,15 @@ package struct LearnPick: Equatable, Identifiable, Sendable {
     package let variant: LearnVariant
     /// false = the button becomes Turn on / Connect.
     package let requirementMet: Bool
-    /// Seen before this read, or recorded `in_use` by it.
-    package let seen: Bool
+    /// How it was seen before this read, `.inUse` when this read records it,
+    /// nil while unseen.
+    package let seenHow: LearnSeenHow?
 
     package var id: String { card.id }
+    package var seen: Bool { seenHow != nil }
+    /// Show again is offered only for a card the owner dismissed or acted on:
+    /// an in-use card would be recorded again at the next read.
+    package var canShowAgain: Bool { seenHow == .gotIt || seenHow == .action }
 }
 
 /// A See all section: the new cards, or one area's cards.
@@ -95,18 +100,17 @@ package enum LearnSelector {
 
     package static func select(_ input: LearnSelectorInput) -> LearnSelection {
         let cards = input.catalog.cards
-        let replaced = replacedIDs(cards)
         var recordInUse: [String] = []
         let picks = cards.map { card -> LearnPick in
-            let variant = variant(of: card, replaced: replaced[card.id] ?? [], input: input)
-            var seen = input.seen[card.id] != nil
+            let variant = variant(of: card, input: input)
+            var seenHow = input.seen[card.id]
             // An updated card shows even while its feature is in use: the change is the point.
-            if !seen, !variant.isUpdated, let signal = card.doneWhen, input.signals.contains(signal) {
+            if seenHow == nil, !variant.isUpdated, let signal = card.doneWhen, input.signals.contains(signal) {
                 recordInUse.append(card.id)
-                seen = true
+                seenHow = .inUse
             }
             let met = card.requires.isEmpty || input.metRequirements.contains(card.requires)
-            return LearnPick(card: card, variant: variant, requirementMet: met, seen: seen)
+            return LearnPick(card: card, variant: variant, requirementMet: met, seenHow: seenHow)
         }
         let ordered = sorted(picks, goals: input.goals)
         return LearnSelection(
@@ -117,24 +121,10 @@ package enum LearnSelector {
             sections: sections(ordered: ordered, guideOrder: picks))
     }
 
-    /// Every id each card replaces, through chains (C replaces B replaces A).
-    static func replacedIDs(_ cards: [LearnCard]) -> [String: Set<String>] {
-        let direct = Dictionary(cards.map { ($0.id, $0.replaces) }) { first, _ in first }
-        var result: [String: Set<String>] = [:]
-        for card in cards where !card.replaces.isEmpty {
-            var covered = Set<String>()
-            var queue = card.replaces
-            while let id = queue.popLast() {
-                guard id != card.id, covered.insert(id).inserted else { continue }
-                queue.append(contentsOf: direct[id] ?? [])
-            }
-            result[card.id] = covered
-        }
-        return result
-    }
-
-    private static func variant(of card: LearnCard, replaced: Set<String>, input: LearnSelectorInput) -> LearnVariant {
-        if replaced.contains(where: { input.seen[$0] != nil }) {
+    /// `replaces` already holds the whole chain (`internal/learn` expands it
+    /// through `retired.txt`).
+    private static func variant(of card: LearnCard, input: LearnSelectorInput) -> LearnVariant {
+        if card.replaces.contains(where: { input.seen[$0] != nil }) {
             return .updated(version: LearnVersion.badge(card.since), text: card.changed.isEmpty ? card.text : card.changed)
         }
         if let after = input.newAfter, let since = LearnVersion(card.since), since > after {

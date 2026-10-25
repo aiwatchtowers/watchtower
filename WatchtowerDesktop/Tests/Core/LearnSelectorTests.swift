@@ -114,10 +114,9 @@ final class LearnSelectorTests: XCTestCase {
         XCTAssertEqual(used.home.map(\.id), ["comm"])
     }
 
+    /// B replaced A and C replaced B; B is gone, and Go hands C's chain as
+    /// `replaces: [b, a]`: seeing A makes C an updated card.
     func testReplaceChain() {
-        XCTAssertEqual(
-            LearnSelector.replacedIDs([card("c", replaces: ["b"]), card("b", replaces: ["a"]), card("x")]),
-            ["c": ["b", "a"], "b": ["a"]])
         let cards = [card("c", since: "0.25.0", replaces: ["b", "a"])]
         let result = select(cards) { $0.seen = ["a": .gotIt] }
         XCTAssertEqual(result.home.first?.variant, .updated(version: "0.25", text: "c text"))

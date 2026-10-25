@@ -6,6 +6,7 @@
 package learn
 
 import (
+	_ "embed"
 	"errors"
 	"fmt"
 	"regexp"
@@ -43,7 +44,8 @@ type Card struct {
 }
 
 // Catalog is every card in guide order, and the retired ids: every id some
-// card's replaces names, sorted. A retired id is never a card again.
+// card's replaces names plus every id in retired.txt, sorted. A retired id is
+// never a card again.
 type Catalog struct {
 	Cards   []Card   `json:"cards"`
 	Retired []string `json:"retired"`
@@ -68,13 +70,20 @@ var (
 	optionalKeys = []string{"action", "changed", "done_when", "requires", "replaces"}
 )
 
-// Load parses and validates every card of the embedded guide. The error
-// joins every problem found, each naming its page and card.
+// retiredFile is the history of retired ids whose replacing card may be gone
+// (retired.txt: "<old> <new>" lines).
+//
+//go:embed retired.txt
+var retiredFile string
+
+// Load parses and validates every card of the embedded guide against the
+// retired history. The error joins every problem found, each naming its page
+// and card.
 func Load() (Catalog, error) {
-	return load(guide.Pages())
+	return load(guide.Pages(), retiredFile)
 }
 
-func load(pages []guide.Page) (Catalog, error) {
+func load(pages []guide.Page, history string) (Catalog, error) {
 	var errs []error
 	cards := []Card{}
 	for _, p := range pages {
@@ -96,12 +105,22 @@ func load(pages []guide.Page) (Catalog, error) {
 			}
 		}
 	}
+	replacedBy, histErrs := parseHistory(history)
+	errs = append(errs, histErrs...)
 	retired := map[string]bool{}
+	for old := range replacedBy {
+		retired[old] = true
+	}
 	for _, c := range cards {
 		for _, id := range c.Replaces {
 			retired[id] = true
 		}
 	}
+	live := map[string]bool{}
+	for _, c := range cards {
+		live[c.ID] = true
+	}
+	errs = append(errs, checkHistory(replacedBy, live, retired)...)
 	firstPage := map[string]string{}
 	for _, c := range cards {
 		if c.ID == "" {
@@ -113,8 +132,12 @@ func load(pages []guide.Page) (Catalog, error) {
 			firstPage[c.ID] = c.Page
 		}
 		if retired[c.ID] {
-			errs = append(errs, fmt.Errorf("%s: card %q: id is retired (another card replaces it): remove this card or give it a new id", c.Page, c.ID))
+			errs = append(errs, fmt.Errorf("%s: card %q: id is retired (a card or retired.txt replaces it): remove this card or give it a new id", c.Page, c.ID))
 		}
+	}
+	before := predecessors(replacedBy)
+	for i := range cards {
+		cards[i].Replaces = expandReplaces(cards[i], before)
 	}
 	cat := Catalog{Cards: cards, Retired: make([]string, 0, len(retired))}
 	for id := range retired {
@@ -125,6 +148,95 @@ func load(pages []guide.Page) (Catalog, error) {
 		return Catalog{}, errors.Join(errs...)
 	}
 	return cat, nil
+}
+
+// parseHistory reads retired.txt: "<old> <new>" lines, "#" comments and
+// blank lines skipped. It returns new by old.
+func parseHistory(history string) (map[string]string, []error) {
+	replacedBy := map[string]string{}
+	var errs []error
+	for n, line := range strings.Split(history, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		switch {
+		case len(fields) != 2:
+			errs = append(errs, fmt.Errorf("retired.txt:%d: %q is not \"<old-id> <new-id>\"", n+1, line))
+		case !idPattern.MatchString(fields[0]) || !idPattern.MatchString(fields[1]):
+			errs = append(errs, fmt.Errorf("retired.txt:%d: %q: ids are kebab-case", n+1, line))
+		case fields[0] == fields[1]:
+			errs = append(errs, fmt.Errorf("retired.txt:%d: %q replaces itself", n+1, fields[0]))
+		case replacedBy[fields[0]] != "":
+			errs = append(errs, fmt.Errorf("retired.txt:%d: %q is listed twice", n+1, fields[0]))
+		default:
+			replacedBy[fields[0]] = fields[1]
+		}
+	}
+	return replacedBy, errs
+}
+
+// checkHistory checks that each line's new id is a live card or a retired id
+// and that no chain of lines loops. A retired id that is still a card is
+// reported with the card.
+func checkHistory(replacedBy map[string]string, live, retired map[string]bool) []error {
+	var errs []error
+	olds := make([]string, 0, len(replacedBy))
+	for old := range replacedBy {
+		olds = append(olds, old)
+	}
+	sort.Strings(olds)
+	for _, old := range olds {
+		if next := replacedBy[old]; !live[next] && !retired[next] {
+			errs = append(errs, fmt.Errorf("retired.txt: %q is replaced by %q, which is neither a card nor a retired id", old, next))
+		}
+		visited := map[string]bool{old: true}
+		for id := replacedBy[old]; id != ""; id = replacedBy[id] {
+			if visited[id] {
+				errs = append(errs, fmt.Errorf("retired.txt: the chain from %q loops back to %q", old, id))
+				break
+			}
+			visited[id] = true
+		}
+	}
+	return errs
+}
+
+// predecessors lists, for each id of the history, the ids it replaced.
+func predecessors(replacedBy map[string]string) map[string][]string {
+	before := map[string][]string{}
+	for old, next := range replacedBy {
+		before[next] = append(before[next], old)
+	}
+	for _, olds := range before {
+		sort.Strings(olds)
+	}
+	return before
+}
+
+// expandReplaces is the card's replaces followed back through the history:
+// with "a b" in retired.txt, a card replacing [b] replaces [b, a], and with
+// "a c" the card c replaces [a].
+func expandReplaces(c Card, before map[string][]string) []string {
+	out := slices.Clone(c.Replaces)
+	seen := map[string]bool{c.ID: true}
+	for _, id := range out {
+		seen[id] = true
+	}
+	queue := append([]string{c.ID}, out...)
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		for _, old := range before[id] {
+			if !seen[old] {
+				seen[old] = true
+				out = append(out, old)
+				queue = append(queue, old)
+			}
+		}
+	}
+	return out
 }
 
 // parseCard reads a block body of "key: value" lines (blank lines skipped).

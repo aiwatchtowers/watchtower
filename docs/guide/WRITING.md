@@ -70,6 +70,7 @@ action: nav:inbox
 - `since: next` on a new card; the release stamps the version.
 - Optional: `action` (`nav:<screen>`, `connect:<source>`, `turnOn:<featureID>`, `chat:<prompt>`, `hotkey:<name>`; without it the button is **Read more**), `requires` (`feature:<id>` or `source:<name>`), `done_when` (a signal that means "already uses it").
 - A feature that changed gets a new card with `replaces: [old-id]` (list every id it supersedes) and may add `changed:` (one sentence on what changed); delete the old card.
+- Deleting a card that has `replaces: [a, b]` (a newer card replaced it in turn): add one line per id to `internal/learn/retired.txt` (`a <deleted-id>`), so those ids stay retired and the newer card's chain still reaches them.
 - A new `##` section that teaches nothing to try carries `<!-- learn: none -->`.
 - `go test ./internal/learn/` validates every card; `watchtower guide learn` lists them. The full vocabulary is in `internal/learn`.
 
