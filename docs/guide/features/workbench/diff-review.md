@@ -7,6 +7,36 @@ Branch review lets you read what an agent session changed, comment on lines, and
 Here you review before anything is committed, and the agent reads your comments by itself. The next round shows only what changed since, and keeps your Viewed marks for files that did not move.
 
 ## How it works
+<!-- learn
+id: diff-review-start
+title: Review what a session changed
+text: Press **Review** on a session's strip to read its diff, comment on lines and send them back as one round.
+area: development
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
+<!-- learn
+id: diff-review-approve
+title: Approve a branch that is done
+text: Press **Approve** in Branch review and the agent finishes the branch the way its methodology says.
+area: development
+level: next
+kind: feature
+since: next
+action: nav:projects
+-->
+<!-- learn
+id: diff-review-file-tree
+title: Read the diff by folder
+text: Branch review lists files as a folder tree with unviewed counts; open a hidden stretch or **Full file** in place.
+area: development
+level: next
+kind: tip
+since: next
+action: nav:projects
+-->
 
 **Review** on a session's strip, or **Review Branch** in its row menu, opens the **Branch review** pane and starts a round. At the top, an identity bar names the branch and its base (`feature/x → main`), the files and lines changed, the uncommitted edits, the worktree the session works in, and the targets the work is for. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones) and compares it with a base, the point where the branch left the default branch. The snapshot only writes git objects.
 
@@ -19,6 +49,16 @@ A round moves through three states: you collect drafts, then you close it with o
 **Approve** closes the round with no changes requested and tells the agent to finish the branch the way its methodology says. It needs no drafts (send or delete them first) and a session that still exists. A popover names what you may have skipped: unviewed chapters and Wrap-up items marked **Partly** or **Not done**. If earlier comments are still open, **Resolve N and approve** closes them too. A closed round shows **Approved** with the time.
 
 ### The AI overview
+<!-- learn
+id: diff-review-ai-overview
+title: Get an AI overview of the changes
+text: Press **Make overview**, or switch to **Deep**, for risks per file, a reading order and target coverage.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 The AI overview is a short summary of the round: whether the changes cover the linked targets, which files fall outside them, a risk mark per file and a reading order. Each overview is one strong-model call, saved per snapshot. The **Quick** / **Deep** switch in the toolbar decides when it runs:
 
@@ -29,6 +69,26 @@ The AI overview is a short summary of the round: whether the changes cover the l
 If it fails, the reason shows with **Retry**.
 
 ### Deep phases
+<!-- learn
+id: diff-review-chapter-risks
+title: See the risks in each chapter
+text: In **Deep**, each chapter lists what to look at from the AI overview; turn one into a comment or ask the agent.
+area: development
+level: power
+kind: feature
+since: next
+action: nav:projects
+-->
+<!-- learn
+id: diff-review-chapter-viewed
+title: Finish a chapter with ⌥⌘Return
+text: Press **Chapter viewed →** or ⌥⌘Return to mark a chapter's files Viewed and move to the next one.
+area: development
+level: power
+kind: tip
+since: next
+action: nav:projects
+-->
 
 **Deep** walks three phases: **1 Meaning**, **2 Chapters**, **3 Wrap-up**. **Next: Chapters** sits at the foot of Meaning and **Next: Wrap-up** at the foot of Chapters. Wrap-up has no verdict buttons of its own; use **Request changes** or **Approve** in the toolbar.
 
@@ -43,10 +103,30 @@ A lens is a set of review questions: **Correctness**, **Tests**, **Security**, *
 **Find Repeats…** in the toolbar's **More** menu (…) looks through your comments of the last 20 sent rounds for remarks you keep making. **Accept** writes a proposed rule into `.watchtower/review.md` under its lens; **Dismiss** drops it.
 
 ### Ask the agent
+<!-- learn
+id: diff-review-ask-agent
+title: Ask the agent about a diff line
+text: Select lines in Branch review and press ⇧⌘A to quote them into the session's chat beside the diff.
+area: development
+level: next
+kind: feature
+since: next
+action: nav:projects
+-->
 
 The session's chat opens beside the diff. Toggle it with the toolbar button or ⌥⌘C. Select lines, then choose **Ask agent** in the context menu or press ⇧⌘A: the lines are quoted into the chat's draft, which you finish and send.
 
 ### Go to definition
+<!-- learn
+id: diff-review-go-to-definition
+title: Jump to a definition from the diff
+text: ⌘-click a name in the diff, or press ⌃⌘J, to open its definition without leaving the review.
+area: development
+level: power
+kind: tip
+since: next
+action: nav:projects
+-->
 
 ⌘-click a name in the diff's new side, or press ⌃⌘J, to jump to its definition. ⇧⌘U shows all usages in a strip under the diff. A file the branch did not change opens in a read-only preview with **← Back to diff**.
 
@@ -55,6 +135,16 @@ The session's chat opens beside the diff. Toggle it with the toolbar button or �
 The agent can leave notes, shown in the diff and under **The agent's walkthrough**. It answers your comments; a reply shows as **Agent:** under the comment. Comments it fixed move to **Resolved by the agent**; **Reopen** puts one back for the next round.
 
 ### Undo a hunk
+<!-- learn
+id: diff-review-undo-hunk
+title: Undo one hunk of the agent's change
+text: Press **Undo** on a hunk in Branch review to revert those lines; the agent is told not to redo them.
+area: development
+level: power
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 **Undo** on a hunk in the diff reverts those lines in the folder at once, with no confirmation, and lists them under **Undone**. The agent is told and does not redo them without asking. Undo is off once the round is sent and while the agent works; binary, symlinked and very large files cannot be undone.
 
