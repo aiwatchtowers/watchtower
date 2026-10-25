@@ -101,9 +101,11 @@ type Policy struct {
 // Errors.
 func Normalize(raw map[string]any) Policy {
 	n := normalizer{p: Policy{Domain: Domain, ReservedNotEnforced: []string{}, Errors: []Problem{}}}
-	for _, k := range append(slices.Clone(Keys), ReservedKeys...) {
-		if _, ok := raw[k]; ok {
-			n.p.Managed = true
+	for _, keys := range [][]string{Keys, ReservedKeys} {
+		for _, k := range keys {
+			if _, ok := raw[k]; ok {
+				n.p.Managed = true
+			}
 		}
 	}
 	ks := &n.p.Keys
@@ -158,7 +160,7 @@ func connectionEntry(s string) string {
 	if isAbsPath(s) {
 		return ""
 	}
-	if _, ok := httpsEntry(s); ok {
+	if _, ok := parseEntry(s); ok {
 		return ""
 	}
 	return ProblemInvalidEntry
@@ -247,10 +249,23 @@ func isIntegral(v any) bool {
 
 func isAbsPath(s string) bool { return strings.HasPrefix(s, "/") }
 
-// httpsEntry parses an https:// URL with a host.
-func httpsEntry(s string) (*url.URL, bool) {
+// httpsURL parses an https:// URL with a host.
+func httpsURL(s string) (*url.URL, bool) {
 	u, err := url.Parse(s)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return nil, false
+	}
+	return u, true
+}
+
+// parseEntry parses an AllowedQuickConnections URL entry: https with a host,
+// no user info, no query or fragment, and a path that pathSafe accepts.
+func parseEntry(s string) (*url.URL, bool) {
+	u, ok := httpsURL(s)
+	if !ok || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
+		return nil, false
+	}
+	if !pathSafe(u.EscapedPath()) {
 		return nil, false
 	}
 	return u, true
@@ -289,16 +304,16 @@ func (p Policy) ConnectionAllowed(kind, rawURL, command string) bool {
 }
 
 func httpMatches(entry, rawURL string) bool {
-	eu, ok := httpsEntry(entry)
+	eu, ok := parseEntry(entry)
 	if !ok {
 		return false
 	}
-	cu, ok := httpsEntry(rawURL)
+	cu, ok := httpsURL(rawURL)
 	if !ok || !strings.EqualFold(eu.Host, cu.Host) {
 		return false
 	}
 	cp := cu.EscapedPath()
-	if hasDotSegment(cp) {
+	if !pathSafe(cp) {
 		return false
 	}
 	ep := eu.EscapedPath()
@@ -314,15 +329,17 @@ func httpMatches(entry, rawURL string) bool {
 	return cp == ep || strings.HasPrefix(cp, ep+"/")
 }
 
-// hasDotSegment refuses "." and ".." segments: the server would resolve them
-// out of the allowed path.
-func hasDotSegment(p string) bool {
-	for _, seg := range strings.Split(p, "/") {
-		if seg == "." || seg == ".." {
-			return true
+// pathSafe refuses an escaped path a server could resolve out of an allowed
+// prefix: a "." or ".." segment (also percent-encoded, e.g. %2e%2e or .%2E),
+// an encoded separator (%2f, %5c) or a backslash, or a bad escape.
+func pathSafe(escaped string) bool {
+	for _, seg := range strings.Split(escaped, "/") {
+		dec, err := url.PathUnescape(seg)
+		if err != nil || dec == "." || dec == ".." || strings.ContainsAny(dec, "/\\") {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // ShellAllowed reports whether automations may call shell().

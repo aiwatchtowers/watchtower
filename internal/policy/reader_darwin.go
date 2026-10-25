@@ -42,51 +42,86 @@ static CFStringRef wtString(const char *s) {
 */
 import "C"
 
-import (
-	"testing"
-	"unsafe"
-)
+import "unsafe"
 
-func init() {
-	// A test binary never reads this Mac's managed preferences: tests set the
-	// policy through SetReaderForTesting / policytest.Set.
-	if testing.Testing() {
-		return
-	}
-	reader = func() map[string]any {
-		return readForced(Domain, append(append([]string{}, Keys...), ReservedKeys...))
-	}
+// UseSystemReader makes every later policy read come from this Mac's managed
+// preferences. main calls it once at startup; a test binary never does, so
+// tests read the empty default or what policytest.Set gives them.
+func UseSystemReader() {
+	setReader(func() map[string]any {
+		return readForced(Domain, allKeys(), cfIsForced)
+	})
 }
 
-// unsupported stands for a value of a CF type the policy never uses (data,
-// date, …); Normalize reads it as a wrong type.
+// allKeys is every key the reader asks for: the v1 keys, then the reserved.
+func allKeys() []string {
+	return append(append([]string{}, Keys...), ReservedKeys...)
+}
+
+// unsupported stands for a value the policy cannot read: a CF type it never
+// uses (data, date, …), or a forced key whose value could not be copied.
+// Normalize reads it as a wrong type (fail closed).
 type unsupported struct{}
 
-// readForced returns the forced values of keys in domain. A value the person
-// wrote with `defaults write` is not forced and is left out (POLICY-01).
-func readForced(domain string, keys []string) map[string]any {
+// readForced returns the values of keys in domain that isForced reports as
+// forced. A value the person wrote with `defaults write` is not forced and is
+// left out (POLICY-01). Anything that cannot be read — the domain or key
+// string not allocated, a forced value copied as NULL — reads as
+// unsupported{}, never as absent. isForced is a seam: cfIsForced in
+// production, a fake in the positive-path test.
+func readForced(domain string, keys []string, isForced func(domain, key string) bool) map[string]any {
+	out := map[string]any{}
 	cdomain := cfString(domain)
 	if cdomain == 0 {
-		return map[string]any{}
+		for _, k := range keys {
+			out[k] = unsupported{}
+		}
+		return out
 	}
 	defer C.wtReleaseString(cdomain)
 	C.CFPreferencesAppSynchronize(cdomain)
 
-	out := map[string]any{}
 	for _, k := range keys {
-		ckey := cfString(k)
-		if ckey == 0 {
+		if !isForced(domain, k) {
 			continue
 		}
-		if C.wtIsForced(ckey, cdomain) != 0 {
-			if v := C.wtCopyValue(ckey, cdomain); v != 0 {
-				out[k] = fromCF(v)
-				C.CFRelease(v)
-			}
-		}
-		C.wtReleaseString(ckey)
+		out[k] = copyValue(cdomain, k)
 	}
 	return out
+}
+
+// copyValue copies and converts key's value; unsupported{} when it cannot.
+func copyValue(cdomain C.CFStringRef, key string) any {
+	ckey := cfString(key)
+	if ckey == 0 {
+		return unsupported{}
+	}
+	defer C.wtReleaseString(ckey)
+	v := C.wtCopyValue(ckey, cdomain)
+	if v == 0 {
+		return unsupported{}
+	}
+	defer C.CFRelease(v)
+	return fromCF(v)
+}
+
+// cfIsForced asks CoreFoundation whether key is forced (managed) in domain.
+// A string that cannot be allocated answers true, so the key is then read
+// and fails closed as unsupported{}.
+func cfIsForced(domain, key string) bool {
+	cdomain, ckey := cfString(domain), cfString(key)
+	if cdomain == 0 || ckey == 0 {
+		if cdomain != 0 {
+			C.wtReleaseString(cdomain)
+		}
+		if ckey != 0 {
+			C.wtReleaseString(ckey)
+		}
+		return true
+	}
+	defer C.wtReleaseString(cdomain)
+	defer C.wtReleaseString(ckey)
+	return C.wtIsForced(ckey, cdomain) != 0
 }
 
 // cfString creates a CFString the caller releases; 0 on failure.

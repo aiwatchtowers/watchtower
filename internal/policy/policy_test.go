@@ -104,28 +104,36 @@ func TestPolicy_AbsentKeysRestrictNothing(t *testing.T) {
 }
 
 func TestPolicy_ErrorsWrapErrNotAllowed(t *testing.T) {
-	restore := SetReaderForTesting(func() map[string]any {
-		return map[string]any{
-			KeyAllowedAIProviders:      []any{"claude", "ollama"},
-			KeyAllowedSources:          []any{},
-			KeyAllowedQuickConnections: []any{"https://mcp.example.com"},
-		}
+	p := Normalize(map[string]any{
+		KeyAllowedAIProviders:      []any{"claude", "ollama"},
+		KeyAllowedSources:          []any{},
+		KeyAllowedQuickConnections: []any{"https://mcp.example.com"},
 	})
-	t.Cleanup(restore)
 
-	err := ProviderError("codex")
+	err := p.ProviderError("codex")
 	assert.True(t, errors.Is(err, ErrNotAllowed))
 	assert.Equal(t, "policy: AI provider codex is not allowed by your organization (allowed: claude, ollama)", err.Error())
 
-	err = SourceError("jira")
+	err = p.SourceError("jira")
 	assert.True(t, errors.Is(err, ErrNotAllowed))
 	assert.Contains(t, err.Error(), "(allowed: none)")
 
-	err = ConnectionError("acme")
+	err = p.ConnectionError("acme")
 	assert.True(t, errors.Is(err, ErrNotAllowed))
 	assert.Contains(t, err.Error(), "Quick Connection acme is not allowed by your organization (allowed: https://mcp.example.com)")
 
 	err = ShellError()
 	assert.True(t, errors.Is(err, ErrNotAllowed))
 	assert.Equal(t, "policy: shell() in automations is not allowed by your organization", err.Error())
+}
+
+// TestPolicy_ErrorUsesItsSnapshot pins that the message lists the snapshot
+// that refused, not a later read.
+func TestPolicy_ErrorUsesItsSnapshot(t *testing.T) {
+	restore := SetReaderForTesting(func() map[string]any { return map[string]any{KeyAllowedSources: []any{"slack"}} })
+	t.Cleanup(restore)
+	p := Current()
+	inner := SetReaderForTesting(func() map[string]any { return map[string]any{KeyAllowedSources: []any{"linear"}} })
+	t.Cleanup(inner)
+	assert.Contains(t, p.SourceError("jira").Error(), "(allowed: slack)")
 }

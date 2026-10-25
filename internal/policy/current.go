@@ -9,11 +9,18 @@ import (
 // fresh enough that a changed profile applies within half a minute.
 const cacheTTL = 30 * time.Second
 
-// reader returns the forced values of Domain. The darwin+cgo build sets it to
-// the CoreFoundation reader outside test binaries; tests swap it through
-// SetReaderForTesting (policytest.Set), so no test reads this Mac's real
-// managed preferences.
+// reader returns the forced values of Domain. It reads nothing until main
+// calls UseSystemReader (the CoreFoundation reader on darwin+cgo), so a test
+// binary never reads this Mac's managed preferences; tests swap it through
+// SetReaderForTesting (policytest.Set).
 var reader = func() map[string]any { return map[string]any{} }
+
+// setReader installs r and drops the cache.
+func setReader(r func() map[string]any) {
+	cache.mu.Lock()
+	reader, cache.ok = r, false
+	cache.mu.Unlock()
+}
 
 var now = time.Now
 
@@ -36,19 +43,15 @@ func Current() Policy {
 	return cache.p
 }
 
-// SetReaderForTesting swaps the reader and drops the cache; restore puts the
-// previous reader back and drops the cache again. Other packages use
-// policytest.Set.
+// SetReaderForTesting is for tests only: it swaps the reader and drops the
+// cache; restore puts the previous reader back and drops the cache again.
+// Other packages' tests use policytest.Set; production code never calls it.
 func SetReaderForTesting(r func() map[string]any) (restore func()) {
 	cache.mu.Lock()
 	old := reader
-	reader, cache.ok = r, false
 	cache.mu.Unlock()
-	return func() {
-		cache.mu.Lock()
-		reader, cache.ok = old, false
-		cache.mu.Unlock()
-	}
+	setReader(r)
+	return func() { setReader(old) }
 }
 
 // SourceAllowed reports whether the current policy allows the source.

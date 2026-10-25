@@ -3,53 +3,104 @@
 package policy
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/policy/internal/cftest"
 )
 
-// TestPolicy01_UnforcedValueIgnored pins that a value written the way
-// `defaults write` writes it (user layer, not forced) is never policy. It
-// uses a throw-away domain, never the app's own, and a per-run key so
-// parallel runs never collide; the key is removed again (cfprefsd may keep
-// the one empty plist of the domain).
-func TestPolicy01_UnforcedValueIgnored(t *testing.T) {
-	b := make([]byte, 8)
-	_, err := rand.Read(b)
-	require.NoError(t, err)
-	const domain = "com.watchtower.policytest"
-	key := KeyAllowedSources + hex.EncodeToString(b)
-	t.Cleanup(func() { setAppValue(domain, key, nil) })
+func alwaysForced(string, string) bool { return true }
 
-	setAppValue(domain, key, []any{"slack"})
-	require.Equal(t, []any{"slack"}, copyAppValue(domain, key), "the user value was written")
-
-	assert.Empty(t, readForced(domain, []string{key}))
+// tempDomain returns an absolute-path application id under t.TempDir():
+// CFPreferences then writes <domain>.plist there, never under
+// ~/Library/Preferences. Cleanup removes every key the test wrote and
+// checks nothing landed in ~/Library/Preferences.
+func tempDomain(t *testing.T, keys ...string) string {
+	t.Helper()
+	domain := filepath.Join(t.TempDir(), "policytest")
+	t.Cleanup(func() {
+		for _, k := range keys {
+			cftest.SetAppValue(domain, k, nil)
+		}
+		home, err := os.UserHomeDir()
+		require.NoError(t, err)
+		entries, err := os.ReadDir(filepath.Join(home, "Library", "Preferences"))
+		require.NoError(t, err)
+		for _, e := range entries {
+			assert.False(t, strings.Contains(e.Name(), "policytest"), "test wrote %s into ~/Library/Preferences", e.Name())
+		}
+	})
+	return domain
 }
 
-// TestPolicy_TestBinaryNeverReadsRealPreferences pins that the CoreFoundation
-// reader is not installed in a test binary.
+// TestPolicy01_UnforcedValueIgnored pins that a value written the way
+// `defaults write` writes it (user layer, not forced) is never policy.
+func TestPolicy01_UnforcedValueIgnored(t *testing.T) {
+	domain := tempDomain(t, KeyAllowedSources)
+	cftest.SetAppValue(domain, KeyAllowedSources, []any{"slack"})
+	_, err := os.Stat(domain + ".plist")
+	require.NoError(t, err, "the user value lands next to the absolute-path domain")
+	require.Equal(t, map[string]any{KeyAllowedSources: []any{"slack"}},
+		readForced(domain, []string{KeyAllowedSources}, alwaysForced), "the user value was written")
+
+	assert.Empty(t, readForced(domain, allKeys(), cfIsForced))
+}
+
+// TestPolicy01_ForcedValuesAreRead is the positive path through a fake
+// forced predicate (a real forced value needs an installed profile, a manual
+// check): every forced key is read and converted, CFBoolean apart from the
+// number 1, and a forced key with no value fails closed as unsupported{}.
+func TestPolicy01_ForcedValuesAreRead(t *testing.T) {
+	values := map[string]any{
+		KeyAllowedSources:            []any{"slack", []any{true, int64(3)}},
+		KeyMobileSync:                "workbench_only",
+		KeyAllowAutomationShell:      int64(1),
+		KeyAllowClaudeAITools:        false,
+		KeyPurgeRevokedData:          true,
+		KeyRetentionDays:             2.5,
+		KeyBulkReadLimits:            map[string]any{"messages": int64(1000), "nested": map[string]any{}},
+		KeyAllowedAIProviders:        []byte("data"),
+		KeyRequireDatabaseEncryption: "ünïcode",
+	}
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	domain := tempDomain(t, keys...)
+	for k, v := range values {
+		cftest.SetAppValue(domain, k, v)
+	}
+
+	forcedSet := map[string]bool{}
+	for _, k := range keys {
+		forcedSet[k] = true
+	}
+	forcedSet[KeyAllowedQuickConnections] = true // forced, but no value
+	got := readForced(domain, allKeys(), func(_, k string) bool { return forcedSet[k] })
+
+	want := map[string]any{}
+	for k, v := range values {
+		want[k] = v
+	}
+	want[KeyAllowedAIProviders] = unsupported{}
+	want[KeyAllowedQuickConnections] = unsupported{}
+	assert.Equal(t, want, got)
+
+	p := Normalize(got)
+	assert.False(t, p.ShellAllowed(), "an integer 1 from a profile is a wrong type")
+	assert.Equal(t, []string{}, p.Keys.AllowedAIProviders, "an unsupported CF type fails closed")
+	assert.Equal(t, []string{}, p.Keys.AllowedQuickConnections, "a forced key without a value fails closed")
+}
+
+// TestPolicy_TestBinaryNeverReadsRealPreferences pins that nothing installs
+// the CoreFoundation reader in a test binary: only main calls
+// UseSystemReader.
 func TestPolicy_TestBinaryNeverReadsRealPreferences(t *testing.T) {
 	assert.Empty(t, reader())
-}
-
-func TestPolicy_ConvertTypes(t *testing.T) {
-	assert.Equal(t, true, roundTripCF(true))
-	assert.Equal(t, false, roundTripCF(false))
-	assert.Equal(t, int64(1), roundTripCF(int64(1)), "the number 1 is a number, not a boolean")
-	assert.Equal(t, 2.5, roundTripCF(2.5))
-	assert.Equal(t, "", roundTripCF(""))
-	assert.Equal(t, "https://mcp.example.com/ü", roundTripCF("https://mcp.example.com/ü"))
-	assert.Equal(t, []any{"slack", []any{true, int64(3)}}, roundTripCF([]any{"slack", []any{true, int64(3)}}))
-	assert.Equal(t, map[string]any{"messages": int64(1000), "nested": map[string]any{}},
-		roundTripCF(map[string]any{"messages": int64(1000), "nested": map[string]any{}}))
-	assert.Equal(t, unsupported{}, roundTripCF([]byte("data")))
-
-	p := Normalize(map[string]any{KeyAllowAutomationShell: roundTripCF(int64(1))})
-	assert.False(t, p.ShellAllowed(), "an integer 1 from a profile is a wrong type")
-	p = Normalize(map[string]any{KeyAllowedSources: roundTripCF([]byte("x"))})
-	assert.Equal(t, []string{}, p.Keys.AllowedSources)
+	assert.False(t, Current().Managed)
 }

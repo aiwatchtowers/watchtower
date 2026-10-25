@@ -603,6 +603,41 @@
           }
         ]
       }
+    },
+    {
+      "name": "quick_connections_query_fragment_userinfo_invalid",
+      "raw": {
+        "AllowedQuickConnections": [
+          "https://mcp.example.com/api?x=1",
+          "https://mcp.example.com/api#frag",
+          "https://mcp.example.com/api?",
+          "https://user@mcp.example.com/",
+          "https://mcp.example.com/a/%2e%2e/b",
+          "https://mcp.example.com/api"
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": [
+            "https://mcp.example.com/api"
+          ],
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedQuickConnections",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
     }
   ],
   "connection_cases": [
@@ -821,6 +856,126 @@
       "url": "",
       "command": "/usr/local/bin/acme-mcp",
       "want": false
+    },
+    {
+      "name": "encoded_dot_dot_lower_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/%2e%2e/admin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "encoded_dot_dot_upper_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/%2E%2E/admin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "encoded_dot_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/%2e/x",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "mixed_dot_encoded_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/.%2e/admin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "mixed_encoded_dot_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/%2e./admin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "encoded_slash_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/..%2fadmin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "encoded_slash_upper_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api%2F..%2Fadmin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "encoded_backslash_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/..%5cadmin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "literal_backslash_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/..\\admin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "bad_escape_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/%zz",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "dot_in_name_ok",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/v1.2/x",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "connection_query_ok",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/v1?x=1",
+      "command": "",
+      "want": true
     }
   ]
 }

@@ -43,9 +43,9 @@ const (
 // whether a forced value decides the switch, on its value. A seam for tests.
 var policySwitch = policy.PurgeRevokedData
 
-// Enabled returns the effective purge switch and its origin: a managed
-// policy first,
-// then the owner's privacy.purge_revoked_data setting, then the build default.
+// Enabled returns the effective purge switch and its origin: a managed policy
+// first, then the owner's privacy.purge_revoked_data setting, then the build
+// default.
 func Enabled(cfg *config.Config) (bool, Origin) {
 	if on, set := policySwitch(); set {
 		return on, OriginPolicy
