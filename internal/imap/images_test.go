@@ -20,7 +20,7 @@ var (
 
 // imageRawMessage is multipart/mixed: alternative (text/plain, related
 // (text/html, inline PNG with a Content-ID)), an attached JPEG, a PDF, and
-// an inline GIF with a filename.
+// an inline GIF with a filename and a Content-ID.
 func imageRawMessage(from string) string {
 	enc := func(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 	return strings.ReplaceAll(fmt.Sprintf(`From: %s
@@ -68,6 +68,7 @@ JVBERi0=
 --mix
 Content-Type: image/gif
 Content-Transfer-Encoding: base64
+Content-ID: <gif@example.com>
 Content-Disposition: inline; filename="small.gif"
 
 %s
@@ -84,7 +85,7 @@ func TestIMAPImageParts_WalkOrder(t *testing.T) {
 	want := []ImagePart{
 		{Index: 0, MediaType: "image/png", ContentID: "logo@example.com", Size: int64(len(logoPNG))},
 		{Index: 1, Filename: "photo.jpg", MediaType: "image/jpeg", Size: int64(len(photoJPG))},
-		{Index: 2, Filename: "small.gif", MediaType: "image/gif", Size: int64(len(smallGIF))},
+		{Index: 2, Filename: "small.gif", MediaType: "image/gif", ContentID: "gif@example.com", Size: int64(len(smallGIF))},
 	}
 	if fmt.Sprint(images) != fmt.Sprint(want) {
 		t.Fatalf("images = %+v, want %+v", images, want)
@@ -152,10 +153,13 @@ func TestIMAPSync_RecordsImagesNeverLinks(t *testing.T) {
 		}
 		got = append(got, s)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	want := []string{
 		fmt.Sprintf("image|img:0|cid:logo@example.com|image/png|1|%d", uid),
 		fmt.Sprintf("image|img:1|photo.jpg|image/jpeg|1|%d", uid),
-		fmt.Sprintf("image|img:2|small.gif|image/gif|1|%d", uid),
+		fmt.Sprintf("image|img:2|cid:gif@example.com small.gif|image/gif|1|%d", uid),
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("media rows = %v, want %v (images only, no links)", got, want)

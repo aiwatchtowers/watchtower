@@ -160,7 +160,23 @@ func mediaRows(t *testing.T, d *db.DB, kind string) []string {
 		}
 		out = append(out, s)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return out
+}
+
+func TestMailImageName_InlineKeepsFilename(t *testing.T) {
+	for _, c := range []struct{ file, cid, want string }{
+		{"photo.jpg", "", "photo.jpg"},
+		{"", "logo@example.com", "cid:logo@example.com"},
+		{"image001.png", "logo@example.com", "cid:logo@example.com image001.png"},
+		{"", "", ""},
+	} {
+		if got := mailImageName(c.file, c.cid); got != c.want {
+			t.Errorf("mailImageName(%q, %q) = %q, want %q", c.file, c.cid, got, c.want)
+		}
+	}
 }
 
 func syncImageMailbox(t *testing.T, internal time.Time, from string, startAt time.Time) *db.DB {

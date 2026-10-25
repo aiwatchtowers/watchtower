@@ -55,6 +55,8 @@ func TestMailJunk_SignatureLogoSkipped(t *testing.T) {
 	inline := e.gmailImage(acct, "m3", "part:3", "cid:sig@example.com", noisePNG(t, 56, 56, 3))
 	screenshot := e.gmailImage(acct, "m4", "part:4", "screenshot.png", shot)
 	bigInline := e.gmailImage(acct, "m5", "part:5", "cid:paste@example.com", noisePNG(t, 230, 230, 4))
+	// An inline part with a filename too: junk on first sight.
+	namedInline := e.gmailImage(acct, "m6", "part:6", "cid:sig2@example.com image002.png", noisePNG(t, 56, 56, 5))
 
 	st := e.run()
 
@@ -65,10 +67,11 @@ func TestMailJunk_SignatureLogoSkipped(t *testing.T) {
 	assert.True(t, strings.HasPrefix(e.row(inline).ContentKey, "sha256:"))
 	assert.Equal(t, "ok", e.row(screenshot).Status, "an attached 200 KiB screenshot is described")
 	assert.Equal(t, "ok", e.row(bigInline).Status, "an inline image over 30 KiB is described")
+	assert.Equal(t, "skipped_junk", e.row(namedInline).Status, "a small inline image with a filename")
 	assert.Equal(t, "gmail", e.row(screenshot).KBSource)
 	imgCalls, _ := e.gen.calls()
 	assert.Equal(t, 3, imgCalls)
-	assert.Equal(t, 2, st.Skipped)
+	assert.Equal(t, 3, st.Skipped)
 }
 
 func TestMailJunk_SameParentIsNoRepeat(t *testing.T) {
@@ -77,7 +80,8 @@ func TestMailJunk_SameParentIsNoRepeat(t *testing.T) {
 	require.NoError(t, err)
 	a := e.gmailImage(acct, "m1", "part:1", "a.png", nil)
 	e.exec(`UPDATE media_items SET content_key = 'sha256:abc' WHERE id = ?`, a)
-	it := db.MediaItem{ID: a + 100, ParentKind: "gmail", ParentKey: db.MediaParent{Kind: "gmail", GmailAccountID: acct, GmailMessageID: "m1"}.Key(), Name: "b.png"}
+	p := db.MediaParent{Kind: "gmail", GmailAccountID: acct, GmailMessageID: "m1"}
+	it := db.MediaItem{ID: a + 100, ParentKind: "gmail", ParentKey: p.Key(), Scope: p.Scope(), Name: "b.png"}
 
 	junk, err := MailJunk(context.Background(), e.d, it, 50<<10, "abc")
 	require.NoError(t, err)
@@ -86,6 +90,58 @@ func TestMailJunk_SameParentIsNoRepeat(t *testing.T) {
 	junk, err = MailJunk(context.Background(), e.d, it, 50<<10, "abc")
 	require.NoError(t, err)
 	assert.True(t, junk)
+	it.Scope = "gmail:" + strconv.FormatInt(acct+1, 10)
+	junk, err = MailJunk(context.Background(), e.d, it, 50<<10, "abc")
+	require.NoError(t, err)
+	assert.False(t, junk, "bytes seen in another account are no repeat")
+}
+
+func TestMailJunk_RepeatScopedByAccount(t *testing.T) {
+	e := newEnv(t)
+	e.p.Openers["gmail"] = e.op
+	e.p.Openers["imap"] = e.op
+	gacct, err := e.d.CreateGoogleAccount(db.GoogleAccount{Email: "me@example.com", Label: "A"})
+	require.NoError(t, err)
+	iacct, err := e.d.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.org",
+		Host: "127.0.0.1", Port: 993, Security: "ssl", Folder: "INBOX"})
+	require.NoError(t, err)
+	img := noisePNG(t, 56, 56, 1)
+	g := e.gmailImage(gacct, "m1", "part:1", "image001.png", img)
+	e.op.data["img:0"] = img
+	m := db.ImapMessage{AccountID: iacct, UID: 7, UIDValidity: 1, FromEmail: "a@example.com", ToJSON: "[]", CcJSON: "[]",
+		InternalDate: time.Now().UTC().Format(time.RFC3339)}
+	require.NoError(t, e.d.UpsertImapMessageMedia(context.Background(), m, m.InternalDate, false,
+		[]db.MediaFound{{Kind: "image", Locator: "img:0", Name: "image001.png", MediaType: "image/png"}}))
+	var i int64
+	require.NoError(t, e.d.QueryRow(`SELECT id FROM media_items WHERE parent_kind = 'imap'`).Scan(&i))
+
+	e.run()
+
+	assert.Equal(t, "ok", e.row(g).Status)
+	assert.Equal(t, "ok", e.row(i).Status, "the same bytes in another account are described, not junk")
+	imgCalls, _ := e.gen.calls()
+	assert.Equal(t, 2, imgCalls)
+}
+
+func TestPipeline_SourceOffWaitsWithoutAttempt(t *testing.T) {
+	e := newEnv(t)
+	img := noisePNG(t, 64, 64, 1)
+	id := e.image("1:C1", "1758000000.000100", "F1", img)
+	e.op.errs["F1"] = fmt.Errorf("account: %w", ErrSourceOff)
+
+	st := e.run()
+	r := e.row(id)
+	assert.Equal(t, "pending", r.Status, "the row waits as it is")
+	assert.Equal(t, 0, r.Attempts, "no attempt is spent")
+	assert.Empty(t, r.Error)
+	assert.Equal(t, 0, st.Failed)
+	pending, err := e.p.HasPending(context.Background())
+	require.NoError(t, err)
+	assert.True(t, pending, "listed again next cycle")
+
+	delete(e.op.errs, "F1")
+	e.run()
+	assert.Equal(t, "ok", e.row(id).Status, "described once the source is back")
 }
 
 type fakeGmailSource struct {
@@ -122,6 +178,9 @@ func TestGmailOpener_MapsErrors(t *testing.T) {
 	src.err = gmail.ErrImagePartTooLarge
 	_, _, err = o.Open(context.Background(), it, 1<<20)
 	assert.ErrorIs(t, err, ErrTooLarge)
+	off := GmailOpener{Client: func(context.Context, int64) (GmailImageSource, error) { return nil, ErrSourceOff }}
+	_, _, err = off.Open(context.Background(), it, 1<<20)
+	assert.ErrorIs(t, err, ErrSourceOff, "an off source passes through to the pass")
 	it.Locator = "img:0"
 	_, _, err = o.Open(context.Background(), it, 1<<20)
 	assert.ErrorIs(t, err, ErrGone)

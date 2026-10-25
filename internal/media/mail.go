@@ -28,18 +28,20 @@ const (
 	maxMailMessage = 2 * maxMediaDownload
 )
 
-// MailJunk reports whether a mail image is junk: an inline image (its name
-// cid:<id>, see the Gmail/IMAP discovery) of at most 30 KiB, or bytes
-// (sha, the hex sha256 of the downloaded bytes) already on an item of
-// another mail parent — the signature logo every mail of a sender carries.
+// MailJunk reports whether a mail image is junk: an inline image (a part
+// with a Content-ID, recorded with the name "cid:<id>" or
+// "cid:<id> <filename>", see the Gmail/IMAP discovery) of at most 30 KiB,
+// or bytes (sha, the hex sha256 of the downloaded bytes) already on an item
+// of another mail parent of the same account (scope) — the signature logo
+// every mail of a sender carries.
 func MailJunk(ctx context.Context, q db.ContextQueryer, it db.MediaItem, size int64, sha string) (bool, error) {
 	if strings.HasPrefix(it.Name, "cid:") && size <= mailInlineJunkMax {
 		return true, nil
 	}
 	var one int
 	err := q.QueryRowContext(ctx, `SELECT 1 FROM media_items
-		WHERE content_key = ? AND parent_kind IN ('gmail', 'imap') AND parent_key <> ? LIMIT 1`,
-		"sha256:"+sha, it.ParentKey).Scan(&one)
+		WHERE content_key = ? AND scope = ? AND parent_kind IN ('gmail', 'imap') AND parent_key <> ? LIMIT 1`,
+		"sha256:"+sha, it.Scope, it.ParentKey).Scan(&one)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
@@ -89,7 +91,9 @@ type IMAPMessageSource interface {
 }
 
 // IMAPOpener opens IMAP image parts (locator img:<index>): it dials the
-// account afresh, refuses a folder whose UIDVALIDITY changed since the row
+// account afresh for every image (one connection and login per item — the
+// pass is sequential and mail images are few; a failed login there updates
+// the account's auth state as the syncer's does), refuses a folder whose UIDVALIDITY changed since the row
 // was recorded (ErrGone: its UIDs mean other messages now), fetches the raw
 // message into memory and walks to the index-th image part.
 type IMAPOpener struct {

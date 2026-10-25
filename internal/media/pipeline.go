@@ -479,6 +479,8 @@ func (r *run) image(ctx context.Context, it db.MediaItem) outcome {
 		return terminal("unreachable", "not_found")
 	case errors.Is(err, ErrTooLarge):
 		return terminal("too_large", "too_large")
+	case errors.Is(err, ErrSourceOff):
+		return outcome{} // waits, no attempt spent: listed again next cycle
 	case err != nil:
 		return failed(err)
 	}

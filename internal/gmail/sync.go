@@ -370,18 +370,24 @@ func (s *Syncer) fromOwner(from string) bool {
 }
 
 // mediaFound turns a message's image parts into media rows (locator
-// part:<partID>); a part without a filename carries its Content-ID in the
-// name as cid:<id>, which the pass's mail junk rule reads. Mail links are
-// never recorded.
+// part:<partID>). A part with a
+// Content-ID (an inline image) is named "cid:<id>", followed by " " and
+// its filename when it has one; the pass's mail junk rule reads the cid:
+// prefix. Mail links are never recorded.
 func mediaFound(images []ImagePart) []db.MediaFound {
 	out := make([]db.MediaFound, 0, len(images))
 	for _, im := range images {
-		name := im.Filename
-		if name == "" && im.ContentID != "" {
-			name = "cid:" + im.ContentID
-		}
+		name := mailImageName(im.Filename, im.ContentID)
 		out = append(out, db.MediaFound{Kind: "image", Locator: "part:" + im.PartID, Name: name,
 			MediaType: im.MediaType, Size: im.Size})
 	}
 	return out
+}
+
+// mailImageName is a mail image row's name (see mediaFound).
+func mailImageName(filename, contentID string) string {
+	if contentID == "" {
+		return filename
+	}
+	return strings.TrimSpace("cid:" + contentID + " " + filename)
 }
