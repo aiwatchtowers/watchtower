@@ -7,6 +7,16 @@ When an agent asks you to review a spec or a plan, a second, independent agent h
 A plan can read well and still drift from your idea: it answers a question you never asked, or settles a choice you never made. The reviewer looks for exactly that, so you spend your time on the places that need a human.
 
 ## How it works
+<!-- learn
+id: spec-review-reviewer
+title: Have specs checked against your words
+text: A spec or plan the agent sends for review comes with an independent reviewer's findings against what you said.
+area: development
+level: next
+kind: feature
+since: next
+action: nav:projects
+-->
 
 The reviewer starts at once when the agent files a review ask for a spec or a plan. It reads the document, the session's conversation, your answers to earlier asks, the task and its comments, the spec's Decisions section and any linked mockups. It also reads the code, read-only. It cannot change anything and the ask is filed whether or not it finishes.
 
@@ -15,6 +25,16 @@ It checks every claim against a quote. A finding whose quote it cannot show in t
 Only your comments reach the agent. The reviewer's notes and your marks stay on your side until you send the round.
 
 ## Using it
+<!-- learn
+id: spec-review-findings
+title: Go through the reviewer's findings
+text: Open the review ask and mark each finding **Fine as is** or **Comment**, then send the round or **Approve**.
+area: development
+level: next
+kind: tip
+since: next
+action: nav:projects
+-->
 
 Open the review ask. The drawer shows three steps.
 

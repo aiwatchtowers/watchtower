@@ -31,6 +31,16 @@ Cards show the status, title, number, priority and badges: a blue bubble for unr
 The search field in the Board header matches title or intent. `#163` finds target 163 only; a bare `163` also finds titles containing it.
 
 ### Add a task
+<!-- learn
+id: board-new-task
+title: Add a task to the board
+text: Press **New Task** in the Board header, type a title and press ⌘↩ to file it.
+area: development
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 **New Task** in the Board header opens a panel; a card's right-click **New Sub-task…** adds one under it.
 
@@ -42,12 +52,32 @@ The search field in the Board header matches title or intent. `#163` finds targe
 **Create more** keeps the panel open with the same parent and chips for the next task.
 
 ### Switch to Kanban
+<!-- learn
+id: board-kanban
+title: See the board as Kanban
+text: Use the **List | Kanban** switch to lay tasks out as columns, one lane per feature, and drag to change status.
+area: development
+level: next
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 The **List | Kanban** switch lays tasks out as columns. By default each top-level feature is a lane. The **Lanes** menu switches between **By group** and **None** (flat columns).
 
 Drag a card to another column to change its status. In lanes a card moves only between the columns of its own lane; use **Move to…** to change its feature.
 
 ### Name your Kanban columns
+<!-- learn
+id: board-columns
+title: Name your own Kanban columns
+text: Right-click a Kanban column header to rename it, add a column or give agents a description to follow.
+area: development
+level: power
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 Edit columns on the Kanban's header row; each change saves at once. Right-click a column header, or click the **…** that appears on hover:
 
@@ -70,18 +100,48 @@ You can rename the title, change status and priority from the chips, edit the de
 Drag the panel's edge to resize it (360 to 720 points).
 
 ### Start work
+<!-- learn
+id: board-work-on-it
+title: Hand a target to the agent
+text: Press **Work on It** on a card and a session starts on that target; on a feature it works the tasks in turn.
+area: development
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 **Work on It** (the play button on a card, or in the panel) starts a session of the default agent named after the target. A target in To Do moves to In Progress once the session runs. If the target already has a session, the button opens it instead.
 
 On a feature, the agent works its sub-tasks one after another. With the default methodology it skips blocked ones, ones waiting for you, and ones already in progress or in review.
 
 ### Group and move targets
+<!-- learn
+id: board-open-group
+title: Focus on one feature
+text: Double-click a Kanban lane header, or press **Open group** in a feature's panel, to see that feature alone.
+area: development
+level: next
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 Drag a target onto another to put it under that target, or right-click a card for **Move to** and **Move to Top Level**. A target can never go under itself or its own sub-tasks.
 
 To look at one feature alone, click **Open group** in its panel, double-click its Kanban lane header, or right-click it in the list for **Open Group**. A path bar reads **Board › #249 Title › #252 Title**; **Leave group** goes up one level.
 
 ### Control the archive
+<!-- learn
+id: board-archive
+title: Archive closed targets
+text: Choose **Archive Closed Targets Now** in the **…** menu to clear done work; **Archive (K)** shows it again.
+area: development
+level: power
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 In the **…** menu of the workbench's title row:
 
@@ -92,6 +152,16 @@ In the **…** menu of the workbench's title row:
 **Archive (K)** next to **Show done** shows the K archived targets, dimmed and tagged **Archived**. To restore one for good, set its status back to an open one.
 
 ### Read the drift line
+<!-- learn
+id: board-drift-fix
+title: Bring the board in step with git
+text: When the **Board drift** line shows, press **Fix** and an agent session puts the board right.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 When something disagrees, a line under the Board header reads **Board drift: N out of step with git**, with findings that are only worth a look listed as "to review". Click it for the list and click an entry to open that target. The refresh button checks again; while the Board is open it re-checks by itself, at most every 30 seconds.
 

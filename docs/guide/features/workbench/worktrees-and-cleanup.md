@@ -11,6 +11,36 @@ The price is disk: one worktree with a warm build can take several GB, and each 
 ## How it works
 
 ### Where a new session starts
+<!-- learn
+id: worktrees-parallel-agents
+title: Run agents side by side in worktrees
+text: Start a second session while an agent works and it gets its own git worktree, so they never clash.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
+<!-- learn
+id: worktrees-starting-at-once
+title: A new session shows up at once
+text: A new session appears in the list right away and reads **Starting…** while its worktree is made.
+area: development
+level: next
+kind: tip
+since: next
+action: nav:projects
+-->
+<!-- learn
+id: worktrees-setup-command
+title: Prepare each new worktree
+text: Set **Worktree Setup Command…** in the **…** menu, such as a dependency install, to run before the agent starts.
+area: development
+level: power
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 A plain new session, or **Work on It** on a card, starts in the folder. If a live agent already works in the folder, it starts in a new worktree instead. A worktree is a branch named `wt/<name>`, created under `.claude/worktrees/` in the repository from the folder's current commit. Uncommitted changes of the folder are not carried over. The session appears at once and reads **Starting…** while its worktree is made.
 
@@ -32,6 +62,16 @@ Cleanup is Watchtower's own command, because an agent in auto mode is blocked fr
 Each item is either ticked for removal or greyed out with the reason it is kept. Nothing is forced.
 
 ## Using it
+<!-- learn
+id: worktrees-clean-up
+title: Free disk from old worktrees
+text: Choose **Clean Up Old Worktrees…** in the **…** menu; anything that still holds work is kept.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 - **Delete…** on a session row (just **Delete Session** when there is nothing to clean) asks "Checking what this session left…" first. **Delete and Clean Up** removes the session and the worktrees and branches that can go; **Delete Only** leaves them. The quick ✕ and ⌘⌫ never clean up.
 - **Clean Up…** in the row menu cleans up without deleting the session. Untick anything you want to keep.

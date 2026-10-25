@@ -22,6 +22,16 @@ Differences from Claude Code you may notice:
 - **Hand to Session** (⌥⌘↩ from a code question) works with either agent.
 
 ## Using it
+<!-- learn
+id: codex-agent
+title: Run Codex as the agent
+text: Set **Default Agent** to Codex in **Settings → System → Workbench**, or pick Codex from the new-session menu.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 1. Install Codex. Set **Default Agent** to Codex if you want it by default.
 2. In a workbench that predates Codex, click **Set up Codex** in the notice next to the workbench name or in the **…** menu. Use **Repair install** only if Codex hooks are not trusted.

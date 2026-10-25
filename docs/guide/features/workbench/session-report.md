@@ -17,6 +17,16 @@ Pull request details need the GitHub CLI (`gh`). Without it, only whether a bran
 ## Using it
 
 ### Read the Report view
+<!-- learn
+id: session-report-view
+title: See what a session got done
+text: Press **Report** on a session's strip for its open asks, tasks, pull requests and the agent's last word.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 The **Report** button on a session's strip shows the report of one Claude Code session next to its terminal:
 
