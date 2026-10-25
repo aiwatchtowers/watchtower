@@ -15,8 +15,12 @@ struct ConnectionsTabView: View {
             }
         }
         // A connect or disconnect may have happened elsewhere (the Calendar
-        // tab, an Inbox banner, the CLI) or a token expired in the daemon.
-        .onAppear { appState.refreshConnectionAccounts() }
+        // tab, an Inbox banner, the CLI) or a token expired in the daemon;
+        // config.yaml may have changed behind the shared copy.
+        .onAppear {
+            appState.refreshConnectionAccounts()
+            appState.sharedConfig.reloadUnlessEdited()
+        }
     }
 }
 
@@ -27,9 +31,13 @@ struct ConnectionsDetailSplit: View {
     let service: ConnectionService
 
     var body: some View {
-        @Bindable var appState = appState
         HStack(spacing: 0) {
-            List(selection: $appState.selectedConnection) {
+            // Only a service is ever written: the overview is reached through
+            // All Connections, never by deselecting the row.
+            List(selection: Binding<ConnectionService?>(
+                get: { service },
+                set: { if let new = $0 { appState.selectedConnection = new } }
+            )) {
                 Section("Sources") {
                     ForEach(ConnectionService.sources) { row($0).tag(Optional($0)) }
                 }

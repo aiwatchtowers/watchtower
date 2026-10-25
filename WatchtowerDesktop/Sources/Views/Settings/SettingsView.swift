@@ -48,13 +48,7 @@ struct SettingsView: View {
                 .tag(SettingsTab.profile)
         }
         .frame(width: 760, height: 580)
-        // Here where the connect happened: the related-features offer,
-        // closed only through its own buttons.
-        .sheet(isPresented: Binding(
-            get: { appState.showsFeatureSuggestion },
-            set: { _ in }
-        )) {
-            FeatureSuggestionSheet().environment(appState)
-        }
+        // The shared config.yaml copy catches up with a CLI or editor change.
+        .onAppear { appState.sharedConfig.reloadUnlessEdited() }
     }
 }

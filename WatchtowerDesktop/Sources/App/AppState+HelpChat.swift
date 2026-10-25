@@ -84,7 +84,8 @@ extension AppState {
         if let route = InboxRoute.fromNavHost(raw, today: Self.inboxToday()) {
             openInbox(route)
         } else if let destination = SidebarDestination(rawValue: raw) {
-            selectedDestination = destination
+            // Connections opens on its overview, like a sidebar click.
+            if destination == .connections { openConnections() } else { selectedDestination = destination }
         } else {
             return
         }

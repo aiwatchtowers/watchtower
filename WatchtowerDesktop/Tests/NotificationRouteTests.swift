@@ -225,6 +225,20 @@ final class NotificationRouteTests: XCTestCase {
         }
     }
 
+    /// The notice's target surfaces a main window: one opens when none is
+    /// visible (only Settings or the tray), and the app is activated.
+    func testAccountPurgeOpensAMainWindow() {
+        let appState = AppState.isolated()
+        var opened = 0
+        var activated = 0
+        appState.openMainWindow = { opened += 1 }
+        appState.openAccountConnection(source: "slack", windows: []) { activated += 1 }
+        XCTAssertEqual(opened, 1)
+        XCTAssertEqual(activated, 1)
+        XCTAssertEqual(appState.selectedDestination, .connections)
+        XCTAssertEqual(appState.selectedConnection, .slack)
+    }
+
     /// A decision push carries an idea id (decisions are ledger-sourced, not tied to a
     /// single digest — see DigestWatcher) and opens the Decisions segment on that entry;
     /// without one it can only land on the Digests tab.

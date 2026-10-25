@@ -17,7 +17,7 @@ struct ConnectionsOverviewContent: View {
     let summaries: [ConnectionSummary]
     let onOpen: (ConnectionService) -> Void
 
-    private static let columns = [GridItem(.adaptive(minimum: 240), spacing: Spacing.medium, alignment: .top)]
+    private static let columns = [GridItem(.adaptive(minimum: PaneWidth.gridCardMin), spacing: Spacing.medium, alignment: .top)]
 
     var body: some View {
         ScrollView {
@@ -120,8 +120,7 @@ struct ConnectionAttentionBanner: View {
     }
 
     private var line: String {
-        guard let first = summary.problems.first else { return "\(summary.service.label) needs attention" }
-        let more = summary.problems.count > 1 ? " (and \(summary.problems.count - 1) more)" : ""
-        return "\(summary.service.label) · \(first.name): \(first.problem)\(more)"
+        guard let problem = summary.problemLine else { return "\(summary.service.label) needs attention" }
+        return "\(summary.service.label) · \(problem)"
     }
 }

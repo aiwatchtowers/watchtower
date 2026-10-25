@@ -15,11 +15,24 @@ final class ConnectionsTabTests: XCTestCase {
         ConnectionAccountState(name: name, isOK: ok, enabled: enabled, status: status ?? (ok ? "ok" : "error"), error: error)
     }
 
+    /// An isolated app state whose shared config reads a scratch file, never ~/.config.
+    private func isolatedWithConfig(policy: [String: Any] = [:]) -> AppState {
+        let appState = AppState.isolated(managedPolicy: policy)
+        appState.managedPolicy.refresh()
+        appState.sharedConfig = ConfigService(configPath: NSTemporaryDirectory() + "watchtower-tests-\(UUID().uuidString).yaml")
+        return appState
+    }
+
+    /// Waits for view models' detached reads, up to 2 s.
+    private func settle(_ done: @MainActor () -> Bool) async throws {
+        for _ in 0..<200 where !done() { try await Task.sleep(for: .milliseconds(10)) }
+    }
+
     // MARK: - Summary
 
     func testNothingConnectedPitchesTheService() {
-        for accounts in [nil, [ConnectionAccountState]()] {
-            let summary = ConnectionSummary(service: .linear, accounts: accounts, blocked: false)
+        do {
+            let summary = ConnectionSummary(service: .linear, accounts: [], blocked: false)
             XCTAssertEqual(summary.status, .notConfigured)
             XCTAssertEqual(summary.countLine, "Not connected")
             XCTAssertEqual(summary.statusLine, ConnectionService.linear.pitch)
@@ -129,17 +142,170 @@ final class ConnectionsTabTests: XCTestCase {
         XCTAssertNil(appState.selectedConnection)
     }
 
-    /// A Slack reconnect started in the tab is still there after a trip to
-    /// another tab: its state is AppState's, not the detail view's.
-    func testSlackFlowSurvivesLeavingTheTab() {
+    /// The Slack detail runs its connect on AppState's flow, not a view's
+    /// own, so a connect survives leaving the service or the tab.
+    func testSlackDetailUsesTheAppStateFlow() throws {
+        let appState = isolatedWithConfig()
+        let split = ConnectionsDetailSplit(service: .slack).environment(appState)
+        let detail = try split.inspect().find(SlackConnectionDetail.self).actualView()
+        XCTAssertTrue(detail.flow === appState.slackAuthFlow)
+    }
+
+    /// The split: All Connections goes back to the overview, the open
+    /// service's own detail shows, and a blocked source gets its notice.
+    func testDetailSplitBackButtonDetailAndBlockedNotice() throws {
+        let appState = isolatedWithConfig(policy: ["AllowedSources": ["slack"]])
+        appState.openConnections(.jira)
+        let jira = ConnectionsDetailSplit(service: .jira).environment(appState)
+        XCTAssertNoThrow(try jira.inspect().find(JiraConnectionDetail.self))
+        XCTAssertNoThrow(try jira.inspect().find(SourceBlockedNotice.self))
+        try jira.inspect().find(button: "All Connections").tap()
+        XCTAssertNil(appState.selectedConnection)
+
+        let slack = ConnectionsDetailSplit(service: .slack).environment(appState)
+        XCTAssertThrowsError(try slack.inspect().find(SourceBlockedNotice.self))
+    }
+
+    /// A day plan's Jira item opens Connections → Jira (the Boards tab before #899).
+    func testDayPlanJiraItemOpensConnectionsOnJira() {
         let appState = AppState.isolated()
-        appState.openConnections(.slack)
-        let flow = appState.slackAuthFlow
-        flow.reconnecting = true
-        appState.selectedDestination = .home
-        appState.openConnections(.slack)
-        XCTAssertTrue(appState.slackAuthFlow === flow)
-        XCTAssertTrue(appState.slackAuthFlow.reconnecting)
+        appState.selectedDestination = .inbox
+        let item = DayPlanItem(row: ["id": 1, "day_plan_id": 1, "kind": "backlog", "source_type": "jira",
+                                     "source_id": "PROJ-1", "title": "Ship it"])
+        appState.openDayPlanItemSource(item)
+        XCTAssertEqual(appState.selectedDestination, .connections)
+        XCTAssertEqual(appState.selectedConnection, .jira)
+    }
+
+    // MARK: - Account reads
+
+    /// Every service's view model is re-read (Linear reads through the CLI
+    /// and has no seam here; its case is in the same exhaustive switch).
+    func testRefreshReReadsEveryServicesAccounts() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        func addOneEach(_ n: Int) async throws {
+            try await pool.write { db in
+                try TestDatabase.insertSlackAccount(db, teamName: "acme-\(n)")
+                try TestDatabase.insertJiraAccount(db, siteURL: "https://acme-\(n).atlassian.net")
+                try TestDatabase.insertEmailAccount(db, emailAddress: "owner\(n)@example.com")
+                try TestDatabase.insertCalendarAccount(db, username: "owner\(n)@example.com")
+                try TestDatabase.insertGoogleAccount(db, email: "owner\(n)@example.com")
+                try db.execute(sql: "INSERT INTO external_connections (name, kind, enabled) VALUES (?, 'http', 1)",
+                               arguments: ["mcp-\(n)"])
+            }
+        }
+        let services: [ConnectionService] = [.slack, .jira, .email, .calendar, .google, .quickConnections]
+        func counts(_ appState: AppState) -> [Int] { services.map { appState.connectionSummary($0).accountCount } }
+
+        try await addOneEach(1)
+        let appState = AppState.isolated()
+        appState.initSlackAccounts(dbPool: pool)
+        appState.initJiraAccounts(dbPool: pool)
+        appState.initEmailAccounts(dbPool: pool)
+        appState.initCalendarAccounts(dbPool: pool)
+        appState.initGoogleAccounts(dbPool: pool)
+        appState.initExternalConnections(dbPool: pool)
+        // Each view model's own first read is done before the second row lands.
+        try await settle { counts(appState).allSatisfy { $0 == 1 } }
+        XCTAssertEqual(counts(appState), Array(repeating: 1, count: services.count))
+
+        try await addOneEach(2)
+        appState.refreshConnectionAccounts()
+        try await settle { counts(appState).allSatisfy { $0 == 2 } }
+        XCTAssertEqual(counts(appState), Array(repeating: 2, count: services.count), "\(services)")
+    }
+
+    /// A sidebar click re-reads the accounts for the badge at most once a minute.
+    func testSidebarRefreshIsThrottled() {
+        let appState = AppState.isolated()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        appState.refreshConnectionAccountsIfStale(now: start)
+        XCTAssertEqual(appState.connectionAccountsReadAt, start, "the first click reads")
+        appState.refreshConnectionAccountsIfStale(now: start.addingTimeInterval(59))
+        XCTAssertEqual(appState.connectionAccountsReadAt, start, "within a minute: no read")
+        appState.refreshConnectionAccountsIfStale(now: start.addingTimeInterval(60))
+        XCTAssertEqual(appState.connectionAccountsReadAt, start.addingTimeInterval(60))
+        // The tab's own read on appear counts too.
+        appState.refreshConnectionAccounts(now: start.addingTimeInterval(100))
+        appState.refreshConnectionAccountsIfStale(now: start.addingTimeInterval(130))
+        XCTAssertEqual(appState.connectionAccountsReadAt, start.addingTimeInterval(100))
+    }
+
+    /// Slack, Jira, Linear and Quick Connections carry their Enabled switch
+    /// into the summary; Google, Email and Calendar have none.
+    func testEachServicesAccountsMapWithTheirSwitch() {
+        let off = ConnectionAccountState(SlackAccount(row: ["id": 1, "team_name": "acme", "status": "error", "enabled": false]))
+        XCTAssertEqual(off.name, "acme")
+        XCTAssertFalse(off.enabled)
+        XCTAssertFalse(ConnectionAccountState(JiraAccount(row: ["id": 1, "site_url": "x", "status": "ok", "enabled": false])).enabled)
+        XCTAssertFalse(ConnectionAccountState(LinearAccount(id: 1, orgName: "acme", status: "revoked", enabled: false)).enabled)
+        let mcp = ConnectionAccountState(ExternalConnection(row: ["id": 1, "name": "notion", "enabled": false, "status": "error"]))
+        XCTAssertEqual(mcp.name, "notion")
+        XCTAssertFalse(mcp.enabled)
+        XCTAssertTrue(ConnectionAccountState(GoogleAccount(row: ["id": 1, "email": "owner@example.com", "status": "revoked"])).enabled)
+        XCTAssertTrue(ConnectionAccountState(EmailAccount(row: ["id": 1, "email_address": "owner@example.com"])).enabled)
+        XCTAssertTrue(ConnectionAccountState(CalendarAccount(row: ["id": 1, "username": "owner"])).enabled)
+        // A switched-off broken Linear workspace asks nothing of the owner.
+        let linear = ConnectionSummary(service: .linear, accounts: [
+            ConnectionAccountState(LinearAccount(id: 1, orgName: "acme", status: "revoked", enabled: false))
+        ], blocked: false)
+        XCTAssertFalse(linear.needsAttention)
+    }
+
+    /// Through AppState: a source the policy blocks shows its lock and
+    /// never lights the badge, however broken its accounts.
+    func testPolicyBlockedSourceThroughAppState() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            try TestDatabase.insertJiraAccount(db, siteURL: "https://acme.atlassian.net", status: "revoked", error: "token expired")
+        }
+        let appState = AppState.isolated(managedPolicy: ["AllowedSources": ["slack"]])
+        appState.managedPolicy.refresh()
+        appState.initJiraAccounts(dbPool: pool)
+        await appState.jiraAccountsViewModel?.refreshAsync()
+        let jira = appState.connectionSummary(.jira)
+        XCTAssertTrue(jira.blocked)
+        XCTAssertEqual(jira.status, .error)
+        XCTAssertEqual(jira.statusLine, SourceBlockedNotice.title)
+        XCTAssertEqual(appState.connectionsAttentionCount, 0)
+    }
+
+    // MARK: - Unknown accounts
+
+    /// Accounts that could not be read are neither "not connected" nor a
+    /// problem: no pitch, no badge.
+    func testUnreadableAccountsAreUnknown() {
+        for summary in [
+            ConnectionSummary(service: .linear, accounts: nil, blocked: false),
+            ConnectionSummary(service: .linear, accounts: [], readError: "Watchtower CLI not found", blocked: false)
+        ] {
+            XCTAssertTrue(summary.unknown)
+            XCTAssertEqual(summary.statusLine, "Couldn't read accounts")
+            XCTAssertNotEqual(summary.countLine, "Not connected")
+            XCTAssertFalse(summary.needsAttention)
+        }
+        // An error beside a listed account is an action's, not the read's.
+        let listed = ConnectionSummary(service: .slack, accounts: [account("acme", ok: true)], readError: "Reconnect failed", blocked: false)
+        XCTAssertFalse(listed.unknown)
+        XCTAssertEqual(listed.statusLine, "Connected")
+    }
+
+    /// A Slack read that fails lights nothing: the badge counts only what it read.
+    func testFailedReadDoesNotLightTheBadge() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let appState = AppState.isolated()
+        appState.initSlackAccounts(dbPool: pool)
+        await appState.slackAccountsViewModel?.refreshAsync()
+        appState.slackAccountsViewModel?.error = "Failed to load accounts: disk I/O error"
+        XCTAssertTrue(appState.connectionSummary(.slack).unknown)
+        XCTAssertEqual(appState.connectionsAttentionCount, 0)
+    }
+
+    func testProblemWithNoStatusOrErrorStillSaysSo() {
+        XCTAssertEqual(account("acme", ok: false, status: "").problem, "needs attention")
     }
 
     // MARK: - Removed tabs (#899)
@@ -164,8 +330,10 @@ final class ConnectionsTabTests: XCTestCase {
             appState.openNavLink(try XCTUnwrap(URL(string: "watchtower-nav://\(screen)")))
             XCTAssertEqual(appState.selectedDestination, .inbox, screen)
         }
+        appState.selectedConnection = .jira
         appState.openNavLink(try XCTUnwrap(URL(string: "watchtower-nav://connections")))
         XCTAssertEqual(appState.selectedDestination, .connections)
+        XCTAssertNil(appState.selectedConnection, "a link opens the overview")
     }
 
     // MARK: - Jira detail
@@ -209,6 +377,19 @@ final class ConnectionsTabTests: XCTestCase {
         XCTAssertEqual(opened, [.slack])
 
         XCTAssertEqual(try view.inspect().findAll(ConnectionCard.self).count, 3)
+        XCTAssertNoThrow(try view.inspect().find(ViewType.Menu.self).find(button: "Google"))
         XCTAssertNoThrow(try view.inspect().find(text: ConnectionService.quickConnections.pitch))
+    }
+
+    /// Connect… offers only what the policy allows.
+    func testConnectMenuHidesBlockedServices() throws {
+        let summaries = [
+            ConnectionSummary(service: .slack, accounts: [], blocked: false),
+            ConnectionSummary(service: .jira, accounts: [], blocked: true)
+        ]
+        let view = ConnectionsOverviewContent(summaries: summaries) { _ in }
+        let menu = try view.inspect().find(ViewType.Menu.self)
+        XCTAssertNoThrow(try menu.find(button: "Slack"))
+        XCTAssertThrowsError(try menu.find(button: "Jira"))
     }
 }

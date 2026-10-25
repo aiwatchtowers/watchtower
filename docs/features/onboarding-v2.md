@@ -220,8 +220,10 @@ Jira → Tasks & Jira) offers the features those goals turn on and that are
 off now. Nothing is enabled without Turn on, which enables them through
 `FeatureManagerService.enableNow([ids])` (never Settings → Features'
 staged changes) and restarts the daemon once; a retry after a failed
-restart only restarts. The offer is a sheet in the Settings window, shown
-once no Add account sheet is up, and closes only through its own buttons.
+restart only restarts. The offer is a sheet over the main window
+(`FeatureSuggestionPresenter`, where the Connections tab connects since
+#899), shown once no Add account sheet is up, and closes only through its
+own buttons; a failed Turn on keeps its error in the sheet.
 
 **Finish landing.** Home, for every goal set (first-run P2,
 `AppState.landOnHome`). Re-runs keep the current tab. During the very first

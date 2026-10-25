@@ -87,6 +87,8 @@ final class ConfigService {
     private var diskGmailEnabled = true
     /// `privacy.purge_revoked_data` as last read from or written to disk.
     private var diskPurgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The editable fields as the last `reload()` or `save()` left them.
+    @ObservationIgnored private var loadedFields = ""
 
     convenience init() {
         self.init(configPath: Constants.configPath)
@@ -116,6 +118,7 @@ final class ConfigService {
     }
 
     func reload() {
+        defer { loadedFields = editableFields }
         guard let str = readConfigText() else { return }
 
         do {
@@ -429,6 +432,33 @@ final class ConfigService {
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
         adoptGoogleSyncSwitches(from: yaml)
+        loadedFields = editableFields
+    }
+
+    /// An edit made here still waits for `save()`.
+    var hasUnsavedEdits: Bool { editableFields != loadedFields }
+
+    /// Re-reads config.yaml when nothing awaits `save()`: the one shared copy
+    /// (`AppState.sharedConfig`) catches up with a CLI or editor change each
+    /// time Settings or the Connections tab shows, and never drops an edit.
+    func reloadUnlessEdited() {
+        if !hasUnsavedEdits { reload() }
+    }
+
+    /// Bookkeeping, not settings: left out of the edit check.
+    private static let nonEditableFields: Set<String> = [
+        "configPath", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
+        "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields"
+    ]
+
+    /// Every settings field (the stored properties, by reflection, so a new
+    /// one is covered without a list to keep in step), rendered for comparison.
+    private var editableFields: String {
+        let fields = Mirror(reflecting: self).children.compactMap { child -> String? in
+            guard let label = child.label, !label.hasPrefix("_$"), !Self.nonEditableFields.contains(label) else { return nil }
+            return "\(label)=\(String(describing: child.value))"
+        }
+        return fields.joined(separator: "\n")
     }
 
     /// A Google sync switch differs from what is on disk: the owner flipped

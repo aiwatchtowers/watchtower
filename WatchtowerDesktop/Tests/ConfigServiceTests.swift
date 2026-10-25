@@ -822,4 +822,27 @@ struct ConfigServiceTests {
         #expect(privacy?["purge_revoked_data"] as? Bool == false)
         #expect(privacy?["other_key"] as? String == "kept")
     }
+
+    /// #899: the shared copy re-reads config.yaml when Settings or the
+    /// Connections tab shows, unless an edit waits for Save.
+    @Test("reloadUnlessEdited picks up the disk and keeps unsaved edits")
+    func reloadUnlessEdited() throws {
+        let path = makeTempConfig("claude_path: /opt/a\n")
+        let svc = ConfigService(configPath: path)
+        #expect(!svc.hasUnsavedEdits)
+
+        try "claude_path: /opt/b\n".write(toFile: path, atomically: true, encoding: .utf8)
+        svc.reloadUnlessEdited()
+        #expect(svc.claudePath == "/opt/b", "a change on disk since the last load shows")
+
+        svc.codexPath = "/opt/mine"
+        #expect(svc.hasUnsavedEdits)
+        try "claude_path: /opt/c\n".write(toFile: path, atomically: true, encoding: .utf8)
+        svc.reloadUnlessEdited()
+        #expect(svc.codexPath == "/opt/mine", "an unsaved edit is kept")
+        #expect(svc.claudePath == "/opt/b")
+
+        try svc.save()
+        #expect(!svc.hasUnsavedEdits, "saved: nothing waits")
+    }
 }

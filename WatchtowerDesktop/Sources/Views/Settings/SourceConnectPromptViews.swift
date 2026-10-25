@@ -2,11 +2,30 @@ import SwiftUI
 import WatchtowerCore
 
 extension View {
-    /// An Add account sheet in Settings: while it is up, the feature
-    /// suggestion waits.
+    /// An Add account sheet (the Connections tab): while it is up, the
+    /// feature suggestion waits.
     func marksAccountSheet(_ appState: AppState) -> some View {
         onAppear { appState.isAddingAccount = true }
             .onDisappear { appState.isAddingAccount = false }
+    }
+}
+
+/// The main window's related-features offer (`FeatureSuggestionSheet`),
+/// where the Connections tab connects: shown once no Add account sheet is
+/// up, closed only through its own buttons.
+struct FeatureSuggestionPresenter: ViewModifier {
+    let appState: AppState
+
+    /// The sheet is up: a suggestion waits and no Add account sheet is.
+    var isPresented: Bool { appState.showsFeatureSuggestion }
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: Binding(
+            get: { isPresented },
+            set: { _ in }
+        )) {
+            FeatureSuggestionSheet().environment(appState)
+        }
     }
 }
 
@@ -49,8 +68,9 @@ struct SidebarConnectRow: View {
     }
 }
 
-/// Settings' "Turn on related features?" offer after a source is connected
-/// there (`AppState.featureSuggestion`). Nothing is enabled without Turn on.
+/// The "Turn on related features?" offer after a source is connected
+/// (`AppState.featureSuggestion`), over the main window. Nothing is enabled
+/// without Turn on.
 struct FeatureSuggestionSheet: View {
     @Environment(AppState.self) private var appState
 

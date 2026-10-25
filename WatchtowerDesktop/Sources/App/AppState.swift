@@ -89,6 +89,7 @@ final class AppState {
     var selectedConnection: ConnectionService?
     /// A Slack connect in flight survives leaving the Connections tab (`SlackAuthFlowState`).
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
+    @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored lazy var sharedConfig = ConfigService()
 
@@ -1058,12 +1059,11 @@ final class AppState {
     private(set) var isApplyingFeatureSuggestion = false
     private(set) var featureSuggestionError: String?
 
-    /// One of Settings' Add account sheets is up: the feature suggestion
-    /// waits for it.
+    /// One of the Add account sheets is up: the feature suggestion waits for it.
     var isAddingAccount = false
 
-    /// The offer shows in Settings once no Add account sheet is up; it
-    /// closes only through its own buttons.
+    /// The offer shows over the main window once no Add account sheet is
+    /// up; it closes only through its own buttons.
     var showsFeatureSuggestion: Bool {
         !featureSuggestion.isEmpty && !isAddingAccount
     }

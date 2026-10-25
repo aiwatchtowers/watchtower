@@ -107,8 +107,9 @@ struct SidebarView: View {
         .onChange(of: selection) { _, new in
             googleAuth.checkStatus()
             // The Connections badge reads the accounts: a token may have
-            // expired in the daemon since the last read.
-            appState.refreshConnectionAccounts()
+            // expired in the daemon since the last read. At most once a
+            // minute; the Connections tab re-reads on its own appear.
+            if new != .connections { appState.refreshConnectionAccountsIfStale() }
             expandSectionContainingSelection()
             Self.lastSeenSelection = new
         }
@@ -191,7 +192,7 @@ struct SidebarView: View {
     private func sidebarButton(_ item: SidebarDestination) -> some View {
         let isSelected = selection == item
         return Button {
-            selection = item
+            select(item)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: item.icon)
@@ -219,6 +220,15 @@ struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// Connections always opens on its overview (`openConnections()`).
+    private func select(_ item: SidebarDestination) {
+        if item == .connections {
+            appState.openConnections()
+        } else {
+            selection = item
+        }
     }
 
     @ViewBuilder
@@ -548,7 +558,7 @@ struct SidebarView: View {
             help += " · Google is not connected"
         }
         return Button {
-            selection = item
+            select(item)
         } label: {
             railIcon(item.icon, isSelected: selection == item, dot: dot)
         }
