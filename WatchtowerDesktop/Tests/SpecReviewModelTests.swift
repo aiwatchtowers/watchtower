@@ -11,6 +11,7 @@ final class SpecReviewModelTests: XCTestCase {
     private var defaults: UserDefaults!
     private var runner: FakeCLIRunner!
     private var askID: Int64 = 0
+    private var asks: OwnerAsksViewModel!
     private var projectID: Int64 = 0
 
     private let snapshot = "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\n"
@@ -56,6 +57,7 @@ final class SpecReviewModelTests: XCTestCase {
         let asks = OwnerAsksViewModel(
             dbPool: pool, terminalCenter: nil, lineDelivery: SessionLineDelivery(terminalCenter: nil), defaults: defaults
         )
+        self.asks = asks
         await asks.load(projectID: projectID)
         let ask = try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID })
         return SpecReviewModel(ask: ask, db: dbm, cli: WorkbenchCLI(runner: runner), asks: asks, sleep: sleep)
@@ -159,12 +161,12 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertFalse(model.canSend)
         await model.mark("ag:1", .ok)
         XCTAssertFalse(model.canSend)
-        let refused = await model.send(note: "")
+        let refused = await model.send()
         guard case .invalid = refused else { return XCTFail("send without comments is refused: \(refused)") }
 
         await model.mark("ag:1", .comment, body: "name the period")
         XCTAssertTrue(model.canSend)
-        let sent = await model.send(note: "")
+        let sent = await model.send()
         guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
         let stored = try await pool.read { d in
             try Row.fetchOne(d, sql: "SELECT status, answer FROM owner_asks WHERE id = ?", arguments: [self.askID])
@@ -200,7 +202,8 @@ final class SpecReviewModelTests: XCTestCase {
         await model.load()
         await model.mark("ag:1", .comment, body: "name the period")
         await model.mark("da:1", .ok)
-        let sent = await model.approve(note: "ship it")
+        model.note = "ship it"
+        let sent = await model.approve()
         guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
         let answer = try await storedAnswer()
         XCTAssertTrue(answer.contains("\"approved\""), answer)
@@ -213,10 +216,81 @@ final class SpecReviewModelTests: XCTestCase {
         let model = try await makeModel()
         await model.load()
         XCTAssertNil(model.row?.result)
-        let sent = await model.approve(note: "")
+        let sent = await model.approve()
         guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
         let answer = try await storedAnswer()
         XCTAssertTrue(answer.contains("\"approved\""))
+    }
+
+    /// Send from the screen carries the margin comments made under Read the
+    /// spec and the note, after nothing is dropped.
+    func testSendCarriesTheDraftsMarginComments() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let model = try await makeModel()
+        await model.load()
+        let ask = try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID })
+        let anchor = CommentAnchor(quote: "Intro text", prefix: "Title\n", suffix: "\nBehaviour", heading: "Title")
+        asks.editDraft(askID) { $0.comments = [OwnerAskCommentDraft(anchor: anchor, body: "say who")] }
+        XCTAssertTrue(model.canSend, "a margin comment alone is something to send")
+        await model.mark("ag:1", .comment, body: "name the period")
+        let sent = await model.send()
+        guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, .changes)
+        XCTAssertEqual(answer.comments.map(\.body), ["say who", "Mute lasts a day — name the period"])
+        XCTAssertEqual(ask.kind, .review)
+    }
+
+    /// The classic footer's Request changes sends the findings' comments too.
+    func testClassicVerdictCarriesTheMarksComments() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let model = try await makeModel()
+        await model.load()
+        await model.mark("da:1", .comment, body: "ask me first")
+        let ask = try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID })
+        let delivery = await asks.answer(ask, verdict: .changes)
+        XCTAssertNotNil(delivery)
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, .changes)
+        XCTAssertEqual(answer.comments.map(\.body), ["Local db — ask me first"])
+        XCTAssertNil(asks.specReviewComments[askID], "a sent answer forgets them")
+    }
+
+    /// A review ask with questions: Send and Approve say why they are off
+    /// until the questions are answered (on Meaning), then the answer
+    /// carries the picks.
+    func testReviewAskWithQuestionsIsAnsweredFromTheScreen() async throws {
+        let id = askID
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE owner_asks SET payload = ? WHERE id = ?", arguments: [
+                #"{"questions":[{"id":"q1","question":"Ship it this week?","options":[{"label":"Yes"},{"label":"No"}]}]}"#, id
+            ])
+        }
+        try setRow(status: "done", result: resultJSON())
+        let model = try await makeModel()
+        await model.load()
+        XCTAssertTrue(model.hasQuestions)
+        XCTAssertEqual(model.answerBlocker, "Answer the ask's questions on Meaning first")
+        asks.editDraft(askID) { $0.picks["q1"] = ChatQuestionAnswer.Entry(labels: ["Yes"]) }
+        XCTAssertNil(model.answerBlocker)
+        let sent = await model.approve()
+        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.answers.first?.labels, ["Yes"])
+        XCTAssertEqual(answer.verdict, .approved)
+    }
+
+    /// A comment keeps its finding's text, so a re-run that drops the
+    /// finding still lists what it was about.
+    func testCommentMarkKeepsItsFindingText() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let model = try await makeModel()
+        await model.load()
+        await model.mark("ag:1", .comment, body: "keep")
+        try setRow(status: "done", result: resultJSON().replacingOccurrences(of: "ag:1", with: "ag:2"))
+        await model.load()
+        XCTAssertEqual(model.orphans.first?.about, "Mute lasts a day")
+        XCTAssertEqual(model.orphans.first?.body, "keep")
     }
 
     private func storedAnswer() async throws -> String {

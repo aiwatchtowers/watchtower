@@ -48,7 +48,7 @@ final class SpecReviewModel {
     var chapterKey: String?
     var lastError: String?
 
-    @ObservationIgnored private let ask: OwnerAsk
+    @ObservationIgnored let ask: OwnerAsk
     @ObservationIgnored private let db: DatabaseManager
     @ObservationIgnored private let cli: WorkbenchCLI
     @ObservationIgnored private let asks: OwnerAsksViewModel
@@ -90,6 +90,7 @@ final class SpecReviewModel {
             }
             self.row = row
             self.marks = marks
+            publishComments()
             if chapterKey == nil || !chapters.contains(where: { $0.key == chapterKey }) {
                 chapterKey = chapters.first?.key
             }
@@ -149,15 +150,23 @@ final class SpecReviewModel {
 
     // MARK: - Marks
 
+    /// A comment keeps its finding's text (`about`), so it still says what
+    /// it was about once a re-run drops the finding.
     func mark(_ key: String, _ state: SpecReviewMarkState, body: String = "") async {
         let askID = ask.id
-        let mark = SpecReviewMark(key: key, state: state, body: body)
+        var about = ""
+        if state == .comment {
+            let finding = row?.result?.findings.first { $0.key == key }
+            about = finding?.text ?? marks[key]?.about ?? ""
+        }
+        let mark = SpecReviewMark(key: key, state: state, body: body, about: about)
         let stamp = now()
         do {
             try await db.dbPool.write { db in
                 try SpecReviewQueries.setMark(db, askID: askID, mark: mark, now: stamp)
             }
             marks[key] = mark
+            publishComments()
         } catch {
             lastError = "Could not save the mark: \(error.localizedDescription)"
         }
@@ -170,6 +179,7 @@ final class SpecReviewModel {
                 try SpecReviewQueries.clearMark(db, askID: askID, key: key)
             }
             marks[key] = nil
+            publishComments()
         } catch {
             lastError = "Could not clear the mark: \(error.localizedDescription)"
         }
@@ -235,6 +245,13 @@ final class SpecReviewModel {
         return SpecReviewAnswer.orphanMarks(result: result, marks: marks)
     }
 
+    /// The document's Decisions list (spec §6), from the snapshot; nil when
+    /// it has no Decisions section.
+    var decisions: [String]? { SpecReviewDecisions.items(in: ask.docSnapshot) }
+
+    /// The ask's questions, answered on Meaning beside the findings.
+    var hasQuestions: Bool { !ask.payload.questions.isEmpty }
+
     /// The reviewed document's file name, for the screen's title.
     var docName: String { (ask.docPath as NSString).lastPathComponent }
 
@@ -250,14 +267,30 @@ final class SpecReviewModel {
 
     // MARK: - Send and approve
 
+    /// Keeps the classic footer's answer in step: its Request changes /
+    /// Approve send these comments with the draft (`OwnerAsksViewModel`).
+    private func publishComments() {
+        let comments = row?.result.map {
+            SpecReviewAnswer.comments(result: $0, marks: marks, snapshot: ask.docSnapshot)
+        } ?? []
+        asks.setSpecReviewComments(comments, askID: ask.id)
+    }
+
     private var commentCount: Int {
         marks.values.filter {
             $0.state == .comment && !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }.count
     }
 
-    /// Send round to the author needs at least one comment.
-    var canSend: Bool { row?.result != nil && commentCount > 0 }
+    /// The ask's draft: the margin comments made under **Read the spec**,
+    /// the question answers and the note, which go with the marks.
+    private var draft: OwnerAskDraft { asks.drafts.askDraft(for: ask.id) }
+
+    private var draftCommentCount: Int { draft.answer(for: ask).comments.count }
+
+    /// Send round to the author needs at least one comment, on a finding
+    /// or in the margin.
+    var canSend: Bool { row?.result != nil && commentCount + draftCommentCount > 0 }
 
     /// Approve asks once when findings are still unmarked.
     var needsApproveConfirm: Bool { unmarkedCount > 0 }
@@ -266,20 +299,36 @@ final class SpecReviewModel {
         "\(unmarkedCount) finding\(unmarkedCount == 1 ? " is" : "s are") not marked. Approve anyway?"
     }
 
-    func send(note: String) async -> OwnerAsksViewModel.AnswerResult {
-        guard canSend, let result = row?.result else {
-            return .invalid("Comment on at least one finding before sending the round.")
-        }
-        return await asks.answer(ask, with: SpecReviewAnswer.build(
-            result: result, marks: marks, note: note, verdict: .changes, snapshot: ask.docSnapshot
-        ))
+    /// The one answer `verdict` sends: the draft (margin comments, question
+    /// answers, note) with the marks' comments after its own.
+    func answer(verdict: OwnerAskAnswer.Verdict) -> OwnerAskAnswer {
+        SpecReviewAnswer.build(
+            result: row?.result ?? Self.emptyResult, marks: marks, base: draft.answer(for: ask),
+            verdict: verdict, snapshot: ask.docSnapshot
+        )
     }
 
-    func approve(note: String) async -> OwnerAsksViewModel.AnswerResult {
-        let result = row?.result ?? Self.emptyResult
-        return await asks.answer(ask, with: SpecReviewAnswer.build(
-            result: result, marks: marks, note: note, verdict: .approved, snapshot: ask.docSnapshot
-        ))
+    /// Why Send and Approve are off, in the owner's words: the ask's
+    /// questions are not all answered (they sit on Meaning), or the note is
+    /// too long. Nil when the answer can go.
+    var answerBlocker: String? {
+        guard let problem = answer(verdict: .approved).problem(kind: ask.kind, payload: ask.payload) else { return nil }
+        switch problem {
+        case .questionUnanswered, .emptyQuestionAnswer: return "Answer the ask's questions on Meaning first"
+        case .noteTooLong: return "Shorten the note to \(OwnerAskAnswerProblem.maxNoteRunes) characters"
+        default: return "This answer cannot be sent: \(problem.message)"
+        }
+    }
+
+    func send() async -> OwnerAsksViewModel.AnswerResult {
+        guard canSend else {
+            return .invalid("Comment on at least one finding before sending the round.")
+        }
+        return await asks.answer(ask, with: answer(verdict: .changes))
+    }
+
+    func approve() async -> OwnerAsksViewModel.AnswerResult {
+        await asks.answer(ask, with: answer(verdict: .approved))
     }
 
     private static let emptyResult: SpecReviewResult = {

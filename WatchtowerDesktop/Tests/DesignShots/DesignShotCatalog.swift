@@ -206,7 +206,7 @@ enum DesignShotCatalog {
                 ReviewShotFixtures.deepMeaning()
             },
             // Spec review in the review ask drawer (spec 2026-10-25 §7).
-            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 720)) {
+            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
                 SpecReviewShotFixtures.screen(.meaning)
             },
             DesignShot(name: "spec-review-chapters", size: NSSize(width: 760, height: 900)) {

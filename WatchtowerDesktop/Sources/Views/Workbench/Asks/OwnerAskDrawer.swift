@@ -262,7 +262,10 @@ struct OwnerAskDrawer: View {
         if mode == .loading {
             Color.clear
         } else if let specReview, mode == .review {
-            SpecReviewView(model: specReview) { showClassic = true }
+            // The ask's own header and questions sit on Meaning: the answer
+            // the screen sends carries their answers (and the margin
+            // comments made under Read the spec).
+            SpecReviewView(model: specReview, onReadSpec: { showClassic = true }, askContext: { topSections })
         } else {
             if let specReview, case let .classic(strip?) = mode {
                 SpecReviewStatusView(
@@ -344,10 +347,14 @@ struct OwnerAskDrawer: View {
     }
 
     /// A review's focus item jumps to its place once the snapshot is
-    /// rendered; one not in it gets no link.
+    /// rendered; one not in it gets no link. From the spec review screen
+    /// the jump opens Read the spec first.
     private func focusAction(_ focus: OwnerAskFocus) -> (() -> Void)? {
         guard ask.kind == .review, let range = asks.reviewDocuments.range(of: focus, askID: ask.id) else { return nil }
-        return { scrollTarget = DocumentScrollTarget(offset: range.location) }
+        return {
+            showClassic = true
+            scrollTarget = DocumentScrollTarget(offset: range.location)
+        }
     }
 
     private func noticeRow(_ notice: OwnerAsksViewModel.AnswerNotice) -> some View {

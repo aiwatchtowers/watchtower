@@ -20,7 +20,7 @@ package enum SpecReviewQueries {
             let key: String = row["item_key"]
             let raw: String = row["state"]
             guard let state = SpecReviewMarkState(rawValue: raw) else { continue }
-            out[key] = SpecReviewMark(key: key, state: state, body: row["body"])
+            out[key] = SpecReviewMark(key: key, state: state, storedBody: row["body"])
         }
         return out
     }
@@ -33,7 +33,7 @@ package enum SpecReviewQueries {
                 ON CONFLICT(ask_id, item_key) DO UPDATE SET
                     state = excluded.state, body = excluded.body, updated_at = excluded.updated_at
                 """,
-            arguments: [askID, mark.key, mark.state.rawValue, mark.body, timestamp(now)]
+            arguments: [askID, mark.key, mark.state.rawValue, mark.storedBody, timestamp(now)]
         )
     }
 

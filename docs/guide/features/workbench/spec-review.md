@@ -18,11 +18,11 @@ Only your comments reach the agent. The reviewer's notes and your marks stay on 
 
 Open the review ask. The drawer shows three steps.
 
-1. **Meaning.** Your idea next to the document's goal, with a verdict, counts and a summary. On a later round it also shows which of your earlier comments are resolved.
-2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**. Press **Fine as is** on a card you accept, or **Comment** to tell the author what to change. Each chapter also has a **Checklist**. Mark the chapter **Viewed** when you are done with it.
-3. **Wrap-up.** Everything you marked, **From the previous run**, and a note for the author. **Send round to the author** returns your comments; **Approve** accepts the document. If items are still unmarked, approving asks once before it goes ahead.
+1. **Meaning.** The ask's own summary, the points to look at, what changed since the last round and any questions the agent asked (answer them here). Then your idea next to the document's goal with a verdict, the document's Decisions list, counts and a summary. On a later round it also shows which of your earlier comments are resolved.
+2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**. Press **Fine as is** on a card you accept, or **Comment** to tell the author what to change. When the reviewer ran checks on a chapter, its **Checklist** sits under the cards. Mark the chapter **Viewed** when you are done with it.
+3. **Wrap-up.** Everything you marked, **From the previous run** (with the finding each comment was about), and a note for the author. **Send round to the author** returns your comments; **Approve** accepts the document. Both send the margin comments you wrote under **Read the spec** too. If items are still unmarked, approving asks once before it goes ahead.
 
-**Read the spec** always opens the classic document view with margin comments, whatever state the reviewer is in. While the reviewer is working, or if it failed or was skipped, that view is fully usable.
+**Read the spec** always opens the classic document view with margin comments, whatever state the reviewer is in. Its **Request changes** and **Approve** also send your comments on findings, so nothing you wrote on either screen is lost.
 
 **Re-run reviewer** starts a fresh review of the same document. **Run reviewer** appears instead when the reviewer failed or was skipped.
 
@@ -30,7 +30,8 @@ The spec screen opens only for open asks. A closed ask shows the classic read-on
 
 ## When it's empty or wrong
 
-- **No findings, only the classic view.** The reviewer is still working, failed, or was skipped. The reason is on the screen. Press **Run reviewer** to start it.
+- **No findings yet.** While the reviewer works, the drawer shows its progress with **Read the spec**, and the findings open there when it is done. If you opened the ask before the reviewer started, you stay in the classic view and a banner offers the findings when they are ready.
+- **Only the classic view, with a reason above it.** The reviewer failed or was skipped. Press **Run reviewer** to start it.
 - **It was skipped with "plan near limit".** The automatic run is skipped when your Claude plan is close to its limit. **Run reviewer** still works.
 - **Nothing about the code.** With Ollama the reviewer cannot read files, so it judges from the document and the conversation alone, and says so.
 - **On the iPhone** you see a one-line reviewer summary above the classic review. The findings screen is on the Mac.

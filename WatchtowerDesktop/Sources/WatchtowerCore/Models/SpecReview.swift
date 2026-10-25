@@ -318,10 +318,29 @@ package struct SpecReviewMark: Equatable, Sendable {
     package var key: String
     package var state: SpecReviewMarkState
     package var body: String
+    /// A comment's finding text, kept with the mark so a comment whose
+    /// finding a re-run drops still says what it was about.
+    package var about: String
 
-    package init(key: String, state: SpecReviewMarkState, body: String = "") {
+    package init(key: String, state: SpecReviewMarkState, body: String = "", about: String = "") {
         self.key = key
         self.state = state
         self.body = body
+        self.about = about
+    }
+
+    /// Between the owner's text and the finding text in the stored `body`
+    /// (Go's `db.SpecReviewMarkAboutSeparator`): `<body>\u{1F}<about>`. A
+    /// body without it has no finding text.
+    package static let aboutSeparator: Character = "\u{1F}"
+
+    /// The `body` column's value.
+    package var storedBody: String {
+        about.isEmpty ? body : "\(body)\(Self.aboutSeparator)\(about)"
+    }
+
+    package init(key: String, state: SpecReviewMarkState, storedBody: String) {
+        let parts = storedBody.split(separator: Self.aboutSeparator, maxSplits: 1, omittingEmptySubsequences: false)
+        self.init(key: key, state: state, body: String(parts[0]), about: parts.count > 1 ? String(parts[1]) : "")
     }
 }

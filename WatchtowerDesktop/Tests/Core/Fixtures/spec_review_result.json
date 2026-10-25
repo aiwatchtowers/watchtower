@@ -29,6 +29,20 @@
         "heading": "Behaviour",
         "quote": "Muting lasts twenty-four hours"
       }
+    },
+    {
+      "key": "ag:ba9876543210",
+      "text": "Threads stay unmuted",
+      "status": "missing",
+      "note": "Not in the document.",
+      "chapter": "ch:1",
+      "source": {
+        "kind": "conversation",
+        "ref": "entry:1",
+        "quote": "nothing more",
+        "speaker": "owner"
+      },
+      "where": null
     }
   ],
   "decided_alone": [

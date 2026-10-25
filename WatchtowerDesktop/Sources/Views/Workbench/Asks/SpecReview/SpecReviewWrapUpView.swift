@@ -90,7 +90,15 @@ struct SpecReviewWrapUpView: View {
             ForEach(model.orphans, id: \.key) { mark in
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
                     markGlyph(mark.state)
-                    Text(mark.body).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: Spacing.tight) {
+                        if !mark.about.isEmpty {
+                            Text(mark.about).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text(mark.body)
+                            .font(mark.about.isEmpty ? .callout : .caption)
+                            .foregroundStyle(mark.about.isEmpty ? .primary : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Spacer(minLength: Spacing.regular)
                     Button("Remove") { Task { await model.unmark(mark.key) } }
                         .buttonStyle(.kitQuiet)
@@ -103,7 +111,25 @@ struct SpecReviewWrapUpView: View {
     }
 
     /// One prominent action: Send while there are comments, else Approve.
+    /// Both stay off, with the reason, while the answer cannot go (an ask
+    /// question not answered yet).
     private var actions: some View {
+        let blocker = model.answerBlocker
+        return VStack(alignment: .trailing, spacing: Spacing.small) {
+            if let blocker {
+                HStack(spacing: Spacing.compact) {
+                    Text(blocker).font(.caption).foregroundStyle(Tone.warning)
+                    if model.hasQuestions {
+                        Button("Go to Meaning") { model.phase = .meaning }.buttonStyle(.kitQuiet)
+                    }
+                }
+            }
+            actionButtons.disabled(blocker != nil)
+        }
+        .controlSize(.small)
+    }
+
+    private var actionButtons: some View {
         HStack(spacing: Spacing.regular) {
             if model.isAnswering { ProgressView().controlSize(.small) }
             Spacer()
@@ -114,7 +140,7 @@ struct SpecReviewWrapUpView: View {
                 Button("Send round to the author", action: send)
                     .buttonStyle(.kitSecondary)
                     .disabled(true)
-                    .help("Comment on at least one finding first")
+                    .help("Comment on a finding, or in the margin under Read the spec, first")
                 Button("Approve", action: pressApprove).buttonStyle(.kitPrimary)
             }
         }
@@ -128,13 +154,11 @@ struct SpecReviewWrapUpView: View {
 
     // The answer's failures land in the ask's answer errors (the drawer's footer).
     private func approve() {
-        let note = model.note
-        Task { _ = await model.approve(note: note) }
+        Task { _ = await model.approve() }
     }
 
     private func send() {
-        let note = model.note
-        Task { _ = await model.send(note: note) }
+        Task { _ = await model.send() }
     }
 
     private func icon(_ title: String) -> String {

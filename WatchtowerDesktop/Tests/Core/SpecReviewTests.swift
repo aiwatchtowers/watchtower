@@ -46,7 +46,11 @@ final class SpecReviewTests: XCTestCase {
         XCTAssertEqual(r.chapters[1].end, 200)
         XCTAssertTrue(r.codeRead)
         XCTAssertEqual(r.dropped, 2)
-        XCTAssertEqual(r.findings.count, 4)
+        XCTAssertEqual(r.findings.count, 5)
+        // A missing agreement: no anchor, the chapter the reviewer named.
+        XCTAssertEqual(r.agreements.last?.status, "missing")
+        XCTAssertNil(r.agreements.last?.anchor)
+        XCTAssertEqual(r.agreements.last?.chapter, "ch:1")
     }
 
     func testDecodingToleratesUnknownKeysAndEnums() throws {
@@ -81,7 +85,7 @@ final class SpecReviewTests: XCTestCase {
             "ag:0123456789ab": SpecReviewMark(key: "ag:0123456789ab", state: .ok),
             "da:0123456789ab": SpecReviewMark(key: "da:0123456789ab", state: .comment, body: "ask first")
         ]
-        let a = SpecReviewAnswer.build(result: r, marks: marks, note: "n", verdict: .changes, snapshot: snapshot)
+        let a = SpecReviewAnswer.build(result: r, marks: marks, base: OwnerAskAnswer(note: "n"), verdict: .changes, snapshot: snapshot)
         XCTAssertEqual(a.comments.count, 1)
         XCTAssertEqual(a.comments[0].body, "State is kept in the local database — ask first")
         XCTAssertEqual(a.comments[0].heading, "Decisions")
@@ -96,7 +100,7 @@ final class SpecReviewTests: XCTestCase {
         let json = #"{"blind_spots":[{"key":"bs:1","text":"No word on threads","chapter":"ch:1"}]}"#
         r.blindSpots = try JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8)).blindSpots
         let marks = ["bs:1": SpecReviewMark(key: "bs:1", state: .comment, body: "add")]
-        let a = SpecReviewAnswer.build(result: r, marks: marks, note: "", verdict: .changes, snapshot: snapshot)
+        let a = SpecReviewAnswer.build(result: r, marks: marks, verdict: .changes, snapshot: snapshot)
         let comment = try XCTUnwrap(a.comments.first)
         XCTAssertEqual(comment.heading, "Behaviour")
         XCTAssertEqual(comment.quote, "Muting lasts twenty-four hours")
@@ -112,7 +116,7 @@ final class SpecReviewTests: XCTestCase {
         ]
         let orphans = SpecReviewAnswer.orphanMarks(result: r, marks: marks)
         XCTAssertEqual(orphans.map(\.key), ["ag:gone"])
-        let a = SpecReviewAnswer.build(result: r, marks: marks, note: "", verdict: .changes, snapshot: snapshot)
+        let a = SpecReviewAnswer.build(result: r, marks: marks, verdict: .changes, snapshot: snapshot)
         XCTAssertEqual(a.comments.count, 2)
         let sent = try XCTUnwrap(a.comments.last)
         XCTAssertEqual(sent.body, "From the previous run: old note")
@@ -158,11 +162,89 @@ final class SpecReviewTests: XCTestCase {
             "bs:1": SpecReviewMark(key: "bs:1", state: .comment, body: "a"),
             "bs:2": SpecReviewMark(key: "bs:2", state: .comment, body: "b")
         ]
-        let a = SpecReviewAnswer.build(result: r, marks: marks, note: "", verdict: .changes, snapshot: doc)
+        let a = SpecReviewAnswer.build(result: r, marks: marks, verdict: .changes, snapshot: doc)
         XCTAssertEqual(a.comments[0].heading, "Поведение ✓")
         XCTAssertEqual(a.comments[0].quote, "Тихий режим на сутки")
         // A chapter with no body line quotes its title.
         XCTAssertEqual(a.comments[1].heading, "Пусто")
         XCTAssertEqual(a.comments[1].quote, "Пусто")
+    }
+    /// The margin comments and question answers of the draft go with the
+    /// marks' comments; the verdict is the button's.
+    func testAnswerMergesTheDraft() throws {
+        let r = try golden()
+        let margin = OwnerAskAnswer.Comment(
+            anchor: CommentAnchor(quote: "Intro text", prefix: "Title\n", suffix: "", heading: "Title"), body: "too vague"
+        )
+        let base = OwnerAskAnswer(
+            verdict: .approved, answers: [.init(id: "q1", labels: ["Yes"])], comments: [margin], note: "n"
+        )
+        let marks = ["da:0123456789ab": SpecReviewMark(key: "da:0123456789ab", state: .comment, body: "ask first")]
+        let a = SpecReviewAnswer.build(result: r, marks: marks, base: base, verdict: .changes, snapshot: snapshot)
+        XCTAssertEqual(a.verdict, .changes)
+        XCTAssertEqual(a.answers.map(\.id), ["q1"])
+        XCTAssertEqual(a.comments.map(\.body), ["too vague", "State is kept in the local database — ask first"])
+        XCTAssertEqual(a.note, "n")
+    }
+
+    /// A finding's raw-markdown quote is anchored on the rendered snapshot,
+    /// with rendered context, so the closed ask finds it again.
+    func testAnchorOnMarkdownQuoteRelocatesInTheRenderedDocument() throws {
+        let doc = "# Title\nIntro\n## Behaviour\nThe `mute_until` column keeps **one day** of quiet.\n"
+        let json = """
+        {"agreements":[{"key":"ag:1","text":"A day","status":"as_agreed","chapter":"ch:1",
+        "where":{"heading":"Behaviour","quote":"The `mute_until` column keeps **one day**"}}]}
+        """
+        let r = try JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8))
+        let marks = ["ag:1": SpecReviewMark(key: "ag:1", state: .comment, body: "ok")]
+        let comment = try XCTUnwrap(
+            SpecReviewAnswer.build(result: r, marks: marks, verdict: .changes, snapshot: doc).comments.first
+        )
+        XCTAssertEqual(comment.quote, "The mute_until column keeps one day")
+        XCTAssertEqual(comment.heading, "Behaviour")
+        XCTAssertTrue(comment.suffix.hasPrefix(" of quiet."), comment.suffix)
+        XCTAssertTrue(comment.prefix.contains("Behaviour") && !comment.prefix.contains("#"), "rendered context: \(comment.prefix)")
+        let rendered = DocumentRendering.render(doc)
+        let anchor = OwnerAskReviewText.anchor(of: comment)
+        let range = try XCTUnwrap(OwnerAskReviewText.range(of: anchor, in: rendered))
+        XCTAssertEqual((rendered.text as NSString).substring(with: range), "The mute_until column keeps one day")
+    }
+
+    /// A comment whose finding a re-run dropped keeps the finding's text.
+    func testOrphanCommentKeepsItsFindingText() throws {
+        let r = try golden()
+        let marks = ["ag:gone": SpecReviewMark(key: "ag:gone", state: .comment, body: "old note", about: "Threads stay muted")]
+        let a = SpecReviewAnswer.build(result: r, marks: marks, verdict: .changes, snapshot: snapshot)
+        XCTAssertEqual(a.comments.last?.body, "From the previous run: Threads stay muted — old note")
+        let stored = SpecReviewMark(key: "k", state: .comment, storedBody: marks["ag:gone"]?.storedBody ?? "")
+        XCTAssertEqual(stored.body, "old note")
+        XCTAssertEqual(stored.about, "Threads stay muted")
+        XCTAssertEqual(SpecReviewMark(key: "k", state: .comment, storedBody: "plain").about, "")
+    }
+
+    func testDecisionsListFromTheSnapshot() {
+        let doc = """
+        # T
+        ## Decisions
+        - Mute lives in the local DB (ask #3)
+        - The sidebar refreshes
+          once a minute (conversation)
+        1. Numbered one
+        ```
+        - not an item
+        ```
+        ### Detail
+        - nested heading keeps the section
+        ## Next
+        - not a decision
+        """
+        XCTAssertEqual(SpecReviewDecisions.items(in: doc), [
+            "Mute lives in the local DB (ask #3)",
+            "The sidebar refreshes once a minute (conversation)",
+            "Numbered one",
+            "nested heading keeps the section"
+        ])
+        XCTAssertNil(SpecReviewDecisions.items(in: "# T\n## Goal\nx\n"))
+        XCTAssertEqual(SpecReviewDecisions.items(in: "## Decisions\n"), [])
     }
 }

@@ -6,9 +6,12 @@ import WatchtowerCore
 /// then Meaning → Chapters → Wrap-up over the reviewer's findings, shaped
 /// like Deep review. While the reviewer has no result the body is its
 /// status page; **Read the spec** (the classic view) is always one click away.
-struct SpecReviewView: View {
+/// `askContext` is the ask's own header (summary, focus points, what changed,
+/// its questions), shown on Meaning.
+struct SpecReviewView<AskContext: View>: View {
     let model: SpecReviewModel
     let onReadSpec: () -> Void
+    @ViewBuilder let askContext: () -> AskContext
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -62,10 +65,16 @@ struct SpecReviewView: View {
     @ViewBuilder
     private func phaseBody(_ result: SpecReviewResult) -> some View {
         switch model.phase {
-        case .meaning: SpecReviewMeaningView(model: model, result: result)
+        case .meaning: SpecReviewMeaningView(model: model, result: result, askContext: askContext)
         case .chapters: SpecReviewChaptersView(model: model)
         case .wrapup: SpecReviewWrapUpView(model: model, result: result)
         }
+    }
+}
+
+extension SpecReviewView where AskContext == EmptyView {
+    init(model: SpecReviewModel, onReadSpec: @escaping () -> Void) {
+        self.init(model: model, onReadSpec: onReadSpec) { EmptyView() }
     }
 }
 

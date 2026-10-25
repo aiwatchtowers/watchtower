@@ -24,7 +24,7 @@ enum SpecReviewShotFixtures {
         ("# Mute a channel for a day", "The owner can mute a noisy channel for a day without leaving it."),
         ("## Goal", "The owner can mute a channel for a day, and it comes back on its own."),
         ("## Behaviour", "Muting lasts twenty-four hours. A muted channel shows a bell with a slash in the sidebar."),
-        ("## Decisions", "Mute state lives in the local database. The sidebar refreshes once a minute."),
+        ("## Decisions", "- Mute state lives in the local database. (ask #41)\n- The sidebar refreshes once a minute. (conversation)"),
         ("## Tests", "A test mutes a channel and checks it is back after a day.")
     ]
 
@@ -82,7 +82,7 @@ enum SpecReviewShotFixtures {
                           note: "Agreed in the discussion; the spec does not say it.",
                           source: ("conversation", "entry:9", "mentions should still reach me", "owner"), anchor: nil),
                 agreement("ag:5", "A test covers the expiry", "as_agreed", "ch:4", note: "",
-                          source: ("decisions", "", "", "agent"),
+                          source: ("ask", "ask:41", "test that it comes back", "owner"),
                           anchor: ("Tests", "checks it is back after a day"))
             ],
             "decided_alone": [
@@ -125,12 +125,25 @@ enum SpecReviewShotFixtures {
         let (projectID, askID) = try pool.write { db -> (Int64, Int64) in
             let project = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/tmp/acme")
             let id = try TestDatabase.insertOwnerAsk(db, projectID: project, kind: "review", docPath: "docs/specs/channel-mute.md")
-            try db.execute(sql: "UPDATE owner_asks SET doc_snapshot = ?, title = 'Review the channel mute spec' WHERE id = ?",
-                           arguments: [snapshot, id])
+            try db.execute(sql: """
+                UPDATE owner_asks SET doc_snapshot = ?, title = 'Review the channel mute spec',
+                    summary = 'Second round: the expiry is now in Goal.', changes = 'Goal says the channel comes back on its own.'
+                WHERE id = ?
+                """, arguments: [snapshot, id])
             try db.execute(sql: """
                 INSERT INTO spec_reviews (ask_id, status, reason, model, result, queued_at)
                 VALUES (?, ?, ?, 'opus', ?, '2026-10-25T10:00:00Z')
                 """, arguments: [id, status, status == "failed" ? "the reviewer ran out of time after 10 minutes" : "", result])
+            if withResult {
+                // A comment from the previous run, whose finding the re-run dropped.
+                try db.execute(sql: """
+                    INSERT INTO spec_review_marks (ask_id, item_key, state, body, updated_at)
+                    VALUES (?, 'ag:old', 'comment', ?, '2026-10-25T09:00:00Z')
+                    """, arguments: [id, SpecReviewMark(
+                        key: "ag:old", state: .comment, body: "Say what a mention does while muted.",
+                        about: "Mentions are not covered"
+                    ).storedBody])
+            }
             return (project, id)
         }
         let defaults = UserDefaults(suiteName: DesignShotFixtures.defaultsSuite) ?? .standard
@@ -176,7 +189,9 @@ enum SpecReviewShotFixtures {
         view {
             let model = try model("done", status: "done", withResult: true)
             model.phase = phase
-            return AnyView(SpecReviewView(model: model) {}.background(Color(nsColor: .textBackgroundColor)))
+            let ask = model.ask
+            return AnyView(SpecReviewView(model: model, onReadSpec: {}, askContext: { OwnerAskHeaderCard(ask: ask) })
+                .background(Color(nsColor: .textBackgroundColor)))
         }
     }
 

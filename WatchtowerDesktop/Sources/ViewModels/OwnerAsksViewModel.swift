@@ -174,6 +174,11 @@ final class OwnerAsksViewModel {
     /// Asks an answer is being written for: Answer is disabled meanwhile,
     /// and a second click writes nothing.
     private(set) var answering: Set<Int64> = []
+    /// The comments a review ask's spec review gives (its finding marks,
+    /// spec 2026-10-25 §8), kept by `SpecReviewModel`: the drawer's own
+    /// Request changes / Approve send them with the draft, so a comment
+    /// written on either screen is in the one answer.
+    private(set) var specReviewComments: [Int64: [OwnerAskAnswer.Comment]] = [:]
     /// The ask each workbench's drawer shows (nil = closed). An answer that
     /// went to its session (sent, typed, copied or held) closes it: the
     /// terminal takes over.
@@ -653,12 +658,20 @@ final class OwnerAsksViewModel {
     /// and keeps the draft. Returns the delivery, nil when nothing was written
     /// (an incomplete draft, an answer already running, a failure).
     /// A review's buttons pass their `verdict`, set on the draft first.
+    /// A review ask's spec-review comments go with the draft's.
     @discardableResult
     func answer(_ ask: OwnerAsk, verdict: OwnerAskAnswer.Verdict? = nil) async -> Delivery? {
         if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
         let draft = drafts.askDraft(for: ask.id)
         guard !isAnswering(ask.id), draft.isAnswerable(for: ask) else { return nil }
-        return await answer(ask, with: draft.answer(for: ask)).delivery
+        var answer = draft.answer(for: ask)
+        if ask.kind == .review { answer.comments += specReviewComments[ask.id] ?? [] }
+        return await self.answer(ask, with: answer).delivery
+    }
+
+    /// Set by the ask's `SpecReviewModel` whenever its marks or result change.
+    func setSpecReviewComments(_ comments: [OwnerAskAnswer.Comment], askID: Int64) {
+        specReviewComments[askID] = comments.isEmpty ? nil : comments
     }
 
     /// Writes `answer` to `ask` and delivers its line — the one path of the
@@ -699,6 +712,7 @@ final class OwnerAsksViewModel {
         }
         answerErrors[askID] = nil
         drafts.discard(askID)
+        specReviewComments[askID] = nil
         let line = OwnerAskPrompt.line(id: askID, kind: ask.kind, answer: answer)
         var delivery = Delivery.noSession
         // Never typed, held or queued for an automation's ask, whatever
