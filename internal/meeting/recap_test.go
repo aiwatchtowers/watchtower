@@ -77,7 +77,7 @@ func TestGenerateRecap_StripsMarkdownFences(t *testing.T) {
 	}
 }
 
-func TestGenerateRecap_MalformedJSONErrorsWithSnippet(t *testing.T) {
+func TestGenerateRecap_MalformedJSONErrorsWithFingerprint(t *testing.T) {
 	aiResponse := "not json at all, full of garbage and other text"
 	p := newTestPipelineForRecap(t, &mockGenerator{response: aiResponse})
 
@@ -85,8 +85,9 @@ func TestGenerateRecap_MalformedJSONErrorsWithSnippet(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error for malformed JSON")
 	}
-	if !strings.Contains(err.Error(), "garbage") {
-		t.Errorf("error should include raw snippet, got: %v", err)
+	// FILES-01: the error carries a fingerprint of the output, never its text.
+	if strings.Contains(err.Error(), "garbage") || !strings.Contains(err.Error(), "sha256:") {
+		t.Errorf("error should carry the output fingerprint, not its text, got: %v", err)
 	}
 }
 

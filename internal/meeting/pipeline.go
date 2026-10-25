@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/textutil"
@@ -170,7 +171,7 @@ type attendeeEntry struct {
 }
 
 func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, userNotes string) (*MeetingPrepResult, error) {
-	p.logger.Printf("meeting: generating prep for %q (ID: %s)", event.Title, event.ID)
+	p.logger.Printf("meeting: generating prep for event=%s", event.ID)
 
 	// Parse attendees.
 	var attendees []attendeeEntry
@@ -256,7 +257,7 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 
 	aiResponse, _, _, err := p.generator.Generate(digest.WithSource(ctx, "meeting.prep"), systemPrompt, userMessage, "")
 	if err != nil {
-		p.logger.Printf("meeting: error generating prep for %q: %v", event.Title, err)
+		p.logger.Printf("meeting: error generating prep for event=%s: %v", event.ID, err)
 		return nil, fmt.Errorf("AI generation: %w", err)
 	}
 
@@ -264,8 +265,8 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	var result MeetingPrepResult
 	cleaned := cleanJSON(aiResponse)
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		p.logger.Printf("meeting: error parsing AI response for %q: %v", event.Title, err)
-		return nil, fmt.Errorf("parsing AI response: %w (raw: %.500s)", err, aiResponse)
+		p.logger.Printf("meeting: error parsing AI response for event=%s: %v (%s)", event.ID, err, logredact.Body([]byte(aiResponse)))
+		return nil, fmt.Errorf("parsing AI response: %w (%s)", err, logredact.Body([]byte(aiResponse)))
 	}
 
 	// Ensure event metadata is filled.
@@ -277,11 +278,11 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	// is no data); no section key at all means the answer was not a prep
 	// ({} after cleanJSON, renamed or wrapped keys) and must not be cached.
 	if !hasPrepSection(cleaned) {
-		return nil, fmt.Errorf("AI response has no prep sections (raw: %.500s)", aiResponse)
+		return nil, fmt.Errorf("AI response has no prep sections (%s)", logredact.Body([]byte(aiResponse)))
 	}
 
-	p.logger.Printf("meeting: completed prep for %q (%d talking points, %d open items)",
-		event.Title, len(result.TalkingPoints), len(result.OpenItems))
+	p.logger.Printf("meeting: completed prep for event=%s (%d talking points, %d open items)",
+		event.ID, len(result.TalkingPoints), len(result.OpenItems))
 
 	return &result, nil
 }
