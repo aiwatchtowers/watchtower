@@ -6,11 +6,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/db"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -201,4 +207,99 @@ func TestRun_NoReadableFolderFails(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "failed", row.Status)
 	assert.Contains(t, row.Reason, "not a readable directory")
+}
+
+// dumpTables is every table's rows but spec_reviews', as text, in a stable
+// order: what a run must leave untouched.
+func dumpTables(t *testing.T, d *db.DB) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, n := range tableNames(t, d) {
+		if n != "spec_reviews" {
+			if rows, ok := dumpTable(t, d, n); ok {
+				out[n] = rows
+			}
+		}
+	}
+	return out
+}
+
+func tableNames(t *testing.T, d *db.DB) []string {
+	t.Helper()
+	rows, err := d.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+		AND name NOT LIKE '%\_fts%' ESCAPE '\' ORDER BY name`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		require.NoError(t, rows.Scan(&n))
+		names = append(names, n)
+	}
+	require.NoError(t, rows.Err())
+	return names
+}
+
+// dumpTable is the table's rows as sorted text; false for a table the plain
+// engine cannot scan.
+func dumpTable(t *testing.T, d *db.DB, name string) (string, bool) {
+	t.Helper()
+	r, err := d.Query(`SELECT * FROM "` + name + `"`)
+	if err != nil {
+		return "", false
+	}
+	defer r.Close()
+	cols, err := r.Columns()
+	require.NoError(t, err)
+	var lines []string
+	for r.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		require.NoError(t, r.Scan(ptrs...))
+		lines = append(lines, fmt.Sprint(vals...))
+	}
+	require.NoError(t, r.Err())
+	sort.Strings(lines)
+	return strings.Join(lines, "\n"), true
+}
+
+// folderState is every entry of the folder with its mtime and size.
+func folderState(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	require.NoError(t, filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		out = append(out, fmt.Sprintf("%s %d %d", p, info.ModTime().UnixNano(), info.Size()))
+		return nil
+	}))
+	return out
+}
+
+// BEHAVIOR SPECREVIEW-01: the reviewer never writes the folder and writes only
+// its own spec_reviews row.
+func TestSpecReview01_RunWritesOnlyItsRow(t *testing.T) {
+	f, askID := runFixture(t)
+	f.write(t, "docs/specs/x-design.md", runDoc)
+	beforeTables := dumpTables(t, f.d)
+	beforeFolder := folderState(t, f.folder)
+	require.Greater(t, len(beforeTables), 20, "the dump sees the schema")
+	require.NotEmpty(t, beforeTables["owner_asks"])
+
+	require.NoError(t, Run(context.Background(), f.deps(&fakeAgent{out: runReply}), askID))
+	row, err := f.d.GetSpecReview(askID)
+	require.NoError(t, err)
+	require.Equal(t, "done", row.Status)
+	assert.Equal(t, beforeTables, dumpTables(t, f.d), "no table but spec_reviews changes")
+	assert.Equal(t, beforeFolder, folderState(t, f.folder), "the folder is untouched")
+
+	// A failing run writes only its row too.
+	f2, askID2 := runFixture(t)
+	before2 := dumpTables(t, f2.d)
+	require.Error(t, Run(context.Background(), f2.deps(&fakeAgent{err: errors.New("boom")}), askID2))
+	assert.Equal(t, before2, dumpTables(t, f2.d))
 }

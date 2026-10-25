@@ -36,6 +36,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Account purge on revoked access | [account-purge.md](account-purge.md) | `internal/purge/`, `internal/db/account_purges.go`, `internal/db/account_purge_steps.go`, `internal/db/account_access.go`, `internal/db/migrations/00148_account_purge.sql`, `internal/daemon/account_purge.go`, `cmd/accounts.go`, `WatchtowerDesktop/Sources/Services/AccountPurgeCenter.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/AccountPurgeNoticePolicy.swift` |
 | Source deletions | [source-deletions.md](source-deletions.md) | `internal/sourcediff/`, `internal/sync/deletions.go`, `internal/db/slack_deletions.go`, `internal/db/migrations/00139_source_deletions.sql`, `internal/gmail/deletions.go`, `internal/imap/sync.go` (`reconcileDeletions`), `internal/jira/sync.go` (comment set-replace), `internal/jira/deletions.go`, `internal/db/jira_deletions.go`, `internal/kb/dirty.go` |
 | Search indexes | [search-indexes.md](search-indexes.md) | `internal/db/migrations/00147_fts_rowid.sql`, `internal/db/fts_rebuild.go`, `internal/db/messages.go`, `internal/db/search.go` |
+| Spec review | [spec-review.md](spec-review.md) | `internal/specreview/`, `internal/db/spec_reviews.go`, `internal/daemon/spec_review_sweep.go`, `cmd/workbench_spec_review.go`, `cmd/workbench_spec_review_launch.go`, `internal/tools/workbench_asks.go` (`doc_type`, launcher) |
 
 (Other modules will be added as their inventories are written.)
 

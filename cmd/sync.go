@@ -891,6 +891,13 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
 	}
 	d.SetPIDPath(pidFilePath(cfg))
+	d.SetSpecReviewLaunch(func(askID int64) error {
+		exe, err := specReviewExe()
+		if err != nil {
+			return fmt.Errorf("locating the watchtower binary: %w", err)
+		}
+		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"))
+	})
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a
 	// cheap struct, and the daemon's own phase methods gate execution on

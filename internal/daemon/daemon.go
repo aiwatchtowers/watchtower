@@ -127,6 +127,7 @@ type Daemon struct {
 	cycleEvents         AutomationEvents // this sync cycle's bus, nil = none (beginAutomationEvents); runSync and startupCalendarSync only
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
+	specReviewLaunch    func(askID int64) error // nil = the spec review sweep is off
 	pidPath             string
 	db                  *db.DB
 	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
@@ -652,6 +653,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.setSection(sectionPipelines)
 	}
 	d.phaseInstructionSuggestions(ctx)
+	d.phaseSpecReviewSweep(ctx)
 }
 
 // sampleLockStats writes this cycle's WAL and connection-pool wait sample to
