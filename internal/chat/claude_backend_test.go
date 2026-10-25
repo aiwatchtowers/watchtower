@@ -329,6 +329,9 @@ func TestChat04_ClaudeArgvCarriesNoContent(t *testing.T) {
 		opts.ClaudeAI = mode
 		tmp := t.TempDir()
 		t.Setenv("TMPDIR", tmp)
+		// The temp-file checks below watch the directory a prompt file
+		// would land in (os.CreateTemp("") = os.TempDir()), not a vacuous one.
+		require.Equal(t, tmp, os.TempDir())
 		read := filepath.Join(t.TempDir(), "read")
 		opts.Env = append(opts.Env, "FAKE_PROMPT="+read+".prompt", "FAKE_MCP="+read+".mcp")
 		h := startSession(t, NewClaudeBackend(opts), nil)

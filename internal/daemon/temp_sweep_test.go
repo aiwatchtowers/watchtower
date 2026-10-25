@@ -51,6 +51,8 @@ func TestDaemonStart_ImportsLegacyDraftCache(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
 	d.db = database
+	_, err = database.Exec(`INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (5, '', 1, 1)`)
+	require.NoError(t, err)
 	dir := filepath.Join(d.config.WorkspaceDir(), authoring.DraftCacheDir)
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "5.jsonl"),

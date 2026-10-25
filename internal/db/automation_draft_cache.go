@@ -1,9 +1,20 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+// DraftCacheImport is one legacy cache line for ImportDraftCache.
+type DraftCacheImport struct {
+	EntryJSON string
+	At        time.Time
+}
+
+// ErrDraftCacheNoConversation is ImportDraftCache's answer for a conversation
+// that no longer exists: there is nothing to attach the entries to.
+var ErrDraftCacheNoConversation = errors.New("the conversation no longer exists")
 
 // AppendDraftCache appends entryJSON (one automation editor DraftCacheEntry)
 // to conversationID's draft cache and keeps only its newest keep entries, in
@@ -57,4 +68,42 @@ func (db *DB) DeleteDraftCache(conversationID int64) error {
 		return fmt.Errorf("deleting the draft cache of conversation %d: %w", conversationID, err)
 	}
 	return nil
+}
+
+// ImportDraftCache writes entries (oldest first; the newest keep are kept) as
+// conversationID's draft cache in one transaction, unless the conversation
+// already has rows: then nothing is written and imported is false. A re-run
+// after a failed removal of the legacy file therefore never duplicates or
+// reorders entries. A missing conversation is ErrDraftCacheNoConversation.
+func (db *DB) ImportDraftCache(conversationID int64, entries []DraftCacheImport, keep int) (imported bool, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("importing the draft cache of conversation %d: %w", conversationID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists, rows int
+	if err := tx.QueryRow(`SELECT (SELECT COUNT(*) FROM chat_conversations WHERE id = ?),
+		(SELECT COUNT(*) FROM automation_draft_cache WHERE conversation_id = ?)`, conversationID, conversationID).
+		Scan(&exists, &rows); err != nil {
+		return false, fmt.Errorf("importing the draft cache of conversation %d: %w", conversationID, err)
+	}
+	if exists == 0 {
+		return false, ErrDraftCacheNoConversation
+	}
+	if rows > 0 {
+		return false, nil
+	}
+	if len(entries) > keep {
+		entries = entries[len(entries)-keep:]
+	}
+	for i, e := range entries {
+		if _, err := tx.Exec(`INSERT INTO automation_draft_cache (conversation_id, seq, entry_json, at) VALUES (?, ?, ?, ?)`,
+			conversationID, i+1, e.EntryJSON, e.At.UTC().Format(time.RFC3339)); err != nil {
+			return false, fmt.Errorf("importing the draft cache of conversation %d: %w", conversationID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("importing the draft cache of conversation %d: %w", conversationID, err)
+	}
+	return true, nil
 }

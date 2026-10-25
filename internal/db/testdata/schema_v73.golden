@@ -688,7 +688,7 @@ reported_cost_usd REAL
 
 table	automation_draft_cache
 CREATE TABLE automation_draft_cache (
-conversation_id INTEGER NOT NULL,
+conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
 seq INTEGER NOT NULL,
 entry_json TEXT NOT NULL,
 at TEXT NOT NULL,

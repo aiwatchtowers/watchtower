@@ -84,24 +84,27 @@ func TestSweepStaleTemp_AllPrefixes(t *testing.T) {
 		}
 		return p
 	}
-	var stale []string
-	for _, prefix := range StaleTempPrefixes {
-		stale = append(stale, write(prefix+"a.txt", old))
+	stale := []string{
+		write(SystemPromptTempPrefix+"a.txt", old),
+		write("wt-chat-prompt-a.txt", old),
+		write("wt-chat-mcp-a.json", old),
+		write("wt-mcp-a.json", old),
 	}
 	fresh := write(SystemPromptTempPrefix+"fresh.txt", now)
-	turn := write("wt-chat-turn-x.txt", old) // lives for a whole session
+	turn := write("wt-chat-turn-x.txt", old)     // lives for a whole session
+	status := write("wt-mcp-status-1.json", old) // session-long, though wt-mcp-*.json matches
 	other := write("other-old.txt", old)
 
 	n, err := SweepStaleTemp(10*time.Minute, now)
-	if err != nil || n != len(StaleTempPrefixes) {
-		t.Fatalf("SweepStaleTemp = %d, %v; want %d, nil", n, err, len(StaleTempPrefixes))
+	if err != nil || n != len(stale) {
+		t.Fatalf("SweepStaleTemp = %d, %v; want %d, nil", n, err, len(stale))
 	}
 	for _, p := range stale {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("%s survived", p)
 		}
 	}
-	for _, p := range []string{fresh, turn, other} {
+	for _, p := range []string{fresh, turn, status, other} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("%s was removed: %v", p, err)
 		}

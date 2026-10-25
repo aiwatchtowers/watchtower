@@ -18,30 +18,35 @@ import (
 // caller removes each once codex has read it.
 const SystemPromptTempPrefix = "wt-system-prompt-"
 
-// StaleTempPrefixes are the temp files that held a prompt or an MCP config,
-// this version's and older versions' (wt-chat-prompt-, wt-chat-mcp-, wt-mcp-
-// came before the pipes of #604). A live call never keeps one ten minutes,
-// so SweepStaleTemp may remove every older one. Not wt-chat-turn- or
-// wt-mcp-status-: they hold ids and live for a whole session.
-var StaleTempPrefixes = []string{SystemPromptTempPrefix, "wt-chat-prompt-", "wt-chat-mcp-", "wt-mcp-"}
+// StaleTempPatterns are the temp files that held a prompt or an MCP config,
+// this version's and older versions' (wt-chat-prompt-, wt-chat-mcp- and
+// wt-mcp-*.json came before the pipes of #604), as filepath.Match patterns.
+// A live call never keeps one ten minutes, so SweepStaleTemp may remove
+// every older one. staleTempKept are never swept: wt-chat-turn- files hold
+// ids and live for a whole session, and wt-mcp-status- is the same family's
+// session-long name, which the broad wt-mcp- pattern would otherwise catch.
+var (
+	StaleTempPatterns = []string{SystemPromptTempPrefix + "*", "wt-chat-prompt-*", "wt-chat-mcp-*", "wt-mcp-*.json"}
+	staleTempKept     = []string{"wt-chat-turn-", "wt-mcp-status-"}
+)
 
 // SweepStaleTemp removes regular files in the system temp directory whose
-// name starts with one of StaleTempPrefixes and whose last change is
+// name matches one of StaleTempPatterns (and none of staleTempKept) and whose last change is
 // olderThan before now: leftovers of a killed process. It returns how many
 // it removed; a file that vanished meanwhile is not an error.
 func SweepStaleTemp(olderThan time.Duration, now time.Time) (int, error) {
-	return sweepDir(os.TempDir(), StaleTempPrefixes, olderThan, now)
+	return sweepDir(os.TempDir(), isStaleTempName, olderThan, now)
 }
 
 // SweepStaleDir removes every regular file in dir older than olderThan (a
 // spool whose live files are always younger). A missing dir is a no-op.
 func SweepStaleDir(dir string, olderThan time.Duration, now time.Time) (int, error) {
-	return sweepDir(dir, nil, olderThan, now)
+	return sweepDir(dir, func(string) bool { return true }, olderThan, now)
 }
 
 // sweepDir removes dir's regular files older than olderThan whose name
-// starts with one of prefixes (every file when prefixes is nil).
-func sweepDir(dir string, prefixes []string, olderThan time.Duration, now time.Time) (int, error) {
+// match accepts.
+func sweepDir(dir string, match func(name string) bool, olderThan time.Duration, now time.Time) (int, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
@@ -52,7 +57,7 @@ func sweepDir(dir string, prefixes []string, olderThan time.Duration, now time.T
 	removed := 0
 	var errs []error
 	for _, e := range entries {
-		if !e.Type().IsRegular() || (prefixes != nil && !hasAnyPrefix(e.Name(), prefixes)) {
+		if !e.Type().IsRegular() || !match(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
@@ -75,9 +80,15 @@ func sweepDir(dir string, prefixes []string, olderThan time.Duration, now time.T
 	return removed, errors.Join(errs...)
 }
 
-func hasAnyPrefix(name string, prefixes []string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(name, p) {
+// isStaleTempName reports whether name is a prompt or MCP-config temp file.
+func isStaleTempName(name string) bool {
+	for _, kept := range staleTempKept {
+		if strings.HasPrefix(name, kept) {
+			return false
+		}
+	}
+	for _, pattern := range StaleTempPatterns {
+		if ok, _ := filepath.Match(pattern, name); ok {
 			return true
 		}
 	}

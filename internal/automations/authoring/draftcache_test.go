@@ -58,6 +58,16 @@ func readDraftCache(t *testing.T, d *db.DB, conversationID int64) []DraftCacheEn
 	return out
 }
 
+// seedConversations inserts the editor chats the cache rows belong to.
+func seedConversations(t *testing.T, d *db.DB, ids ...int64) {
+	t.Helper()
+	for _, id := range ids {
+		if _, err := d.Exec(`INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (?, '', 1, 1)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func editorBinding(conversationID int64) tools.Binding {
 	return tools.Binding{Surface: tools.AutomationEditorSurface, ConversationID: conversationID}
 }
@@ -66,6 +76,7 @@ func editorBinding(conversationID int64) tools.Binding {
 // automation_draft_cache, and no automation-drafts directory is created.
 func TestCacheDraft_WritesRows(t *testing.T) {
 	f := newDraftFixture(t)
+	seedConversations(t, f.d, 42)
 	dir := t.TempDir()
 	text := recipeText([]string{"llm:light"}, "", `return llm("x")`)
 	resJSON := f.callBound(t, dir, text, editorBinding(42))
@@ -91,6 +102,7 @@ func TestCacheDraft_WritesRows(t *testing.T) {
 
 func TestDraftCache_NotWrittenOnMainOrWithoutConversation(t *testing.T) {
 	f := newDraftFixture(t)
+	seedConversations(t, f.d, 42)
 	dir := t.TempDir()
 	text := recipeText([]string{"llm:light"}, "", `return llm("x")`)
 	f.callBound(t, dir, text, tools.Binding{Surface: "main", ConversationID: 42})
@@ -102,6 +114,7 @@ func TestDraftCache_NotWrittenOnMainOrWithoutConversation(t *testing.T) {
 
 func TestDraftCache_KeepsTheLastFive(t *testing.T) {
 	f := newDraftFixture(t)
+	seedConversations(t, f.d, 7)
 	dir := t.TempDir()
 	var texts []string
 	for i := range 7 {
@@ -148,6 +161,7 @@ func TestDraftCache_WriteFailureLeavesTheResultUnchanged(t *testing.T) {
 // never shows the older draft as the current one (J5).
 func TestDraftCache_EvaluationErrorIsCachedNewest(t *testing.T) {
 	f := newDraftFixture(t)
+	seedConversations(t, f.d, 9)
 	dir := t.TempDir()
 	f.callBound(t, dir, "not a recipe", editorBinding(9))
 

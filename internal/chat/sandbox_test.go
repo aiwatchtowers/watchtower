@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/fsutil"
 )
 
 // fakeSandboxExec is a sandbox-exec stand-in: it appends its argv (one
@@ -242,3 +245,26 @@ func sandboxTestHome(t *testing.T) string {
 }
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// The real seatbelt profile lets the child read its inherited pipes: the
+// claude.ai-mode chat child gets its prompt and MCP config as /dev/fd/N
+// (#604 G7). A harmless run of cat under the real sandbox-exec.
+func TestChildSandbox_RealProfileReadsInheritedFD(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the file sandbox is macOS only")
+	}
+	s, err := NewChildSandbox()
+	if err != nil {
+		t.Skipf("sandbox-exec unavailable: %v", err)
+	}
+	name, argv := s.command("/bin/cat", []string{fsutil.PayloadPath(0), fsutil.PayloadPath(1)})
+	cmd := exec.Command(name, argv...)
+	_, closePayloads, err := fsutil.AttachPayloads(cmd, "PROMPT-OK\n", `{"mcpServers":{}}`)
+	require.NoError(t, err)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	require.NoError(t, cmd.Start())
+	closePayloads()
+	require.NoError(t, cmd.Wait())
+	assert.Equal(t, "PROMPT-OK\n{\"mcpServers\":{}}", out.String())
+}

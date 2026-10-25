@@ -10,9 +10,11 @@ import (
 
 // TestImportLegacyDraftCache (#604 Review Focus 4): an older version's
 // automation-drafts/<id>.jsonl files are imported in order and removed; a
-// file that does not parse stays for the owner, and the directory with it.
+// file that does not parse is renamed .bad (logged once) and stays for the
+// owner, and the directory with it.
 func TestImportLegacyDraftCache(t *testing.T) {
 	f := newDraftFixture(t)
+	seedConversations(t, f.d, 11, 12, 13, 14)
 	ws := t.TempDir()
 	dir := filepath.Join(ws, DraftCacheDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -52,12 +54,15 @@ func TestImportLegacyDraftCache(t *testing.T) {
 			t.Errorf("%s was not removed", name)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "13.jsonl")); err != nil {
-		t.Errorf("the unparseable file was removed: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "13.jsonl.bad")); err != nil {
+		t.Errorf("the unparseable file is not kept as .bad: %v", err)
+	}
+	if n, err := ImportLegacyDraftCache(f.d, ws); err != nil || n != 0 {
+		t.Fatalf("re-run with only the .bad file = %d, %v; want 0, nil (no retry, no log)", n, err)
 	}
 
 	// Once the last file goes, so does the directory.
-	if err := os.Remove(filepath.Join(dir, "13.jsonl")); err != nil {
+	if err := os.Remove(filepath.Join(dir, "13.jsonl.bad")); err != nil {
 		t.Fatal(err)
 	}
 	write("14.jsonl", line("d1"))
@@ -69,5 +74,58 @@ func TestImportLegacyDraftCache(t *testing.T) {
 	}
 	if n, err := ImportLegacyDraftCache(f.d, ws); err != nil || n != 0 {
 		t.Fatalf("import with no directory = %d, %v", n, err)
+	}
+}
+
+// A file whose removal failed is imported again on the next start: the
+// conversation already has its rows, so nothing is duplicated or reordered,
+// and the file goes this time. A conversation that no longer exists only
+// loses the file.
+func TestImportLegacyDraftCache_TwiceAfterAFailedRemove(t *testing.T) {
+	f := newDraftFixture(t)
+	seedConversations(t, f.d, 21)
+	ws := t.TempDir()
+	dir := filepath.Join(ws, DraftCacheDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, text := range []string{"x1", "x2", "x3"} {
+		b, err := json.Marshal(DraftCacheEntry{RecipeText: text, At: "2026-10-20T10:00:00Z"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(b))
+	}
+	body := []byte(strings.Join(lines, "\n") + "\n")
+	path := filepath.Join(dir, "21.jsonl")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "22.jsonl"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The removal fails: the directory is read-only.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportLegacyDraftCache(f.d, ws); err == nil {
+		t.Fatal("a failed removal must be reported")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := ImportLegacyDraftCache(f.d, ws); err != nil || n != 0 {
+		t.Fatalf("second import = %d, %v; want 0, nil", n, err)
+	}
+	var got []string
+	for _, e := range readDraftCache(t, f.d, 21) {
+		got = append(got, e.RecipeText)
+	}
+	if strings.Join(got, ",") != "x1,x2,x3" {
+		t.Fatalf("cache = %v; want x1,x2,x3 once, in order", got)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("both files (22 has no conversation) and the directory must be gone: %v", err)
 	}
 }

@@ -2176,7 +2176,7 @@ CREATE TABLE IF NOT EXISTS instruction_chat_lines (
     added_at        TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS automation_draft_cache (
-    conversation_id INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
     seq             INTEGER NOT NULL,
     entry_json      TEXT NOT NULL,
     at              TEXT NOT NULL,

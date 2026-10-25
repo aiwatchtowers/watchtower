@@ -3247,8 +3247,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
 -- results of an automation_editor conversation (the Draft panel's history),
 -- oldest first by seq, at most a handful kept (AppendDraftCache). entry_json
 -- is one DraftCacheEntry. Replaces <workspace>/automation-drafts/<id>.jsonl.
+-- Deleting the conversation (Go or the Desktop) drops its rows by cascade.
 CREATE TABLE IF NOT EXISTS automation_draft_cache (
-    conversation_id INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
     seq             INTEGER NOT NULL,
     entry_json      TEXT NOT NULL,
     at              TEXT NOT NULL,                       -- RFC 3339 UTC

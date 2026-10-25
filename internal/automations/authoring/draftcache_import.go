@@ -19,9 +19,13 @@ import (
 
 // ImportLegacyDraftCache moves the draft caches an older version kept in
 // <workspace>/automation-drafts/<conversation id>.jsonl into
-// automation_draft_cache, oldest line first, then removes each imported
-// file and, once it is empty, the directory (#604 G2). A file that does not
-// parse is kept and logged by name only (its lines hold recipe text). It
+// automation_draft_cache, oldest line first, each file in one transaction
+// (db.ImportDraftCache), then removes the file and, once it is empty, the
+// directory (#604 G2). A conversation that already has cache rows keeps
+// them (a re-run after a failed removal never duplicates or reorders); the
+// file of a conversation that no longer exists is removed with nothing to
+// import. A file that does not parse is renamed to <name>.bad, logged once
+// by name only (its lines hold recipe text), and left for the owner. It
 // returns how many files were imported; a missing directory is no work.
 func ImportLegacyDraftCache(d *db.DB, workspaceDir string) (int, error) {
 	dir := filepath.Join(workspaceDir, DraftCacheDir)
@@ -40,20 +44,27 @@ func ImportLegacyDraftCache(d *db.DB, workspaceDir string) (int, error) {
 		if !ok {
 			continue
 		}
-		lines, err := readLegacyDraftCache(filepath.Join(dir, name))
+		path := filepath.Join(dir, name)
+		lines, err := readLegacyDraftCache(path)
 		if err != nil {
-			log.Printf("automation drafts: keeping %s: %v", name, err)
+			log.Printf("automation drafts: %s does not parse (%v), kept as %s.bad", name, err, name)
+			if rerr := os.Rename(path, path+".bad"); rerr != nil {
+				errs = append(errs, rerr)
+			}
 			continue
 		}
-		if err := importDraftLines(d, id, lines); err != nil {
+		wrote, err := importDraftLines(d, id, lines)
+		if err != nil && !errors.Is(err, db.ErrDraftCacheNoConversation) {
 			errs = append(errs, fmt.Errorf("importing %s: %w", name, err))
 			continue
 		}
-		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+		if err := os.Remove(path); err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		imported++
+		if wrote {
+			imported++
+		}
 	}
 	if rest, err := os.ReadDir(dir); err == nil && len(rest) == 0 {
 		_ = os.Remove(dir) // an empty leftover; a failure leaves it for the next start
@@ -95,20 +106,20 @@ func readLegacyDraftCache(path string) ([]DraftCacheEntry, error) {
 	return out, sc.Err()
 }
 
-// importDraftLines appends entries to conversation id's cache, oldest first.
-func importDraftLines(d *db.DB, id int64, entries []DraftCacheEntry) error {
+// importDraftLines writes entries as conversation id's cache, oldest first,
+// in one transaction; false when the conversation already had rows.
+func importDraftLines(d *db.DB, id int64, entries []DraftCacheEntry) (bool, error) {
+	rows := make([]db.DraftCacheImport, 0, len(entries))
 	for _, e := range entries {
 		line, err := json.Marshal(e)
 		if err != nil {
-			return err
+			return false, err
 		}
 		at, err := time.Parse(time.RFC3339, e.At)
 		if err != nil {
 			at = time.Now()
 		}
-		if err := d.AppendDraftCache(id, string(line), at, draftCacheKeep); err != nil {
-			return err
-		}
+		rows = append(rows, db.DraftCacheImport{EntryJSON: string(line), At: at})
 	}
-	return nil
+	return d.ImportDraftCache(id, rows, draftCacheKeep)
 }

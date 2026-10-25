@@ -2,12 +2,13 @@
 -- Company content that used to sit in files outside the database (#604
 -- Stage A, spec docs/superpowers/specs/2026-10-25-files-outside-db-design.md):
 -- automation_draft_cache replaces <workspace>/automation-drafts/<id>.jsonl
--- (Go writes it, the Desktop's Draft panel reads it); pending_transcripts
+-- (Go writes it, the Desktop's Draft panel reads it; its rows go with their
+-- conversation by cascade); pending_transcripts
 -- replaces the recording sidecars rec_*.meta|txt|json and chat_queued_drafts
 -- the queued embedded-chat draft in UserDefaults — both written by the
 -- Desktop only (Go never reads or writes them).
 CREATE TABLE automation_draft_cache (
-    conversation_id INTEGER NOT NULL,
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
     seq             INTEGER NOT NULL,
     entry_json      TEXT NOT NULL,
     at              TEXT NOT NULL,

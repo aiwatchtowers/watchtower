@@ -103,7 +103,7 @@ func Execute() int {
 const staleTempAge = 10 * time.Minute
 
 // sweepStaleTemp removes the prompt and MCP-config temp files a killed
-// process left (fsutil.StaleTempPrefixes). Every process start runs it in
+// process left (fsutil.StaleTempPatterns). Every process start runs it in
 // the background: best effort, it never delays a command or a hook, and a
 // short-lived process may exit before it finishes; errors are dropped (the
 // daemon's own startup sweep logs them).
