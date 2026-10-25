@@ -391,6 +391,29 @@ final class AskAnswerHandlerTests: XCTestCase {
         XCTAssertEqual(try stored(ask).status, "open")
     }
 
+    /// F5: the phone's answer to a review ask carries the spec review's
+    /// comment marks, read from the database at answer time (the phone
+    /// never sees them).
+    func testAReviewAnswerFromThePhoneCarriesTheSpecReviewMarks() async throws {
+        let (p, _, ask) = try await seed(kind: "review", payload: "{}")
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE owner_asks SET doc_snapshot = ? WHERE id = ?", arguments: ["# Spec\nThe plan text\n", ask])
+            try d.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, queued_at) VALUES (?, 'running', '2026-10-25T10:00:00Z')
+                """, arguments: [ask])
+            try d.execute(sql: """
+                INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at)
+                VALUES (?, 'ag:1', 'comment', 'say when', 'Mute lasts a day', '2026-10-25T10:00:00Z')
+                """, arguments: [ask])
+        }
+
+        let outcome = try await makeHandler(makeVM()).handle(action(ask: ask, workbench: p, answer: review(verdict: "changes")))
+
+        XCTAssertNotEqual(try stored(ask).status, "open", "\(outcome)")
+        let answer = try OwnerAskAnswer.decode(try stored(ask).answer)
+        XCTAssertEqual(answer.comments.map(\.body), ["From the previous run: Mute lasts a day — say when"])
+    }
+
     func testAWhitespaceOnlyCommentIsInvalidAnswer() async throws {
         let (p, _, ask) = try await seed(kind: "review", payload: "{}")
         let blank: JSONValue = .object([

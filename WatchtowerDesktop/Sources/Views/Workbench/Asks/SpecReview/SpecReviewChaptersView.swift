@@ -13,9 +13,9 @@ struct SpecReviewChaptersView: View {
         let chapters = model.chapters
         HSplitView {
             list(chapters)
-                .frame(minWidth: 170, idealWidth: 220, maxWidth: 360)
+                .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal, maxWidth: PaneWidth.sideListMax)
             detail(chapters.first { $0.key == model.chapterKey } ?? chapters.first)
-                .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: PaneWidth.detailMin, maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

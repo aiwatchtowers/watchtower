@@ -53,41 +53,54 @@ final class SpecReviewModelTests: XCTestCase {
     }
 
     private func makeModel(
-        sleep: @escaping (Duration) async throws -> Void = { _ in await Task.yield() },
-        render: @escaping (String) -> RenderedDocument = { DocumentRendering.render($0) }
+        sleep: @escaping (Duration) async throws -> Void = { _ in await Task.yield() }
     ) async throws -> SpecReviewModel {
-        let dbm = DatabaseManager(pool: pool)
         let asks = OwnerAsksViewModel(
             dbPool: pool, terminalCenter: nil, lineDelivery: SessionLineDelivery(terminalCenter: nil), defaults: defaults
         )
         self.asks = asks
         await asks.load(projectID: projectID)
         let ask = try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID })
-        return SpecReviewModel(ask: ask, db: dbm, cli: WorkbenchCLI(runner: runner), asks: asks, sleep: sleep, render: render)
+        return SpecReviewModel(ask: ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks, sleep: sleep)
     }
 
-    /// The snapshot is rendered once for the model's life: poll loads and
-    /// mark changes reuse it, and the Wrap-up's answerBlocker (read on every
-    /// body evaluation, so on every keystroke of the note) never renders.
-    func testSnapshotIsRenderedOnceAndAnswerBlockerNeverRenders() async throws {
+    /// The asks view model alone, no SpecReviewModel ever built: the
+    /// classic footer, a Quick answer or the phone's relay.
+    private func makeAsks() async throws -> (OwnerAsksViewModel, OwnerAsk) {
+        let asks = OwnerAsksViewModel(
+            dbPool: pool, terminalCenter: nil, lineDelivery: SessionLineDelivery(terminalCenter: nil), defaults: defaults
+        )
+        self.asks = asks
+        await asks.load(projectID: projectID)
+        return (asks, try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID }))
+    }
+
+    /// A mark as the Desktop screen writes it.
+    private func writeMark(_ key: String, _ state: String, body: String = "", about: String = "") throws {
+        let id = askID
+        try pool.write { d in
+            try d.execute(sql: """
+                INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at)
+                VALUES (?, ?, ?, ?, ?, '2026-10-25T10:00:00Z')
+                """, arguments: [id, key, state, body, about])
+        }
+    }
+
+    /// The screen hands the draft to the one answer path; the marks'
+    /// comments are placed there, from the database, so the model never
+    /// places (or renders) anything on a mark, a load or a keystroke.
+    func testScreenAnswerIsTheDraftAndMarksAreAddedOnceFromTheDatabase() async throws {
         try setRow(status: "done", result: resultJSON())
-        var renders = 0
-        let countingRender: (String) -> RenderedDocument = { renders += 1; return DocumentRendering.render($0) }
-        let model = try await makeModel(render: countingRender)
+        let model = try await makeModel()
         await model.load()
-        XCTAssertEqual(renders, 0, "no comment yet: nothing to place")
-        for _ in 0..<5 { _ = model.answerBlocker }
-        XCTAssertEqual(renders, 0, "answerBlocker must not render the snapshot")
         await model.mark("ag:1", .comment, body: "keep")
-        XCTAssertEqual(renders, 1)
-        await model.load()
-        await model.load()
         await model.mark("da:1", .comment, body: "why?")
-        for _ in 0..<5 { _ = model.answerBlocker }
-        XCTAssertEqual(renders, 1, "the rendered snapshot is cached")
-        XCTAssertEqual(asks.specReviewComments[askID]?.count, 2)
-        XCTAssertEqual(model.answer(verdict: .changes).comments.count, 2)
-        XCTAssertEqual(renders, 1)
+        XCTAssertEqual(model.answer(verdict: .changes).comments.count, 0, "the draft has no margin comment")
+        XCTAssertNil(model.answerBlocker)
+        let sent = await model.send()
+        guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.comments.map(\.body), ["Mute lasts a day — keep", "Local db — why?"], "each mark once")
     }
 
     func testChaptersGroupFindingsAndOther() async throws {
@@ -280,7 +293,85 @@ final class SpecReviewModelTests: XCTestCase {
         let answer = try OwnerAskAnswer.decode(try await storedAnswer())
         XCTAssertEqual(answer.verdict, .changes)
         XCTAssertEqual(answer.comments.map(\.body), ["Local db — ask me first"])
-        XCTAssertNil(asks.specReviewComments[askID], "a sent answer forgets them")
+    }
+
+    /// F5: the classic footer with no SpecReviewModel ever loaded (the
+    /// marks written earlier, say before a relaunch) still sends them.
+    func testClassicFooterWithoutALoadedModelSendsTheStoredMarks() async throws {
+        try setRow(status: "done", result: resultJSON())
+        try writeMark("ag:1", "comment", body: "name the period", about: "Mute lasts a day")
+        try writeMark("da:1", "ok")
+        let (asks, ask) = try await makeAsks()
+        let delivery = await asks.answer(ask, verdict: .approved)
+        XCTAssertNotNil(delivery)
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, .approved)
+        XCTAssertEqual(answer.comments.map(\.body), ["Mute lasts a day — name the period"])
+        XCTAssertEqual(answer.comments.first?.heading, "Behaviour", "anchored in its chapter")
+    }
+
+    /// F1: while the reviewer is queued, running or failed (no result) the
+    /// footer sends every comment mark as the screen does: "From the
+    /// previous run" with its finding text.
+    func testNoResultSendsEveryCommentMarkAsFromThePreviousRun() async throws {
+        for status in ["queued", "running", "failed"] {
+            try setUpWithError()
+            try setRow(status: status)
+            try writeMark("ag:1", "comment", body: "keep", about: "Mute lasts a day")
+            try writeMark("ch:1", "viewed")
+            let (asks, ask) = try await makeAsks()
+            let delivery = await asks.answer(ask, verdict: .changes)
+            XCTAssertNotNil(delivery, status)
+            let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+            XCTAssertEqual(answer.comments.map(\.body), ["From the previous run: Mute lasts a day — keep"], status)
+        }
+    }
+
+    /// The phone's answer (the relay ends in `answer(_:with:)`) and a Quick
+    /// path carry the marks too; a dismissal carries none.
+    func testRelayAnswerCarriesTheMarksAndADismissalDoesNot() async throws {
+        try setRow(status: "done", result: resultJSON())
+        try writeMark("bs:1", "comment", body: "check it", about: "Lost chapter")
+        let (asks, ask) = try await makeAsks()
+        var relayed = OwnerAskAnswer()
+        relayed.verdict = .changes
+        let result = await asks.answerQuick(ask, with: relayed)
+        guard case .delivered = result else { return XCTFail("relayed: \(result)") }
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.comments.map(\.body), ["Lost chapter — check it"])
+
+        try setUpWithError()
+        try setRow(status: "done", result: resultJSON())
+        try writeMark("bs:1", "comment", body: "check it", about: "Lost chapter")
+        let (asks2, ask2) = try await makeAsks()
+        _ = await asks2.answer(ask2, with: .dismissal)
+        let dismissed = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertTrue(dismissed.comments.isEmpty)
+    }
+
+    /// F11: the model looks for a row that is not there yet and starts the
+    /// poll once it turns up while the reviewer runs.
+    func testFollowReviewerWaitsForTheRowThenPolls() async throws {
+        var ticks = 0
+        let pool = try XCTUnwrap(pool)
+        let id = askID
+        let model = try await makeModel { _ in
+            ticks += 1
+            if ticks == 2 {
+                try await pool.write { d in
+                    try d.execute(sql: """
+                        INSERT INTO spec_reviews (ask_id, status, queued_at) VALUES (?, 'running', '2026-10-25T10:00:00Z')
+                        """, arguments: [id])
+                }
+            }
+            if ticks > 2 { try await Task.sleep(for: .seconds(3600)) }
+        }
+        await model.load()
+        XCTAssertNil(model.row)
+        await model.followReviewer()
+        XCTAssertEqual(model.row?.status, .running)
+        XCTAssertTrue(model.isPolling)
+        model.stopPolling()
     }
 
     /// A review ask with questions: Send and Approve say why they are off
@@ -318,6 +409,18 @@ final class SpecReviewModelTests: XCTestCase {
         await model.load()
         XCTAssertEqual(model.orphans.first?.about, "Mute lasts a day")
         XCTAssertEqual(model.orphans.first?.body, "keep")
+    }
+
+    /// F3: a plan keeps no Decisions section, so Meaning shows none.
+    func testAPlanShowsNoDecisionsList() async throws {
+        let spec = try await makeModel()
+        XCTAssertTrue(spec.showsDecisions)
+        let id = askID
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE owner_asks SET doc_type = 'plan' WHERE id = ?", arguments: [id])
+        }
+        let plan = try await makeModel()
+        XCTAssertFalse(plan.showsDecisions)
     }
 
     private func storedAnswer() async throws -> String {

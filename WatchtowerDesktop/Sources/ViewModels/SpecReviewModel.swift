@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import GRDB
 import WatchtowerCore
 
 /// A finding as one chapter lists it (named apart from Core's markable
@@ -49,7 +50,7 @@ final class SpecReviewModel {
     var lastError: String?
 
     @ObservationIgnored let ask: OwnerAsk
-    @ObservationIgnored private let db: DatabaseManager
+    @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: WorkbenchCLI
     @ObservationIgnored private let asks: OwnerAsksViewModel
     @ObservationIgnored private let pollInterval: Duration
@@ -59,30 +60,23 @@ final class SpecReviewModel {
     /// Bumped on every start and stop, so a finishing Task clears `pollTask`
     /// only when it is still the current one.
     @ObservationIgnored private var pollGeneration = 0
-    @ObservationIgnored private let render: (String) -> RenderedDocument
-    /// The ask's snapshot rendered once (the ask, and so its snapshot, is
-    /// fixed for the model's life): the marks' comments are placed on it on
-    /// every poll load and mark change.
-    @ObservationIgnored private var renderedSnapshot: RenderedDocument?
 
     init(
         ask: OwnerAsk,
-        db: DatabaseManager,
+        dbPool: DatabasePool,
         cli: WorkbenchCLI,
         asks: OwnerAsksViewModel,
         pollInterval: Duration = .seconds(3),
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        now: @escaping () -> Date = Date.init,
-        render: @escaping (String) -> RenderedDocument = { DocumentRendering.render($0) }
+        now: @escaping () -> Date = Date.init
     ) {
         self.ask = ask
-        self.db = db
+        self.dbPool = dbPool
         self.cli = cli
         self.asks = asks
         self.pollInterval = pollInterval
         self.sleep = sleep
         self.now = now
-        self.render = render
     }
 
     deinit { pollTask?.cancel() }
@@ -92,12 +86,11 @@ final class SpecReviewModel {
     func load() async {
         let askID = ask.id
         do {
-            let (row, marks) = try await db.dbPool.read { db in
+            let (row, marks) = try await dbPool.read { db in
                 (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID))
             }
             self.row = row
             self.marks = marks
-            publishComments()
             if chapterKey == nil || !chapters.contains(where: { $0.key == chapterKey }) {
                 chapterKey = chapters.first?.key
             }
@@ -127,6 +120,24 @@ final class SpecReviewModel {
             if let self, self.pollGeneration == generation { self.pollTask = nil }
         }
     }
+
+    /// After the first `load`: the reviewer is queued just after the ask is
+    /// filed, so a missing row is looked for again (`missingRowChecks`
+    /// times, one `pollInterval` apart), then the poll starts while the
+    /// reviewer is queued or running. Returns once the poll is started (or
+    /// not needed); cancelled with the caller's Task.
+    func followReviewer() async {
+        for _ in 0..<Self.missingRowChecks where row == nil {
+            try? await sleep(pollInterval)
+            guard !Task.isCancelled else { return }
+            await load()
+        }
+        guard !Task.isCancelled else { return }
+        startPolling()
+    }
+
+    /// How many times a missing reviewer row is looked for.
+    static let missingRowChecks = 10
 
     func stopPolling() {
         pollGeneration += 1
@@ -169,11 +180,10 @@ final class SpecReviewModel {
         let mark = SpecReviewMark(key: key, state: state, body: body, about: about)
         let stamp = now()
         do {
-            try await db.dbPool.write { db in
+            try await dbPool.write { db in
                 try SpecReviewQueries.setMark(db, askID: askID, mark: mark, now: stamp)
             }
             marks[key] = mark
-            publishComments()
         } catch {
             lastError = "Could not save the mark: \(error.localizedDescription)"
         }
@@ -182,11 +192,10 @@ final class SpecReviewModel {
     func unmark(_ key: String) async {
         let askID = ask.id
         do {
-            try await db.dbPool.write { db in
+            try await dbPool.write { db in
                 try SpecReviewQueries.clearMark(db, askID: askID, key: key)
             }
             marks[key] = nil
-            publishComments()
         } catch {
             lastError = "Could not clear the mark: \(error.localizedDescription)"
         }
@@ -256,6 +265,10 @@ final class SpecReviewModel {
     /// it has no Decisions section.
     var decisions: [String]? { SpecReviewDecisions.items(in: ask.docSnapshot) }
 
+    /// A plan keeps no Decisions section (its agreements come from its
+    /// spec), so Meaning shows the list for a spec only.
+    var showsDecisions: Bool { ask.docType != "plan" }
+
     /// The ask's questions, answered on Meaning beside the findings.
     var hasQuestions: Bool { !ask.payload.questions.isEmpty }
 
@@ -273,24 +286,6 @@ final class SpecReviewModel {
     var isAnswering: Bool { asks.isAnswering(ask.id) }
 
     // MARK: - Send and approve
-
-    /// Keeps the classic footer's answer in step: its Request changes /
-    /// Approve send these comments with the draft (`OwnerAsksViewModel`).
-    private func publishComments() {
-        let comments = row?.result.map {
-            SpecReviewAnswer.comments(result: $0, marks: marks, snapshot: ask.docSnapshot, rendered: renderedDocument)
-        } ?? []
-        asks.setSpecReviewComments(comments, askID: ask.id)
-    }
-
-    /// The snapshot rendered: this model's cache, else the drawer's
-    /// (`reviewDocuments`, the same snapshot), else rendered now and kept.
-    private func renderedDocument() -> RenderedDocument {
-        if let renderedSnapshot { return renderedSnapshot }
-        let doc = asks.reviewDocuments.rendered[ask.id] ?? render(ask.docSnapshot)
-        renderedSnapshot = doc
-        return doc
-    }
 
     private var commentCount: Int {
         marks.values.filter {
@@ -315,13 +310,14 @@ final class SpecReviewModel {
         "\(unmarkedCount) finding\(unmarkedCount == 1 ? " is" : "s are") not marked. Approve anyway?"
     }
 
-    /// The one answer `verdict` sends: the draft (margin comments, question
-    /// answers, note) with the marks' comments after its own.
+    /// What `verdict` hands to the ask's one answer path: the draft (margin
+    /// comments, question answers, note) with the verdict. The marks'
+    /// comments are added there, from the database (`SpecReviewAnswer`),
+    /// as for the classic footer and the phone.
     func answer(verdict: OwnerAskAnswer.Verdict) -> OwnerAskAnswer {
-        SpecReviewAnswer.build(
-            result: row?.result ?? Self.emptyResult, marks: marks, base: draft.answer(for: ask),
-            verdict: verdict, snapshot: ask.docSnapshot, rendered: renderedDocument
-        )
+        var answer = draft.answer(for: ask)
+        answer.verdict = verdict
+        return answer
     }
 
     /// Why Send and Approve are off, in the owner's words: the ask's
@@ -329,7 +325,7 @@ final class SpecReviewModel {
     /// too long. Nil when the answer can go. Read on every Wrap-up body
     /// evaluation, so it checks the draft alone: the marks' comments always
     /// carry their finding's text, never a blank body, so they add no
-    /// problem, and placing them would cost a pass over the document.
+    /// problem, and they are placed only when the answer is written.
     var answerBlocker: String? {
         var answer = draft.answer(for: ask)
         answer.verdict = .approved
@@ -351,9 +347,4 @@ final class SpecReviewModel {
     func approve() async -> OwnerAsksViewModel.AnswerResult {
         await asks.answer(ask, with: answer(verdict: .approved))
     }
-
-    private static let emptyResult: SpecReviewResult = {
-        // swiftlint:disable:next force_try
-        try! JSONDecoder().decode(SpecReviewResult.self, from: Data("{}".utf8))
-    }()
 }

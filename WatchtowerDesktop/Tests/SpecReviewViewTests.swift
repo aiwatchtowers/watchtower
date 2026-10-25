@@ -130,9 +130,13 @@ final class SpecReviewViewTests: XCTestCase {
         XCTAssertEqual(SpecReviewPresentation.sourceLabel(try source("target", "agent", ref: "target:12")), "Target · target #12")
         XCTAssertEqual(SpecReviewPresentation.sourceLabel(try source("ask", "agent", ref: "ask:4")), "Ask · ask #4")
 
-        let owner = try XCTUnwrap(try result(#"{"idea":{"owner_source":{"kind":"conversation","speaker":"owner"}}}"#).idea)
+        func idea(_ kind: String, _ speaker: String) throws -> SpecReviewResult.Idea {
+            let json = #"{"idea":{"owner_quote":"mute a channel","owner_source":{"kind":"\#(kind)","speaker":"\#(speaker)"}}}"#
+            return try XCTUnwrap(try result(json).idea)
+        }
+        let owner = try idea("conversation", "owner")
         XCTAssertEqual(SpecReviewPresentation.ideaLabel(owner), "Your idea")
-        let agent = try XCTUnwrap(try result(#"{"idea":{"owner_source":{"kind":"decisions","speaker":"agent"}}}"#).idea)
+        let agent = try idea("decisions", "agent")
         XCTAssertEqual(SpecReviewPresentation.ideaLabel(agent), "The idea · Decisions")
     }
 
@@ -198,7 +202,7 @@ final class SpecReviewViewTests: XCTestCase {
                                       defaults: defaults)
         await asks.load(projectID: projectID)
         let ask = try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID })
-        let model = SpecReviewModel(ask: ask, db: DatabaseManager(pool: pool), cli: WorkbenchCLI(runner: FakeCLIRunner()), asks: asks)
+        let model = SpecReviewModel(ask: ask, dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), asks: asks)
         await model.load()
         return model
     }

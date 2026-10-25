@@ -32,7 +32,7 @@ struct SpecReviewWrapUpView: View {
                 )
                 actions
             }
-            .frame(maxWidth: Self.columnWidth, alignment: .leading)
+            .frame(maxWidth: ReadableColumn.maxLineWidth, alignment: .leading)
             .padding(Spacing.page)
             .frame(maxWidth: .infinity)
         }
@@ -172,6 +172,4 @@ struct SpecReviewWrapUpView: View {
         default: "circle.dashed"
         }
     }
-
-    private static let columnWidth: CGFloat = 760
 }

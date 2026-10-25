@@ -188,6 +188,12 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
             ownerSource = try c.decodeIfPresent(Source.self, forKey: .ownerSource)
         }
 
+        /// Neither the owner's words nor the document's goal: nothing to show.
+        var isBlank: Bool {
+            ownerQuote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && goalQuote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
         private enum Keys: String, CodingKey {
             case verdict, note
             case ownerQuote = "owner_quote"
@@ -229,7 +235,9 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
-        idea = try c.decodeIfPresent(Idea.self, forKey: .idea)
+        // An idea with neither quote is absent: a result stored before Go
+        // left the key out wrote an empty one (F2).
+        idea = try c.decodeIfPresent(Idea.self, forKey: .idea).flatMap { $0.isBlank ? nil : $0 }
         agreements = try c.decodeIfPresent([Agreement].self, forKey: .agreements) ?? []
         decidedAlone = try c.decodeIfPresent([DecidedAlone].self, forKey: .decidedAlone) ?? []
         blindSpots = try c.decodeIfPresent([BlindSpot].self, forKey: .blindSpots) ?? []

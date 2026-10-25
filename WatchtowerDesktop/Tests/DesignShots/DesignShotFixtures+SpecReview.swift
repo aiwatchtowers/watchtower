@@ -150,7 +150,7 @@ enum SpecReviewShotFixtures {
         let task = Task {
             await asks.load(projectID: projectID)
             guard let ask = asks.openAsks[projectID]?.first(where: { $0.id == askID }) else { return }
-            let model = SpecReviewModel(ask: ask, db: DatabaseManager(pool: pool), cli: WorkbenchCLI(runner: FakeCLIRunner()),
+            let model = SpecReviewModel(ask: ask, dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()),
                                         asks: asks)
             await model.load()
             if withResult {

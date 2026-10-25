@@ -4,7 +4,7 @@ import WatchtowerCore
 /// Spec review, step 1 (spec §7): the ask's own header (its summary, focus
 /// points, what changed on a re-round, its questions to answer), then does
 /// the document carry the owner's idea — the idea next to the document's
-/// goal with the verdict — the document's Decisions list, the counts, the
+/// goal with the verdict — a spec's Decisions list (a plan has none), the counts, the
 /// reviewer's summary, its notes (trimmed inputs, dropped findings, code
 /// not read) and, on a re-round, which of the owner's earlier comments are
 /// resolved.
@@ -18,7 +18,7 @@ struct SpecReviewMeaningView<AskContext: View>: View {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 askContext()
                 if let idea = result.idea { ideaCard(idea) }
-                decisionsList
+                if model.showsDecisions { decisionsList }
                 VStack(alignment: .leading, spacing: Spacing.regular) {
                     SectionHeader(title: "Reviewer's summary", systemImage: "text.magnifyingglass")
                     Text(SpecReviewPresentation.countsLine(result)).font(.callout.weight(.medium).monospacedDigit())
@@ -38,7 +38,7 @@ struct SpecReviewMeaningView<AskContext: View>: View {
                 if !result.resolved.isEmpty { resolvedList }
                 SpecReviewNextStepButton(model: model)
             }
-            .frame(maxWidth: Self.columnWidth, alignment: .leading)
+            .frame(maxWidth: ReadableColumn.maxLineWidth, alignment: .leading)
             .padding(Spacing.page)
             .frame(maxWidth: .infinity)
         }
@@ -103,7 +103,4 @@ struct SpecReviewMeaningView<AskContext: View>: View {
             }
         }
     }
-
-    /// One readable column, centred in a wide drawer (style guide).
-    private static var columnWidth: CGFloat { 760 }
 }

@@ -281,33 +281,24 @@ struct OwnerAskDrawer: View {
         }
     }
 
-    /// Opens the spec review of an open review ask: its row and marks, the
-    /// poll while the reviewer runs. The reviewer is queued just after the
-    /// ask is filed, so a missing row is looked for again a few times; one
-    /// that turns up later leaves the classic view in place.
+    /// Opens the spec review of an open review ask: its row and marks, then
+    /// the model follows the reviewer (`followReviewer`: a missing row is
+    /// looked for again a few times, the poll while it runs). A row that
+    /// turns up later leaves the classic view in place.
     private func loadSpecReview() async {
         specReview?.stopPolling()
         specReview = nil
         showClassic = false
         specReviewLoadedFor = nil
         guard specReviewApplies, let cli = vm.cli else { return }
-        let model = SpecReviewModel(ask: ask, db: DatabaseManager(pool: vm.dbPool), cli: cli, asks: asks)
+        let model = SpecReviewModel(ask: ask, dbPool: vm.dbPool, cli: cli, asks: asks)
         await model.load()
         guard !Task.isCancelled else { return }
         specReview = model
         showClassic = model.row == nil
         specReviewLoadedFor = ask.id
-        for _ in 0..<Self.missingRowChecks where model.row == nil {
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            await model.load()
-        }
-        guard !Task.isCancelled else { return }
-        model.startPolling()
+        await model.followReviewer()
     }
-
-    /// How many times a missing reviewer row is looked for (every 3 s).
-    private static let missingRowChecks = 10
 
     private var classicReviewLayout: some View {
         GeometryReader { geometry in

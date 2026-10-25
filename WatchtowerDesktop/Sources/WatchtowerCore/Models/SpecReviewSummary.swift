@@ -22,11 +22,15 @@ package enum SpecReviewSummary {
     /// The Desktop's one-line state for a row that is waiting, running,
     /// failed or skipped; nil for done and unknown (the caller words those).
     package static func stateLine(_ row: SpecReviewRow) -> String? {
-        switch row.status {
+        stateLine(status: row.status, reason: row.reason)
+    }
+
+    package static func stateLine(status: SpecReviewRow.Status, reason: String) -> String? {
+        switch status {
         case .queued: return "Reviewer is waiting to start…"
         case .running: return "Reviewer is reading the spec and the discussion…"
-        case .failed: return reasonLine("Reviewer failed", row.reason)
-        case .skipped: return reasonLine("Reviewer skipped", row.reason)
+        case .failed: return reasonLine("Reviewer failed", reason)
+        case .skipped: return reasonLine("Reviewer skipped", reason)
         case .done, .unknown: return nil
         }
     }
@@ -40,12 +44,20 @@ package enum SpecReviewSummary {
     /// while queued or running, the reason for failed or skipped. Never
     /// empty; nil for a state this build does not know. The caller clips it.
     package static func phoneLine(_ row: SpecReviewRow) -> (status: String, line: String)? {
-        switch row.status {
-        case .queued, .running: return (row.status.rawValue, "Reviewer is reading…")
+        phoneLine(status: row.status, reason: row.reason) { row.result }
+    }
+
+    /// `result` is read only for a done review (a caller that keeps the
+    /// counts line per finish need not load or decode it otherwise).
+    package static func phoneLine(
+        status: SpecReviewRow.Status, reason: String, result: () -> SpecReviewResult?
+    ) -> (status: String, line: String)? {
+        switch status {
+        case .queued, .running: return (status.rawValue, "Reviewer is reading…")
         case .done:
-            guard let result = row.result else { return ("done", "The reviewer's result could not be read") }
+            guard let result = result() else { return ("done", "The reviewer's result could not be read") }
             return ("done", countsLine(result))
-        case .failed, .skipped: return stateLine(row).map { (row.status.rawValue, $0) }
+        case .failed, .skipped: return stateLine(status: status, reason: reason).map { (status.rawValue, $0) }
         case .unknown: return nil
         }
     }

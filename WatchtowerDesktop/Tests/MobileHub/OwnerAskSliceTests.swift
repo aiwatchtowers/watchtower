@@ -133,6 +133,32 @@ final class OwnerAskSliceTests: XCTestCase {
         XCTAssertNil(try payload(plain)["spec_review"], "no reviewer row: today's view")
     }
 
+    /// F9: a done review's counts are decoded once per finish: the same
+    /// slice reading the same `finished_at` keeps its line (the result is
+    /// not read again); a new finish is read.
+    func testDoneReviewLineIsKeptPerFinish() throws {
+        let id = try insertAsk(kind: "review")
+        try dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, result, queued_at, finished_at)
+                VALUES (?, 'done', '{"blind_spots":[{"key":"c"}]}', '2026-10-25T10:00:00Z', '2026-10-25T10:05:00Z')
+                """, arguments: [id])
+        }
+        let slice = OwnerAskSlice()
+        func line() throws -> String? {
+            let records = try dbPool.read { try slice.records($0) }
+            let payload = try SliceJSON.objects(records).first { ($0["id"] as? NSNumber)?.int64Value == id }
+            return (payload?["spec_review"] as? [String: Any])?["line"] as? String
+        }
+        XCTAssertEqual(try line(), "1 blind spot")
+        try dbPool.write { try $0.execute(sql: "UPDATE spec_reviews SET result = '{}' WHERE ask_id = ?", arguments: [id]) }
+        XCTAssertEqual(try line(), "1 blind spot", "same finish: the cached line")
+        try dbPool.write {
+            try $0.execute(sql: "UPDATE spec_reviews SET finished_at = '2026-10-25T10:09:00Z' WHERE ask_id = ?", arguments: [id])
+        }
+        XCTAssertEqual(try line(), "No findings", "a new finish is decoded")
+    }
+
     func testAnOpenReviewMatchesTheKitFixture() throws {
         let ask = try insertReview(snapshot: "# Plan\n\nStep 1.\n")
         let payload = try payload(ask)

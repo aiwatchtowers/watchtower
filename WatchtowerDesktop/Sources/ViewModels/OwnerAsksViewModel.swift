@@ -174,11 +174,6 @@ final class OwnerAsksViewModel {
     /// Asks an answer is being written for: Answer is disabled meanwhile,
     /// and a second click writes nothing.
     private(set) var answering: Set<Int64> = []
-    /// The comments a review ask's spec review gives (its finding marks,
-    /// spec 2026-10-25 §8), kept by `SpecReviewModel`: the drawer's own
-    /// Request changes / Approve send them with the draft, so a comment
-    /// written on either screen is in the one answer.
-    private(set) var specReviewComments: [Int64: [OwnerAskAnswer.Comment]] = [:]
     /// The ask each workbench's drawer shows (nil = closed). An answer that
     /// went to its session (sent, typed, copied or held) closes it: the
     /// terminal takes over.
@@ -658,20 +653,12 @@ final class OwnerAsksViewModel {
     /// and keeps the draft. Returns the delivery, nil when nothing was written
     /// (an incomplete draft, an answer already running, a failure).
     /// A review's buttons pass their `verdict`, set on the draft first.
-    /// A review ask's spec-review comments go with the draft's.
     @discardableResult
     func answer(_ ask: OwnerAsk, verdict: OwnerAskAnswer.Verdict? = nil) async -> Delivery? {
         if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
         let draft = drafts.askDraft(for: ask.id)
         guard !isAnswering(ask.id), draft.isAnswerable(for: ask) else { return nil }
-        var answer = draft.answer(for: ask)
-        if ask.kind == .review { answer.comments += specReviewComments[ask.id] ?? [] }
-        return await self.answer(ask, with: answer).delivery
-    }
-
-    /// Set by the ask's `SpecReviewModel` whenever its marks or result change.
-    func setSpecReviewComments(_ comments: [OwnerAskAnswer.Comment], askID: Int64) {
-        specReviewComments[askID] = comments.isEmpty ? nil : comments
+        return await answer(ask, with: draft.answer(for: ask)).delivery
     }
 
     /// Writes `answer` to `ask` and delivers its line — the one path of the
@@ -686,17 +673,27 @@ final class OwnerAsksViewModel {
     /// (`failed`). A success discards the ask's draft; otherwise it is kept.
     /// An automation's ask (spec §13.3) is never delivered to a session —
     /// its run reads the answer once the daemon is woken (`wakeAutomations`).
+    /// A review ask's answer (not a dismissal) gets its spec review's
+    /// comment marks, read from the database now (`specReviewAnswer`), so
+    /// every path sends them once, whatever screen was loaded.
     @discardableResult
-    func answer(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerResult {
+    func answer(_ ask: OwnerAsk, with given: OwnerAskAnswer) async -> AnswerResult {
         guard !isAnswering(ask.id) else { return .busy }
         let (askID, projectID) = (ask.id, ask.projectID)
-        let answer = answer.normalized(for: ask)
+        answering.insert(askID)
+        defer { answering.remove(askID) }
+        let answer: OwnerAskAnswer
+        do {
+            answer = try await specReviewAnswer(ask, given).normalized(for: ask)
+        } catch {
+            let reason = "Could not read the spec review's comments: \(error.localizedDescription)"
+            answerErrors[askID] = reason
+            return .failed(reason)
+        }
         if let problem = answer.problem(kind: ask.kind, payload: ask.payload) {
             answerErrors[askID] = "This answer cannot be sent: \(problem.message)"
             return .invalid(problem.message)
         }
-        answering.insert(askID)
-        defer { answering.remove(askID) }
         do {
             try await dbPool.write { db in
                 try OwnerAskQueries.answer(db, askID: askID, projectID: projectID, with: answer)
@@ -712,7 +709,6 @@ final class OwnerAsksViewModel {
         }
         answerErrors[askID] = nil
         drafts.discard(askID)
-        specReviewComments[askID] = nil
         let line = OwnerAskPrompt.line(id: askID, kind: ask.kind, answer: answer)
         var delivery = Delivery.noSession
         // Never typed, held or queued for an automation's ask, whatever
@@ -732,6 +728,29 @@ final class OwnerAsksViewModel {
         await onAnswered?()
         if ask.automationRunID != nil { await wakeAutomationRun(askID: askID) }
         return .delivered(delivery)
+    }
+
+    /// `answer` with the comments of the ask's spec review marks
+    /// (`SpecReviewAnswer`, F5): `spec_review_marks` and the reviewer's
+    /// result as stored now — no result (queued, running, failed) sends
+    /// every comment mark as "From the previous run". Placed off the main
+    /// actor on the drawer's rendered snapshot when it has one. Any other
+    /// ask, a dismissal, or an ask without comment marks is unchanged.
+    private func specReviewAnswer(_ ask: OwnerAsk, _ answer: OwnerAskAnswer) async throws -> OwnerAskAnswer {
+        guard ask.kind == .review, !answer.dismissed else { return answer }
+        let askID = ask.id
+        let (result, marks) = try await dbPool.read { db in
+            (try SpecReviewQueries.row(db, askID: askID)?.result, try SpecReviewQueries.marks(db, askID: askID))
+        }
+        guard marks.values.contains(where: { $0.state == .comment }) else { return answer }
+        let snapshot = ask.docSnapshot
+        let cached = reviewDocuments.rendered[askID]
+        return await Task.detached(priority: .userInitiated) {
+            SpecReviewAnswer.build(
+                result: result, marks: marks, base: answer, snapshot: snapshot,
+                rendered: cached.map { doc in { doc } }
+            )
+        }.value
     }
 
     /// Best effort: the answer is saved either way, and the daemon's next

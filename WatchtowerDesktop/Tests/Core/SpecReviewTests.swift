@@ -53,6 +53,20 @@ final class SpecReviewTests: XCTestCase {
         XCTAssertEqual(r.agreements.last?.chapter, "ch:1")
     }
 
+    /// F2: Go's empty result (no idea key; testdata/result_empty.golden)
+    /// and an older stored one with an empty idea both read as no idea.
+    func testEmptyIdeaReadsAsAbsent() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/spec_review_result_empty.json")
+        let empty = try JSONDecoder().decode(SpecReviewResult.self, from: Data(contentsOf: url))
+        XCTAssertEqual(empty.summary, "s")
+        XCTAssertNil(empty.idea)
+        XCTAssertTrue(empty.agreements.isEmpty)
+        let old = #"{"summary":"s","idea":{"owner_quote":"","goal_quote":" ","verdict":"","note":"","#
+            + #""owner_source":{"kind":"","ref":"","quote":"","speaker":""}}}"#
+        XCTAssertNil(try JSONDecoder().decode(SpecReviewResult.self, from: Data(old.utf8)).idea)
+    }
+
     func testDecodingToleratesUnknownKeysAndEnums() throws {
         let json = #"{"summary":"s","future":{"x":1},"agreements":[{"key":"ag:1","text":"t","status":"brand_new","where":null,"extra":true}]}"#
         let r = try JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8))
@@ -247,5 +261,18 @@ final class SpecReviewTests: XCTestCase {
         ])
         XCTAssertNil(SpecReviewDecisions.items(in: "# T\n## Goal\nx\n"))
         XCTAssertEqual(SpecReviewDecisions.items(in: "## Decisions\n"), [])
+    }
+
+    /// F4, the Go rule: a `## ` heading whose title starts with the word
+    /// "Decisions", any case; no other level, no longer word.
+    func testDecisionsHeadingMayGoOnButIsLevelTwoOnly() {
+        XCTAssertEqual(SpecReviewDecisions.items(in: "# T\n## Decisions (owner's)\n- Local state (ask #1)\n## Next\n"), [
+            "Local state (ask #1)"
+        ])
+        XCTAssertEqual(SpecReviewDecisions.items(in: "## DECISIONS — approved\n- a\n"), ["a"])
+        XCTAssertNil(SpecReviewDecisions.items(in: "# Decisions\n- a\n"))
+        XCTAssertNil(SpecReviewDecisions.items(in: "### Decisions\n- a\n"))
+        XCTAssertNil(SpecReviewDecisions.items(in: "## Decisionsless\n- a\n"))
+        XCTAssertNil(SpecReviewDecisions.items(in: "## Open decisions\n- a\n"))
     }
 }

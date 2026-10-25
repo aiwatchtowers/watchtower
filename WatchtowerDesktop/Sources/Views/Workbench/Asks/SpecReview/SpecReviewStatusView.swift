@@ -43,11 +43,9 @@ struct SpecReviewStatusView: View {
             }
             if canRun { runButton }
         }
-        .frame(maxWidth: Self.pageWidth)
+        .frame(maxWidth: PaneWidth.narrowPage)
         .padding(Spacing.page)
     }
-
-    private static let pageWidth: CGFloat = 420
 
     private var strip: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {

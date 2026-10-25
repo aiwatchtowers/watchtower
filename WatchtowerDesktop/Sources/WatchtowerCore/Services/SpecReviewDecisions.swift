@@ -4,10 +4,12 @@ import Foundation
 /// review's Meaning step: read from the ask's snapshot, the same text the
 /// reviewer checked. Pure.
 package enum SpecReviewDecisions {
-    /// One entry per list item (or paragraph line) of the first section
-    /// headed "Decisions", up to the next heading of the same or a higher
-    /// level; list markers stripped, an item's continuation lines joined to
-    /// it, fenced code skipped. Nil when the document has no such section.
+    /// One entry per list item (or paragraph line) of the first `## `
+    /// section whose title starts with the word "Decisions", any case (as
+    /// in "## Decisions (owner-approved)"; Go's `isDecisionsHeading` is the
+    /// same rule), up to the next heading of the same or a higher level;
+    /// list markers stripped, an item's continuation lines joined to it,
+    /// fenced code skipped. Nil when the document has no such section.
     package static func items(in snapshot: String) -> [String]? {
         var level: Int?
         var items: [String] = []
@@ -24,7 +26,7 @@ package enum SpecReviewDecisions {
                     if heading.level <= open { break }
                     continue
                 }
-                if heading.title.lowercased() == "decisions" { level = heading.level }
+                if heading.level == 2, isDecisionsTitle(heading.title) { level = heading.level }
                 continue
             }
             guard level != nil, !trimmed.isEmpty else { continue }
@@ -37,6 +39,15 @@ package enum SpecReviewDecisions {
             }
         }
         return level == nil ? nil : items
+    }
+
+    /// "Decisions", "decisions (owner's)", "DECISIONS — approved"; not
+    /// "Decisionsless" or "Open decisions".
+    static func isDecisionsTitle(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        guard lower.hasPrefix("decisions") else { return false }
+        guard let next = lower.dropFirst("decisions".count).first else { return true }
+        return !(next.isLetter || next.isNumber)
     }
 
     private static func heading(_ line: String) -> (level: Int, title: String)? {

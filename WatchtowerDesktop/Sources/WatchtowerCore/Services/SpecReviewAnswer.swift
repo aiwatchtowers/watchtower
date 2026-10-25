@@ -4,36 +4,45 @@ import Foundation
 /// and "Viewed" never reach the author. Every comment carries a heading and
 /// quote located in the RENDERED snapshot, the text a closed ask re-locates
 /// its comments on (`internal/asks/answer.go` is unchanged).
+///
+/// The one builder of every answer to a review ask (F5): the Desktop's
+/// answer path (`OwnerAsksViewModel.answer(_:with:)`, which the drawer's
+/// footer, the findings screen, Quick answers and the phone's relay all
+/// end in) reads `spec_review_marks` at answer time and appends these
+/// comments, whether or not a findings screen was ever loaded.
 package enum SpecReviewAnswer {
-    /// `base` is the ask's draft answer — its margin comments made under
-    /// **Read the spec**, its question answers, its note — so the one
-    /// answer carries both screens' input; the marks' comments follow its
-    /// comments and `verdict` replaces its verdict. `rendered` hands over
-    /// the snapshot already rendered (a caller's cache); nil renders it here.
+    /// `base` is the answer as written — the draft's margin comments made
+    /// under **Read the spec**, its question answers, its note, its
+    /// verdict — with the marks' comments after its own; a `verdict`
+    /// replaces the base's. `rendered` hands over the snapshot already
+    /// rendered (a caller's cache); nil renders it here.
     package static func build(
-        result: SpecReviewResult,
+        result: SpecReviewResult?,
         marks: [String: SpecReviewMark],
         base: OwnerAskAnswer = OwnerAskAnswer(),
-        verdict: OwnerAskAnswer.Verdict,
+        verdict: OwnerAskAnswer.Verdict? = nil,
         snapshot: String,
         rendered: (() -> RenderedDocument)? = nil
     ) -> OwnerAskAnswer {
         var answer = base
-        answer.verdict = verdict
+        if let verdict { answer.verdict = verdict }
         answer.comments += comments(result: result, marks: marks, snapshot: snapshot, rendered: rendered)
         return answer
     }
 
     /// The comments the marks give, in findings order, then the comments of
-    /// findings the re-run no longer has. The snapshot is rendered (or
-    /// `rendered` called) only when there is a comment to place.
+    /// findings the re-run no longer has. No result (the reviewer queued,
+    /// running or failed) makes every comment mark such an orphan: it goes
+    /// out as "From the previous run" with its finding text (`about`). The
+    /// snapshot is rendered (or `rendered` called) only when there is a
+    /// comment to place.
     package static func comments(
-        result: SpecReviewResult,
+        result: SpecReviewResult?,
         marks: [String: SpecReviewMark],
         snapshot: String,
         rendered render: (() -> RenderedDocument)? = nil
     ) -> [OwnerAskAnswer.Comment] {
-        let marked = result.findings.filter { marks[$0.key]?.state == .comment }
+        let marked = result?.findings.filter { marks[$0.key]?.state == .comment } ?? []
         let orphans = orphanMarks(result: result, marks: marks)
         guard !marked.isEmpty || !orphans.isEmpty else { return [] }
         let rendered = render?() ?? DocumentRendering.render(snapshot)
@@ -41,7 +50,7 @@ package enum SpecReviewAnswer {
         for finding in marked {
             guard let mark = marks[finding.key] else { continue }
             let anchor = finding.anchor.map { ($0.heading, $0.quote) }
-                ?? chapterAnchor(result: result, key: finding.chapter, snapshot: snapshot)
+                ?? result.flatMap { chapterAnchor(result: $0, key: finding.chapter, snapshot: snapshot) }
                 ?? firstHeadingAnchor(snapshot)
             comments.append(comment(
                 heading: anchor.0, quote: anchor.1, body: join(finding.text, mark.body), in: rendered
@@ -58,13 +67,13 @@ package enum SpecReviewAnswer {
     }
 
     /// Comment marks whose key the result no longer has (the reviewer ran
-    /// again), in key order. `viewed` marks of dropped chapters are not
-    /// orphans: nothing is lost by forgetting them.
+    /// again, or has no result now), in key order. `viewed` marks of
+    /// dropped chapters are not orphans: nothing is lost by forgetting them.
     package static func orphanMarks(
-        result: SpecReviewResult,
+        result: SpecReviewResult?,
         marks: [String: SpecReviewMark]
     ) -> [SpecReviewMark] {
-        let known = Set(result.findings.map(\.key))
+        let known = Set(result?.findings.map(\.key) ?? [])
         return marks.values
             .filter { $0.state == .comment && !known.contains($0.key) }
             .sorted { $0.key < $1.key }
