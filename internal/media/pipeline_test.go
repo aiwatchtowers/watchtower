@@ -1406,9 +1406,39 @@ func TestPipeline_ModelUnavailableSpendsNoAttempt(t *testing.T) {
 			assert.Zero(t, st.Failed)
 			has, err := e.p.HasPending(context.Background())
 			require.NoError(t, err)
-			assert.True(t, has, "the rows are worked again next cycle")
+			assert.True(t, has, "the rest is worked again next cycle")
 		})
 	}
+}
+
+// The item that failed as unavailable is deferred: it cannot head the
+// queue and stop every run; the next run works the item behind it.
+func TestPipeline_ModelUnavailableItemDeferred(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	failNext := true
+	e.gen.describe = func(context.Context, string, string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failNext {
+			failNext = false
+			return "", digest.WithCause(errors.New("API Error: 500"), digest.ErrAICall)
+		}
+		return `{"title":"T","description":"The image shows a thing.","text":"","keys":[]}`, nil
+	}
+	a := e.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
+	b := e.image("1:C1", "1758000000.000200", "F2", noisePNG(t, 64, 64, 2))
+
+	e.run()
+	assert.Equal(t, "pending", e.row(a).Status)
+	assert.Zero(t, e.row(a).Attempts)
+	assert.Equal(t, "pending", e.row(b).Status, "the run ended at A")
+
+	e.run() // the clock is still before A's next_try_at
+	assert.Equal(t, "ok", e.row(b).Status, "B is worked while A waits")
+	assert.Equal(t, "pending", e.row(a).Status, "A is not retried before its time")
+	img, _ := e.gen.calls()
+	assert.Equal(t, 2, img)
 }
 
 func TestPipeline_BadReplyAndOwnTimeoutCountAttempts(t *testing.T) {

@@ -229,10 +229,16 @@ func (r *run) item(ctx context.Context, it db.MediaItem) {
 			return // shutdown: no attempt is spent
 		}
 		if modelUnavailable(o.fail) {
-			// Not the item's fault: no attempt is spent, and no other
-			// item is tried against a provider that cannot answer.
+			// Not counted against the item: no attempt is spent, and no
+			// other item is tried against a provider that cannot answer.
+			// The item is deferred like a waiting row, so one item whose
+			// failure only looks like an outage cannot head the queue and
+			// stop every run.
 			r.stop = true
 			r.p.logf("media: item %d: the model is unavailable, the pass resumes next cycle: %s", it.ID, redactURLs(o.fail.Error()))
+			if err := r.p.DB.DeferMedia(ctx, it.ID, r.p.now().Add(mediaWaitRetry)); err != nil {
+				r.p.logf("media: item %d: %v", it.ID, err)
+			}
 			return
 		}
 		r.fail(ctx, it, o.fail)
