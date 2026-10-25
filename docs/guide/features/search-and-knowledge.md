@@ -31,7 +31,7 @@ Only images and links that arrive while Knowledge search is on are processed, ne
 
 - Opening a link fetches the page from your Mac like a browser visit: the site sees your Mac's address and the time, and a tracking link can tell its author the link was opened.
 - Text read off a screenshot is stored and searchable as it is, passwords and tokens included.
-- Hosts listed under `knowledge.link_fetch_deny_hosts` in the config are never opened; a company build ships its own list on top.
+- Links to your own company: the domains of the work addresses you connected (Gmail, mail, Jira, Linear; not public mail like gmail.com) and their subdomains are never opened. Hosts listed under `knowledge.link_fetch_deny_hosts` in the config are never opened either.
 
 **Confluence in search** uses your Jira sign-in. It is read-only: Watchtower never writes to Confluence from the index. Nothing is fetched until you select a space; after that each cycle loads a bounded amount (about 90 seconds of work), so a big space takes several cycles to arrive.
 

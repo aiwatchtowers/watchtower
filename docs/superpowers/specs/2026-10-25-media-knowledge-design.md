@@ -120,3 +120,4 @@ Owner decisions:
 - (B) Links are fetched from every channel and DM; opening a link can tell its author it was opened — the guide says so.
 - (C) No caps on how many images or links are processed; bots' images are described.
 - (D) Text read off screenshots is stored and searchable as is (no secret scrubbing).
+- (ask #598) The company's own domains are derived automatically from the owner's connected accounts and never fetched in any build; the build seed is optional.
