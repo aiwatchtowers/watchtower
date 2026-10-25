@@ -81,8 +81,9 @@ final class AppState {
         try await LiveLearnEnvironment.loadCatalog()
     }
     /// Onboarding was finished before this launch (`LearnVersionPolicy`):
-    /// read at init, before this launch's onboarding may finish.
-    @ObservationIgnored let learnOnboardingFinishedAtLaunch: Bool
+    /// the local step at init, or the database profile `reconcileOnboarding`
+    /// restores it from — never this launch's own onboarding finishing.
+    @ObservationIgnored private(set) var learnOnboardingFinishedAtLaunch: Bool
 
     /// The owner (`OwnerQueries.resolve`, OWNER-01); unknown → `NoOwnerEmptyState` (OWNER-02). Re-read on
     /// DB open, account reloads and Day Plan/Briefings/Inbox appear (the daemon fills Jira's cross-process).
@@ -985,7 +986,9 @@ final class AppState {
         var skipThisLaunch = false
         if let dbPool, onboarding.currentStep != .complete {
             switch await checkProfileOnboarding(dbPool: dbPool) {
-            case .done: onboarding.goTo(.complete)
+            case .done:
+                onboarding.goTo(.complete)
+                learnOnboardingFinishedAtLaunch = true
             case .unreadable: skipThisLaunch = true
             case .pending: break
             }
