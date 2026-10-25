@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Design reference:** `docs/design/mobile/mockups.html` — 17 approved-direction mockups (screens 1–8 approved, ask #618).
+
 **Goal:** The owner can run workbench sessions from the iPhone without sitting at the Mac: near-live workchat with a state line, chatting while the agent works, a push for every stop of work while away, and the whole app redesigned in the Desktop's language.
 
-**Architecture:** The Mac hub (Desktop process) gains an away gate and one generalised alert kind (`ask_alert` carries four events), a faster session-chat lane and the PROJ-16 send-while-busy rule; the phone registers the CloudKit subscription it never registered, routes taps, merges session detail and chat into one workchat screen, and moves onto a token module shared with the Desktop.
+**Architecture:** The Mac hub (Desktop process) gains an away gate and one generalised alert kind (`ask_alert` carries four events), a faster session-chat lane and the PROJ-16 send-while-busy rule; the phone first moves onto a token module shared with the Desktop and a set of parts drawn from the approved mockups, then registers the CloudKit subscription it never registered, routes taps, merges session detail and chat into one workchat screen, and rebuilds every other screen to its mockup.
 
 **Tech Stack:** Swift 5.10 mode (Swift 6 toolchain), SwiftUI, GRDB, CloudKit (`CKSyncEngine`, `CKQuerySubscription`), UserNotifications, IOKit power assertions, CoreGraphics event source; Go untouched except docs.
 
@@ -27,17 +29,41 @@
 
 ## Review Focus
 
-1. **Owner returns, then leaves again** while the same ask is still open → no second push (ledger `pushed`). Test in Task 4 `testASecondAwayPeriodDoesNotRepushTheSameAsk`.
-2. **A session stops with an open ask** (`waitingOnAsk`) or stops on a permission prompt (`needsApproval`) → exactly one push (the ask / the request), never also a session push. Task 4 `testAWaitingOnAskSessionPushesOnlyTheAsk`, `testNeedsApprovalPushesOnlyTheRequest`.
-3. **The Mac restarts / the hub is rebuilt while the owner is away** → no push storm for old stops (enabled_at and ledger). Task 4 `testAHubRestartRepublishesWithoutNewSignals`.
-4. **A phone line sent while a Claude agent works, then a permission prompt appears** → the line is held (`needs_approval`), never typed into the prompt. Task 9 `testProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt`.
-5. **The Mac is asleep or Watchtower is quit** while the phone shows a workchat → the screen says so and a sent line reads "Waiting for your Mac", never a fake "Sent". Task 11 `testAStaleHeartbeatShowsMacAsleepAndHoldsTheComposerCaption`.
+1. **Owner returns, then leaves again** while the same ask is still open → no second push (ledger `pushed`). Test in Task 6 `testASecondAwayPeriodDoesNotRepushTheSameAsk`.
+2. **A session stops with an open ask** (`waitingOnAsk`) or stops on a permission prompt (`needsApproval`) → exactly one push (the ask / the request), never also a session push. Task 6 `testAWaitingOnAskSessionPushesOnlyTheAsk`, `testNeedsApprovalPushesOnlyTheRequest`.
+3. **The Mac restarts / the hub is rebuilt while the owner is away** → no push storm for old stops (enabled_at and ledger). Task 6 `testAHubRestartRepublishesWithoutNewSignals`.
+4. **A phone line sent while a Claude agent works, then a permission prompt appears** → the line is held (`needs_approval`), never typed into the prompt. Task 11 `testProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt`.
+5. **The Mac is asleep or Watchtower is quit** while the phone shows a workchat → the screen says so and a sent line reads "Waiting for your Mac", never a fake "Sent". Task 13 `testAStaleHeartbeatShowsMacAsleepAndHoldsTheComposerCaption`.
 
 ---
 
-## Phase A — pushes when work stops (spec §5.1, §5.2, §5.6 keep-awake)
+## Phase A — design system first (spec §6; mockups approved, ask #618)
 
-### Task 1: Away gate
+### Task 1: One token module for Desktop and phone
+
+**Files:**
+- Modify: `WatchtowerKit/Package.swift` (new target + product `WatchtowerDesign`, SwiftUI only, no GRDB), `WatchtowerDesktop/Package.swift` (DesignKit depends on `WatchtowerDesign`), `WatchtowerMobile/project.yml` (+ `make mobile-gen`)
+- Create: `WatchtowerKit/Sources/WatchtowerDesign/Tokens.swift`, `Tone.swift` (moved from DesignKit; platform shims under `#if canImport(AppKit)` / `UIKit` for `Stroke.hairlineColor` and `Tone.amber`)
+- Modify: `WatchtowerDesktop/Sources/DesignKit/Tokens.swift`, `Tone.swift` → `@_exported import WatchtowerDesign` (keep names public through DesignKit; `Surface.swift` stays macOS-only); phone `DesignSystem/Metrics.swift` and `PhoneTone.swift` read the shared values (phone-only additions — `RowInsets`, `TypeScale`, the orange reservation — stay in the phone)
+- Modify: `WatchtowerDesktop/Tests/Core/PublicAPISurfaceTests.swift` only if `WatchtowerDesign` trips its module list (Core must still not import it), `WatchtowerMobile/Tests/DesignSystemTests.swift` (expected values now Desktop's: Radius gains container 10/bubble 16/pill 18, card radius = `Radius.container`), `WatchtowerMobile/.swiftlint.yml` (`orange_outside_phone_tone` still allows `PhoneTone.swift`; add `kit_no_raw_metrics` and `kit_no_color_opacity` scoped to `Sources/Features/`)
+- Test: `WatchtowerKit/Tests/WatchtowerDesignTests/TokenTests.swift` (pins every value from `docs/design/desktop-style-guide.md` Tokens table)
+- [ ] Steps: token tests FAIL → move → `make kit-test FILTER=TokenTests`, `make test-swift FILTER='PublicAPISurfaceTests|DesignShotsTests'`, `make mobile-test MOBILE_FILTER='DesignSystemTests|OrangeToneTests'`, `make design-gallery` builds, `make lint-swift` → PASS → commit `refactor(design): one token module shared by the Desktop and the phone`. Desktop pixels must not change: run `make desktop-shots DESKTOP_SHOTS=<scratch>` before and after and diff file hashes.
+
+### Task 2: Phone components in the Desktop language
+
+**Files:**
+- Modify: every file in `WatchtowerMobile/Sources/DesignSystem/` — `Card.swift` (soft `Fill.card` + hairline, `Radius.container`, no opaque system fill), `Pill.swift` (`ChipTint` 0.14 fill + 0.5 stroke at 0.3, like `Chip`), `FlatRow.swift` (`.kitRow`-like fills, no `RowDivider` between rows), `Bars.swift` (composer bar like `WorkchatComposer`), `Parts.swift` (`SessionDot` = Desktop `SessionLiveDot`); add `SectionHeader` caps style with `Tracking.caps` per the Desktop `SectionHeader`; add `ChatBubble` (owner right on accent `Fill.selected`, `Radius.bubble`; agent left without a bubble; Watchtower lines as captions — Desktop `SessionChatRow`/`UserMessageBubble`)
+- Modify: `WatchtowerMobile/Tests/ScreenshotTourTests.swift` — shot list covers spec §6.2's list: Now, workbench list, workbench sessions, workchat (working / waiting / permission card / inline ask / composer states), board, target detail, three ask views, agenda, event detail, recordings, recap, Settings, Macs, linking screens, empty and Mac-asleep states, a notification mock (rendered `UNNotificationContent` preview card)
+- Test: `DesignSystemTests` updated to the new paints
+- **Reference:** the approved mockups `docs/design/mobile/mockups.html` (screens 1–17, light and dark; 1–8 approved in ask #618) are the target look for every part: take sizes, fills, radii and copy from there, mapped onto the Task 1 tokens.
+- Also add the parts the mockups use that the phone lacks: `StateLine` (dot/glyph + caption + optional "m:ss" timer; mockups 3, 4, 8), `MacStatusChip` (1, 7), `InlinePermissionCard` and `InlineAskCard` (4), `WorkchatComposerBar` (3, 4, 8), `BoardCard` (5, = Desktop `WorkbenchBoardCardView`), `CalendarRow` (7, = Desktop `CalendarEventRow`), `PrimaryActionBar` (9–12), `SettingsCard` with small switches (16).
+- [ ] **Step 1:** Update `DesignSystemTests` to the new paints and add one test per new part (inputs → visible strings and tones) → FAIL. **Step 2:** build the parts → `make mobile-test MOBILE_FILTER='DesignSystemTests|OrangeToneTests'` PASS. **Step 3:** add a `designSystemShots()` page to `ScreenshotTourTests` rendering each part in its mockup states; `make mobile-shots` (default `build/mobile-shots`, gitignored); compare with the mockups side by side and fix drift. **Step 4:** `make lint-swift`. **Step 5:** commit `feat(mobile): design system in the Desktop language`.
+
+---
+
+## Phase B — pushes when work stops (spec §5.1, §5.2, §5.6 keep-awake)
+
+### Task 3: Away gate
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/OwnerAwayPolicy.swift`
@@ -60,7 +86,7 @@
 - [ ] **Step 4:** Same command → PASS; `make lint-swift`.
 - [ ] **Step 5:** Commit `feat(desktop): owner-away gate for phone alerts`.
 
-### Task 2: Alert ledger in the hub sidecar
+### Task 4: Alert ledger in the hub sidecar
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/Services/MobileHub/HubSyncState.swift` (schema ~:75, `markAlerted` ~:821, `pruneAlertedAsks` ~:841, `wipeSyncState` ~:885–938)
@@ -77,11 +103,11 @@
 
 - [ ] **Step 1: Write failing tests:** `testFirstSeenWins`, `testPushedAtIsSetOnce`, `testPruneKeepsOpenKeys`, `testOldAlertedAsksRowsMigrateAsPushed` (pre-create `alerted_asks` with ask 7 → `ask-7` pushed), `testWipeBumpsGenerationAndKeepsPublishedRows`.
 - [ ] **Step 2:** `make test-swift FILTER=HubSyncStateWorkAlertsTests` → FAIL.
-- [ ] **Step 3:** Implement; update the two callers to compile (`AskAlertSlice` is rewritten in Task 4 — keep it building by mapping to `ask-<id>` keys for now).
+- [ ] **Step 3:** Implement; update the two callers to compile (`AskAlertSlice` is rewritten in Task 6 — keep it building by mapping to `ask-<id>` keys for now).
 - [ ] **Step 4:** `make test-swift FILTER='HubSyncStateWorkAlertsTests|AskAlertSliceTests|MobileHubServiceTests'` → PASS.
 - [ ] **Step 5:** Commit `feat(mobile-hub): work_alerts ledger with seen and pushed`.
 
-### Task 3: Kit alert payload for four events
+### Task 5: Kit alert payload for four events
 
 **Files:**
 - Modify: `WatchtowerKit/Sources/WatchtowerSync/Secure/AlertOpener.swift` (`AskAlertPayload` → `WorkAlertPayload`)
@@ -100,7 +126,7 @@
 - [ ] **Step 4:** Same → PASS; `make lint-swift`.
 - [ ] **Step 5:** Commit `feat(kit): work alert payload for asks, permissions and session stops`.
 
-### Task 4: Hub work-alert slice
+### Task 6: Hub work-alert slice
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Services/MobileHub/Slices/WorkAlertSlice.swift` (replaces `AskAlertSlice.swift`, deleted)
@@ -109,7 +135,7 @@
 - Test: `WatchtowerDesktop/Tests/Core/WorkAlertPolicyTests.swift`, `WatchtowerDesktop/Tests/MobileHub/WorkAlertSliceTests.swift` (replaces `AskAlertSliceTests.swift`)
 
 **Interfaces:**
-- Consumes: Task 1 `OwnerAwayBox.read()`, Task 2 ledger, Task 3 `WorkAlertPayload`/`WorkAlertKey`; `TerminalSessionSlice.publishedSessions(_:)` (`Published.state.kind`, `TerminalSessionSlice.stateAt(_:)`), `PermissionRequestSlice` row reading, `WorkbenchSlice.publishedWorkbenchRefs`.
+- Consumes: Task 3 `OwnerAwayBox.read()`, Task 4 ledger, Task 5 `WorkAlertPayload`/`WorkAlertKey`; `TerminalSessionSlice.publishedSessions(_:)` (`Published.state.kind`, `TerminalSessionSlice.stateAt(_:)`), `PermissionRequestSlice` row reading, `WorkbenchSlice.publishedWorkbenchRefs`.
 - Produces:
   - `package enum WorkAlertPolicy { package static let stopHold: TimeInterval = 20; package enum Event: String { case ask, permission, sessionStopped = "session_stopped", sessionFailed = "session_failed" }; package struct AskInput { id, workbenchID, sessionID: Int64?, title, kind, createdAt: Date }; package struct RequestInput { id, sessionID, workbenchID, toolName, createdAt: Date }; package struct SessionInput { id, workbenchID, title, kind: SessionSwitcherPresentation.State.Kind, stateAt: Date?, openAsks: Int, hasPendingRequest: Bool }; package struct Candidate: Equatable { key: String, event: Event, workbenchID: Int64, sessionID: Int64?, askID: Int64?, requestID: Int64?, startedAt: Date, title: String, body: String }; package static func candidates(asks: [AskInput], requests: [RequestInput], sessions: [SessionInput], now: Date) -> [Candidate] }` (Core has no Kit types, so the slice maps `Candidate` to the Kit `WorkAlertPayload`). Rules: every open ask → `ask`; every pending request → `permission`; a session whose kind is `.finished` or `.stopped` → `sessionStopped`, `.failed` → `sessionFailed`, only when `stateAt` is set, `now - stateAt >= stopHold`, `openAsks == 0` and `!hasPendingRequest`; `.waitingOnAsk`, `.readyToCheck` and `.needsApproval` never yield a session candidate (their ask or request does).
   - `struct WorkAlertSlice: SliceSource { let kind = SliceKind.askAlert; init(sidecar: HubSyncState, isAway: @escaping @Sendable () -> Bool, liveness: @escaping @Sendable () -> SessionLiveness, now: @escaping @Sendable () -> Date = { Date() }) }`
@@ -122,7 +148,7 @@
 - [ ] **Step 4:** `make test-swift FILTER='WorkAlertPolicyTests|WorkAlertSliceTests|FastLaneTests|SlicePublisherTests'` → PASS.
 - [ ] **Step 5:** Update `docs/features/mobile-companion.md` "Owner asks and ask alerts (B4)" → work alerts; commit `feat(mobile-hub): push every stop of work while the owner is away`.
 
-### Task 5: Phone subscription, extension and Settings
+### Task 7: Phone subscription, extension and Settings
 
 **Files:**
 - Modify: `WatchtowerMobile/Sources/App/Hubs/HubSession.swift` (register/unregister in `startTransport` ~:586 and on toggle), `WatchtowerMobile/NotifyService/NotificationService.swift`, `WatchtowerMobile/Sources/App/DeviceSettings.swift` (`newAskAlerts` → `workAlerts`, key `notifications.workAlerts` in the app-group suite, default true, migrate old key value), `WatchtowerMobile/Sources/Features/Settings/SettingsView.swift:240`
@@ -142,7 +168,7 @@
 - [ ] **Step 4:** Tests PASS; `make mobile-build`; `make lint-swift`.
 - [ ] **Step 5:** Guide `docs/guide/features/iphone.md` (notifications section) + `reference/settings.md`; commit `feat(mobile): register the work-alert subscription and fill all four events`.
 
-### Task 6: Tap routing and clearing resolved notifications
+### Task 8: Tap routing and clearing resolved notifications
 
 **Files:**
 - Create: `WatchtowerMobile/Sources/App/NotificationRouter.swift`
@@ -160,7 +186,7 @@
 - [ ] **Step 4:** PASS; lint.
 - [ ] **Step 5:** Commit `feat(mobile): open the right screen from an alert and clear resolved ones`.
 
-### Task 7: Keep the Mac awake
+### Task 9: Keep the Mac awake
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/KeepAwakePolicy.swift`, `WatchtowerDesktop/Sources/Services/MobileHub/MacAwakeAssertion.swift`
@@ -174,15 +200,15 @@
 - [ ] **Step 2–4:** `make test-swift FILTER='KeepAwakePolicyTests|MacAwakeAssertionTests|MobileSettingsViewModelTests'`, `make mobile-test MOBILE_FILTER=HubBootTests` FAIL → implement → PASS; lint.
 - [ ] **Step 5:** Guide (`iphone.md`, `settings.md`: "Keep this Mac awake for the iPhone", note lid-closed on battery not covered); commit `feat(mobile-hub): keep the Mac awake while a session runs and the phone is in touch`.
 
-**Phase A gate (controller):** `make test-swift`, `make kit-test`, `make mobile-test`, `make lint-all`.
+**Phase B gate (controller):** `make test-swift`, `make kit-test`, `make mobile-test`, `make lint-all`.
 
-**Dependencies:** Task 1, 2, 3 none; Task 4 depends on 1, 2, 3; Task 5 on 3; Task 6 on 5; Task 7 none. Task 8, 9 none; Task 10 on 9; Task 11 on 10. Task 12 none; Task 13 on 12 and 10, 11 (shots cover the new screens); Tasks 14–17 on 13 and the owner's verdict. Independent tasks may run in parallel lanes (own worktree each).
+**Dependencies:** Task 1 none; Task 2 on 1. Tasks 3, 4, 5, 9 none; Task 6 on 3, 4, 5; Task 7 on 5 and 2; Task 8 on 7. Tasks 10, 11 none; Task 12 on 11 and 2; Task 13 on 12. Tasks 14–17 on 2 (and 14/15 after 12–13, which build the workchat, Now and sessions screens new). Phase B and the hub halves of Phase C (Tasks 10, 11) run in parallel with Phase A; independent tasks run in parallel lanes, each in its own worktree.
 
 ---
 
-## Phase B — workchat (spec §5.3–§5.6)
+## Phase C — workchat (spec §5.3–§5.6)
 
-### Task 8: Near-live chat lane
+### Task 10: Near-live chat lane
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/Services/MobileHub/Slices/SessionChatRunner.swift` (`Timing.standard.every` 10 → 3 s; `onChange: (@Sendable () -> Void)?` fired when a fetch changes a payload), `.../SlicePublisher.swift` (`urgentKinds` += `.sessionChat`, placed after the ask kinds in `publishOrder`), `AppState+MobileHub.swift` (runner `onChange` → `publisher?.nudge(kinds: [.sessionChat])`), `SessionChatSlice.swift` doc
@@ -190,7 +216,7 @@
 - Docs: `docs/features/session-chat-feed.md` (~40 s → ~5 s, Lifetime paragraph), Kit `SessionChat.live` comment.
 - [ ] Steps 1–5 as usual: tests FAIL → implement → `make test-swift FILTER='SessionChatRunnerTests|SessionChatSliceTests|SlicePublisherTests|FastLaneTests'` PASS → commit `feat(mobile-hub): near-live session chat while a phone watches`.
 
-### Task 9: PROJ-16 send while busy
+### Task 11: PROJ-16 send while busy
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionInputHandlers.swift` (`verdict` ~:283: `kind == .claude ? control.workchatLineCheck : control.lineCheck`; applied result gains `while_busy: true` when `control.isWorking(sessionID)` at submit)
@@ -202,27 +228,27 @@
 - Guard changes (owner-approved amendment, ask #614 — do not weaken the others): replace `testProj16_AWorkingSessionHoldsTheLineUntilItStops` with `testProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt` (working → submitted; then a `needsApproval` state → next line held `needs_approval`) and add `testProj16_AWorkingCodexSessionStillHoldsTheLine`; `SessionControlTests.testPhoneLineCheckStillHoldsWhileWorking` stays (it tests `lineCheck`, still used for Codex) with its doc comment updated.
 - [ ] Steps 1–5: tests FAIL → implement → `make test-swift FILTER='SessionInputHandlersTests|SessionControlTests'` PASS → commit `feat(mobile-hub): a phone line reaches a working Claude agent (PROJ-16 amended)`.
 
-### Task 10: One workchat screen on the phone
+### Task 12: One workchat screen on the phone
 
 **Files:**
-- Create: `WatchtowerMobile/Sources/Features/Workbench/WorkchatView.swift`, `WorkchatModel.swift` (pure), `WorkchatComposer.swift` (replaces `TellSessionBar.swift`)
+- Create: `WatchtowerMobile/Sources/Features/Workbench/WorkchatView.swift`, `WorkchatModel.swift` (pure) (the composer is Task 2's `WorkchatComposerBar`; `TellSessionBar.swift` is deleted)
 - Modify: `SessionChatView.swift` (kept for subagent chats only; main-chat path removed), `SessionDetailView.swift` (becomes `SessionReportView` reached from the actions menu "Report and timeline"), `SessionInputSender.swift` (`SessionInputModel.footnote` and held texts), navigation destinations in `WorkbenchListView.swift:31-36`, `NowView.swift:48-53` (`SessionRoute` → `WorkchatView`)
 - Test: `WatchtowerMobile/Tests/WorkchatWiringTests.swift` (new), update `SessionChatWiringTests`, `SessionDetailWiringTests`, `SessionInputWiringTests`, `ScreenshotTourTests` sources
 
 **Interfaces:**
-- Consumes: `SessionChatRequester` (starts on appear, stops on disappear), `SessionRowModel`, `PermissionCardModel`, `SessionActionsModel`, `SessionInputModel`, Task 9 `whileBusy`.
+- Consumes: `SessionChatRequester` (starts on appear, stops on disappear), `SessionRowModel`, `PermissionCardModel`, `SessionActionsModel`, `SessionInputModel`, Task 11 `whileBusy`.
 - Produces: `struct WorkchatModel: Equatable { init(session: TerminalSessionState, chat: SessionChat?, snapshot: WorkbenchReplicaSnapshot, input: SessionInputModel, permission: PermissionCardModel?, macOnline: Bool, now: Date); stateLine: StateLine /* glyph, tone, caption, timer "m:ss" from stateAt while working */; entries: [SessionChat.Entry]; inlineAsks: [WaitingCardModel] /* the session's open asks, as SessionDetailModel.asks builds them today */; permission: PermissionCardModel?; composer: ComposerState }` with `enum ComposerState: Equatable { case hidden(SessionInputModel.TypingHint?), ready(footnote: String?), approval(String), macAway(String) }`.
 - Copy (exact): composer placeholder "Message the session…"; footnote removed for Claude, "Delivered when the agent stops" for Codex; sent-while-busy caption "Queued · the agent reads it at its next step"; held captions unchanged except `.agentBusy` → "Queued · sends when the agent stops"; waiting copy unchanged ("Asking your Mac…", "Your Mac has not sent this chat yet. Is it awake?").
-- Layout: header (title, workbench, state line), feed (bubbles as today), inline permission card and open asks at the bottom of the feed, composer pinned; actions menu: Stop, Finish, Interrupt, Report and timeline, Open board target.
+- Layout (mockups 3, 4, 8; built on the Task 2 parts `StateLine`, `ChatBubble`, `InlinePermissionCard`, `InlineAskCard`, `WorkchatComposerBar`): header (title, workbench, state line), feed, inline permission card and open asks at the bottom of the feed, composer pinned; actions menu: Stop, Finish, Interrupt, Report and timeline, Open board target.
 - [ ] **Step 1:** Failing tests: `testOpeningTheSessionStartsTheChatWatch`, `testStateLineShowsTimerWhileWorking`, `testPermissionCardSitsAboveTheComposer`, `testOpenAsksShowInline`, `testSentWhileBusyShowsQueuedCaption`, `testCodexKeepsTheIdleFootnote`, `testSubagentScreenHasNoComposer`, `testReportIsReachableFromTheMenu`, plus the existing "no transcript" guards kept.
 - [ ] **Step 2–4:** `make mobile-test MOBILE_FILTER='WorkchatWiringTests|SessionChatWiringTests|SessionDetailWiringTests|SessionInputWiringTests|PermissionCardTests'` FAIL → implement → PASS; lint.
 - [ ] **Step 5:** Demo seed: add a `session_chat` record for working session 10 and a typing grant so the composer shows in the demo (`DemoSeed+SessionDetail.swift`); guide; commit `feat(mobile): one workchat screen with state line and composer`.
 
-### Task 11: Now, sessions order and honest staleness
+### Task 13: Now, sessions order and honest staleness
 
 **Files:**
 - Modify: `WatchtowerMobile/Sources/Features/Now/NowModel.swift`, `NowView.swift`, `Features/Workbench/WorkbenchView.swift`, `WorkbenchModels.swift`, `Features/Settings/MacStatusRow.swift` (reuse status for the chip)
-- Create: `WatchtowerMobile/Sources/Features/Hubs/MacStatusChip.swift`
+- Uses: Task 2 `MacStatusChip` (feeds it `MacReachability`), `StateLine`, `SectionHeader`; layout per mockups 1 (Now) and 2 (sessions).
 - Test: `WatchtowerMobile/Tests/NowWiringTests.swift`, `WatchtowerMobile/Tests/WorkbenchSessionsOrderTests.swift` (new), `WorkchatWiringTests`
 
 **Interfaces:**
@@ -230,46 +256,24 @@
 - [ ] **Step 1:** Failing tests incl. `testAStaleHeartbeatShowsMacAsleepAndHoldsTheComposerCaption` (composer line reads "Waiting for your Mac"), `testStoppedAndFailedSessionsAreWaitingForYou`, `testSessionsFollowTheDesktopPanelOrder`.
 - [ ] **Step 2–5:** `make mobile-test MOBILE_FILTER='NowWiringTests|WorkbenchSessionsOrderTests|WorkchatWiringTests'` FAIL → implement → PASS → guide → commit `feat(mobile): Now leads with waiting work; Mac asleep is shown`.
 
-**Phase B gate (controller):** `make test`, `make test-swift`, `make lint-all`, `make mobile-test`; then a device smoke checklist as a `kind: check` ask (pushes on private scope, tap routing, ~5 s chat latency measured and reported, send while busy, keep-awake assertion visible in `pmset -g assertions`).
+**Phase C gate (controller):** `make test`, `make test-swift`, `make lint-all`, `make mobile-test`; then a device smoke checklist as a `kind: check` ask (pushes on private scope, tap routing, ~5 s chat latency measured and reported, send while busy, keep-awake assertion visible in `pmset -g assertions`).
 
 ---
 
-## Phase C — design (spec §6)
+## Phase D — the other screens, to the approved mockups
 
-### Task 12: One token module for Desktop and phone
+Each task: rebuild the listed screens on the Task 2 parts so they match the named mockups; no behaviour change; before/after shots (`make mobile-shots`) next to the mockup in the PR body; `make mobile-test MOBILE_FILTER=<the screens' wiring tests>`; `make lint-swift`; guide wording in `docs/guide/features/iphone.md` where it describes the screen; commit `feat(mobile): <area> in the new design`. Screens without a mockup (Macs, hub switcher, event detail, recordings list, question ask full screen, boot and failure screens, empty states) take the nearest mockup's parts.
 
-**Files:**
-- Modify: `WatchtowerKit/Package.swift` (new target + product `WatchtowerDesign`, SwiftUI only, no GRDB), `WatchtowerDesktop/Package.swift` (DesignKit depends on `WatchtowerDesign`), `WatchtowerMobile/project.yml` (+ `make mobile-gen`)
-- Create: `WatchtowerKit/Sources/WatchtowerDesign/Tokens.swift`, `Tone.swift` (moved from DesignKit; platform shims under `#if canImport(AppKit)` / `UIKit` for `Stroke.hairlineColor` and `Tone.amber`)
-- Modify: `WatchtowerDesktop/Sources/DesignKit/Tokens.swift`, `Tone.swift` → `@_exported import WatchtowerDesign` (keep names public through DesignKit; `Surface.swift` stays macOS-only); phone `DesignSystem/Metrics.swift` and `PhoneTone.swift` read the shared values (phone-only additions — `RowInsets`, `TypeScale`, the orange reservation — stay in the phone)
-- Modify: `WatchtowerDesktop/Tests/Core/PublicAPISurfaceTests.swift` only if `WatchtowerDesign` trips its module list (Core must still not import it), `WatchtowerMobile/Tests/DesignSystemTests.swift` (expected values now Desktop's: Radius gains container 10/bubble 16/pill 18, card radius = `Radius.container`), `WatchtowerMobile/.swiftlint.yml` (`orange_outside_phone_tone` still allows `PhoneTone.swift`; add `kit_no_raw_metrics` and `kit_no_color_opacity` scoped to `Sources/Features/`)
-- Test: `WatchtowerKit/Tests/WatchtowerDesignTests/TokenTests.swift` (pins every value from `docs/design/desktop-style-guide.md` Tokens table)
-- [ ] Steps: token tests FAIL → move → `make kit-test FILTER=TokenTests`, `make test-swift FILTER='PublicAPISurfaceTests|DesignShotsTests'`, `make mobile-test MOBILE_FILTER='DesignSystemTests|OrangeToneTests'`, `make design-gallery` builds, `make lint-swift` → PASS → commit `refactor(design): one token module shared by the Desktop and the phone`. Desktop pixels must not change: run `make desktop-shots DESKTOP_SHOTS=<scratch>` before and after and diff file hashes.
+### Task 14: Workbench list, board (mockup 5), target detail (9), New session (12), New target sheet
+Tests: `BoardModelTests`, `BoardWriteWiringTests`, `StartSheetWiringTests`. (Now and sessions are built new in Task 13.)
 
-### Task 13: Phone components in the Desktop language, and the mockup review
+### Task 15: Ask views — review (10), check (11), question (full-screen form of mockup 4's inline ask); report and timeline (13); subagent chat
+Tests: `AskFormTests`, `SessionDetailWiringTests`. (Workchat and the permission card are built new in Task 12.)
 
-**Files:**
-- Modify: every file in `WatchtowerMobile/Sources/DesignSystem/` — `Card.swift` (soft `Fill.card` + hairline, `Radius.container`, no opaque system fill), `Pill.swift` (`ChipTint` 0.14 fill + 0.5 stroke at 0.3, like `Chip`), `FlatRow.swift` (`.kitRow`-like fills, no `RowDivider` between rows), `Bars.swift` (composer bar like `WorkchatComposer`), `Parts.swift` (`SessionDot` = Desktop `SessionLiveDot`); add `SectionHeader` caps style with `Tracking.caps` per the Desktop `SectionHeader`; add `ChatBubble` (owner right on accent `Fill.selected`, `Radius.bubble`; agent left without a bubble; Watchtower lines as captions — Desktop `SessionChatRow`/`UserMessageBubble`)
-- Modify: `WatchtowerMobile/Tests/ScreenshotTourTests.swift` — shot list covers spec §6.2's list: Now, workbench list, workbench sessions, workchat (working / waiting / permission card / inline ask / composer states), board, target detail, three ask views, agenda, event detail, recordings, recap, Settings, Macs, linking screens, empty and Mac-asleep states, a notification mock (rendered `UNNotificationContent` preview card)
-- Test: `DesignSystemTests` updated to the new paints
-- [ ] **Step 1:** Update tests to the new values → FAIL. **Step 2:** restyle components → `make mobile-test MOBILE_FILTER='DesignSystemTests|OrangeToneTests'` PASS. **Step 3:** `make mobile-shots` (default `build/mobile-shots` in the worktree, gitignored; light + dark). **Step 4:** `ask_owner kind: review` with `doc_path` = the absolute path of the generated `build/mobile-shots/INDEX.md` and the shots attached to target #1072 (`update_target add_images`, ≤ 5 MB each, the 12 most telling) — title "Мобильное приложение: макеты нового дизайна". **Step 5:** commit `feat(mobile): design system in the Desktop language`. Phase D waits for the owner's verdict; changes the owner asks for become steps of Tasks 14–17.
-
----
-
-## Phase D — screen by screen (gated on Task 13's verdict)
-
-Each task: restyle the listed screens on the Task 13 components; no behaviour change; before/after shots (`make mobile-shots`) in the PR body; `make mobile-test MOBILE_FILTER=<the screens' wiring tests>`; `make lint-swift`; guide screenshots/wording in `docs/guide/features/iphone.md` where they describe the screen; commit `feat(mobile): <area> in the new design`.
-
-### Task 14: Now, Workbench list, sessions, board, target detail, StartSessionSheet, NewBoardTargetSheet
-Tests: `NowWiringTests`, `BoardModelTests`, `BoardWriteWiringTests`, `StartSheetWiringTests`, `WorkbenchSessionsOrderTests`.
-
-### Task 15: Workchat, subagent chat, report and timeline, ask views (question, check, review), permission card
-Tests: `WorkchatWiringTests`, `AskFormTests`, `PermissionCardTests`, `SessionDetailWiringTests`.
-
-### Task 16: Calendar agenda, event detail, recorder, recordings list, recap
+### Task 16: Calendar agenda (7), event detail, recorder (14), recordings list, recap (15)
 Tests: `CalendarWiringTests`, `RecordingsWiringTests`, `RecorderTests`.
 
-### Task 17: Settings, Macs, hub switcher, onboarding and linking, boot/failure screens, demo banner
+### Task 17: Settings (16), Macs, hub switcher, linking (17) and onboarding, boot/failure screens, demo banner
 Tests: `SettingsWiringTests`, `MacsModelTests`, `HubSwitcherTests`, `LinkingViewModelTests`.
 
 **Final gate (controller):** full `make test`, `make test-swift`, `make lint-all`, `make mobile-test`, `go test ./docs/guide`; `docs/features/mobile-companion.md` "Design layer" rewritten and the 2026-10-11 design-pass spec marked superseded; `debate-review` on the branch; PR into `main`.
