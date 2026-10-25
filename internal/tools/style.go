@@ -22,6 +22,8 @@ func NewGetWritingStyle() *Tool {
 			"you draft to be sent as them (send_slack_message) sounds like them. Call it before drafting.",
 		InputSchema: mustSchema[getWritingStyleArgs]("get_writing_style"),
 		Access:      AccessRead,
+		// Company data: its typical phrases quote the owner's own messages.
+		CompanyData: true,
 		Surfaces:    []string{"main", WorkbenchSurface, AutomationSurface},
 		Execute: func(_ context.Context, d *db.DB, _ Call) (any, error) {
 			profile, err := d.GetStyleProfile()

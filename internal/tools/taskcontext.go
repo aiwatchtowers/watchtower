@@ -103,6 +103,7 @@ func NewGetTaskContext() *Tool {
 			"it carries the context the ticket text does not.",
 		InputSchema: mustSchema[getTaskContextArgs]("get_task_context"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var args getTaskContextArgs
 			if err := json.Unmarshal(call.Args, &args); err != nil {
