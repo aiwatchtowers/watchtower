@@ -8,9 +8,29 @@ After a meeting you want one answer: what is waiting for me? Home puts what need
 
 ## How it works
 
-Home only reads what the app produced and refreshes about every 30 seconds. The feed is on the left; on the right, top to bottom, are **Workbench**, **Links** and **Today in numbers** (one column, in that order, in a narrow window). A zone with nothing to show is left out.
+Home only reads what the app produced, about every 30 seconds. The feed is on the left; on the right, top to bottom, are **Workbench**, **Links**, **Today in numbers** and **Learn Watchtower** (one column, in that order, in a narrow window). A zone with nothing to show is left out.
 
 ### The feed
+<!-- learn
+id: home-feed
+title: Start the day from Home
+text: Home lists what waits on you above the **NOW** line and your meetings below it; **Done** or **Hide** clears a row.
+area: communication
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:home
+-->
+<!-- learn
+id: home-feed-more
+title: Page through what waits on you
+text: Press **N more** under the feed to see up to 50 waiting rows right on Home, and **Show 50 more** for the next ones.
+area: communication
+level: next
+kind: tip
+since: next
+action: nav:home
+-->
 
 Above a **NOW** line is everything that waits on you; below it, your meetings and what is still to come.
 
@@ -53,6 +73,20 @@ The **Links** zone has up to four shortcuts, each shown while its tab (for the b
 - **meetings recorded**: recordings made today.
 
 **AI spend** always shows; a number whose source is off is left out, one that couldn't be read shows "—".
+
+### Learn Watchtower
+<!-- learn
+id: home-learn
+title: Learn a feature at a time
+text: The **Learn Watchtower** zone on Home shows three features to try; **Got it** brings the next ones.
+area: setup
+level: basics
+kind: feature
+since: next
+action: nav:home
+-->
+
+The last zone shows three cards about what Watchtower can do: this version's new ones first (marked **NEW**), then your setup areas. Each has a button to try it, **Read more** and **Ask about this**. Its button, **Got it** or using the feature marks it seen; **See all →** lists every card, with **Show again**.
 
 ### Data scheduled for deletion
 
@@ -97,6 +131,7 @@ Home ends with "Stuck? Press **⌘/** to ask, or open the User Guide."; **⌘/**
 - **A link or number is missing.** Its tab is hidden, or its feature or source is off.
 - **The feed has no Slack, Jira, Linear or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
 - **No meetings below NOW.** Calendar isn't connected or its tab is hidden, or the events are all-day, cancelled or declined.
+- **No Learn Watchtower zone.** The cards couldn't be read; the next launch tries again.
 - **"Couldn't read … — see the log."** A zone (Workbench, the links, or a feed source) couldn't read the local database. Reopen the app; if it persists, check the app log.
 
 A tab stays empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
