@@ -528,6 +528,10 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         try Data([0x00]).write(to: audio) // the recorder finalizes its file
         XCTAssertEqual(try pendingStore.pending(), [], "nothing could be written without the store")
 
+        // A later launch: the one-time pass over older builds' audio ran on
+        // an earlier one.
+        let laterDefaults = try isolatedDefaults()
+        laterDefaults.set(true, forKey: MeetingRecorderCenter.legacyAudioTombstonedKey)
         let relaunched = MeetingRecorderCenter(
             pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
@@ -535,7 +539,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults(),
+            defaults: laterDefaults,
             recordingsDirectory: recordingsDir
         )
         await relaunched.restorePendingOnLaunch()

@@ -458,6 +458,9 @@ final class MeetingRecorderCenter {
     var pendingStore: PendingTranscriptStore?
     /// The legacy `rec_*` sidecars were imported into `pendingStore`.
     private var legacySidecarsImported = false
+    /// When this center was made (this launch): audio modified since is never
+    /// taken for an older build's dismissed recording.
+    let launchedAt: Date
 
     private let recorderFactory: () -> AudioRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
@@ -465,10 +468,10 @@ final class MeetingRecorderCenter {
     private let decode: (URL) throws -> [Float]
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let notifier: MeetingTranscriptNotifying
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
     /// Directory the recorder writes `rec_*` files into and `restorePendingOnLaunch`
     /// scans. Injectable so tests neither write to nor scan the user's real one.
-    private let recordingsDirectory: URL
+    let recordingsDirectory: URL
     /// Identity of the engine `engineFactory` would load right now (provider +
     /// model, the same Settings keys `defaultEngineFactory` reads). Consulted
     /// when parking and when taking from the warm slot, so a Settings change
@@ -477,7 +480,7 @@ final class MeetingRecorderCenter {
     /// Injectable clock (the MeetingReminderCenter convention) for the
     /// warm-policy poll and for the timestamp that names an ingested phone
     /// recording (`ingestPhoneRecording`).
-    private let clock: () -> Date
+    let clock: () -> Date
     /// Reads the meeting window the warm policy decides against. The default
     /// stub sees no meetings (the Center is constructed before the DB pool
     /// exists); AppState hands in the real GRDB-backed provider via
@@ -526,6 +529,7 @@ final class MeetingRecorderCenter {
         self.recordingsDirectory = recordingsDirectory
         self.engineKey = engineKey
         self.clock = now
+        self.launchedAt = now()
         self.meetingsProvider = meetingsProvider
     }
 
@@ -933,7 +937,6 @@ final class MeetingRecorderCenter {
 
         do {
             try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
-            await beginPending(eventID: eventID, title: title, for: url)
             try await recorder.start(to: url)
             captureAudioURL = url
             captureState = .recording(startedAt: Date())
@@ -960,6 +963,10 @@ final class MeetingRecorderCenter {
                 liveEngineState = .waiting
                 pendingLiveStart = PendingLiveStart(recorder: recorder, config: config)
             }
+            // Once the capture runs and shows: a slow or failing write never
+            // delays or stops it, and a crash before the row lands is
+            // recovered from the audio file alone.
+            await beginPending(eventID: eventID, title: title, for: url)
         } catch {
             // Start failed before any audio was captured: nothing to keep.
             self.recorder = nil
@@ -1270,8 +1277,8 @@ final class MeetingRecorderCenter {
     /// Forgets a recovered recording the user chose not to transcribe: drops the
     /// entry and marks its row dismissed so the "recovered" pill goes away for
     /// good — this session and on relaunch. The audio file is left on disk; the
-    /// Go orphan sweep reclaims it like any other `rec_*` file (the row goes
-    /// with it at a later launch). Only acts on the idle recovered state,
+    /// Go orphan sweep reclaims it like any other `rec_*` file, and the first
+    /// launch after that removes the tombstone (`prunePendingRows`). Only acts on the idle recovered state,
     /// never mid-capture.
     func dismissRecovered() async {
         guard case .idle = captureState, !recoverable.isEmpty else { return }
@@ -1303,6 +1310,8 @@ final class MeetingRecorderCenter {
         }
         await migrateLegacyPendingDefaults(into: store)
         let busy = Set(jobs.map(\.audioURL)).union(captureAudioURL.map { [$0] } ?? [])
+        await tombstoneLegacyAudioOnce(store: store, busy: busy)
+        await prunePendingRows(store: store, busy: busy)
         for entry in Self.recoverable(in: recordingsDirectory, store: store) where !busy.contains(entry.audioURL) {
             addRecoverable(entry)
         }
@@ -1721,7 +1730,7 @@ final class MeetingRecorderCenter {
     /// Audio extensions of the `rec_*` family: `.caf` from this Mac's own
     /// recorder, `.m4a` from phone recordings relayed by the mobile hub. Both
     /// are AVFoundation-readable, so the batch decode path is shared.
-    nonisolated private static let recordingAudioExtensions: Set<String> = ["caf", "m4a"]
+    nonisolated static let recordingAudioExtensions: Set<String> = ["caf", "m4a"]
 
     /// Chronological sort key for a `rec_<timestamp>[-N].<ext>` name: the
     /// timestamp, then the collision suffix as a number (absent = the first
@@ -1764,9 +1773,10 @@ final class MeetingRecorderCenter {
         for row in rows {
             withRow.insert(row.recording)
             // A row whose audio is gone (the daemon's orphan sweep took it)
-            // is not listed; it is left alone, a few bytes.
+            // is not listed; `prunePendingRows` removes it at launch.
             guard audio.contains(row.recording) else { continue }
-            if row.dismissed { continue }
+            // A saved recording whose row a failed removal left behind.
+            if row.dismissed || saved.contains(directory.appendingPathComponent(row.recording).path) { continue }
             byName[row.recording] = RecoverableRecording(audioURL: directory.appendingPathComponent(row.recording),
                                                          eventID: row.eventID, title: row.title)
         }
@@ -1826,7 +1836,15 @@ final class MeetingRecorderCenter {
     /// Non-empty text and decodable metadata, or nil (then the retry
     /// re-transcribes).
     private func loadPersistedTranscript(audioURL: URL) -> PersistedTranscript? {
-        guard let row = try? pendingStore?.transcript(recording: audioURL.lastPathComponent),
+        let found: PendingTranscript?
+        do {
+            found = try pendingStore?.transcript(recording: audioURL.lastPathComponent)
+        } catch {
+            print("[MeetingRecorder] cannot read the kept transcript of \(audioURL.lastPathComponent), "
+                  + "re-transcribing: \(error.localizedDescription)")
+            return nil
+        }
+        guard let row = found,
               let text = row.transcript, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let json = row.metaJSON,
               let meta = try? JSONDecoder().decode(PersistedTranscriptMeta.self, from: Data(json.utf8)) else {

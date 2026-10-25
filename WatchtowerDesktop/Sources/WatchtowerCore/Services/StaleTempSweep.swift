@@ -7,18 +7,27 @@ import Foundation
 package enum StaleTempSweep {
     package static let prefixes = [
         "watchtower-text-", "watchtower-transcript-", "watchtower-segments-", "watchtower-speakers-",
-        "dictation-", "watchtower-automation-"
+        "watchtower-automation-"
     ]
 
+    /// Dictation's file was `dictation-<UUID>.txt`: matched exactly, since
+    /// a bare `dictation-` prefix is too generic for the shared temp folder.
+    package static func isStale(_ name: String) -> Bool {
+        if prefixes.contains(where: { name.hasPrefix($0) }) { return true }
+        guard name.hasPrefix("dictation-"), name.hasSuffix(".txt") else { return false }
+        let id = name.dropFirst("dictation-".count).dropLast(".txt".count)
+        return UUID(uuidString: String(id)) != nil
+    }
+
     /// Removes every entry of `dir` (files and the recipe draft directories)
-    /// whose name starts with one of `prefixes` and that was last modified
+    /// whose name `isStale` and that was last modified
     /// at least `olderThan` seconds before `now`. Returns how many it removed.
     @discardableResult
     package static func run(in dir: URL, olderThan: TimeInterval = 600, now: Date = Date()) -> Int {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return 0 }
         var removed = 0
-        for name in names where prefixes.contains(where: { name.hasPrefix($0) }) {
+        for name in names where isStale(name) {
             let url = dir.appendingPathComponent(name)
             guard let attributes = try? fm.attributesOfItem(atPath: url.path),
                   let modified = attributes[.modificationDate] as? Date,

@@ -527,7 +527,9 @@ struct SystemSettings: View {
         if isCodex {
             process.arguments = ["exec", "--model", model, "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "respond with: OK"]
         } else {
-            process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model]
+            // No session file for a probe (#604 G11).
+            process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model,
+                                 "--no-session-persistence"]
         }
 
         process.environment = await Constants.resolvedEnvironmentAsync()

@@ -10,8 +10,8 @@ import (
 
 // TestImportLegacyDraftCache (#604 Review Focus 4): an older version's
 // automation-drafts/<id>.jsonl files are imported in order and removed; a
-// file that does not parse is renamed .bad (logged once) and stays for the
-// owner, and the directory with it.
+// file that does not parse is deleted (a cache: no recipe text outside the
+// database).
 func TestImportLegacyDraftCache(t *testing.T) {
 	f := newDraftFixture(t)
 	seedConversations(t, f.d, 11, 12, 13, 14)
@@ -54,15 +54,15 @@ func TestImportLegacyDraftCache(t *testing.T) {
 			t.Errorf("%s was not removed", name)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "13.jsonl.bad")); err != nil {
-		t.Errorf("the unparseable file is not kept as .bad: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "13.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("the unparseable file was not deleted: %v", err)
 	}
-	if n, err := ImportLegacyDraftCache(f.d, ws); err != nil || n != 0 {
-		t.Fatalf("re-run with only the .bad file = %d, %v; want 0, nil (no retry, no log)", n, err)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("with every file gone, the %s directory must go too: %v", DraftCacheDir, err)
 	}
 
-	// Once the last file goes, so does the directory.
-	if err := os.Remove(filepath.Join(dir, "13.jsonl.bad")); err != nil {
+	// A later leftover is imported the same way.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	write("14.jsonl", line("d1"))
@@ -127,5 +127,31 @@ func TestImportLegacyDraftCache_TwiceAfterAFailedRemove(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("both files (22 has no conversation) and the directory must be gone: %v", err)
+	}
+}
+
+// A legacy file that cannot be read stays for the next start (an error is
+// returned); it is not deleted like one that does not parse.
+func TestImportLegacyDraftCache_UnreadableFileStays(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	f := newDraftFixture(t)
+	seedConversations(t, f.d, 31)
+	ws := t.TempDir()
+	dir := filepath.Join(ws, DraftCacheDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "31.jsonl")
+	if err := os.WriteFile(path, []byte(`{"recipe_text":"x","at":"2026-10-20T10:00:00Z"}`+"\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	if n, err := ImportLegacyDraftCache(f.d, ws); err == nil || n != 0 {
+		t.Fatalf("ImportLegacyDraftCache = %d, %v; want 0 and a read error", n, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the unreadable file must stay: %v", err)
 	}
 }

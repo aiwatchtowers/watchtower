@@ -157,6 +157,9 @@ final class DatabaseDraftMirror: EmbeddedDraftMirror {
             let key = String(name.dropFirst(Self.legacyPrefix.count))
             if changes[key] == nil, let text = value as? String { changes[key] = .some(text) }
         }
+        // `restore` answers from `known` until the write lands, so a legacy
+        // draft is seen at once, not only after the row commits.
+        known = changes
         let defaults = defaults
         write(changes) { succeeded in
             guard succeeded else { return }

@@ -1317,7 +1317,7 @@ final class AppState {
                 await vm?.loadDetail(id)
             }
         )
-        // A new draft the editor holds is a list row, cache file or not.
+        // A new draft the editor holds is a list row, cached draft rows or not.
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }

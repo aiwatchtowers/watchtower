@@ -1,22 +1,42 @@
 import Foundation
+import os
 
-/// Moves the recording sidecars older versions wrote next to the audio
-/// (`rec_X.meta` — event link and title — and `rec_X.txt` + `rec_X.json` — the
-/// transcript kept for a save retry) into `pending_transcripts` rows (#604
-/// S3/S4), then deletes them. A stem with an unreadable sidecar keeps all its
-/// files and is logged by file name; the next launch tries again.
+/// Moves the recording sidecars older versions wrote next to the audio into
+/// `pending_transcripts` rows (#604 S3/S4), then deletes them. Older versions
+/// kept a recording pending exactly while its `rec_X.meta` existed (event link
+/// and title; `rec_X.txt` + `rec_X.json` held a transcript kept for a save
+/// retry), so:
+/// - a stem with a `.meta` becomes a pending row, with its kept transcript;
+/// - a stem without one (a lone `.txt` or `.json`, or the pair) was dismissed
+///   or saved on the old build: it becomes a dismissed tombstone, and its text
+///   is not imported — the files are just deleted (the audio stays).
+///
+/// A stem with an unreadable sidecar keeps all its files (logged by file
+/// name); the next launch tries again. A stem counts as imported only once
+/// its `.meta` is gone; a delete that fails is logged per file and retried at
+/// the next launch (the row writes are idempotent).
 package enum LegacyRecordingSidecarImport {
     private struct Meta: Decodable {
         let eventID: String?
         let title: String?
     }
 
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "recording-import")
+
     /// Imports every `rec_*` sidecar stem in `dir`. Returns how many stems
-    /// became rows.
+    /// were fully moved (rows written, sidecars deleted).
     @discardableResult
     package static func importAll(in dir: URL, into store: PendingTranscriptStore) async -> Int {
         let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return 0 }
+        let names: [String]
+        do {
+            names = try fm.contentsOfDirectory(atPath: dir.path)
+        } catch CocoaError.fileReadNoSuchFile {
+            return 0
+        } catch {
+            log.error("cannot list the recordings folder: \(error.localizedDescription, privacy: .public)")
+            return 0
+        }
         let sidecarExtensions: Set<String> = ["meta", "txt", "json"]
         var stems: [String: Set<String>] = [:]
         for name in names where name.hasPrefix("rec_") {
@@ -41,13 +61,23 @@ package enum LegacyRecordingSidecarImport {
         let file = { (ext: String) in dir.appendingPathComponent("\(stem).\(ext)") }
         let audioName = ["caf", "m4a"].map { "\(stem).\($0)" }
             .first { fm.fileExists(atPath: dir.appendingPathComponent($0).path) } ?? "\(stem).caf"
-        var meta: Meta?
-        if exts.contains("meta") {
-            guard let data = try? Data(contentsOf: file("meta")),
-                  let decoded = try? JSONDecoder().decode(Meta.self, from: data) else {
-                return keep(file("meta"))
+        let started = (try? fm.attributesOfItem(atPath: dir.appendingPathComponent(audioName).path))?[.modificationDate]
+            as? Date ?? Date()
+        guard exts.contains("meta") else {
+            // Dismissed or saved on the old build: never pending again.
+            do {
+                try await store.dismiss(recording: audioName, at: started)
+            } catch {
+                log.error("""
+                    keeping the sidecars of \(stem, privacy: .public): \(error.localizedDescription, privacy: .public)
+                    """)
+                return false
             }
-            meta = decoded
+            return delete(exts.sorted(), of: stem, in: dir)
+        }
+        guard let data = try? Data(contentsOf: file("meta")),
+              let meta = try? JSONDecoder().decode(Meta.self, from: data) else {
+            return keep(file("meta"))
         }
         var transcript: (text: String, metaJSON: String)?
         if exts.contains("txt"), exts.contains("json") {
@@ -58,26 +88,43 @@ package enum LegacyRecordingSidecarImport {
             }
             transcript = (text, json)
         }
-        let started = (try? fm.attributesOfItem(atPath: dir.appendingPathComponent(audioName).path))?[.modificationDate]
-            as? Date ?? Date()
         do {
-            if meta != nil || transcript == nil {
-                try await store.begin(recording: audioName, eventID: meta?.eventID, title: meta?.title, at: started)
-            }
+            try await store.begin(recording: audioName, eventID: meta.eventID, title: meta.title, at: started)
             if let transcript {
                 try await store.saveTranscript(recording: audioName, text: transcript.text, metaJSON: transcript.metaJSON,
                                                at: started)
             }
         } catch {
-            print("[LegacyRecordingSidecarImport] keeping the sidecars of \(stem): \(error.localizedDescription)")
+            log.error("keeping the sidecars of \(stem, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }
-        for ext in exts { try? fm.removeItem(at: file(ext)) }
-        return true
+        // The `.meta` goes last: while it stands, the next launch imports
+        // the stem again.
+        return delete(exts.subtracting(["meta"]).sorted() + ["meta"], of: stem, in: dir)
+    }
+
+    /// Deletes the stem's sidecars in order; true once every one is gone.
+    private static func delete(_ exts: [String], of stem: String, in dir: URL) -> Bool {
+        var allGone = true
+        for ext in exts {
+            let url = dir.appendingPathComponent("\(stem).\(ext)")
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch CocoaError.fileNoSuchFile {
+                continue
+            } catch {
+                allGone = false
+                log.error("""
+                    could not delete \(url.lastPathComponent, privacy: .public): \
+                    \(error.localizedDescription, privacy: .public)
+                    """)
+            }
+        }
+        return allGone
     }
 
     private static func keep(_ url: URL) -> Bool {
-        print("[LegacyRecordingSidecarImport] \(url.lastPathComponent) is unreadable; its sidecars are kept")
+        log.error("\(url.lastPathComponent, privacy: .public) is unreadable; its sidecars are kept")
         return false
     }
 }

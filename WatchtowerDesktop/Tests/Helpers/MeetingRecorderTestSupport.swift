@@ -334,9 +334,10 @@ class MeetingRecorderTestCase: XCTestCase {
     /// A dummy on-disk file standing in for a finished recording. Its bytes are
     /// never decoded (the Center's decode seam is stubbed); it only has to exist
     /// so "audio preserved" assertions are meaningful.
+    /// In the recordings folder, as every recording is (a pending row names
+    /// its file there); the `rec-` dash keeps it out of the `rec_*` scans.
     func makeDummyAudioFile() throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rec-\(UUID().uuidString).caf")
+        let url = recordingsDir.appendingPathComponent("rec-\(UUID().uuidString).caf")
         try Data([0x00, 0x01, 0x02]).write(to: url)
         return url
     }

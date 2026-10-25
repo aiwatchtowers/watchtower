@@ -72,6 +72,7 @@ final class EmbeddedDraftMirrorTests: XCTestCase {
         let mirror = mirror()
         mirror.clear(for: second) // this process's clear wins over the legacy text
         mirror.writer = pool
+        XCTAssertEqual(mirror.restore(for: first), "from defaults", "seen before the write lands")
         try settled()
         XCTAssertEqual(try row(first), "from defaults")
         XCTAssertNil(try row(second))

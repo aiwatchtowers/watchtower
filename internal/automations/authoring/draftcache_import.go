@@ -24,9 +24,10 @@ import (
 // directory (#604 G2). A conversation that already has cache rows keeps
 // them (a re-run after a failed removal never duplicates or reorders); the
 // file of a conversation that no longer exists is removed with nothing to
-// import. A file that does not parse is renamed to <name>.bad, logged once
-// by name only (its lines hold recipe text), and left for the owner. It
-// returns how many files were imported; a missing directory is no work.
+// import. A file that does not parse is deleted (it is only a cache, and no
+// recipe text stays outside the database), logged by name only; a file that
+// cannot be read stays for the next start. It returns how many files were
+// imported; a missing directory is no work.
 func ImportLegacyDraftCache(d *db.DB, workspaceDir string) (int, error) {
 	dir := filepath.Join(workspaceDir, DraftCacheDir)
 	entries, err := os.ReadDir(dir)
@@ -45,10 +46,15 @@ func ImportLegacyDraftCache(d *db.DB, workspaceDir string) (int, error) {
 			continue
 		}
 		path := filepath.Join(dir, name)
-		lines, err := readLegacyDraftCache(path)
+		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Printf("automation drafts: %s does not parse (%v), kept as %s.bad", name, err, name)
-			if rerr := os.Rename(path, path+".bad"); rerr != nil {
+			errs = append(errs, fmt.Errorf("reading %s: %w", name, err))
+			continue
+		}
+		lines, err := parseLegacyDraftCache(data)
+		if err != nil {
+			log.Printf("automation drafts: %s does not parse (%v), deleted", name, err)
+			if rerr := os.Remove(path); rerr != nil {
 				errs = append(errs, rerr)
 			}
 			continue
@@ -82,13 +88,9 @@ func legacyDraftCacheID(e fs.DirEntry) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-// readLegacyDraftCache returns the file's entries in order, each checked to
+// parseLegacyDraftCache returns the file's entries in order, each checked to
 // decode as a DraftCacheEntry.
-func readLegacyDraftCache(path string) ([]DraftCacheEntry, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+func parseLegacyDraftCache(data []byte) ([]DraftCacheEntry, error) {
 	var out []DraftCacheEntry
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 64*1024), len(data)+1)

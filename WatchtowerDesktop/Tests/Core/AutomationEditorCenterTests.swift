@@ -91,7 +91,8 @@ final class AutomationEditorCenterTests: XCTestCase {
     private typealias Fixtures = AutomationEditFixtures
 
     private var runner: EditorRunner!
-    private var tempDir: URL!
+    /// The system temp folder's recipe-draft entries when the test began.
+    private var tempBefore: Set<String> = []
     private var grants: [AutomationToolGrant] = []
     private var refreshed: [Int64] = []
     private var sleeper: TestSleeper!
@@ -100,9 +101,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         try await super.setUp()
         sleeper = TestSleeper()
         runner = EditorRunner()
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("editor-center-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempBefore = try recipeTempEntries()
         grants = []
         refreshed = []
         runner.on("show") { _ in try Fixtures.showJSON() }
@@ -111,7 +110,6 @@ final class AutomationEditorCenterTests: XCTestCase {
     override func tearDown() async throws {
         runner.release()
         sleeper.fire()
-        try? FileManager.default.removeItem(at: tempDir)
         try await super.tearDown()
     }
 
@@ -160,8 +158,16 @@ final class AutomationEditorCenterTests: XCTestCase {
         }
     }
 
+    /// The `watchtower-automation-*` entries the editor wrote to the system
+    /// temp folder before #604 S7, whatever else is there.
+    private func recipeTempEntries() throws -> Set<String> {
+        Set(try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
+            .filter { $0.hasPrefix("watchtower-automation-") })
+    }
+
+    /// Entries this test added: none, since the recipe goes on stdin.
     private func tempEntries() throws -> [String] {
-        try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+        try recipeTempEntries().subtracting(tempBefore).sorted()
     }
 
     // MARK: - Save
@@ -382,13 +388,16 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertNil(center.saving[7], "closed")
     }
 
-    func testTempFileRemovedOnFailure() async throws {
+    /// The recipe goes on stdin (#604 S7): a failed validate or save leaves
+    /// no temp entry behind, because none is ever written.
+    func testRecipeTravelsOnStdinAndFailuresLeaveNoTempEntry() async throws {
         runner.on("validate") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: boom\n") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
         await center.check(7)
         XCTAssertEqual(center.saving[7], .failed("Error: boom"))
-        XCTAssertNotNil(runner.fileTexts["validate"], "the file existed while validate ran")
+        XCTAssertNotNil(runner.fileTexts["validate"], "validate got the recipe on stdin")
+        XCTAssertTrue(runner.invocations.contains { $0.starts(with: ["automations", "validate", "-"]) })
         XCTAssertEqual(try tempEntries(), [])
 
         runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
@@ -396,6 +405,8 @@ final class AutomationEditorCenterTests: XCTestCase {
         let plan = try await checkedPlan(center, 7)
         await center.commit(7, plan: plan, turnOn: true)
         XCTAssertEqual(center.saving[7], .failed("Error: disk full"))
+        XCTAssertNotNil(runner.fileTexts["save"], "save got the recipe on stdin")
+        XCTAssertTrue(runner.invocations.contains { $0.contains("--file") && $0.contains("-") && $0[1] == "save" })
         XCTAssertEqual(try tempEntries(), [])
     }
 

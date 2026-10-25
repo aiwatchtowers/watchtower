@@ -22,8 +22,10 @@ final class StaleTempSweepTests: XCTestCase {
             return url
         }
         let gone = try StaleTempSweep.prefixes.map { try make("\($0)a.txt", at: old) }
-            + [try make("watchtower-automation-1", at: old, directory: true)]
-        let kept = [try make("watchtower-text-fresh.txt", at: now), try make("other-old.txt", at: old)]
+            + [try make("watchtower-automation-1", at: old, directory: true),
+               try make("dictation-\(UUID().uuidString).txt", at: old)]
+        let kept = [try make("watchtower-text-fresh.txt", at: now), try make("other-old.txt", at: old),
+                    try make("dictation-notes.txt", at: old), try make("dictation-\(UUID().uuidString).wav", at: old)]
 
         let removed = StaleTempSweep.run(in: dir, now: now)
 
