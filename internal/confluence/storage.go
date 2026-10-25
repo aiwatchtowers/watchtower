@@ -59,7 +59,8 @@ func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, 
 
 // StorageMedia lists the images and links a storage body names, in
 // document order, each once (its first place), anchored at the
-// HeadingAnchor of its enclosing section: an ac:image of a page attachment
+// HeadingAnchor of its enclosing section (none when that section is cut
+// off by the body cap): an ac:image of a page attachment
 // (ri:attachment ri:filename) is {image, "att:<filename>"}; one of an
 // external URL (ri:url ri:value) is {image, "url:<normalized>", URL} and an
 // <a href> is {link, "url:<normalized>", URL}, both only when
@@ -92,7 +93,22 @@ func convertStorage(xhtml string, maxRunes int) storageResult {
 	c := &converter{}
 	nodes = flattenTransparent(nodes)
 	sections := capSections(c.splitSections(nodes), maxRunes)
-	return storageResult{sections: sections, userIDs: c.userIDs, jiraKeys: c.jiraKeys, media: c.media}
+	return storageResult{sections: sections, userIDs: c.userIDs, jiraKeys: c.jiraKeys, media: anchorKept(c.media, sections)}
+}
+
+// anchorKept moves a ref anchored at a section capSections cut off to the
+// page itself (no anchor): an anchor names a stored section or none.
+func anchorKept(refs []extsync.MediaRef, sections []extsync.Section) []extsync.MediaRef {
+	kept := make(map[string]bool, len(sections))
+	for _, s := range sections {
+		kept[s.Anchor] = true
+	}
+	for i := range refs {
+		if !kept[refs[i].Anchor] {
+			refs[i].Anchor = ""
+		}
+	}
+	return refs
 }
 
 // oneSection wraps text as the one-section shape the rest of the pipeline

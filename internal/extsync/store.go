@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -130,25 +131,30 @@ func upsertDocument(ctx context.Context, q Queryer, sourceID int64, it *Item, no
 	return nil
 }
 
-// recordMedia hands one written item's media to Options.Media: a page's or
-// blog post's own Media, or an image attachment's one image (an
-// {image, "attachment"} item of its own document) at the attachment's
-// created time; any other attachment records none, which also drops what
-// an earlier version recorded. A comment is never written here. Without a
-// content time nothing is recorded (only new content is, and an unknown
-// time is not new).
+// AttachmentLocator is the locator of an image attachment's own media item
+// for one version ("attachment:v<N>"): a new version is a new item, so its
+// bytes are described again and the old version's row is replaced.
+func AttachmentLocator(version int) string {
+	return "attachment:v" + strconv.Itoa(version)
+}
+
+// recordMedia hands one written item's media to Options.Media, at the
+// version's modified time: a page's or blog post's own Media, or an image
+// attachment's one image (an {image, AttachmentLocator(version)} item of
+// its own document); any other attachment records none, which also drops
+// what an earlier version recorded. A comment is never written here.
+// Nothing is recorded without a content time (only new content is, and an
+// unknown time is not new), nor for an item whose body could not be read
+// for media (MediaUnread: what it recorded before is kept).
 func (e *Engine) recordMedia(ctx context.Context, q Queryer, sourceID int64, it *Item) error {
-	if e.opts.Media == nil {
+	if e.opts.Media == nil || it.MediaUnread {
 		return nil
 	}
 	refs, at := it.Media, it.Ref.Modified
 	if it.Ref.Kind == KindAttachment {
 		refs = nil
-		if !it.Created.IsZero() {
-			at = it.Created
-		}
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(it.MediaType)), "image/") {
-			refs = []MediaRef{{Kind: "image", Locator: "attachment", Name: it.Title}}
+			refs = []MediaRef{{Kind: "image", Locator: AttachmentLocator(it.Ref.Version), Name: it.Title}}
 		}
 	}
 	if at.IsZero() {

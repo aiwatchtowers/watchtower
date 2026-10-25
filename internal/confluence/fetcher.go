@@ -485,6 +485,7 @@ func (f *Fetcher) pageItem(c extsync.Container, ref extsync.ItemRef, p *v2Page) 
 		Meta:             meta,
 		MentionedUserIDs: users,
 		Media:            body.media,
+		MediaUnread:      body.err != nil,
 	}, nil
 }
 

@@ -608,9 +608,11 @@ func confluenceRelink(ctx context.Context, q extsync.Queryer, ref string, texts 
 // the opener over the external sync's own per-account fetchers (one client
 // and token refresh per account), the resolver of a page's inline images,
 // and the hook that relinks a document once one of its images is
-// described. A nil pass is a no-op.
-func registerConfluenceMedia(p *media.Pipeline, database *db.DB, fetchers map[int64]extsync.Fetcher) {
+// described. A nil pass (not set before the external sync was wired)
+// registers nothing and is logged, once per daemon start.
+func registerConfluenceMedia(p *media.Pipeline, database *db.DB, fetchers map[int64]extsync.Fetcher, logger *log.Logger) {
 	if p == nil {
+		logger.Printf("confluence: no media pass to register with; Confluence images and links stay undescribed")
 		return
 	}
 	if p.Openers == nil {
@@ -620,7 +622,7 @@ func registerConfluenceMedia(p *media.Pipeline, database *db.DB, fetchers map[in
 		p.Resolvers = map[string]media.Resolver{}
 	}
 	p.Openers["confluence"] = media.ConfluenceOpener{DB: database, Fetchers: fetchers}
-	p.Resolvers["confluence"] = media.ConfluenceResolver{DB: database}
+	p.Resolvers["confluence"] = media.ConfluenceResolver{DB: database, Logger: p.Logger}
 	p.AfterDescribed = append(p.AfterDescribed, media.ConfluenceRelinkHook(database, confluenceRelink))
 }
 

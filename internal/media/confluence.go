@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/db"
@@ -29,9 +32,17 @@ var confluenceAttachmentWait = 24 * time.Hour
 // image URLs and links are checked again with Fetchable against the synced
 // sources, the connected sites and denyHosts (DenyHosts(cfg)), and a link's
 // content key is its normalized URL; anything Fetchable refuses is not
-// recorded. Content older than media_state.start_at records nothing.
+// recorded. Content older than media_state.start_at records nothing. When
+// an attachment's image row is replaced (a new version, or no longer an
+// image), the page's inline image of it ("att:<title>") is reset to
+// pending in the same transaction, so it copies the new description.
 func ConfluenceRecorder(denyHosts []string) extsync.MediaRecorder {
 	return func(ctx context.Context, q extsync.Queryer, sourceID int64, extID string, refs []extsync.MediaRef, contentAt time.Time) error {
+		p := db.MediaParent{Kind: "confluence", ExtSourceID: sourceID, ExtID: extID, ContentAt: contentAt}
+		before, err := attachmentImageLocators(ctx, q, p.Key())
+		if err != nil {
+			return err
+		}
 		var refused map[string]bool
 		found := make([]db.MediaFound, 0, len(refs))
 		for _, r := range refs {
@@ -54,14 +65,73 @@ func ConfluenceRecorder(denyHosts []string) extsync.MediaRecorder {
 			}
 			found = append(found, f)
 		}
-		p := db.MediaParent{Kind: "confluence", ExtSourceID: sourceID, ExtID: extID, ContentAt: contentAt}
-		_, err := db.RecordMedia(ctx, q, p, found, "image", "link")
-		return err
+		if _, err := db.RecordMedia(ctx, q, p, found, "image", "link"); err != nil {
+			return err
+		}
+		if len(before) == 0 {
+			return nil
+		}
+		after, err := attachmentImageLocators(ctx, q, p.Key())
+		if err != nil {
+			return err
+		}
+		for _, loc := range before {
+			if !slices.Contains(after, loc) {
+				return resetInlineImage(ctx, q, sourceID, extID)
+			}
+		}
+		return nil
 	}
 }
 
+// attachmentImageLocators lists the attachment image locators recorded on
+// parentKey ("attachment:v<N>"; none on a page).
+func attachmentImageLocators(ctx context.Context, q extsync.Queryer, parentKey string) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT locator FROM media_items
+		WHERE parent_key = ? AND kind = 'image' AND locator LIKE 'attachment:%'`, parentKey)
+	if err != nil {
+		return nil, fmt.Errorf("media: reading images of %s: %w", parentKey, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			return nil, fmt.Errorf("media: reading images of %s: %w", parentKey, err)
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("media: reading images of %s: %w", parentKey, err)
+	}
+	return out, nil
+}
+
+// resetInlineImage makes the inline image of attachment attID on its page
+// ("att:<title>") pending again with nothing carried over, so the pass
+// resolves it afresh.
+func resetInlineImage(ctx context.Context, q extsync.Queryer, sourceID int64, attID string) error {
+	var page, title string
+	err := q.QueryRowContext(ctx, `SELECT parent_ext_id, title FROM ext_documents WHERE source_id = ? AND ext_id = ?`,
+		sourceID, attID).Scan(&page, &title)
+	if errors.Is(err, sql.ErrNoRows) || page == "" {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("media: reading attachment %s: %w", attID, err)
+	}
+	pageKey := db.MediaParent{Kind: "confluence", ExtSourceID: sourceID, ExtID: page}.Key()
+	if _, err := q.ExecContext(ctx, `UPDATE media_items SET status = 'pending', attempts = 0, error = '',
+			content_key = '', title = '', body = '', image_text = '', keys_json = '[]',
+			kb_source = '', kb_ref = '', described_at = ''
+		WHERE parent_key = ? AND kind = 'image' AND locator = ?`, pageKey, "att:"+title); err != nil {
+		return fmt.Errorf("media: resetting the inline image of %s: %w", attID, err)
+	}
+	return nil
+}
+
 // ConfluenceOpener opens an image attachment's own item (locator
-// "attachment") through its source's account fetcher — the one the
+// "attachment:v<N>") through its source's account fetcher — the one the
 // external sync uses, so its client and token refresh are shared — after
 // re-reading the attachment's metadata (gone or no longer visible is
 // ErrGone, above limit is ErrTooLarge). An inline "att:" image is resolved
@@ -73,7 +143,7 @@ type ConfluenceOpener struct {
 }
 
 func (o ConfluenceOpener) Open(ctx context.Context, it db.MediaItem, limit int64) (io.ReadCloser, string, error) {
-	if it.ParentKind != "confluence" || it.Locator != "attachment" {
+	if it.ParentKind != "confluence" || !strings.HasPrefix(it.Locator, "attachment:v") {
 		return nil, "", ErrGone
 	}
 	var acct sql.NullInt64
@@ -136,15 +206,19 @@ func (b confluenceBody) Close() error { return b.rc.Close() }
 // ConfluenceResolver resolves a page's inline image ("att:<filename>") to
 // the item of the attachment it names: the attachment document under the
 // same page with that title (Confluence keeps file names unique per page)
-// and its {image, attachment} item. That item is copied when ok and waited
+// and its one image item (its current version's). That item is copied when ok and waited
 // for while pending; an attachment without an item (older than the start
 // mark, or not an image) is ErrGone, and so is one still not synced
-// confluenceAttachmentWait after the page's image was found. Any other row
-// is no reference.
+// confluenceAttachmentWait after the page's image was found (an unreadable
+// discovery time keeps it waiting). Any other row is no reference.
 type ConfluenceResolver struct {
-	DB  *db.DB
-	Now func() time.Time // nil = time.Now
+	DB     *db.DB
+	Now    func() time.Time // nil = time.Now
+	Logger *log.Logger      // nil = no log
 }
+
+// badDiscoveredAt logs an unreadable discovered_at once per process.
+var badDiscoveredAt sync.Once
 
 func (r ConfluenceResolver) Resolve(ctx context.Context, it db.MediaItem) (*db.MediaItem, error) {
 	file, inline := strings.CutPrefix(it.Locator, "att:")
@@ -165,7 +239,7 @@ func (r ConfluenceResolver) Resolve(ctx context.Context, it db.MediaItem) (*db.M
 		return nil, fmt.Errorf("media: resolving inline image of %s: %w", it.ExtID, err)
 	}
 	parent := db.MediaParent{Kind: "confluence", ExtSourceID: it.ExtSourceID, ExtID: attID}
-	target, err := r.DB.MediaItemAt(ctx, parent.Key(), "image", "attachment")
+	target, err := r.DB.LastMediaItem(ctx, parent.Key(), "image")
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +254,12 @@ func (r ConfluenceResolver) Resolve(ctx context.Context, it db.MediaItem) (*db.M
 func (r ConfluenceResolver) waiting(it db.MediaItem) bool {
 	found, err := time.Parse(time.RFC3339, it.DiscoveredAt)
 	if err != nil {
-		return false
+		badDiscoveredAt.Do(func() {
+			if r.Logger != nil {
+				r.Logger.Printf("media: item %d: unreadable discovered_at; its inline image keeps waiting", it.ID)
+			}
+		})
+		return true
 	}
 	now := time.Now
 	if r.Now != nil {
@@ -192,9 +271,9 @@ func (r ConfluenceResolver) waiting(it db.MediaItem) bool {
 // ConfluenceRelinkHook is the pass's AfterDescribed hook for Confluence:
 // once an image of a page or attachment is described, the document's links
 // are re-recorded from its stored text, which now carries the image's
-// description and text (extsync.RelinkDocument), in one short write
-// transaction. Link rows never feed the links — a fetched page's summary is
-// not the document's content.
+// text and keys (extsync.RelinkDocument: never the model's own title or
+// description), in one short write transaction. Link rows never feed the
+// links — a fetched page's summary is not the document's content.
 func ConfluenceRelinkHook(d *db.DB, relink extsync.RelinkFunc) func(ctx context.Context, it db.MediaItem) error {
 	return func(ctx context.Context, it db.MediaItem) error {
 		if it.ParentKind != "confluence" || it.Kind != "image" || relink == nil {

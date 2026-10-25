@@ -192,3 +192,16 @@ func TestStorageToSections_Unchanged(t *testing.T) {
 		})
 	}
 }
+
+// A ref whose section the body cap cut off is anchored at the page (no
+// anchor): an anchor always names a stored section.
+func TestStorageMedia_AnchorOnlyAtKeptSections(t *testing.T) {
+	body := `<h2>Kept</h2><p>short <ac:image><ri:attachment ri:filename="k.png" /></ac:image></p>` +
+		`<h2>Cut</h2><p>` + strings.Repeat("long text ", 50) + `<a href="https://example.com/c">c</a></p>`
+	r := convertStorage(body, 10) // "Kept\nshort" fits; "Cut" is dropped whole
+	require.Equal(t, "[truncated]", r.sections[len(r.sections)-1].Text)
+	assert.Equal(t, []extsync.MediaRef{
+		{Kind: "image", Locator: "att:k.png", Name: "k.png", Anchor: "Kept"},
+		{Kind: "link", Locator: "url:https://example.com/c", URL: "https://example.com/c"},
+	}, r.media)
+}

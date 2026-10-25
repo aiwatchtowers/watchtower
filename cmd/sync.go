@@ -1203,7 +1203,9 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 		}
 	}
 	d.SetExternalSync(engine)
-	registerConfluenceMedia(d.MediaPipeline(), database, fetchers)
+	// Needs the media pass set first (SetMediaPipeline runs before
+	// wireJiraSyncers in the daemon setup); a nil pass is logged.
+	registerConfluenceMedia(d.MediaPipeline(), database, fetchers, logger)
 }
 
 // newIssueKeyDetector is issuekey.NewKeyDetectorIfEnabled with the detector's

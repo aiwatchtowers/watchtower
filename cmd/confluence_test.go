@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -515,6 +516,21 @@ func TestExternalSyncWiring_RegistersConfluenceMedia(t *testing.T) {
 	assert.Len(t, p.AfterDescribed, 1)
 	assert.NotNil(t, p.Openers["chat"], "the existing openers are kept")
 	assert.NotNil(t, extSyncOptions(env.cfg, logger, 0).Media)
+}
+
+// Without a media pass set first, the wiring registers nothing and says so.
+func TestExternalSyncWiring_NoMediaPassIsLogged(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	newConfluenceFetcher = func(*jira.Client, string) extsync.Fetcher { return env.fetcher }
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	env.cfg.Knowledge.Connectors.Enabled = true
+	d := daemon.New(env.cfg)
+
+	accounts, clients := buildAtlassianClients(env.cfg, env.db, logger)
+	wireExternalSync(d, env.cfg, env.db, accounts, clients, logger)
+	assert.Nil(t, d.MediaPipeline())
+	assert.Equal(t, 1, strings.Count(buf.String(), "no media pass to register with"))
 }
 
 func TestExternalSyncWiring_OffBuildsNoFetcher(t *testing.T) {

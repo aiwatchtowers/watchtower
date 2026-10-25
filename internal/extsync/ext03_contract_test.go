@@ -159,7 +159,7 @@ func TestEXT03_BinariesNeverPersisted(t *testing.T) {
 
 	// The PNG attachment was recorded as media of its own document.
 	var images int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM media_items WHERE ext_id = 'a-png' AND locator = 'attachment'`).Scan(&images))
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM media_items WHERE ext_id = 'a-png' AND locator = 'attachment:v1'`).Scan(&images))
 	require.Equal(t, 1, images)
 
 	// (b) + (c) no raw bytes (nor their base64 forms) and no BLOB anywhere in
@@ -244,7 +244,7 @@ func TestEXT03_MediaItemsHoldNoBytes(t *testing.T) {
 
 		statuses := queryStrings(t, d, `SELECT locator || '=' || status FROM media_items ORDER BY locator`)
 		if fail {
-			assert.Equal(t, []string{"att:sample.png=pending", "attachment=failed"}, statuses)
+			assert.Equal(t, []string{"att:sample.png=pending", "attachment:v1=failed"}, statuses)
 			errs := queryStrings(t, d, `SELECT error FROM media_items`)
 			require.NotEmpty(t, errs)
 			for _, v := range errs {
@@ -257,7 +257,7 @@ func TestEXT03_MediaItemsHoldNoBytes(t *testing.T) {
 				}
 			}
 		} else {
-			assert.Equal(t, []string{"att:sample.png=ok", "attachment=ok"}, statuses, "described, so the guard is not vacuous")
+			assert.Equal(t, []string{"att:sample.png=ok", "attachment:v1=ok"}, statuses, "described, so the guard is not vacuous")
 		}
 		assertNoFiles(t, filepath.Join(ws, "tmp", "media"))
 		for _, magic := range [][]byte{pngBytes[:16], {0x89, 'P', 'N', 'G'}, []byte("iVBORw0K"),

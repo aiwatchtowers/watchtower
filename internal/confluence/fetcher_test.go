@@ -967,3 +967,20 @@ func TestPageItemFillsMedia(t *testing.T) {
 		{Kind: "link", Locator: "url:https://example.com/x", URL: "https://example.com/x", Anchor: "Shots"},
 	}, it.Media)
 }
+
+// A body only the fallback strip could read is marked MediaUnread, so the
+// engine keeps the media already recorded for the page.
+func TestPageItemFallbackMarksMediaUnread(t *testing.T) {
+	f := NewFetcher(newFakeAPI(t), "https://acme.atlassian.net")
+	p := &v2Page{ID: "9", Title: "T", Version: v2Version{Number: 1, CreatedAt: "2026-10-25T10:00:00Z"}}
+	p.Body.Storage.Value = strings.Repeat("<div>", 600) + "deep"
+	it, err := f.pageItem(extsync.Container{Key: "ENG"}, extsync.ItemRef{Kind: extsync.KindPage, ExtID: "9"}, p)
+	require.NoError(t, err)
+	assert.True(t, it.MediaUnread)
+	assert.Empty(t, it.Media)
+
+	p.Body.Storage.Value = "<p>fine</p>"
+	it, err = f.pageItem(extsync.Container{Key: "ENG"}, extsync.ItemRef{Kind: extsync.KindPage, ExtID: "9"}, p)
+	require.NoError(t, err)
+	assert.False(t, it.MediaUnread)
+}

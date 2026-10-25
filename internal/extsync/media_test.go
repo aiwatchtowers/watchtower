@@ -85,15 +85,16 @@ func TestEngine_RecordsPageMediaInWriteTx(t *testing.T) {
 	assert.Equal(t, []string{"image att:a.png"}, mediaLocators(t, d, "p1"))
 }
 
-// An image attachment records one {image, attachment} item of its own
-// document at its created time; another attachment records none.
+// An image attachment records one {image, attachment:v<N>} item of its own
+// document at the version's modified time; another attachment records
+// none. A new version replaces the old version's row.
 func TestEngine_ImageAttachmentRecorded(t *testing.T) {
 	d, src := newMediaDB(t)
 	f := newFake()
 	f.addPage("p1", 1, t0)
-	f.addAttachment("a-img", "p1", 1, t0.Add(time.Hour), "shot.png", "image/png", []byte("png bytes"), -1)
-	created := t0.Add(-time.Hour)
-	f.find("a-img").item.Created = created
+	modified := t0.Add(time.Hour)
+	f.addAttachment("a-img", "p1", 1, modified, "shot.png", "image/png", []byte("png bytes"), -1)
+	f.find("a-img").item.Created = t0.Add(-time.Hour) // first upload: not the content time
 	f.addAttachment("a-txt", "p1", 1, t0, "notes.txt", "text/plain", []byte("hello"), -1)
 
 	var calls []mediaCall
@@ -102,17 +103,46 @@ func TestEngine_ImageAttachmentRecorded(t *testing.T) {
 	_, err := e.Run(context.Background())
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"image attachment"}, mediaLocators(t, d, "a-img"))
+	assert.Equal(t, []string{"image attachment:v1"}, mediaLocators(t, d, "a-img"))
 	assert.Empty(t, mediaLocators(t, d, "a-txt"))
-	for _, c := range calls {
-		if c.extID == "a-img" {
-			assert.True(t, created.Equal(c.contentAt), "content time = the attachment's created time")
-			assert.Equal(t, []MediaRef{{Kind: "image", Locator: "attachment", Name: "shot.png"}}, c.refs)
+	var img *mediaCall
+	for i := range calls {
+		if calls[i].extID == "a-img" {
+			img = &calls[i]
 		}
 	}
+	require.NotNil(t, img, "the image attachment reached the recorder")
+	assert.True(t, modified.Equal(img.contentAt), "content time = the version's modified time")
+	assert.Equal(t, []MediaRef{{Kind: "image", Locator: "attachment:v1", Name: "shot.png"}}, img.refs)
 	var name string
 	require.NoError(t, d.QueryRow(`SELECT name FROM media_items WHERE ext_id = 'a-img'`).Scan(&name))
 	assert.Equal(t, "shot.png", name)
+
+	f.mutate("a-img", 2, modified.Add(time.Hour))
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"image attachment:v2"}, mediaLocators(t, d, "a-img"), "the new version replaces the old row")
+}
+
+// An item whose body could not be read for media (the fallback strip)
+// leaves its recorded media alone: no recorder call, nothing deleted.
+func TestEngine_MediaUnreadKeepsRecordedMedia(t *testing.T) {
+	d, src := newMediaDB(t)
+	f := newFake()
+	f.addPage("p1", 1, t0)
+	f.find("p1").item.Media = []MediaRef{{Kind: "image", Locator: "att:a.png", Name: "a.png"}}
+	var calls []mediaCall
+	e := New(d, Options{Media: dbRecorder(&calls)})
+	e.SetFetcher(src.JiraAccountID, f)
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+
+	f.mutate("p1", 2, t0.Add(time.Hour))
+	f.find("p1").item.Media, f.find("p1").item.MediaUnread = nil, true
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, calls, 1, "no recorder call for the unread body")
+	assert.Equal(t, []string{"image att:a.png"}, mediaLocators(t, d, "p1"))
 }
 
 // A page edit replaces the page's images and links: a link no longer named
@@ -148,8 +178,8 @@ func TestEngine_PageEditReplacesLinks(t *testing.T) {
 	assert.True(t, t0.Add(time.Hour).Equal(calls[len(calls)-1].contentAt), "the edit records at the new version's time")
 }
 
-// storedTexts reads the document's ok image media text (never a link
-// summary, never a row still pending).
+// storedTexts reads the document's ok image text and keys (never the
+// model's title or description, a link summary or a row still pending).
 func TestStoredTexts_IncludesOKImageMediaOnly(t *testing.T) {
 	d, src := newMediaDB(t)
 	f := newFake()
@@ -164,7 +194,8 @@ func TestStoredTexts_IncludesOKImageMediaOnly(t *testing.T) {
 	e.SetFetcher(src.JiraAccountID, f)
 	_, err := e.Run(context.Background())
 	require.NoError(t, err)
-	_, err = d.Exec(`UPDATE media_items SET status = 'ok', title = 'IMG-T', body = 'IMG-B', image_text = 'IMG-X' WHERE locator = 'att:a.png'`)
+	_, err = d.Exec(`UPDATE media_items SET status = 'ok', title = 'IMG-T', body = 'IMG-B', image_text = 'IMG-X',
+		keys_json = '["IMG-K"]' WHERE locator = 'att:a.png'`)
 	require.NoError(t, err)
 	_, err = d.Exec(`UPDATE media_items SET title = 'PEND' WHERE locator = 'att:b.png'`)
 	require.NoError(t, err)
@@ -173,9 +204,10 @@ func TestStoredTexts_IncludesOKImageMediaOnly(t *testing.T) {
 
 	texts, err := storedTexts(context.Background(), d, src.ID, "p1")
 	require.NoError(t, err)
-	assert.Contains(t, texts, "IMG-T")
-	assert.Contains(t, texts, "IMG-B")
 	assert.Contains(t, texts, "IMG-X")
+	assert.Contains(t, texts, "IMG-K")
+	assert.NotContains(t, texts, "IMG-T", "the model's own title is not the image's content")
+	assert.NotContains(t, texts, "IMG-B", "nor its description")
 	assert.NotContains(t, texts, "PEND")
 	assert.NotContains(t, texts, "LINK-T")
 	assert.NotContains(t, texts, "LINK-B")

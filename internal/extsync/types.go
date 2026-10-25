@@ -66,6 +66,10 @@ type Item struct {
 	// Media lists the images and links a page or blog post body names
 	// (pages only; an attachment's own image is the engine's to record).
 	Media []MediaRef
+	// MediaUnread: the body could not be parsed for media (a fallback
+	// text strip), so the engine leaves the item's recorded media alone
+	// rather than replace them with none.
+	MediaUnread bool
 }
 
 // MediaRef is one image or link an item names, handed to the

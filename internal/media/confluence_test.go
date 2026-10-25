@@ -183,7 +183,7 @@ func TestConfluenceResolver_CopiesAttachmentDescription(t *testing.T) {
 	c.f.page("p1", 1, confMod, "page body", inlineChart)
 	c.f.attachment("a1", "p1", "chart.png", "image/png", confMod, noisePNG(t, 64, 64, 7))
 	c.sync()
-	inline, own := c.itemID("p1", "image", "att:chart.png"), c.itemID("a1", "image", "attachment")
+	inline, own := c.itemID("p1", "image", "att:chart.png"), c.itemID("a1", "image", "attachment:v1")
 
 	c.run() // the attachment is described; the inline image waits for it
 	assert.Equal(t, "ok", c.row(own).Status)
@@ -207,7 +207,7 @@ func TestConfluenceResolver_WaitsWhilePending(t *testing.T) {
 	c.f.attachment("a1", "p1", "chart.png", "image/png", confMod, noisePNG(t, 64, 64, 7))
 	c.sync()
 	delete(c.p.Openers, "confluence") // the attachment cannot be opened yet
-	inline, own := c.itemID("p1", "image", "att:chart.png"), c.itemID("a1", "image", "attachment")
+	inline, own := c.itemID("p1", "image", "att:chart.png"), c.itemID("a1", "image", "attachment:v1")
 
 	c.run()
 	c.run()
@@ -262,7 +262,7 @@ func TestConfluenceOpener_GoneAndFailures(t *testing.T) {
 	delete(c.f.items, "a2") // deleted upstream since the sync
 	c.f.downloadErr = errors.New(`GET https://acme.example.net/wiki/download/a1?token=s3cr3t: 500 <html>boom</html>`)
 	c.f.mu.Unlock()
-	a1, a2 := c.itemID("a1", "image", "attachment"), c.itemID("a2", "image", "attachment")
+	a1, a2 := c.itemID("a1", "image", "attachment:v1"), c.itemID("a2", "image", "attachment:v1")
 
 	for range maxMediaAttempts {
 		c.run()
@@ -348,4 +348,75 @@ func TestLinkConfluenceDoc_IgnoresLinkSummaryKeys(t *testing.T) {
 		extsync.MediaRef{Kind: "link", Locator: "url:https://example.com/a", URL: "https://example.com/a"})
 	c.sync()
 	assert.Empty(t, c.jiraLinks("p1"), "nor on a re-sync")
+}
+
+// A new attachment version is described again: its row is version-
+// qualified, the old version's row goes in the same transaction, and the
+// page's inline image of it is reset to pending with nothing carried over.
+func TestConfluenceRecorder_NewAttachmentVersionRedescribed(t *testing.T) {
+	c := newConfEnv(t)
+	c.f.page("p1", 1, confMod, "page body", inlineChart)
+	c.f.attachment("a1", "p1", "chart.png", "image/png", confMod, noisePNG(t, 64, 64, 7))
+	c.sync()
+	c.run()
+	c.run()
+	inline := c.itemID("p1", "image", "att:chart.png")
+	require.Equal(t, "ok", c.row(inline).Status)
+	require.Equal(t, "ok", c.row(c.itemID("a1", "image", "attachment:v1")).Status)
+
+	c.f.attachment("a1", "p1", "chart.png", "image/png", confMod.Add(time.Hour), noisePNG(t, 64, 64, 8))
+	c.f.mu.Lock()
+	c.f.items["a1"].Ref.Version = 2
+	c.f.mu.Unlock()
+	c.sync()
+
+	var n int
+	require.NoError(t, c.d.QueryRow(`SELECT COUNT(*) FROM media_items WHERE ext_id = 'a1'`).Scan(&n))
+	assert.Equal(t, 1, n, "the old version's row is gone")
+	v2 := c.itemID("a1", "image", "attachment:v2")
+	assert.Equal(t, "pending", c.row(v2).Status)
+	r := c.row(inline)
+	assert.Equal(t, rowView{Kind: "image", Status: "pending"}, r, "the inline image is pending with nothing carried over")
+
+	c.run()
+	c.run()
+	assert.Equal(t, "ok", c.row(v2).Status)
+	assert.Equal(t, "ok", c.row(inline).Status)
+	assert.Equal(t, c.row(v2).ContentKey, c.row(inline).ContentKey, "the inline image copies the new version")
+	img, _ := c.gen.calls()
+	assert.Equal(t, 2, img, "each version's bytes are described once")
+}
+
+// Only the text read off an image (and its verbatim keys) feeds the links:
+// a key the model put only in its own title or description adds none.
+func TestLinkConfluenceDoc_ScansImageTextOnly(t *testing.T) {
+	c := newConfEnv(t)
+	c.gen.describe = func(context.Context, string, string) (string, error) {
+		return `{"title":"PROJ-9 board","description":"The image shows PROJ-9.","text":"no keys here","keys":[]}`, nil
+	}
+	c.f.page("p1", 1, confMod, "page body without keys", inlineChart)
+	c.f.attachment("a1", "p1", "chart.png", "image/png", confMod, noisePNG(t, 64, 64, 7))
+	c.sync()
+	c.run()
+	c.run()
+	require.Equal(t, "ok", c.row(c.itemID("p1", "image", "att:chart.png")).Status)
+	assert.Empty(t, c.jiraLinks("a1"))
+	assert.Empty(t, c.jiraLinks("p1"))
+}
+
+// An unreadable discovery time keeps an inline image waiting for its
+// attachment rather than ending it unreachable.
+func TestConfluenceResolver_UnreadableDiscoveredAtWaits(t *testing.T) {
+	c := newConfEnv(t)
+	c.f.page("p1", 1, confMod, "page body", inlineChart)
+	c.sync()
+	it, err := c.d.MediaItemAt(context.Background(), db.MediaParent{Kind: "confluence", ExtSourceID: c.src.ID, ExtID: "p1"}.Key(),
+		"image", "att:chart.png")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	it.DiscoveredAt = "not a time"
+	target, err := ConfluenceResolver{DB: c.d}.Resolve(context.Background(), *it)
+	require.NoError(t, err)
+	require.NotNil(t, target)
+	assert.Equal(t, "pending", target.Status)
 }
