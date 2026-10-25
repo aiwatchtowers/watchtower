@@ -321,8 +321,9 @@ func jiraSteps(s *purgeSteps, id int64, digests []int64, spaces []extSpace) {
 	// The account's Confluence spaces: documents and comments, their
 	// knowledge documents, marks and links (a key range per space), then the
 	// source rows themselves.
-	extOfAccount := `source_id IN (SELECT id FROM ext_sources WHERE jira_account_id = ?)`
-	s.del("confluence media items", "media_items", `ext_source_id IN (SELECT id FROM ext_sources WHERE jira_account_id = ?)`, id)
+	const accountSources = `(SELECT id FROM ext_sources WHERE jira_account_id = ?)`
+	extOfAccount := `source_id IN ` + accountSources
+	s.del("confluence media items", "media_items", `ext_source_id IN `+accountSources, id)
 	s.del("confluence comments", "ext_comments", extOfAccount, id)
 	s.del("confluence documents", "ext_documents", extOfAccount, id)
 	for _, sp := range spaces {

@@ -44,11 +44,12 @@ func (db *DB) LiveSlackMessageKeys(accountID int64, from, to float64) ([]SlackMe
 // thread_ts stay so threads and ids still resolve), and deletes its reactions,
 // files and media_items rows (image and link descriptions). The inbox items
 // made from the message stay, but their copies of its text (snippet, context,
-// raw_text, and its entry in a channel item's mentions list) are blanked. FTS and kb_dirty follow through triggers. A key
-// that is already a tombstone, or not stored, is skipped. Keys are written in
-// transactions of at most tombstoneBatch, so no write holds the lock long. It
-// returns how many rows were tombstoned (those of committed batches when a
-// later batch fails).
+// raw_text, and its entry in a channel item's mentions list) are blanked.
+// FTS and kb_dirty follow through triggers. A key that is already a
+// tombstone, or not stored, is skipped. Keys are written in transactions of
+// at most tombstoneBatch, so no write holds the lock long. It returns how
+// many rows were tombstoned (those of committed batches when a later batch
+// fails).
 func (db *DB) TombstoneSlackMessages(keys []SlackMessageKey) (int, error) {
 	total := 0
 	for start := 0; start < len(keys); start += tombstoneBatch {
