@@ -45,6 +45,10 @@ final class AppState {
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
     let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
+    /// The organization policy forced through the MDM (#608). Read only once
+    /// `initialize()` starts it, so a test that never initializes never reads
+    /// this Mac's managed preferences.
+    let managedPolicy = ManagedPolicyCenter { ManagedPolicyReader.readForced() }
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -754,6 +758,8 @@ final class AppState {
         isInitializing = true
         isLoading = true
         Constants.prewarmResolvedEnvironment()
+        // Before anything a key decides starts (the mobile hub, the pickers).
+        managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
         // Surface a recording captured before a crash/relaunch so the global
         // indicator can offer to (re-)transcribe it. No DB needed.
         meetingRecorderCenter.restorePendingOnLaunch()
