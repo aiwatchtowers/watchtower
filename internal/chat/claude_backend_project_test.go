@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +19,7 @@ func first(blocks []json.RawMessage, _ string) []json.RawMessage { return blocks
 func TestClaudeBackend_ProjectBlocksOnlyWhilePending(t *testing.T) {
 	att, marker := projectFixture(t)
 	b := &claudeBackend{opts: ClaudeOptions{ProjectAttachments: []Attachment{att}}}
-	b.projectPending = initialProjectPending(b.opts)
+	b.markFreshSession()
 
 	blocks := first(b.projectBlocks(0))
 	require.Len(t, blocks, 1)
@@ -101,24 +100,6 @@ func TestClaudeBackend_FileOverTheCapAloneGetsNoTurnNote(t *testing.T) {
 	assert.Contains(t, warn.String(), "huge.pdf")
 }
 
-func TestClaudeBackend_ResumedSessionDoesNotReattachProjectFiles(t *testing.T) {
-	opts := ClaudeOptions{
-		ProjectAttachments: []Attachment{{Path: "/p/spec.pdf", Mime: "application/pdf", Name: "spec.pdf"}},
-		ResumeSessionID:    "sid-1",
-	}
-	if initialProjectPending(opts) {
-		t.Fatal("a --resume'd session already holds the project files in its history")
-	}
-	opts.ResumeSessionID = ""
-	if !initialProjectPending(opts) {
-		t.Fatal("a fresh session with project files must attach them")
-	}
-	opts.ProjectAttachments = nil
-	if initialProjectPending(opts) {
-		t.Fatal("no project files, nothing pending")
-	}
-}
-
 // projectFixture writes a PDF project file and returns its attachment and the
 // base64 content that marks it on the fake child's stdin.
 func projectFixture(t *testing.T) (Attachment, string) {
@@ -156,84 +137,6 @@ func TestClaudeBackend_FreshSessionSendsProjectFilesOnFirstTurnOnly(t *testing.T
 	assert.Contains(t, lines[0], marker, "the first turn carries the project file")
 	assert.Contains(t, lines[0], `"type":"document"`)
 	assert.NotContains(t, lines[1], marker, "the second turn on the same child does not")
-}
-
-// A resumed session never re-attaches: its history already holds the files.
-func TestClaudeBackend_ResumedStartSendsNoProjectFiles(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	att, marker := projectFixture(t)
-	opts.ProjectAttachments = []Attachment{att}
-	opts.ResumeSessionID = "sess-0"
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
-
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 1)
-	assert.NotContains(t, lines[0], marker)
-}
-
-// The session_lost retry after a rejected --resume is a fresh session again
-// and carries the files. (The fake's resumed child exits before reading
-// stdin, so the only logged line is the retry's.)
-func TestClaudeBackend_SessionLostRetryReattachesProjectFiles(t *testing.T) {
-	opts, f := fakeClaude(t, "lost")
-	att, marker := projectFixture(t)
-	opts.ProjectAttachments = []Attachment{att}
-	opts.ResumeSessionID = "gone"
-	opts.Replay = func(string) (string, error) { return "", nil }
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
-	assertOneFreshRetryWithProject(t, f, marker)
-}
-
-// The warm --resume child started at session open usually dies of the
-// rejection before the owner's first turn arrives. That dead child must not
-// be respawned with the same doomed --resume: the turn goes straight to the
-// fresh retry (one rejected run, one fresh run). Both rejection shapes.
-func TestClaudeBackend_ResumeRejectedBeforeFirstTurnIsNotRespawned(t *testing.T) {
-	for _, mode := range []string{"lost", "lost_result"} {
-		t.Run(mode, func(t *testing.T) {
-			opts, f := fakeClaude(t, mode)
-			att, marker := projectFixture(t)
-			opts.ProjectAttachments = []Attachment{att}
-			opts.ResumeSessionID = "gone"
-			opts.Replay = func(string) (string, error) { return "", nil }
-			be := NewClaudeBackend(opts).(*claudeBackend)
-			h := startSession(t, be, nil)
-			h.next(EventSessionReady)
-			be.mu.Lock()
-			p := be.proc
-			be.mu.Unlock()
-			require.NotNil(t, p)
-			require.True(t, waitClosed(p.exited, 5*time.Second), "the rejected --resume child exits on its own")
-
-			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
-			assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-			require.NoError(t, h.finish())
-			assertOneFreshRetryWithProject(t, f, marker)
-		})
-	}
-}
-
-// assertOneFreshRetryWithProject: exactly one rejected --resume run, then one
-// fresh run whose first (and only logged) message carries the project file.
-func assertOneFreshRetryWithProject(t *testing.T, f fakeFiles, marker string) {
-	t.Helper()
-	runs := argvRuns(t, f.argv)
-	require.Len(t, runs, 2)
-	assert.True(t, contains(runs[0], "--resume"))
-	assert.False(t, contains(runs[1], "--resume"))
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 1)
-	assert.Contains(t, lines[0], marker, "the fresh retry carries the project file")
 }
 
 // A Replay command replaces the warm child with a fresh session: its first
@@ -380,10 +283,10 @@ func transientFailuresKeepProjectFiles(t *testing.T, errText, code string) {
 	assert.NotContains(t, warn.String(), "given up")
 }
 
-// A fresh session killed after a cancel already holds the files (its turn
-// was streaming): the respawn resumes that session and does not send them
-// again.
-func TestClaudeBackend_CancelKillDoesNotResendProjectFiles(t *testing.T) {
+// A child killed after a cancel is replaced by a new provider session (no
+// session is stored, #604 G11): its first turn carries the project files
+// again, with the replayed history.
+func TestClaudeBackend_CancelKillResendsProjectFilesToTheNewChild(t *testing.T) {
 	opts, f := fakeClaude(t, "ignore_interrupt")
 	opts.Env = append(opts.Env, "FAKE_INIT_SID=sess-new")
 	att, marker := projectFixture(t)
@@ -400,12 +303,12 @@ func TestClaudeBackend_CancelKillDoesNotResendProjectFiles(t *testing.T) {
 	require.NoError(t, h.finish())
 
 	runs := argvRuns(t, f.argv)
-	last := runs[len(runs)-1]
-	require.True(t, contains(last, "--resume"))
+	require.Len(t, runs, 2)
+	assert.False(t, contains(runs[1], "--resume"))
 	lines := stdinLines(t, f.stdin)
 	require.Len(t, lines, 3, "turn 1, the interrupt, turn 2")
 	assert.Contains(t, lines[0], marker)
-	assert.NotContains(t, lines[2], marker, "the resumed session already holds the files")
+	assert.Contains(t, lines[2], marker, "the new child holds nothing yet")
 }
 
 // The owner's own files leave too little of the cap for the project file:

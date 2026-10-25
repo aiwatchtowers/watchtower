@@ -290,15 +290,15 @@ func NewClient(model, dbPath, claudePath string) *Client {
 // buildArgs constructs the common CLI arguments, plus the stdin content: the
 // user message always travels on stdin (a bare "-p" makes claude read the
 // prompt from there), never on argv, where every local process could read
-// it through `ps` and a large one would hit ARG_MAX. When sessionID is
-// non-empty, --resume is used instead of the system prompt (the system
-// prompt is already baked into the existing session). payloads are the
+// it through `ps` and a large one would hit ARG_MAX. No Claude session is
+// stored (--no-session-persistence): a caller that wants continuity puts
+// the history in the message. payloads are the
 // contents the argv names as /dev/fd/3, /dev/fd/4, … (fsutil.PayloadPath):
 // the system prompt and a secret-bearing mcp-config, which the caller hands
 // over inherited pipes (fsutil.AttachPayloads on a cmd with no other
 // ExtraFiles) — nothing written to disk, nothing on argv. Returned rather
 // than kept on the Client, so concurrent calls never share them.
-func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) (args []string, stdin string, payloads []string) {
+func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args []string, stdin string, payloads []string) {
 	viaFD := func(content string) string {
 		payloads = append(payloads, content)
 		return fsutil.PayloadPath(len(payloads) - 1)
@@ -369,27 +369,21 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 			args = append(args, "--mcp-config", mcpConfig)
 		}
 	}
-	if sessionID != "" {
-		args = append(args, "--resume", sessionID)
-		// No fence is added here: the claude CLI replays the session's
-		// recorded system prompt on --resume (--system-prompt-snapshot), so
-		// an appended one would be ignored. Known limit: a connection enabled
-		// after the session's first turn is mounted but not named in the
-		// fence until a new session starts.
+	// No session store on disk (#604 G11): every call is a fresh session,
+	// so the prompt is always sent.
+	args = append(args, "--no-session-persistence")
+	// Mounted Quick Connections' texts are fenced as external data.
+	systemPrompt = WithExternalDataRule(systemPrompt, c.externalServers)
+	if systemPrompt == "" {
+		// An empty prompt still replaces claude's default one and
+		// carries nothing.
+		args = append(args, "--system-prompt", "")
 	} else {
-		// Mounted Quick Connections' texts are fenced as external data.
-		systemPrompt = WithExternalDataRule(systemPrompt, c.externalServers)
-		if systemPrompt == "" {
-			// An empty prompt still replaces claude's default one and
-			// carries nothing.
-			args = append(args, "--system-prompt", "")
-		} else {
-			// The prompt carries the owner's data (a pipeline's whole
-			// payload, a chat's context): on argv it would be readable in
-			// `ps` for the process lifetime and could hit ARG_MAX, and in a
-			// temp file it would outlive a crash. It goes over a pipe.
-			args = append(args, "--system-prompt-file", viaFD(systemPrompt))
-		}
+		// The prompt carries the owner's data (a pipeline's whole
+		// payload, a chat's context): on argv it would be readable in
+		// `ps` for the process lifetime and could hit ARG_MAX, and in a
+		// temp file it would outlive a crash. It goes over a pipe.
+		args = append(args, "--system-prompt-file", viaFD(systemPrompt))
 	}
 	return args, stdin, payloads
 }
@@ -666,9 +660,10 @@ func watchtowerBinary() string {
 
 // Query sends a streaming request via the Claude Code CLI and returns channels
 // for text chunks, errors, and the session ID. The sessionIDCh receives at most
-// one value — the session ID from the "result" event — enabling multi-turn
-// conversations via --resume. Pass a non-empty sessionID to resume an existing session.
-func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan StreamChunk, <-chan error, <-chan string) {
+// one value — the session ID from the "result" event, for display only: no
+// session is stored (--no-session-persistence), so the Provider's sessionID
+// argument is ignored.
+func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan StreamChunk, <-chan error, <-chan string) {
 	textCh := make(chan StreamChunk, 64)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
@@ -678,7 +673,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(errCh)
 		defer close(sidCh)
 
-		args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "stream-json")
 		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 		_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
 		if err != nil {
@@ -797,10 +792,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 }
 
 // QuerySync sends a non-streaming request via the Claude Code CLI and returns
-// the full response text and token usage. Pass a non-empty sessionID to resume
-// an existing session.
-func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
-	args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+// the full response text and token usage. The sessionID argument is ignored
+// (see Query).
+func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *Usage, error) {
+	args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "json")
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	// cmd.Output starts the child before it blocks; the parent's read ends
 	// close once it returns (the child holds its own).

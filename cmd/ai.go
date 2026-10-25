@@ -98,7 +98,10 @@ func init() {
 	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 
 	aiQueryCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
-	aiQueryCmd.Flags().StringVar(&aiFlagSessionID, "session-id", "", "resume session (Claude only)")
+	// Ignored since #604 G11 (no Claude session is stored); kept so an
+	// older caller's flag still parses.
+	aiQueryCmd.Flags().StringVar(&aiFlagSessionID, "session-id", "", "ignored: no session is stored")
+	_ = aiQueryCmd.Flags().MarkHidden("session-id")
 	aiQueryCmd.Flags().StringVar(&aiFlagSystemPrompt, "system-prompt", "", "system prompt")
 	aiQueryCmd.Flags().BoolVar(&aiFlagSystemPromptStdin, "system-prompt-stdin", false,
 		"read the system prompt from stdin (keeps it off argv: visible in ps, bounded by ARG_MAX)")

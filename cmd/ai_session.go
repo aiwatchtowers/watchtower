@@ -51,7 +51,11 @@ func init() {
 	f.StringVar(&aiSessionFlagModel, "model", "", "override the AI model (default: the provider's strong tier)")
 	f.StringVar(&aiSessionFlagSurface, "surface", "main", "chat surface: main|target")
 	f.Int64Var(&aiSessionFlagProjectID, "project-id", 0, "chat project whose instructions and files join the prompt")
-	f.StringVar(&aiSessionFlagResume, "resume", "", "Claude session id to resume")
+	// No Claude session is stored any more (#604 G11): a new child replays
+	// the history from the database. The flag stays accepted (an older
+	// Desktop still passes it) and does nothing.
+	f.StringVar(&aiSessionFlagResume, "resume", "", "ignored: chats replay their history instead of resuming")
+	_ = f.MarkHidden("resume")
 	f.StringVar(&aiSessionFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 }
 
@@ -282,7 +286,6 @@ func claudeSessionOptions(w sessionWiring, ext []ai.ExternalMCPServer) chat.Clau
 	return chat.ClaudeOptions{
 		Binary:          claude.FindBinary(w.cfg.ClaudePath),
 		Model:           w.model,
-		ResumeSessionID: aiSessionFlagResume,
 		SystemPrompt:    ai.WithExternalDataRule(w.prompt, ext),
 		MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
 		Tools:           ai.SessionBuiltinTools,

@@ -20,9 +20,9 @@ func TestMain(m *testing.M) {
 }
 
 // buildArgsT is buildArgs for tests that inspect the argv only.
-func buildArgsT(t *testing.T, c *Client, systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
+func buildArgsT(t *testing.T, c *Client, systemPrompt, userMessage, outputFormat string) ([]string, string, error) {
 	t.Helper()
-	args, stdin, _ := c.buildArgs(systemPrompt, userMessage, outputFormat, sessionID)
+	args, stdin, _ := c.buildArgs(systemPrompt, userMessage, outputFormat)
 	return args, stdin, nil
 }
 
