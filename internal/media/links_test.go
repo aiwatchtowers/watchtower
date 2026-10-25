@@ -281,3 +281,22 @@ func TestFetchable_NestedAndAcronymKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchable_SessionIDKeys(t *testing.T) {
+	for _, k := range []string{"jsessionid", "JSESSIONID", "PHPSESSID", "ASPSESSIONID", "ASPSESSIONIDQABCDEFG", "ASP.NET_SessionId", "sessid", "session_id", "mySessionId"} {
+		for _, u := range []string{
+			"https://example.com/p?" + k + "=x",
+			"https://example.com/p;" + k + "=x",
+			"https://example.com/p#" + k + "=x",
+		} {
+			if n, ok := Fetchable(u, nil); ok {
+				t.Errorf("%s allowed as %s", u, n)
+			}
+		}
+	}
+	for _, u := range []string{"https://example.com/p?sessions=1", "https://example.com/p?obsessive=1"} {
+		if _, ok := Fetchable(u, nil); !ok {
+			t.Errorf("%s refused", u)
+		}
+	}
+}

@@ -284,6 +284,11 @@ func wordsSecret(s string, set map[string]bool) bool {
 
 func keySecret(k string) bool {
 	l := strings.ToLower(k)
+	// Framework session ids (jsessionid, PHPSESSID, ASPSESSIONIDxxxx, session_id).
+	joined := strings.ToLower(strings.Join(splitWords(k), ""))
+	if strings.Contains(joined, "sessid") || strings.Contains(joined, "sessionid") {
+		return true
+	}
 	return strings.HasPrefix(l, "x-amz-") || strings.HasPrefix(l, "x-goog-") || wordsSecret(k, secretParamSet)
 }
 
