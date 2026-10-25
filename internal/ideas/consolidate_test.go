@@ -1413,3 +1413,38 @@ func TestConsolidate_ChatAttachOnActiveItem_AssistantQuoteNotIndexed(t *testing.
 		assert.Empty(t, res.Hits, q)
 	}
 }
+
+// Image descriptions reach the consolidator labelled and after the owner's
+// text, but the stored chat mention quote is only what the owner typed.
+func TestConsolidate_ChatImageLinesRenderedButNeverStoredAsQuote(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	conv := seedChatConversation(t, d, "Rollout", "")
+	owner := seedChatTurn(t, d, conv, "user", "we ship Monday, see the chart", quietAgo())
+	asst := seedChatTurn(t, d, conv, "assistant", "ok", quietAgo())
+	res, err := d.Exec(`INSERT INTO chat_attachments (conversation_id, message_id, name, mime, size, path, sha256, created_at)
+		VALUES (?, ?, 'chart.png', 'image/png', 3, '/ws/chat_files/chart.png', 'aa', 1)`, conv, owner)
+	require.NoError(t, err)
+	att, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE media_items SET status = 'ok', title = 'Chart', body = 'launch dates' WHERE chat_attachment_id = ?`, att)
+	require.NoError(t, err)
+
+	var captured string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		captured = user
+		return chatOps("new_note", chatRef(conv, owner)), nil
+	}}
+	_, _, err = New(d, testCfg(), gen, testLogger()).runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, captured, `we ship Monday, see the chart [image "chart.png" — `+db.ChatImageLabel+`: Chart — launch dates]`)
+	assert.NotContains(t, captured, "ok [image", "assistant turns carry no image lines")
+	_ = asst
+
+	rows := allRegistryRows(t, d)
+	require.Len(t, rows, 1)
+	ms, err := d.ListIdeaMentions(rows[0].ID)
+	require.NoError(t, err)
+	require.Len(t, ms, 1)
+	assert.Equal(t, "we ship Monday, see the chart", ms[0].Quote)
+}

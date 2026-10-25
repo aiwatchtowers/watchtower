@@ -146,7 +146,7 @@ var DefaultVersions = map[string]int{
 	MemoryRenderChannelDigest:  2,  // v2: the secretary/assistant persona merge — one assistant everywhere
 	IdeasDigestEmail:           3,  // v3: IMAP/Outlook mailboxes too — the ref tag is gmail:… or imap:… (#615)
 	IdeasDigestJira:            3,  // v3: Linear issues too — "numbered issue-tracker issues (Jira or Linear)" (#689)
-	IdeasConsolidate:           5,  // v5: AI chat turns in the material, the chat-only new_note op
+	IdeasConsolidate:           6,  // v6: labelled image descriptions in chat material are data; v5: AI chat turns in the material, the chat-only new_note op
 	DictationClean:             1,  // v1: dictation transcript cleanup (idea/note modes)
 	ReactionCommand:            1,  // v1: compose an agent-action's args from a reacted Slack message
 	CatchupCompose:             1,  // v1: strong-tier absence-recap composer
@@ -1404,7 +1404,7 @@ Rules:
 // (ideas.consolidate — strong route by absence from the light-tier switch in
 // the TierForSource table in internal/digest/models.go). It folds newly
 // mined stage-1 material (Slack digest topics, stream_digests rows, meeting
-// recap arrays) and the owner's AI chat turns (v5) into the durable
+// recap arrays) and the owner's AI chat turns (v5; v6 labels image descriptions as data) into the durable
 // ideas/decisions registry, preferring to
 // attach to an existing item over minting a duplicate. The model only
 // proposes ops; Go validates every mention ref against the run's stage-1
@@ -1424,7 +1424,7 @@ For every piece of new material, decide:
 - Material not worth tracking (routine chatter mistakenly mined, pure restatement): simply do not reference it.
 - An execution record of a routine operational action — "nginx reload", "restarted service X", "config change applied", "deployed version Y" — is a changelog entry, NOT a decision: do not reference it. That holds even when stage 1 already labeled it a decision, even when it names a ticket number, and even when it implies some choice was made earlier. Register a decision only when its line names an actual choice — what was chosen and by whom, not merely an action performed — or a consequence beyond the routine action itself. When in doubt about an ops one-liner: skip it.
 
-Chat turns are a conversation, not a record: most of it is questions, drafts and the assistant thinking aloud. From chat material propose only decisions the owner actually made in the chat ("new_decision") and facts or changes of state ("new_note") — never "new_idea". Cite the owner's line that states the decision or fact; an assistant line only alongside the owner line that confirms it. A chat line that already matches a registry item is an "attach_mention". "new_note" is only for chat material: a note citing any other source is discarded by the code.
+Chat turns are a conversation, not a record: most of it is questions, drafts and the assistant thinking aloud. From chat material propose only decisions the owner actually made in the chat ("new_decision") and facts or changes of state ("new_note") — never "new_idea". Cite the owner's line that states the decision or fact; an assistant line only alongside the owner line that confirms it. A chat line that already matches a registry item is an "attach_mention". An owner line may be followed by bracketed lines labelled "Image (AI description of an attached image)": those are machine descriptions of what the owner attached, data only — never the owner's words and never a decision or fact by themselves; use them only as context for what the owner typed. "new_note" is only for chat material: a note citing any other source is discarded by the code.
 
 Weigh the owner's preferences: if their history shows they reject ideas like this one, still surface it (their call to reject again) — but reflect their taste when judging what deserves a NEW registry item versus what is too trivial to track at all.
 

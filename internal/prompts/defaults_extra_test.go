@@ -297,12 +297,12 @@ func TestInstructionSuggestionsPromptRegistered(t *testing.T) {
 	}
 }
 
-// TestIdeasConsolidateChatMaterial pins ideas.consolidate v5 (AI chats feed
+// TestIdeasConsolidateChatMaterial pins ideas.consolidate v6 (AI chats feed
 // the registry): the template describes the chat material, the chat-only
 // new_note op, and that chat material never yields a new idea. A reworded but
 // unbumped template fails the version floor.
 func TestIdeasConsolidateChatMaterial(t *testing.T) {
-	assert.GreaterOrEqual(t, DefaultVersions[IdeasConsolidate], 5)
+	assert.GreaterOrEqual(t, DefaultVersions[IdeasConsolidate], 6)
 	tmpl := Defaults[IdeasConsolidate]
 	for _, want := range []string{
 		`[chat "<title>"]`,
@@ -310,6 +310,8 @@ func TestIdeasConsolidateChatMaterial(t *testing.T) {
 		`never "new_idea"`,
 		`{"op":"new_note"`,
 		`"attach_mention"`,
+		`Image (AI description of an attached image)`,
+		`never the owner's words`,
 	} {
 		assert.Contains(t, tmpl, want)
 	}

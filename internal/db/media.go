@@ -411,3 +411,14 @@ func (db *DB) FailMedia(ctx context.Context, id int64, class string, maxAttempts
 	}
 	return final, nil
 }
+
+// MediaDescription renders a described item as "title — body".
+func MediaDescription(title, body string) string {
+	switch {
+	case title == "":
+		return body
+	case body == "":
+		return title
+	}
+	return title + " — " + body
+}
