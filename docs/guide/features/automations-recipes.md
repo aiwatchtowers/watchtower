@@ -6,6 +6,27 @@ A template is a working recipe to adapt; the parts show what you confirm.
 
 ## How it works
 ### The settings block
+<!-- learn
+id: recipes-button-trigger
+title: Make a recipe you start by name
+text: Give a recipe a `button` trigger and it shows under its name in **Run Automation…** and the tray menu.
+area: automations
+level: power
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
+
+<!-- learn
+id: recipes-summary-line
+title: Write the line under its name
+text: Add a `summary:` line to a recipe to set the short text the list shows; it never asks for confirmation again.
+area: automations
+level: power
+kind: tip
+since: next
+action: nav:automations
+-->
 The top of the file holds the settings:
 - **Trigger**, exactly one of: a `schedule` (five-field cron, local time), an `event` (see [Event triggers](#event-triggers)), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). **Form** calls the button option **When I press a button**. It makes the recipe appear under its name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu, and a workbench recipe is also an item in its workbench's ⚡ menu; with `confirm` it asks before running.
 - **Permissions**, such as `gmail:read@work`, `jira:read@PAY`, `llm:light`, `llm:strong`, `tool:create_jira_issue`. Reading all Slack messages or all calendar events needs `slack:read@*` or `calendar:read@*`. Linear uses team keys: `linear:read@ENG`, `linear:write@ENG`.
@@ -16,6 +37,16 @@ The top of the file holds the settings:
 Text outside the settings and the script is the description. An optional `summary:` line (up to 60 characters) is the short line under the name in the list; without it, the description's first sentence is used. Changing it never asks you to confirm again. The script is one block of plain, synchronous JavaScript. It can only use what Watchtower gives it: ask the assistant, read tools, a small saved state and the outputs. BigInt numbers (`10n`) are not available: such a recipe shows "BigInt is not available in automations".
 
 ### Event triggers
+<!-- learn
+id: recipes-event-trigger
+title: Run a recipe when something lands
+text: Use an event trigger to run a recipe after new Slack messages, mail or Jira changes arrive, filtered by `where`.
+area: automations
+level: next
+kind: feature
+since: 0.24.0
+action: nav:automations
+-->
 An event trigger runs the recipe after a sync brings something new. For example, `trigger: {event: {type: slack.new_messages, where: {channel: releases}}}` runs after new messages land in #releases. The script finds what happened in `trigger.events`: ids, names and counts, never the text.
 
 | Type | When | `where` keys |
@@ -37,11 +68,31 @@ A recipe runs at most once per sync cycle, however many events it matched; it ge
 Personal recipes sit in the `automations` folder inside Watchtower's workspace folder. The file name is the recipe's id: lower-case letters, digits and dashes. Symlinks are never read.
 
 ### Workbench recipes
+<!-- learn
+id: recipes-workbench
+title: Keep a recipe in your repository
+text: Put a recipe in a workbench's `.watchtower/automations/` to run a command, start a session or ask you there.
+area: automations
+level: power
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 A recipe can also live in a Workbench folder, in `.watchtower/automations/`, so it travels with the repository. There it can do what a personal one can't: run an exact command listed in its settings in the folder, open an agent session there, or ask you something. **Edit** and confirming work the same, and the new version is saved in the workbench folder.
 
 The file belongs to the repository, so it can arrive with a `git pull` or be changed by someone else. Watchtower notices when you open the workbench and as the file changes. Such a recipe shows **Needs your confirmation** on its card and in the ⚡ menu, and does not run until you confirm it.
 
 ## Using it
+<!-- learn
+id: recipes-templates
+title: Start from a template
+text: Click **+** in **Automations** and pick a template, such as a weekly Jira report, then **Save and Turn On**.
+area: automations
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:automations
+-->
 1. In **Automations**, click **+**, pick the scope, then a template under **How do you want to start?** and **Continue**.
 2. The panel shows the template's fields, if any, and the recipe it makes, checked but not written. **Save and Turn On** installs, confirms and turns it on. **Adjust in Chat** opens the recipe in the editor chat instead; a template with several recipes has no such button.
 
@@ -60,6 +111,27 @@ The file belongs to the repository, so it can arrive with a `git pull` or be cha
 `jira-state-report` picks its projects when you install it: every synced Jira project with an open issue assigned to you or reported by you. The form says which ("Covers: PAY, OPS"). Each project gets its own `jira:read@…` permission and an entry in the script's `projects` list; to add or drop one later, change both.
 
 ### Finding your way around
+<!-- learn
+id: recipes-editor-reads
+title: Let the editor chat look things up
+text: In the editor's **Chat**, the assistant reads your recipes, runs, channels and mail to write a better recipe.
+area: automations
+level: next
+kind: tip
+since: next
+action: nav:automations
+-->
+
+<!-- learn
+id: recipes-hide-draft
+title: Give the editor chat more room
+text: Press ⌥⌘0 (**Hide Draft**) in the automation editor to hide the draft column; **Save…** brings it back.
+area: automations
+level: power
+kind: tip
+since: next
+action: nav:automations
+-->
 - The list's groups (**Built in**, **Personal**, one per workbench) fold, and Watchtower remembers it. A failed recipe shows its error first.
 - In the editor's **Chat**, the assistant can read your recipes and their runs, Slack channels, Confluence pages, mail and meeting recaps to write a better recipe. It can only propose a save, which you approve.
 - **Hide Draft** (**⌥⌘0**) hides the draft column to give the chat the room; **Save…** brings it back.

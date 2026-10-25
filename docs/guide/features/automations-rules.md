@@ -3,6 +3,39 @@
 Reaction commands and custom tracks are automations too. This page says where each one lives in the **Automations** tab and how to add your own. For recipes themselves, see [Automations](automations.md).
 
 ## How it works
+<!-- learn
+id: rules-reaction-dictionary
+title: Act on Slack with an emoji
+text: On the **Reactions** card, map an emoji to a tool, such as a reminder, then react to a Slack message to run it.
+area: automations
+level: next
+kind: feature
+since: 0.24.0
+action: nav:automations
+done_when: reaction.used
+-->
+
+<!-- learn
+id: rules-reaction-recipe
+title: Collect messages with a reaction
+text: Press **New reaction automation** on the **Reactions** card, pick an emoji, and each reacted message lands in Inbox.
+area: automations
+level: power
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
+
+<!-- learn
+id: rules-watch
+title: Watch for a topic
+text: Click **+** → **Watch for something** to make a custom track that collects what matches your instruction.
+area: automations
+level: next
+kind: feature
+since: 0.24.0
+action: nav:automations
+-->
 
 There is one list in the tab, with no switch between sections. The **Built in** section holds **Reactions**, **Track my threads** and **Idea finder** next to **Morning brief** (see [Built-in automations](automations-built-in.md)), and your recipes follow it.
 
