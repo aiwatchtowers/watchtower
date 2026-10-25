@@ -10,7 +10,7 @@ struct PrivacySettings: View {
     @Environment(AppState.self) private var appState
     @Bindable var config: ConfigService
 
-    var body: some View {
+    @ViewBuilder var body: some View {
         PrivacySettingsContent(
             isOn: Binding(
                 get: { config.purgeRevokedData ?? appState.accountPurgeCenter?.status?.enabled ?? false },
@@ -20,6 +20,7 @@ struct PrivacySettings: View {
             statusError: appState.accountPurgeCenter?.statusError
         )
         .task { await appState.accountPurgeCenter?.reloadStatus() }
+        OrganizationPolicySection(policy: appState.managedPolicy.policy)
     }
 }
 

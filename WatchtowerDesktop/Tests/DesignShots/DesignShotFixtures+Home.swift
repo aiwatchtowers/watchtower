@@ -192,3 +192,24 @@ extension HomeShotFixtures {
         .formStyle(.grouped))
     }
 }
+
+extension HomeShotFixtures {
+    /// Settings → System → Privacy under a sample configuration profile.
+    static func organizationPolicy() -> AnyView {
+        let policy = ManagedPolicy.normalize([
+            "AllowedSources": ["slack", "jira"],
+            "MobileSync": "workbench_only",
+            "AllowedQuickConnections": ["https://mcp.example.com/"],
+            "AllowAutomationShell": false,
+            "AllowedAIProviders": ["claude"],
+            "PurgeRevokedData": true,
+            "RetentionDays": 90
+        ])
+        return AnyView(Form {
+            PrivacySettingsContent(
+                isOn: .constant(true), status: AccountPurgeStatus(enabled: true, enabledBy: "policy"), statusError: nil)
+            OrganizationPolicySection(policy: policy)
+        }
+        .formStyle(.grouped))
+    }
+}

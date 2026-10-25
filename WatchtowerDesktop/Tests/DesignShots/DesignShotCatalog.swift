@@ -86,6 +86,9 @@ enum DesignShotCatalog {
             DesignShot(name: "settings-privacy", size: NSSize(width: 640, height: 420)) {
                 AnyView(HomeShotFixtures.privacySettings().shotFrame().detailBackground())
             },
+            DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 600)) {
+                AnyView(HomeShotFixtures.organizationPolicy().shotFrame().detailBackground())
+            },
             DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
                 AutomationShotFixtures.list()
             },
