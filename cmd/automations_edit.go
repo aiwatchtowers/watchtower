@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -144,11 +145,10 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	data, contentHash, err := automations.ReadRecipeFile(args[0])
+	data, contentHash, slug, err := readValidateInput(cmd.InOrStdin(), args[0])
 	if err != nil {
 		return err
 	}
-	slug := recipeSlugOf(args[0])
 	if scope.BuiltinID != "" {
 		slug = scope.BuiltinID // --against a built-in: its copy is <id>.md whatever the file is called
 	}
@@ -163,6 +163,21 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "%s: ok — %s (%s), approval hash %s\n", args[0], v.Name, v.Scope, v.ApprovalHash)
 	fmt.Fprintf(w, "  permissions: %v\n  outputs:     %v\n", v.Permissions, v.Outputs)
 	return nil
+}
+
+// readValidateInput reads validate's recipe: the file at path, or stdin when
+// path is "-" (the Desktop pipes the editor's text, #604 S6), whose slug
+// then comes from --slug instead of the file name.
+func readValidateInput(in io.Reader, path string) (data []byte, contentHash, slug string, err error) {
+	if path != "-" {
+		data, contentHash, err = automations.ReadRecipeFile(path)
+		return data, contentHash, recipeSlugOf(path), err
+	}
+	if autoFlags.Slug == "" {
+		return nil, "", "", errors.New(`--slug is required when the recipe is read from stdin ("-")`)
+	}
+	data, contentHash, err = automations.ReadRecipe(in)
+	return data, contentHash, autoFlags.Slug, err
 }
 
 // validateScope is the scope validate parses in and the recipe its widening
@@ -469,12 +484,20 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 	if autoFlags.File == "" {
 		return errors.New("--file is required: the recipe text to save")
 	}
+	if autoFlags.File == "-" && autoFlags.Path == "" {
+		return errors.New(`--path is required when the recipe is read from stdin ("--file -")`)
+	}
 	cfg, database, err := openAutomationsCmd()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
-	data, _, err := automations.ReadRecipeFile(autoFlags.File)
+	var data []byte
+	if autoFlags.File == "-" {
+		data, _, err = automations.ReadRecipe(cmd.InOrStdin())
+	} else {
+		data, _, err = automations.ReadRecipeFile(autoFlags.File)
+	}
 	if err != nil {
 		return err
 	}

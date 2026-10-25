@@ -46,6 +46,7 @@ type automationsFlags struct {
 	Render            bool     // install-template --render
 	Output            int64    // reply --output
 	Action            int      // reply --action
+	Slug              string   // validate --slug, with "-" (stdin)
 }
 
 var autoFlags automationsFlags
@@ -109,11 +110,12 @@ func init() {
 		c.Flags().Int64Var(&autoFlags.Workbench, "workbench", 0, "workbench id (its .watchtower/automations folder)")
 	}
 	dryRun.Flags().StringVar(&autoFlags.File, "file", "", "a recipe file in a recipe folder (rescanned first)")
-	save.Flags().StringVar(&autoFlags.File, "file", "", "the recipe text to write")
+	save.Flags().StringVar(&autoFlags.File, "file", "", "the recipe text to write (- = stdin, with --path)")
 	save.Flags().StringVar(&autoFlags.Path, "path", "", "where to write it (default: the personal folder, the file's name)")
 	save.Flags().StringVar(&autoFlags.ConfirmHash, "confirm-hash", "", "confirm the saved recipe at this approval hash (owner only)")
 	save.Flags().StringVar(&autoFlags.ExpectContentHash, expectContentHashFlag, "",
 		`refuse unless the target file's content hash is this ("" = the file must not exist)`)
+	validate.Flags().StringVar(&autoFlags.Slug, "slug", "", `the recipe's slug when the file is "-" (stdin)`)
 	validate.Flags().Int64Var(&autoFlags.Against, "against", 0,
 		"compare with this automation: its scope, widening from its current permissions")
 	confirm.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash being confirmed (required)")

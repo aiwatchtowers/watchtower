@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,7 +43,7 @@ func init() {
 	rootCmd.AddCommand(dictateCmd)
 	dictateCmd.AddCommand(dictateCleanCmd)
 	dictateCleanCmd.Flags().StringVar(&dictateCleanFlagMode, "mode", "", "cleanup destination: idea or note (required)")
-	dictateCleanCmd.Flags().StringVar(&dictateCleanFlagFile, "transcript-file", "", "path to the raw transcript text file (required)")
+	dictateCleanCmd.Flags().StringVar(&dictateCleanFlagFile, "transcript-file", "", "path to the raw transcript text file, - = stdin (required)")
 }
 
 // dictateEnv loads config and opens the workspace DB (the transcriptEnv
@@ -78,7 +77,7 @@ func runDictateClean(cmd *cobra.Command, _ []string) error {
 	if dictateCleanFlagFile == "" {
 		return fmt.Errorf("--transcript-file is required")
 	}
-	raw, err := os.ReadFile(dictateCleanFlagFile)
+	raw, err := readFileOrStdin(cmd.InOrStdin(), dictateCleanFlagFile)
 	if err != nil {
 		return fmt.Errorf("reading transcript file: %w", err)
 	}
