@@ -63,7 +63,7 @@ Media rows follow their parent: a Slack tombstone deletes them in its write (`To
 ## Safety
 
 - **Link rules** (`internal/media/linkrule`, a leaf package so `internal/confluence` does not pull the AI stack — `TestConfluence_DoesNotImportMediaPipeline`, `TestLinkrule_IsLeaf`): `Fetchable` refuses non-http(s), ports other than 80/443, userinfo, IP-literal hosts, secret-looking query/fragment/`;` keys (`SecretParams`, tokenized: `auth_token`, `X-Amz-*`, `X-Goog-*`, CloudFront `Expires`+`Key-Pair-Id`, camelCase and nested keys), capability path segments (`SecretPathSegments`: `/reset`, `/invite`, `/unsubscribe`, `/login`, …), synced-source hosts (`SyncedHosts`: Slack, Atlassian, Linear, Google mail/docs/drive/calendar), the connected Jira/Confluence sites and the deny list (exact host or subdomain, IDNA-normalized, trailing dots stripped).
-- **Deny list** (owner decision A, ask #590): `media.DenyHosts(cfg)` = the build seed `media.BuildDenyHosts` (ldflags from `WATCHTOWER_LINK_FETCH_DENY_HOSTS`, `Makefile` and `scripts/build-app.sh`; empty in the public build, the corp domains in the corp build) united with `knowledge.link_fetch_deny_hosts` — the config only adds hosts, it never drops the seed. Checked at discovery and on every redirect.
+- **Deny list** (owner decision A, ask #590): `media.DenyHosts(cfg)` = the build seed `media.BuildDenyHosts` (ldflags from `WATCHTOWER_LINK_FETCH_DENY_HOSTS`, `Makefile` and `scripts/build-app.sh`; empty in the public build, the corp domains in the corp build) united with `knowledge.link_fetch_deny_hosts` — the config only adds hosts, it never drops the seed. Checked at discovery and on every redirect. A flavoured build (`BUILD_FLAVOR` set — the corp build) **fails** when `WATCHTOWER_LINK_FETCH_DENY_HOSTS` is empty: `scripts/build-app.sh` (its profile-selection block, pinned by `scripts/tests/test-build-app-profile.sh`) and the Makefile's `flavor-check` (before `make build`/`make install`) stop with an error naming the variable; the public build (no flavour) is unaffected.
 - **The fetcher** (`internal/media/webfetch`): anonymous (no cookies, credentials, Referer, proxy; a generic browser User-Agent), connect-time address gate (no DNS-rebinding window): only public unicast addresses — loopback, private, CGNAT, link-local, documentation, benchmarking, multicast, reserved, ULA and IPv6 special ranges refused; NAT64/6to4 judged by the IPv4 they embed; the host's own interface addresses refused (an unreadable interface list refuses everything). `Check` (the run's `Fetchable`) is re-run on every redirect hop, at most 5. Body and time caps; `ErrRefused`/`ErrNotFound`/`ErrUnsupported`/`ErrTooLarge` map to the statuses above.
 - **Prompt injection**: the calls have no tools; the output is parsed as strict JSON, cleaned, capped and stored as data; the prompts tell the model the image or page is third-party data and to write in the third person; every reader sees the label and the reader line.
 
@@ -80,6 +80,11 @@ Media rows follow their parent: a Slack tombstone deletes them in its write (`To
 - Dedupe is per account: identical bytes in a private and a public channel of one account share one description.
 - Codex's hardening is a denylist (see "The image call").
 - The IMAP opener re-dials per image (one connection and login per item); `imap.Dial` has no timeout (pre-existing, also in sync).
+
+## Release notes
+
+- **Corp build:** the build profile (`.env.corp`) must set `WATCHTOWER_LINK_FETCH_DENY_HOSTS` — comma-separated, no spaces, the corp domains whose links the media pass never fetches. A flavoured build without it fails at the start of `make app` / `make build` / `make install` with an error naming the variable. The public build needs nothing.
+- Migration 00156 adds `media_state` and `media_items` (with `next_try_at`); turning Knowledge search on moves the start mark, so nothing older is described.
 
 ## v1 limits (accepted)
 

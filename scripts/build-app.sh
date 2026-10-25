@@ -41,6 +41,12 @@ if [ -n "$FLAVOR" ] && ! printf '%s' "$FLAVOR" | grep -Eq '^[A-Za-z0-9._-]+$'; t
     echo "ERROR: BUILD_FLAVOR '$FLAVOR' must match [A-Za-z0-9._-]+ — it lands in ldflags and artifact file names" >&2
     exit 1
 fi
+# A flavoured build (the corp build) must seed the media pass's link deny
+# list: without it the pass would fetch the corp's own internal links.
+if [ -n "$FLAVOR" ] && [ -z "${WATCHTOWER_LINK_FETCH_DENY_HOSTS:-}" ]; then
+    echo "ERROR: BUILD_FLAVOR '$FLAVOR' requires WATCHTOWER_LINK_FETCH_DENY_HOSTS — the comma-separated hosts (the corp domains) whose links the media pass never fetches; a flavoured build without it would fetch internal links" >&2
+    exit 1
+fi
 FLAVOR_SUFFIX="${FLAVOR:+-$FLAVOR}"
 # END profile-selection
 DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
