@@ -68,8 +68,9 @@ with an invented quote is dropped and counted in `dropped`. A quote shorter than
 longer than 1000 is rejected, never clipped, so every stored quote is a real substring.
 Every stored `source` carries the `speaker` Parse found (`owner` | `agent`, never the
 model's): `owner` only when the quote lies in the owner's own words of that ref — an
-owner line of the conversation, the owner's answer texts / notes / comment bodies of an
-ask (in the asks block or as a conversation ask-answer entry), an owner comment. The
+owner line of the conversation, the owner's answer texts — the chosen option labels and
+free answers — / notes / comment bodies of an ask (in the asks block or as a conversation
+ask-answer entry; never the ask's questions or check items), an owner comment. The
 target, the Decisions section and the spec are `agent` (author side). `idea.owner_source`
 must be `owner`; an agreement citing the conversation, an ask or a comment must be
 `owner`, while `decisions`, `spec` and `target` sources stay allowed as `agent`.
@@ -90,3 +91,4 @@ all of them unreliable.
 
 - 2026-10-25 (spec review Plan 1): file created with SPECREVIEW-01, 02, 03.
 - 2026-10-25 (Plan 1 final review fixes): SPECREVIEW-02 covers a failed queue write (queued after the ask's commit); SPECREVIEW-03 checks the speaker of the owner's words and stores `speaker` on every source.
+- 2026-10-25 (PR #473 review fixes): wording only, no guard changed — SPECREVIEW-03's Observable names the chosen option labels among the owner's answer texts (as `ownerAnswerWords` always did). A plan's review header carries no `decisions_section`; a spec's Decisions section is a `## ` heading starting with "Decisions" (`isDecisionsHeading`, Swift `SpecReviewDecisions`); an empty idea is left out of the result (`idea` omitted).

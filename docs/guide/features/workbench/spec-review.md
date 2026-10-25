@@ -18,11 +18,11 @@ Only your comments reach the agent. The reviewer's notes and your marks stay on 
 
 Open the review ask. The drawer shows three steps.
 
-1. **Meaning.** The ask's own summary, the points to look at, what changed since the last round and any questions the agent asked (answer them here). Then your idea next to the document's goal with a verdict, the document's Decisions list, counts and a summary. On a later round it also shows which of your earlier comments are resolved.
+1. **Meaning.** The ask's own summary, the points to look at, what changed since the last round and any questions the agent asked (answer them here). Then your idea next to the document's goal with a verdict, a spec's Decisions list (a plan has none: its agreements come from its spec), counts and a summary. On a later round it also shows which of your earlier comments are resolved.
 2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**. Press **Fine as is** on a card you accept, or **Comment** to tell the author what to change. When the reviewer ran checks on a chapter, its **Checklist** sits under the cards. Mark the chapter **Viewed** when you are done with it.
 3. **Wrap-up.** Everything you marked, **From the previous run** (with the finding each comment was about), and a note for the author. **Send round to the author** returns your comments; **Approve** accepts the document. Both send the margin comments you wrote under **Read the spec** too. If items are still unmarked, approving asks once before it goes ahead.
 
-**Read the spec** always opens the classic document view with margin comments, whatever state the reviewer is in. Its **Request changes** and **Approve** also send your comments on findings, so nothing you wrote on either screen is lost.
+**Read the spec** always opens the classic document view with margin comments, whatever state the reviewer is in. Its **Request changes** and **Approve** also send your comments on findings, so nothing you wrote on either screen is lost. An answer from your phone sends them too.
 
 **Re-run reviewer** starts a fresh review of the same document. **Run reviewer** appears instead when the reviewer failed or was skipped.
 
