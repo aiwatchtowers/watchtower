@@ -30,10 +30,15 @@ The reply ends with a **Published on claude.ai** card naming the page. **Open in
 
 With an API key, Bedrock, Vertex, Foundry, Codex or Ollama the chat cannot publish. It says so and gives you the in-app artifact.
 
+### Keeping an artifact in Knowledge
+
+A document, table, code or HTML page has **Add to Knowledge** in its header. It adds the version you see to [knowledge search](search-and-knowledge.md), so the assistant finds it later (HTML is indexed as its text). The version is pinned: when the assistant writes a newer one the button reads **Update in Knowledge**, which is a menu with **Remove from Knowledge**. Until you press it, the index keeps the older version. **Remove from Knowledge** takes it out, and deleting the chat does too. Drafts to send (email, Slack, event) have no button, and neither does a code question chat.
+
 ## When it's empty or wrong
 
 - **An HTML page shows nothing yet.** It renders once it is fully written.
 - **A page loads no images or styles.** It runs with every network load blocked; ask for one self-contained file.
+- **No Add to Knowledge button.** Only documents, tables, code and HTML pages have it, and not in a code question chat.
 - **No passage comments on an HTML page.** HTML pages take none; ask for the change in the chat.
 
 ## Related

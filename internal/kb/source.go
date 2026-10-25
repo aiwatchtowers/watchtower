@@ -36,6 +36,7 @@ func allSources() []Source {
 		calendarSource{},
 		newWorkbenchDocSource(),
 		ideaSource{},
+		chatArtifactSource{},
 		digestSource{},
 		streamDigestSource{},
 		recapSource{},

@@ -1,6 +1,6 @@
 # Ideas & Decisions
 
-Ideas collects proposals that were floated in Slack threads, meetings, Jira and Linear comments and mail but never written down, so they don't get lost. You only triage what it finds, in the [Inbox](inbox.md) under its **Ideas** filter. Decisions are mined by the same pipeline but born settled: they are listed there too, never wait for a verdict, and also live in Digests → Decisions.
+Ideas collects proposals that were floated in Slack threads, meetings, AI chats, Jira and Linear comments and mail but never written down, so they don't get lost. You only triage what it finds, in the [Inbox](inbox.md) under its **Ideas** filter. Decisions are mined by the same pipeline but born settled: they are listed there too, never wait for a verdict (except those found only in your AI chats), and also live in Digests → Decisions.
 
 ## Why use it
 
@@ -14,6 +14,8 @@ The registry is filled in two steps, both by the background sync.
 2. **Consolidation.** A stronger AI pass reads only the new material and your recent verdicts. It proposes new ideas or attaches a repeat mention to an existing one. This pass is the built-in **Idea finder** in Automations → **Built in**: its card has **Turn On** and **Turn Off**, **Every** (hours, 1 to 48, default 6; press **Save**) and **Edit in Chat** if you want it to judge differently. See [Built-in automations](automations-built-in.md). Settings → Features no longer lists Ideas.
 
 It needs the **Idea finder** on (on by default). For mail, Jira and Linear ideas, Stream Digests must also be on. The daemon's regular pass looks only at recent activity; use **Find Ideas in Past Messages…** to reach further back (it does not cover Linear).
+
+Your AI chats are mined too, by the Idea finder, about 30 minutes after a chat goes quiet and only from when you updated Watchtower (older chats are skipped; code question chats never). What it finds from chats alone, decisions included, waits in **Needs your decision** for **Approve**. Until then it stays out of search, the assistant's answers, Catch Up and the Decisions ledger.
 
 A mention of something you rejected, dropped or put on **Not now** brings it back into **Needs your decision** with the reason "brought up again". An exact repeat of a mention it already has does not.
 
@@ -41,6 +43,10 @@ Open **Discuss with assistant** at the bottom of an item to chat about it. Colla
 ### Add one yourself
 
 On the **Ideas** filter, press **+** (**New Idea**), choose **Idea** or **Note**, give a **Title** and an **Essence** and press **Create**. It starts active, with no review. A decision is added from Digests → Decisions.
+
+### Save one from the chat
+
+Start a message to the assistant with **решили:** or **decided:** and it is saved as a decision. Start it with **факт:** or **fact:** and it is saved as a fact, a note in the registry. The rest of the message is the text. It is active at once, with no review, and the message shows **Saved as a decision** (or **Saved as a fact**) with **Undo** and **Open in Inbox**. **Undo** only works while the item is unchanged. The prefixes do nothing in a code question chat (no mark appears).
 
 ### Mine an older period
 

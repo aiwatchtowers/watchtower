@@ -31,6 +31,9 @@ type Idea struct {
 	LastMentionAt     string
 	CreatedAt         string
 	UpdatedAt         string
+	// ChatBorn marks an idea first proposed from chat material: until the
+	// owner approves it, knowledge readers skip it (KnowledgeVisibleIdeaCond).
+	ChatBorn bool
 }
 
 // IdeaMention is a single sighting of an idea across sources — an idea
@@ -57,19 +60,21 @@ type IdeaFilter struct {
 
 const ideaSelectCols = `id, kind, title, essence, status, source, snooze_until,
 	needs_review, review_reason, similar_to_id, merged_into_id, superseded_by_id,
-	converted_target_id, owner_rating, rating_comment, last_mention_at, created_at, updated_at`
+	converted_target_id, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born`
 
 func scanIdea(row interface{ Scan(...any) error }) (*Idea, error) {
 	var idea Idea
-	var needsReview int
+	var needsReview, chatBorn int
 	if err := row.Scan(
 		&idea.ID, &idea.Kind, &idea.Title, &idea.Essence, &idea.Status, &idea.Source, &idea.SnoozeUntil,
 		&needsReview, &idea.ReviewReason, &idea.SimilarToID, &idea.MergedIntoID, &idea.SupersededByID,
 		&idea.ConvertedTargetID, &idea.OwnerRating, &idea.RatingComment, &idea.LastMentionAt, &idea.CreatedAt, &idea.UpdatedAt,
+		&chatBorn,
 	); err != nil {
 		return nil, err
 	}
 	idea.NeedsReview = needsReview != 0
+	idea.ChatBorn = chatBorn != 0
 	return &idea, nil
 }
 
@@ -110,11 +115,11 @@ func (db *DB) CreateIdeaTx(tx *sql.Tx, idea Idea) (int64, error) {
 	now := "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
 	res, err := tx.Exec(`INSERT INTO ideas (kind, title, essence, status, source, snooze_until,
 			needs_review, review_reason, similar_to_id, merged_into_id, superseded_by_id,
-			converted_target_id, owner_rating, rating_comment, last_mention_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+now+`, `+now+`)`,
+			converted_target_id, owner_rating, rating_comment, last_mention_at, chat_born, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+now+`, `+now+`)`,
 		idea.Kind, idea.Title, idea.Essence, idea.Status, idea.Source, idea.SnoozeUntil,
 		boolToInt(idea.NeedsReview), idea.ReviewReason, idea.SimilarToID, idea.MergedIntoID, idea.SupersededByID,
-		idea.ConvertedTargetID, idea.OwnerRating, idea.RatingComment, idea.LastMentionAt,
+		idea.ConvertedTargetID, idea.OwnerRating, idea.RatingComment, idea.LastMentionAt, boolToInt(idea.ChatBorn),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("creating idea: %w", err)
@@ -231,9 +236,12 @@ func (db *DB) ListIdeas(f IdeaFilter) ([]Idea, error) {
 	if f.Query != "" {
 		like := "%" + escapeLike(f.Query) + "%"
 		where = append(where, `(title LIKE ? ESCAPE '\' OR essence LIKE ? ESCAPE '\' OR EXISTS (
-			SELECT 1 FROM idea_mentions m WHERE m.idea_id = ideas.id AND m.quote LIKE ? ESCAPE '\'))`)
+			SELECT 1 FROM idea_mentions m WHERE m.idea_id = ideas.id AND m.quote LIKE ? ESCAPE '\' AND `+AgentVisibleMentionCond("m")+`))`)
 		args = append(args, like, like, like)
 	}
+
+	// An unapproved chat-born item is not shown to agents (list_ideas, CLI).
+	where = append(where, KnowledgeVisibleIdeaCond(""))
 
 	query := `SELECT ` + ideaSelectCols + ` FROM ideas`
 	if len(where) > 0 {
@@ -272,10 +280,34 @@ func (db *DB) GetIdea(id int64) (*Idea, error) {
 	return idea, nil
 }
 
+// GetKnowledgeVisibleIdea is GetIdea for agent-visible readers: an unapproved
+// chat-born item answers (nil, nil), exactly as a missing id does.
+func (db *DB) GetKnowledgeVisibleIdea(id int64) (*Idea, error) {
+	row := db.QueryRow(`SELECT `+ideaSelectCols+` FROM ideas WHERE id = ? AND `+KnowledgeVisibleIdeaCond(""), id)
+	idea, err := scanIdea(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getting idea %d: %w", id, err)
+	}
+	return idea, nil
+}
+
 // ListIdeaMentions returns every mention of an idea, oldest first.
 func (db *DB) ListIdeaMentions(ideaID int64) ([]IdeaMention, error) {
+	return db.listIdeaMentions(ideaID, "")
+}
+
+// ListAgentVisibleIdeaMentions is ListIdeaMentions without the chat mentions
+// the assistant authored (AgentVisibleMentionCond) — what get_idea returns.
+func (db *DB) ListAgentVisibleIdeaMentions(ideaID int64) ([]IdeaMention, error) {
+	return db.listIdeaMentions(ideaID, " AND "+AgentVisibleMentionCond(""))
+}
+
+func (db *DB) listIdeaMentions(ideaID int64, cond string) ([]IdeaMention, error) {
 	rows, err := db.Query(`SELECT id, idea_id, source, ref, quote, author, said_at, created_at
-		FROM idea_mentions WHERE idea_id = ? ORDER BY said_at, id`, ideaID)
+		FROM idea_mentions WHERE idea_id = ?`+cond+` ORDER BY said_at, id`, ideaID)
 	if err != nil {
 		return nil, fmt.Errorf("listing idea mentions: %w", err)
 	}
@@ -304,10 +336,10 @@ func (db *DB) ListIdeasByMentionRef(source, ref string, limit int) ([]Idea, erro
 	}
 	query := `SELECT DISTINCT i.id, i.kind, i.title, i.essence, i.status, i.source, i.snooze_until,
 			i.needs_review, i.review_reason, i.similar_to_id, i.merged_into_id, i.superseded_by_id,
-			i.converted_target_id, i.owner_rating, i.rating_comment, i.last_mention_at, i.created_at, i.updated_at
+			i.converted_target_id, i.owner_rating, i.rating_comment, i.last_mention_at, i.created_at, i.updated_at, i.chat_born
 		FROM ideas i
 		JOIN idea_mentions m ON m.idea_id = i.id
-		WHERE m.source = ? AND m.ref = ?
+		WHERE m.source = ? AND m.ref = ? AND ` + KnowledgeVisibleIdeaCond("i") + `
 		ORDER BY i.updated_at DESC LIMIT ?`
 	rows, err := db.Query(query, source, ref, limit)
 	if err != nil {
@@ -429,6 +461,16 @@ func (db *DB) IdeasFloorTops() (digest, stream, transcript int64, err error) {
 	return digest, stream, transcript, nil
 }
 
+// IdeasChatFloorTop returns the newest chat_messages id (0 when there are
+// none) — the chat floor's fast-forward target, migration 00154's seeding.
+func (db *DB) IdeasChatFloorTop() (int64, error) {
+	var top int64
+	if err := db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM chat_messages`).Scan(&top); err != nil {
+		return 0, fmt.Errorf("getting ideas chat floor top: %w", err)
+	}
+	return top, nil
+}
+
 // SetIdeasFloorsTx updates the three registry watermarks. A workspace row that
 // does not exist yet is an error, not a silent zero-row update (the
 // SetIdeasEmailFloor sibling shape): the caller's transaction must roll back
@@ -458,6 +500,49 @@ func (db *DB) SetIdeasFloors(digest, stream, transcript int64) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("setting ideas floors: no workspace row exists")
+	}
+	return nil
+}
+
+// GetIdeasChatFloor returns the highest chat_messages.id the ideas
+// consolidator has consumed (seeded by 00154 to the newest message at
+// install time). A workspace without its singleton row reads as 0.
+func (db *DB) GetIdeasChatFloor() (int64, error) {
+	var floor int64
+	err := db.QueryRow(`SELECT COALESCE(ideas_chat_floor, 0) FROM workspace LIMIT 1`).Scan(&floor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting ideas chat floor: %w", err)
+	}
+	return floor, nil
+}
+
+// SetIdeasChatFloorTx advances the chat floor inside the consolidator's
+// transaction. A missing workspace row is an error (the SetIdeasFloorsTx
+// shape): committing registry rows without moving the floor would re-feed
+// the same turns on every run (IDEA-01).
+func (db *DB) SetIdeasChatFloorTx(tx *sql.Tx, id int64) error {
+	res, err := tx.Exec(`UPDATE workspace SET ideas_chat_floor = ?`, id)
+	if err != nil {
+		return fmt.Errorf("setting ideas chat floor: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas chat floor: no workspace row exists")
+	}
+	return nil
+}
+
+// SetIdeasChatFloor is SetIdeasChatFloorTx's non-tx sibling, for the backfill
+// engine's final raise (the SetIdeasFloors precedent).
+func (db *DB) SetIdeasChatFloor(id int64) error {
+	res, err := db.Exec(`UPDATE workspace SET ideas_chat_floor = ?`, id)
+	if err != nil {
+		return fmt.Errorf("setting ideas chat floor: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas chat floor: no workspace row exists")
 	}
 	return nil
 }
@@ -922,10 +1007,11 @@ func (db *DB) ListTranscriptsForIdeasAfter(floor int64, toISO string) ([]Transcr
 }
 
 // CountIdeasForReview returns the number of ideas awaiting owner attention:
-// freshly proposed, or explicitly flagged needs_review, excluding decisions.
+// freshly proposed, or explicitly flagged needs_review, excluding mined
+// decisions (a chat-born decision awaits the owner's approval and counts).
 func (db *DB) CountIdeasForReview() (int, error) {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM ideas WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'`).Scan(&count)
+	err := db.QueryRow(`SELECT COUNT(*) FROM ideas WHERE (status = 'proposed' OR needs_review = 1) AND (kind != 'decision' OR chat_born = 1)`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting ideas for review: %w", err)
 	}

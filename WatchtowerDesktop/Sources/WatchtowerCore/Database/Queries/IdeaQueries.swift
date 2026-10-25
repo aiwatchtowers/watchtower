@@ -49,17 +49,30 @@ package enum IdeaQueries {
     /// Ideas/Notes segments each review their own queue, so a flagged note
     /// surfaces under Notes instead of mixing into Ideas.
     ///
-    /// The `kind != 'decision'` clause stays alongside the caller's kind:
-    /// decisions are born 'active' and never enter this queue whatever is
-    /// asked for — mirrors the Go side's `CountIdeasForReview`, which this is
-    /// the dual path of.
+    /// `reviewKindCond` stays alongside the caller's kind: mined decisions
+    /// are born 'active' and never enter this queue whatever is asked for;
+    /// only a chat-born decision waits for a verdict.
     package static func fetchForReview(_ db: Database, kind: String) throws -> [Idea] {
         try Idea.fetchAll(db, sql: """
             SELECT * FROM ideas
-            WHERE (status = 'proposed' OR needs_review = 1) AND kind = ? AND kind != 'decision'
+            WHERE (status = 'proposed' OR needs_review = 1) AND kind = ? AND \(reviewKindCond)
             ORDER BY updated_at DESC
             """, arguments: [kind])
     }
+
+    /// Which kinds can wait in the review queue: anything but a decision,
+    /// unless it was born in a chat — the dual path of Go
+    /// `CountIdeasForReview` (`internal/db/ideas.go`) and `Idea.awaitsVerdict`.
+    private static let reviewKindCond = "(kind != 'decision' OR chat_born = 1)"
+
+    /// The condition every knowledge reader of the registry adds: a chat-born
+    /// item is hidden while it was never approved (proposed, not now,
+    /// rejected, dropped). Once approved it stays knowledge through its later
+    /// life (superseded, reversed, converted, merged), as any other item does
+    /// (spec §4). Twin of Go `db.KnowledgeVisibleIdeaCond("")`
+    /// (`internal/db/chat_knowledge.go`); unqualified columns.
+    package static let knowledgeVisibleSQL =
+        "NOT (chat_born = 1 AND status IN ('proposed','not_now','rejected','dropped'))"
 
     /// The Inbox's Ideas filter: ideas, notes and decisions except the merged
     /// ones (F15 — decisions are informational there), newest update first.
@@ -94,7 +107,7 @@ package enum IdeaQueries {
     package static func countForReview(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM ideas
-            WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'
+            WHERE (status = 'proposed' OR needs_review = 1) AND \(reviewKindCond)
             """) ?? 0
     }
 
@@ -109,11 +122,11 @@ package enum IdeaQueries {
     /// Review-queue size per kind, keyed by `kind` — what the Ideas | Notes
     /// segment labels count, so a queue waiting in the other segment is
     /// visible without switching to it. A kind with nothing waiting is absent
-    /// from the map.
+    /// from the map; `decision` appears only for chat-born decisions.
     package static func reviewCountsByKind(_ db: Database) throws -> [String: Int] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT kind, COUNT(*) AS count FROM ideas
-            WHERE (status = 'proposed' OR needs_review = 1) AND kind IN ('idea', 'note')
+            WHERE (status = 'proposed' OR needs_review = 1) AND \(reviewKindCond)
             GROUP BY kind
             """)
         return rows.reduce(into: [:]) { counts, row in counts[row["kind"]] = row["count"] }
@@ -123,10 +136,11 @@ package enum IdeaQueries {
 
     /// The full decisions ledger, most-recently-mentioned first (falling back
     /// to `updated_at` for a decision with no mention yet, e.g. hand-written
-    /// via `createManual`).
+    /// via `createManual`). A chat-born decision joins it once approved
+    /// (`knowledgeVisibleSQL`), as do the unread/new-since readers below.
     package static func fetchDecisionLedger(_ db: Database, limit: Int = 200) throws -> [Idea] {
         try Idea.fetchAll(db, sql: """
-            SELECT * FROM ideas WHERE kind = 'decision'
+            SELECT * FROM ideas WHERE kind = 'decision' AND \(knowledgeVisibleSQL)
             ORDER BY COALESCE(NULLIF(last_mention_at, ''), updated_at) DESC
             LIMIT ?
             """, arguments: [limit])
@@ -157,7 +171,7 @@ package enum IdeaQueries {
     package static func markAllDecisionsSeen(_ db: Database) throws {
         try db.execute(sql: """
             UPDATE ideas SET seen_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), \(clearReviewFlag)
-            WHERE kind = 'decision' AND (seen_at IS NULL OR needs_review = 1)
+            WHERE kind = 'decision' AND (seen_at IS NULL OR needs_review = 1) AND \(knowledgeVisibleSQL)
             """)
     }
 
@@ -167,7 +181,7 @@ package enum IdeaQueries {
     package static func unreadDecisionCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM ideas
-            WHERE kind = 'decision' AND (seen_at IS NULL OR needs_review = 1)
+            WHERE kind = 'decision' AND (seen_at IS NULL OR needs_review = 1) AND \(knowledgeVisibleSQL)
             """) ?? 0
     }
 
@@ -178,13 +192,13 @@ package enum IdeaQueries {
     /// no longer tied to a single digest.
     package static func fetchNewDecisionsSince(_ db: Database, afterID: Int) throws -> [Idea] {
         try Idea.fetchAll(db, sql: """
-            SELECT * FROM ideas WHERE kind = 'decision' AND id > ?
+            SELECT * FROM ideas WHERE kind = 'decision' AND id > ? AND \(knowledgeVisibleSQL)
             ORDER BY id ASC
             """, arguments: [afterID])
     }
 
     package static func maxDecisionID(_ db: Database) throws -> Int {
-        try Int.fetchOne(db, sql: "SELECT MAX(id) FROM ideas WHERE kind = 'decision'") ?? 0
+        try Int.fetchOne(db, sql: "SELECT MAX(id) FROM ideas WHERE kind = 'decision' AND \(knowledgeVisibleSQL)") ?? 0
     }
 
     /// Distinct mention sources per idea, for the decisions ledger row's
@@ -326,6 +340,75 @@ package enum IdeaQueries {
             arguments: [ideaID, essence, now]
         )
         return ideaID
+    }
+
+    // MARK: - Chat knowledge
+
+    /// Registry title length for an item written from a chat prefix.
+    private static let chatTitleLength = 120
+
+    /// Writes an owner-prefixed chat message (`KnowledgePrefix`) as an active
+    /// item at once, in the caller's single write transaction: `kind` is
+    /// `decision` or `note`, essence = `body` verbatim, title = its first line
+    /// cut to 120 characters, `chat_born = 1`, and one `chat` mention with
+    /// ref `chat:<conversation>:<message>` (what `chatIdea` finds it by).
+    package static func createFromChat(
+        _ db: Database, kind: String, body: String, conversationID: Int64, messageID: Int64
+    ) throws -> Int64 {
+        let now = try String.fetchOne(db, sql: "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')") ?? ""
+        let firstLine = body.split(maxSplits: 1, omittingEmptySubsequences: false, whereSeparator: \.isNewline).first ?? ""
+        let title = String(firstLine.prefix(chatTitleLength))
+        try db.execute(
+            sql: """
+                INSERT INTO ideas (kind, title, essence, status, source, last_mention_at, chat_born)
+                VALUES (?, ?, ?, 'active', 'owner', ?, 1)
+                """,
+            arguments: [kind, title, body, now]
+        )
+        let ideaID = db.lastInsertedRowID
+        try db.execute(
+            sql: """
+                INSERT INTO idea_mentions (idea_id, source, ref, quote, said_at)
+                VALUES (?, 'chat', ?, ?, ?)
+                """,
+            arguments: [ideaID, chatRef(conversationID: conversationID, messageID: messageID), body, now]
+        )
+        return ideaID
+    }
+
+    /// The item a chat message's knowledge prefix wrote, for the mark rebuilt
+    /// when the chat reopens: the item holding the message's earliest `chat`
+    /// mention (a merge carries the mention to the survivor). `nil` when none.
+    package static func chatIdea(_ db: Database, conversationID: Int64, messageID: Int64) throws -> Idea? {
+        try Idea.fetchOne(db, sql: """
+            SELECT i.* FROM idea_mentions m JOIN ideas i ON i.id = m.idea_id
+            WHERE m.source = 'chat' AND m.ref = ?
+            ORDER BY m.id LIMIT 1
+            """, arguments: [chatRef(conversationID: conversationID, messageID: messageID)])
+    }
+
+    /// The mark's Undo: deletes the item `createFromChat` wrote (with its
+    /// mentions, via `delete`) only while it is untouched — still `active`,
+    /// not merged into anything, nothing merged into it, and `updated_at`
+    /// still `createdUpdatedAt`, the value read right after creation. Returns
+    /// false otherwise (the caller opens the item instead).
+    package static func undoChatIdea(_ db: Database, id: Int64, createdUpdatedAt: String) throws -> Bool {
+        let untouched = try Bool.fetchOne(db, sql: """
+            SELECT EXISTS(
+                SELECT 1 FROM ideas
+                WHERE id = ? AND chat_born = 1 AND status = 'active' AND merged_into_id IS NULL
+                  AND updated_at = ?
+                  AND NOT EXISTS (SELECT 1 FROM ideas c WHERE c.merged_into_id = ideas.id)
+            )
+            """, arguments: [id, createdUpdatedAt]) ?? false
+        guard untouched else { return false }
+        try delete(db, id: Int(id))
+        return true
+    }
+
+    /// `idea_mentions.ref` of a chat mention (see 00154).
+    private static func chatRef(conversationID: Int64, messageID: Int64) -> String {
+        "chat:\(conversationID):\(messageID)"
     }
 
     /// Owner-initiated hard delete: the row, its mentions, and its Discuss

@@ -153,10 +153,10 @@ var registry = []Entry{
 		Prompts:    []PromptRef{{Name: "consolidate", PromptID: prompts.IdeasConsolidate}},
 		Parameters: []Parameter{{Key: "ideas.mine_interval_hours", Kind: ParamInterval, Label: "Every"}},
 		Pipelines:  []string{"ideas"},
-		Reads:      []string{"Slack digests", "Mail and tracker digests", "Meeting recaps"},
+		Reads:      []string{"Slack digests", "Mail and tracker digests", "Meeting recaps", "AI chats"},
 		Does: []string{
 			"Collects ideas and decisions that came up in your work",
-			"Reads Slack digests, mail and tracker digests and meeting recaps, every few hours",
+			"Reads Slack digests, mail and tracker digests, meeting recaps and your AI chats, every few hours",
 			"Merges repeats and keeps what is worth your attention",
 		},
 		Sends:        []string{"Idea cards in your Inbox, under Ideas; decisions go to your brief"},
