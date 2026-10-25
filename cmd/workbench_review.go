@@ -336,7 +336,17 @@ func runWorkbenchReviewFile(cmd *cobra.Command, _ []string) error {
 	return writeReview(cmd, reviewEnvelope{OK: true, Old: &oldSide, New: &newSide})
 }
 
+// runWorkbenchReviewSend sends the round's comments as the owner's request
+// for changes (AGENT-07, ask #575): refused under an agent before anything is
+// read, then confirmed in the Desktop — the Desktop's own Send is granted
+// without a window.
 func runWorkbenchReviewSend(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("send a review round"); err != nil {
+		return err
+	}
+	if err := confirmWithOwner("send a review round", fmt.Sprintf("Send review round %d to the agent.", reviewFlagRound)); err != nil {
+		return failReview(cmd, err)
+	}
 	database, p, err := reviewTarget()
 	if err != nil {
 		return err

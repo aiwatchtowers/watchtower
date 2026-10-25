@@ -349,3 +349,42 @@ func TestWorkbenchReviewApprove_OwnerDeniedLeavesRoundOpen(t *testing.T) {
 	assert.Equal(t, approveConfirmDetail(rid, true), (*asked)[0].Detail)
 	assert.Equal(t, "open", roundStatus(t, database, rid))
 }
+
+// Send is the owner's request for changes (AGENT-07, ask #575): under any
+// agent marker it is refused before it reads or writes anything; the round
+// stays open and its draft stays a draft.
+func TestWorkbenchReviewSend_RefusedUnderAgentMarkers(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			database, wb, s, repo := reviewFixture(t)
+			require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+			rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+			_, err := database.Exec(`INSERT INTO review_comments (round_id, path, body) VALUES (?, 'README.md', 'why?')`, rid)
+			require.NoError(t, err)
+			asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+			t.Setenv(marker, "1")
+			_, _, err = runWorkbench(t, "review", "send", "--workbench", itoa(wb), "--json", "--round", itoa(rid))
+			resetSetFlags(workbenchReviewCmd.Commands()...)
+			require.ErrorContains(t, err, marker)
+			assert.Empty(t, *asked, "the refusal comes before the owner is asked")
+			assert.Equal(t, "open", roundStatus(t, database, rid))
+			var status string
+			require.NoError(t, database.QueryRow(`SELECT status FROM review_comments WHERE round_id = ?`, rid).Scan(&status))
+			assert.Equal(t, "draft", status)
+		})
+	}
+}
+
+// Without a marker the owner still confirms in the Desktop; a denial sends nothing.
+func TestWorkbenchReviewSend_OwnerDeniedLeavesRoundOpen(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+	asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+	out := reviewJSON(t, wb, "send", "--round", itoa(rid))
+	assert.Equal(t, false, out["ok"])
+	assert.Contains(t, out["error"], "refusing to send a review round")
+	require.Len(t, *asked, 1)
+	assert.Equal(t, "send a review round", (*asked)[0].Verb)
+	assert.Equal(t, "open", roundStatus(t, database, rid))
+}
