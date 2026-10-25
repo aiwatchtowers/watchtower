@@ -46,6 +46,22 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
+            DesignShot(name: "chat-knowledge-marks", size: NSSize(width: 560, height: 260)) {
+                AnyView(DesignShotFixtures.chatKnowledgeMarks().padding(12).shotFrame().detailBackground())
+            },
+            // Native text runs (§5b): finished and streaming must match.
+            DesignShot(name: "chat-markdown-finished", size: NSSize(width: 784, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 760).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-streaming", size: NSSize(width: 784, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 760).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-finished-narrow", size: NSSize(width: 344, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 320).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
+            },
             DesignShot(name: "workchat-live-line", size: NSSize(width: 560, height: 120)) {
                 AnyView(DesignShotFixtures.workchatLiveLine().padding(12).shotFrame().detailBackground())
             },
@@ -75,6 +91,9 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
                 AutomationShotFixtures.list()
+            },
+            DesignShot(name: "automation-list-collapsed", size: NSSize(width: 1280, height: 760)) {
+                AutomationShotFixtures.list(collapsed: true)
             },
             DesignShot(name: "automation-card", size: NSSize(width: 900, height: 720)) {
                 AnyView(AutomationShotFixtures.card().detailBackground())
@@ -140,6 +159,9 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "inbox-decision-card", size: NSSize(width: 1180, height: 720)) {
                 OneInboxShotFixtures.decisionCard()
+            },
+            DesignShot(name: "inbox-chat-decision-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.chatDecisionCard()
             },
             DesignShot(name: "inbox-message-card", size: NSSize(width: 1180, height: 720)) {
                 OneInboxShotFixtures.messageCard()
@@ -416,6 +438,23 @@ enum DesignShotFixtures {
         } catch {
             return failure(error)
         }
+    }
+
+    /// An owner message that saved a decision, and each other mark state.
+    static func chatKnowledgeMarks() -> AnyView {
+        let marks: [(ChatKnowledgeMark, String)] = [
+            (.saved(kind: "note", ideaID: 2), "note"), (.empty, "decision"), (.changed(ideaID: 3), "decision"),
+            (.undone, "decision"), (.failed("database is locked"), "decision")
+        ]
+        return AnyView(VStack(alignment: .trailing, spacing: 12) {
+            UserMessageBubble(text: "decided: release acme on Tuesdays from next week")
+            ChatKnowledgeMarkLine(mark: .saved(kind: "decision", ideaID: 1), prefixKind: "decision",
+                                  undo: {}, openInInbox: { _ in })
+            ForEach(Array(marks.enumerated()), id: \.offset) { _, entry in
+                ChatKnowledgeMarkLine(mark: entry.0, prefixKind: entry.1, undo: {}, openInInbox: { _ in })
+            }
+            Spacer(minLength: 0)
+        })
     }
 
     // MARK: - Workchat

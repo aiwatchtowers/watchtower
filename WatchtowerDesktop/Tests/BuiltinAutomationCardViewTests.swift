@@ -60,15 +60,21 @@ final class BuiltinAutomationCardViewTests: XCTestCase {
         XCTAssertTrue(try view(model).inspect().find(button: "Run Now").isDisabled())
     }
 
-    func testSectionsShowWhenReadsSendsAndCosts() async throws {
+    func testSectionsShowReadsDoesResultWhenAndCosts() async throws {
         let model = await card(try Self.show())
         let sut = view(model)
-        for label in ["When", "Reads", "Sends", "Costs"] {
+        for label in ["When", "Reads", "Does", "Result", "Costs"] {
             XCTAssertNoThrow(try sut.inspect().find(text: label), label)
         }
         XCTAssertNoThrow(try sut.inspect().find(text: "Every morning at the first sync after 08:00"))
-        XCTAssertNoThrow(try sut.inspect().find(text: "Your day card in the Inbox"))
+        XCTAssertNoThrow(try sut.inspect().find(text: "Your day card in the Inbox, under Day"))
         XCTAssertNoThrow(try sut.inspect().find(text: "Cost not reported"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Show in Inbox"), "no handler, no link")
+        var actions = BuiltinCardActions()
+        var opened: [InboxFilter] = []
+        actions.openInbox = { opened.append($0) }
+        try BuiltinAutomationCard(model: model, actions: actions) {}.inspect().find(button: "Show in Inbox").tap()
+        XCTAssertEqual(opened, [.day])
         XCTAssertThrowsError(try sut.inspect().find(button: "Save"), "Save appears only once a field changed")
         XCTAssertThrowsError(try sut.inspect().find(button: "Delete…"), "a built-in is turned off, never deleted")
     }

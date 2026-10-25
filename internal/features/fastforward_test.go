@@ -71,6 +71,19 @@ func TestFastForward_Ideas(t *testing.T) {
 	_, err = database.InsertMeetingTranscript(db.MeetingTranscript{Title: "m1", TranscriptText: "hello"})
 	require.NoError(t, err)
 
+	// Chat messages -> chat floor top = the newest message id.
+	res, err := database.Exec(`INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('c', 0, 0)`)
+	require.NoError(t, err)
+	conv, err := res.LastInsertId()
+	require.NoError(t, err)
+	var lastChat int64
+	for _, text := range []string{"one", "two"} {
+		res, err = database.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, 'user', ?, 0)`, conv, text)
+		require.NoError(t, err)
+		lastChat, err = res.LastInsertId()
+		require.NoError(t, err)
+	}
+
 	// Per-account stage-1 floors seeded to known values: they belong to
 	// Stream Digests (streams.enabled), which toggles independently of
 	// Ideas, so an Ideas enable must leave them exactly where they are.
@@ -91,6 +104,9 @@ func TestFastForward_Ideas(t *testing.T) {
 	assert.Equal(t, int64(3), digestFloor, "digest floor should equal MAX(digest_topics.id)")
 	assert.Equal(t, int64(2), streamFloor, "stream floor should equal MAX(stream_digests.id)")
 	assert.Equal(t, int64(1), transcriptFloor, "transcript floor should equal MAX(meeting_transcripts.id)")
+	chatFloor, err := database.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, lastChat, chatFloor, "chat floor should equal MAX(chat_messages.id): the window Ideas was off is not mined")
 
 	emailFloor, err := database.IdeasEmailFloor(gmailAcct)
 	require.NoError(t, err)

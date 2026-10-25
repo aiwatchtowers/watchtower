@@ -47,6 +47,11 @@ package final class AutomationsViewModel {
     /// (`SidebarCountsViewModel`, which sees only this process's writes)
     /// re-reads.
     @ObservationIgnored package var onInboxOutputCountChanged: (() -> Void)?
+    /// The list groups the owner folded, stored under `collapsedSectionsKey`.
+    package private(set) var collapse: AutomationListCollapse
+    /// A selection made before its row was loaded; the next refresh reveals its group.
+    private var pendingRevealID: Int64?
+    nonisolated package static let collapsedSectionsKey = "automations.collapsedSections"
     /// The automation whose card is open. Set it through `select(_:)` to load the card.
     package var selectedID: Int64?
     /// What the right panel shows: the empty state, a card, the New flow, a
@@ -62,6 +67,15 @@ package final class AutomationsViewModel {
     /// The new drafts the editor holds, by conversation id → name
     /// (`AutomationEditorCenter.openNewDraftNames`), read with the list.
     @ObservationIgnored package var openNewDrafts: @MainActor () -> [Int64: String] = { [:] }
+    /// The embedded chats' engines: a saved draft's engine is let go of
+    /// before its conversation moves to the automation (`draftSaved`).
+    @ObservationIgnored package weak var embeddedChats: EmbeddedChatCenter?
+    /// Drops the editor's draft by key (`AutomationEditorCenter.discard`):
+    /// a saved draft's buffer is never listed or saved again.
+    @ObservationIgnored package var discardEditorDraft: @MainActor (Int64) -> Void = { _ in }
+    /// Saved drafts whose conversation is not re-keyed yet (`draftSaved`
+    /// waits for the chat to go idle): never a row meanwhile.
+    @ObservationIgnored private var savedDraftConversations: Set<Int64> = []
     /// Run ids whose steps are shown in the history.
     package private(set) var expandedRuns: Set<Int64> = []
     /// Keyed by automation id.
@@ -105,6 +119,7 @@ package final class AutomationsViewModel {
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let failureWatch: AutomationFailureWatch?
+    @ObservationIgnored private let defaults: UserDefaults
     /// The app is active with a visible key window: only then does an open
     /// card count as seen.
     @ObservationIgnored private let isOwnerLooking: () -> Bool
@@ -122,6 +137,7 @@ package final class AutomationsViewModel {
         dbPool: DatabasePool,
         cli: AutomationsCLI,
         failureWatch: AutomationFailureWatch? = nil,
+        defaults: UserDefaults = .standard,
         isOwnerLooking: @escaping () -> Bool = { true },
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
@@ -129,6 +145,8 @@ package final class AutomationsViewModel {
         self.dbPool = dbPool
         self.cli = cli
         self.failureWatch = failureWatch
+        self.defaults = defaults
+        collapse = AutomationListCollapse(collapsed: Set(defaults.stringArray(forKey: Self.collapsedSectionsKey) ?? []))
         self.isOwnerLooking = isOwnerLooking
         self.now = now
         self.sleep = sleep
@@ -217,6 +235,7 @@ package final class AutomationsViewModel {
                 let rows = AutomationDraftRows.rows(conversations, databasePath: databasePath,
                                                     liveWorkbenchIDs: snapshot.workbenchIDs,
                                                     openDrafts: openNewDrafts())
+                    .filter { !savedDraftConversations.contains($0.conversationID) }
                 if draftRows != rows { draftRows = rows }
             }
             if lastErrorIsRead {
@@ -290,6 +309,10 @@ package final class AutomationsViewModel {
 
     private func apply(_ snapshot: Snapshot) {
         items = snapshot.items
+        if let pending = pendingRevealID {
+            pendingRevealID = nil
+            if pending == selectedID { revealSection(ofAutomation: pending) }
+        }
         attentionCount = snapshot.attentionCount
         headerButtonsByProject = snapshot.headerButtons
         if snapshot.inboxOutputCount != inboxOutputCount {
@@ -331,6 +354,7 @@ package final class AutomationsViewModel {
         panel = id.map(AutomationsPanel.card) ?? .empty
         composerPrefill = nil
         if id != nil { refresh() }
+        revealSection(ofAutomation: id)
     }
 
     /// Shows an automation's card in the panel and selects its row.
@@ -372,6 +396,55 @@ package final class AutomationsViewModel {
         panel = .editor(target)
         self.composerPrefill = composerPrefill
         if id != nil { refresh() }
+        if case let .newDraft(_, scope, _) = target {
+            reveal(scope.workbenchID.map(AutomationListSections.workbenchID) ?? AutomationListSections.personalID)
+        } else {
+            revealSection(ofAutomation: id)
+        }
+    }
+
+    // MARK: - Group collapse
+
+    /// The list section `id` is listed in; nil while it is not in the list.
+    package func sectionID(forAutomation id: Int64) -> String? {
+        items.first { $0.id == id }.flatMap { AutomationListSections.sectionID(of: $0.automation) }
+    }
+
+    /// A group shows open when the owner left it open, or, while `query`
+    /// searches, when it has a match (a listed section always has one). A
+    /// search never changes the stored set.
+    package func isExpanded(_ section: AutomationListSection, query: String) -> Bool {
+        let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return collapse.isExpanded(section.id, searching: searching, hasMatch: !section.isEmpty)
+    }
+
+    /// A click on a group's header folds or opens it, remembered.
+    package func toggleSection(_ id: String) {
+        collapse.toggle(id)
+        storeCollapse()
+    }
+
+    /// A row opened in a folded group (the Inbox, a notification,
+    /// auto-select) opens that group, remembered.
+    private func revealSection(ofAutomation id: Int64?) {
+        guard let id else { return }
+        if let section = sectionID(forAutomation: id) {
+            pendingRevealID = nil
+            reveal(section)
+        } else {
+            // A cold tab: the list has not loaded yet; the first refresh finishes this.
+            pendingRevealID = id
+        }
+    }
+
+    private func reveal(_ section: String) {
+        guard collapse.collapsed.contains(section) else { return }
+        collapse.reveal(section)
+        storeCollapse()
+    }
+
+    private func storeCollapse() {
+        defaults.set(collapse.collapsed.sorted(), forKey: Self.collapsedSectionsKey)
     }
 
     /// The list's first row (`first`) is shown while the panel is empty, or
@@ -414,6 +487,44 @@ package final class AutomationsViewModel {
         if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
     }
 
+    /// A new draft's save landed as automation `automationID` (spec
+    /// 2026-10-24 §4): its row leaves the list and its cache file goes at
+    /// once, with the editor's draft; once the draft's chat engine is idle
+    /// and let go of, its conversation becomes the automation's editor chat
+    /// (ask #528). The selection is the caller's: this never empties the panel.
+    package func draftSaved(contextID: String, conversationID: Int64, automationID: Int64) async {
+        savedDraftConversations.insert(conversationID)
+        defer { savedDraftConversations.remove(conversationID) }
+        discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
+        removeDraftCache(conversationID)
+        draftRows.removeAll { $0.conversationID == conversationID }
+        let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
+                                  conversationID: conversationID)
+        await embeddedChats?.releaseWhenIdle(key)
+        do {
+            _ = try await DatabaseEmbeddedChatStore.rekeyConversation(
+                dbPool: dbPool, conversationID: conversationID, toContextType: "automation",
+                contextID: String(automationID))
+        } catch {
+            lastError = "Saved, but the draft's chat could not move to the automation: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
+        // The turn waited for may have drafted again.
+        removeDraftCache(conversationID)
+    }
+
+    private func removeDraftCache(_ conversationID: Int64) {
+        let url = AutomationDraftEntry.cacheURL(databasePath: dbPool.path, conversationID: conversationID)
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch CocoaError.fileNoSuchFile {
+            // Never drafted, or already gone.
+        } catch {
+            lastError = "Could not remove the saved draft: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
+    }
+
     /// Shows or hides a run's steps in the history.
     package func toggleRun(_ runID: Int64) {
         if expandedRuns.remove(runID) == nil {
@@ -439,6 +550,7 @@ package final class AutomationsViewModel {
         composerPrefill = nil
         if let runID { expandedRuns.insert(runID) }
         refresh()
+        revealSection(ofAutomation: automationID)
     }
 
     /// Reads the card's `show --json`. The card calls it on open and whenever

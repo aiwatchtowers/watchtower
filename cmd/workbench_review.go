@@ -82,26 +82,26 @@ type reviewRoundJSON struct {
 }
 
 type reviewEnvelope struct {
-	OK               bool                `json:"ok"`
-	Error            string              `json:"error,omitempty"`
-	Round            *reviewRoundJSON    `json:"round,omitempty"`
-	Diff             *reviewdiff.Diff    `json:"diff,omitempty"`
-	From             string              `json:"from,omitempty"`
-	To               string              `json:"to,omitempty"`
-	PreviousTreeLost bool                `json:"previous_tree_lost,omitempty"`
-	Old              *reviewdiff.Side    `json:"old,omitempty"`
-	New              *reviewdiff.Side    `json:"new,omitempty"`
-	Sent             *bool               `json:"sent,omitempty"`
-	Comments         int                 `json:"comments,omitempty"`
-	Line             string              `json:"line,omitempty"`
-	Items            []reviewContextItem `json:"items,omitempty"`
-	Lenses           []reviewdiff.Lens   `json:"lenses,omitempty"`
-	LensNotes        []string            `json:"lens_notes,omitempty"`
-	Revert           *reviewRevertJSON   `json:"revert,omitempty"`
-	Overview         json.RawMessage     `json:"overview,omitempty"`
-	OverviewCached   bool                `json:"overview_cached,omitempty"`
-	Lessons          *[]reviewLessonJSON `json:"lessons,omitempty"`
-	Written          string              `json:"written,omitempty"`
+	OK               bool                      `json:"ok"`
+	Error            string                    `json:"error,omitempty"`
+	Round            *reviewRoundJSON          `json:"round,omitempty"`
+	Diff             *reviewdiff.Diff          `json:"diff,omitempty"`
+	From             string                    `json:"from,omitempty"`
+	To               string                    `json:"to,omitempty"`
+	PreviousTreeLost bool                      `json:"previous_tree_lost,omitempty"`
+	Old              *reviewdiff.Side          `json:"old,omitempty"`
+	New              *reviewdiff.Side          `json:"new,omitempty"`
+	Sent             *bool                     `json:"sent,omitempty"`
+	Comments         int                       `json:"comments,omitempty"`
+	Line             string                    `json:"line,omitempty"`
+	Items            []tools.ReviewContextItem `json:"items,omitempty"`
+	Lenses           []reviewdiff.Lens         `json:"lenses,omitempty"`
+	LensNotes        []string                  `json:"lens_notes,omitempty"`
+	Revert           *reviewRevertJSON         `json:"revert,omitempty"`
+	Overview         json.RawMessage           `json:"overview,omitempty"`
+	OverviewCached   bool                      `json:"overview_cached,omitempty"`
+	Lessons          *[]reviewLessonJSON       `json:"lessons,omitempty"`
+	Written          string                    `json:"written,omitempty"`
 }
 
 type reviewRevertJSON struct {

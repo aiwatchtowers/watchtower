@@ -291,7 +291,7 @@ func TestRenderOwnerCopy_UngivenPromptKeepsTheDefault(t *testing.T) {
 
 func TestRenderOwnerCopy_ChangesOnlyTheScript(t *testing.T) {
 	e := mustEntry(t)
-	e.Recipe = bytes.Replace(e.Recipe, []byte("when the\nbrief fails"), []byte("builtin.defaultPrompt(name) when the\nbrief fails"), 1)
+	e.Recipe = bytes.Replace(e.Recipe, []byte("plans your day from it"), []byte("builtin.defaultPrompt(name) plans your day from it"), 1)
 	copyText := editedCopy(t, e, "Brief for %s on %s.")
 	shipped, err := ParseShipped(e)
 	if err != nil {

@@ -19,7 +19,7 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
     package let phase: String
     package let chapterKey: String
     package let activeSeconds: Int
-    /// '' | `ReviewOutcome.changes` | `ReviewOutcome.approved` (00154). `review start` answers only open
+    /// '' | `ReviewOutcome.changes` | `ReviewOutcome.approved` (00155). `review start` answers only open
     /// rounds ('' there); the model sets its copy after a Send or Approve.
     package var outcome: String
 
@@ -467,7 +467,7 @@ package struct ReviewComment: FetchableRecord, Decodable, Equatable, Identifiabl
     }
 }
 
-/// A sent round's `review_rounds.outcome` (00154; Go `db.ReviewOutcomeChanges`
+/// A sent round's `review_rounds.outcome` (00155; Go `db.ReviewOutcomeChanges`
 /// / `db.ReviewOutcomeApproved`); an open round's is "".
 package enum ReviewOutcome {
     package static let changes = "changes"

@@ -269,7 +269,9 @@ func renderRecapJSON(area string, id int, raw string) string {
 
 // ListCatchupDecisions returns ledger decisions with a mention inside the window
 // (said_at, or created_at when said_at is empty), newest mention first. Body is
-// the essence; Meta carries the latest in-window quote and author.
+// the essence; Meta carries the latest in-window quote and author. A chat
+// mention the assistant authored never counts (AgentVisibleMentionCond): its
+// quote is a model's words.
 //
 // The MAX() over the mention timestamp sits in the SELECT list, not only in the
 // ORDER BY: that is what makes SQLite's bare-column rule resolve m.quote,
@@ -281,7 +283,8 @@ func (db *DB) ListCatchupDecisions(from, to float64, limit int) ([]CatchupItem, 
 		       MAX(CASE WHEN m.said_at <> '' THEN m.said_at ELSE m.created_at END) AS last_at
 		FROM ideas i
 		JOIN idea_mentions m ON m.idea_id = i.id
-		WHERE i.kind = 'decision'
+		WHERE i.kind = 'decision' AND `+KnowledgeVisibleIdeaCond("i")+`
+		  AND `+AgentVisibleMentionCond("m")+`
 		  AND CASE WHEN m.said_at <> '' THEN m.said_at ELSE m.created_at END > ?
 		  AND CASE WHEN m.said_at <> '' THEN m.said_at ELSE m.created_at END <= ?
 		GROUP BY i.id

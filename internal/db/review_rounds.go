@@ -29,10 +29,10 @@ type ReviewRound struct {
 	CreatedAt     string
 	SentAt        sql.NullString
 	DeliveredAt   sql.NullString
-	Outcome       string // "", ReviewOutcomeChanges or ReviewOutcomeApproved (00154)
+	Outcome       string // "", ReviewOutcomeChanges or ReviewOutcomeApproved (00155)
 }
 
-// A sent round's outcome (review_rounds.outcome, 00154); an open round's is "".
+// A sent round's outcome (review_rounds.outcome, 00155); an open round's is "".
 const (
 	ReviewOutcomeChanges  = "changes"  // sent with comments: changes requested
 	ReviewOutcomeApproved = "approved" // approved, no changes requested

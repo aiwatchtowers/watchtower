@@ -40,17 +40,19 @@ struct ChatMessageRow: View, Equatable {
     let isEditing: Bool
     let actions: ChatRowActions
     var artifactVersions: [String: Int] = [:]
+    /// Artifact keys of this chat pinned as knowledge (card badge).
+    var keptArtifactKeys: Set<String> = []
     /// The owner message that followed this reply — answers a question card.
     var questionAnswer: String?
-    /// The owner bubble looks up its remember mark: a persisted chat with the
-    /// owner's instructions only (`ChatSurfaceSpec.showsRememberMarks`).
+    /// The owner bubble looks up its remember and knowledge marks: a persisted
+    /// chat with the owner's instructions only (`ChatSurfaceSpec.showsRememberMarks`).
     var showsRememberMark = false
     @State private var hovering = false
     @State private var editText = ""
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item == rhs.item && lhs.isLast == rhs.isLast && lhs.isEditing == rhs.isEditing
-            && lhs.artifactVersions == rhs.artifactVersions
+            && lhs.artifactVersions == rhs.artifactVersions && lhs.keptArtifactKeys == rhs.keptArtifactKeys
             // Retry comes and goes on an embedded chat's failed reply (it
             // hides while a turn runs or waits): its presence is data.
             && (lhs.actions.retry == nil) == (rhs.actions.retry == nil)
@@ -75,11 +77,11 @@ struct ChatMessageRow: View, Equatable {
                 editor
             } else {
                 UserMessageBubble(text: item.message.text, attachments: item.attachments,
-                                  messageID: showsRememberMark ? item.id : nil)
+                                  stored: showsRememberMark ? (item.message.conversationID, item.id) : nil)
             }
         } else if item.message.isAssistant {
             AssistantMessageBody(text: item.message.text, steps: item.stepDisplays, isRunning: false,
-                                 versions: artifactVersions, onOpenArtifact: actions.openArtifact,
+                                 versions: artifactVersions, keptKeys: keptArtifactKeys, onOpenArtifact: actions.openArtifact,
                                  onOpenSources: { actions.openSources(item.id, item.sources) },
                                  questionAnswer: questionAnswer, onAnswerQuestion: actions.answerQuestion)
             statusCard
@@ -227,6 +229,7 @@ struct AssistantMessageBody: View {
     let steps: [ChatStepDisplay]
     let isRunning: Bool
     var versions: [String: Int] = [:]
+    var keptKeys: Set<String> = []
     var onOpenArtifact: (String) -> Void = { _ in }
     var onOpenSources: () -> Void = {}
     /// A question card's answer (the next owner message) and its sender.
@@ -250,10 +253,16 @@ struct AssistantMessageBody: View {
                     ForEach(Array(parsed.segments.enumerated()), id: \.offset) { _, segment in
                         switch segment {
                         case .markdown(let markdown):
-                            MarkdownView(text: markdown)
+                            // A finished answer's prose is native text
+                            // (§5b); the streaming one stays SwiftUI.
+                            if isRunning {
+                                MarkdownView(text: markdown)
+                            } else {
+                                NativeMarkdownView(text: markdown)
+                            }
                         case .artifact(let draft):
                             ArtifactCardView(draft: draft, isWriting: isRunning && !draft.isComplete,
-                                             version: versions[draft.key]) { onOpenArtifact(draft.key) }
+                                             version: versions[draft.key], inKnowledge: keptKeys.contains(draft.key)) { onOpenArtifact(draft.key) }
                         }
                     }
                 }
@@ -283,8 +292,9 @@ struct AssistantMessageBody: View {
 struct UserMessageBubble: View {
     let text: String
     var attachments: [ChatAttachment] = []
-    /// Set for a stored message: a remember command shows its outcome here.
-    var messageID: Int64?
+    /// Set for a stored message of a chat with the owner's instructions: a
+    /// remember command or a knowledge prefix shows its outcome here.
+    var stored: (conversationID: Int64, messageID: Int64)?
 
     private var parts: ChatTurnDisplayParts { ChatTurnComposer.displayParts(text) }
 
@@ -312,7 +322,11 @@ struct UserMessageBubble: View {
                     .foregroundStyle(.white)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16))
             }
-            if let messageID { RememberMarkView(messageID: messageID, text: parts.body) }
+            if let stored {
+                RememberMarkView(messageID: stored.messageID, text: parts.body)
+                ChatKnowledgeMarkView(conversationID: stored.conversationID, messageID: stored.messageID,
+                                      text: parts.body)
+            }
         }
     }
 }

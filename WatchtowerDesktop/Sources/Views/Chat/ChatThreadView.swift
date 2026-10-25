@@ -17,8 +17,10 @@ struct ChatThreadView: View {
             if chatVM.thread.isEmpty {
                 ChatEmptyState(ownerName: ownerName, onPrompt: usePrompt)
             }
+            // One look-up table per pass, not a map and a scan per row.
+            let thread = ChatThreadIndex(chatVM.thread.map(\.message))
             ForEach(chatVM.thread) { item in
-                row(item).id(item.id)
+                row(item, thread).id(item.id)
                 actionCards(forTurn: item.message.turnID)
             }
             unattachedActionCards
@@ -44,37 +46,34 @@ struct ChatThreadView: View {
     }
 
     @ViewBuilder
-    private func row(_ item: ChatThreadItem) -> some View {
+    private func row(_ item: ChatThreadItem, _ thread: ChatThreadIndex) -> some View {
         if let live = chatVM.liveTurn, live.messageID == item.id {
             LiveAssistantRow(turn: live, onOpenArtifact: { chatVM.openArtifact(key: $0) },
                              onOpenSources: { chatVM.openSources(messageID: live.messageID, sources: $0) },
                              onStreamingTextChanged: { chatVM.updateLiveArtifacts(streamingText: $0) })
         } else {
             ChatMessageRow(item: item, isLast: item.id == chatVM.thread.last?.id,
-                           isEditing: chatVM.editingMessageID == item.id, actions: actions(for: item),
+                           isEditing: chatVM.editingMessageID == item.id, actions: actions(for: item, thread),
                            artifactVersions: chatVM.artifactVersionsByMessage[item.id] ?? [:],
-                           questionAnswer: ownerReply(after: item), showsRememberMark: true)
+                           keptArtifactKeys: chatVM.keptArtifactKeys,
+                           questionAnswer: ownerReply(after: item, thread), showsRememberMark: true)
                 .equatable()
         }
     }
 
     /// A question card is answered from the latest reply only, while no
     /// turn runs.
-    private func actions(for item: ChatThreadItem) -> ChatRowActions {
+    private func actions(for item: ChatThreadItem, _ thread: ChatThreadIndex) -> ChatRowActions {
         var actions = baseActions
-        let rows = chatVM.thread.map(\.message)
-        if let index = rows.firstIndex(where: { $0.id == item.id }),
-           ChatQuestionThread.isAnswerable(at: index, in: rows, busy: chatVM.isBusy) {
+        if thread.isAnswerable(item.id, busy: chatVM.isBusy) {
             actions.answerQuestion = { answer in Task { await chatVM.send(text: answer, keepsComposer: true) } }
         }
         return actions
     }
 
     /// The owner's words right after `item` — a question card's answer.
-    private func ownerReply(after item: ChatThreadItem) -> String? {
-        let rows = chatVM.thread.map(\.message)
-        guard let index = rows.firstIndex(where: { $0.id == item.id }),
-              let text = ChatQuestionThread.ownerReply(after: index, in: rows) else { return nil }
+    private func ownerReply(after item: ChatThreadItem, _ thread: ChatThreadIndex) -> String? {
+        guard let text = thread.ownerReply(after: item.id) else { return nil }
         return ChatTurnComposer.displayParts(text).body
     }
 

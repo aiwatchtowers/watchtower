@@ -1,8 +1,11 @@
+import WatchtowerCore
+
 extension AppState {
-    /// The main chat (and Ask Watchtower, which uses the same view model).
+    /// The main chat (and Ask Watchtower, which uses the same view model):
+    /// remember and the knowledge prefixes, as on every embedded chat.
     func wireRemember(_ chat: ChatViewModel) {
         chat.onOwnerMessageStored = { [weak self] text, conversationID, messageID in
-            self?.embeddedChats.rememberCenter?.ownerMessageSent(text: text, conversationID: conversationID, messageID: messageID)
+            self?.embeddedChats.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID)
         }
     }
 
@@ -19,5 +22,16 @@ extension AppState {
         ensureChatViewModels()
         chatViewModel?.select(conversationID: id)
         selectedDestination = .chat
+    }
+
+    /// A conversation in AI Chat scrolled to one of its messages (a `chat`
+    /// mention on an Inbox idea card), the ⌘K hit path.
+    func openChatMessage(conversationID: Int64, messageID: Int64) {
+        ensureChatViewModels()
+        selectedDestination = .chat
+        guard let chat = chatViewModel else { return }
+        Task {
+            await chat.open(ChatSearchHit(conversationID: conversationID, messageID: messageID, title: "", snippet: ""))
+        }
     }
 }

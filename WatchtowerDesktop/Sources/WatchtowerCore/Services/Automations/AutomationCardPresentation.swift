@@ -524,7 +524,7 @@ package enum AutomationCardPresentation {
         decimal.string(from: NSNumber(value: value)) ?? String(value)
     }
 
-    private static func firstLine(_ text: String) -> String {
+    package static func firstLine(_ text: String) -> String {
         String(text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true).first ?? "")
     }
 }

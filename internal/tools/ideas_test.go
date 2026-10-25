@@ -64,6 +64,23 @@ func TestGetIdea_IncludesMentions(t *testing.T) {
 	assert.Contains(t, got, "please add dark mode")
 }
 
+// TestGetIdea_SkipsAssistantChatMentions (ask #516): get_idea never returns a
+// chat mention the assistant authored — its quote is a model's words — while
+// the owner's own chat turn stays.
+func TestGetIdea_SkipsAssistantChatMentions(t *testing.T) {
+	d := openDB(t)
+	id := seedIdea(t, d, db.Idea{Kind: "decision", Title: "Ship Monday", Status: "active", Source: "mined"}, "")
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.InsertIdeaMentionTx(tx, db.IdeaMention{IdeaID: id, Source: "chat", Ref: "chat:1:1", Quote: "owner words", Author: "owner"}))
+	require.NoError(t, d.InsertIdeaMentionTx(tx, db.IdeaMention{IdeaID: id, Source: "chat", Ref: "chat:1:2", Quote: "model conclusion", Author: "assistant"}))
+	require.NoError(t, tx.Commit())
+
+	got := callReadString(t, ideasRegistry(t, d), "get_idea", `{"id":`+strconv.FormatInt(id, 10)+`}`)
+	assert.Contains(t, got, "owner words")
+	assert.NotContains(t, got, "model conclusion")
+}
+
 func TestGetIdea_NotFound(t *testing.T) {
 	_, err := ideasRegistry(t, openDB(t)).CallRead(context.Background(), "get_idea", json.RawMessage(`{"id":999999}`), Binding{})
 	require.Error(t, err)
@@ -116,4 +133,25 @@ func TestCreateIdea_Registration(t *testing.T) {
 	assert.False(t, tool.External)
 	assert.ElementsMatch(t, []string{"reaction", "main", AutomationSurface}, tool.Surfaces, "reaction path + main chat + automations; never the target chat (TGT-BRIEF-01 axis 3)")
 	require.NotNil(t, tool.InputSchema)
+}
+
+func TestListIdeas_HidesUnapprovedChatBorn(t *testing.T) {
+	d := openDB(t)
+	seedIdea(t, d, db.Idea{Kind: "decision", Title: "Pending chat decision", Status: "proposed", Source: "mined", ChatBorn: true}, "")
+	seedIdea(t, d, db.Idea{Kind: "decision", Title: "Approved chat decision", Status: "active", Source: "mined", ChatBorn: true}, "")
+	seedIdea(t, d, db.Idea{Kind: "idea", Title: "Mined proposal", Status: "proposed", Source: "mined"}, "")
+
+	got := callReadString(t, ideasRegistry(t, d), "list_ideas", `{}`)
+	assert.NotContains(t, got, "Pending chat decision")
+	assert.Contains(t, got, "Approved chat decision")
+	assert.Contains(t, got, "Mined proposal")
+}
+
+func TestGetIdea_UnapprovedChatBornNotFound(t *testing.T) {
+	d := openDB(t)
+	id := seedIdea(t, d, db.Idea{Kind: "decision", Title: "Pending chat decision", Status: "proposed", Source: "mined", ChatBorn: true}, "secret quote")
+
+	_, err := ideasRegistry(t, d).CallRead(context.Background(), "get_idea", json.RawMessage(`{"id":`+strconv.FormatInt(id, 10)+`}`), Binding{})
+	require.Error(t, err)
+	assert.Equal(t, "idea not found", err.Error())
 }

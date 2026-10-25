@@ -931,3 +931,47 @@ func TestBackfill_IdeasDisabledSkipsConsolidator(t *testing.T) {
 	assert.Zero(t, stage2, "ideas off: no consolidator call")
 	assert.Zero(t, result.Proposed)
 }
+
+// TestBackfill_ChatFloorRestoredAfterWindow: a backfill mines chat turns past
+// the stored chat floor up to its `to` bound in memory, writes the stored floor
+// only at the end as max(saved, reached), and leaves a turn after `to` for the
+// ordinary run.
+func TestBackfill_ChatFloorRestoredAfterWindow(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	now := time.Now()
+	from := now.Add(-72 * time.Hour)
+	to := now.Add(-3 * time.Hour)
+
+	conv := seedChatConversation(t, d, "Rollout", "")
+	inWindow := seedChatTurn(t, d, conv, "user", "inside the window", now.Add(-24*time.Hour))
+	seedChatTurn(t, d, conv, "user", "after the window", now.Add(-time.Hour))
+
+	var captured []string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		captured = append(captured, user)
+		return `{"ops":[]}`, nil
+	}}
+	p := New(d, backfillCfg(), gen, testLogger())
+	_, err := p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, captured)
+	for _, u := range captured {
+		assert.NotContains(t, u, "after the window")
+	}
+	assert.Contains(t, captured[0], "inside the window")
+	floor, err := d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, inWindow, floor, "the reached chat floor is written once the backfill ends")
+
+	// A stored floor above what the backfill reaches is never lowered.
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.SetIdeasChatFloorTx(tx, inWindow+50))
+	require.NoError(t, tx.Commit())
+	_, err = p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+	floor, err = d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, inWindow+50, floor)
+}

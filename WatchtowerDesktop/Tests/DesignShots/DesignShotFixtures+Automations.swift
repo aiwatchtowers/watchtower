@@ -263,10 +263,10 @@ enum AutomationShotFixtures {
         ] as [String: Any])
     }
 
-    private static func hooks(acmeID: Int64?) -> AutomationEditorChatHooks {
+    private static func hooks(acmeID: Int64?, extra: [AutomationScopeChoice] = []) -> AutomationEditorChatHooks {
         let acme = acmeID.map { AutomationScopeChoice.workbench(id: $0, name: "acme", folder: "/work/acme") }
         return AutomationEditorChatHooks(
-            scopes: [.personal] + (acme.map { [$0] } ?? []), workspaceDir: "/acme",
+            scopes: [.personal] + (acme.map { [$0] } ?? []) + extra, workspaceDir: "/acme",
             draftContextID: { _ in "shot" }, makeNewChat: { _, _ in nil }, makeEditChat: { _ in nil },
             templatePanel: { _, _ in nil }, startTemplate: { _, _ in nil }
         )
@@ -306,40 +306,74 @@ enum AutomationShotFixtures {
         try (cacheLine() + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// The tab (spec A1): Personal with an off automation and one that needs
-    /// confirmation, acme with a draft row and a paused automation, and the
-    /// first automation's card in the panel.
-    static func list() -> AnyView {
+    /// The tab (spec 2026-10-24 §1, mockup boards 1 and 3): Personal with an
+    /// off automation, one that needs confirmation and an enabled one;
+    /// acme with a draft row and a paused automation; acme-docs with a
+    /// failed one; the first automation's card in the panel. `collapsed`
+    /// folds both workbenches, whose headers then say what they hold.
+    static func list(collapsed: Bool = false) -> AnyView {
         do {
             let pool = try makePool()
             let path = pool.path
-            let (acmeID, firstID) = try pool.write { db -> (Int64, Int64) in
+            let (acmeID, docsID, firstID) = try pool.write { db -> (Int64, Int64, Int64) in
                 let acme = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/work/acme")
+                let docs = try TestDatabase.insertWorkbench(db, name: "acme-docs", folder: "/work/acme-docs")
                 let first = try TestDatabase.insertAutomation(
                     db, slug: "morning-mail", name: "Morning mail digest", triggerKind: "schedule",
                     triggerSpec: #"{"schedule":"0 9 * * 1-5"}"#, enabled: false,
                     permissionsJSON: #"["gmail:read@work","llm:light"]"#, outputsJSON: #"["inbox","report"]"#)
                 try insertHistory(db, automationID: first)
-                try TestDatabase.insertAutomation(
+                try setRecipe(db, id: first, summary: "Sorts the morning mail and flags replies")
+                let weekly = try TestDatabase.insertAutomation(
                     db, slug: "weekly-status", name: "Weekly status report", triggerKind: "schedule",
                     triggerSpec: #"{"schedule":"0 16 * * 5"}"#, approvalHash: "h2", enabled: false)
+                try setRecipe(db, id: weekly, body: "Writes the Friday status from the week's Jira changes. Then more.")
+                let standup = try TestDatabase.insertAutomation(
+                    db, slug: "standup-notes", name: "Standup notes", triggerKind: "schedule",
+                    triggerSpec: #"{"schedule":"30 9 * * 1-5"}"#, nextRunAt: "2026-10-24T09:30:00Z")
+                try setRecipe(db, id: standup, summary: "Drafts my standup from yesterday's work")
                 let paused = try TestDatabase.insertAutomation(
                     db, slug: "nightly-triage", name: "Nightly test triage", triggerKind: "schedule",
                     triggerSpec: #"{"schedule":"0 2 * * *"}"#, enabled: false, workbenchID: acme)
                 try db.execute(sql: "UPDATE automations SET disabled_reason = ? WHERE id = ?",
                                arguments: ["stopped after a runaway script", paused])
+                try setRecipe(db, id: paused, summary: "Sorts last night's failed tests by cause")
+                let broken = try TestDatabase.insertAutomation(
+                    db, slug: "docs-links", name: "Docs link check", triggerKind: "schedule",
+                    triggerSpec: #"{"schedule":"0 7 * * *"}"#, workbenchID: docs)
+                try setRecipe(db, id: broken, summary: "Checks the docs for dead links")
+                try TestDatabase.insertAutomationRun(
+                    db, automationID: broken, trigger: "schedule", status: "failed",
+                    error: "fetch: example.com timed out after 30 s",
+                    queuedAt: "2026-10-20T07:00:00Z", startedAt: "2026-10-20T07:00:01Z",
+                    finishedAt: "2026-10-20T07:00:31Z")
                 try insertDraft(db, databasePath: path, acme: acme)
-                return (acme, first)
+                return (acme, docs, first)
             }
+            let suite = "automation-shots-\(collapsed)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defaults.removePersistentDomain(forName: suite)
             let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: RoutedCLIRunner(routes: [
                 "show": try showJSON(name: "Morning mail digest")
-            ])))
+            ])), defaults: defaults)
             vm.refresh()
             vm.select(firstID)
-            return AnyView(AutomationsView(vm: vm, hooks: hooks(acmeID: acmeID)))
+            if collapsed {
+                vm.toggleSection(AutomationListSections.workbenchID(acmeID))
+                vm.toggleSection(AutomationListSections.workbenchID(docsID))
+            }
+            let docs = AutomationScopeChoice.workbench(id: docsID, name: "acme-docs", folder: "/work/acme-docs")
+            return AnyView(AutomationsView(vm: vm, hooks: hooks(acmeID: acmeID, extra: [docs])))
         } catch {
             return failure(error)
         }
+    }
+
+    /// A shot recipe with a `summary:` key or a description body.
+    private static func setRecipe(_ db: Database, id: Int64, summary: String? = nil, body: String = "") throws {
+        let key = summary.map { "summary: \"\($0)\"\n" } ?? ""
+        try db.execute(sql: "UPDATE automations SET recipe_text = ? WHERE id = ?",
+                       arguments: ["---\nname: \"x\"\n\(key)---\n\(body)\n", id])
     }
 
     /// The card of an enabled personal automation with its reports and history.
