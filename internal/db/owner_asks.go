@@ -39,7 +39,7 @@ type OwnerAsk struct {
 	WithdrawnAt     string // when it was withdrawn (created_at's format); '' while not, or withdrawn before 00107
 	// AutomationRunID is the automation run the ask belongs to (00122); NULL = not an automation's.
 	AutomationRunID sql.NullInt64
-	// DocType is a review ask's document kind (00153): spec | plan | other; '' for any other ask.
+	// DocType is a review ask's document kind (00156): spec | plan | other; '' for any other ask.
 	DocType string
 }
 

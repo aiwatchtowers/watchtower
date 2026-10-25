@@ -2735,14 +2735,14 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     chat_asked_at    TEXT NOT NULL DEFAULT '',   -- origin chat only: when it was asked in the terminal; '' otherwise
     withdrawn_at     TEXT NOT NULL DEFAULT '',   -- when it was withdrawn (00107); '' while not, and for asks withdrawn before 00107
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run the ask belongs to (00122); NULL = not an automation's
-    doc_type         TEXT NOT NULL DEFAULT '',   -- review asks: spec | plan | other (00153); '' for any other ask
+    doc_type         TEXT NOT NULL DEFAULT '',   -- review asks: spec | plan | other (00156); '' for any other ask
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
 CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
 
--- Spec review (00153): one reviewer-agent run per review ask. queued -> running
+-- Spec review (00156): one reviewer-agent run per review ask. queued -> running
 -- (claimed by a pid) -> done | failed; skipped = no review runs (reason).
 -- result is the reviewer's JSON; a re-queue keeps the marks and counts attempt.
 CREATE TABLE IF NOT EXISTS spec_reviews (
@@ -2761,7 +2761,7 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     finished_at TEXT NOT NULL DEFAULT ''
 );
 
--- The owner's per-item marks on a spec review (00153); the Desktop writes them.
+-- The owner's per-item marks on a spec review (00156); the Desktop writes them.
 CREATE TABLE IF NOT EXISTS spec_review_marks (
     ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
     item_key   TEXT NOT NULL,

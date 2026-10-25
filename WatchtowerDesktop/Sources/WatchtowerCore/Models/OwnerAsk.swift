@@ -140,7 +140,7 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
     package let changes: String
     package let payload: OwnerAskPayload
     package let docPath: String
-    /// A review's document kind (00153): spec, plan or other; empty for
+    /// A review's document kind (00156): spec, plan or other; empty for
     /// other kinds and for asks filed before it. Only a spec or a plan
     /// gets a spec review.
     package let docType: String

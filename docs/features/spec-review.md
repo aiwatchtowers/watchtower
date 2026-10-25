@@ -8,7 +8,7 @@ When the agent files a `review` ask for a spec or a plan, a second, independent 
 
 ## Storage
 
-Migration `00153_spec_reviews.sql` (mirrored in `schema.sql`); access in `internal/db/spec_reviews.go`.
+Migration `00156_spec_reviews.sql` (mirrored in `schema.sql`); access in `internal/db/spec_reviews.go`.
 
 - `owner_asks.doc_type` — `''` (not a review), `spec`, `plan`, `other`.
 - `spec_reviews(ask_id PK, status queued|running|done|failed|skipped, reason, result, provider, model, doc_sha, dropped, pid, attempt, queued_at, started_at, finished_at)` — one reviewer run per review ask. `QueueSpecReview` upserts to `queued`, clears the result and adds one to `attempt`; `RelaunchQueuedSpecReview` is the sweep's conditional re-queue (only `WHERE status='queued' AND attempt < 3`); `RequeueSpecReview` (the owner's `start`) resets `attempt` to 1; `ClaimSpecReview` moves queued to running under the reviewer's pid; `FinishSpecReview` / `FailSpecReview` act only on a running row of that pid; `SkipSpecReview` records why no review runs.
