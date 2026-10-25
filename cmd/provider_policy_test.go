@@ -262,3 +262,43 @@ func TestProviderPolicy_RefusedQueryDeliversTheError(t *testing.T) {
 	assert.Contains(t, lines[0], "AI provider codex is not allowed by your organization")
 	assert.Contains(t, lines[1], `"type":"done"`)
 }
+
+// A warm Claude session whose mounted Quick Connection or claude.ai mode the
+// policy now forbids ends at the next turn, so the pool restarts it (#608).
+func TestProviderPolicy_SessionEndsOnStaleMounts(t *testing.T) {
+	for name, tc := range map[string]struct {
+		b   policyCheckedBackend
+		raw map[string]any
+	}{
+		"quick connection": {
+			b:   policyCheckedBackend{mounted: []ai.ExternalMCPServer{{Name: "acme", Kind: "http", URL: "https://other.example.com/mcp"}}},
+			raw: map[string]any{"AllowedQuickConnections": []any{"https://mcp.example.com"}},
+		},
+		"claude.ai tools": {
+			b:   policyCheckedBackend{claudeAIOn: true},
+			raw: map[string]any{"AllowClaudeAITools": false},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeTurnBackend{}
+			ended := false
+			b := tc.b
+			b.Backend, b.provider, b.end = fake, "claude", func() { ended = true }
+			var events []chat.Event
+			emit := func(e chat.Event) { events = append(events, e) }
+
+			policytest.Set(t, nil)
+			require.NoError(t, b.Turn(context.Background(), chat.Command{TurnID: "t1"}, emit))
+			assert.False(t, ended)
+
+			policytest.Set(t, tc.raw)
+			err := b.Turn(context.Background(), chat.Command{TurnID: "t2"}, emit)
+			require.ErrorIs(t, err, policy.ErrNotAllowed)
+			assert.True(t, ended, "the session ends")
+			assert.Equal(t, 1, fake.turns, "the provider never sees the turn")
+			last := events[len(events)-1]
+			assert.Equal(t, chat.CodeSessionLost, last.Code)
+			assert.Equal(t, "t2", last.TurnID)
+		})
+	}
+}

@@ -3,6 +3,8 @@ package cmd
 import (
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 )
@@ -23,7 +27,7 @@ func TestPolicyLogin_RefusedBeforeAnyWrite(t *testing.T) {
 		path string
 		src  string
 	}{
-		{"auth login", "slack"}, {"slack add", "slack"}, {"slack login", "slack"}, {"slack enable", "slack"},
+		{"auth login", "slack"}, {"reaction-commands poll", "slack"}, {"slack add", "slack"}, {"slack login", "slack"}, {"slack enable", "slack"},
 		{"google login", "google"}, {"google add", "google"}, {"gmail login", "google"}, {"gmail sync", "google"},
 		{"calendar login", "google"}, {"calendar sync", "google"},
 		{"imap add", "imap"}, {"outlook login", "imap"},
@@ -80,7 +84,7 @@ func TestPolicyLogin_EverySourceCommandIsGuarded(t *testing.T) {
 	for key := range sourceGuardExempt {
 		assert.True(t, seen[key], "exempt %q is not a runnable source command", key)
 	}
-	for _, group := range []string{"auth", "slack", "google", "gmail", "calendar", "imap", "outlook", "caldav", "jira", "confluence", "linear"} {
+	for _, group := range []string{"auth", "reaction-commands", "slack", "google", "gmail", "calendar", "imap", "outlook", "caldav", "jira", "confluence", "linear"} {
 		_, ok := sourceCommandGroups[group]
 		assert.True(t, ok, group)
 	}
@@ -119,4 +123,63 @@ func TestPolicySync_OneShotSlackRefused(t *testing.T) {
 	err := runSync(&cobra.Command{}, nil)
 	require.ErrorIs(t, err, policy.ErrNotAllowed)
 	assert.Contains(t, err.Error(), "source slack is not allowed by your organization (allowed: google)")
+}
+
+// The assistant's tool clients refuse a source the policy forbids before
+// any token is read (#608): one check per factory.
+func TestPolicyToolFactories_RefuseForbiddenSource(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	t.Setenv("HOME", t.TempDir())
+	jiraAcct := db.JiraAccount{ID: 1, CloudID: "cloud-1"}
+
+	_, err := jiraClientFactory(cfg)(jiraAcct)
+	require.ErrorIs(t, err, policy.ErrNotAllowed, "jira create")
+	_, err = jiraWriteClientFactory(cfg)(jiraAcct)
+	require.ErrorIs(t, err, policy.ErrNotAllowed, "jira writes")
+	_, err = confluencePageClientFactory(cfg)(jiraAcct)
+	require.ErrorIs(t, err, policy.ErrNotAllowed, "confluence pages")
+	_, err = jiraConnectFactory(cfg, nil)(jiraAcct)
+	require.ErrorIs(t, err, policy.ErrNotAllowed, "jira connect")
+	_, err = linearWriteClientFactory(cfg, nil)(db.LinearAccount{ID: 1})
+	require.ErrorIs(t, err, policy.ErrNotAllowed, "linear writes")
+	_, _, err = slackSenderFactory(cfg)(db.SlackAccount{ID: 1})
+	require.ErrorIs(t, err, policy.ErrNotAllowed, "slack send")
+	assert.Contains(t, err.Error(), "source slack is not allowed by your organization (allowed: google)")
+}
+
+// testPolicyEnv hands a runCLIEnv subprocess its forced policy (TestMain).
+const testPolicyEnv = "WATCHTOWER_TEST_POLICY_JSON"
+
+// TestPolicyLogin_RealExecuteAppliesGuards runs the test binary as the real
+// CLI, where TestMain applies nothing: cobra's initializer must guard the
+// command on the plain Execute path.
+func TestPolicyLogin_RealExecuteAppliesGuards(t *testing.T) {
+	c := exec.Command(os.Args[0], "auth", "login")
+	c.Env = append(os.Environ(), runCLIEnv+"=1", "HOME="+t.TempDir(), testPolicyEnv+`={"AllowedSources":["google"]}`)
+	out, err := c.CombinedOutput()
+	require.Error(t, err, string(out))
+	assert.Contains(t, string(out), "source slack is not allowed by your organization (allowed: google)")
+}
+
+// main installs the system reader; nothing else does (tests never read this
+// Mac's managed preferences).
+func TestPolicy_MainInstallsTheSystemReader(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "main.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "policy.UseSystemReader()")
+}
+
+func TestPolicySync_UsersOnlySlackRefused(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgFile := filepath.Join(home, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte("active_workspace: test\n"), 0o600))
+	orig, origUsers := flagConfig, syncFlagUsersOnly
+	flagConfig, syncFlagUsersOnly = cfgFile, true
+	t.Cleanup(func() { flagConfig, syncFlagUsersOnly = orig, origUsers })
+
+	err := runSync(&cobra.Command{}, nil)
+	require.ErrorIs(t, err, policy.ErrNotAllowed)
 }

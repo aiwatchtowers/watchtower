@@ -290,7 +290,7 @@ func (p Policy) MobileSyncMode() string {
 
 // ConnectionAllowed reports whether a Quick Connection may be mounted, added,
 // enabled or called. kind "http" matches rawURL against the https:// entries
-// (https only, host incl. port case-insensitive, path on a "/" boundary or a
+// (https only, host incl. port ASCII-case-insensitive, path on a "/" boundary or a
 // plain prefix when the entry path ends in "/"); kind "stdio" matches command
 // byte-equal to an absolute-path entry.
 func (p Policy) ConnectionAllowed(kind, rawURL, command string) bool {
@@ -313,7 +313,7 @@ func httpMatches(entry, rawURL string) bool {
 		return false
 	}
 	cu, ok := httpsURL(rawURL)
-	if !ok || !strings.EqualFold(eu.Host, cu.Host) {
+	if !ok || !asciiEqualFold(eu.Host, cu.Host) {
 		return false
 	}
 	cp := cu.EscapedPath()
@@ -331,6 +331,27 @@ func httpMatches(entry, rawURL string) bool {
 		return strings.HasPrefix(cp, ep)
 	}
 	return cp == ep || strings.HasPrefix(cp, ep+"/")
+}
+
+// asciiEqualFold compares hosts folding ASCII letters only, as the Swift
+// twin does: Unicode folding would make "\u212A" (KELVIN SIGN) equal "k".
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 // pathSafe refuses an escaped path a server could resolve out of an allowed

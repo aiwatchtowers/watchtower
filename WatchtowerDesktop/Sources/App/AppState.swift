@@ -522,6 +522,7 @@ final class AppState {
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
         managedPolicy.onChange = { [weak self] in self?.managedPolicyChanged($0) }
+        managedPolicy.onRefresh = { [weak self] _ in self?.retryPolicyOffWipe() }
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).

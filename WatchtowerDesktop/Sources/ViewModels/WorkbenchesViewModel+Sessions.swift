@@ -226,11 +226,6 @@ extension WorkbenchesViewModel {
     /// mechanically and never gets an AI title. Codex is never offered here:
     /// its launch arguments come from a workbench (`launch-args`).
     func newStandalone(kind: TerminalSession.Kind, folder: URL) async {
-        if kind != .shell,
-           let refusal = ConnectionTest.policyRefusal(provider: kind.rawValue, policy: managedPolicy()) {
-            errorMessage = refusal
-            return
-        }
         let title = switch kind {
         case .claude, .codex: TerminalSessionNaming.provisional(now: now())
         case .shell: TerminalSessionNaming.shell(shellPath: terminalCenter?.shell(), folder: folder.path)
@@ -258,11 +253,7 @@ extension WorkbenchesViewModel {
         agent: AgentKind,
         worktree: WorktreeChoice = .auto
     ) async -> TerminalSession? {
-        if let refusal = ConnectionTest.policyRefusal(provider: agent.rawValue, policy: managedPolicy()) {
-            errorMessage = refusal
-            return nil
-        }
-        return await createAndStart(
+        await createAndStart(
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
                   folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
             prompt: prompt,
@@ -845,6 +836,14 @@ extension WorkbenchesViewModel {
         placing: SessionPlacing? = nil
     ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
+        // Every new agent session passes here (New Session, Work on It, the
+        // phone, drift Fix, an automation's session()): an agent the
+        // organization's policy forbids (#608) is never started.
+        if let agent = new.kind.agent,
+           let refusal = ConnectionTest.policyRefusal(provider: agent.rawValue, policy: managedPolicy()) {
+            reportStartError(refusal, projectID: new.projectID, ticket: ticket)
+            throw TargetStartError.failed(refusal)
+        }
         // A failed insert leaves no notice of an earlier start beside its error.
         if placing != nil, let projectID = new.projectID { startNotice[projectID] = nil }
         var row = try await insertSession(new, ticket: ticket)

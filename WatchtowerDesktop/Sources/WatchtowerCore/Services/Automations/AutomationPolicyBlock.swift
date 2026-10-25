@@ -9,7 +9,10 @@ import Foundation
 package enum AutomationPolicyBlock {
     /// `connections` nil = not loaded: an `mcp:` entry under an allowed list
     /// then counts as blocked (fail closed), never silently allowed.
+    /// A recipe that does not parse is not blocked (Go's show/list say ""):
+    /// it does not run at all.
     package static func isBlocked(_ automation: Automation, policy: ManagedPolicy, connections: [ExternalConnection]?) -> Bool {
+        guard automation.parseError.isEmpty else { return false }
         let entries = automation.permissions.compactMap(entry)
         if !policy.shellAllowed, entries.contains(where: { $0.head == "shell" }) { return true }
         guard policy.allowedQuickConnections != nil else { return false }

@@ -1,8 +1,11 @@
 package automations_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -142,5 +145,71 @@ func assertPolicyFailsThrice(t *testing.T, f *exFixture, a db.Automation) {
 	}
 	if !got.Enabled || got.DisabledReason != "" {
 		t.Fatalf("automation enabled=%v reason=%q; want still enabled", got.Enabled, got.DisabledReason)
+	}
+}
+
+// TestAutomationSession_PolicyRefusesForbiddenAgent: session() with the
+// workbench's default agent (claude) under AllowedAIProviders [codex]
+// throws PolicyError and files nothing for the Desktop.
+func TestAutomationSession_PolicyRefusesForbiddenAgent(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowedAIProviders": []any{"codex"}})
+	s := newSessFixture(t, "claude")
+	a := s.seedSession(t, []string{"session:start"}, "",
+		`try { session({prompt: "Check the deploy"}); return "launched" } catch (e) { return e.name + "|" + e.message }`)
+	id := s.enqueue(t, a, db.TriggerManual)
+	s.step(t, 1)
+	r := s.run(t, id)
+	if !strings.HasPrefix(r.Summary, "PolicyError|") || !strings.Contains(r.Summary, "AI provider claude is not allowed") {
+		t.Fatalf("script got %q; want a PolicyError", r.Summary)
+	}
+	if pending, err := s.d.PendingAutomationSessionSteps(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending = %+v, %v; want none", pending, err)
+	}
+}
+
+// TestCheckManifestPolicy_SharedFixture runs testdata/policy_block_cases.json,
+// which the Desktop's AutomationPolicyBlock runs too: both read a recipe's
+// policy block the same way (#608).
+func TestCheckManifestPolicy_SharedFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "policy_block_cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Connections []struct{ Name, Kind, URL, Command string } `json:"connections"`
+		Cases       []struct {
+			Name        string         `json:"name"`
+			Permissions []string       `json:"permissions"`
+			Policy      map[string]any `json:"policy"`
+			Want        string         `json:"want"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(name string) (string, string, string, bool) {
+		for _, c := range f.Connections {
+			if c.Name == name {
+				return c.Kind, c.URL, c.Command, true
+			}
+		}
+		return "", "", "", false
+	}
+	for _, c := range f.Cases {
+		t.Run(c.Name, func(t *testing.T) {
+			policytest.Set(t, c.Policy)
+			m, err := automations.ParseManifest(c.Permissions, nil, automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: 7})
+			if err != nil {
+				t.Fatalf("ParseManifest: %v", err)
+			}
+			got := ""
+			var b *automations.PolicyBlock
+			if errors.As(automations.CheckManifestPolicy(m, lookup), &b) {
+				got = b.Kind
+			}
+			if got != c.Want {
+				t.Fatalf("block = %q; want %q", got, c.Want)
+			}
+		})
 	}
 }

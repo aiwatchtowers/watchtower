@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
+	"watchtower/internal/reactioncmd"
 )
 
 type policyMailSyncer struct {
@@ -84,4 +86,27 @@ func TestProviderPolicy_InstructionMinerRefused(t *testing.T) {
 	policytest.Set(t, map[string]any{"AllowedAIProviders": []any{"codex"}})
 	_, _, _, err := instructionGeneratorFactory(&config.Config{}).Generate(context.Background(), "", "", "")
 	assert.ErrorIs(t, err, policy.ErrNotAllowed)
+}
+
+// A forbidden Slack source (#608): the reaction poll lists nothing and
+// leaves the event seed stamps alone (a forbidden period never reseeds).
+func TestPolicySync_ReactionCommandsSkipForbiddenSlack(t *testing.T) {
+	cfg := &config.Config{ReactionCommands: config.ReactionCommandsConfig{Enabled: true, IntervalHours: 1}}
+	d, _ := newReactionTestDaemon(t, cfg)
+	calls := 0
+	accountsFn := func(context.Context) ([]reactioncmd.Account, error) {
+		return []reactioncmd.Account{{AccountID: 1, OwnerID: "1:UOWNER", Lister: countingReactionLister{&calls}}}, nil
+	}
+	d.SetReactionCommandsPipeline(reactioncmd.New(d.db, cfg, nil, nil, accountsFn, nil))
+	_, err := d.db.Exec(`UPDATE slack_accounts SET reaction_events_seeded_at = '2026-10-25T00:00:00Z'`)
+	require.NoError(t, err)
+	d.lastReactionCmd = time.Now() // a throttled cycle would reset the seeds
+
+	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
+	d.phaseReactionCommands(context.Background())
+
+	assert.Zero(t, calls, "nothing is polled")
+	var seeded string
+	require.NoError(t, d.db.QueryRow(`SELECT reaction_events_seeded_at FROM slack_accounts WHERE id = 1`).Scan(&seeded))
+	assert.Equal(t, "2026-10-25T00:00:00Z", seeded, "the seed stamps are untouched")
 }

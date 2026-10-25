@@ -15,7 +15,7 @@ A full example with every key and placeholder values is in the repository at `do
 | Key | Type | Effect |
 |---|---|---|
 | `AllowedSources` | array of `slack`, `google`, `imap`, `caldav`, `jira`, `linear` | Only these can be connected and synced. `google` covers Gmail and Google Calendar, `imap` covers Outlook, `jira` covers Confluence. An empty array allows none. A source already connected stops syncing and keeps its data. |
-| `MobileSync` | `allowed`, `workbench_only` or `off` | `off` turns iPhone sync off and removes what the phone held. `workbench_only` keeps boards, sessions, asks, session chat and permission prompts, and removes briefings, inbox, digests, people, calendar, transcripts, day plan and accounts from the phone. |
+| `MobileSync` | `allowed`, `workbench_only` or `off` | `off` turns iPhone sync off and removes what the phone held. `workbench_only` keeps workbenches, board targets and comments, sessions with their reports and timelines, asks and ask alerts, session chat and permission prompts, and removes briefings, inbox, digests, people, calendar, transcripts, recordings, day plan and accounts from the phone. |
 | `AllowedQuickConnections` | array of `https://` URL prefixes or absolute command paths | A Quick Connection that matches none is never started, added, enabled or called. An empty array allows none. |
 | `AllowAutomationShell` | boolean | `false` refuses automation recipes that run shell commands. |
 | `AllowedAIProviders` | array of `claude`, `codex`, `ollama` | The only providers any part of Watchtower may use. A configured provider outside the list fails each AI call with the policy error; it never switches to another provider by itself. |
@@ -28,7 +28,7 @@ A key with the wrong type counts as its most restrictive value (for example an i
 
 ## What happens to existing data
 
-- A forbidden source's accounts stay listed as **Blocked by your organization** and keep their synced data. If purge on revoked access is on, a source that has not synced for 30 days is scheduled for deletion with the usual 72-hour notice.
+- A forbidden source's accounts stay listed under **Blocked by your organization** and keep their synced data. Its data is never deleted for being unreached while the rule holds; an account whose access is revoked still follows [revoked access](../concepts/revoked-access.md).
 - After `MobileSync` was `off`, a phone has to be paired again once you allow sync.
 
 ## Pinning the AI account

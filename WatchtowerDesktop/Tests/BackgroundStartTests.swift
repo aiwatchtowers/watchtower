@@ -165,6 +165,33 @@ final class BackgroundStartTests: XCTestCase {
         XCTAssertNil(vm.sessionErrors[p])
     }
 
+    /// #608: an agent the organization's policy forbids is never started,
+    /// from the phone (startForTarget) or an automation's session().
+    func testAForbiddenAgentIsRefusedForTargetsAndAutomationSessions() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let vm = makeVM()
+        vm.managedPolicy = { ManagedPolicy.normalize(["AllowedAIProviders": ["codex"]]) }
+        let refusal = "policy: AI provider claude is not allowed by your organization (allowed: codex)"
+
+        do {
+            _ = try await vm.startForTarget(targetID: t, prompt: nil, mode: .new, placement: .background)
+            XCTFail("expected a refusal")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            XCTAssertEqual(error.localizedDescription, refusal)
+        }
+        do {
+            let request = try await automationRequest(p)
+            _ = try await vm.startAutomationSession(request)
+            XCTFail("expected a refusal")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            XCTAssertEqual(error.localizedDescription, refusal)
+        }
+        XCTAssertTrue(launches.isEmpty, "no process starts")
+        let stored = try await rows(p)
+        XCTAssertTrue(stored.isEmpty, "no row is written")
+    }
+
     func testAnAutomationSessionWhoseLaunchIsRefusedThrows() async throws {
         let p = try await workbench()
         let request = try await automationRequest(p)

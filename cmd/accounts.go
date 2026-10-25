@@ -165,18 +165,28 @@ var errLoginDuringPurge = errors.New("watchtower is deleting this account's data
 // browser or write happens.
 func guardSource(src string, run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		if p := policy.Current(); !p.SourceAllowed(src) {
-			return p.SourceError(src)
+		if err := sourceRefusal(src); err != nil {
+			return err
 		}
 		return run(cmd, args)
 	}
 }
 
+// sourceRefusal is the organization's refusal of src (AllowedSources,
+// #608); nil when it may be used. The commands (guardSource), the one-shot
+// sync and the assistant's tool clients ask it.
+func sourceRefusal(src string) error {
+	if p := policy.Current(); !p.SourceAllowed(src) {
+		return p.SourceError(src)
+	}
+	return nil
+}
+
 // sourceCommandGroups are the command groups of each policy source (google
 // = Gmail + Calendar, imap includes Outlook, jira includes Confluence; auth
-// is the Slack OAuth login).
+// is the Slack OAuth login, reaction-commands polls Slack reactions).
 var sourceCommandGroups = map[string]string{
-	"auth": "slack", "slack": "slack",
+	"auth": "slack", "slack": "slack", "reaction-commands": "slack",
 	"google": "google", "gmail": "google", "calendar": "google",
 	"imap": "imap", "outlook": "imap",
 	"caldav": "caldav",
@@ -188,7 +198,7 @@ var sourceCommandGroups = map[string]string{
 // make no call to the source and connect nothing — local reads, local
 // settings, and taking an account away (logout, remove, disable, purge).
 var sourceGuardExempt = map[string]bool{
-	"auth check-cert": true, "auth trust-cert": true, "auth logout": true,
+	"auth check-cert": true, "auth trust-cert": true, "auth logout": true, "reaction-commands list": true,
 	"slack accounts": true, "slack disable": true, "slack remove": true, "slack rename": true,
 	"google accounts": true, "google remove": true, "google rename": true,
 	"gmail logout": true, "gmail purge": true, "gmail status": true,

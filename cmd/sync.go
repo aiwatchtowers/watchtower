@@ -36,7 +36,6 @@ import (
 	"watchtower/internal/issuekey"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
-	"watchtower/internal/policy"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -498,8 +497,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// A one-shot or --users-only sync is a Slack sync in this process; the
 	// daemon checks the policy per phase and cycle instead.
 	if !syncFlagDaemon && !syncFlagStop && !syncFlagNow {
-		if p := policy.Current(); !p.SourceAllowed("slack") {
-			return p.SourceError("slack")
+		if err := sourceRefusal("slack"); err != nil {
+			return err
 		}
 	}
 

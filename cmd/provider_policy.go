@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
+	"watchtower/internal/policy"
 	"watchtower/internal/providers"
 )
 
@@ -92,12 +94,17 @@ func checkedGenerator(cfg *config.Config) digest.Generator {
 	return policyCheckedGenerator{inner: buildGenerator(cfg), provider: cfg.AI.Provider}
 }
 
-// policyCheckedBackend asks the policy at every turn of a warm `ai session`:
-// a forbidden provider answers the turn with the policy error instead of
-// reaching the provider.
+// policyCheckedBackend asks the policy at every turn of a warm `ai session`
+// (#608, spec §5): a forbidden provider answers the turn with the policy
+// error; a Quick Connection the session mounted, or its claude.ai mode, that
+// the policy now forbids ends the session (`end`), so the app's pool starts
+// a new one under the current policy.
 type policyCheckedBackend struct {
 	chat.Backend
-	provider string
+	provider   string
+	mounted    []ai.ExternalMCPServer
+	claudeAIOn bool
+	end        func()
 }
 
 func (b policyCheckedBackend) Turn(ctx context.Context, c chat.Command, emit func(chat.Event)) error {
@@ -105,5 +112,27 @@ func (b policyCheckedBackend) Turn(ctx context.Context, c chat.Command, emit fun
 		emit(chat.Event{Type: chat.EventError, TurnID: c.TurnID, Code: chat.CodeProviderUnavailable, Message: err.Error()})
 		return err
 	}
+	if err := b.staleMounts(); err != nil {
+		emit(chat.Event{Type: chat.EventError, TurnID: c.TurnID, Code: chat.CodeSessionLost, Retryable: true,
+			Message: err.Error() + "; the chat restarts under the current policy"})
+		if b.end != nil {
+			b.end()
+		}
+		return err
+	}
 	return b.Backend.Turn(ctx, c, emit)
+}
+
+// staleMounts is the policy refusal of something this session mounted at its
+// start: a Quick Connection or the claude.ai tools.
+func (b policyCheckedBackend) staleMounts() error {
+	for _, m := range b.mounted {
+		if err := connectionPolicyError(m.Name, m.Kind, m.URL, m.Command); err != nil {
+			return err
+		}
+	}
+	if b.claudeAIOn && !policy.ClaudeAIToolsAllowed() {
+		return fmt.Errorf("policy: claude.ai tools are %w", policy.ErrNotAllowed)
+	}
+	return nil
 }

@@ -16,6 +16,9 @@ extension AppState {
     /// use), off stops it. The hub object is kept, so toggling never opens a
     /// second transport.
     func setMobileSyncEnabled(_ enabled: Bool) {
+        // MobileSync = off (#608) cannot be turned on from here, whatever
+        // the view shows; the stored toggle is left as it was.
+        if enabled, mobileSyncLockedByPolicy { return }
         mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
         guard enabled else {
             mobileHub?.disable()
@@ -29,6 +32,14 @@ extension AppState {
     }
 
     var mobileSyncLockedByPolicy: Bool { managedPolicy.policy.mobileSyncMode == "off" }
+
+    /// Every policy tick: a wipe under `MobileSync = off` whose hub could not
+    /// be built (no storage yet) is tried again (`wipeHubForPolicyOff` runs
+    /// once per run).
+    func retryPolicyOffWipe() {
+        guard mobileSyncPolicy.current == "off", mobileHub == nil, let pool = mobileHubPool else { return }
+        wipeHubForPolicyOff(dbPool: pool)
+    }
 
     /// Follows a changed policy on the hub: `off` stops it and removes what
     /// it published (`disable`); leaving `off` starts it again only when the

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/policy"
 )
 
 // Reasons a purge is scheduled for.
@@ -63,12 +64,22 @@ type accountKey struct {
 // longer than the lease.
 // An empty or unreadable time is no evidence: it never schedules a lease.
 func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, now time.Time) Actions {
+	return PlanWith(accounts, open, enabled, now, nil)
+}
+
+// PlanWith is Plan with leaseHeld: a source it reports (one the
+// organization's policy forbids, #608) has no lease deadline, so no lease
+// purge is scheduled for its accounts and an open lease row is cancelled —
+// a policy-forbidden source is not synced, and its data is kept (POLICY-03,
+// Q2). Revoked purges are unaffected. nil holds nothing.
+func PlanWith(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, now time.Time,
+	leaseHeld func(source string) bool) Actions {
 	var out Actions
 	byKey := make(map[accountKey]db.PurgeAccount, len(accounts))
 	for _, a := range accounts {
 		byKey[accountKey{a.Source, a.ID}] = a
 	}
-	deadlines := leaseDeadlines(accounts)
+	deadlines := leaseDeadlines(accounts, leaseHeld)
 	openFor := make(map[accountKey]bool, len(open))
 
 	for _, p := range open {
@@ -159,8 +170,8 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, now 
 // leaseDeadlines returns each account's lease deadline: for a live account
 // its source's newest access_ok_at + Lease (only when every live account of
 // the source has one), for a removed account its own access_ok_at + Lease.
-// Purged accounts have none.
-func leaseDeadlines(accounts []db.PurgeAccount) map[accountKey]time.Time {
+// Purged accounts, and those of a source leaseHeld reports, have none.
+func leaseDeadlines(accounts []db.PurgeAccount, leaseHeld func(string) bool) map[accountKey]time.Time {
 	type sourceClock struct {
 		newest  time.Time
 		unknown bool
@@ -186,6 +197,9 @@ func leaseDeadlines(accounts []db.PurgeAccount) map[accountKey]time.Time {
 	}
 	out := map[accountKey]time.Time{}
 	for _, a := range accounts {
+		if leaseHeld != nil && leaseHeld(a.Source) {
+			continue
+		}
 		k := accountKey{a.Source, a.ID}
 		switch {
 		case a.Status == "removed":
@@ -243,7 +257,7 @@ func Apply(d *db.DB, enabled, leases bool, now time.Time) (Actions, error) {
 	if err != nil {
 		return Actions{}, err
 	}
-	plan := Plan(accounts, open, enabled, now)
+	plan := PlanWith(accounts, open, enabled, now, func(source string) bool { return !policy.SourceAllowed(source) })
 	done := Actions{Due: plan.Due}
 	var errs []error
 	for _, id := range plan.Cancel {

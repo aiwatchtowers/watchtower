@@ -148,4 +148,50 @@ final class MobileHubPolicyTests: XCTestCase {
         XCTAssertEqual(transport.zoneDeletes, 0)
         XCTAssertFalse(defaults.bool(forKey: Constants.mobileSyncEnabledKey))
     }
+
+    /// The wipe under `off` whose storage could not be built is tried again
+    /// at the next policy tick.
+    func testPolicyOffWipeRetriesOnTheNextTick() async throws {
+        let box = RawBox()
+        box.raw = ["MobileSync": "off"]
+        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
+        let transport = StubHubTransport()
+        let appState = try makeAppState(box, transport: transport, initialize: false)
+        defer { stopAll(appState) }
+        let sidecar = try XCTUnwrap(self.sidecar)
+        var failures = 1
+        appState.makeMobileHubStorage = {
+            if failures > 0 {
+                failures -= 1
+                throw CocoaError(.fileReadUnknown)
+            }
+            var storage = try MobileHubStorage.stub(transport: transport, sidecar: sidecar)
+            storage.ownerUser = { "_owner-acme" }
+            return storage
+        }
+        appState.managedPolicy.refresh()
+        runInitWorkbenches(appState)
+        XCTAssertNil(appState.mobileHub, "the first build failed")
+        XCTAssertEqual(transport.zoneDeletes, 0)
+
+        appState.managedPolicy.refresh() // the next tick, nothing changed
+        await awaitHubCondition("the wipe ran on the retry") { transport.zoneDeletes > 0 }
+        XCTAssertEqual(appState.mobileHub?.status, .off)
+    }
+
+    /// `off` cannot be turned on from the toggle path, whatever the view shows.
+    func testSetMobileSyncEnabledRefusesUnderOff() async throws {
+        let box = RawBox()
+        box.raw = ["MobileSync": "off"]
+        let transport = StubHubTransport()
+        let appState = try makeAppState(box, transport: transport, initialize: false)
+        defer { stopAll(appState) }
+        appState.managedPolicy.refresh()
+        runInitWorkbenches(appState)
+
+        appState.setMobileSyncEnabled(true)
+        XCTAssertFalse(defaults.bool(forKey: Constants.mobileSyncEnabledKey), "the toggle is not written")
+        XCTAssertNil(appState.mobileHub)
+        XCTAssertEqual(transport.starts, 0)
+    }
 }

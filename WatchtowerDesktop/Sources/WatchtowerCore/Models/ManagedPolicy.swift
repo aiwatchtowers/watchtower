@@ -1,4 +1,5 @@
 import CoreFoundation
+import Darwin
 import Foundation
 
 /// The settings a company forces on Watchtower through its MDM (board #608):
@@ -172,8 +173,10 @@ package struct ManagedPolicy: Equatable, Sendable {
 
     package var shellAllowed: Bool { allowAutomationShell ?? true }
 
+    /// "" and an unknown id read as claude, as Go's `providers.Allowed`.
     package func providerAllowed(_ id: String) -> Bool {
-        allowedAIProviders.map { Self.byteIn(id, $0) } ?? true
+        let resolved = Self.byteIn(id, Self.knownProviders) ? id : "claude"
+        return allowedAIProviders.map { Self.byteIn(resolved, $0) } ?? true
     }
 
     package var claudeAIToolsAllowed: Bool { allowClaudeAITools ?? true }
@@ -319,10 +322,12 @@ package struct ManagedPolicy: Equatable, Sendable {
     /// non-ASCII bytes, and %XX only for %25 or a byte >= 0x80. The host is
     /// returned unescaped. nil when Go refuses it.
     static func parseHost(_ host: [UInt8]) -> [UInt8]? {
-        if host.first == 0x5B { // [ IPv6 literal: Go's own checks are not mirrored; byte-compared as written
-            guard let close = host.lastIndex(of: 0x5D) else { return nil }
-            let port = Array(host[(close + 1)...])
-            return validOptionalPort(port) ? host : nil
+        if host.first == 0x5B { // [ an IP literal: Go requires a valid IPv6 address (an IPv4 one is refused)
+            guard let close = host.lastIndex(of: 0x5D), validOptionalPort(Array(host[(close + 1)...])) else { return nil }
+            let inner = Array(host[1..<close])
+            let addr = indexOf(inner, Array("%25".utf8)).map { Array(inner[..<$0]) } ?? inner
+            guard isIPv6(addr) else { return nil }
+            return percentDecoded(host)
         }
         var name = host
         if let colon = host.lastIndex(of: 0x3A) {
@@ -342,6 +347,14 @@ package struct ManagedPolicy: Equatable, Sendable {
             i += 1
         }
         return percentDecoded(host)
+    }
+
+    /// Whether `addr` (no brackets, no zone) is an IPv6 address, as Go's
+    /// netip.ParseAddr + !Is4 decide for a bracketed host.
+    private static func isIPv6(_ addr: [UInt8]) -> Bool {
+        guard !addr.isEmpty, let text = String(bytes: addr, encoding: .utf8) else { return false }
+        var out = in6_addr()
+        return text.withCString { inet_pton(AF_INET6, $0, &out) } == 1
     }
 
     private static func validOptionalPort(_ port: [UInt8]) -> Bool {

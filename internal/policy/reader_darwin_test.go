@@ -48,7 +48,7 @@ func TestPolicy01_UnforcedValueIgnored(t *testing.T) {
 	require.Equal(t, map[string]any{KeyAllowedSources: []any{"slack"}},
 		readForced(domain, []string{KeyAllowedSources}, alwaysForced), "the user value was written")
 
-	assert.Empty(t, readForced(domain, allKeys(), cfIsForced))
+	assert.Empty(t, readForced(domain, allKeys(), nil))
 }
 
 // TestPolicy01_ForcedValuesAreRead is the positive path through a fake
