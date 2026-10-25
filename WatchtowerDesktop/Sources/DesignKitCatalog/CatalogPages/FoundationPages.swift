@@ -137,6 +137,12 @@ struct SpacingPage: View {
         Step(name: "wide", value: Spacing.wide), Step(name: "hero", value: Spacing.hero)
     ]
 
+    static let paneWidths = [
+        Step(name: "sideListMin", value: PaneWidth.sideListMin), Step(name: "sideListIdeal", value: PaneWidth.sideListIdeal),
+        Step(name: "sideListMax", value: PaneWidth.sideListMax), Step(name: "detailMin", value: PaneWidth.detailMin),
+        Step(name: "narrowPage", value: PaneWidth.narrowPage)
+    ]
+
     @State private var chosen = Step(name: "regular", value: Spacing.regular)
 
     var body: some View {
@@ -169,6 +175,23 @@ struct SpacingPage: View {
                         VStack(alignment: .leading, spacing: chosen.value) {
                             ForEach(["Fix the login redirect", "Invoice PDF layout", "CSV columns"], id: \.self) {
                                 Text($0).padding(chosen.value).frame(width: 280, alignment: .leading).card()
+                            }
+                        }
+                    }
+                }
+            }
+            PageSection("Pane widths") {
+                Sample("A side list beside its detail, and a narrow centred page; each bar is the true width",
+                       usage: ".frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal, maxWidth: PaneWidth.sideListMax)") {
+                    VStack(alignment: .leading, spacing: Spacing.compact) {
+                        ForEach(Self.paneWidths, id: \.name) { item in
+                            HStack(spacing: Spacing.regular) {
+                                Text(item.name).font(.caption).frame(width: 110, alignment: .leading)
+                                Text("\(Int(item.value))")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 30, alignment: .trailing)
+                                Rectangle().fill(Color.accentColor).frame(width: item.value, height: Spacing.regular)
                             }
                         }
                     }

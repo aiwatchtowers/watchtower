@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // No cmd test may launch the real executable, which here is the test binary.
@@ -45,7 +46,7 @@ func TestLaunchSpecReview_Detached(t *testing.T) {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	})
 
-	sid, err := syscall.Getsid(pid)
+	sid, err := unix.Getsid(pid)
 	require.NoError(t, err)
 	assert.Equal(t, pid, sid, "the reviewer leads its own session")
 	assert.NotEqual(t, syscall.Getpid(), sid)
