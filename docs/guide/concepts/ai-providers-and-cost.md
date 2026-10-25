@@ -3,6 +3,15 @@
 Watchtower has no AI of its own and no API key to paste. It calls a provider you already use, and every AI feature goes through the one you pick in **Settings → System → AI**. This page covers the choices, what costs what, and where to watch usage.
 
 ## The three providers
+<!-- learn
+id: ai-pick-provider
+title: Pick Claude, Codex or a local model
+text: Choose the provider for every AI feature in **Settings → System → AI**; **Ollama / Local** keeps text on your Mac.
+area: setup
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 | Provider | How it runs | Needs |
 |---|---|---|
@@ -13,6 +22,15 @@ Watchtower has no AI of its own and no API key to paste. It calls a provider you
 Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "auto-detect"), then press **Test Connection**. The main AI Chat also has a provider and model pill for switching per chat.
 
 ## Light and strong models
+<!-- learn
+id: ai-own-models
+title: Choose your own models
+text: Type a model into **Light Model** or **Strong Model** in **Settings → System → AI**; **Default** clears it.
+area: setup
+level: power
+kind: tip
+since: 0.24.0
+-->
 
 Every AI call is routed to one of two tiers, and each provider has a model per tier.
 
@@ -28,6 +46,16 @@ Defaults:
 Override either tier in **Light Model** and **Strong Model**, or press **Default** to clear it.
 
 ## What drives cost
+<!-- learn
+id: ai-mute-channel
+title: Mute a noisy channel for AI
+text: In **Statistics**, **Mute for AI** keeps a bot-heavy channel or person out of digests, tracks and the briefing.
+area: setup
+level: next
+kind: tip
+since: 0.24.0
+action: nav:statistics
+-->
 
 - **Features, not tabs.** Slack Digests and Tracks are the heavy ones, every cycle. People Cards, Stream Digests, Ideas, Memory, Next Step and Knowledge search (its images and links) are medium. Briefing and Day Plan are light, once a day. Attention detection and Claude plan limits spend nothing. The badge is in **Settings → Features** ([Turning features on and off](features-on-and-off.md)).
 - **Channels.** Digests are per channel, so a bot-heavy channel burns tokens. In **Statistics** you can **Mute for AI** a channel or a person; muted ones are skipped by digests, tracks and the briefing, but the chat, Catch Up and Memory can still read them.
@@ -38,6 +66,16 @@ Override either tier in **Light Model** and **Strong Model**, or press **Default
 On a local Ollama model nothing is billed, but speed and quality depend on the model you run.
 
 ## Where to see usage
+<!-- learn
+id: ai-usage-by-day
+title: See what the AI used
+text: Open **Usage** and pick a day to see AI calls and tokens per request, so you know what to switch off.
+area: setup
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:usage
+-->
 
 **Usage** has three tabs:
 
@@ -46,6 +84,17 @@ On a local Ollama model nothing is billed, but speed and quality depend on the m
 - **Claude plan**: your Claude account's limits, below.
 
 ## Claude plan limits
+<!-- learn
+id: ai-plan-limits
+title: Watch your Claude plan limits
+text: **Usage → Claude plan** shows your 5-hour and weekly limits and when you would hit them at this pace.
+area: setup
+level: next
+kind: feature
+since: 0.24.0
+action: nav:usage
+requires: feature:claude-plan-limits
+-->
 
 This tab shows how much of your Claude plan is used: the 5-hour window, the weekly window and per-model weekly limits, each with a projection of when it would be hit at the current pace. The limits belong to the Claude account, so Claude chats and Claude Code count too.
 

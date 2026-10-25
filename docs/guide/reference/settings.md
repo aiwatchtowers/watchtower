@@ -3,6 +3,15 @@
 Seven tabs, in this order: **General**, **Connections**, **Features**, **Meetings**, **System**, **Mobile**, **Profile**. Settings opens on **Connections**. Tabs that edit configuration share one **Save** bar (⌘S); the **Mobile** switch and the **Skills** card apply at once. This page lists only what the screen does not explain.
 
 ## General
+<!-- learn
+id: settings-assistant-language
+title: Pick the assistant's language
+text: **Assistant language** in **Settings → General** sets the language of briefings, digests, tracks and Catch Up.
+area: setup
+level: basics
+kind: tip
+since: 0.24.0
+-->
 
 - **Assistant language** — the language of Catch Up, briefings, tracks and digests. A new install starts from your Mac's first preferred language, else English. In chat the assistant answers in the language you write. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
 
@@ -20,6 +29,15 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 - **Quick Connections** — outside tool servers the assistant may read from; write tools never reach the chat. See [Quick Connections](../features/quick-connections.md).
 
 ## Features
+<!-- learn
+id: settings-pause-notifications
+title: Pause every notification
+text: Turn on **Pause notifications** in **Settings → Features** to silence every notice until you turn it off.
+area: setup
+level: next
+kind: tip
+since: 0.24.0
+-->
 
 - The list turns each feature on or off, asking first if others depend on the one turned off. **Keep ML engines in memory** keeps the speech models loaded. **Save** restarts the background sync once. See [Features on and off](../concepts/features-on-and-off.md).
 - **Briefing, Day Plan, Tracks, Ideas and Reaction commands** have no switch here: "These now live in Automations → Built in", and **Open Automations** leads there. See [Built-in automations](../features/automations-built-in.md).
@@ -50,6 +68,15 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 - Each linked phone shows **Same Apple ID** or **Shared** and one line per permission, each with **Allow…** or **Revoke**: typing into your sessions, starting sessions (allowed only once typing is: **Starting sessions needs typing**) and answering permission prompts. **Remove…** unlinks it.
 
 ## Profile
+<!-- learn
+id: settings-tools-without-approval
+title: Let a tool run without asking
+text: In **Settings → Profile → Assistant tools**, tick where a write tool may run without your approval.
+area: assistant
+level: power
+kind: tip
+since: 0.24.0
+-->
 
 - **Instructions** — **For chats and agents**, **Only in chats** and **Target procedure**, each with its own **Save**, and **Preview what the agent gets…**. See [Your instructions](../features/workbench/instructions.md).
 - Your role, team, manager, reports, peers and starred channels and people. **Run Setup Again** repeats [setup](../start/setup.md).
