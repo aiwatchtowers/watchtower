@@ -19,15 +19,21 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// buildArgsT is buildArgs for tests that inspect the argv: the 0600
-// system-prompt file a call writes (the file Query/QuerySync remove after
-// the child exits) is removed when the test ends. Read its path from the
-// argv with flagValue(t, args, "--system-prompt-file").
-func buildArgsT(t *testing.T, c *Client, systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
+// buildArgsT is buildArgs for tests that inspect the argv only.
+func buildArgsT(t *testing.T, c *Client, systemPrompt, userMessage, outputFormat string) ([]string, string, error) {
 	t.Helper()
-	args, stdin, promptFile, err := c.buildArgs(systemPrompt, userMessage, outputFormat, sessionID)
-	if promptFile != "" {
-		t.Cleanup(func() { _ = os.Remove(promptFile) })
+	args, stdin, _ := c.buildArgs(systemPrompt, userMessage, outputFormat)
+	return args, stdin, nil
+}
+
+// payloadFor returns the content buildArgs hands the child for flag: the
+// argv names it /dev/fd/N, the N-3rd payload.
+func payloadFor(t *testing.T, args, payloads []string, flag string) string {
+	t.Helper()
+	path := flagValue(t, args, flag)
+	var n int
+	if _, err := fmt.Sscanf(path, "/dev/fd/%d", &n); err != nil || n < 3 || n-3 >= len(payloads) {
+		t.Fatalf("%s = %q, want /dev/fd/N naming one of %d payloads", flag, path, len(payloads))
 	}
-	return args, stdin, err
+	return payloads[n-3]
 }

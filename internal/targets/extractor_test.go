@@ -60,14 +60,11 @@ func TestIsValidExternalRef(t *testing.T) {
 	}
 }
 
-// TestParseExtractResponse_TruncatesTargetTextInLogs pins that the cap-hit log
-// lines carry at most 80 runes of the model's target text. The text is derived
-// from private Slack/mail content and the daemon log is not a place for it —
-// the sibling tracks pipeline truncates the equivalent sites the same way.
-func TestParseExtractResponse_TruncatesTargetTextInLogs(t *testing.T) {
-	// A text long enough that the 80-rune cap lands between the two markers.
+// TestParseExtractResponse_KeepsTargetTextOutOfLogs pins that the cap-hit
+// log lines name the item by index and carry none of the model's target
+// text, which is derived from private Slack/mail content (FILES-01).
+func TestParseExtractResponse_KeepsTargetTextOutOfLogs(t *testing.T) {
 	sensitive := "Acquisition of Northwind " + strings.Repeat("padding ", 12) + "DO-NOT-LOG-TAIL"
-	require.Greater(t, len([]rune(sensitive)), 80)
 
 	var subs []string
 	for i := range 16 {
@@ -100,8 +97,7 @@ func TestParseExtractResponse_TruncatesTargetTextInLogs(t *testing.T) {
 	require.Contains(t, logged, "secondary links, truncating to 3")
 	require.Contains(t, logged, "sub_items, truncating to 15")
 
-	assert.NotContains(t, logged, "DO-NOT-LOG-TAIL",
-		"target text beyond the 80-rune cap must not reach the log")
-	assert.Contains(t, logged, "Acquisition of Northwind",
-		"the truncated head must survive so the line stays diagnostic")
+	assert.NotContains(t, logged, "DO-NOT-LOG-TAIL", "target text must not reach the log")
+	assert.NotContains(t, logged, "Acquisition of Northwind", "target text must not reach the log")
+	assert.Contains(t, logged, "extracted item 0", "the line names the item by index")
 }

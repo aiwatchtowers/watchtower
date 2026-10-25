@@ -118,6 +118,17 @@ which filters `project_id IS NULL` as well, guarded by
 (2026-10-15's "My targets" read) is no longer Home's read but stays and stays
 guarded by `testProj01_HomeSummaryNeverReturnsAProjectTarget`.
 
+*Note (2026-10-25, images and links become knowledge, asks #576/#590/#594; contract extended):*
+a workbench target image gets a machine description (`media_items` of
+parent kind `target`, recorded by an insert trigger, described by the daemon's
+media pass). It reaches an agent only through `get_target` (`description`
+next to the image's `path`, labelled as data) and so follows the same session
+scope; it is never indexed (`kb.MediaParentRef` gives target items no
+document) and no other reader reads it. Guards added:
+`internal/tools/targets_read_test.go::TestGetTarget_ImageDescription`,
+`internal/db/workbench_images_test.go::TestListWorkbenchTargetImages_Description`,
+`internal/kb/media_test.go::TestKB_OwnerUploadMediaNeverIndexed`.
+
 **Why locked:** Owner decision D4. An agent decomposes a plan into dozens of
 sub-targets; letting them into the Targets tab, the day plan, next-step,
 Catch-Up, memory mirrors or the inbox overdue notification would flood every
@@ -496,15 +507,15 @@ rule from one Repair or Re-run Setup; `workbench resync --json` reports
 `cleanup_permission_added`.
 
 *2026-10-15 (board #266, spec §4.3):* the install writes two skills into `.claude/skills` and
-`.agents/skills`: the core `watchtower-workbench` (pack v16 since the spec review, 2026-10-25; v15 since board #964, v14 since board #947) always, and the `watchtower-flow` preset (v11)
+`.agents/skills`: the core `watchtower-workbench` (pack v17 since the spec review, 2026-10-25; v16 since board #907, v15 since board #964, v14 since board #947) always, and the `watchtower-flow` preset (v11)
 unless the effective preset is `none` (`WorkbenchInstallOptions.PresetNone`, resolved like the hooks).
 Both follow the DEV-04 rules. Preset `none` removes the preset only when its bytes are ours (shipped,
 or matching the sidecar); an edited or foreign copy is kept and reported. An owner-edited core from
 before v10 (marker below `v10`) keeps the single-file layout: nothing is written beside it, and
 `resync` says "Your edited skill keeps the old single-file layout; delete it to take the v10 core and
-preset." A core byte-identical to the shipped v8 … v15 with no sidecar is adopted as ours. A preset change
+preset." A core byte-identical to the shipped v8 … v16 with no sidecar is adopted as ours. A preset change
 through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the skills only: each core
-copy goes through the install first, so a pre-v10 core of ours becomes v16, then the preset follows; no
+copy goes through the install first, so a pre-v10 core of ours becomes v17, then the preset follows; no
 hook or registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install
 or resync, and the brief names the mismatch. An owner-edited preset copy counts as installed under
 `watchtower-flow` (no mismatch line, never rewritten); under `none` it is kept, `methodology --json`
@@ -2520,6 +2531,8 @@ owner never saw.
   "~" figure; the sweep never signals processes; the one-time sweep hint plans in the background only after the Workbench page stayed on screen 30 s, one hint plan app-wide at a time, stopped after 5 minutes or when the page is left; when the worktrees take 1 GB or less it is snoozed for 7 days (`projects.cleanupHintCheckedAt.<id>`), and only when every worktree was measured — otherwise it checks again at the next launch; a future stamp counts as due, a failed or timed-out plan waits for the next launch, and once the banner went up or the sweep sheet was opened (`projects.cleanupHintShown.<id>`) it never runs for that workbench again.
 
 ## Changelog
+
+- 2026-10-25 (images and links become knowledge, board #907, **owner approved in asks #576, #590 and #594**): strengthening, no guard relaxed. **PROJ-01 note** — a target image's description reaches an agent only through `get_target` and is never indexed (guards listed there). **PROJ-02** — deleting a target image (or the workbench, by cascade) deletes its `media_items` row (`internal/db/media_purge_test.go::TestChatAndTargetDeleteTakeMedia`). **PROJ-04** — core skill pack v16: the Tools section lists `search_knowledge` / `get_knowledge_document` with the reader line for AI-described images and fetched pages (`TestWorkbenchSkill_MediaSectionsAreData`); the shipped v15 text joins the adopt-by-digest list (`v15CoreSHA256`) and the DEV-04 fixtures (`testdata/watchtower-workbench-v15.md`).
 
 - 2026-10-24 (board #947, spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md`, **owner approved in ask #550**): strengthening, no guard relaxed. **PROJ-14 amended** — `finish_session` is refused while the session's ticket has open leaves or its changes have no AI overview that sees all of the work, unless `handover_ask_id` names an ask of this session about the ticket; only with the finish check on. `TestSessionLinks_EachWriteToolLinksItsTargets`' `finish_session` case marks its ticket done first with direct SQL, not a tool, so the linked target it asserts is still `finish_session`'s own (a supporting test, not a guard). **PROJ-04:** core skill pack v14 ("Finishing a session": the whole ticket, the overview before `finish_session`); the v13 text joins the adopt-by-digest list and the DEV-04 fixtures. New guards listed under PROJ-14.
 - 2026-10-20 (board #713, Linear AI-14): note only — **no contract, guard test or status changed**. Desktop only: board columns are edited on the Kanban's header row instead of the **Board Columns…** sheet (the same whole-definition `workbench columns --set -` write, PROJ-19 unchanged); New Task becomes a panel whose column chip writes the column right after `workbench target add`; the drift popover's **Fix** starts an ordinary agent session with a fix prompt (PROJ-07 unchanged: the check stays read-only, the agent writes the board through its tools).

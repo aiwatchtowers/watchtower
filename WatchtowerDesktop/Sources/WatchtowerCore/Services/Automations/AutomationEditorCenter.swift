@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Observation
 import os
 
@@ -102,8 +103,7 @@ package final class AutomationEditorCenter {
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let grants: @MainActor (Int64) async throws -> [AutomationToolGrant]
     @ObservationIgnored private let refresh: @MainActor (Int64) async -> Void
-    @ObservationIgnored private let tempDirectory: URL
-    @ObservationIgnored private let draftCacheDir: URL?
+    @ObservationIgnored private let draftCache: (any DatabaseWriter)?
     @ObservationIgnored private let checkDelay: Duration
     @ObservationIgnored private let sleep: (Duration) async -> Void
     /// The text the last check validated, which `commit` writes.
@@ -127,23 +127,22 @@ package final class AutomationEditorCenter {
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "automation-editor")
 
     /// `grants` reads an automation's auto grants; `refresh` re-reads the list
-    /// and the card's detail after a write. `draftCacheDir` is
-    /// `<workspace>/automation-drafts`, whose `<conversation id>.jsonl` a new
-    /// draft's save removes. `sleep` is the debounce's wait (a test seam).
+    /// and the card's detail after a write. `draftCache` is the database
+    /// whose `automation_draft_cache` rows a new draft's save removes (the
+    /// view model removes them in the app). `sleep` is the debounce's wait
+    /// (a test seam).
     package init(
         cli: AutomationsCLI,
         grants: @escaping @MainActor (Int64) async throws -> [AutomationToolGrant],
         refresh: @escaping @MainActor (Int64) async -> Void,
-        draftCacheDir: URL? = nil,
-        tempDirectory: URL = FileManager.default.temporaryDirectory,
+        draftCache: (any DatabaseWriter)? = nil,
         checkDelay: Duration = .milliseconds(500),
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.cli = cli
         self.grants = grants
         self.refresh = refresh
-        self.draftCacheDir = draftCacheDir
-        self.tempDirectory = tempDirectory
+        self.draftCache = draftCache
         self.checkDelay = checkDelay
         self.sleep = sleep
     }
@@ -314,10 +313,8 @@ package final class AutomationEditorCenter {
         -> (AutomationsCLI.ValidateResult, AutomationSavePlan?) {
         let detail = draft.detail
         let isNew = Self.isNewDraft(key)
-        let validated = try await withTempRecipe(text, slug: detail.slug) { file in
-            try await cli.validate(file: file, against: isNew ? nil : key,
-                                   workbench: isNew && detail.scope == "workbench" ? detail.projectID : nil)
-        }
+        let validated = try await cli.validate(text: text, slug: detail.slug, against: isNew ? nil : key,
+                                               workbench: isNew && detail.scope == "workbench" ? detail.projectID : nil)
         guard validated.ok else { return (validated, nil) }
         let plan = AutomationSavePlan.make(validated: validated, current: detail,
                                            grants: isNew ? [] : try await grants(key))
@@ -441,7 +438,7 @@ package final class AutomationEditorCenter {
             return
         }
         savedIDs[key] = saved.automationID
-        if Self.isNewDraft(key) { removeDraftCache(key) }
+        if Self.isNewDraft(key) { await removeDraftCache(key) }
         if turnOn, setsEnabled {
             do {
                 try await cli.setEnabled(saved.automationID, true)
@@ -514,15 +511,13 @@ package final class AutomationEditorCenter {
         await confirmForeign(id, shownHash: plan.validated.approvalHash, enable: turnOn)
     }
 
-    private func removeDraftCache(_ key: Int64) {
-        guard let draftCacheDir else { return }
-        let file = draftCacheDir.appendingPathComponent("\(-key).jsonl")
-        guard FileManager.default.fileExists(atPath: file.path) else { return }
+    private func removeDraftCache(_ key: Int64) async {
+        guard let draftCache else { return }
         do {
-            try FileManager.default.removeItem(at: file)
+            try await draftCache.write { try AutomationDraftCacheQueries.delete($0, conversationID: -key) }
         } catch {
             let reason = error.localizedDescription
-            Self.log.error("could not remove the draft cache \(file.lastPathComponent, privacy: .public): \(reason, privacy: .public)")
+            Self.log.error("could not remove the draft cache of conversation \(-key, privacy: .public): \(reason, privacy: .public)")
         }
     }
 
@@ -543,11 +538,9 @@ package final class AutomationEditorCenter {
                          : draft.detail.path
         let saved: AutomationsCLI.SaveResult
         do {
-            saved = try await withTempRecipe(text, slug: slug) { file in
-                try await cli.save(file: file, path: path,
-                                   confirmHash: plan.validated.approvalHash,
-                                   expectContentHash: isNew ? "" : draft.buffer.baseContentHash)
-            }
+            saved = try await cli.save(text: text, path: path,
+                                       confirmHash: plan.validated.approvalHash,
+                                       expectContentHash: isNew ? "" : draft.buffer.baseContentHash)
         } catch {
             let message = Self.saveMessage(for: error)
             // A new recipe was never opened: a file at its slug is a name clash.
@@ -666,21 +659,6 @@ package final class AutomationEditorCenter {
         }
         let trimmed = String(out.prefix(64)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return trimmed.isEmpty ? "automation" : trimmed
-    }
-
-    /// Runs `body` on `text` written to `<private dir>/<slug>.md` (dir 0700,
-    /// file 0600); the directory is removed on every path.
-    private func withTempRecipe<T>(_ text: String, slug: String, _ body: (URL) async throws -> T) async throws -> T {
-        let fm = FileManager.default
-        let dir = tempDirectory.appendingPathComponent("watchtower-automation-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        defer { try? fm.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("\(slug).md")
-        guard fm.createFile(atPath: file.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600])
-        else {
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: file.path])
-        }
-        return try await body(file)
     }
 
     private static func recipeErrors(_ validated: AutomationsCLI.ValidateResult) -> String {

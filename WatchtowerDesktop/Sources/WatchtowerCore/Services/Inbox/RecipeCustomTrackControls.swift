@@ -21,7 +21,7 @@ import GRDB
         self.direct = direct
     }
 
-    /// `tracks instruction <id> --text-file …`.
+    /// `tracks instruction <id> --text-file -` (the text on stdin).
     package func saveInstruction(_ track: Track, text: String) async throws {
         guard track.automationID != nil else { return try await direct.saveInstruction(track, text: text) }
         try await cli.trackInstruction(track.id, text: text)

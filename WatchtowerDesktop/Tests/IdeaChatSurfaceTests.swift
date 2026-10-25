@@ -95,10 +95,10 @@ final class IdeaChatSurfaceTests: XCTestCase {
         XCTAssertEqual(mock.toolModes, [nil])
     }
 
-    /// A resumed turn drops the system prompt (the CLI uses --resume), so the
-    /// per-turn prompt must itself carry the idea context block (mirrors
-    /// TargetChatViewModelTests.testResumedTurnCarriesTaskContextAndActionContract).
-    func testResumedTurnCarriesIdeaContext() async throws {
+    /// A stored session id is never resumed (#604 G11): the turn sends the
+    /// system prompt, which carries the idea context (mirrors
+    /// TargetChatViewModelTests.testALaterTurnSendsTheSystemPromptAndTheReplay).
+    func testAStoredSessionIsNotResumedAndTheTurnCarriesTheSystemPrompt() async throws {
         let idea = try makeIdea()
         try await dbManager.dbPool.write { db in
             let conv = try ChatConversationQueries.create(
@@ -113,11 +113,10 @@ final class IdeaChatSurfaceTests: XCTestCase {
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 
-        let prompt = try XCTUnwrap(mock.prompts.first)
-        XCTAssertTrue(prompt.contains("=== IDEA ==="))
-        XCTAssertTrue(prompt.contains(idea.title))
-        XCTAssertTrue(prompt.hasSuffix("again"), "user text must follow the carried context")
-        XCTAssertEqual(mock.systemPrompts, [nil])
+        XCTAssertEqual(mock.prompts, ["again"])
+        let system = try XCTUnwrap(mock.systemPrompts.first.flatMap { $0 })
+        XCTAssertTrue(system.contains("=== IDEA ==="))
+        XCTAssertTrue(system.contains(idea.title))
     }
 
     func testFirstTurnSendsTheSystemPrompt() async throws {
@@ -131,7 +130,7 @@ final class IdeaChatSurfaceTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(mock.systemPrompts.first.flatMap { $0 }).contains("=== IDEA ==="))
         let conv = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
         let sessionID = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: conv)?.sessionID }
-        XCTAssertEqual(sessionID, "s9")
+        XCTAssertNil(sessionID, "never resumed, so never kept (#604 G11)")
     }
 
     /// The Go prompt (internal/ai/prompt.go) and this Swift copy are a

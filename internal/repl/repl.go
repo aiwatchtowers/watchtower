@@ -52,9 +52,29 @@ func (r *REPL) aiProvider() ai.Provider {
 	cfg := r.deps.Config
 	// This fallback always builds the Claude client, so resolve the models
 	// claude-scoped regardless of cfg.AI.Provider (in practice cmd/root.go
-	// always injects deps.AIProvider, making this a safety net only).
+	// always injects deps.AIProvider, making this a safety net only). The
+	// organization's provider policy (#608) still decides.
+	if err := providers.Allowed("claude"); err != nil {
+		return refusedProvider{err: err}
+	}
 	_, strong := providers.ResolveModelsFor(cfg, "claude")
 	return ai.NewClient(strong, r.deps.DBPath, cfg.ClaudePath)
+}
+
+// refusedProvider fails every call with the policy refusal; nothing starts.
+type refusedProvider struct{ err error }
+
+func (p refusedProvider) Query(context.Context, string, string, string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	chunks, errs, ids := make(chan ai.StreamChunk), make(chan error, 1), make(chan string)
+	errs <- p.err
+	close(errs)
+	close(chunks)
+	close(ids)
+	return chunks, errs, ids
+}
+
+func (p refusedProvider) QuerySync(context.Context, string, string, string) (string, *ai.Usage, error) {
+	return "", nil, p.err
 }
 
 // setStreamCancel atomically sets the stream cancel function.

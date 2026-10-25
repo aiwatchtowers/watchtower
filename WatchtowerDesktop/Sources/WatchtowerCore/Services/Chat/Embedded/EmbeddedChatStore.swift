@@ -7,8 +7,8 @@ import GRDB
 /// freezes the main thread (board #670). The engine queues them in order.
 @MainActor
 package protocol EmbeddedChatStore: AnyObject {
+    /// The chat's rows; a deleted context throws `ChatContextGoneError`.
     func loadMessages() throws -> [ChatMessageRecord]
-    func loadSessionID() throws -> String?
     /// The owner row (nil for a follow-up or hidden prompt) plus the reply's
     /// empty `partial` placeholder, atomically.
     /// `provider` is stamped on the reply row (the error card's sign-in hint).
@@ -19,8 +19,6 @@ package protocol EmbeddedChatStore: AnyObject {
     func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws
     @discardableResult
     func append(role: String, text: String) async throws -> Int64
-    /// nil forgets it: the next Claude turn starts a fresh session.
-    func saveSessionID(_ sessionID: String?) async throws
     /// The `sqlite` path handed to `ai query --db-path`; nil for a chat that
     /// reads no workspace data.
     var dbPath: String? { get }
@@ -99,15 +97,10 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
 
     package func loadMessages() throws -> [ChatMessageRecord] {
         let id = conversationID
-        return try dbPool.read { db in try ChatMessageQueries.fetchByConversation(db, conversationID: id) }
-    }
-
-    package func loadSessionID() throws -> String? {
-        let id = conversationID
-        guard let conversation = try dbPool.read({ db in try ChatConversationQueries.fetchByID(db, id: id) }) else {
-            throw ChatContextGoneError()
+        return try dbPool.read { db in
+            guard try ChatConversationQueries.fetchByID(db, id: id) != nil else { throw ChatContextGoneError() }
+            return try ChatMessageQueries.fetchByConversation(db, conversationID: id)
         }
-        return conversation.sessionID
     }
 
     package func beginTurn(ownerText: String?, turnID: String, provider: String?) async throws -> (ownerID: Int64?, assistantID: Int64) {
@@ -140,14 +133,6 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
             return try ChatMessageQueries.insert(db, conversationID: id, role: role, text: text)
         }
     }
-
-    package func saveSessionID(_ sessionID: String?) async throws {
-        let id = conversationID
-        try await dbPool.write { db in
-            try ChatConversationQueries.updateSessionID(db, id: id, sessionID: sessionID)
-            guard db.changesCount > 0 else { throw ChatContextGoneError() }
-        }
-    }
 }
 
 /// Rows for a throwaway chat (onboarding, setup assistants): nothing is
@@ -156,7 +141,6 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
 @MainActor
 package final class MemoryEmbeddedChatStore: EmbeddedChatStore {
     private var rows: [ChatMessageRecord] = []
-    private var sessionID: String?
     private var nextID: Int64 = -1
     private let clock: () -> Date
 
@@ -167,8 +151,6 @@ package final class MemoryEmbeddedChatStore: EmbeddedChatStore {
     package var dbPath: String? { nil }
 
     package func loadMessages() throws -> [ChatMessageRecord] { rows }
-
-    package func loadSessionID() throws -> String? { sessionID }
 
     package func beginTurn(ownerText: String?, turnID: String, provider: String?) async throws -> (ownerID: Int64?, assistantID: Int64) {
         let ownerID = ownerText.map { insert(role: "user", text: $0, turnID: turnID, status: "complete") }
@@ -194,10 +176,6 @@ package final class MemoryEmbeddedChatStore: EmbeddedChatStore {
     @discardableResult
     package func append(role: String, text: String) async throws -> Int64 {
         insert(role: role, text: text, turnID: "", status: "complete")
-    }
-
-    package func saveSessionID(_ sessionID: String?) async throws {
-        self.sessionID = sessionID
     }
 
     private func insert(role: String, text: String, turnID: String, status: String, provider: String? = nil) -> Int64 {

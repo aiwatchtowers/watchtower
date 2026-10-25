@@ -130,6 +130,9 @@ func (s extSource) fillPage(ctx context.Context, doc *Doc, r *extRow, names *ext
 	if doc.Sections, err = s.storedSections(ctx, r, names); err != nil {
 		return err
 	}
+	if doc.Sections, err = s.withMedia(ctx, names.q, doc.Sections, r); err != nil {
+		return err
+	}
 	comments, err := s.commentSections(ctx, r, names)
 	if err != nil {
 		return err
@@ -155,8 +158,30 @@ func (s extSource) fillAttachment(ctx context.Context, doc *Doc, r *extRow, name
 	}
 	doc.Meta = joinNonEmpty(parts)
 	var err error
-	doc.Sections, err = s.storedSections(ctx, r, names)
+	if doc.Sections, err = s.storedSections(ctx, r, names); err != nil {
+		return err
+	}
+	doc.Sections, err = s.withMedia(ctx, names.q, doc.Sections, r)
 	return err
+}
+
+// withMedia appends the document row's described images and links (an
+// attachment's after its extracted text); a heading anchor deep-links into
+// the page like a stored section's, anything else points at the document id.
+func (s extSource) withMedia(ctx context.Context, q Queryer, sections []Section, r *extRow) ([]Section, error) {
+	key := "ext:" + r.sourceID + ":" + r.extID
+	media, err := mediaSections(ctx, q, "confluence", []string{key})
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range media[key] {
+		anchor := r.extID
+		if m.Anchor != "" && r.url != "" {
+			anchor = r.url + "#" + m.Anchor
+		}
+		sections = append(sections, Section{Text: m.Text, Anchor: anchor})
+	}
+	return sections, nil
 }
 
 // storedSections maps sections_json; a heading anchor becomes a deep link

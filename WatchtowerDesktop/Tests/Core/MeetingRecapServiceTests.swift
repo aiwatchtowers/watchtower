@@ -37,14 +37,14 @@ final class MeetingRecapServiceTests: XCTestCase {
         guard let args = fake.invocations.first else {
             return XCTFail("no invocation recorded")
         }
-        // Expected: ["meeting-prep", "recap", "--event-id", "my-event", "--text-file", <tmp>, "--json"]
+        // Expected: ["meeting-prep", "recap", "--event-id", "my-event", "--text-file", "-", "--json"]
         XCTAssertEqual(args.count, 7)
         XCTAssertEqual(args[0], "meeting-prep")
         XCTAssertEqual(args[1], "recap")
         XCTAssertEqual(args[2], "--event-id")
         XCTAssertEqual(args[3], "my-event")
         XCTAssertEqual(args[4], "--text-file")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: args[5]), "the temp file is removed after the call")
+        XCTAssertEqual(args[5], "-", "the text travels on stdin")
         XCTAssertEqual(fake.textFileContents, ["notes here"])
         XCTAssertEqual(args[6], "--json")
     }

@@ -152,7 +152,9 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 func TestKB02_NoGeneratorImports(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
-	forbidden := []string{"watchtower/internal/digest", "watchtower/internal/ai", "watchtower/internal/codex", "watchtower/internal/ollama", "watchtower/internal/providers"}
+	forbidden := []string{"watchtower/internal/digest", "watchtower/internal/ai", "watchtower/internal/codex", "watchtower/internal/ollama", "watchtower/internal/providers",
+		// the media describer lives outside the index; kb renders stored rows only
+		"watchtower/internal/media", "watchtower/internal/prompts"}
 	fset := token.NewFileSet()
 	files := 0
 	for _, e := range entries {

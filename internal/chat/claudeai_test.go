@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/claude"
+	"watchtower/internal/policy/policytest"
 )
 
 // claudeAITestOptions is a warm-session ClaudeOptions with every argv field
@@ -17,20 +18,19 @@ func claudeAITestOptions(mode ClaudeAIMode) ClaudeOptions {
 }
 
 // Off, the warm child's argv is byte-identical to the one before claude.ai
-// mode existed: fresh and resumed.
+// mode existed (plus #604's --no-session-persistence; no resume since).
 func TestClaudeArgs_OffIsUnchanged(t *testing.T) {
 	head := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--include-partial-messages", "--verbose", "--setting-sources", "project,local", "--strict-mcp-config",
+		"--include-partial-messages", "--verbose", "--no-session-persistence",
+		"--setting-sources", "project,local", "--strict-mcp-config",
 		"--model", "sonnet", "--mcp-config", "/tmp/m", "--tools", "ToolSearch,WebSearch",
 		"--allowedTools", "mcp__watchtower", "--disallowedTools", "Bash"}
 	o := claudeAITestOptions(ClaudeAIMode{})
 	assert.Equal(t, append(append([]string{}, head...), "--system-prompt-file", "/tmp/p"),
-		claudeArgs(o, "/tmp/p", "/tmp/m", ""))
-	assert.Equal(t, append(append([]string{}, head...), "--resume", "sess-9"),
-		claudeArgs(o, "/tmp/p", "/tmp/m", "sess-9"))
+		claudeArgs(o, "/tmp/p", "/tmp/m"))
 	// Connectors alone (mode not on) changes nothing.
-	assert.Equal(t, claudeArgs(o, "/tmp/p", "/tmp/m", ""),
-		claudeArgs(claudeAITestOptions(ClaudeAIMode{Connectors: true}), "/tmp/p", "/tmp/m", ""))
+	assert.Equal(t, claudeArgs(o, "/tmp/p", "/tmp/m"),
+		claudeArgs(claudeAITestOptions(ClaudeAIMode{Connectors: true}), "/tmp/p", "/tmp/m"))
 }
 
 // On, the child loads the account's connectors (no --strict-mcp-config) and
@@ -39,22 +39,20 @@ func TestClaudeArgs_OffIsUnchanged(t *testing.T) {
 // flag stay as they are.
 func TestClaudeArgs_ClaudeAIModeDropsStrictAndAddsGate(t *testing.T) {
 	for _, connectors := range []bool{true, false} {
-		for _, resume := range []string{"", "sess-9"} {
-			mode := ClaudeAIMode{On: true, Connectors: connectors}
-			args := claudeArgs(claudeAITestOptions(mode), "/tmp/p", "/tmp/m", resume)
-			off := claudeArgs(claudeAITestOptions(ClaudeAIMode{}), "/tmp/p", "/tmp/m", resume)
-			assert.NotContains(t, args, "--strict-mcp-config", "connectors=%v resume=%q", connectors, resume)
-			i := indexOf(args, "--permission-prompt-tool")
-			require.GreaterOrEqual(t, i, 0)
-			assert.Equal(t, "stdio", args[i+1])
-			assert.Equal(t, i, lastIndexOf(args, "--permission-prompt-tool"), "passed once")
-			j := indexOf(args, "--setting-sources")
-			require.GreaterOrEqual(t, j, 0, "the TCC guard stays")
-			assert.Equal(t, "project,local", args[j+1])
+		mode := ClaudeAIMode{On: true, Connectors: connectors}
+		args := claudeArgs(claudeAITestOptions(mode), "/tmp/p", "/tmp/m")
+		off := claudeArgs(claudeAITestOptions(ClaudeAIMode{}), "/tmp/p", "/tmp/m")
+		assert.NotContains(t, args, "--strict-mcp-config", "connectors=%v", connectors)
+		i := indexOf(args, "--permission-prompt-tool")
+		require.GreaterOrEqual(t, i, 0)
+		assert.Equal(t, "stdio", args[i+1])
+		assert.Equal(t, i, lastIndexOf(args, "--permission-prompt-tool"), "passed once")
+		j := indexOf(args, "--setting-sources")
+		require.GreaterOrEqual(t, j, 0, "the TCC guard stays")
+		assert.Equal(t, "project,local", args[j+1])
 
-			// Apart from the swapped flag, the argv is the off one.
-			assert.Equal(t, without(off, "--strict-mcp-config"), without(args, "--permission-prompt-tool", "stdio"))
-		}
+		// Apart from the swapped flag, the argv is the off one.
+		assert.Equal(t, without(off, "--strict-mcp-config"), without(args, "--permission-prompt-tool", "stdio"))
 	}
 }
 
@@ -132,4 +130,25 @@ func TestClaudeAIAvailability(t *testing.T) {
 			assert.Equal(t, c.reason, reason)
 		})
 	}
+}
+
+// TestClaudeAIAvailability_PolicyOff pins the CHAT-02/03 amendment (#608):
+// AllowClaudeAITools false turns the tools off first, with its own reason;
+// without the key nothing changes.
+func TestClaudeAIAvailability_PolicyOff(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowClaudeAITools": false})
+	on, reason := ClaudeAIAvailability([]string{"HOME=/h"}, "claude", "main")
+	assert.False(t, on)
+	assert.Equal(t, "claude.ai tools are turned off by your organization's policy.", reason)
+	_, reason = ClaudeAIAvailability(nil, "codex", "target")
+	assert.Equal(t, "claude.ai tools are turned off by your organization's policy.", reason, "checked first")
+
+	policytest.Set(t, map[string]any{"AllowClaudeAITools": "no"})
+	on, _ = ClaudeAIAvailability(nil, "claude", "main")
+	assert.False(t, on, "a wrong type fails closed")
+
+	policytest.Set(t, nil)
+	on, reason = ClaudeAIAvailability([]string{"HOME=/h"}, "claude", "main")
+	assert.True(t, on)
+	assert.Empty(t, reason)
 }

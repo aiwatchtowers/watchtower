@@ -158,7 +158,7 @@ func (p *Pipeline) resolveAttendeeEntity(vault *memory.Vault, a attendeeEntry) (
 			return node, true
 		}
 		if !errors.Is(err, memory.ErrNotFound) {
-			p.logger.Printf("meeting: resolving attendee %q in memory: %v", ref, err)
+			p.logger.Printf("meeting: resolving an attendee in memory: %v", err)
 		}
 	}
 	return memory.Node{}, false

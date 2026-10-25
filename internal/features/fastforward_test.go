@@ -300,8 +300,15 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 	database := testDB(t)
 	now := time.Now()
 
+	mediaStart, err := database.MediaStartAt()
+	require.NoError(t, err)
+
 	assertNoWatermarksWritten := func(t *testing.T) {
 		t.Helper()
+		start, err := database.MediaStartAt()
+		require.NoError(t, err)
+		assert.True(t, start.Equal(mediaStart), "media start_at moved")
+
 		inboxTS, err := database.GetInboxLastProcessedTS()
 		require.NoError(t, err)
 		assert.Zero(t, inboxTS)
@@ -339,6 +346,7 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 		// Reaction commands seed the ledger through the deps seam; its own
 		// test below covers both the wired and the unwired call.
 		"reaction-commands": true,
+		"knowledge-search":  true,
 	}
 	for _, f := range All() {
 		if hookIDs[f.ID] {
@@ -374,4 +382,26 @@ func TestFastForward_LinearFloorsAndWatermark(t *testing.T) {
 	wm, err = database.MemoryLinearWatermark(acct)
 	require.NoError(t, err)
 	assert.Equal(t, float64(now.Unix()), wm)
+}
+
+// TestFastForward_KnowledgeSearchMovesMediaStart pins the Knowledge search
+// hook (ask #576): enabling it moves media_state.start_at to now, so nothing
+// that arrived while it was off is described.
+func TestFastForward_KnowledgeSearchMovesMediaStart(t *testing.T) {
+	database := testDB(t)
+	now := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+
+	require.NoError(t, FastForward("knowledge-search", database, now, Deps{}))
+
+	start, err := database.MediaStartAt()
+	require.NoError(t, err)
+	assert.True(t, start.Equal(now), "start_at = %s, want %s", start, now)
+
+	// The other hooks' watermarks stay untouched.
+	inboxTS, err := database.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Zero(t, inboxTS)
+	ffTS, err := database.GetDigestFastForwardTS()
+	require.NoError(t, err)
+	assert.Zero(t, ffTS)
 }

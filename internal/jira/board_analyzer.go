@@ -385,7 +385,7 @@ func (a *BoardAnalyzer) AnalyzeAllSelected(ctx context.Context) (int, error) {
 		}
 
 		if _, err := a.AnalyzeBoard(ctx, *full); err != nil {
-			a.logger.Printf("failed to analyze board %d (%s): %v", board.ID, board.Name, err)
+			a.logger.Printf("failed to analyze board %d: %v", board.ID, err)
 			continue
 		}
 		count++
@@ -465,17 +465,17 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 			continue // config unchanged
 		}
 
-		if a.skipRefresh(board.ID, board.Name, *full, newHash) {
+		if a.skipRefresh(board.ID, *full, newHash) {
 			results = append(results, RefreshResult{BoardID: board.ID, BoardName: board.Name, Skipped: true})
 			continue
 		}
 
-		a.logger.Printf("board %d (%s): config changed (hash %s -> %s)",
-			board.ID, board.Name, full.ConfigHash[:min(8, len(full.ConfigHash))], newHash[:min(8, len(newHash))])
+		a.logger.Printf("board %d: config changed (hash %s -> %s)",
+			board.ID, full.ConfigHash[:min(8, len(full.ConfigHash))], newHash[:min(8, len(newHash))])
 
 		if !autoRefresh {
-			a.logger.Printf("board %d (%s): needs re-analyze — run 'watchtower jira boards analyze' or use --auto",
-				board.ID, board.Name)
+			a.logger.Printf("board %d: needs re-analyze — run 'watchtower jira boards analyze' or use --auto",
+				board.ID)
 			results = append(results, RefreshResult{
 				BoardID:   board.ID,
 				BoardName: board.Name,
@@ -490,7 +490,7 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 		full.ConfigHash = ""
 		profile, err := a.AnalyzeBoard(ctx, *full)
 		if err != nil {
-			a.recordAndLogFailedRefresh(board.ID, board.Name, newHash, err)
+			a.recordAndLogFailedRefresh(board.ID, newHash, err)
 			results = append(results, RefreshResult{
 				BoardID:   board.ID,
 				BoardName: board.Name,
@@ -506,7 +506,7 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 			}
 		}
 
-		a.logger.Printf("board %d (%s): re-analyzed successfully", board.ID, board.Name)
+		a.logger.Printf("board %d: re-analyzed successfully", board.ID)
 		results = append(results, RefreshResult{
 			BoardID:   board.ID,
 			BoardName: board.Name,
@@ -523,12 +523,12 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 // today's failure-retry budget being spent (silent: recordAndLogFailedRefresh
 // already logged once when the budget was spent, so a skip on every later
 // same-day pass would just repeat that line for no new information).
-func (a *BoardAnalyzer) skipRefresh(boardID int, boardName string, full db.JiraBoard, newHash string) bool {
+func (a *BoardAnalyzer) skipRefresh(boardID int, full db.JiraBoard, newHash string) bool {
 	if full.ProfileGeneratedAt != "" {
 		generated, err := time.Parse(time.RFC3339, full.ProfileGeneratedAt)
 		if err == nil && time.Since(generated) < RefreshCooldown {
-			a.logger.Printf("board %d (%s): config changed but cooldown not elapsed (generated %s ago)",
-				boardID, boardName, time.Since(generated).Truncate(time.Minute))
+			a.logger.Printf("board %d: config changed but cooldown not elapsed (generated %s ago)",
+				boardID, time.Since(generated).Truncate(time.Minute))
 			return true
 		}
 	}
@@ -544,14 +544,14 @@ func (a *BoardAnalyzer) skipRefresh(boardID int, boardName string, full db.JiraB
 // attempt that spends the last of today's budget, a one-time "giving up for
 // today" line (skipRefresh's later same-day skips stay silent instead of
 // repeating it).
-func (a *BoardAnalyzer) recordAndLogFailedRefresh(boardID int, boardName, hash string, err error) {
+func (a *BoardAnalyzer) recordAndLogFailedRefresh(boardID int, hash string, err error) {
 	attempts := a.recordFailedRefresh(boardID, hash)
 	if attempts >= maxDailyBoardRefreshAttempts {
-		a.logger.Printf("board %d (%s): giving up for today after %d failed refresh attempts, will retry tomorrow: %v",
-			boardID, boardName, attempts, err)
+		a.logger.Printf("board %d: giving up for today after %d failed refresh attempts, will retry tomorrow: %v",
+			boardID, attempts, err)
 		return
 	}
-	a.logger.Printf("warning: re-analysis failed for board %d (%s): %v", boardID, boardName, err)
+	a.logger.Printf("warning: re-analysis failed for board %d: %v", boardID, err)
 }
 
 // mergeUserOverrides re-applies user override stale thresholds on top of a freshly

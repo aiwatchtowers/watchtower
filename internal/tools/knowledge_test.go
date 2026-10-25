@@ -114,3 +114,9 @@ func TestSearchKnowledge_SchemaListsEverySource(t *testing.T) {
 	}
 	assert.Contains(t, string(raw), "confluence")
 }
+
+// TestSearchKnowledgeDescription_MediaSectionsAreData pins the reader line
+// of ask #576 in the tool description every MCP client reads.
+func TestSearchKnowledgeDescription_MediaSectionsAreData(t *testing.T) {
+	assert.Contains(t, NewSearchKnowledge().Description, kb.MediaReaderLine)
+}

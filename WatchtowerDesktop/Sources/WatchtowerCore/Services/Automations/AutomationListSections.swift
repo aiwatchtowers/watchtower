@@ -3,7 +3,7 @@ import GRDB
 
 // MARK: - Draft rows
 
-/// A New automation chat with a draft on disk: listed at the top of its
+/// A New automation chat with a cached draft: listed at the top of its
 /// section until it is saved or abandoned.
 package struct AutomationDraftRow: Identifiable, Equatable, Sendable {
     package let conversationID: Int64
@@ -11,7 +11,7 @@ package struct AutomationDraftRow: Identifiable, Equatable, Sendable {
     package let contextID: String
     package let workbenchID: Int64?
     package let name: String
-    /// The cache file's modification date.
+    /// When its newest draft was cached.
     package let updatedAt: Date
     /// The drafted recipe's one-line summary (`AutomationRowSummary`); nil
     /// without a drafted recipe.
@@ -40,43 +40,47 @@ package enum AutomationDraftRows {
     package static let contextType = "automation_draft"
     package static let untitled = "New automation"
 
-    /// An `automation_draft` conversation, as `conversations` reads it.
+    /// An `automation_draft` conversation, as `conversations` reads it, with
+    /// its newest cached draft entry (nil without one) and when it was cached.
     package struct Conversation: Equatable, Sendable {
         package let id: Int64
         package let contextID: String
         package let updatedAt: Date
+        package var newestDraft: String?
+        package var draftAt: Date?
     }
 
-    /// Every `automation_draft` conversation whose cache file exists and
-    /// whose newest line decodes, newest first. A draft of a workbench not in
+    /// Every `automation_draft` conversation whose newest cached draft
+    /// decodes, newest first. A draft of a workbench not in
     /// `liveWorkbenchIDs` (deleted since) is dropped; an unreadable or
     /// undecodable cache is not a row — unless the editor holds the draft
     /// (`openDrafts`, conversation id → name, `AutomationEditorCenter.openNewDraftNames`):
     /// then it is a row named as the editor reads it, dated by its chat.
     package static func load(
-        _ db: Database, databasePath: String, liveWorkbenchIDs: Set<Int64>, openDrafts: [Int64: String] = [:]
+        _ db: Database, liveWorkbenchIDs: Set<Int64>, openDrafts: [Int64: String] = [:]
     ) throws -> [AutomationDraftRow] {
-        rows(try conversations(db), databasePath: databasePath, liveWorkbenchIDs: liveWorkbenchIDs,
-             openDrafts: openDrafts)
+        rows(try conversations(db), liveWorkbenchIDs: liveWorkbenchIDs, openDrafts: openDrafts)
     }
 
-    /// The database half of `load`: the draft conversations, no file read.
+    /// The database half of `load`: the draft conversations with their
+    /// newest cached draft.
     package static func conversations(_ db: Database) throws -> [Conversation] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, context_id, updated_at FROM chat_conversations
             WHERE context_type = ? AND context_id IS NOT NULL
             """, arguments: [contextType])
-        return rows.map { row in
-            Conversation(id: row["id"], contextID: row["context_id"],
-                         updatedAt: Date(timeIntervalSince1970: row["updated_at"] ?? 0))
+        return try rows.map { row in
+            let id: Int64 = row["id"]
+            let newest = try AutomationDraftCacheQueries.newest(db, conversationID: id)
+            return Conversation(id: id, contextID: row["context_id"],
+                                updatedAt: Date(timeIntervalSince1970: row["updated_at"] ?? 0),
+                                newestDraft: newest?.entry, draftAt: newest?.at)
         }
     }
 
-    /// The file half of `load`: reads each conversation's cache file, so it
-    /// runs outside a database read.
+    /// The pure half of `load`: the rows of the read conversations.
     package static func rows(
         _ conversations: [Conversation],
-        databasePath: String,
         liveWorkbenchIDs: Set<Int64>,
         openDrafts: [Int64: String] = [:]
     ) -> [AutomationDraftRow] {
@@ -84,15 +88,13 @@ package enum AutomationDraftRows {
         for conversation in conversations {
             let workbenchID = workbenchID(fromContextID: conversation.contextID)
             if let workbenchID, !liveWorkbenchIDs.contains(workbenchID) { continue }
-            let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: conversation.id)
             let name: String
             let updatedAt: Date
             var summary: String?
-            if let text = try? String(contentsOf: url, encoding: .utf8),
-               case let .entry(entry) = AutomationDraftEntry.newest(inCache: text),
-               let modified = try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date {
+            if let json = conversation.newestDraft, let cachedAt = conversation.draftAt,
+               case let .entry(entry) = AutomationDraftEntry.decodeNewest(json) {
                 name = entry.result?.manifest.name ?? ""
-                updatedAt = modified
+                updatedAt = cachedAt
                 summary = AutomationRowSummary.summary(recipeText: entry.recipeText)
             } else if let open = openDrafts[conversation.id] {
                 name = open
@@ -226,10 +228,11 @@ package enum AutomationListSections {
 
 /// A row's chip. "Disabled" is none: the dot and the "Off · " line say it.
 package enum AutomationRowChip: Equatable, Sendable {
-    case needsConfirmation, paused, cantRead, draft
+    case needsConfirmation, paused, cantRead, draft, blockedByPolicy
 
     package var title: String {
         switch self {
+        case .blockedByPolicy: "Blocked by your organization's policy"
         case .needsConfirmation: "Needs confirmation"
         case .paused: "Paused"
         case .cantRead: "Can't read"

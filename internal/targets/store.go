@@ -39,10 +39,10 @@ func (s *Store) CreateBatch(ctx context.Context, items []ProposedTarget, sourceT
 	defer func() { _ = tx.Rollback() }()
 
 	ids := make([]int64, 0, len(items))
-	for _, pt := range items {
+	for i, pt := range items {
 		id, err := insertTargetTx(ctx, tx, pt, sourceType, sourceRef)
 		if err != nil {
-			return nil, fmt.Errorf("inserting target %q: %w", pt.Text, err)
+			return nil, fmt.Errorf("inserting target %d of %d: %w", i+1, len(items), err)
 		}
 		ids = append(ids, id)
 

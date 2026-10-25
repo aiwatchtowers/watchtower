@@ -79,9 +79,8 @@ enum AutomationEditorChatSurface {
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
                 let recipe = currentRecipeBlock(automationID: automation.id, dbPool: dbPool)
-                let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) + "\n\n" : ""
                 let panel = panelDraftBlock(panelDraft(), conversationID: conversationID, dbPool: dbPool)
-                return compose(outcomes(input.previousOwnerMessageAt), resumed + recipe, panel, input.text)
+                return compose(outcomes(input.previousOwnerMessageAt), recipe, panel, input.text)
             },
             emptyHint: "Say what to change — the assistant drafts it and dry-runs it; you save it with the "
                 + "Save buttons in the draft column.",
@@ -115,9 +114,8 @@ enum AutomationEditorChatSurface {
             ownerInstructions: true,
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
-                let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) : ""
                 let panel = panelDraftBlock(panelDraft(), conversationID: conversationID, dbPool: dbPool)
-                return compose(outcomes(input.previousOwnerMessageAt), resumed, panel, input.text)
+                return compose(outcomes(input.previousOwnerMessageAt), panel, input.text)
             },
             emptyHint: "Describe the recurring work in your own words — when it runs, what it reads and where "
                 + "the result goes. The assistant drafts it and dry-runs it without writing anything."
@@ -242,9 +240,9 @@ enum AutomationEditorChatSurface {
     /// (they edited it, or no draft was made yet): the model drafts from it.
     static func panelDraftBlock(_ text: String?, conversationID: Int64, dbPool: DatabasePool) -> String? {
         guard let text, !text.isEmpty else { return nil }
-        let url = AutomationDraftEntry.cacheURL(databasePath: dbPool.path, conversationID: conversationID)
-        if let cache = try? String(contentsOf: url, encoding: .utf8),
-           case let .entry(entry) = AutomationDraftEntry.newest(inCache: cache), entry.recipeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let cached = try? dbPool.read({ try AutomationDraftCacheQueries.newest($0, conversationID: conversationID) }),
+           case let .entry(entry) = AutomationDraftEntry.decodeNewest(cached.entry),
+           entry.recipeText.trimmingCharacters(in: .whitespacesAndNewlines)
                == text.trimmingCharacters(in: .whitespacesAndNewlines) { return nil }
         return "=== THE DRAFT IN THE OWNER'S PANEL (they may have edited it — draft from this text) ===\n"
             + dataFence(text)
@@ -286,7 +284,7 @@ final class AutomationEditorChat {
     /// refused it: a turn is still running); nil once one is sent.
     private(set) var sendNote: String?
 
-    @ObservationIgnored private let databasePath: String
+    @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let center: EmbeddedChatCenter
     /// A `save_automation` of this chat landed: the new automation's id
     /// when the save wrote a new recipe (a new draft then leaves the list),
@@ -310,13 +308,13 @@ final class AutomationEditorChat {
         self.actionFeed = feed
         self.conversationID = conversationID
         self.toolsAvailable = toolsAvailable
-        self.databasePath = dbPool.path
+        self.dbPool = dbPool
         self.center = center
         self.onSaved = onSaved
         self.panelDraftBox = panelDraftBox
         let spec = makeSpec { [weak feed] floor in feed?.outcomesBlock(after: floor) }
         engine = center.engine(for: spec)
-        draft = AutomationDraftPanelModel.load(databasePath: dbPool.path, conversationID: conversationID)
+        draft = AutomationDraftPanelModel.load(dbPool, conversationID: conversationID)
         center.markShown(spec.key)
         engine.onTurnFinished = { [weak self] _ in self?.turnFinished() }
         feed.onDecision = { [weak self] _, row in self?.decided(row) }
@@ -334,7 +332,7 @@ final class AutomationEditorChat {
 
     /// Re-reads the newest draft (after a turn, and when the panel appears).
     func reloadDraft() {
-        draft = AutomationDraftPanelModel.load(databasePath: databasePath, conversationID: conversationID)
+        draft = AutomationDraftPanelModel.load(dbPool, conversationID: conversationID)
     }
 
     /// The panel's draft buffer, read at each turn (the view hands over the

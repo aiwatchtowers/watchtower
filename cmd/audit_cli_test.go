@@ -309,6 +309,7 @@ var cliNoContentCommands = map[string]bool{
 	"outlook logout":                   true,
 	"outlook rename":                   true,
 	"people generate":                  true,
+	"policy show":                      true, // the organization policy: settings, no company content
 	"profile":                          true,
 	"project":                          true,
 	"prompts history":                  true,

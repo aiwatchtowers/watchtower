@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/jirakey"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 )
@@ -499,7 +500,7 @@ func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, fresh
 
 	p.LastStepDurationSeconds = 0 // reset to avoid duplicate step recording on final progress
 	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for @%s across %d channels", res.stored, userName, len(allEntries)))
-	p.logger.Printf("tracks: %d tracks for @%s from %d channels", res.stored, userName, len(allEntries))
+	p.logger.Printf("tracks: %d tracks for %s from %d channels", res.stored, userID, len(allEntries))
 
 	// A window that produced nothing must not be stamped as a completed run:
 	// both tracks watermarks read pipeline_runs rows with status='done', so a
@@ -884,7 +885,7 @@ type digestEntry struct {
 // storeTrackItems validates and persists AI-extracted track items into the database.
 // Returns the number of tracks successfully stored/updated and the first
 // failed write, if any (the remaining items are still stored).
-func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelName string,
+func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID string,
 	usage *digest.Usage, promptVersion int, from, to float64) (int, error) {
 	// Divide token cost across items.
 	var inputTokens, outputTokens int
@@ -918,8 +919,8 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 
 		// Post-AI quality filter: drop low-value tracks.
 		if shouldDropTrack(ownership, priority, item.Category, item.Blocking) {
-			p.logger.Printf("tracks: #%s — dropped low-value track (ownership=%s, priority=%s, category=%s): %.80s",
-				channelName, ownership, priority, item.Category, item.Text)
+			p.logger.Printf("tracks: channel %s — dropped low-value track (ownership=%s, priority=%s, category=%s)",
+				channelID, ownership, priority, item.Category)
 			continue
 		}
 
@@ -991,9 +992,9 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			// Keep storing the other items, but report the loss: a batch
 			// with a failed write is a failed batch, so its digests stay
 			// owed (retry set) instead of being settled as processed.
-			p.logger.Printf("tracks: #%s — %v", channelName, err)
+			p.logger.Printf("tracks: channel %s — %v", channelID, err)
 			if writeErr == nil {
-				writeErr = fmt.Errorf("#%s: %w", channelName, err)
+				writeErr = fmt.Errorf("channel %s: %w", channelID, err)
 			}
 			continue
 		}
@@ -1001,7 +1002,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 	}
 
 	if stored > 0 {
-		p.logger.Printf("tracks: #%s → %d tracks", channelName, stored)
+		p.logger.Printf("tracks: channel %s → %d tracks", channelID, stored)
 	}
 	return stored, writeErr
 }
@@ -1026,7 +1027,7 @@ func (p *Pipeline) persistTrack(userID string, item aiItem, track db.Track, fp [
 		if err := p.db.FoldSourceRefsIntoTrack(custID, track.SourceRefs, track.ChannelIDs, track.RelatedDigestIDs); err != nil {
 			return fmt.Errorf("folding into custom track #%d: %w", custID, err)
 		}
-		p.logger.Printf("tracks: folded auto content into custom track #%d: %.80s", custID, item.Text)
+		p.logger.Printf("tracks: folded auto content into custom track=%d", custID)
 		return nil
 	}
 
@@ -1036,7 +1037,7 @@ func (p *Pipeline) persistTrack(userID string, item aiItem, track db.Track, fp [
 		if _, err := p.db.UpdateTrackFromExtraction(id, track); err != nil {
 			return fmt.Errorf("updating track #%d (matched via %s): %w", id, how, err)
 		}
-		p.logger.Printf("tracks: merged into existing track #%d via %s: %.80s", id, how, item.Text)
+		p.logger.Printf("tracks: merged into existing track=%d via %s", id, how)
 		return nil
 	}
 
@@ -1154,7 +1155,7 @@ func parseBatchTracksResult(raw string) ([]batchChannelResult, error) {
 
 	var results []batchChannelResult
 	if err := json.Unmarshal([]byte(cleaned), &results); err != nil {
-		return nil, fmt.Errorf("parsing batch tracks JSON: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("parsing batch tracks JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 
 	// Filter out entries with missing channel ID.
@@ -1275,8 +1276,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 			rejected++
 			continue
 		}
-		chName := p.channelName(channelID)
-		stored, err := p.storeTrackItems(cr.Items, userID, channelID, chName, usage, promptVersion, from, to)
+		stored, err := p.storeTrackItems(cr.Items, userID, channelID, usage, promptVersion, from, to)
 		totalStored += stored
 		if err != nil && writeErr == nil {
 			writeErr = err
@@ -2157,7 +2157,7 @@ func parseResult(raw string) (*aiResult, error) {
 	cleaned := cleanJSON(raw)
 	var result aiResult
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, fmt.Errorf("parsing tracks JSON: %w (raw: %.200s)", err, raw)
+		return nil, fmt.Errorf("parsing tracks JSON: %w (%s)", err, logredact.Body([]byte(raw)))
 	}
 	return &result, nil
 }

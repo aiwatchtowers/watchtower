@@ -108,9 +108,9 @@ final class MeetingChatSurfaceTests: XCTestCase {
         XCTAssertEqual(mock.toolModes, [nil])
     }
 
-    /// A resumed session drops the system prompt, so the turn carries the
-    /// meeting block itself.
-    func testResumedTurnCarriesTheMeetingContext() async throws {
+    /// A stored session id is never resumed (#604 G11): the turn sends the
+    /// system prompt, which carries the meeting block.
+    func testAStoredSessionIsNotResumedAndTheTurnCarriesTheSystemPrompt() async throws {
         let transcript = try loadTranscript()
         let conv = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
         try await dbManager.dbPool.write { db in try ChatConversationQueries.updateSessionID(db, id: conv, sessionID: "s1") }
@@ -120,9 +120,9 @@ final class MeetingChatSurfaceTests: XCTestCase {
         await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
-        let prompt = try XCTUnwrap(mock.prompts.first)
-        XCTAssertTrue(prompt.contains("=== MEETING RECORDING ==="))
-        XCTAssertTrue(prompt.hasSuffix("who owns the launch?"))
+        XCTAssertEqual(mock.prompts, ["who owns the launch?"])
+        let system = try XCTUnwrap(mock.systemPrompts.first.flatMap { $0 })
+        XCTAssertTrue(system.contains("=== MEETING RECORDING ==="))
     }
 
     /// Switching to another recording no longer cancels this one's reply:

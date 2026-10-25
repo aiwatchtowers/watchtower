@@ -2,8 +2,9 @@ import GRDB
 
 /// One owner-managed external MCP server ("Quick Connections") from the
 /// `external_connections` table (internal/db/migrations/00064_external_connections.sql).
-/// A lean subset for the list UI — `command`/`args_json`/`url` (and any secret)
-/// live only on the Go side and are never read here.
+/// A lean subset for the list UI — `args_json` (and any secret) live only on
+/// the Go side and are never read here; `url` and `command` are read only for
+/// the organization policy's check (#608, `ManagedPolicy.connectionAllowed`).
 package struct ExternalConnection: FetchableRecord, Identifiable, Equatable {
     package let id: Int
     package let name: String
@@ -11,6 +12,8 @@ package struct ExternalConnection: FetchableRecord, Identifiable, Equatable {
     package let enabled: Bool
     package let status: String
     package let error: String
+    package let url: String
+    package let command: String
 
     package init(row: Row) {
         id = row["id"]
@@ -19,6 +22,13 @@ package struct ExternalConnection: FetchableRecord, Identifiable, Equatable {
         enabled = row["enabled"] ?? false
         status = row["status"] ?? "ok"
         error = row["error"] ?? ""
+        url = row["url"] ?? ""
+        command = row["command"] ?? ""
+    }
+
+    /// Whether the organization's policy allows this connection (#608).
+    package func allowed(by policy: ManagedPolicy) -> Bool {
+        policy.connectionAllowed(kind: kind, url: url, command: command)
     }
 
     package var isOK: Bool { status == "ok" }

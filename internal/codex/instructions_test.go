@@ -176,3 +176,50 @@ func TestPromptArgs_RefusesAnUnquotablePath(t *testing.T) {
 		t.Errorf("the temp file must be removed, found %d entries", len(entries))
 	}
 }
+
+// codex refuses a pipe for model_instructions_file (it stats the file:
+// "model instructions file is empty: /dev/fd/3", codex-cli 0.145.0), so the
+// prompt is a 0600 file — gone once codex has printed its first line, while
+// the child still runs, and never left behind. The fake reads the file
+// twice (stat, then read) before any output, as codex does.
+func TestPromptFile_GoneAfterFirstOutput(t *testing.T) {
+	useRealVersionProbe(t)
+	tmp := t.TempDir()
+	const marker = "SYS-MARKER-once"
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	body := `#!/bin/sh
+[ "$1" = "--version" ] && { echo "codex-cli 0.145.0"; exit 0; }
+file=""
+for a in "$@"; do case "$a" in model_instructions_file=*) file=${a#model_instructions_file=}; file=${file#\"}; file=${file%\"} ;; esac; done
+cat > /dev/null
+first=$(cat "$file"); second=$(cat "$file")
+reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
+case "$first$second" in *` + marker + `*` + marker + `*) ;; *) reply unread ;; esac
+echo '{"type":"thread.started","thread_id":"t"}'
+sleep 0.5
+[ -e "$file" ] && reply present
+reply gone
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	for name, run := range map[string]func() (string, error){
+		"client": func() (string, error) {
+			out, _, err := NewClient("m", "", script).QuerySync(context.Background(), "sys "+marker, "hi", "")
+			return out, err
+		},
+		"generator": func() (string, error) {
+			out, _, _, err := NewCodexGenerator("m", "m", script).Generate(context.Background(), "sys "+marker, "hi", "")
+			return out, err
+		},
+	} {
+		out, err := run()
+		if err != nil || out != "gone" {
+			t.Errorf("%s: output = %q, %v; want gone", name, out, err)
+		}
+		if entries, _ := os.ReadDir(tmp); len(entries) != 0 {
+			t.Errorf("%s: %d file(s) left in the temp dir", name, len(entries))
+		}
+	}
+}

@@ -75,7 +75,7 @@ func (o *Orchestrator) fetchUserProfilesIndividually(ctx context.Context, userID
 		}
 
 		o.progress.SetUserProfiles(len(userIDs), i+1)
-		o.logger.Printf("user profiles: %d/%d @%s", i+1, len(userIDs), user.Name)
+		o.logger.Printf("user profiles: %d/%d %s", i+1, len(userIDs), userID)
 	}
 
 	return nil

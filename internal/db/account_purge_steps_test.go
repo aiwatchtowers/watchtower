@@ -224,10 +224,18 @@ func TestPurge02_ChunkedResumable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A first run stops after one chunk of the first step (messages).
-	n, err := d.RunPurgeStep(context.Background(), steps[0], 500)
-	if err != nil || n != 500 || steps[0].Table != "messages" {
-		t.Fatalf("first chunk = %d, %v (step %s)", n, err, steps[0].Table)
+	// A first run stops after one chunk of the messages step, the heaviest
+	// raw step. Only the media items step runs before it (descriptions go
+	// before their messages; there are none here).
+	if steps[0].Table != "media_items" || steps[1].Table != "messages" {
+		t.Fatalf("first steps = %s, %s; want media_items, messages", steps[0].Table, steps[1].Table)
+	}
+	if n, err := d.RunPurgeStep(context.Background(), steps[0], 500); err != nil || n != 0 {
+		t.Fatalf("media items chunk = %d, %v", n, err)
+	}
+	n, err := d.RunPurgeStep(context.Background(), steps[1], 500)
+	if err != nil || n != 500 {
+		t.Fatalf("first messages chunk = %d, %v", n, err)
 	}
 	if got := count(t, d, `SELECT COUNT(*) FROM messages WHERE channel_id = '1:C1'`); got != 700 {
 		t.Fatalf("after one chunk %d messages left, want 700", got)

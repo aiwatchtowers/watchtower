@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -196,10 +197,9 @@ final class FakeDiarizer: SpeakerDiarizing, @unchecked Sendable {
     }
 }
 
-/// Reads the files passed via --transcript-file / --segments-file /
-/// --speakers-file DURING the CLI invocation (the save service deletes them
-/// right after), capturing the exact saved text, segments JSON and speakers
-/// JSON (nil when the corresponding file was not passed).
+/// Decodes `transcript save --stdin`'s JSON object (or a `dictate clean
+/// --transcript-file -` text), capturing the exact saved text, segments JSON
+/// and speakers JSON (nil when not sent).
 /// `shouldThrow` (cleared by the test for a retry) fails the save AFTER
 /// capturing, mirroring FakeCLIRunner's failure knob.
 final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
@@ -214,24 +214,43 @@ final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     func run(args: [String]) async throws -> Data {
         invocations.append(args)
-        if let idx = args.firstIndex(of: "--transcript-file"), idx + 1 < args.count,
-           let text = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedTranscripts.append(text)
-        }
-        if let idx = args.firstIndex(of: "--segments-file"), idx + 1 < args.count,
-           let json = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedSegments.append(json)
-        } else {
-            savedSegments.append(nil)
-        }
-        if let idx = args.firstIndex(of: "--speakers-file"), idx + 1 < args.count,
-           let json = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedSpeakers.append(json)
-        } else {
-            savedSpeakers.append(nil)
+        if let shouldThrow { throw shouldThrow }
+        return stdoutData
+    }
+
+    func run(args: [String], stdin: Data) async throws -> Data {
+        invocations.append(args)
+        if !args.contains("--stdin") {
+            // `dictate clean --transcript-file -`: the raw transcript.
+            savedTranscripts.append(String(bytes: stdin, encoding: .utf8) ?? "")
+        } else if let payload = TranscriptStdinPayload.decode(stdin) {
+            savedTranscripts.append(payload.transcript)
+            savedSegments.append(payload.segments)
+            savedSpeakers.append(payload.speakers)
         }
         if let shouldThrow { throw shouldThrow }
         return stdoutData
+    }
+}
+
+/// `transcript save --stdin`'s object as the test reads it back: the
+/// segments and speakers as their JSON text (nil for null or absent).
+struct TranscriptStdinPayload {
+    let transcript: String
+    let segments: String?
+    let speakers: String?
+
+    static func decode(_ data: Data) -> Self? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let transcript = object["transcript"] as? String else { return nil }
+        func json(_ key: String) -> String? {
+            guard let value = object[key], !(value is NSNull),
+                  let bytes = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else {
+                return nil
+            }
+            return String(bytes: bytes, encoding: .utf8)
+        }
+        return Self(transcript: transcript, segments: json("segments"), speakers: json("speakers"))
     }
 }
 
@@ -265,9 +284,18 @@ class MeetingRecorderTestCase: XCTestCase {
     /// neither litter nor read the real one (a leftover recording there would
     /// surface as a recovered one and change what the assertions see).
     var recordingsDir: URL!
+    /// The recorder's pending rows (#604 S3/S4): an in-memory database shared
+    /// by every Center a test builds, so a "relaunched" Center sees the rows
+    /// the first one wrote.
+    var pendingStore: DatabasePendingTranscriptStore!
+    /// The database behind `pendingStore` (a saved transcript's row goes here).
+    var pendingDB: DatabaseQueue!
 
     override func setUp() {
         super.setUp()
+        // swiftlint:disable:next force_try
+        pendingDB = try! TestDatabase.create()
+        pendingStore = DatabasePendingTranscriptStore(writer: pendingDB)
         recordingsDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("recorder-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
@@ -306,9 +334,10 @@ class MeetingRecorderTestCase: XCTestCase {
     /// A dummy on-disk file standing in for a finished recording. Its bytes are
     /// never decoded (the Center's decode seam is stubbed); it only has to exist
     /// so "audio preserved" assertions are meaningful.
+    /// In the recordings folder, as every recording is (a pending row names
+    /// its file there); the `rec-` dash keeps it out of the `rec_*` scans.
     func makeDummyAudioFile() throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rec-\(UUID().uuidString).caf")
+        let url = recordingsDir.appendingPathComponent("rec-\(UUID().uuidString).caf")
         try Data([0x00, 0x01, 0x02]).write(to: url)
         return url
     }
@@ -318,20 +347,31 @@ class MeetingRecorderTestCase: XCTestCase {
         { _ in [Float](repeating: 0, count: sampleCount) }
     }
 
-    /// Removes the recording's sidecars: the persisted transcript
-    /// (`<basename>.txt`/`.json`), the mic-activity timeline (`.activity`) and
-    /// the crash-recovery metadata (`.meta`).
+    /// Removes what a recording leaves beside its audio — the mic-activity
+    /// timeline (`.activity`) and any legacy sidecar a test wrote — and its
+    /// pending row.
     func removeSidecars(_ audio: URL) {
         for ext in ["txt", "json", "activity", "meta"] {
             try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension(ext))
         }
+        _ = try? pendingDB.write { try PendingTranscriptQueries.remove($0, recording: audio.lastPathComponent) }
     }
 
-    /// The crash-recovery sidecar the Center writes next to a recording at start
-    /// and removes once the transcript is saved.
+    /// A legacy crash-recovery sidecar (older versions wrote it at record
+    /// start); `restorePendingOnLaunch` imports it into a row.
     func metaSidecar(_ audio: URL) -> URL {
         audio.deletingPathExtension().appendingPathExtension("meta")
     }
+
+    /// The recording's `pending_transcripts` row, nil when it has none (saved,
+    /// or never started).
+    func pendingRow(_ audio: URL) -> PendingTranscript? {
+        try? pendingStore.transcript(recording: audio.lastPathComponent)
+    }
+
+    /// Whether the recording has a pending row — the Center writes one at
+    /// record start and removes it once the transcript is saved.
+    func hasPendingRow(_ audio: URL) -> Bool { pendingRow(audio) != nil }
 
     /// The value of `flag` in one `meeting-prep transcript save` invocation, or
     /// nil when the flag was not passed at all (an ad-hoc save omits
@@ -342,13 +382,11 @@ class MeetingRecorderTestCase: XCTestCase {
     }
 
     /// The one recording the Center started this test (its `.caf` in the
-    /// injected recordings directory). The fake recorder never writes audio, so
-    /// only the `.meta` sidecar the Center itself wrote is on disk.
-    func startedRecordingMeta() throws -> URL {
-        let names = try FileManager.default.contentsOfDirectory(atPath: recordingsDir.path)
-        return recordingsDir.appendingPathComponent(
-            try XCTUnwrap(names.first { $0.hasSuffix(".meta") },
-                          "the Center must write a rec_*.meta sidecar at record start"))
+    /// injected recordings directory), read from its pending row: the fake
+    /// recorder never writes audio.
+    func startedRecording() throws -> URL {
+        let row = try XCTUnwrap(try pendingStore.pending().first, "the Center must write a pending row at record start")
+        return recordingsDir.appendingPathComponent(row.recording)
     }
 
     /// Yields the main actor until `condition` holds, polling against a

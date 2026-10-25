@@ -1,12 +1,13 @@
 import Foundation
+import GRDB
 
-/// One line of the editor's draft cache: `draft_automation` on the
+/// One entry of the editor's draft cache: `draft_automation` on the
 /// `automation_editor` surface appends `{recipe_text, result, error?, at}` to
-/// `<workspace>/automation-drafts/<conversation id>.jsonl` and keeps the last
-/// five (`internal/automations/authoring/draftcache.go`). A UI cache of the
-/// tool's own result, not a store of record. A draft whose evaluation failed
-/// is a line with `result: null` and its `error`; every other key is always
-/// written.
+/// `automation_draft_cache` and keeps the last five
+/// (`internal/automations/authoring/draftcache.go`, `AutomationDraftCacheQueries`).
+/// A UI cache of the tool's own result, not a store of record. A draft whose
+/// evaluation failed is an entry with `result: null` and its `error`; every
+/// other key is always written.
 package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
     package struct Manifest: Decodable, Equatable, Sendable {
         package var name = ""
@@ -64,31 +65,25 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
         case recipeText = "recipe_text", result, error
     }
 
-    /// The newest line of a cache file: none (no line yet), a decoded entry,
-    /// or a line that does not decode — never an older line in its place.
+    /// The newest cache entry: none (no entry yet), a decoded entry, or one
+    /// that does not decode — never an older entry in its place.
     package enum Newest: Equatable, Sendable {
         case none
         case entry(AutomationDraftEntry)
         case undecodable
     }
 
-    /// `<workspace>/automation-drafts/<conversation id>.jsonl`; the workspace
-    /// is the directory holding the database (Go `cfg.WorkspaceDir()`).
-    package static func cacheURL(databasePath: String, conversationID: Int64) -> URL {
-        URL(fileURLWithPath: databasePath).deletingLastPathComponent()
-            .appendingPathComponent("automation-drafts", isDirectory: true)
-            .appendingPathComponent("\(conversationID).jsonl")
+    /// The newest of a conversation's cache entries (oldest first), decoded.
+    /// A newest entry that does not decode is `.undecodable`, never a silent
+    /// fall-back to the one before it.
+    package static func newest(in entries: [String]) -> Newest {
+        guard let last = entries.last else { return .none }
+        return decodeNewest(last)
     }
 
-    /// The newest line of a cache file's text: its last non-blank line,
-    /// decoded. A last line that does not decode is `.undecodable`, never a
-    /// silent fall-back to the line before it.
-    package static func newest(inCache text: String) -> Newest {
-        let last = text.split(whereSeparator: \.isNewline).last {
-            !$0.trimmingCharacters(in: .whitespaces).isEmpty
-        }
-        guard let last else { return .none }
-        guard let entry = try? JSONDecoder().decode(Self.self, from: Data(last.utf8)) else { return .undecodable }
+    /// One entry's JSON as the newest: `.entry`, or `.undecodable`.
+    package static func decodeNewest(_ json: String) -> Newest {
+        guard let entry = try? JSONDecoder().decode(Self.self, from: Data(json.utf8)) else { return .undecodable }
         return .entry(entry)
     }
 }
@@ -104,8 +99,8 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     package let entry: AutomationDraftEntry?
     /// No draft yet.
     package let isEmpty: Bool
-    /// The cache file exists but could not be read, or its newest line does
-    /// not decode: the panel says so instead of showing an older draft.
+    /// The cache could not be read, or its newest entry does not decode: the
+    /// panel says so instead of showing an older draft.
     package let isUnreadable: Bool
     package let name: String
     package let recipeText: String
@@ -129,29 +124,26 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     package var shownRecipeText: String? { isEmpty || isUnreadable ? nil : recipeText }
 
     /// Reads the newest entry of the conversation's cache: empty when there
-    /// is no file (or no line yet), unreadable when the file cannot be read
-    /// or its newest line does not decode.
-    package static func load(databasePath: String, conversationID: Int64) -> Self {
-        let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: conversationID)
-        let text: String
+    /// is no entry yet, unreadable when the database cannot be read or the
+    /// newest entry does not decode.
+    package static func load(_ reader: any DatabaseReader, conversationID: Int64) -> Self {
+        let entries: [String]
         do {
-            text = try String(contentsOf: url, encoding: .utf8)
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            return .empty
+            entries = try reader.read { try AutomationDraftCacheQueries.entries($0, conversationID: conversationID) }
         } catch {
             return .unreadable
         }
-        var model = Self(newest: AutomationDraftEntry.newest(inCache: text))
-        model.dryRunSessions = dryRunSessions(inCache: text)
+        var model = Self(newest: AutomationDraftEntry.newest(in: entries))
+        model.dryRunSessions = dryRunSessions(in: entries)
         return model
     }
 
-    /// Every decodable line of the cache, oldest first, keyed by its recipe
-    /// text: the newest line of a text wins, and one without a dry run (or a
+    /// Every decodable cache entry, oldest first, keyed by its recipe text:
+    /// the newest entry of a text wins, and one without a dry run (or a
     /// refused one) drops the text — its sessions are not known.
-    package static func dryRunSessions(inCache text: String) -> [String: AutomationDryRunSessions] {
+    package static func dryRunSessions(in entries: [String]) -> [String: AutomationDryRunSessions] {
         var byText: [String: AutomationDryRunSessions] = [:]
-        for line in text.split(whereSeparator: \.isNewline) {
+        for line in entries {
             guard let entry = try? JSONDecoder().decode(AutomationDraftEntry.self, from: Data(line.utf8)) else {
                 continue
             }

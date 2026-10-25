@@ -43,7 +43,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                     try await self.run(
                         prompt: prompt,
                         systemPrompt: systemPrompt,
-                        sessionID: sessionID,
                         dbPath: dbPath,
                         model: model,
                         provider: provider,
@@ -104,7 +103,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
 
     /// Build the `watchtower ai query` argument list. Pulled out of `run()` so
     /// the CLI-flag mapping (in particular `--provider`) can be unit tested
-    /// without spawning a process.
+    /// without spawning a process. It never carries `--session-id`: no turn
+    /// resumes a stored provider session (#604 G11), so a `sessionID` handed
+    /// to `stream` is not sent.
     ///
     /// The argv carries ids and flags only: `--prompt-stdin` makes the CLI
     /// read the owner's message and the chat's system prompt from stdin
@@ -118,7 +119,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     /// the CLI refuses the pair. `ownerInstructions` adds the bare
     /// `--owner-instructions` flag (no content: the CLI reads the texts).
     package static func buildArgs(
-        sessionID: String?,
         dbPath: String?,
         model: String?,
         provider: String?,
@@ -128,9 +128,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     ) -> [String] {
         var args = ["ai", "query", "--prompt-stdin"]
 
-        if let sessionID, !sessionID.isEmpty {
-            args += ["--session-id", sessionID]
-        }
         if let dbPath, !dbPath.isEmpty {
             args += ["--db-path", dbPath]
         }
@@ -192,7 +189,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     private func run(
         prompt: String,
         systemPrompt: String?,
-        sessionID: String?,
         dbPath: String?,
         model: String?,
         provider: String?,
@@ -205,7 +201,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         let cliPath = try Self.findCLI()
 
         let args = Self.buildArgs(
-            sessionID: sessionID,
             dbPath: dbPath,
             model: model,
             provider: provider,

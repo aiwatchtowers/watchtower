@@ -120,10 +120,10 @@ final class ChatSessionPool {
     /// session id again (the write just cleared the stored ones — a late
     /// `session_ready` would put one back). A launched busy one finishes its
     /// turn first, then is replaced on the next request or policy tick;
-    /// every other one closes now — a pending one too, since its argv
-    /// already carries the old `--resume`. A turn a pending one held never
-    /// reached a provider: it is re-sent on a fresh session (no `--resume`,
-    /// replaying the history) with the new prompt — out of the project when
+    /// every other one closes now — a pending one too, since it would start
+    /// on the old prompt. A turn a pending one held never reached a provider:
+    /// it is re-sent on a fresh session (replaying the history) with the new
+    /// prompt — out of the project when
     /// it was deleted (owner decision 2026-10-01: never left "Stopped").
     ///
     /// They all leave the queue first: closing one re-runs admission, which
@@ -138,7 +138,6 @@ final class ChatSessionPool {
             close(conversationID: id)
             guard let held else { continue }
             var fresh = client.config
-            fresh.resumeSessionID = nil
             if deleted { fresh.projectID = nil }
             let command = held.command
             NSLog("ChatSessionPool: re-sending held turn %@ of conversation %lld on a fresh session (project %@)",
@@ -156,7 +155,8 @@ final class ChatSessionPool {
     /// turn starts a new process with the new switches. A pending session has
     /// not started yet and reads them when it launches. Unlike
     /// `retireSessions(projectID:deleted:)` the prompt did not change, so the
-    /// stored session id stays and the next session resumes it. Only Claude
+    /// session id is still recorded (it is never read since #604 G11: the
+    /// next session replays the history). Only Claude
     /// sessions load claude.ai tools; the others are left alone.
     func retireIdleSessions() {
         for (id, client) in clients where !client.isPending && client.config.provider == AIProvider.claude.rawValue {

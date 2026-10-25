@@ -92,8 +92,8 @@ final class WatchTrackControlsTests: XCTestCase {
         XCTAssertEqual(AutomationsCLI.args(.runSince(5, since: nil)), ["automations", "run", "5", "--json"])
         XCTAssertEqual(AutomationsCLI.args(.showWatch(5)), ["automations", "show", "5", "--json"])
         XCTAssertEqual(AutomationsCLI.args(.trackStart(7)), ["tracks", "start", "7", "--json"])
-        XCTAssertEqual(AutomationsCLI.args(.trackInstruction(7, file: "/tmp/acme.txt")),
-                       ["tracks", "instruction", "7", "--text-file", "/tmp/acme.txt"])
+        XCTAssertEqual(AutomationsCLI.args(.trackInstruction(7)),
+                       ["tracks", "instruction", "7", "--text-file", "-"])
     }
 
     func testDecodesTheWatchBlockAndAtNextSync() async throws {

@@ -12,7 +12,9 @@ struct NewSessionMenuItems: View {
     let start: (AgentKind, WorktreeChoice) -> Void
 
     var body: some View {
-        let choices = AgentChoicePresentation.newSessionAgentChoices { vm.agentAvailable($0, projectID: projectID) }
+        let choices = AgentChoicePresentation.newSessionAgentChoices(policy: vm.managedPolicy()) {
+            vm.agentAvailable($0, projectID: projectID)
+        }
         ForEach(choices) { choice in
             Button(choice.title) { start(choice.agent, .auto) }
                 .disabled(!choice.isAvailable)

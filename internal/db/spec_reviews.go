@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Spec review storage (00156): one reviewer-agent run per review ask, plus the
+// Spec review storage (00158): one reviewer-agent run per review ask, plus the
 // owner's per-item marks. See docs/superpowers/specs/2026-10-25-spec-review-design.md.
 
 // ErrSpecReviewNotFound is returned when an ask has no spec_reviews row.

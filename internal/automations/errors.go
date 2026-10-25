@@ -19,6 +19,8 @@ const (
 	// ErrNamePrimitiveFailed: a built-in primitive (brief.compose, …)
 	// failed; uncaught, it ends the run failed/backend.
 	ErrNamePrimitiveFailed = "PrimitiveFailed"
+	// ErrNamePolicy: the organization's policy (#608) forbids the call.
+	ErrNamePolicy = "PolicyError"
 )
 
 // SDKError is an error an SDK function returns to the script: it becomes a JS
@@ -32,6 +34,12 @@ func (e *SDKError) Error() string {
 		return e.Name
 	}
 	return e.Name + ": " + e.Message
+}
+
+// PolicyError is the SDK error of a call the organization's policy forbids;
+// err is the policy refusal, whose text the script sees.
+func PolicyError(err error) *SDKError {
+	return &SDKError{Name: ErrNamePolicy, Message: err.Error()}
 }
 
 // InterruptReason is why a run was stopped from outside the script.

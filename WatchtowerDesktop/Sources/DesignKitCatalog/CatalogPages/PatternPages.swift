@@ -42,6 +42,12 @@ struct SettingsPatternPage: View {
                         .fixedSize()
                     }
                 }
+                SettingsSection(title: "iPhone", footer: "A control the organization's policy decides: .managedByOrganization(locked)") {
+                    SettingRow(title: "Sync to iPhone", caption: "Boards, sessions and asks on your phone") {
+                        Toggle("Sync to iPhone", isOn: .constant(false)).labelsHidden()
+                            .managedByOrganization(true)
+                    }
+                }
                 SettingsSection(title: "Account") {
                     SettingRow(title: "Workspace", caption: "Shown in the window title") {
                         TextField("Workspace", text: $workspace).textFieldStyle(.kit).frame(width: 200)

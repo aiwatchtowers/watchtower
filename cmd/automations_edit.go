@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -100,7 +101,12 @@ func triggerLine(t automations.Trigger) string {
 // permissions add to the confirmed recipe's — every one of them for a recipe
 // validated on its own (nil confirmed); changes is the confirmed recipe's
 // field diff.
-func validateRecipe(slug string, data []byte, contentHash string, scope automations.Scope, confirmed *automations.Recipe) validateJSON {
+//
+// lookup finds a Quick Connection by name for the policy check
+// (automations.CheckManifestPolicy, #608; nil checks shell: only): a recipe
+// the organization's policy forbids is not ok.
+func validateRecipe(slug string, data []byte, contentHash string, scope automations.Scope, confirmed *automations.Recipe,
+	lookup func(string) (string, string, string, bool)) validateJSON {
 	v := validateJSON{Errors: []string{}, Slug: slug, Scope: scope.String(), ContentHash: contentHash,
 		Permissions: []string{}, Outputs: []string{}, Widening: []string{}, Changes: []automationChangeJSON{}}
 	r, err := automations.ParseRecipe(slug, data, scope)
@@ -131,6 +137,10 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 	}
 	v.Widening = automations.Covers(baseline, v.Permissions)
 	v.FeedsSourcesToLLM = m.FeedsSourcesToLLM()
+	if err := automations.CheckManifestPolicy(m, lookup); err != nil {
+		v.OK = false
+		v.Errors = append(v.Errors, err.Error())
+	}
 	return v
 }
 
@@ -144,15 +154,18 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	data, contentHash, err := automations.ReadRecipeFile(args[0])
+	data, contentHash, slug, err := readValidateInput(cmd.InOrStdin(), args[0])
 	if err != nil {
 		return err
 	}
-	slug := recipeSlugOf(args[0])
 	if scope.BuiltinID != "" {
 		slug = scope.BuiltinID // --against a built-in: its copy is <id>.md whatever the file is called
 	}
-	v := validateRecipe(slug, data, contentHash, scope, confirmed)
+	lookup, err := automations.ConnectionLookup(database)
+	if err != nil {
+		return err
+	}
+	v := validateRecipe(slug, data, contentHash, scope, confirmed, lookup)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, v) // ok:false exits 0: the Desktop decodes it
@@ -163,6 +176,21 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "%s: ok — %s (%s), approval hash %s\n", args[0], v.Name, v.Scope, v.ApprovalHash)
 	fmt.Fprintf(w, "  permissions: %v\n  outputs:     %v\n", v.Permissions, v.Outputs)
 	return nil
+}
+
+// readValidateInput reads validate's recipe: the file at path, or stdin when
+// path is "-" (the Desktop pipes the editor's text, #604 S6), whose slug
+// then comes from --slug instead of the file name.
+func readValidateInput(in io.Reader, path string) (data []byte, contentHash, slug string, err error) {
+	if path != "-" {
+		data, contentHash, err = automations.ReadRecipeFile(path)
+		return data, contentHash, recipeSlugOf(path), err
+	}
+	if autoFlags.Slug == "" {
+		return nil, "", "", errors.New(`--slug is required when the recipe is read from stdin ("-")`)
+	}
+	data, contentHash, err = automations.ReadRecipe(in)
+	return data, contentHash, autoFlags.Slug, err
 }
 
 // validateScope is the scope validate parses in and the recipe its widening
@@ -390,6 +418,9 @@ func runAutomationsConfirm(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
+	if err := refuseAutomationByPolicy(database, id); err != nil {
+		return err
+	}
 	if err := database.ConfirmAutomation(id, autoFlags.Hash, time.Now()); err != nil {
 		if errors.Is(err, db.ErrHashMismatch) {
 			return fmt.Errorf("%w — the recipe changed since you reviewed it; check it again with `watchtower automations show %d`", err, id)
@@ -397,6 +428,27 @@ func runAutomationsConfirm(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Automation #%d confirmed.\n", id)
+	return nil
+}
+
+// refuseAutomationByPolicy refuses confirming automation id while the
+// organization's policy forbids its manifest (#608).
+func refuseAutomationByPolicy(database *db.DB, id int64) error {
+	a, err := database.GetAutomation(id)
+	if err != nil {
+		return err
+	}
+	m, err := automationManifest(a)
+	if err != nil {
+		return nil //nolint:nilerr // a recipe that does not parse has no manifest to check and never runs
+	}
+	lookup, err := automations.ConnectionLookup(database)
+	if err != nil {
+		return err
+	}
+	if err := automations.CheckManifestPolicy(m, lookup); err != nil {
+		return fmt.Errorf("not confirmed: %w", err)
+	}
 	return nil
 }
 
@@ -469,12 +521,20 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 	if autoFlags.File == "" {
 		return errors.New("--file is required: the recipe text to save")
 	}
+	if autoFlags.File == "-" && autoFlags.Path == "" {
+		return errors.New(`--path is required when the recipe is read from stdin ("--file -")`)
+	}
 	cfg, database, err := openAutomationsCmd()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
-	data, _, err := automations.ReadRecipeFile(autoFlags.File)
+	var data []byte
+	if autoFlags.File == "-" {
+		data, _, err = automations.ReadRecipe(cmd.InOrStdin())
+	} else {
+		data, _, err = automations.ReadRecipeFile(autoFlags.File)
+	}
 	if err != nil {
 		return err
 	}
@@ -487,6 +547,13 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 	}
 	if err := checkConfirmHash(t, data, autoFlags.ConfirmHash); err != nil {
 		return err
+	}
+	// A recipe the organization's policy forbids is not saved (#608); one
+	// that does not parse is saved and indexed with its parse error.
+	if r, perr := automations.ParseRecipe(t.slug, data, t.scope); perr == nil {
+		if err := automations.CheckRecipePolicy(database, r); err != nil {
+			return fmt.Errorf("not saved: %w", err)
+		}
 	}
 	if cmd.Flags().Changed(expectContentHashFlag) {
 		if err := checkExpectedContentHash(t.path, autoFlags.ExpectContentHash); err != nil {
@@ -694,6 +761,13 @@ func saveBuiltinCopy(cmd *cobra.Command, cfg *config.Config, database *db.DB, id
 		dir: filepath.Dir(path), path: path, slug: e.ID}
 	if err := checkConfirmHash(t, data, autoFlags.ConfirmHash); err != nil {
 		return err
+	}
+	// A recipe the organization's policy forbids is not saved (#608); one
+	// that does not parse is saved and indexed with its parse error.
+	if r, perr := automations.ParseRecipe(t.slug, data, t.scope); perr == nil {
+		if err := automations.CheckRecipePolicy(database, r); err != nil {
+			return fmt.Errorf("not saved: %w", err)
+		}
 	}
 	if cmd.Flags().Changed(expectContentHashFlag) {
 		if err := checkBuiltinExpectedContentHash(e, path, autoFlags.ExpectContentHash); err != nil {

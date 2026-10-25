@@ -36,9 +36,12 @@ import (
 	"watchtower/internal/jira"
 	"watchtower/internal/kb"
 	"watchtower/internal/linear"
+	"watchtower/internal/media"
 	"watchtower/internal/memory"
 
+	"watchtower/internal/automations/authoring"
 	"watchtower/internal/customtracks"
+	"watchtower/internal/logredact"
 	"watchtower/internal/reactioncmd"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
@@ -157,6 +160,7 @@ type Daemon struct {
 	imapSyncers      []mailSyncer
 	jiraSyncers      []jiraAccountSyncer
 	externalSync     ExternalSyncRunner
+	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner
 	// mbMu guards what the Morning brief's gate and primitives read and write
 	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
@@ -172,6 +176,8 @@ type Daemon struct {
 	lastJira                   time.Time
 	linearSyncers              []linearAccountSyncer
 	purgeHold                  map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
+	policySkipMu               gosync.Mutex
+	policySkipping             map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
 	lastLinear                 time.Time
 	lastPeople                 time.Time // when people cards last ran (once per day)
 	lastBriefing               time.Time // when briefing last ran (once per day)
@@ -417,6 +423,18 @@ func (d *Daemon) SetExternalSync(e ExternalSyncRunner) {
 	d.externalSync = e
 }
 
+// SetMediaPipeline sets the media describe pass (images and links become
+// knowledge). nil disables the media-describe phase.
+func (d *Daemon) SetMediaPipeline(p *media.Pipeline) {
+	d.mediaPipe = p
+}
+
+// MediaPipeline returns the media describe pass (nil when unset), so a
+// source's wiring can add its openers, resolvers and hooks.
+func (d *Daemon) MediaPipeline() *media.Pipeline {
+	return d.mediaPipe
+}
+
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
 func (d *Daemon) SetPeoplePipeline(p *guide.Pipeline) {
 	d.peoplePipe = p
@@ -480,7 +498,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadRollupAttempts()
 	d.loadPeopleAttempts()
 	d.reapStalePipelineRuns()
-	d.sweepStaleSystemPrompts()
+	d.sweepStaleTemp()
+	d.importLegacyDraftCache()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -603,6 +622,8 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
 	d.phaseTranscriptAudioCleanup()
+	// Before the index, so this cycle's descriptions are searchable now.
+	d.phaseMediaDescribe(ctx)
 	d.phaseKnowledgeIndex(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
@@ -696,7 +717,7 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 	}
 	errMsg := ""
 	if stats.err != nil {
-		errMsg = stats.err.Error()
+		errMsg = logredact.Full(stats.err)
 	}
 	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
 		d.logger.Printf("pipeline_runs: %s run %d not completed: %v", name, runID, err)
@@ -745,21 +766,46 @@ const stalePipelineRunAfter = 24 * time.Hour
 // stalePipelineRunError is the error_msg a reaped run carries.
 const stalePipelineRunError = "interrupted: the process running it exited before it finished"
 
-// staleSystemPromptAge is how old a system-prompt temp file must be before
-// the startup sweep removes it: a live claude/codex call deletes its own file
-// as soon as the child exits, well within this.
-const staleSystemPromptAge = 10 * time.Minute
+// staleTempAge is how old a prompt temp file or an extract spool file must
+// be before the startup sweep removes it: a live call removes its own long
+// before (fsutil.StaleTempPatterns, extract.StaleTempAge).
+const staleTempAge = 10 * time.Minute
 
-// sweepStaleSystemPrompts removes the 0600 system-prompt files a killed
-// process left in the temp dir (they hold the owner's data). Best-effort:
-// a failure is logged and never keeps the daemon from starting.
-func (d *Daemon) sweepStaleSystemPrompts() {
-	n, err := fsutil.SweepStalePrivateTemp(fsutil.SystemPromptTempPrefix, staleSystemPromptAge, time.Now())
+// sweepStaleTemp removes what a killed process left holding the owner's
+// data: the prompt and MCP-config temp files (fsutil.SweepStaleTemp, every
+// CLI start does the same) and the <ws>/tmp/extract spool. Best-effort: a
+// failure is logged and never keeps the daemon from starting.
+func (d *Daemon) sweepStaleTemp() {
+	now := time.Now()
+	n, err := fsutil.SweepStaleTemp(staleTempAge, now)
 	if n > 0 {
-		d.logger.Printf("removed %d stale system prompt temp file(s)", n)
+		d.logger.Printf("removed %d stale prompt temp file(s)", n)
 	}
 	if err != nil {
-		d.logger.Printf("sweeping system prompt temp files: %v", err)
+		d.logger.Printf("sweeping prompt temp files: %v", err)
+	}
+	n, err = fsutil.SweepStaleDir(filepath.Join(d.config.WorkspaceDir(), "tmp", "extract"), staleTempAge, now)
+	if n > 0 {
+		d.logger.Printf("removed %d stale extract spool file(s)", n)
+	}
+	if err != nil {
+		d.logger.Printf("sweeping the extract spool: %v", err)
+	}
+}
+
+// importLegacyDraftCache moves an older version's automation editor draft
+// cache files into the database once (#604 G2). Best-effort: a failure is
+// logged and the files stay for the next start.
+func (d *Daemon) importLegacyDraftCache() {
+	if d.db == nil {
+		return
+	}
+	n, err := authoring.ImportLegacyDraftCache(d.db, d.config.WorkspaceDir())
+	if n > 0 {
+		d.logger.Printf("imported %d automation draft cache file(s) into the database", n)
+	}
+	if err != nil {
+		d.logger.Printf("importing automation draft cache files: %v", err)
 	}
 }
 
@@ -802,6 +848,9 @@ func (d *Daemon) reapStalePipelineRuns() {
 // account's watermark for good; its status row already shows it as revoked.
 func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
+		return nil, nil
+	}
+	if !d.sourceAllowed("slack") {
 		return nil, nil
 	}
 	var firstErr error
@@ -949,6 +998,9 @@ func (d *Daemon) startupCalendarSync(ctx context.Context) {
 // account — a per-account failure is logged and skipped rather than
 // aborting the rest of the accounts.
 func (d *Daemon) phaseCalendarSync(ctx context.Context) {
+	if len(d.calendarSyncers) == 0 || !d.sourceAllowed("google") {
+		return
+	}
 	for _, s := range d.calendarSyncers {
 		if d.purgeHeld("google", s.AccountID()) {
 			continue
@@ -967,6 +1019,9 @@ func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 // over one syncer per account — a per-account failure is logged and skipped
 // rather than aborting the rest of the accounts.
 func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
+	if len(d.calDAVSyncers) == 0 || !d.sourceAllowed("caldav") {
+		return
+	}
 	for _, s := range d.calDAVSyncers {
 		n, err := s.Sync(ctx)
 		if err != nil {
@@ -983,6 +1038,9 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 // account — a per-account failure is logged and skipped rather than
 // aborting the rest of the accounts.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
+	if len(d.gmailSyncers) == 0 || !d.sourceAllowed("google") {
+		return
+	}
 	for _, s := range d.gmailSyncers {
 		if d.purgeHeld("google", s.AccountID()) {
 			continue
@@ -1016,6 +1074,9 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 // this loops over one syncer per account — a per-account failure is logged
 // and skipped rather than aborting the rest of the accounts.
 func (d *Daemon) phaseImapSync(ctx context.Context) {
+	if len(d.imapSyncers) == 0 || !d.sourceAllowed("imap") {
+		return
+	}
 	for _, s := range d.imapSyncers {
 		var n int
 		var err error
@@ -1055,6 +1116,9 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 // jira-boards pipeline_runs row records.
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if len(d.jiraSyncers) == 0 {
+		return
+	}
+	if !d.sourceAllowed("jira") {
 		return
 	}
 	interval := time.Duration(d.config.Jira.SyncIntervalMins) * time.Minute
@@ -1106,7 +1170,7 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 				d.logger.Printf("jira: account %d: sync cancelled, leaving auth state untouched", s.AccountID())
 			case errors.Is(err, jira.ErrAuthRevoked):
 				if d.db != nil {
-					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", err.Error()); dbErr != nil {
+					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", logredact.Full(err)); dbErr != nil {
 						d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
 					}
 				}
@@ -1174,6 +1238,9 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 // cycle's fetches) is checked first.
 func (d *Daemon) phaseLinearSync(ctx context.Context) {
 	if len(d.linearSyncers) == 0 {
+		return
+	}
+	if !d.sourceAllowed("linear") {
 		return
 	}
 	interval := time.Duration(d.config.Linear.SyncIntervalMins) * time.Minute
@@ -1445,6 +1512,9 @@ func (d *Daemon) phaseKnowledgeIndex(ctx context.Context) {
 // every cycle.
 func (d *Daemon) phaseExternalSync(ctx context.Context) {
 	if !d.config.Knowledge.Connectors.Enabled || d.externalSync == nil || d.db == nil {
+		return
+	}
+	if !d.sourceAllowed("jira") { // Confluence comes with the jira source
 		return
 	}
 	if ctx.Err() != nil {
@@ -1912,6 +1982,14 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		// Nobody polls, so reactions placed now must not fire when the
 		// feature comes back: clear the event seed stamps (a no-op read when
 		// none is set).
+		d.resetReactionEventSeeds()
+		return
+	}
+	// A Slack source the organization's policy forbids (#608) polls
+	// nothing; like a disabled feature it clears the event seed stamps, so
+	// reactions placed while it was forbidden never fire once it is allowed
+	// again.
+	if !d.sourceAllowed("slack") {
 		d.resetReactionEventSeeds()
 		return
 	}

@@ -184,12 +184,6 @@ func (o *Orchestrator) buildChannelQueue(opts SyncOptions) ([]SyncTask, error) {
 		})
 	}
 
-	// Build channel name map for logging
-	o.channelNames = make(map[string]string, len(allChannels))
-	for _, ch := range allChannels {
-		o.channelNames[ch.ID] = ch.Name
-	}
-
 	SortTasksByPriority(tasks)
 	o.logger.Printf("channels to sync: %d (after filters)", len(tasks))
 
@@ -250,14 +244,14 @@ func (o *Orchestrator) syncChannel(ctx context.Context, channelID string, full b
 	cursor := ""
 	if !full && state != nil && state.Cursor != "" {
 		cursor = state.Cursor
-		o.logger.Printf("channel %s: resuming from cursor", o.channelName(channelID))
+		o.logger.Printf("channel %s: resuming from cursor", channelID)
 	}
 
 	isInitial := state == nil || !state.IsInitialSyncComplete || full
 	if isInitial {
-		o.logger.Printf("channel %s: initial sync (oldest=%s)", o.channelName(channelID), oldest)
+		o.logger.Printf("channel %s: initial sync (oldest=%s)", channelID, oldest)
 	} else {
-		o.logger.Printf("channel %s: incremental sync (since=%s)", o.channelName(channelID), oldest)
+		o.logger.Printf("channel %s: incremental sync (since=%s)", channelID, oldest)
 	}
 	messagesSynced := 0
 	if state != nil {
@@ -293,7 +287,7 @@ func (o *Orchestrator) syncChannel(ctx context.Context, channelID string, full b
 		}
 
 		if len(resp.Messages) == 0 {
-			o.logger.Printf("channel %s: no messages in window", o.channelName(channelID))
+			o.logger.Printf("channel %s: no messages in window", channelID)
 			break
 		}
 
@@ -303,13 +297,13 @@ func (o *Orchestrator) syncChannel(ctx context.Context, channelID string, full b
 		}
 
 		// Upsert messages in a transaction
-		count, err := o.upsertMessagePage(channelID, resp.Messages)
+		count, err := o.upsertMessagePage(ctx, channelID, resp.Messages)
 		if err != nil {
 			return fmt.Errorf("upserting messages: %w", err)
 		}
 		messagesSynced += count
 		o.progress.AddMessages(count)
-		o.logger.Printf("channel %s: fetched %d messages (total: %d)", o.channelName(channelID), count, messagesSynced)
+		o.logger.Printf("channel %s: fetched %d messages (total: %d)", channelID, count, messagesSynced)
 
 		// Inline thread sync: immediately fetch replies for any thread parents
 		// in this page so threads are available right after message sync.
@@ -327,7 +321,7 @@ func (o *Orchestrator) syncChannel(ctx context.Context, channelID string, full b
 					if replyCount > 0 {
 						messagesSynced += replyCount
 						o.progress.AddMessages(replyCount)
-						o.logger.Printf("channel %s: thread %s: %d replies", o.channelName(channelID), msg.Timestamp, replyCount)
+						o.logger.Printf("channel %s: thread %s: %d replies", channelID, msg.Timestamp, replyCount)
 					}
 				}
 			}
@@ -354,7 +348,7 @@ func (o *Orchestrator) syncChannel(ctx context.Context, channelID string, full b
 		}
 
 		if done {
-			o.logger.Printf("channel %s: done (%d messages)", o.channelName(channelID), messagesSynced)
+			o.logger.Printf("channel %s: done (%d messages)", channelID, messagesSynced)
 			break
 		}
 		cursor = resp.NextCursor
@@ -388,8 +382,11 @@ func (o *Orchestrator) computeOldest(state *db.SyncState, full bool) string {
 	return fmt.Sprintf("%d.000000", cutoff.Unix())
 }
 
-// upsertMessagePage inserts/updates a page of messages in a single transaction.
-func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Message) (int, error) {
+// upsertMessagePage inserts/updates a page of messages in a single
+// transaction, with each new message's images and links: a re-upsert (an
+// edit, a Slack tombstone) replaces both kinds.
+func (o *Orchestrator) upsertMessagePage(ctx context.Context, channelID string, messages []goslack.Message) (int, error) {
+	plan := o.mediaPlan(ctx) // read once per run, before the write transaction
 	tx, err := o.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("beginning transaction: %w", err)
@@ -437,6 +434,19 @@ func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Me
 	}
 	if err := o.db.UpsertReactionBatch(tx, reactions); err != nil {
 		return 0, fmt.Errorf("upserting reactions: %w", err)
+	}
+
+	if plan != nil {
+		for _, msg := range messages {
+			if !plan.isNew(msg.Timestamp) {
+				continue
+			}
+			o.recordSlackMedia(ctx, tx, slackMediaWrite{
+				channelID: channelID, ts: msg.Timestamp, user: watchtowerslack.Namespace(o.accountID, msg.User),
+				found:   slackMediaFound(msg.Text, msg.SubType, msg.Files, plan.refused),
+				replace: slackReplaceAll,
+			})
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -29,13 +29,11 @@ package struct MeetingTopicsExtractService {
     }
 
     package func extract(text: String, eventID: String = "") async throws -> MeetingTopicsExtractResult {
-        let data = try await CLITextFile.with(text) { path in
-            var args = ["meeting-prep", "extract-topics", "--json", "--text-file", path]
-            if !eventID.isEmpty {
-                args.append(contentsOf: ["--event-id", eventID])
-            }
-            return try await runner.run(args: args)
+        var args = ["meeting-prep", "extract-topics", "--json", "--text-file", "-"]
+        if !eventID.isEmpty {
+            args.append(contentsOf: ["--event-id", eventID])
         }
+        let data = try await runner.run(args: args, stdin: Data(text.utf8))
         let decoded = try JSONDecoder().decode(CLIExtractTopicsResponse.self, from: data)
 
         let topics = decoded.topics.map {

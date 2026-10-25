@@ -104,9 +104,8 @@ package final class EmbeddedChatEngine {
     @ObservationIgnored private let provider: String?
     @ObservationIgnored private let inactivityTimeout: TimeInterval
     @ObservationIgnored private let clock: () -> Date
-    @ObservationIgnored private var sessionID: String?
-    /// The history could not be read: sending would start a fresh provider
-    /// session over the stored one, so a send first retries the load.
+    /// The history could not be read: sending would replay a wrong one, so
+    /// a send first retries the load.
     @ObservationIgnored private var loadFailed = false
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var watchdog: Task<Void, Never>?
@@ -134,8 +133,6 @@ package final class EmbeddedChatEngine {
     /// The app is quitting: a turn that ends from here on (its end awaits
     /// the writer, board #670) starts no follow-up turn.
     @ObservationIgnored private var isQuitting = false
-    /// The session id being stored, so a repeated event stores it once.
-    @ObservationIgnored private var savingSessionID: String?
 
     private struct TurnRequest {
         let slot = UUID()
@@ -160,9 +157,6 @@ package final class EmbeddedChatEngine {
     private struct RunningTurn {
         let request: TurnRequest
         let turn: LiveTurn
-        /// The run's provider resumes sessions: only then is its session id
-        /// kept (another provider's id is not Claude's to resume).
-        let keepsSession: Bool
         var lastFlush: Date
         var lastEvent: Date
         /// The banner shown when the turn began: a completed turn clears it.
@@ -404,15 +398,8 @@ package final class EmbeddedChatEngine {
         let provider = options.provider ?? self.provider
         let ids: (ownerID: Int64?, assistantID: Int64)
         do {
-            ids = try await writes.runThrowing { [self] in
-                // A provider that cannot resume the Claude session runs turns it
-                // never sees: the session is forgotten, so the next Claude turn
-                // starts fresh and its surface replays the whole conversation.
-                if !options.resumesSession, sessionID != nil {
-                    try await store.saveSessionID(nil)
-                    sessionID = nil
-                }
-                return try await store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: provider)
+            ids = try await writes.runThrowing {
+                try await store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: provider)
             }
         } catch {
             isStarting = false
@@ -441,7 +428,7 @@ package final class EmbeddedChatEngine {
         let now = clock()
         let turn = LiveTurn(messageID: ids.assistantID, turnID: turnID, startedAt: now)
         liveTurn = turn
-        running = RunningTurn(request: request, turn: turn, keepsSession: options.resumesSession, lastFlush: now,
+        running = RunningTurn(request: request, turn: turn, lastFlush: now,
                               lastEvent: now, bannerAtBegin: bannerError)
         refreshRows()
         if stopBeforeStart {
@@ -456,14 +443,16 @@ package final class EmbeddedChatEngine {
     }
 
     private func startStream(_ request: TurnRequest, turn: LiveTurn, options: ChatRunOptions) {
-        let resumed = options.resumesSession ? sessionID : nil
-        let input = ChatTurnInput(text: request.promptText, isResumed: resumed != nil,
+        // Every turn is a fresh provider run (no session is resumed, #604
+        // G11): the system prompt goes again and the earlier turns are
+        // replayed from the stored rows, as the main chat's Go replay does.
+        let input = ChatTurnInput(text: request.promptText,
                                   previousOwnerMessageAt: request.previousOwnerMessageAt, turnID: turn.turnID,
                                   alreadyApplied: request.alreadyApplied)
         let stream = aiService.stream(
-            prompt: spec.turnPrompt(input),
-            systemPrompt: resumed == nil ? spec.systemPrompt() : nil,
-            sessionID: resumed,
+            prompt: (replayBlock(before: turn.turnID, prompt: request.promptText) ?? "") + spec.turnPrompt(input),
+            systemPrompt: spec.systemPrompt(),
+            sessionID: nil,
             dbPath: store.dbPath,
             model: options.model,  // nil = the provider's resolved strong-tier model
             provider: options.provider,
@@ -487,8 +476,8 @@ package final class EmbeddedChatEngine {
                 case .text(let text):
                     turn.replaceText(text, now: clock())
                     flushIfDue(turn)
-                case .sessionID(let sid):
-                    if running?.keepsSession == true { recordSession(sid) }
+                case .sessionID:
+                    break  // never resumed, so never kept
                 case .failed(let message):
                     fail(EmbeddedChatErrorClassifier.classify(message: message))
                 case .none:
@@ -553,18 +542,14 @@ package final class EmbeddedChatEngine {
         }
     }
 
-    private func recordSession(_ sid: String) {
-        guard !sid.isEmpty, sid != sessionID, sid != savingSessionID, let turn = running?.turn else { return }
-        savingSessionID = sid
-        let store = store
-        writes.start { [self] in
-            do {
-                try await store.saveSessionID(sid)
-                sessionID = sid  // only once stored
-            } catch {
-                if isCurrent(turn) { failForStore(error, prefix: "Couldn't save the session") }
-            }
-            if savingSessionID == sid { savingSessionID = nil }
+    /// The earlier turns of this chat as a replay block; nil on the first
+    /// turn. A failed read sends the turn without them, logged.
+    private func replayBlock(before turnID: String, prompt: String) -> String? {
+        do {
+            return EmbeddedChatReplay.block(messages: try store.loadMessages(), before: turnID, prompt: prompt)
+        } catch {
+            log("reading the history to replay: \(error)")
+            return nil
         }
     }
 
@@ -777,7 +762,6 @@ package final class EmbeddedChatEngine {
 
     private func loadHistory() {
         do {
-            sessionID = try store.loadSessionID()
             try reload()
             loadFailed = false
         } catch {
@@ -786,7 +770,7 @@ package final class EmbeddedChatEngine {
         }
     }
 
-    /// True when the history (and its provider session) is known; retries a
+    /// True when the history is known; retries a
     /// failed load first.
     private func historyLoaded() -> Bool {
         if loadFailed { loadHistory() }

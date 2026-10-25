@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/fsutil"
 )
 
@@ -35,11 +36,20 @@ type rotatingFile struct {
 	maxSize int64
 	f       *os.File
 	n       int64 // bytes in the current generation, including what was there at open
+	// onOpen, when set, is called with the live file after the first open
+	// and after each rotation (the detached daemon points its stderr at it).
+	onOpen func(*os.File)
 }
 
 // newRotatingFile opens path for appending and returns a writer that keeps it
 // under maxSize. The caller owns the returned writer and must Close it.
 func newRotatingFile(path string, maxSize int64) (*rotatingFile, error) {
+	return newRotatingFileWithHook(path, maxSize, nil)
+}
+
+// newRotatingFileWithHook is newRotatingFile with an onOpen hook, called with
+// the live file right away and again after every rotation.
+func newRotatingFileWithHook(path string, maxSize int64, onOpen func(*os.File)) (*rotatingFile, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening log file: %w", err)
@@ -55,18 +65,40 @@ func newRotatingFile(path string, maxSize int64) (*rotatingFile, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("sizing log file %s: %w", path, err)
 	}
-	return &rotatingFile{path: path, maxSize: maxSize, f: f, n: info.Size()}, nil
+	r := &rotatingFile{path: path, maxSize: maxSize, f: f, n: info.Size(), onOpen: onOpen}
+	if onOpen != nil {
+		onOpen(f)
+	}
+	return r, nil
 }
 
 // newSyncLogWriter opens the daemon's own log stream, watchtower.log, behind
 // a rotatingFile. This is the only construction site outside tests, so the
 // file it names is the one that gets bounded.
+//
+// In a detached child it also points the process's stderr at that file and
+// keeps it there across rotations (followStderr), so runtime panics and
+// stray stderr writes land in the rotated watchtower.log and daemon.log only
+// keeps what was written before the logger started.
 func newSyncLogWriter(cfg *config.Config) (*rotatingFile, error) {
 	syncLog := syncLogFilePath(cfg)
 	if err := fsutil.MakePrivateDir(filepath.Dir(syncLog)); err != nil {
 		return nil, fmt.Errorf("creating log directory: %w", err)
 	}
-	return newRotatingFile(syncLog, maxLogSize)
+	var hook func(*os.File)
+	if os.Getenv(daemon.DetachEnvKey) == "1" {
+		hook = followStderr
+	}
+	return newRotatingFileWithHook(syncLog, maxLogSize, hook)
+}
+
+// followStderr is the detached child's onOpen hook. A failed redirect is
+// noted in the log file; stderr then stays on daemon.log.
+func followStderr(f *os.File) {
+	if err := redirectStderr(f); err != nil {
+		fmt.Fprintf(f, "%s stderr redirect: %v (stderr stays on daemon.log)\n",
+			time.Now().Format("2006/01/02 15:04:05"), err)
+	}
 }
 
 func (r *rotatingFile) Write(p []byte) (int, error) {
@@ -108,6 +140,11 @@ func (r *rotatingFile) rotate() error {
 	if err != nil {
 		return fmt.Errorf("reopening %s: %w", r.path, err)
 	}
+	// Point the hook at the new file before closing the old one, so stderr
+	// never refers to a closed descriptor's file.
+	if r.onOpen != nil {
+		r.onOpen(f)
+	}
 	_ = r.f.Close()
 	r.f = f
 	r.n = 0
@@ -124,16 +161,16 @@ func (r *rotatingFile) Close() error {
 // gets every line; os.Stderr is added only under --verbose.
 //
 // The detached flag is accepted and deliberately ignored: it used to add
-// stderr too, but a detached child's stdout and stderr ARE daemon.log
-// (runSyncDetach hands the child that file), so every line landed in both
-// files byte for byte. watchtower.log is now the one log stream and daemon.log
-// keeps its distinct role as the stderr channel — Go runtime panics, the
-// parent's rotation note, and whatever still logs to stderr instead of through
-// this logger. The stdlib default logger is pointed at this stream for the
-// daemon's lifetime (routeStdLog) and the Jira sub-components get sub-loggers
-// on it (wireJiraSyncers), so what remains on stderr is only code that writes
-// to os.Stderr directly. Passing the flag keeps that decision visible at the
-// call site and gives the guard test the case to pin.
+// stderr too, but a detached child's stderr is a log file itself — daemon.log
+// as runSyncDetach hands it over, then watchtower.log once newSyncLogWriter
+// redirects it (followStderr) — so every line would land twice. watchtower.log
+// is the one log stream; daemon.log keeps only what came before the logger:
+// the parent's rotation note and the child's earliest stderr. The stdlib
+// default logger is pointed at this stream for the daemon's lifetime
+// (routeStdLog) and the Jira sub-components get sub-loggers on it
+// (wireJiraSyncers), so what reaches stderr is only code that writes to
+// os.Stderr directly, and the runtime's panics. Passing the flag keeps that
+// decision visible at the call site and gives the guard test the case to pin.
 //
 // `--verbose --detach` still duplicates: that is the operator asking for it.
 func logWriterFor(logFile io.Writer, verbose, detached bool) io.Writer {

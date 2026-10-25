@@ -1,6 +1,7 @@
 package gmail
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -241,13 +242,17 @@ type apiHeader struct {
 	Value string `json:"value"`
 }
 
-// apiPart is a node in the Gmail MIME tree. Headers only appear on the top-level
-// payload, but the type is reused recursively for nested parts.
+// apiPart is a node in the Gmail MIME tree; the type is reused recursively
+// for nested parts, each with its own headers (Content-ID and the like).
 type apiPart struct {
+	PartID   string      `json:"partId"`
 	MimeType string      `json:"mimeType"`
+	Filename string      `json:"filename"`
 	Headers  []apiHeader `json:"headers"`
 	Body     struct {
-		Data string `json:"data"`
+		AttachmentID string `json:"attachmentId"`
+		Size         int64  `json:"size"`
+		Data         string `json:"data"`
 	} `json:"body"`
 	Parts []apiPart `json:"parts"`
 }
@@ -321,17 +326,23 @@ func (c *Client) GetMessage(ctx context.Context, id string) (*Message, error) {
 		m.InternalDate = time.UnixMilli(ms).UTC().Format(time.RFC3339)
 	}
 	m.BodyText = extractPlainText(raw.Payload)
+	m.Images = imageParts(raw.Payload, nil)
 	return m, nil
+}
+
+// decodeBody decodes a part's base64url data; Gmail sometimes omits the
+// padding.
+func decodeBody(data string) ([]byte, error) {
+	if dec, err := base64.URLEncoding.DecodeString(data); err == nil {
+		return dec, nil
+	}
+	return base64.RawURLEncoding.DecodeString(data)
 }
 
 // extractPlainText walks the MIME tree for the first text/plain body (base64url).
 func extractPlainText(p apiPart) string {
 	if p.MimeType == "text/plain" && p.Body.Data != "" {
-		if dec, err := base64.URLEncoding.DecodeString(p.Body.Data); err == nil {
-			return string(dec)
-		}
-		// Gmail sometimes omits padding; retry with RawURLEncoding.
-		if dec, err := base64.RawURLEncoding.DecodeString(p.Body.Data); err == nil {
+		if dec, err := decodeBody(p.Body.Data); err == nil {
 			return string(dec)
 		}
 	}
@@ -363,4 +374,104 @@ func parseAddressList(v string) []string {
 		}
 	}
 	return out
+}
+
+// ErrImagePartGone: the message or its image part no longer exists.
+// ErrImagePartTooLarge: the part is over the caller's limit.
+var (
+	ErrImagePartGone     = errors.New("gmail: image part is gone")
+	ErrImagePartTooLarge = errors.New("gmail: image part is too large")
+)
+
+func isImageLeaf(p apiPart) bool {
+	return len(p.Parts) == 0 && strings.HasPrefix(strings.ToLower(p.MimeType), "image/")
+}
+
+// imageParts appends every leaf image/* part of the tree under p, in walk
+// order.
+func imageParts(p apiPart, out []ImagePart) []ImagePart {
+	if isImageLeaf(p) {
+		ip := ImagePart{PartID: p.PartID, Filename: p.Filename, MediaType: strings.ToLower(p.MimeType), Size: p.Body.Size}
+		for _, h := range p.Headers {
+			if strings.EqualFold(h.Name, "Content-ID") {
+				ip.ContentID = strings.Trim(strings.TrimSpace(h.Value), "<>")
+			}
+		}
+		return append(out, ip)
+	}
+	for _, sub := range p.Parts {
+		out = imageParts(sub, out)
+	}
+	return out
+}
+
+func findPart(p *apiPart, partID string) *apiPart {
+	if p.PartID == partID {
+		return p
+	}
+	for i := range p.Parts {
+		if f := findPart(&p.Parts[i], partID); f != nil {
+			return f
+		}
+	}
+	return nil
+}
+
+// goneOn404 maps a 404 reply to ErrImagePartGone.
+func goneOn404(err error) error {
+	var se *StatusError
+	if errors.As(err, &se) && se.Code == http.StatusNotFound {
+		return fmt.Errorf("%w: %v", ErrImagePartGone, err)
+	}
+	return err
+}
+
+// GetImagePart reads the bytes of image part partID of message messageID
+// (at most limit, else ErrImagePartTooLarge). The message is fetched
+// afresh (format=full) to find the part: its inline body.data, or
+// attachments.get with the attachment id of that same response — Gmail's
+// attachment ids are not stable across calls, so none is ever stored. The
+// bytes stay in memory.
+func (c *Client) GetImagePart(ctx context.Context, messageID, partID string, limit int64) (io.ReadCloser, error) {
+	msgPath := "/users/me/messages/" + url.PathEscape(messageID)
+	body, err := c.doGet(ctx, msgPath, url.Values{"format": {"full"}})
+	if err != nil {
+		return nil, goneOn404(err)
+	}
+	var raw apiMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decoding message: %w", err)
+	}
+	p := findPart(&raw.Payload, partID)
+	if p == nil || !isImageLeaf(*p) {
+		return nil, ErrImagePartGone
+	}
+	if p.Body.Size > limit {
+		return nil, ErrImagePartTooLarge
+	}
+	data := p.Body.Data
+	if data == "" {
+		if p.Body.AttachmentID == "" {
+			return nil, ErrImagePartGone
+		}
+		attBody, err := c.doGet(ctx, msgPath+"/attachments/"+url.PathEscape(p.Body.AttachmentID), nil)
+		if err != nil {
+			return nil, goneOn404(err)
+		}
+		var att struct {
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(attBody, &att); err != nil {
+			return nil, fmt.Errorf("decoding attachment: %w", err)
+		}
+		data = att.Data
+	}
+	dec, err := decodeBody(data)
+	if err != nil {
+		return nil, fmt.Errorf("decoding image part: %w", err)
+	}
+	if int64(len(dec)) > limit {
+		return nil, ErrImagePartTooLarge
+	}
+	return io.NopCloser(bytes.NewReader(dec)), nil
 }

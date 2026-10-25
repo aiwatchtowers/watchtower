@@ -25,11 +25,10 @@ import (
 
 // ClaudeOptions configures the warm Claude backend.
 type ClaudeOptions struct {
-	Binary          string // claude executable; "" = claude.FindBinary("")
-	Model           string // --model; "" = the CLI default
-	ResumeSessionID string // --resume on the first spawn; "" = fresh session
-	SystemPrompt    string // written to a 0600 file, passed as --system-prompt-file
-	MCPConfig       string // mcp-config JSON, written to a 0600 file; "" = none
+	Binary       string // claude executable; "" = claude.FindBinary("")
+	Model        string // --model; "" = the CLI default
+	SystemPrompt string // --system-prompt-file, over an inherited pipe
+	MCPConfig    string // mcp-config JSON for --mcp-config, over an inherited pipe; "" = none
 	// Tools is the --tools allowlist over Claude Code's built-in tools; it is
 	// always passed, so "" hides every built-in (MCP tools are unaffected) —
 	// a built-in a later CLI release adds is never visible by default.
@@ -51,18 +50,18 @@ type ClaudeOptions struct {
 	ConnectorsFile string
 	// WorkDir is the child's working directory; "" = NeutralWorkDir(). It
 	// must hold no CLAUDE.md: claude loads project instructions from its cwd
-	// (and its parents) into the session. It must also be stable across
-	// spawns — claude files sessions per cwd, so --resume only finds a
-	// session started from the same directory.
+	// (and its parents) into the session.
 	WorkDir string
 	Env     []string // extra environment (tests)
-	// Replay renders the history before turnID (BuildReplaySteps output) for a
-	// fresh provider session that is not continuous with the branch.
+	// Replay renders the history before turnID (BuildReplaySteps output; ""
+	// when there is none). The first turn of every child is prefixed with it:
+	// no Claude session is stored (--no-session-persistence, #604 G11), so a
+	// new child knows the conversation only from Watchtower's own history.
+	// nil = no history to replay.
 	Replay func(turnID string) (string, error)
 	// ProjectAttachments are the project's binary files. They are sent ahead
-	// of the owner's own attachments on the first turn of every fresh
-	// provider session — never on a --resume, whose history already holds
-	// them (spec §6.1).
+	// of the owner's own attachments on the first turn of every child
+	// (spec §6.1).
 	ProjectAttachments []Attachment
 	// Warn receives the name of a project file skipped at turn time and
 	// the note that a group-writable work dir was narrowed to 0700
@@ -85,9 +84,7 @@ type claudeProc struct {
 	stop      chan struct{} // closed to release a reader blocked on events
 	stopOnce  sync.Once
 	stderr    *boundedBuffer
-	resumed   bool
-	gotResult atomic.Bool
-	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
+	served    bool         // a turn's message was sent to this child (under b.mu)
 	sessionID atomic.Value // string: the latest session id the child reported (see noteSessionID)
 	// unreadable is set once a JSON line the translator could not read was
 	// reported, so a protocol change is noted once per child, not per line.
@@ -95,50 +92,11 @@ type claudeProc struct {
 }
 
 // exitedOutputWait bounds how long an exited child's stdout may take to be
-// fully read before the exit is judged (rejectedResume, exitOutcome). Both
-// wait after a sweep, so no grandchild still holds the pipe: the wait ends at
-// EOF, normally at once — the bound is only a backstop. It must be generous:
-// under load the reader can lag the exit by far more than half a second, and
-// judging the exit before the reader saw a --resume rejection turns the
-// fresh retry into a respawn of the same doomed --resume, or an error.
+// fully read before the exit is judged (exitOutcome). It waits after a
+// sweep, so no grandchild still holds the pipe: the wait ends at EOF,
+// normally at once — the bound is only a backstop, generous because under
+// load the reader can lag the exit.
 const exitedOutputWait = 5 * time.Second
-
-// rejectedResume returns the --resume rejection an exited child died of
-// before any turn result, or "" when it died of anything else. Only called
-// once the child has exited and its group was swept.
-func (p *claudeProc) rejectedResume() string {
-	if !p.resumed {
-		return ""
-	}
-	// The reader records a rejection before the result that carries it, so
-	// a result already seen settles the answer without waiting (this runs
-	// under b.mu).
-	for waited := false; ; waited = true {
-		if m, _ := p.lostMsg.Load().(string); m != "" {
-			return m
-		}
-		if p.gotResult.Load() {
-			return ""
-		}
-		if waited {
-			break
-		}
-		waitClosed(p.outDone, exitedOutputWait)
-	}
-	waitClosed(p.errDone, 500*time.Millisecond)
-	msg := strings.TrimSpace(p.stderr.String())
-	if code, _ := ClassifyClaudeError(msg); code == CodeSessionLost {
-		return msg
-	}
-	return ""
-}
-
-// resumeRejectedError is ensureProcLocked's refusal to respawn a --resume the
-// CLI already rejected: Turn treats it as outcomeLost and retries fresh, with
-// the replayed history and the project files.
-type resumeRejectedError struct{ msg string }
-
-func (e *resumeRejectedError) Error() string { return e.msg }
 
 func (p *claudeProc) write(b []byte) error {
 	p.writeMu.Lock()
@@ -155,15 +113,13 @@ func (p *claudeProc) closeStdin() {
 }
 
 type claudeBackend struct {
-	opts       ClaudeOptions
-	tr         *ClaudeTranslator
-	gate       *gate // nil without ClaudeOptions.Gate
-	gateErr    error // invalid ClaudeOptions.Gate: Start refuses
-	promptFile string
-	mcpFile    string
-	curTurn    atomic.Value // string: the running turn id (read by the translator)
-	active     atomic.Bool  // a Turn is in flight
-	closeOnce  sync.Once
+	opts      ClaudeOptions
+	tr        *ClaudeTranslator
+	gate      *gate        // nil without ClaudeOptions.Gate
+	gateErr   error        // invalid ClaudeOptions.Gate: Start refuses
+	curTurn   atomic.Value // string: the running turn id (read by the translator)
+	active    atomic.Bool  // a Turn is in flight
+	closeOnce sync.Once
 
 	// catalog is the claude.ai-mode connector catalog (the gate's own when
 	// there is a gate); nil when the mode is off.
@@ -183,10 +139,9 @@ type claudeBackend struct {
 
 	mu        sync.Mutex
 	proc      *claudeProc
-	resume    string // session id the next spawn resumes ("" = fresh)
-	cancelled bool   // Cancel arrived for the turn in flight (reset when Turn returns)
-	closed    bool   // Close ran: nothing may spawn again
-	inFlight  bool   // this turn's message reached the child (reset when Turn returns)
+	cancelled bool // Cancel arrived for the turn in flight (reset when Turn returns)
+	closed    bool // Close ran: nothing may spawn again
+	inFlight  bool // this turn's message reached the child (reset when Turn returns)
 
 	// projectPending is true until a turn of the current fresh provider
 	// session carrying the project files ends with turn_done. Touched only
@@ -228,7 +183,7 @@ func NewClaudeBackend(opts ClaudeOptions) Backend {
 	if opts.WorkDir == "" {
 		opts.WorkDir = NeutralWorkDir()
 	}
-	b := &claudeBackend{opts: opts, resume: opts.ResumeSessionID}
+	b := &claudeBackend{opts: opts}
 	b.curTurn.Store("")
 	turnID := func() string { s, _ := b.curTurn.Load().(string); return s }
 	b.tr = NewClaudeTranslator(turnID)
@@ -253,10 +208,14 @@ func NewClaudeBackend(opts ClaudeOptions) Backend {
 }
 
 // claudeArgs builds the child's argv. It never carries content (CHAT-04): the
-// system prompt and MCP config are file paths, the owner's text goes to stdin.
-func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
+// system prompt and MCP config are /dev/fd paths of inherited pipes, the
+// owner's text goes to stdin.
+func claudeArgs(o ClaudeOptions, promptFile, mcpFile string) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
 		"--include-partial-messages", "--verbose",
+		// No session store on disk (#604 G11): a new child replays the
+		// history from the database instead of resuming.
+		"--no-session-persistence",
 		// Skip user-level settings: their plugins/hooks probe ~/Desktop and
 		// ~/Documents at startup and trigger TCC prompts (see internal/ai).
 		// claude.ai mode keeps this: the connectors come from the account,
@@ -293,13 +252,7 @@ func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 	if o.DisallowedTools != "" {
 		args = append(args, "--disallowedTools", o.DisallowedTools)
 	}
-	if resume != "" {
-		// A resumed session reuses the prompt recorded with it (spec §1.3).
-		args = append(args, "--resume", resume)
-	} else {
-		args = append(args, "--system-prompt-file", promptFile)
-	}
-	return args
+	return append(args, "--system-prompt-file", promptFile)
 }
 
 // claudeEnv is the child's environment: this process's, a PATH that finds
@@ -311,7 +264,7 @@ func claudeEnv(o ClaudeOptions) []string {
 	return append(env, o.Env...)
 }
 
-// Start writes the prompt/MCP files and spawns the warm process.
+// Start spawns the warm process.
 func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -324,33 +277,18 @@ func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	if err := b.gate.expireOrphans(ctx); err != nil {
 		return "", fmt.Errorf("closing the connector calls a previous session left open: %w", err)
 	}
-	var err error
-	if b.promptFile, err = fsutil.WritePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
-		return "", fmt.Errorf("writing system prompt file: %w", err)
-	}
-	if b.opts.MCPConfig != "" {
-		if b.mcpFile, err = fsutil.WritePrivateTemp("wt-chat-mcp-*.json", b.opts.MCPConfig); err != nil {
-			return "", fmt.Errorf("writing mcp config file: %w", err)
-		}
-	}
-	b.projectPending = initialProjectPending(b.opts)
+	b.markFreshSession()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, err := b.spawnLocked(); err != nil {
 		return "", err
 	}
-	return b.resumeLocked(), nil
+	return b.currentSessionLocked(), nil
 }
 
-// initialProjectPending reports whether the first turn of a newly started
-// child must carry the project files.
-func initialProjectPending(opts ClaudeOptions) bool {
-	return opts.ResumeSessionID == "" && len(opts.ProjectAttachments) > 0
-}
-
-// markFreshSession is called wherever the backend starts a child WITHOUT
-// --resume after Start (the replay restart, the session_lost retry, a respawn
-// of a child that died before reporting a session id).
+// markFreshSession is called wherever the backend starts a child: every
+// child is a fresh provider session, so its first turn carries the project
+// files.
 func (b *claudeBackend) markFreshSession() {
 	b.projectPending = len(b.opts.ProjectAttachments) > 0
 }
@@ -365,8 +303,8 @@ func (b *claudeBackend) projectSent() {
 
 // settleProject decides, after a turn that carried the project files,
 // whether the session now holds them: a completed turn, or one killed after
-// the owner's cancel (it was streaming, so its message is in the session the
-// respawn resumes). A turn that failed in a way the files may have caused
+// the owner's cancel (the next child is a fresh session and gets them again
+// — attemptTurn marks it). A turn that failed in a way the files may have caused
 // (projectFileFailure) — an error result, or the CLI crashing on the turn
 // (owner decision 2026-10-01: a crash counts too) — keeps them pending once
 // more, and the second such failure gives them up. Any other failure (rate
@@ -537,12 +475,24 @@ func (b *claudeBackend) warn() io.Writer {
 }
 
 func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
-	resume := b.resumeLocked() // before b.proc is replaced: the dead child's id counts
 	dir, err := b.workDir()
 	if err != nil {
 		return nil, err
 	}
-	name, args := b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)
+	// The MCP config (it can hold connection secrets) and the system prompt
+	// reach the child over inherited pipes, fresh for every spawn (#604
+	// G7/G8): never argv (CHAT-04), never a temp file.
+	var payloads []string
+	viaFD := func(content string) string {
+		payloads = append(payloads, content)
+		return fsutil.PayloadPath(len(payloads) - 1)
+	}
+	var mcpPath, promptPath string
+	if b.opts.MCPConfig != "" {
+		mcpPath = viaFD(b.opts.MCPConfig)
+	}
+	promptPath = viaFD(b.opts.SystemPrompt)
+	name, args := b.opts.Binary, claudeArgs(b.opts, promptPath, mcpPath)
 	if b.opts.ClaudeAI.On {
 		// claude.ai mode exposes Write and Artifact, whose paths the CLI
 		// touches before the gate decides: never without the sandbox.
@@ -558,6 +508,12 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 		name, args = b.opts.ClaudeAI.Sandbox.command(bin, args)
 	}
 	cmd := exec.Command(name, args...)
+	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
+	if err != nil {
+		return nil, fmt.Errorf("claude prompt pipes: %w", err)
+	}
+	// After Start below (or a failed one) the child holds its own ends.
+	defer closePayloads()
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
 	cmd.Dir = dir
@@ -595,7 +551,7 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 		cmd: cmd, pgid: cmd.Process.Pid, stdin: stdin,
 		events: make(chan Event, 256), exited: make(chan struct{}), outDone: make(chan struct{}),
 		errDone: make(chan struct{}), stop: make(chan struct{}),
-		stderr: &boundedBuffer{limit: 64 << 10}, resumed: resume != "",
+		stderr: &boundedBuffer{limit: 64 << 10},
 	}
 	go func() {
 		_ = cmd.Wait()
@@ -648,14 +604,6 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			b.gate.onResult(r)
 		}
 		for _, e := range f.events {
-			// lostMsg before gotResult: a reader seen half-way must never
-			// show a result without the rejection it carried.
-			if e.Type == EventError && e.Code == CodeSessionLost {
-				p.lostMsg.Store(e.Message)
-			}
-			if isTerminal(e) {
-				p.gotResult.Store(true)
-			}
 			select {
 			case p.events <- e:
 			case <-p.stop:
@@ -701,31 +649,21 @@ func (b *claudeBackend) routeControl(p *claudeProc, line []byte) bool {
 	return false
 }
 
-// noteSessionID makes the session id the live child reports (its init line
-// already carries it) the one the next spawn resumes. Without it a fresh
-// child killed mid-turn (a cancel past InterruptGrace) left resume empty, and
-// the next turn — sent without replay, as the app counts the stopped turn as
-// seen — opened a blank session with no history.
-//
-// It records the id on the child only and never takes b.mu: rejectedResume
-// waits for this reader to reach EOF while holding b.mu, so a reader blocked
-// on b.mu would stall that wait to its bound and hide the rejection — the
-// dead --resume was then respawned (a flaky third spawn under load).
-// resumeLocked promotes the id; a replaced child's late lines are ignored, as
-// restartFresh has already detached it.
+// noteSessionID records the session id the live child reports (its init
+// line carries it), which turn events report to the app. It never takes
+// b.mu: the reader must not block on the turn that waits for it.
 func (b *claudeBackend) noteSessionID(p *claudeProc, sid string) {
 	p.sessionID.Store(sid)
 }
 
-// resumeLocked returns the session id the next spawn resumes: the latest one
-// the current child reported, else the stored one. Called under b.mu.
-func (b *claudeBackend) resumeLocked() string {
-	if b.proc != nil {
-		if sid, _ := b.proc.sessionID.Load().(string); sid != "" {
-			b.resume = sid
-		}
+// currentSessionLocked is the session id the current child reported ("" for
+// none yet). Called under b.mu.
+func (b *claudeBackend) currentSessionLocked() string {
+	if b.proc == nil {
+		return ""
 	}
-	return b.resume
+	sid, _ := b.proc.sessionID.Load().(string)
+	return sid
 }
 
 type outcomeKind int
@@ -733,7 +671,6 @@ type outcomeKind int
 const (
 	outcomeDone outcomeKind = iota
 	outcomeExited
-	outcomeLost
 	outcomeContext
 )
 
@@ -759,41 +696,33 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 	b.active.Store(true)
 	defer b.active.Store(false)
 
-	fresh := c.Replay
-	if fresh {
+	if c.Replay {
+		// The app says the current child is not continuous with the branch
+		// (an edit, a regenerate): the turn goes to a new child.
 		b.restartFresh()
 	}
-	for attempt := 0; ; attempt++ {
-		out, err := b.attemptTurn(ctx, c, fresh, emit)
-		if err != nil {
-			return err
-		}
-		switch out.kind {
-		case outcomeDone:
-			return nil
-		case outcomeContext:
-			return ctx.Err()
-		case outcomeLost:
-			if attempt == 0 {
-				fresh = true
-				b.restartFresh()
-				continue
-			}
-			emit(errorEvent(c.TurnID, CodeSessionLost, out.msg, false))
-			return nil
-		default:
-			emit(b.exitedTerminal(c.TurnID, out.msg))
-			return nil
-		}
+	out, err := b.attemptTurn(ctx, c, emit)
+	if err != nil {
+		return err
+	}
+	switch out.kind {
+	case outcomeDone:
+		return nil
+	case outcomeContext:
+		return ctx.Err()
+	default:
+		emit(b.exitedTerminal(c.TurnID, out.msg))
+		return nil
 	}
 }
 
-// attemptTurn sends one try of the turn (fresh = prefixed with the replayed
-// history) and relays its events until an outcome. A child whose --resume was
-// already rejected before this turn is outcomeLost without a respawn.
-func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, emit func(Event)) (outcome, error) {
+// attemptTurn sends the turn and relays its events until an outcome. The
+// first turn a child gets is prefixed with the replayed history: no Claude
+// session is stored, so the child knows nothing of the conversation yet.
+func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, emit func(Event)) (outcome, error) {
 	text := c.Text
-	if fresh {
+	if b.nextChildIsNew() {
+		b.markFreshSession() // its history holds no project files either
 		prefix, err := b.replayText(c.TurnID)
 		if err != nil {
 			return outcome{}, fmt.Errorf("building the replay: %w", err)
@@ -806,15 +735,11 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, 
 		return outcome{}, err
 	}
 	p, sent, err := b.send(ctx, line)
-	var rejected *resumeRejectedError
-	if errors.As(err, &rejected) {
-		return outcome{kind: outcomeLost, msg: rejected.msg}, nil
-	}
 	if err != nil {
 		return outcome{}, err
 	}
 	if !sent { // cancelled before the message reached the child
-		emit(Event{Type: EventTurnDone, TurnID: c.TurnID, Status: StatusInterrupted, SessionID: b.sessionToResume()})
+		emit(Event{Type: EventTurnDone, TurnID: c.TurnID, Status: StatusInterrupted, SessionID: b.currentSession()})
 		return outcome{kind: outcomeDone}, nil
 	}
 	out := b.await(ctx, p, emit)
@@ -829,7 +754,7 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, 
 // the grace), otherwise the classified exit message.
 func (b *claudeBackend) exitedTerminal(turnID, msg string) Event {
 	b.mu.Lock()
-	cancelled, sid := b.cancelled, b.resumeLocked()
+	cancelled, sid := b.cancelled, b.currentSessionLocked()
 	b.mu.Unlock()
 	if cancelled {
 		return Event{Type: EventTurnDone, TurnID: turnID, Status: StatusInterrupted, SessionID: sid}
@@ -839,13 +764,9 @@ func (b *claudeBackend) exitedTerminal(turnID, msg string) Event {
 }
 
 // await relays events until the turn's terminal event, the child's exit, or
-// ctx cancellation. A --resume rejection (as an error result, or as an exit
-// before any result) is reported as outcomeLost instead of being emitted.
+// ctx cancellation.
 func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Event)) outcome {
 	handle := func(e Event) (outcome, bool) {
-		if e.Type == EventError && e.Code == CodeSessionLost && p.resumed {
-			return outcome{kind: outcomeLost, msg: e.Message}, true
-		}
 		emit(e)
 		if isTerminal(e) {
 			return outcome{kind: outcomeDone, failed: e.Type == EventError, code: e.Code, msg: e.Message}, true
@@ -867,28 +788,18 @@ func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Even
 }
 
 // exitOutcome judges a child that exited mid-turn: it first delivers what the
-// child printed before it died, then reads stderr — a --resume rejected
-// before any result is outcomeLost.
+// child printed before it died, then reads stderr. The next turn goes to a
+// new child, which replays the history.
 func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 	sweep(p) // nothing left in the group may hold stdout open
 	waitClosed(p.outDone, exitedOutputWait)
 	if o, done := drainPending(p.events, handle); done {
 		return o
 	}
-	// A rejection reported on stdout before this turn's message was sent
-	// (its event drained by claimForSend) still means the --resume failed.
-	if m, _ := p.lostMsg.Load().(string); p.resumed && m != "" {
-		return outcome{kind: outcomeLost, msg: m}
-	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	msg := strings.TrimSpace(p.stderr.String())
 	if msg == "" {
 		msg = "claude exited: " + p.cmd.ProcessState.String()
-	}
-	if p.resumed && !p.gotResult.Load() {
-		if code, _ := ClassifyClaudeError(msg); code == CodeSessionLost {
-			return outcome{kind: outcomeLost, msg: msg}
-		}
 	}
 	return outcome{kind: outcomeExited, msg: msg}
 }
@@ -939,22 +850,36 @@ func (b *claudeBackend) claimForSend(ctx context.Context) (*claudeProc, error) {
 	drain(p.events)
 	p.writeMu.Lock()
 	b.inFlight = true
+	p.served = true
 	return p, nil
 }
 
-func (b *claudeBackend) sessionToResume() string {
+func (b *claudeBackend) currentSession() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.resumeLocked()
+	return b.currentSessionLocked()
 }
 
-// ensureProcLocked returns the live child, respawning (with --resume of the
-// last session, if any) when it has exited. Never spawns after Close.
-//
-// A child that exited because the CLI rejected its --resume (the warm child
-// started at session open usually dies of it before the owner's first turn)
-// is not respawned with the same doomed --resume: a *resumeRejectedError lets
-// Turn go straight to its fresh retry.
+// nextChildIsNew reports whether the next message goes to a child that has
+// had no turn yet: none is running, the running one exited (the send
+// respawns), or it has not been sent a message. Turns are single-flight, so
+// the answer holds until the send.
+func (b *claudeBackend) nextChildIsNew() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.proc == nil || !b.proc.served {
+		return true
+	}
+	select {
+	case <-b.proc.exited:
+		return true
+	default:
+		return false
+	}
+}
+
+// ensureProcLocked returns the live child, respawning a fresh one when it has
+// exited. Never spawns after Close.
 func (b *claudeBackend) ensureProcLocked() (*claudeProc, error) {
 	if b.closed {
 		return nil, errBackendClosed
@@ -963,35 +888,20 @@ func (b *claudeBackend) ensureProcLocked() (*claudeProc, error) {
 		select {
 		case <-b.proc.exited:
 			sweep(b.proc)
-			if msg := b.proc.rejectedResume(); msg != "" {
-				return nil, &resumeRejectedError{msg: msg}
-			}
 		default:
-			// Alive but already reported the --resume rejection (it is
-			// about to exit): sending would drain that report away and
-			// end the turn as a plain exit. Go to the fresh retry now.
-			if m, _ := b.proc.lostMsg.Load().(string); b.proc.resumed && m != "" {
-				return nil, &resumeRejectedError{msg: m}
-			}
 			return b.proc, nil
 		}
 	}
-	if b.resumeLocked() == "" {
-		// A fresh session (the child died before reporting a session id):
-		// its history holds no project files. This turn's line is already
-		// built, so the flag reaches the next turn at the latest.
-		b.markFreshSession()
-	}
+	// attemptTurn saw the child was new and marked the session fresh.
 	return b.spawnLocked()
 }
 
-// restartFresh replaces the child with a fresh session (no --resume); the
-// next turn carries the replayed history.
+// restartFresh replaces the child with a fresh session; the next turn
+// carries the replayed history.
 func (b *claudeBackend) restartFresh() {
 	b.mu.Lock()
 	p := b.proc
 	b.proc = nil
-	b.resume = ""
 	b.mu.Unlock()
 	b.markFreshSession()
 	if p != nil {
@@ -1007,7 +917,8 @@ func (b *claudeBackend) replayText(turnID string) (string, error) {
 }
 
 // Cancel sends the interrupt control request; if the turn has not ended
-// within InterruptGrace the child is killed and the next turn resumes.
+// within InterruptGrace the child is killed and the next turn goes to a new
+// child with the history replayed.
 //
 // The session calls Cancel only while a turn is in flight, possibly before
 // Turn has reached the child: the recorded flag then stops the message from
@@ -1061,7 +972,7 @@ const neutralWorkDirName = "watchtower-chat-cwd"
 
 // NeutralWorkDir is the default ClaudeOptions.WorkDir: a dedicated directory
 // under the per-user system temp dir, whose parents hold no CLAUDE.md, at
-// the same path on every spawn so --resume keeps working.
+// the same path on every spawn.
 func NeutralWorkDir() string {
 	return filepath.Join(os.TempDir(), neutralWorkDirName)
 }
@@ -1236,11 +1147,6 @@ func (b *claudeBackend) Close() error {
 			fmt.Fprintf(b.warn(), "chat: a claude.ai connector watch did not stop within %v\n", gateStopWait)
 		}
 		b.gate.shutdown()
-		for _, f := range []string{b.promptFile, b.mcpFile} {
-			if f != "" {
-				_ = os.Remove(f)
-			}
-		}
 	})
 	return nil
 }

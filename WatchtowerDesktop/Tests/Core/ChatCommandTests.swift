@@ -26,9 +26,6 @@ final class ChatCommandTests: XCTestCase {
     }
 
     func testContinuity() {
-        XCTAssertNil(ChatContinuity.initialLeaf(resumeSessionID: nil, activeLeafID: 5))
-        XCTAssertNil(ChatContinuity.initialLeaf(resumeSessionID: "", activeLeafID: 5))
-        XCTAssertEqual(ChatContinuity.initialLeaf(resumeSessionID: "s", activeLeafID: 5), 5)
         XCTAssertFalse(ChatContinuity.replayNeeded(historyTipID: nil, continuousLeafID: nil), "a brand-new chat")
         XCTAssertFalse(ChatContinuity.replayNeeded(historyTipID: 5, continuousLeafID: 5))
         XCTAssertTrue(ChatContinuity.replayNeeded(historyTipID: 3, continuousLeafID: 5), "regenerate/edit/branch")

@@ -182,7 +182,7 @@ struct SystemSettings: View {
         }
     }
 
-    private var aiProviderPicker: some View {
+    @ViewBuilder private var aiProviderPicker: some View {
         Picker(
             "AI Provider",
             selection: Binding(
@@ -200,10 +200,34 @@ struct SystemSettings: View {
                 }
             )
         ) {
-            Text("Claude").tag("claude")
-            Text("Codex").tag("codex")
-            Text("Ollama / Local").tag("ollama")
+            // Only the providers the organization's policy allows (#608),
+            // plus a stored provider it forbids, marked, so the owner sees
+            // what is configured and can pick an allowed one.
+            ForEach(Self.providerChoices.filter { policy.providerAllowed($0.id) || $0.id == selectedProviderID },
+                    id: \.id) { choice in
+                Text(policy.providerAllowed(choice.id) ? choice.title : "\(choice.title) (not allowed)").tag(choice.id)
+            }
         }
+        .managedByOrganization(providerLocked)
+        if !policy.providerAllowed(selectedProviderID) {
+            Text(ConnectionTest.policyRefusal(provider: selectedProviderID, policy: policy) ?? "")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private static let providerChoices: [(id: String, title: String)] = [
+        ("claude", "Claude"), ("codex", "Codex"), ("ollama", "Ollama / Local")
+    ]
+
+    private var policy: ManagedPolicy { appState.managedPolicy.policy }
+
+    /// Locked only when the policy allows exactly one provider and it is the
+    /// stored one: nothing else could be picked. A forbidden stored provider
+    /// leaves the picker open, so AI is never stuck on it.
+    private var providerLocked: Bool {
+        guard let allowed = policy.allowedAIProviders else { return false }
+        return allowed.count == 1 && allowed.first == selectedProviderID
     }
 
     private var aiWorkersField: some View {
@@ -472,6 +496,11 @@ struct SystemSettings: View {
     }
 
     private func testConnection() {
+        if let refusal = ConnectionTest.policyRefusal(provider: selectedProviderID, policy: policy) {
+            connectionTestResult = refusal
+            connectionTestSuccess = false
+            return
+        }
         if selectedProviderID == "ollama" {
             testOllamaConnection()
             return
@@ -527,7 +556,9 @@ struct SystemSettings: View {
         if isCodex {
             process.arguments = ["exec", "--model", model, "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "respond with: OK"]
         } else {
-            process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model]
+            // No session file for a probe (#604 G11).
+            process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model,
+                                 "--no-session-persistence"]
         }
 
         process.environment = await Constants.resolvedEnvironmentAsync()

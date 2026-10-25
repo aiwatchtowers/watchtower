@@ -265,7 +265,7 @@ func (e *Engine) applyPages(ctx context.Context, p pass, refs []ItemRef, inTx fu
 	}
 	st := Stats{}
 	err = e.withTx(ctx, func(q Queryer) error {
-		if err := writeItems(ctx, q, p.src.ID, refs, items, e.opts.Now(), &st); err != nil {
+		if err := e.writeItems(ctx, q, p.src.ID, refs, items, &st); err != nil {
 			return err
 		}
 		for i, parent := range parents {
@@ -345,9 +345,11 @@ func collectUsers(u userSet, items []*Item, sets [][]Item) {
 	}
 }
 
-// writeItems upserts fetched items and deletes the refs whose Fetch
-// reported them gone.
-func writeItems(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef, items []*Item, now time.Time, st *Stats) error {
+// writeItems upserts fetched items, recording each one's media, and
+// deletes the refs whose Fetch reported them gone (their media go with
+// the document, by foreign key).
+func (e *Engine) writeItems(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef, items []*Item, st *Stats) error {
+	now := e.opts.Now()
 	for i, it := range items {
 		if it != nil && it.Ref.ExtID != refs[i].ExtID {
 			return fmt.Errorf("extsync: fetch of %s returned item %q", refs[i].ExtID, it.Ref.ExtID)
@@ -360,6 +362,9 @@ func writeItems(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef, 
 			continue
 		}
 		if err := upsertDocument(ctx, q, sourceID, it, now); err != nil {
+			return err
+		}
+		if err := e.recordMedia(ctx, q, sourceID, it); err != nil {
 			return err
 		}
 		st.Fetched++

@@ -16,14 +16,14 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
 
     /// An app quit before the job ran leaves the `.m4a` with its `.meta`; the
     /// launch scan must offer it like a crashed Desktop recording.
-    func testRecoveryScanFindsAnM4AWithItsSidecar() throws {
+    func testRecoveryScanFindsAnM4AWithItsSidecar() async throws {
         let phone = recordingsDir.appendingPathComponent("rec_20260803_100000.m4a")
         try Data([0x00]).write(to: phone)
         try #"{"eventID":"evt-phone","title":"Phone"}"#
             .write(to: metaSidecar(phone), atomically: true, encoding: .utf8)
         let center = try makeCenter(runner: nil)
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [phone])
         XCTAssertEqual(center.recoverable.first?.eventID, "evt-phone")
@@ -32,7 +32,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
 
     /// The sort key strips whichever extension the file has, so phone and
     /// Desktop recordings of the same second interleave chronologically.
-    func testRecoveryScanOrdersMixedExtensionsChronologically() throws {
+    func testRecoveryScanOrdersMixedExtensionsChronologically() async throws {
         let first = recordingsDir.appendingPathComponent("rec_20260803_100000.m4a")
         let second = recordingsDir.appendingPathComponent("rec_20260803_100000-2.m4a")
         let third = recordingsDir.appendingPathComponent("rec_20260803_100000-3.caf")
@@ -44,7 +44,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         }
         let center = try makeCenter(runner: nil)
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [first, second, third, tenth, nextSecond])
     }
@@ -99,6 +99,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         let counter = SampleCountingTranscriber()
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in counter },
             runnerResolver: { runner },
@@ -155,7 +156,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         XCTAssertEqual(outcome.notifier.readyTitles, ["Standup"])
         XCTAssertFalse(outcome.phases.contains { $0.isFailed })
         XCTAssertTrue(outcome.center.jobs.isEmpty, "the job saved and left the queue")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: metaSidecar(outcome.audioURL).path),
+        XCTAssertFalse(hasPendingRow(outcome.audioURL),
                        "a saved recording drops its recovery sidecar")
     }
 
@@ -204,6 +205,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         var engineLoads = 0
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in
                 engineLoads += 1
@@ -250,15 +252,16 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     // MARK: - Name reservation (concurrent writers)
 
     /// Writers off the main actor racing for the same second: the exclusive
-    /// sidecar create gives each its own stem and no sidecar is overwritten.
+    /// row insert gives each its own stem and no row is overwritten.
     func testConcurrentReservationsOfTheSameSecondGetDistinctNames() async throws {
         let date = Date()
         let directory: URL = recordingsDir
+        let store: DatabasePendingTranscriptStore = pendingStore
         let urls = try await withThrowingTaskGroup(of: URL.self) { group in
             for index in 0..<8 {
                 group.addTask {
-                    try MeetingRecorderCenter.reservePhoneRecording(
-                        eventID: nil, title: "title \(index)", in: directory, date: date)
+                    try await MeetingRecorderCenter.reservePhoneRecording(
+                        eventID: nil, title: "title \(index)", in: directory, store: store, date: date)
                 }
             }
             return try await group.reduce(into: [URL]()) { $0.append($1) }
@@ -300,8 +303,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         defer { try? FileManager.default.removeItem(at: source) }
         let fixed = Date()
         let desktop = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: fixed)
-        try #"{"eventID":"evt-desk","title":"Desk"}"#
-            .write(to: metaSidecar(desktop), atomically: true, encoding: .utf8)
+        try await pendingStore.begin(recording: desktop.lastPathComponent, eventID: "evt-desk", title: "Desk", at: fixed)
         let center = try makeCenter(runner: nil) { fixed }
 
         let ingested = try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Phone",
@@ -322,6 +324,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         defer { try? FileManager.default.removeItem(at: source) }
         let recorder = FakeRecorder()
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
             decode: stubDecode(sampleCount: 1600),
@@ -365,6 +368,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
 
         let names = try FileManager.default.contentsOfDirectory(atPath: recordingsDir.path)
         XCTAssertFalse(names.contains { $0.hasPrefix("rec_") }, "got \(names)")
+        XCTAssertEqual(try pendingStore.pending(), [], "the reserved row goes too")
         XCTAssertTrue(center.jobs.isEmpty)
     }
 
@@ -436,9 +440,9 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         try writePhoneAACFixture(durationSec: 0.2)
     }
 
+    /// The title in the recording's pending row.
     private func sidecarTitle(_ audio: URL) throws -> String? {
-        struct Meta: Decodable { let title: String? }
-        return try JSONDecoder().decode(Meta.self, from: Data(contentsOf: metaSidecar(audio))).title
+        try XCTUnwrap(pendingRow(audio), "\(audio.lastPathComponent) has no pending row").title
     }
 
     // MARK: - Harness
@@ -451,6 +455,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         now: @escaping () -> Date = Date.init
     ) throws -> MeetingRecorderCenter {
         MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: texts)) },
             diarizerFactory: { _ in diarizer },
@@ -492,6 +497,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
             SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25)
         ]
         let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет", "ответ"])) },
             diarizerFactory: { _ in diarizer },

@@ -36,7 +36,10 @@ func TierForSource(source string) Tier {
 		"automation.llm",
 		// instructions.suggest: the owner's repeated directions from 14 days of
 		// workbench sessions to a bounded list of short lines Go validates
-		"instructions.suggest":
+		"instructions.suggest",
+		// media.summarize_link: a fetched public page to a ≤1200-rune summary
+		// in a fixed JSON shape (the image twin media.describe stays strong)
+		"media.summarize_link":
 		return TierLight
 	default:
 		return TierStrong

@@ -281,7 +281,7 @@ final class MobileHubServiceTests: XCTestCase {
     private func stagedAssetStore() throws -> SliceAssetStore {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hub-assets-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
-        let store = SliceAssetStore(directory: dir)
+        let store = SliceAssetStore(directory: dir, descriptors: sidecar)
         _ = try store.stage(Data("[]".utf8), fileName: "segments.json", recordName: "meeting_transcript-1")
         return store
     }
@@ -318,27 +318,28 @@ final class MobileHubServiceTests: XCTestCase {
         )
     }
 
-    /// The staged files are ciphertext with a `.desc` descriptor (holding `K_asset`) beside each: an account reset
-    /// and turning the hub off remove both, never leaving a key behind.
+    /// The staged files are ciphertext with a descriptor row (holding `K_asset`) in `hubstate.db` for each
+    /// (#604 S12): an account reset and turning the hub off remove both, never leaving a key behind.
     func testAccountResetAndDisableStillRemoveStagedFilesAndDescriptors() async throws {
         let store = try stagedAssetStore()
         let file = store.fileURL(recordName: "meeting_transcript-1", fileName: "segments.json")
-        let descriptor = file.appendingPathExtension("desc")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: descriptor.path))
+        let key = "meeting_transcript-1/segments.json"
+        XCTAssertNotNil(try sidecar.descriptor(forFile: key))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.appendingPathExtension("desc").path))
         let transport = StubHubTransport()
         let service = makeService(transport: transport, assets: store)
         await service.start()
 
         transport.fireAccountReset()
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: descriptor.path), "the descriptor goes with its file")
+        XCTAssertNil(try sidecar.descriptor(forFile: key), "the descriptor goes with its file")
 
         _ = try store.stage(Data("[]".utf8), fileName: "segments.json", recordName: "meeting_transcript-1")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: descriptor.path))
+        XCTAssertNotNil(try sidecar.descriptor(forFile: key))
         service.disable()
         await service.waitUntilStopped()
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: descriptor.path))
+        XCTAssertNil(try sidecar.descriptor(forFile: key))
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.path))
         XCTAssertNil(store.stagedDescriptor(recordName: "meeting_transcript-1", fileName: "segments.json"))
     }

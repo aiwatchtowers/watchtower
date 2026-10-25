@@ -6,9 +6,8 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sourcediff"
-
-	"github.com/slack-go/slack"
 )
 
 // sweepMaxPages caps the search pages the rolling sweep spends per cycle:
@@ -42,7 +41,7 @@ type searchListing struct {
 type pageEdge struct{ first, last time.Time }
 
 // addPage records a received page's edge timestamps (in API order).
-func (l *searchListing) addPage(matches []slack.SearchMessage) {
+func (l *searchListing) addPage(matches []watchtowerslack.SearchMatch) {
 	if len(matches) == 0 {
 		return
 	}

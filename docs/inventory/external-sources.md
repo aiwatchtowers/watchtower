@@ -119,6 +119,23 @@ crash sweep by `TestSweepStaleRemovesCrashLeftovers`
 (`internal/extract/sweep_test.go`) and `TestEngineSweepsTempFilesEachRun`
 (`internal/extsync/ocr_retry_test.go`).
 
+**Extension (2026-10-25, images and links become knowledge, asks #576/#590/#594):**
+the rule covers every source's images. The media pass (`internal/media`)
+spools an image only to `<WorkspaceDir>/tmp/media` (0700), removes it before
+the item's result is written on every path (panics included), sweeps stale
+files at the start of each run, and stores only text in `media_items`
+(title, description, image text, keys, the locator and an error class from
+`db.MediaErrorClasses` — never a URL, query, header or body); a fetched web
+page is read in memory and never stored. Guards added:
+`TestEXT03_MediaItemsHoldNoBytes` (`internal/extsync/ext03_contract_test.go`:
+a Confluence sync recording an image attachment and its inline image, then
+media passes that download and describe it; no `media_*` column holds the
+bytes, their base64 form or a BLOB, the temp dir is empty, and after a
+download failing with a URL-bearing error every stored error is a class),
+`TestEXT03_BinariesNeverPersisted` (now also scans `media_*` tables),
+`TestPipeline_TempFilesRemovedOnEveryPath`, `TestPipeline_SweepsStaleTempFiles`
+and `TestPipeline_StoresOnlyErrorClass` (`internal/media/pipeline_test.go`).
+
 ## EXT-04 — the sync engine stays generic
 
 **Status:** Enforced
@@ -129,14 +146,24 @@ AI-specific package: not `internal/jira`, `internal/confluence`,
 directly or transitively. Provider behavior comes in through interfaces
 (`Fetcher`, `Extractor`) and cross-source links through the injected
 `Options.Relink` (cmd wires `doclinks.LinkConfluenceDoc`; nil = no links).
+Since 2026-10-25 the images and links of a page (`Item.Media`, `MediaRef`)
+and an image attachment's own image are recorded through the injected
+`Options.Media` (`MediaRecorder`, run inside the item's write transaction;
+cmd wires `media.ConfluenceRecorder`; nil = no media), so the engine does
+not import `internal/media` either. `internal/confluence` reads the link
+rules from the leaf `internal/media/linkrule` only, never the media
+pipeline.
 The Jira key pattern lives in the dependency-free `internal/jirakey`, which
 `internal/jira` re-exports, so the linker does not pull the AI stack either.
 
 **Guard:** `TestEXT04_EngineImportsNoLinkOrAIPackages`
 (`internal/extsync/links_backfill_test.go`) — runs `go list -deps
 watchtower/internal/extsync` and asserts none of the packages above (or
-their subpackages) appears; a scan floor requires `internal/db` in the list
-so an empty or failed listing cannot pass.
+their subpackages, `internal/media` included since 2026-10-25) appears; a
+scan floor requires `internal/db` in the list so an empty or failed listing
+cannot pass. Supporting: `TestConfluence_DoesNotImportMediaPipeline`
+(`internal/confluence/deps_test.go`, transitive walk: no `internal/media`
+package but `linkrule`, no `digest`/`codex`/`kb`) and `TestLinkrule_IsLeaf`.
 
 ## EXT-05 — Confluence writes are approved, versioned and bounded
 
@@ -280,6 +307,8 @@ source: it is registered in the KB contract tests (`kbSourceTables` lists
 every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
+
+- 2026-10-25 (images and links become knowledge, board #907, spec `docs/superpowers/specs/2026-10-25-media-knowledge-design.md`, **EXT-03 and EXT-04 extended, owner approved in asks #576 (spec), #590 (security decisions) and #594 (plan)**): EXT-03 covers every source's images through the media pass (temp files under `tmp/media` only, text and error classes only in `media_items`); EXT-04 gains the `Options.Media` seam and `internal/media` joins the forbidden list. Confluence pages now list their `ac:image` and `a href` (`Item.Media`; `MediaUnread` keeps recorded media when the body fell back to a text strip) and an image attachment version is described again (`attachment:v<N>`). Guards added: `TestEXT03_MediaItemsHoldNoBytes`, the `media_*` scan in `TestEXT03_BinariesNeverPersisted`, the `internal/media` entry in `TestEXT04_EngineImportsNoLinkOrAIPackages`, `TestConfluence_DoesNotImportMediaPipeline`, `TestEngine_RecordsPageMediaInWriteTx`, `TestEngine_MediaUnreadKeepsRecordedMedia`, `TestConfluenceRecorder_NewAttachmentVersionRedescribed`. No guard relaxed. Feature note: `docs/features/media-knowledge.md`.
 
 - 2026-10-18 (Linear Plan 2 lane 2, board #688/#689, spec `docs/superpowers/specs/2026-10-15-linear-integration-design.md` §6/§8): EXT-04 unchanged: the issue-key detector moved from `internal/jira` to the new `internal/issuekey`, which imports only `config`, `db` and the dependency-free `jirakey` (no AI, sync-engine or connector package); `internal/jira` still re-exports `KeyRegexp`.
 - 2026-10-18 (#573, Confluence at connect): `*confluence.Fetcher` gained
