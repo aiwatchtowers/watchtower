@@ -1448,3 +1448,19 @@ func TestConsolidate_ChatImageLinesRenderedButNeverStoredAsQuote(t *testing.T) {
 	require.Len(t, ms, 1)
 	assert.Equal(t, "we ship Monday, see the chart", ms[0].Quote)
 }
+
+func TestRenderChatUnit_CapsImageLinesPerTurn(t *testing.T) {
+	lines := make([]string, 8)
+	for i := range lines {
+		lines[i] = fmt.Sprintf(`[image "shot%d.png" — %s: Shot %d]`, i, db.ChatImageLabel, i)
+	}
+	got := renderChatUnit(db.ChatTurnForIdeas{ID: 2, ConversationID: 1, Role: "user", Text: "see these", ImageLines: lines}, false)
+	for i := 0; i < chatImageLinesPerTurn; i++ {
+		assert.Contains(t, got, fmt.Sprintf(`shot%d.png`, i))
+	}
+	assert.NotContains(t, got, "shot5.png")
+	assert.Contains(t, got, "[+3 more images] ref=chat:1:2")
+
+	five := renderChatUnit(db.ChatTurnForIdeas{ID: 2, ConversationID: 1, Role: "user", Text: "see these", ImageLines: lines[:5]}, false)
+	assert.NotContains(t, five, "more images", "five lines need no marker")
+}

@@ -138,6 +138,9 @@ const (
 	chatAssistantRuneCap = 1500
 	chatOwnerRuneCap     = 4000
 	chatImageLineRuneCap = 700
+	// chatImageLinesPerTurn caps the image lines one owner turn renders: a
+	// turn pasting a whole album must not take the prompt budget.
+	chatImageLinesPerTurn = 5
 )
 
 // transcriptRecapWaitWindow is how long a just-finished transcript is given
@@ -559,7 +562,11 @@ func renderChatUnit(t db.ChatTurnForIdeas, header bool) string {
 	}
 	text := chatTurnText(t)
 	if chatRole(t.Role) == "owner" {
-		for _, line := range t.ImageLines {
+		for i, line := range t.ImageLines {
+			if i == chatImageLinesPerTurn {
+				text += fmt.Sprintf(" [+%d more images]", len(t.ImageLines)-i)
+				break
+			}
 			text += " " + textutil.Truncate(strings.Join(strings.Fields(line), " "), chatImageLineRuneCap, "…]")
 		}
 	}
