@@ -152,6 +152,20 @@ the parent's, and its chunk anchor is the item's own anchor (the Slack
 message ts, the Confluence heading) or the parent's. Guard added:
 `TestKB03_MediaSectionResolvable` (`internal/kb/media_test.go`).
 
+## KB-04 — link fetching reaches only public, non-secret, non-company pages
+
+**Status:** Enforced
+
+**Observable:** A link found in synced content is opened for knowledge only when it is a plain public web page: `http`/`https` on ports 80/443, a host that resolves to a public address (checked at connect time and again on every redirect), no secret-looking query or fragment keys (tokens, keys, signatures, session ids, in any case or nesting), no capability-path words (invite, reset, verify, confirm, unsubscribe, magic and the like), not a host Watchtower already syncs or never opens (`linkrule.SyncedHosts`: Slack, Atlassian, Linear, Gmail, Google Calendar, Docs and Drive), not one of the company's own domains (`OrgDomains`: Google, IMAP/Outlook and the Jira and Linear identities of accounts not removed, public mail providers left out) and not on the owner's deny list. The request ignores proxy environment variables and sends no cookies or auth headers. A refused link is never fetched.
+
+**Test guards:**
+- Guard: `internal/media/linkrule/linkrule_test.go::TestFetchable_RefusesSecrets`, `TestFetchable_RefusesSyncedHosts`, `TestFetchable_RefusesCapabilityPaths`, `TestFetchable_Ports`; `internal/media/webfetch/fetch_test.go::TestGet_RefusesLoopbackServer`, `TestGet_RefusesNameResolvingToLoopback`, `TestGet_RefusesRedirectToPrivate`, `TestGet_RedirectRerunsCheck`, `TestGet_RefusesNonWebPort`, `TestGet_RefusesNonWebScheme`, `TestGet_IgnoresEnvProxy`, `TestGet_SendsNoCookiesOrAuth`; `internal/media/policy_test.go::TestOrgDomains_FromOwnerAccounts`, `TestOrgDomains_NoAccountsNothing`
+- Supporting: `TestFetchable_AllowsPlain`, `TestFetchable_FixRound1Refusals`, `TestFetchable_CamelCaseAndBrackets`, `TestFetchable_NestedAndAcronymKeys`, `TestFetchable_SessionIDKeys`
+
+**Why locked:** Fetching a link leaks that it was seen and can act on it (a one-time login, an invite) or read the company's intranet from the owner's machine. These rules are the owner's security decisions A–D (asks #590, #598) for images and links becoming knowledge (#471, #474).
+
+**Locked since:** 2026-10-25
+
 ## Read-only-ness
 
 Not a Knowledge Search contract — `search_knowledge` and
@@ -164,6 +178,7 @@ DEV-01.
 
 ## Changelog
 
+- 2026-10-25 (v0.25.0 release audit, **KB-04 added, owner approved in ask #607**): the link-fetch safety rules of #471/#474 are a contract; guards as listed under KB-04. No existing guard changed.
 - 2026-10-25 (images and links become knowledge, board #907, spec `docs/superpowers/specs/2026-10-25-media-knowledge-design.md`, **KB-01..03 extended, owner approved in asks #576, #590 and #594**): image descriptions and link summaries render as labelled sections of their parent document (KB-01, re-rendered through `kb_dirty` triggers of migration 00156); the describer stays outside the index and the KB-02 import scan forbids `internal/media` and `internal/prompts` too; a media-only hit resolves and anchors (KB-03). The model-facing reader line (`kb.MediaReaderLine`) is in the main system prompt, the `search_knowledge` description and the workbench skill. Guards added as listed under each contract, plus `TestPromptBlocks_MediaSectionsAreData` (`internal/chat`), `TestSearchKnowledgeDescription_MediaSectionsAreData` (`internal/tools`), `TestWorkbenchSkill_MediaSectionsAreData` (`internal/devpack`). No guard relaxed. Feature note: `docs/features/media-knowledge.md`.
 
 - 2026-10-24 (AI chats feed the knowledge base, spec `docs/superpowers/specs/2026-10-24-chat-knowledge-design.md`, **KB-01 extended, owner approved in ask #551**): the new `chat_artifact` source (`internal/kb/source_chat_artifact.go`) indexes the artifact versions the owner kept (`chat_knowledge_artifacts`, migration 00154): one document per (conversation, artifact key), the kept version only (a newer version is indexed only after **Update in Knowledge**), HTML reduced to text, removed with **Remove from Knowledge** or with the conversation; `code_question` conversations are never indexed. It joins KB-01's rebuild/no-source-write guards (it writes no source table). **Chat-born visibility rule:** the `ideas` source and `search_knowledge` leave out `chat_born = 1` items whose status is `proposed`, `not_now`, `rejected` or `dropped` (`db.KnowledgeVisibleIdeaCond`), so an unapproved item from a chat never surfaces as knowledge; approving it makes it indexable. **Assistant words are never indexed:** an idea document leaves out every chat mention authored by `assistant` (`db.AgentVisibleMentionCond` in `loadIdeaMentions`), and a chat mention's stored quote is the turn's own text, never the model's (ask #516; `TestKB_IdeaDocSkipsAssistantChatMentions`, `TestConsolidate_ChatAttachOnActiveItem_AssistantQuoteNotIndexed`). A kept HTML artifact whose `<head>` is never closed still indexes its body (`TestHTMLToText_MalformedPages`). `search_knowledge`'s source list names `chat_artifact` (`TestSearchKnowledge_SchemaListsEverySource`). No guard relaxed.

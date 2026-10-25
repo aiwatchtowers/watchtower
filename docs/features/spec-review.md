@@ -1,6 +1,6 @@
 # Spec review — an independent reviewer for specs and plans (2026-10-25)
 
-Spec: `docs/superpowers/specs/2026-10-25-spec-review-design.md`; plan 1: `docs/superpowers/plans/2026-10-25-spec-review-p1-core.md`; plan 2 (Desktop): `docs/superpowers/plans/2026-10-25-spec-review-p2-desktop.md`. Contracts: SPECREVIEW-01..03 in `docs/inventory/spec-review.md`.
+Spec: `docs/superpowers/specs/2026-10-25-spec-review-design.md`; plan 1: `docs/superpowers/plans/2026-10-25-spec-review-p1-core.md`; plan 2 (Desktop): `docs/superpowers/plans/2026-10-25-spec-review-p2-desktop.md`; plan 3 (pack, guide, phone): `docs/superpowers/plans/2026-10-25-spec-review-p3-pack-guide-phone.md`. Contracts: SPECREVIEW-01..03 in `docs/inventory/spec-review.md`.
 
 ## Summary
 
@@ -18,6 +18,7 @@ Migration `00158_spec_reviews.sql` (mirrored in `schema.sql`); access in `intern
 
 - `ask_owner` (`internal/tools/workbench_asks.go`) takes `doc_type` (`spec`, `plan`, `other`; default from the path by `specreview.ClassifyDoc`). A spec or plan queues a review row right after the ask's transaction has committed, then calls the surface's launcher.
 - Neither a failed queue write nor a launcher failure fails the ask: a refusal or failure records `skipped` with the reason (`could not queue: …`, `launch failed: …`, `plan near limit`, or `no reviewer on this surface` when the surface has no launcher); the reason is always in the `spec_review` result key, also when the skip itself cannot be written. The cmd launcher (`specReviewLauncher`) skips on a Claude plan near its limit (`planusage.NearLimit`).
+- Skill pack v17 (`internal/devpack`): the core skill tells the agent to pass `doc_type` on a review ask; the `watchtower-flow` preset makes every spec carry a `## Decisions` section (one line per owner decision with its source, `ask #N` or `conversation`) and commits mockups agreed in a brainstorm under `docs/design/mockups/<feature>/`, linked from the spec.
 - `LaunchSpecReview` (`cmd/workbench_spec_review_launch.go`) starts `workbench spec-review run --ask N` detached in its own session, output appended to `<workspace>/logs/spec-review.log`, agent-session env markers dropped, the child reaped in the background. The binary comes from the package var `specReviewExe` (`/usr/bin/false` in cmd tests).
 
 ## The run — `internal/specreview`

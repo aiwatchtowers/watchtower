@@ -103,6 +103,7 @@ When an update changes the shipped version while you keep your own, the card sho
 - **"Your edited copy is not confirmed yet, so it does not run."** Nothing runs, not even the shipped version, until you confirm. Press **Edit in Chat**, check the draft and press **Save** or **Confirm**; or reset to the shipped version.
 - **An error on the card instead.** Your copy can't be read. Fix it in **Edit in Chat**, or **Reset to built-in**. **Make today's brief and plan** says "Morning brief: your edited copy has an error — fix it in Automations → Built in" until then.
 - **"Couldn't move Morning brief to Automations" in the Inbox.** The update could not switch that part over (the name can also be Track my threads, Idea finder, Reactions or "your watched tracks"); the card shows why. It still runs the old way. Press **Retry** on that card.
+- **Built-in version updated right after an update, on a copy you edited.** The shipped text changed (for example a new summary line). **Show changes** lists the differences; keep your copy or **Reset to built-in**.
 - **A prompt edit elsewhere does nothing.** These prompts now live in the recipes: change them with **Edit in Chat**. `watchtower prompts show` says so for them.
 - **"Morning brief is running now — try again in a minute."** A run is in progress. Wait for it.
 - **Time set to 00:00 runs at 08:00.** A [known issue](../troubleshooting/known-issues.md); pick 01:00 or later.

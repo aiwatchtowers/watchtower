@@ -296,14 +296,14 @@ final class HomeQueriesTests: XCTestCase {
     // MARK: - Instruction suggestion
 
     private func insertSuggestion(
-        _ d: Database, _ text: String, status: String = "open", daysAgo: Double = 1
+        _ d: Database, _ text: String, status: String = "open", daysAgo: Double = 1, field: String = "session"
     ) throws {
         let seen = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-daysAgo * 86400))
         try d.execute(
             sql: """
                 INSERT INTO instruction_suggestions (text, field, first_seen_at, last_seen_at, status, fingerprint)
-                VALUES (?, 'session', ?, ?, ?, ?)
-                """, arguments: [text, seen, seen, status, text])
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [text, field, seen, seen, status, text])
     }
 
     private func suggestionRead() throws -> HomeWorkbenchData {
@@ -316,6 +316,12 @@ final class HomeQueriesTests: XCTestCase {
             try insertSuggestion(d, "newest", daysAgo: 1)
         }
         XCTAssertEqual(try suggestionRead().suggestion?.text, "newest")
+    }
+
+    func testInstructionSuggestionCarriesItsField() throws {
+        try db.write { try insertSuggestion($0, "answer in English", field: "chat") }
+        let suggestion = try XCTUnwrap(try suggestionRead().suggestion)
+        XCTAssertEqual(suggestion.field, "chat")
     }
 
     func testInstructionSuggestionCardHiddenAfterSevenDays() throws {

@@ -244,8 +244,8 @@ non-runnable when `approval_hash` changed. `approval_hash` covers the script,
 permissions, outputs, scope, the trigger (without a button's cosmetic label;
 its `confirm` counts), the `missed` policy, the budget (tokens and minutes)
 and `concurrency` (ask #294), so a schedule, missed-policy, budget or
-concurrency edit waits for the owner like a script edit; a name, description
-or button-label edit does not. A recipe new to the index, or
+concurrency edit waits for the owner like a script edit; a name, `summary`, description
+or button-label edit does not (`summary` since 2026-10-24). A recipe new to the index, or
 changed outside an owner save, is indexed unconfirmed (an insert never sets
 `confirmed_hash`/`enabled`; an upsert never touches them). `confirmed_hash`
 is set only by `db.ConfirmAutomation(id, hash, now)`, which refuses any hash

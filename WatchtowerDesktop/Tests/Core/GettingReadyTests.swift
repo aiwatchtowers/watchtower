@@ -8,13 +8,21 @@ final class GettingReadyTests: XCTestCase {
     private func step(
         _ readiness: [ReadinessFeature: Readiness],
         ownerKnown: Bool = true,
+        policy: ManagedPolicy = .none,
         memory: GettingReadyMemory? = nil,
         sawUnready: Bool = false,
         at date: Date? = nil
     ) -> GettingReadyStep {
         GettingReadyPolicy.step(
-            readiness: readiness, ownerKnown: ownerKnown, memory: memory ?? empty, sawUnready: sawUnready,
-            now: date ?? now, briefingHour: 8)
+            readiness: readiness, ownerKnown: ownerKnown, policy: policy, memory: memory ?? empty,
+            sawUnready: sawUnready, now: date ?? now, briefingHour: 8)
+    }
+
+    private func policy(allowing sources: [String]) -> ManagedPolicy {
+        var policy = ManagedPolicy()
+        policy.managed = true
+        policy.allowedSources = sources
+        return policy
     }
 
     /// Every feature `.off` unless overridden, so only the features a test
@@ -85,6 +93,29 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(
             sourceRows(result.zone),
             [GettingReadySourceRow(source: .slack, features: [.digests, .tracks, .peopleCards, .ideas])])
+    }
+
+    /// A source the organization's policy forbids (#608) gets no Connect row;
+    /// a row stays while one of the sources behind it is allowed.
+    func testPolicyForbiddenSourceHasNoConnectRow() {
+        let readiness = readinessMap([
+            .slackSync: .preparing(detail: nil),
+            .digests: .needsSource(.slack), .jira: .needsSource(.jira),
+            .calendar: .needsSource(.calendar), .streamDigests: .needsSource(.jiraOrMail)
+        ])
+        let slackOnly = step(readiness, policy: policy(allowing: ["slack"]))
+        XCTAssertEqual(sourceRows(slackOnly.zone), [GettingReadySourceRow(source: .slack, features: [.digests])])
+
+        let caldavOnly = step(readiness, policy: policy(allowing: ["caldav", "imap"]))
+        XCTAssertEqual(sourceRows(caldavOnly.zone).map(\.source), [.jiraOrMail, .calendar])
+    }
+
+    /// The forbidden rows were the only reason to open the zone: it stays hidden.
+    /// `.digests` is goal-switched, so its Connect row alone opens the zone.
+    func testOnlyForbiddenRowsKeepTheZoneHidden() {
+        let readiness = readinessMap([.digests: .needsSource(.slack)])
+        XCTAssertEqual(sourceRows(step(readiness).zone), [GettingReadySourceRow(source: .slack, features: [.digests])])
+        XCTAssertEqual(step(readiness, policy: policy(allowing: ["jira"])).zone, .hidden)
     }
 
     func testCollapsesToAllReadyWhenEveryCardReadyOrError() {

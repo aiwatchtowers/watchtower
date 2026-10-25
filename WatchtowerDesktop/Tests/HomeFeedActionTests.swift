@@ -30,6 +30,23 @@ final class FakeHomeFeedPerformer: HomeFeedPerforming {
     }
 }
 
+/// Holds each row's write until `release(_:failing:)` for that row, so two
+/// Done / Hide presses can overlap and land in either order.
+@MainActor
+private final class PerRowGatedPerformer: HomeFeedPerforming {
+    private var gates: [FeedRef: CheckedContinuation<Error?, Never>] = [:]
+
+    func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws {
+        if let error = await withCheckedContinuation({ gates[ref] = $0 }) { throw error }
+    }
+
+    func isWaiting(_ ref: FeedRef) -> Bool { gates[ref] != nil }
+
+    func release(_ ref: FeedRef, failing error: Error? = nil) {
+        gates.removeValue(forKey: ref)?.resume(returning: error)
+    }
+}
+
 /// Records each CLI call and its timeout (nil for the untimed call);
 /// answers with empty stdout or throws `error`.
 private final class RecordingRunner: CLIRunnerProtocol, @unchecked Sendable {
@@ -292,23 +309,151 @@ final class HomeFeedActionTests: XCTestCase {
         XCTAssertFalse(center.hiddenRefs.contains(ref))
     }
 
-    func testSetFeedExpandedShowsEveryRow() async throws {
-        let pool = try makePool()
+    private func insertInbox(_ pool: DatabasePool, count: Int) async throws {
         try await pool.write { db in
-            for index in 0..<9 {
-                try TestDatabase.insertInboxItem(db, messageTS: "1700000000.00010\(index)")
+            for index in 0..<count {
+                try TestDatabase.insertInboxItem(db, messageTS: String(format: "1700000000.%06d", index))
             }
         }
+    }
+
+    /// Over a long backlog the feed pages in place: seven, 50, 100, the last
+    /// partial page, and Show less goes back to seven.
+    func testPageFeedPagesAndShowsLess() async throws {
+        let pool = try makePool()
+        try await insertInbox(pool, count: 120)
         let center = try makeCenter(performer: FakeHomeFeedPerformer())
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center) { $0?.feed.waiting.count == 7 }
-        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 2)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 113)
 
-        center.setFeedExpanded(true)
-        XCTAssertTrue(center.feedExpanded)
-        XCTAssertEqual(center.snapshot?.feed.waiting.count, 9)
+        center.pageFeed(more: true)
+        XCTAssertEqual(center.feedLimit, 50)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 50)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 70)
+
+        center.pageFeed(more: true)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 100)
+        center.pageFeed(more: true)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 120)
         XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 0)
+
+        center.pageFeed(more: false)
+        XCTAssertEqual(center.feedLimit, HomeFeedBuilder.waitingLimit)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 113)
+    }
+
+    /// Done / Hide down to seven rows or fewer collapses the page state, so
+    /// the next backlog starts folded instead of expanded with no Show less.
+    func testFeedCollapsesWhenRowsDropToSeven() async throws {
+        let pool = try makePool()
+        try await insertInbox(pool, count: 9)
+        let center = try makeCenter(performer: FakeHomeFeedPerformer())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0?.feed.waiting.count == 7 }
+
+        center.pageFeed(more: true)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 9)
+        let refs = try XCTUnwrap(center.snapshot?.feed.waiting.prefix(2).map(\.id))
+        await center.act(.done, on: refs[0])
+        XCTAssertEqual(center.feedLimit, 50, "eight rows: still expanded")
+        await center.act(.done, on: refs[1])
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.feedLimit, HomeFeedBuilder.waitingLimit)
+    }
+
+    /// A Done that fails while the list is expanded at eight rows: the
+    /// page does not collapse under the pending write, so the row comes
+    /// back with its error in view, not behind "1 more".
+    func testFailedDoneKeepsThePageOpen() async throws {
+        let pool = try makePool()
+        try await insertInbox(pool, count: 8)
+        let performer = FakeHomeFeedPerformer()
+        performer.gated = true
+        performer.error = NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "write failed"])
+        let center = try makeCenter(performer: performer)
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0?.feed.waiting.count == 7 }
+        center.pageFeed(more: true)
+        let ref = try XCTUnwrap(center.snapshot?.feed.waiting.last?.id)
+
+        let done = Task { await center.act(.done, on: ref) }
+        await waitUntil(center, hides(ref))
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.feedLimit, 50, "no collapse while the write runs")
+        XCTAssertTrue(performer.isWaiting)
+        performer.release()
+        await done.value
+
+        XCTAssertEqual(center.feedErrors[ref], "write failed")
+        XCTAssertTrue(shows(ref)(center.snapshot), "the failed row is back in view")
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 8)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 0)
+        XCTAssertEqual(center.feedLimit, 50)
+    }
+
+    /// Two overlapping Done presses on an expanded list of nine: the first
+    /// landing leaves the page open while the second still runs; the
+    /// second landing collapses it when seven rows are left.
+    func testOverlappingDonesCollapseOnlyOnceBothLand() async throws {
+        let (center, performer, first, second) = try await startTwoDones()
+        defer { center.endReading() }
+        performer.release(second.ref)
+        await second.task.value
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.feedLimit, 50, "the first Done still runs")
+
+        performer.release(first.ref)
+        await first.task.value
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 0)
+        XCTAssertEqual(center.feedLimit, HomeFeedBuilder.waitingLimit)
+    }
+
+    /// The same overlap, the later write failing: its row comes back with
+    /// the error, eight rows, and the page stays open.
+    func testOverlappingDoneFailureKeepsThePageOpen() async throws {
+        let (center, performer, first, second) = try await startTwoDones()
+        defer { center.endReading() }
+        performer.release(first.ref)
+        await first.task.value
+        XCTAssertEqual(center.feedLimit, 50, "the second Done still runs")
+
+        performer.release(
+            second.ref, failing: NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "write failed"]))
+        await second.task.value
+        XCTAssertEqual(center.feedErrors[second.ref], "write failed")
+        XCTAssertTrue(shows(second.ref)(center.snapshot))
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 8)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 0)
+        XCTAssertEqual(center.feedLimit, 50)
+    }
+
+    /// Nine rows, expanded, Done pressed on two of them with both writes held.
+    private func startTwoDones() async throws -> (
+        HomeCenter, PerRowGatedPerformer, (ref: FeedRef, task: Task<Void, Never>), (ref: FeedRef, task: Task<Void, Never>)
+    ) {
+        let pool = try makePool()
+        try await insertInbox(pool, count: 9)
+        let performer = PerRowGatedPerformer()
+        let center = try makeCenter(performer: performer)
+        center.beginReading(pool: pool)
+        await waitUntil(center) { $0?.feed.waiting.count == 7 }
+        center.pageFeed(more: true)
+        let refs = try XCTUnwrap(center.snapshot?.feed.waiting.prefix(2).map(\.id))
+        let first = Task { await center.act(.done, on: refs[0]) }
+        await waitUntil(center, hides(refs[0]))
+        let second = Task { await center.act(.done, on: refs[1]) }
+        await waitUntil(center, hides(refs[1]))
+        XCTAssertTrue(performer.isWaiting(refs[0]))
+        XCTAssertTrue(performer.isWaiting(refs[1]))
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.feedLimit, 50, "no collapse while both run")
+        return (center, performer, (refs[0], first), (refs[1], second))
     }
 
     // MARK: - LiveHomeFeedPerformer

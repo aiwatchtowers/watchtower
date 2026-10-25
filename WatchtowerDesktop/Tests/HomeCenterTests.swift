@@ -17,6 +17,7 @@ final class FakeHomeEnvironment: HomeEnvironment {
     var firstSync: FirstSyncLine?
     var linksAllowed = Set(HomeLinkKind.allCases)
     var feedSourcesAllowed = Set(FeedSource.allCases)
+    var managedPolicy = ManagedPolicy.none
     var workbenchSessions: [SessionAgentStatus] = []
 }
 

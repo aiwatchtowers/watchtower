@@ -14,7 +14,7 @@ A full example with every key and placeholder values is in the repository at `do
 
 | Key | Type | Effect |
 |---|---|---|
-| `AllowedSources` | array of `slack`, `google`, `imap`, `caldav`, `jira`, `linear` | Only these can be connected and synced. `google` covers Gmail and Google Calendar, `imap` covers Outlook, `jira` covers Confluence. An empty array allows none. A source already connected stops syncing and keeps its data. |
+| `AllowedSources` | array of `slack`, `google`, `imap`, `caldav`, `jira`, `linear` | Only these can be connected and synced. `google` covers Gmail and Google Calendar, `imap` covers Outlook, `caldav` covers CalDAV and ICS feeds, `jira` covers Confluence. An empty array allows none. A source already connected stops syncing and keeps its data. |
 | `MobileSync` | `allowed`, `workbench_only` or `off` | `off` turns iPhone sync off and removes what the phone held. `workbench_only` keeps workbenches, board targets and comments, sessions with their reports and timelines, asks and ask alerts, session chat and permission prompts, and removes briefings, inbox, digests, people, calendar, transcripts, recordings, day plan and accounts from the phone. |
 | `AllowedQuickConnections` | array of `https://` URL prefixes or absolute command paths | A Quick Connection that matches none is never started, added, enabled or called. An empty array allows none. |
 | `AllowAutomationShell` | boolean | `false` refuses automation recipes that run shell commands. |

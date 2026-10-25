@@ -31,7 +31,7 @@ action: nav:inbox
 -->
 
 - **Attention items:** a message addressed to you (you are in To) becomes an item, like a Slack mention. A message that only copies you (Cc) becomes a lower-priority item. A message from you mints nothing.
-- **Where you see them:** items have no screen of their own. They surface in **Catch Up** (needs you), the briefing and meeting prep. Catch Up also reads the mail stream digests described below.
+- **Where you see them:** the Inbox's **Messages** filter lists them with your Slack and tracker items ([Inbox](inbox.md)). They also surface in **Catch Up** (needs you), the briefing and meeting prep. Catch Up also reads the mail stream digests described below.
 - **Ideas:** with **Stream Digests** on (**Settings → Features**), new mail is summarized per account (Gmail by thread, Outlook and IMAP message by message), and ideas and decisions mined from it reach the Ideas registry. Stream Digests is a medium AI cost.
 - **Memory:** Gmail is a Memory source, off by default.
 

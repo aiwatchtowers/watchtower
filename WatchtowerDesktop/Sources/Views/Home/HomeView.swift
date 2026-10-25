@@ -20,7 +20,7 @@ struct HomeView: View {
                 onHideGettingReady: { appState.homeCenter.hideGettingReady() },
                 onAsk: { appState.toggleHelpChat() },
                 onAct: { await appState.homeCenter.act($0, on: $1) },
-                onExpand: { appState.homeCenter.setFeedExpanded($0) },
+                onPage: { appState.homeCenter.pageFeed(more: $0) },
                 onReconnect: { appState.openAccountConnection(source: $0) },
                 purges: appState.accountPurgeCenter?.openRows ?? [],
                 learn: appState.learnCenter.zone,
@@ -48,7 +48,8 @@ struct HomeContent: View {
     let onHideGettingReady: () -> Void
     let onAsk: () -> Void
     let onAct: (FeedAction, FeedRef) async -> Void
-    let onExpand: (Bool) -> Void
+    /// true: the next page of the feed; false: back to the first seven.
+    let onPage: (Bool) -> Void
     /// Open account purges (board #601): the red banner above Getting ready.
     let purges: [AccountPurge]
     let onReconnect: (String) -> Void
@@ -67,7 +68,7 @@ struct HomeContent: View {
         onHideGettingReady: @escaping () -> Void,
         onAsk: @escaping () -> Void = {},
         onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
-        onExpand: @escaping (Bool) -> Void = { _ in },
+        onPage: @escaping (Bool) -> Void = { _ in },
         onReconnect: @escaping (String) -> Void = { _ in },
         purges: [AccountPurge] = [],
         learn: LearnSelection? = nil,
@@ -80,7 +81,7 @@ struct HomeContent: View {
         self.calendar = calendar
         self.feedErrors = feedErrors
         self.onAct = onAct
-        self.onExpand = onExpand
+        self.onPage = onPage
         self.onDecideSuggestion = onDecideSuggestion
         self.snapshot = snapshot
         self.today = today
@@ -119,23 +120,16 @@ struct HomeContent: View {
 
     /// The feed and the right column side by side across the whole width
     /// when the content is at least `twoColumnWidth` wide, else one column:
-    /// feed first.
+    /// feed first. One layout picks by width, so each column is built once
+    /// (a `ViewThatFits` over both arrangements built the feed twice).
     private func columns(_ snapshot: HomeSnapshot) -> some View {
-        let feed = FeedZoneView(
-            feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: today,
-            calendar: calendar)
-        let right = HomeSideColumn(
-            snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion, learn: learn,
-            learnActions: learnActions)
-        return ViewThatFits(in: .horizontal) {
-            HomeColumnsLayout(spacing: Spacing.page) {
-                feed
-                right
-            }
-            VStack(alignment: .leading, spacing: Spacing.page) {
-                feed
-                right
-            }
+        HomeColumnsLayout(spacing: Spacing.page) {
+            FeedZoneView(
+                feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onPage: onPage, now: today,
+                calendar: calendar)
+            HomeSideColumn(
+                snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion, learn: learn,
+                learnActions: learnActions)
         }
     }
 
@@ -207,36 +201,66 @@ struct HomeSideColumn: View {
 }
 
 /// The feed and the right column side by side, split about 60/40 (the
-/// mockup's 1.55 : 1) across the whole proposed width; each column is as
-/// tall as its own content. Its ideal width is `HomeContent.twoColumnWidth`,
-/// so `ViewThatFits` falls back to one column below it.
+/// mockup's 1.55 : 1) across the whole width when it is at least
+/// `HomeContent.twoColumnWidth`; each column is as tall as its own content.
+/// Narrower, the two stack in one column, feed first, `spacing` apart.
 struct HomeColumnsLayout: Layout {
     static let feedShare: CGFloat = 1.55 / 2.55
     var spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
-        let width = Self.resolvedWidth(proposal.width)
-        let heights = zip(subviews, columnWidths(width)).map { subview, columnWidth in
-            subview.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height
+        size(proposedWidth: proposal.width, count: subviews.count) { index, columnWidth in
+            subviews[index].sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height
         }
-        return CGSize(width: width, height: heights.max() ?? 0)
     }
 
     func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
-        var x = bounds.minX
-        for (subview, columnWidth) in zip(subviews, columnWidths(bounds.width)) {
+        let frames = frames(width: bounds.width, count: subviews.count) { index, columnWidth in
+            subviews[index].sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height
+        }
+        for (subview, frame) in zip(subviews, frames) {
             subview.place(
-                at: CGPoint(x: x, y: bounds.minY), anchor: .topLeading,
-                proposal: ProposedViewSize(width: columnWidth, height: nil))
-            x += columnWidth + spacing
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), anchor: .topLeading,
+                proposal: ProposedViewSize(width: frame.width, height: nil))
         }
     }
 
-    /// Never narrower than the breakpoint, whatever is proposed (the old
-    /// row's `minWidth`), so the two columns never fit below it; nil or an
-    /// infinite proposal is the breakpoint itself (the ideal width).
-    static func resolvedWidth(_ proposed: CGFloat?) -> CGFloat {
-        max(proposed.flatMap { $0.isFinite ? $0 : nil } ?? 0, HomeContent.twoColumnWidth)
+    /// The proposed width; nil or an infinite proposal is the breakpoint
+    /// itself (the ideal width: two columns).
+    static func layoutWidth(_ proposed: CGFloat?) -> CGFloat {
+        proposed.flatMap { $0.isFinite ? $0 : nil } ?? HomeContent.twoColumnWidth
+    }
+
+    /// The size for a proposed width: that width (`layoutWidth`) by the
+    /// bottom of the lowest frame. Pure, like `frames`.
+    func size(proposedWidth: CGFloat?, count: Int, height: (Int, CGFloat) -> CGFloat) -> CGSize {
+        let width = Self.layoutWidth(proposedWidth)
+        let frames = frames(width: width, count: count, height: height)
+        return CGSize(width: width, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    /// Two columns from the breakpoint up, one below it.
+    static func isTwoColumn(_ width: CGFloat) -> Bool {
+        width >= HomeContent.twoColumnWidth
+    }
+
+    /// Each subview's frame within `width`, from its height at the width it
+    /// is offered: side by side in two columns, else stacked `spacing` apart.
+    /// Pure, so the arrangement is testable without a layout pass.
+    func frames(width: CGFloat, count: Int, height: (Int, CGFloat) -> CGFloat) -> [CGRect] {
+        if Self.isTwoColumn(width) {
+            var x: CGFloat = 0
+            return zip(0..<count, columnWidths(width)).map { index, columnWidth in
+                defer { x += columnWidth + spacing }
+                return CGRect(x: x, y: 0, width: columnWidth, height: height(index, columnWidth))
+            }
+        }
+        var y: CGFloat = 0
+        return (0..<count).map { index in
+            let rowHeight = height(index, width)
+            defer { y += rowHeight + spacing }
+            return CGRect(x: 0, y: y, width: width, height: rowHeight)
+        }
     }
 
     /// The feed's and the right column's widths.

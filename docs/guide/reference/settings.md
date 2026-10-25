@@ -54,9 +54,9 @@ since: 0.24.0
 
 ## System
 
-- **AI** — provider (Claude, Codex, Ollama / Local), **Light Model** and **Strong Model** (empty = the provider's default), CLI paths (empty = auto-detected), **Test Connection**. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
+- **AI** — provider (Claude, Codex, Ollama / Local), **Light Model** and **Strong Model** (empty = the provider's default), **Workers** (parallel AI calls, default 5), CLI paths (empty = auto-detected), **Test Connection**. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
 - **Workbench** — **Default Agent** (Claude Code or Codex) for new sessions and the **Work on It** button (the menu offers **Work on It with …** the other agent). Your standing directions moved to **Profile → Instructions**; this tab keeps a pointer. See [Your instructions](../features/workbench/instructions.md).
-- **Sync** — **Poll Interval** (default `15m`), **Workers**, **Initial History Days** (bounds the first Slack sync to a few days; the month of history comes from [history backfill](../concepts/history-backfill.md)), **Sync Threads**.
+- **Sync** — **Poll Interval** (default `15m`), **Workers** (parallel sync work, default 1; not the AI one), **Initial History Days** (bounds the first Slack sync to a few days; the month of history comes from [history backfill](../concepts/history-backfill.md)), **Sync Threads**.
 - **Daemon** — read-only status; the app starts and stops it. **Open Logs** opens the live log window.
 - **Data** — storage, **Reset AI-Generated Data** (deletes what the AI made, then rebuilds it), and **Reset All Data** under Danger Zone.
 - **Privacy** — **Delete an account's data when its access is revoked** (off by default, on in the corporate build), and **Organization policy** when your company manages the Mac. See [Revoked access](../concepts/revoked-access.md) and [Managed by your organization](../concepts/managed-by-your-organization.md).

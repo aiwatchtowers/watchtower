@@ -6,23 +6,43 @@ import Foundation
 package enum HomeFeedBuilder {
     /// Rows shown above NOW before "N more".
     package static let waitingLimit = 7
+    /// The first expand shows this many rows above NOW, and each "Show N
+    /// more" after it this many more: a long backlog pages in place instead
+    /// of laying out hundreds of rows at once.
+    package static let expandedLimit = 50
+
+    /// The row limit one more page raises `limit` to: the first expand goes
+    /// from the collapsed seven to `expandedLimit`, each later one adds
+    /// `expandedLimit`.
+    package static func nextLimit(after limit: Int) -> Int {
+        limit < expandedLimit ? expandedLimit : limit + expandedLimit
+    }
+
+    /// How many rows the next page adds to a feed: never more than remain
+    /// past it, so "N more" never promises rows it will not show.
+    package static func nextPageCount(_ feed: HomeFeed) -> Int {
+        let shown = feed.waiting.count
+        return min(feed.hiddenWaiting, nextLimit(after: shown) - shown)
+    }
     /// How many days ahead the next day with meetings is looked for.
     package static let nextDayHorizonDays = 3
 
     private static let nextDayLimit = 3
     private static let soonMinutes = 60
 
-    /// `hidden` holds the rows the owner just pressed Done / Hide on, so
-    /// they leave before the next read lands.
+    /// `limit` is how many rows show above NOW: `waitingLimit` collapsed,
+    /// raised a page at a time by `nextLimit(after:)`. `hidden` holds the
+    /// rows the owner just pressed Done / Hide on, so they leave before the
+    /// next read lands.
     package static func feed(
         _ data: HomeFeedData,
         now: Date,
         calendar: Calendar,
-        expanded: Bool,
+        limit: Int = waitingLimit,
         hidden: Set<FeedRef>
     ) -> HomeFeed {
         let rows = waitingRows(data, now: now, calendar: calendar).filter { !hidden.contains($0.id) }
-        let shown = expanded ? rows : Array(rows.prefix(waitingLimit))
+        let shown = Array(rows.prefix(max(limit, waitingLimit)))
         let today = events(data, now: now, calendar: calendar, hidden: hidden)
         return HomeFeed(
             waiting: shown,
@@ -200,8 +220,11 @@ package enum HomeFeedBuilder {
 
     /// An RFC 3339 UTC stamp as a date; an unparseable one sorts last.
     private static func instant(_ stamp: String) -> Date {
-        ISO8601DateFormatter().date(from: stamp) ?? .distantPast
+        isoParser.date(from: stamp) ?? .distantPast
     }
+
+    /// Zone-free, so one parser serves every build.
+    private static let isoParser = ISO8601DateFormatter()
 
     /// A target's "yyyy-MM-dd[THH:mm]" due date as local wall-clock time; a
     /// bare day is its midnight.

@@ -63,7 +63,7 @@ final class LearnZoneViewTests: XCTestCase {
     private func sideColumn(learn: LearnSelection?, actions: LearnZoneActions = .none) -> HomeSideColumn {
         let snapshot = HomeSnapshot(
             gettingReady: .hidden, firstSync: nil,
-            feed: HomeFeedBuilder.feed(HomeFeedData(), now: Date(), calendar: .current, expanded: false, hidden: []),
+            feed: HomeFeedBuilder.feed(HomeFeedData(), now: Date(), calendar: .current, hidden: []),
             workbench: [], links: [], numbers: nil)
         return HomeSideColumn(
             snapshot: snapshot, onLink: { _ in }, onDecideSuggestion: { _, _ in nil }, learn: learn,

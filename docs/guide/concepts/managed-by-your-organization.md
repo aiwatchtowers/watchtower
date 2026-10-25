@@ -12,7 +12,7 @@ Your company's configuration profile sets the value, and the app follows it unti
 - Whether the iPhone syncs, syncs only the Workbench, or does not sync.
 - Which Quick Connections the chat and automations may use.
 - Whether automations may run shell commands.
-- Which AI provider Watchtower uses, and whether the chat may use claude.ai tools.
+- Which AI provider Watchtower uses (and so which coding agent a workbench session can start), and whether the chat may use claude.ai tools.
 - Whether a revoked account's data is deleted.
 
 ## What happens to your data
