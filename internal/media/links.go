@@ -4,6 +4,7 @@
 package media
 
 import (
+	"net"
 	"net/url"
 	"regexp"
 	"sort"
@@ -90,23 +91,42 @@ func TextLinks(text string) []string {
 			}
 			break
 		}
-		if isHTTP(m) && len(m) > len("https://") {
+		if i := strings.Index(m, "://"); isHTTP(m) && len(m) > i+3 {
 			out = append(out, m)
 		}
 	}
 	return out
 }
 
+// asciiHost lowercases and IDNA-converts a host (ideographic full stops count
+// as dots), drops every trailing dot, and refuses an empty host or label.
 func asciiHost(h string) (string, bool) {
-	h = strings.TrimSuffix(strings.ToLower(h), ".")
-	if h == "" {
+	a, err := idna.Lookup.ToASCII(strings.ToLower(h))
+	if err != nil {
 		return "", false
 	}
-	a, err := idna.Lookup.ToASCII(h)
-	if err != nil || a == "" {
+	a = strings.TrimRight(strings.ToLower(a), ".")
+	if a == "" {
 		return "", false
 	}
-	return strings.ToLower(a), true
+	for _, l := range strings.Split(a, ".") {
+		if l == "" {
+			return "", false
+		}
+	}
+	return a, true
+}
+
+// NormalizeHostSet builds the refusedHosts set Fetchable expects: lowercase,
+// IDNA ASCII, no trailing dot. Hosts that do not normalize are dropped.
+func NormalizeHostSet(hosts []string) map[string]bool {
+	m := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		if n, ok := asciiHost(strings.TrimSpace(h)); ok {
+			m[n] = true
+		}
+	}
+	return m
 }
 
 func isTrackingKey(k string) bool {
@@ -116,7 +136,8 @@ func isTrackingKey(k string) bool {
 
 // NormalizeURL canonicalizes an http(s) URL: lowercase scheme and host, IDNA
 // ASCII host, default port and fragment dropped, tracking parameters dropped,
-// remaining query pairs sorted. It reports false for unparseable input.
+// remaining query pairs sorted, empty path becomes "/". IP-literal hosts are
+// normalized like any other (Fetchable refuses them). It reports false for unparseable input.
 func NormalizeURL(raw string) (string, bool) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
@@ -165,7 +186,7 @@ func NormalizeURL(raw string) (string, bool) {
 	b.WriteString(scheme + "://" + hostport)
 	if p := u.EscapedPath(); p != "" {
 		b.WriteString(p)
-	} else if len(pairs) > 0 {
+	} else {
 		b.WriteString("/")
 	}
 	if len(pairs) > 0 {
@@ -174,30 +195,71 @@ func NormalizeURL(raw string) (string, bool) {
 	return b.String(), true
 }
 
-// paramKeys lists the lowercased, unescaped keys of a k=v&k=v string.
+// decodeStable percent-decodes s until it stops changing (at most 3 rounds),
+// so double-encoded words are seen as the fetcher's server would see them.
+func decodeStable(s string, dec func(string) (string, error)) string {
+	for i := 0; i < 3; i++ {
+		d, err := dec(s)
+		if err != nil || d == s {
+			return s
+		}
+		s = d
+	}
+	return s
+}
+
+// paramKeys lists the lowercased, decoded keys of a k=v string separated by
+// "&" or ";", with a trailing array suffix ("[]", "[0]") removed.
 func paramKeys(s string) []string {
 	var keys []string
-	for _, p := range strings.Split(s, "&") {
+	for _, p := range strings.FieldsFunc(s, func(r rune) bool { return r == '&' || r == ';' }) {
 		if i := strings.IndexByte(p, '='); i >= 0 {
 			p = p[:i]
 		}
-		if p == "" {
-			continue
+		p = strings.ToLower(decodeStable(p, url.QueryUnescape))
+		if i := strings.IndexByte(p, '['); i > 0 && strings.HasSuffix(p, "]") {
+			p = p[:i]
 		}
-		if dk, err := url.QueryUnescape(p); err == nil {
-			p = dk
+		if p != "" {
+			keys = append(keys, p)
 		}
-		keys = append(keys, strings.ToLower(p))
 	}
 	return keys
 }
 
+func splitWords(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return r == '-' || r == '_' || r == '.' })
+}
+
+// wordsSecret reports whether any separator-delimited word of s, or s with the
+// separators removed, is in set.
+func wordsSecret(s string, set map[string]bool) bool {
+	tokens := splitWords(strings.ToLower(s))
+	for _, t := range tokens {
+		if set[t] {
+			return true
+		}
+	}
+	return set[strings.Join(tokens, "")]
+}
+
+func keySecret(k string) bool {
+	return strings.HasPrefix(k, "x-amz-") || strings.HasPrefix(k, "x-goog-") || wordsSecret(k, secretParamSet)
+}
+
 func hasSecretParam(u *url.URL) bool {
-	keys := append(paramKeys(u.RawQuery), paramKeys(u.EscapedFragment())...)
+	keys := paramKeys(u.RawQuery)
+	frag := u.EscapedFragment()
+	route, qs := frag, ""
+	if i := strings.IndexByte(frag, '?'); i >= 0 {
+		route, qs = frag[:i], frag[i+1:]
+	}
+	keys = append(keys, paramKeys(qs)...)
+	keys = append(keys, paramKeys(route)...)
 	var expires, keyPair bool
 	for _, k := range keys {
 		switch {
-		case secretParamSet[k], strings.HasPrefix(k, "x-amz-"), strings.HasPrefix(k, "x-goog-"):
+		case keySecret(k):
 			return true
 		case k == "expires":
 			expires = true
@@ -209,22 +271,24 @@ func hasSecretParam(u *url.URL) bool {
 }
 
 func segmentIsSecret(seg string) bool {
-	seg = strings.ToLower(seg)
-	tokens := strings.FieldsFunc(seg, func(r rune) bool { return r == '-' || r == '_' || r == '.' })
-	for _, t := range tokens {
-		if secretSegmentSet[t] {
-			return true
+	head, tail, hasParams := strings.Cut(seg, ";")
+	if wordsSecret(head, secretSegmentSet) {
+		return true
+	}
+	if hasParams {
+		for _, k := range paramKeys(tail) {
+			if keySecret(k) {
+				return true
+			}
 		}
 	}
-	return secretSegmentSet[strings.Join(tokens, "")]
+	return false
 }
 
-func hasSecretPath(u *url.URL) bool {
-	for _, raw := range strings.Split(u.EscapedPath(), "/") {
-		seg, err := url.PathUnescape(raw)
-		if err != nil {
-			seg = raw
-		}
+// pathSecret checks every segment of an escaped path (or fragment route).
+func pathSecret(escaped string) bool {
+	for _, raw := range strings.Split(escaped, "/") {
+		seg := decodeStable(raw, url.PathUnescape)
 		// An encoded slash splits into further segments.
 		for _, s := range strings.Split(seg, "/") {
 			if s != "" && segmentIsSecret(s) {
@@ -235,47 +299,58 @@ func hasSecretPath(u *url.URL) bool {
 	return false
 }
 
+func hasSecretPath(u *url.URL) bool {
+	route, _, _ := strings.Cut(u.EscapedFragment(), "?")
+	return pathSecret(u.EscapedPath()) || pathSecret(route)
+}
+
+// hostRefused matches host (already normalized) and each parent domain
+// against SyncedHosts and refused. The keys of refused must be normalized
+// (lowercase, IDNA ASCII, no trailing dot): build the set with NormalizeHostSet.
 func hostRefused(host string, refused map[string]bool) bool {
-	match := func(set func(string) bool) bool {
-		for h := host; h != ""; {
-			if set(h) {
-				return true
-			}
-			i := strings.IndexByte(h, '.')
-			if i < 0 {
-				break
-			}
-			h = h[i+1:]
+	for h := host; h != ""; {
+		if refused[h] {
+			return true
 		}
-		return false
-	}
-	if match(func(h string) bool {
 		for _, s := range SyncedHosts {
 			if h == s {
 				return true
 			}
 		}
-		return false
-	}) {
+		i := strings.IndexByte(h, '.')
+		if i < 0 {
+			break
+		}
+		h = h[i+1:]
+	}
+	return false
+}
+
+// isIPLiteral reports a host that is an IP address, including the numeric
+// shorthand forms resolvers accept (a purely numeric last label, "0x…").
+func isIPLiteral(host string) bool {
+	if net.ParseIP(host) != nil {
 		return true
 	}
-	return match(func(h string) bool {
-		if refused[h] {
-			return true
+	labels := strings.Split(host, ".")
+	last := labels[len(labels)-1]
+	if strings.HasPrefix(last, "0x") {
+		return true
+	}
+	for _, r := range last {
+		if r < '0' || r > '9' {
+			return false
 		}
-		for k, v := range refused {
-			if v && strings.EqualFold(strings.TrimSuffix(k, "."), h) {
-				return true
-			}
-		}
-		return false
-	})
+	}
+	return last != ""
 }
 
 // Fetchable reports whether Watchtower may ever fetch raw, and returns its
 // normalized form. It refuses non-http(s) schemes, ports other than 80/443,
-// userinfo, secret-looking parameters or path segments, and hosts that are
-// synced sources or in refusedHosts (exact or subdomain). The web fetcher
+// userinfo, secret-looking parameters (query, fragment, ";" path parameters)
+// or path segments (also in a fragment route), IP-literal hosts (the fetcher's
+// connect-time address check is the real gate), and hosts that are synced
+// sources or in refusedHosts (exact or subdomain; build it with NormalizeHostSet). The web fetcher
 // runs it again on every redirect hop.
 func Fetchable(raw string, refusedHosts map[string]bool) (string, bool) {
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -292,8 +367,8 @@ func Fetchable(raw string, refusedHosts map[string]bool) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	host, _ := asciiHost(u.Hostname())
-	if hostRefused(host, refusedHosts) {
+	host, ok := asciiHost(u.Hostname())
+	if !ok || isIPLiteral(host) || hostRefused(host, refusedHosts) {
 		return "", false
 	}
 	return norm, true

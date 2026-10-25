@@ -171,3 +171,68 @@ func TestFetchable_AllowsPlain(t *testing.T) {
 		t.Fatalf("got %q %v", got, ok)
 	}
 }
+
+func TestFetchable_FixRound1Refusals(t *testing.T) {
+	deny := NormalizeHostSet([]string{"Corp.Example.", "bücher.example"})
+	refused := []string{
+		// trailing-dot and ideographic-dot hosts
+		"https://slack.com../", "https://slack.com。/", "https://corp.example../", "https://wiki.corp.example。/",
+		"https://slack.com.../x", "https://a..example.com/",
+		"https://xn--bcher-kva.example/", "https://www.bücher.example/",
+		// path parameters
+		"https://example.com/login;jsessionid=abc", "https://example.com/verify;token=abc", "https://example.com/p;token=abc",
+		"https://example.com/p;a=1;sid=abc",
+		// ; as query separator
+		"https://example.com/p?a=1;token=abc",
+		// array keys
+		"https://example.com/p?token[]=abc", "https://example.com/p?token%5B%5D=abc", "https://example.com/p?token[0]=abc",
+		// tokenized keys
+		"https://example.com/p?auth_token=abc", "https://example.com/p?private_token=abc",
+		"https://example.com/p?oauth_token=abc", "https://example.com/p?access-token=abc", "https://example.com/p?sort-key=a",
+		"https://example.com/p#auth_token=abc",
+		// fragment routes
+		"https://example.com/app#/invite?token=abc", "https://example.com/app#!/x?access_token=abc",
+		"https://example.com/app#/invite/abc", "https://example.com/app#!/reset-password",
+		// double encoding
+		"https://example.com/lo%2567in", "https://example.com/p?t%256Fken=abc", "https://example.com/a%252Fverify",
+		// IP literals
+		"https://127.0.0.1/", "https://8.8.8.8/x", "https://[::1]/", "https://[2001:db8::1]/", "https://2130706433/",
+	}
+	for _, u := range refused {
+		if n, ok := Fetchable(u, deny); ok {
+			t.Errorf("%s allowed as %s", u, n)
+		}
+	}
+	allowed := []string{
+		"https://example.com/p?page_size=10", "https://example.com/p?Expires=1", "https://example.com/p;v=1",
+		"https://example.com/app#/docs/intro", "https://example.com/p?keyboard=1", "https://example.com/p?monkey=1",
+		"http://x",
+	}
+	for _, u := range allowed {
+		if n, ok := Fetchable(u, deny); !ok {
+			t.Errorf("%s refused (%s)", u, n)
+		}
+	}
+}
+
+func TestNormalizeURL_EmptyPath(t *testing.T) {
+	a, _ := NormalizeURL("https://example.com")
+	b, _ := NormalizeURL("https://example.com/")
+	c, _ := NormalizeURL("https://example.com?b=1&a=2")
+	if a != b || a != "https://example.com/" || c != "https://example.com/?a=2&b=1" {
+		t.Fatalf("%q %q %q", a, b, c)
+	}
+}
+
+func TestTextLinks_ShortScheme(t *testing.T) {
+	if got := TextLinks("see http://x now"); len(got) != 1 || got[0] != "http://x" {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestNormalizeHostSet(t *testing.T) {
+	m := NormalizeHostSet([]string{" Corp.Example. ", "bücher.example", "", "a..b"})
+	if !m["corp.example"] || !m["xn--bcher-kva.example"] || len(m) != 2 {
+		t.Fatalf("%v", m)
+	}
+}
