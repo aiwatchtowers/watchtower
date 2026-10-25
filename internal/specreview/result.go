@@ -53,12 +53,23 @@ type Anchor struct {
 }
 
 // Source says where an agreement was made. Kind is one of conversation, ask,
-// target, comment, decisions, spec.
+// target, comment, decisions, spec. Speaker is set by Parse, never taken from
+// the model: "owner" when the quote is the owner's own words (an owner line of
+// the conversation, the owner's part of an ask answer, an owner comment), else
+// "agent" (agent text, an ask's question or summary, an agent comment, the
+// target, the document's Decisions section, the spec).
 type Source struct {
-	Kind  string `json:"kind"`
-	Ref   string `json:"ref"`
-	Quote string `json:"quote"`
+	Kind    string `json:"kind"`
+	Ref     string `json:"ref"`
+	Quote   string `json:"quote"`
+	Speaker string `json:"speaker"`
 }
+
+// Speakers of a Source.
+const (
+	SpeakerOwner = "owner"
+	SpeakerAgent = "agent"
+)
 
 // Evidence is a place in the folder.
 type Evidence struct {
@@ -142,8 +153,12 @@ type Result struct {
 }
 
 // Sources is everything a quote may come from. Every map is keyed by the Ref
-// the prompt shows (entry:<id>, ask:<n>, comment:<n>).
+// the prompt shows (entry:<id>, ask:<n>, comment:<n>). OwnerWords holds, per
+// ref, the pieces of that source the owner said (an owner line, the owner's
+// answer texts, notes and comment bodies of an ask, an owner comment); a ref
+// absent from it is the agent's.
 type Sources struct {
+	OwnerWords   map[string][]string
 	Doc          string
 	Conversation map[string]string
 	Asks         map[string]string

@@ -103,6 +103,7 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 	in := &inputs{src: Sources{
 		Doc: ask.DocSnapshot, Folder: folder,
 		Conversation: map[string]string{}, Asks: map[string]string{}, Comments: map[string]string{},
+		OwnerWords: map[string][]string{},
 	}}
 	t := DocType(ask.DocType)
 
@@ -189,6 +190,7 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 		return
 	}
 	var heads, refs, texts []string
+	byRef := map[string]sessionfeed.Entry{}
 	for _, e := range entries {
 		if strings.TrimSpace(e.Text) == "" {
 			continue
@@ -207,6 +209,7 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 			head += " " + e.At.UTC().Format(time.RFC3339)
 		}
 		heads, refs, texts = append(heads, "["+ref+"] "+head), append(refs, ref), append(texts, e.Text)
+		byRef[ref] = e
 	}
 	items := make([]string, len(texts))
 	for i := range texts {
@@ -233,6 +236,13 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 	}
 	for i := first; i < len(items); i++ {
 		in.src.Conversation[refs[i]] = texts[i]
+		if e := byRef[refs[i]]; e.Kind == sessionfeed.KindOwner {
+			in.src.OwnerWords[refs[i]] = []string{texts[i]}
+		} else if e.Kind == sessionfeed.KindAskAnswer {
+			// The entry carries the rendered ask, the agent's questions
+			// included: only the stored answer's own texts are the owner's.
+			in.src.OwnerWords[refs[i]] = askOwnerWords(d.DB, ask.WorkbenchID, e.AskID)
+		}
 	}
 	// Items are already indented: fence them as they are.
 	in.blocks = append(in.blocks, "<<<conversation\n"+strings.Join(items[first:], "")+">>>\n")
@@ -281,19 +291,61 @@ func (in *inputs) asks(d *db.DB, ask *db.OwnerAsk) error {
 	}
 	var b strings.Builder
 	for _, a := range picked {
-		text, _, err := asks.RenderStored(a.Kind, a.Payload, a.Answer)
+		text, answer, err := asks.RenderStored(a.Kind, a.Payload, a.Answer)
 		if err != nil {
 			in.note("ask #%d left out: %v", a.ID, err)
 			continue
 		}
 		ref := "ask:" + strconv.FormatInt(a.ID, 10)
 		in.src.Asks[ref] = text
+		in.src.OwnerWords[ref] = ownerAnswerWords(answer)
 		fmt.Fprintf(&b, "[%s] %s %q answered %s\n%s", ref, a.Kind, oneLineText(a.Title), a.AnsweredAt, indentLines(text, blockIndent))
 	}
 	if b.Len() > 0 {
 		in.add("asks", b.String())
 	}
 	return nil
+}
+
+// ownerAnswerWords is what the owner wrote or picked in an answer: the
+// chosen labels and free answers, the check notes, the comment bodies and the
+// note. The questions, check items, quoted document text and the dismissal
+// line are the agent's (or Watchtower's) words.
+func ownerAnswerWords(a asks.Answer) []string {
+	var out []string
+	add := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	for _, q := range a.Answers {
+		for _, l := range q.Labels {
+			add(l)
+		}
+		add(q.Other)
+	}
+	for _, c := range a.Checklist {
+		add(c.Note)
+	}
+	for _, c := range a.Comments {
+		add(c.Body)
+	}
+	add(a.Note)
+	return out
+}
+
+// askOwnerWords is ownerAnswerWords of an answered ask of the workbench; an
+// ask that is gone, open or unreadable has no owner words.
+func askOwnerWords(d *db.DB, workbenchID, askID int64) []string {
+	a, err := d.GetOwnerAsk(workbenchID, askID)
+	if err != nil || (a.Status != "answered" && a.Status != "delivered") {
+		return nil
+	}
+	_, answer, err := asks.RenderStored(a.Kind, a.Payload, a.Answer)
+	if err != nil {
+		return nil
+	}
+	return ownerAnswerWords(answer)
 }
 
 // target loads the ask's target and its parent; a target that is gone is a
@@ -352,6 +404,9 @@ func (in *inputs) comments(d *db.DB, ask *db.OwnerAsk) error {
 	for _, c := range list {
 		ref := "comment:" + strconv.FormatInt(c.ID, 10)
 		in.src.Comments[ref] = c.Body
+		if c.Author == "owner" {
+			in.src.OwnerWords[ref] = []string{c.Body}
+		}
 		fmt.Fprintf(&b, "[%s] %s %s\n%s", ref, c.Author, c.CreatedAt, indentLines(c.Body, blockIndent))
 	}
 	if b.Len() > 0 {

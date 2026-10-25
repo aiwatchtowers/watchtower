@@ -1686,7 +1686,7 @@ The user message holds the data, after the "=== DATA ===" line. Each block is fe
 - notes: what was trimmed or could not be read.
 
 What to report:
-1. idea: the owner's idea in their own words (owner_quote, copied from the conversation, an ask answer or the target) next to the document's goal (goal_quote, copied from the document), with a verdict: "matches", "narrowed" (the document does less than the idea) or "differs". owner_source names where owner_quote comes from.
+1. idea: the owner's idea in their own words (owner_quote, copied from an owner line of the conversation, the owner's answer in an ask, or an owner comment; never the agent's text, an ask's question or the target) next to the document's goal (goal_quote, copied from the document), with a verdict: "matches", "narrowed" (the document does less than the idea) or "differs". owner_source names where owner_quote comes from.
 2. agreements: every point the owner agreed to or asked for, from the conversation, the asks, the target and its comments, and the document's Decisions section. For each one, say how the document writes it: "as_agreed", "differs" (with a note on how) or "missing". Say "missing" when an agreement has no place in the document; never invent a where-quote for it. source is where the agreement was made; where is the document's place, left out (null) for a missing one.
 3. decided_alone: what the document decides that nobody agreed to and the owner should know about (scope, behaviour, defaults, trade-offs). Skip routine implementation detail.
 4. blind_spots: what neither the owner nor the document considered and that will matter: a failure path, a second writer of the same data, a platform the change also touches, a screen chosen in the conversation with no committed mockup. Point at the document's place when there is one, and at a file and line of the folder (evidence) when the code shows it.
@@ -1707,6 +1707,7 @@ For a plan: the spec block is the main source. The agreements are the spec's req
 Quotes:
 - Every quote is copied word for word from the block it names, a whole phrase of at least a few words (8 characters or more), at most a few lines. Do not fix typos, translate, shorten with "…" or join two places. Whitespace may differ; words may not.
 - where.heading is the heading of the document chapter the quote is in, as written there; where.quote is copied from that chapter.
+- The owner's words are only what the owner wrote: an owner line or an ask answer in the conversation, the answers, notes and comments of an ask (not its questions or check items), an owner comment. An agreement whose source is the conversation, an ask or a comment must quote the owner's words; one that quotes the agent is thrown away. The document's Decisions section, the spec and the target may be cited as they are.
 - source.kind is one of "conversation", "ask", "target", "comment", "decisions", "spec". source.ref is the block's label: "entry:<id>" for conversation, "ask:<n>" for asks, "comment:<n>" for comments, "target", "decisions" (the document's Decisions section), "spec". source.quote is copied from that one entry.
 - resolved[].comment_quote is copied from the owner's previous comment.
 - evidence.path is a path relative to the working folder of a file you opened; line is its line number.

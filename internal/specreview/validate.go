@@ -100,9 +100,11 @@ func (v *validator) anchor(a Anchor) (key, heading string, ok bool) {
 	return v.chapters[hit].Key, v.chapters[hit].Heading, true
 }
 
-// sourceOK checks a source: the ref must exist for its kind and the quote must
-// occur in the text under it.
-func (v *validator) sourceOK(s Source) bool {
+// source checks a source: the ref must exist for its kind and the quote must
+// occur in the text under it. speaker is who said the quote: the owner only
+// when it occurs in one of the owner's own pieces of that ref (OwnerWords);
+// the target, the Decisions section and the spec are the author's side.
+func (v *validator) source(s Source) (speaker string, ok bool) {
 	var text string
 	var found bool
 	switch s.Kind {
@@ -119,7 +121,25 @@ func (v *validator) sourceOK(s Source) bool {
 	case "spec":
 		text, found = v.src.Spec, v.src.Spec != ""
 	}
-	return found && contains(text, s.Quote)
+	if !found || !contains(text, s.Quote) {
+		return "", false
+	}
+	switch s.Kind {
+	case "conversation", "ask", "comment":
+		for _, w := range v.src.OwnerWords[s.Ref] {
+			if contains(w, s.Quote) {
+				return SpeakerOwner, true
+			}
+		}
+	}
+	return SpeakerAgent, true
+}
+
+// authorSide is a source kind an agreement may cite without the owner's
+// words: the document's own Decisions section, the spec a plan implements and
+// the board target.
+func authorSide(kind string) bool {
+	return kind == "decisions" || kind == "spec" || kind == "target"
 }
 
 // decisionsText is the text of the chapter headed "Decisions" (the first one).
@@ -214,11 +234,16 @@ func (v *validator) agreements(in []Agreement) []Agreement {
 	seen := map[string]bool{}
 	for _, a := range in {
 		a.Text, a.Note = field(a.Text), field(a.Note)
+		speaker, srcOK := v.source(a.Source)
+		// An agreement quoting the agent's words in the conversation, an
+		// ask or a comment is not something the owner agreed.
+		srcOK = srcOK && (speaker == SpeakerOwner || authorSide(a.Source.Kind))
 		if a.Text == "" || !(a.Status == "as_agreed" || a.Status == "differs" || a.Status == "missing") ||
-			!v.sourceOK(a.Source) || len(out) >= maxAgreements {
+			!srcOK || len(out) >= maxAgreements {
 			v.drop()
 			continue
 		}
+		a.Source.Speaker = speaker
 		anchorQuote := ""
 		if a.Where != nil {
 			ch, h, ok := v.anchor(*a.Where)
@@ -335,8 +360,9 @@ func (v *validator) resolved(in []Resolved) []Resolved {
 	return out
 }
 
-// idea keeps the verdict only when its quotes are real; otherwise it is empty
-// (and counted), unless the model gave none at all.
+// idea keeps the verdict only when its quotes are real and owner_source is the
+// owner's own words; otherwise it is empty (and counted), unless the model gave
+// none at all.
 func (v *validator) idea(i Idea) Idea {
 	if i == (Idea{}) {
 		return Idea{}
@@ -345,12 +371,14 @@ func (v *validator) idea(i Idea) Idea {
 	if i.OwnerSource.Quote == "" {
 		i.OwnerSource.Quote = i.OwnerQuote
 	}
+	speaker, srcOK := v.source(i.OwnerSource)
 	ok := (i.Verdict == "matches" || i.Verdict == "narrowed" || i.Verdict == "differs") &&
 		contains(v.src.Doc, i.GoalQuote) && contains(i.OwnerSource.Quote, i.OwnerQuote) &&
-		v.sourceOK(i.OwnerSource)
+		srcOK && speaker == SpeakerOwner
 	if !ok {
 		v.drop()
 		return Idea{}
 	}
+	i.OwnerSource.Speaker = speaker
 	return i
 }
