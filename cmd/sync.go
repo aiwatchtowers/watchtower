@@ -935,7 +935,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	dayPlanPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetDayPlanPipeline(dayPlanPipe)
 	mediaPipe := newMediaPipeline(cfg, database, gen, logger)
-	wireSlackMedia(mediaPipe, orchestrators, newIssueKeyDetector(cfg, database, logger))
+	wireSlackMedia(mediaPipe, orchestrators, newIssueKeyDetector(cfg, database, logger), logger)
 	d.SetMediaPipeline(mediaPipe)
 	// Seed jira_accounts from a pre-multi-account legacy token file
 	// before wiring, so a single-account install keeps syncing without
