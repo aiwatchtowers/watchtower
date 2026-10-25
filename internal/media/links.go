@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"golang.org/x/net/idna"
 )
@@ -37,11 +38,20 @@ var SyncedHosts = []string{
 }
 
 var (
-	secretParamSet   = toSet(SecretParams)
+	secretParamSet   = toSet(stripSeps(SecretParams))
 	secretSegmentSet = toSet(SecretPathSegments)
 	slackAngleRe     = regexp.MustCompile(`<([^<>]+)>`)
 	textLinkRe       = regexp.MustCompile(`(?i)https?://[^\s<>]+`)
 )
+
+// stripSeps lowercases each word and removes its -/_/. separators.
+func stripSeps(l []string) []string {
+	out := make([]string, len(l))
+	for i, s := range l {
+		out[i] = strings.ToLower(strings.Join(splitWords(s), ""))
+	}
+	return out
+}
 
 func toSet(l []string) map[string]bool {
 	m := make(map[string]bool, len(l))
@@ -216,8 +226,8 @@ func paramKeys(s string) []string {
 		if i := strings.IndexByte(p, '='); i >= 0 {
 			p = p[:i]
 		}
-		p = strings.ToLower(decodeStable(p, url.QueryUnescape))
-		if i := strings.IndexByte(p, '['); i > 0 && strings.HasSuffix(p, "]") {
+		p = decodeStable(p, url.QueryUnescape)
+		if i := strings.IndexByte(p, '['); i > 0 {
 			p = p[:i]
 		}
 		if p != "" {
@@ -227,24 +237,51 @@ func paramKeys(s string) []string {
 	return keys
 }
 
+// splitWords splits at -/_/. and at camelCase and letter/digit boundaries
+// ("accessToken" -> access, Token), keeping the original case.
 func splitWords(s string) []string {
-	return strings.FieldsFunc(s, func(r rune) bool { return r == '-' || r == '_' || r == '.' })
+	var words []string
+	var cur []rune
+	var prev rune
+	flush := func() {
+		if len(cur) > 0 {
+			words = append(words, string(cur))
+			cur = cur[:0]
+		}
+	}
+	for _, r := range s {
+		if r == '-' || r == '_' || r == '.' {
+			flush()
+			prev = 0
+			continue
+		}
+		if prev != 0 && ((unicode.IsLower(prev) && unicode.IsUpper(r)) ||
+			(unicode.IsDigit(prev) != unicode.IsDigit(r))) {
+			flush()
+		}
+		cur = append(cur, r)
+		prev = r
+	}
+	flush()
+	return words
 }
 
-// wordsSecret reports whether any separator-delimited word of s, or s with the
-// separators removed, is in set.
+// wordsSecret reports whether any word of s, or the words joined, is in set
+// (whose entries have their separators removed).
 func wordsSecret(s string, set map[string]bool) bool {
-	tokens := splitWords(strings.ToLower(s))
-	for _, t := range tokens {
-		if set[t] {
+	words := splitWords(s)
+	for i := range words {
+		words[i] = strings.ToLower(words[i])
+		if set[words[i]] {
 			return true
 		}
 	}
-	return set[strings.Join(tokens, "")]
+	return set[strings.Join(words, "")]
 }
 
 func keySecret(k string) bool {
-	return strings.HasPrefix(k, "x-amz-") || strings.HasPrefix(k, "x-goog-") || wordsSecret(k, secretParamSet)
+	l := strings.ToLower(k)
+	return strings.HasPrefix(l, "x-amz-") || strings.HasPrefix(l, "x-goog-") || wordsSecret(k, secretParamSet)
 }
 
 func hasSecretParam(u *url.URL) bool {
@@ -261,9 +298,9 @@ func hasSecretParam(u *url.URL) bool {
 		switch {
 		case keySecret(k):
 			return true
-		case k == "expires":
+		case strings.EqualFold(k, "expires"):
 			expires = true
-		case k == "key-pair-id":
+		case strings.EqualFold(k, "key-pair-id"):
 			keyPair = true
 		}
 	}

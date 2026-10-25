@@ -236,3 +236,25 @@ func TestNormalizeHostSet(t *testing.T) {
 		t.Fatalf("%v", m)
 	}
 }
+
+func TestFetchable_CamelCaseAndBrackets(t *testing.T) {
+	for _, u := range []string{
+		"https://example.com/p?accessToken=x", "https://example.com/p?refreshToken=x", "https://example.com/p?clientSecret=x",
+		"https://example.com/p?idToken=x", "https://example.com/p?APIKey=x", "https://example.com/p?apiKey=x",
+		"https://example.com/p?accesstoken=x", "https://example.com/p#accessToken=x", "https://example.com/p?token2=x",
+		"https://example.com/resetPassword", "https://example.com/signIn", "https://example.com/SignIn", "https://example.com/verifyEmail",
+		"https://example.com/p?token[=x", "https://example.com/p?token[0=x", "https://example.com/p?accessToken[]=x",
+	} {
+		if n, ok := Fetchable(u, nil); ok {
+			t.Errorf("%s allowed as %s", u, n)
+		}
+	}
+	for _, u := range []string{
+		"https://example.com/p?keyboard=1", "https://example.com/p?page_size=1", "https://example.com/p?monkey=1",
+		"https://example.com/a#/docs/intro", "https://example.com/blog/approvals", "https://example.com/p?pageSize=1",
+	} {
+		if _, ok := Fetchable(u, nil); !ok {
+			t.Errorf("%s refused", u)
+		}
+	}
+}
