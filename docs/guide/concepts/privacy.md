@@ -16,6 +16,19 @@ In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated d
 
 Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, the iPhone-sync folder next to them (`MobileHub`), the sync keys in your Keychain and anything already in iCloud. Delete the recordings by hand. To clear iPhone data, turn off **Sync with iPhone** and remove the phone before you reset.
 
+## Watchtower stays out of Time Machine
+
+Time Machine skips Watchtower's data: `~/.local/share/watchtower` (the database, Memory, logs and sign-ins), `~/Library/Application Support/Watchtower` (recordings and the iPhone-sync folder) and a custom recordings folder. The app marks them again at every launch and daemon start, so a recreated folder is skipped too. Your settings in `~/.config/watchtower` are still backed up.
+
+Backups made before Watchtower started skipping these folders still hold them. To delete those copies:
+
+1. Open Time Machine and go to the folder's parent.
+2. Control-click the folder and choose **Delete All Backups of "…"**.
+
+A backup disk formatted APFS (the default since macOS 11) has no such item: it deletes only whole backups. Delete the older backups (`sudo tmutil delete -d <disk> -t <timestamp>`; Terminal needs Full Disk Access), or erase the disk and back up again.
+
+Other backup tools may not honour Time Machine's flag: add the two folders to their exclusion list by hand.
+
 ## What goes to your AI provider
 
 Every AI feature sends the relevant text to the provider you chose in [AI providers, models and cost](ai-providers-and-cost.md), and it arrives under the terms of your own Claude, Codex or other account. Watchtower does not control that provider's retention.
