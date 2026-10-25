@@ -37,6 +37,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Source deletions | [source-deletions.md](source-deletions.md) | `internal/sourcediff/`, `internal/sync/deletions.go`, `internal/db/slack_deletions.go`, `internal/db/migrations/00139_source_deletions.sql`, `internal/gmail/deletions.go`, `internal/imap/sync.go` (`reconcileDeletions`), `internal/jira/sync.go` (comment set-replace), `internal/jira/deletions.go`, `internal/db/jira_deletions.go`, `internal/kb/dirty.go` |
 | Search indexes | [search-indexes.md](search-indexes.md) | `internal/db/migrations/00147_fts_rowid.sql`, `internal/db/fts_rebuild.go`, `internal/db/messages.go`, `internal/db/search.go` |
 | Backup exclusion (Time Machine) | [backup.md](backup.md) | `internal/backupexclude/`, `cmd/backup_exclude.go`, `cmd/workspace.go`, `cmd/db.go`, `cmd/sync.go` (`runSyncDaemon`), `internal/config/config.go` (`AppSupportDir`) |
+| Files outside the database (logs, temp files) | [files.md](files.md) | `internal/logredact/`, `internal/logcanary/`, `internal/fsutil/prompt_pipe.go`, `internal/fsutil/private_temp.go`, `internal/{sync,meeting,digest,tracks,targets,briefing,guide,ai,codex,jira,ollama}/*files01_test.go` |
 
 (Other modules will be added as their inventories are written.)
 

@@ -31,7 +31,11 @@ stays in the composer. Assistant text that already streamed survives Stop, a
 session crash and app quit: it is persisted with `status='partial'` (Stop
 sends `cancel` and the interrupted turn renders "Stopped" + Continue; a
 crashed process's partial text is flushed and the next send respawns the
-session with `--resume`, replaying history). Regenerate and Edit insert
+session, which replays the history from the database — no session resumes
+a stored provider session since #604 G11; the replay waits for the
+stopped reply's last save). A queued embedded-chat message waiting for its
+turn is kept in `chat_queued_drafts` and comes back as a draft after a
+relaunch. Regenerate and Edit insert
 their new assistant/user rows under the NEW turn id **before** the turn goes
 out, and a failed turn is recorded as an `error` row before the next turn is
 accepted — both close the same failure mode: Go's `HistoryBefore` strips
@@ -116,24 +120,25 @@ misbehaving child.
 **Status:** Enforced
 
 **Observable:** The system prompt, the owner's text and attachment paths
-never appear on any process's argv: the prompt travels in a 0600 temp file
-(`--system-prompt-file`, deleted when the session exits), the turn's text
+never appear on any process's argv: the prompt travels over an inherited
+pipe (`--system-prompt-file /dev/fd/N`, nothing on disk), the turn's text
 and attachment paths travel in the `turn` command on stdin (an accepted
 attachment's file content is base64-encoded into the stdin content block —
 its path is never written to stdin either), and any MCP config carrying
-connection secrets travels as a 0600 temp-file path (`--mcp-config`), also
-deleted on exit. This holds across providers: the Claude backend's argv is
-ids/flags only (`--resume`, `--model`, etc.), and the codex-backed turn
-hands codex the system prompt as a 0600 `model_instructions_file` (only
-its path on argv) and the replay + user text on stdin (`codex exec -`),
+connection secrets travels over an inherited pipe as well
+(`--mcp-config /dev/fd/N`). This holds across providers: the Claude
+backend's argv is flags and `/dev/fd` paths only (`--model`,
+`--no-session-persistence`, etc.; never `--resume`), and the codex-backed
+turn hands codex the system prompt as a 0600 `model_instructions_file`
+(only its path on argv; codex refuses a pipe there, so the file is removed
+at codex's first output) and the replay + user text on stdin (`codex exec -`),
 never as `-c developer_instructions=...` or a positional prompt.
 `ai session`'s own argv (the Swift session-launch side) carries only
 ids and names (`--conversation`, `--provider`, `--model`, `--surface`,
-`--project-id`, `--resume`, `--db-path`) — the turn's text and attachments
-exist only in the stdin JSONL command. A resumed session (`--resume`) never
-re-sends `--system-prompt-file` either — it reuses the prompt already
-recorded in its resumed history rather than passing it (or anything else)
-again on argv. The one-shot `watchtower chat title` call is covered too:
+`--project-id`, `--db-path`) — the turn's text and attachments exist only
+in the stdin JSONL command. No Claude Code session store is written
+(`--no-session-persistence`): every new child gets the prompt over its pipe
+and the history as a replay. The one-shot `watchtower chat title` call is covered too:
 its user message (the owner's first exchange) always travels on the
 claude/codex child's stdin, whatever its size, and so is `watchtower
 terminal title`, whose user message is the owner's typed messages from an
@@ -154,7 +159,7 @@ Extends QC-03's "secrets never on argv" to all chat content.
 
 **Guard:** `TestChat04_ClaudeArgvCarriesNoContent`,
 `TestChat04_ClaudeSendsRealAttachmentAsContentBlock`,
-`TestChat04_ClaudeArgsOnResume`
+`TestChat04_ClaudeArgsNeverResume`
 (`internal/chat/claude_backend_test.go`);
 `TestChat04_CodexSessionArgvCarriesNoContent`
 (`internal/codex/client_test.go`);
@@ -241,6 +246,8 @@ child is never started without it.
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`)
 
 ## Changelog
+
+- 2026-10-25 (board #604 Stage A, ask #571): **CHAT-04** strengthened; two guard assertions changed shape, the "nothing on argv" assertions are unchanged. Prompts and secret MCP configs reach the claude child over inherited pipes (`fsutil.AttachPayloads`, `/dev/fd/N`), so `TestChat04_ClaudeArgvCarriesNoContent` now asserts `/dev/fd` paths and that no prompt temp file exists, where it used to assert a 0600 temp file. No Claude Code session store exists (`--no-session-persistence` on every claude call, G11): `TestChat04_ClaudeArgsOnResume` is replaced by `TestChat04_ClaudeArgsNeverResume` (no spawn, first or after a crash, carries `--resume`; each gets `--system-prompt-file`), and the Swift `testChat04SessionArgvNeverCarriesContent` gains a no-`--resume` check. **CHAT-01**: the contract holds, one guard's shape changed. A respawned session replays the history from the database instead of resuming, so `testChat01PartialTextSurvivesProcessDeathAndTheNextTurnResumes` (name kept) now asserts that the next turn carries `replay: true` and no `--resume`; before saving a turn's rows the view model awaits the session driver's writes, so the replay holds a stopped reply's last save (`testSendAfterAStopReplaysTheStoppedReplysSavedText`). Embedded chats no longer store or resume a session id either: every turn sends the system prompt plus `EmbeddedChatReplay`'s block. The queued embedded-chat draft moved from UserDefaults to `chat_queued_drafts` (migration 00156), legacy keys imported once. Feature note: `docs/features/files-outside-db.md`.
 
 - 2026-10-24 (AI chats feed the knowledge base, ask #551): **extension of the code-question guard** (spec 2026-10-02 §9.4, owner decision 2; `TestCodeQuestionGuard_NoGoToolReadsChatHistory`, `internal/tools`): a Go reader of the chat tables is now let through only by an entry in the guard's `chatTableReaders` allow-map that names a behavioural test, and the guard checks that the reader's source filters `code_question`. The guard scans `internal/tools`, `internal/mcp` and `internal/kb` whole, plus the single file `internal/db/chat_knowledge.go` (the rest of `internal/db` has non-model-facing chat-table readers and is not scanned). Readers let through: the `chat_artifact` knowledge source (`internal/kb/source_chat_artifact.go`, test `TestChatArtifactSource_SkipsCodeQuestionChats`) and `db.ListChatTurnsForIdeas` (`internal/db/chat_knowledge.go`, the consolidator's chat material, test `TestListChatTurnsForIdeas`). A `code_question` chat saves no knowledge prefix (`решили:`/`факт:`), has no Add to Knowledge, and is never mined. Strengthening only; no assertion weakened.
 - 2026-10-24 (ask #539, spec `docs/superpowers/specs/2026-10-24-automations-tab-polish-design.md` §5b): note only — **no contract or assertion changed**. A finished answer's prose now draws through one native text view per run (`Views/Chat/MarkdownTextRun.swift`, runs from `MarkdownRunBuilder`); streaming replies stay SwiftUI. `ChatSelectionQuoteScanTests` gained the `nativeText` check for the new file. No CHAT guard relaxed.
