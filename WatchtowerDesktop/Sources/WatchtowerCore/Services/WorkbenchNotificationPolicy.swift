@@ -154,11 +154,21 @@ package enum WorkbenchNotificationPolicy {
                  questions: [], targets: [:], ownerTouched: [])
         }
 
+        /// What is saved between polls (UserDefaults, outside the database):
+        /// no transient field and no company text (#604 S16) — the names
+        /// and titles become `ContentDigest`s. `decide` reads only ids,
+        /// statuses and watermarks from the previous snapshot; every notice
+        /// takes its text from the current one.
         package var persisted: Self {
             var copy = self
+            copy.projectName = ContentDigest.of(projectName)
             copy.questions = []
             copy.pendingActions = []
             copy.ownerTouched = []
+            copy.targets = targets.mapValues { TargetState(title: ContentDigest.of($0.title), status: $0.status) }
+            copy.openAsks = openAsks.mapValues {
+                OpenAsk(title: ContentDigest.of($0.title), sessionID: $0.sessionID, kind: $0.kind)
+            }
             return copy
         }
 
