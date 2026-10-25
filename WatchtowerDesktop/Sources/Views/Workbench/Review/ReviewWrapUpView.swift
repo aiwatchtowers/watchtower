@@ -89,7 +89,7 @@ struct ReviewWrapUpView: View {
                     Task { try? await model.markIntent(item, state: state, note: "") } // a failure lands in lastError
                 } else {
                     compose(.init(title: state == .partial ? "What is only partly done?" : "What is not done?",
-                                  allowsEmpty: true) { note, _ in
+                                  allowsEmpty: true) { note in
                         try await model.markIntent(item, state: state, note: note)
                     })
                 }

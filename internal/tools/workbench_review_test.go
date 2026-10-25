@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -114,4 +115,22 @@ func TestGetReview_TextShowsLens(t *testing.T) {
 	assert.Regexp(t, `#\d+ a\.go:3-4 \[tests\]\n`, v.Text)
 	assert.Regexp(t, `#\d+ design \[intent\]\n`, v.Text)
 	assert.Regexp(t, `#\d+ b\.go:1-1\n`, v.Text)
+}
+
+func TestGetReview_ApprovedRoundStatesOutcome(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	sid := seedTerminalSession(t, fx.d, fx.a)
+	rid, err := fx.d.CreateReviewRound(db.ReviewRound{ProjectID: fx.a, SessionID: sql.NullInt64{Int64: sid, Valid: true},
+		FolderRoot: "/tmp/acme", BaseSHA: "b", BaseLabel: "main", TreeSHA: "t"})
+	require.NoError(t, err)
+	ok, err := fx.d.ApproveReviewRound(fx.a, rid, false)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	got := callReadIn(t, reg, fx.a, "get_review", fmt.Sprintf(`{"round_id":%d}`, rid))
+	var v reviewView
+	require.NoError(t, json.Unmarshal([]byte(got), &v))
+	assert.Equal(t, "approved", v.Outcome)
+	assert.True(t, strings.HasPrefix(v.Text, "Outcome: approved — no changes requested\n"), v.Text)
 }

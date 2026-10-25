@@ -269,7 +269,7 @@ func briefReviewLines(database *db.DB, workbenchID int64) string {
 				n++
 			}
 		}
-		lines = append(lines, reviewWaitingLine(r.ID, n))
+		lines = append(lines, reviewRoundLine(r, n))
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "watchtower: workbench %d brief: review rounds: %v\n", workbenchID, err)
@@ -295,8 +295,11 @@ func joinBriefLines(parts ...string) string {
 	return strings.Join(slices.DeleteFunc(parts, func(s string) bool { return s == "" }), "\n")
 }
 
-func reviewWaitingLine(id int64, n int) string {
-	return fmt.Sprintf("Review round #%d waiting (%s) → get_review %d", id, reviewdiff.CommentCount(n), id)
+func reviewRoundLine(r db.ReviewRound, n int) string {
+	if r.Outcome == db.ReviewOutcomeApproved {
+		return fmt.Sprintf("Review round #%d approved → get_review %d", r.ID, r.ID)
+	}
+	return fmt.Sprintf("Review round #%d waiting (%s) → get_review %d", r.ID, reviewdiff.CommentCount(n), r.ID)
 }
 
 // briefRecent is the recent-in-workbench-sources input; nil when the

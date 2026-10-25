@@ -108,9 +108,11 @@ package enum KeyboardShortcutCatalog {
             Entry("⌃6", "File symbols"),
             Entry("⌃⌘← / ⌃⌘→", "Back / forward"),
             Entry("⌘S", "Save now"),
-            Entry("⌥⌘Return", "Hand to Session (an Ask AI answer)"),
+            Entry("⌥⌘Return", "Hand to Session (an Ask AI answer); Chapter viewed in Branch review (Deep)"),
             Entry("⌥⌘M", "Comment on the selected lines (Branch review pane)"),
-            Entry("⌥⌘↑ / ⌥⌘↓", "Previous / next unviewed file (Branch review pane)")
+            Entry("⌥⌘↑ / ⌥⌘↓", "Previous / next unviewed file (Branch review pane)"),
+            Entry("⇧⌘A", "Ask agent about the selected lines (Branch review)"),
+            Entry("⌥⌘C", "Show or hide the review's chat panel")
         ]),
         Area("Open Quickly", [
             Entry("↑ / ↓", "Move"),

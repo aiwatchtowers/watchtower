@@ -29,7 +29,14 @@ type ReviewRound struct {
 	CreatedAt     string
 	SentAt        sql.NullString
 	DeliveredAt   sql.NullString
+	Outcome       string // "", ReviewOutcomeChanges or ReviewOutcomeApproved (00155)
 }
+
+// A sent round's outcome (review_rounds.outcome, 00155); an open round's is "".
+const (
+	ReviewOutcomeChanges  = "changes"  // sent with comments: changes requested
+	ReviewOutcomeApproved = "approved" // approved, no changes requested
+)
 
 type ReviewComment struct {
 	ID, RoundID        int64
@@ -43,12 +50,12 @@ type ReviewComment struct {
 }
 
 const reviewRoundCols = `id, project_id, session_id, source, folder_root, base_sha, base_label, tree_sha,
-	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at`
+	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at, outcome`
 
 func scanReviewRound(s interface{ Scan(...any) error }) (*ReviewRound, error) {
 	var r ReviewRound
 	err := s.Scan(&r.ID, &r.ProjectID, &r.SessionID, &r.Source, &r.FolderRoot, &r.BaseSHA, &r.BaseLabel,
-		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt)
+		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt, &r.Outcome)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +133,8 @@ func (db *DB) SendReviewRound(projectID, id int64) (sent int, ok bool, err error
 		return 0, false, err
 	}
 	defer tx.Rollback() // a committed tx makes this a no-op
-	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ? AND project_id = ? AND status = 'open'`, id, projectID)
+	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', outcome = ?, sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ? AND project_id = ? AND status = 'open'`, ReviewOutcomeChanges, id, projectID)
 	if err != nil {
 		return 0, false, fmt.Errorf("sending review round %d: %w", id, err)
 	}
@@ -142,6 +149,45 @@ func (db *DB) SendReviewRound(projectID, id int64) (sent int, ok bool, err error
 		return 0, false, err
 	}
 	return sent, true, tx.Commit()
+}
+
+// ApproveReviewRound closes an open round as approved in one transaction. ok
+// false (nothing written) when the round is not open, not this workbench's, has
+// no session, has draft comments, or has open carried/outdated rows while
+// resolveOpen is false; with resolveOpen those rows are resolved in the same
+// transaction.
+func (db *DB) ApproveReviewRound(projectID, id int64, resolveOpen bool) (ok bool, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("approving review round %d: %w", id, err)
+	}
+	defer tx.Rollback() // a committed tx makes this a no-op
+	var drafts, open int
+	if err := tx.QueryRow(`SELECT
+		COALESCE(SUM(status = 'draft'), 0), COALESCE(SUM(status IN ('carried','outdated')), 0)
+		FROM review_comments WHERE round_id = ?`, id).Scan(&drafts, &open); err != nil {
+		return false, fmt.Errorf("approving review round %d: %w", id, err)
+	}
+	if drafts > 0 || (open > 0 && !resolveOpen) {
+		return false, nil
+	}
+	// The round goes first so a refused round writes no comment.
+	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', outcome = ?,
+		sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ? AND project_id = ? AND status = 'open' AND session_id IS NOT NULL`, ReviewOutcomeApproved, id, projectID)
+	if err != nil {
+		return false, fmt.Errorf("approving review round %d: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	if open > 0 {
+		if _, err := tx.Exec(`UPDATE review_comments SET status = 'resolved', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			WHERE round_id = ? AND status IN ('carried','outdated')`, id); err != nil {
+			return false, fmt.Errorf("resolving open comments of review round %d: %w", id, err)
+		}
+	}
+	return true, tx.Commit()
 }
 
 // ReviewRoundComments lists a round's comments in id order.

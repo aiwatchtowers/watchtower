@@ -96,3 +96,13 @@ func TestWorkbenchSkill_FolderRulesAndConditionalChecks(t *testing.T) {
 
 func mustCore() []byte { _, b := WorkbenchSkill(); return b }
 func mustFlow() []byte { _, b := FlowSkill(); return b }
+
+// Pack v15 (branch review polish): the preset's "What `in_review` means"
+// closes with the approved round — the owner's own review accepted the
+// branch, so the agent finishes it without asking for another review.
+func TestFlowSkill_ApprovedReviewRoundFinishesTheBranch(t *testing.T) {
+	section := skillSection(t, string(mustFlow()), "What `in_review` means")
+	assert.Contains(t, section, "The owner's own review is the diff reviewer's round: when one arrives `approved` "+
+		"(`Review round #N approved …`), the branch is accepted — finish it (PR and merge, targets `done`, cleanup, "+
+		"`finish_session`) without asking for another review.")
+}

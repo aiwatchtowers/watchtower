@@ -25,8 +25,8 @@ struct ReviewMeaningView: View {
                     Text("Design comments").font(.headline)
                     Spacer()
                     Button("Add design comment…") {
-                        compose(.init(title: "Design comment", lensChoice: true) { body, lens in
-                            try await model.addDesignComment(body: body, lens: lens)
+                        compose(.init(title: "Design comment") { body in
+                            try await model.addDesignComment(body: body)
                         })
                     }
                     .buttonStyle(.kitSecondary)

@@ -189,6 +189,9 @@ final class WorkbenchesViewModel {
     /// it was worked out from (`codeRoot(sessionID:project:)`): view bodies
     /// read it without touching the disk again.
     @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
+    /// Per workbench: the panes besides Files a code jump can land in
+    /// (Branch review, board #960), asked while one is key.
+    @ObservationIgnored var codeDestinations: [Int64: [WeakCodeLocationDestination]] = [:]
     /// The ask link clicked last per workbench, while it runs
     /// (`clickAskLink`): a newer click cancels it, and so does its view
     /// (`owner`) going away.

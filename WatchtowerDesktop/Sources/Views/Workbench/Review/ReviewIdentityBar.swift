@@ -15,6 +15,8 @@ struct ReviewSessionIdentity {
     var agentName: String
     var openSession: () -> Void
     var openTerminal: () -> Void
+    /// The session's Workchat (the approved banner's Open Workchat, #964); nil = not offered.
+    var openWorkchat: (() -> Void)?
 
     /// The branch line for the model's round: the one place the bar and the
     /// pane's empty state read it from.
