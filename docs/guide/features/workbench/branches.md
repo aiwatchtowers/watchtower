@@ -25,6 +25,16 @@ Opening the menu fetches origin in the background when the last fetch attempt fo
 Watchtower's fetch never asks you for a password or key passphrase, and never touches the Keychain. It uses network remotes only (https, ssh, git), not a folder path, and not a custom `core.sshCommand`. When origin needs a password or an unloaded key, or there is no network, a quiet **Couldn't fetch origin: …** note appears and the list keeps working on what is already there. The automatic fetch also leaves your ssh agent alone, so an agent that approves each use, such as a password manager's, never asks; only the ↻ button uses your agent.
 
 ## Using it
+<!-- learn
+id: branches-switch
+title: Switch branches without losing work
+text: Click the branch button to switch or check out a branch; your uncommitted edits go to a named stash first.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 1. Click the branch button. Type part of a name in **Find branch** to filter.
 2. Click a branch under **Local branches** to switch to it. A branch open in another worktree is greyed out.

@@ -2366,3 +2366,13 @@ Entry format:
 - weak-dimension: 7. The tests pin the summary mapping and route state, but no test presents the moved sheet or checks that a window surfaces. The "survives leaving the tab" test only asserts the identity of a lazy property.
 - rule-gap (candidate, dim 8): *moving a screen between windows (Settings scene ↔ main window) ships a table of everything the old host presented or observed for it (sheets, alerts, onAppear reloads, window-surfacing calls), with where each one lives now.*
 - outcome: TBD
+
+## 2026-10-25 — feature/718-home-learn (Home's Learn zone: `internal/learn` card parser over guide `<!-- learn` blocks, `guide learn --json`, migration 00159 `learn_seen`, `LearnSelector`/`LearnVersionPolicy`/`LearnInputs`/`LearnQueries`, `LearnCenter`, zone + See all sheet, 240 cards across the guide, release-step `since: next` stamp; panel: prosecutor (11) + codex (3), 3 specialists DOWN (not installed); judge verified by reading and grep, no runs) — verdict: changes-needed
+
+- contested (C3/F4, raised by 2 lanes, held major): design §9.7 promises replace chains (C replaces B replaces A), but Go forbids a replaced id staying live, so the Swift walk can never step past the first hop, and once B is deleted A also leaves `retired` and becomes reusable. Each half looks right alone; the two rules together make the chain code dead. **When one side forbids a state (a replaced card staying live), check every piece of the other side that needs that state to exist.** [2/6]
+- contested (F1, held blocker): `Text(String)` renders verbatim, so 201 of 240 card texts show literal `**`. The view tests and shot fixtures use plain strings, so nothing caught it. Checking the real corpus against the renderer settled it. [6/7]
+- false-positive: C2 (two workspaces with the same folder name share UserDefaults keys). Workspaces are folders under one data root, so the names are unique. Dismissed.
+- miss: codex alone saw the onboarding flag frozen in `init` before `reconcileOnboarding` restores `.complete` from the profile. The prosecutor alone traced `reaction.used` to the seed rows (`skipped`) and the Show again / `in_use` loop.
+- weak-dimension: 7. Every fixture is hand-written: plain-text cards, no seeded `reaction_commands`, no embedded-chat rows, no Show-again-while-in-use case.
+- rule-gap (candidate, dim 6/7): *a signal or "has used X" flag that reads EXISTS on a table names every writer of that table (seeders, sibling surfaces sharing it) and filters to the real-use rows, with a test seeding the non-use writer; content rendered from an authored corpus gets one test over the real corpus (or a sample of it), not only fixtures.*
+- outcome: TBD

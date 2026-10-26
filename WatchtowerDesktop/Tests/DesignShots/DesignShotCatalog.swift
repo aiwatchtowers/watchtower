@@ -86,6 +86,20 @@ enum DesignShotCatalog {
             DesignShot(name: "home-account-purge", size: NSSize(width: 1280, height: 720)) {
                 HomeShotFixtures.home(purges: HomeShotFixtures.purges)
             },
+            // Learn Watchtower (#718): the last zone of the right column, the
+            // all-seen line, and See all.
+            DesignShot(name: "home-learn", size: NSSize(width: 1280, height: 1560)) {
+                HomeShotFixtures.home(learn: LearnShotFixtures.selection())
+            },
+            DesignShot(name: "learn-zone", size: NSSize(width: 440, height: 0)) {
+                AnyView(LearnShotFixtures.zone().shotFrame().detailBackground())
+            },
+            DesignShot(name: "learn-zone-all-seen", size: NSSize(width: 440, height: 0)) {
+                AnyView(LearnShotFixtures.zone(allSeen: true).shotFrame().detailBackground())
+            },
+            DesignShot(name: "learn-all-sheet", size: NSSize(width: 680, height: 760)) {
+                AnyView(LearnShotFixtures.sheet().shotFrame())
+            },
             DesignShot(name: "settings-privacy", size: NSSize(width: 640, height: 420)) {
                 AnyView(HomeShotFixtures.privacySettings().shotFrame().detailBackground())
             },

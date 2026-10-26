@@ -55,10 +55,23 @@ type Page struct {
 }
 
 // Section is a "##"/"###" section. The text before the first heading has an
-// empty Heading and Anchor.
+// empty Heading and Anchor. Cards holds the bodies of the section's
+// "<!-- learn" … "-->" blocks (Home's Learn cards, parsed by internal/learn),
+// in order; they are not part of Text.
 type Section struct {
 	Heading, Anchor, Text string
+	Cards                 []string
 }
+
+// Learn card markers: a block opens on a line that is exactly cardOpen and
+// closes on a line that is exactly cardClose (surrounding spaces ignored); a
+// cardNone line says a section has no card on purpose. Inside a code fence
+// they are ordinary text.
+const (
+	cardOpen  = "<!-- learn"
+	cardClose = "-->"
+	cardNone  = "<!-- learn: none -->"
+)
 
 // paths returns every embedded file path (WRITING.md included), sorted.
 func paths() []string {
@@ -96,33 +109,91 @@ func parse(p, body string) Page {
 	var text strings.Builder
 	flush := func() {
 		cur.Text = strings.TrimSpace(text.String())
-		if cur.Heading != "" || cur.Text != "" {
+		if cur.Heading != "" || cur.Text != "" || len(cur.Cards) > 0 {
 			page.Sections = append(page.Sections, cur)
 		}
 		text.Reset()
 	}
-	fence := ""
-	for _, line := range strings.Split(body, "\n") {
-		trim := strings.TrimSpace(line)
-		if fence != "" {
-			if strings.HasPrefix(trim, fence) {
-				fence = ""
+	scanLines(body, func(line string, inFence bool) {
+		if !inFence {
+			if strings.HasPrefix(line, "# ") && page.Title == "" {
+				page.Title = strings.TrimSpace(line[2:])
+				return
 			}
-		} else if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
-			fence = trim[:3]
-		} else if strings.HasPrefix(line, "# ") && page.Title == "" {
-			page.Title = strings.TrimSpace(line[2:])
-			continue
-		} else if h, ok := sectionHeading(line); ok {
-			flush()
-			cur = Section{Heading: h, Anchor: Slug(h, seen)}
-			continue
+			if h, ok := sectionHeading(line); ok {
+				flush()
+				cur = Section{Heading: h, Anchor: Slug(h, seen)}
+				return
+			}
 		}
 		text.WriteString(line)
 		text.WriteByte('\n')
-	}
+	}, func(card string) {
+		cur.Cards = append(cur.Cards, card)
+	})
 	flush()
 	return page
+}
+
+// stripCards returns body without its learn blocks and "learn: none" lines:
+// the page as a reader sees it.
+func stripCards(body string) string {
+	var b strings.Builder
+	scanLines(body, func(line string, _ bool) {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}, func(string) {})
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// scanLines walks body line by line: text gets every line that is page text
+// (inFence true for a code fence's lines, its markers included), card the
+// trimmed body of every closed learn block. A "learn: none" line goes to
+// neither. A block still open at the end is not a card: its lines go back to
+// text, where internal/learn finds the stray opening line and fails the guide.
+func scanLines(body string, text func(line string, inFence bool), card func(body string)) {
+	fence := ""
+	var block []string // an open learn block's lines, its opening line first
+	for _, line := range strings.Split(body, "\n") {
+		trim := strings.TrimSpace(line)
+		switch {
+		case block != nil:
+			if trim == cardClose {
+				card(strings.TrimSpace(strings.Join(block[1:], "\n")))
+				block = nil
+			} else {
+				block = append(block, line)
+			}
+		case fence != "":
+			if strings.HasPrefix(trim, fence) {
+				fence = ""
+			}
+			text(line, true)
+		case strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~"):
+			fence = trim[:3]
+			text(line, true)
+		case trim == cardOpen:
+			block = []string{line}
+		case trim == cardNone:
+		default:
+			text(line, false)
+		}
+	}
+	for _, line := range block {
+		text(line, false)
+	}
+}
+
+// HasStrayCardOpen reports whether text — a Section.Text — holds a learn
+// block's opening line outside a code fence: a block that never closed.
+func HasStrayCardOpen(text string) bool {
+	stray := false
+	scanLines(text, func(line string, inFence bool) {
+		if !inFence && strings.TrimSpace(line) == cardOpen {
+			stray = true
+		}
+	}, func(string) {})
+	return stray
 }
 
 func sectionHeading(line string) (string, bool) {

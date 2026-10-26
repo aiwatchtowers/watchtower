@@ -13,6 +13,38 @@ Each change is a new version of the same artifact; the earlier ones stay. Drafts
 ## Using it
 
 ### Artifacts
+<!-- learn
+id: artifacts-comment
+title: Comment on a draft to revise it
+text: Select a passage in an artifact, choose **Comment**, then **Send N comments** and the assistant writes a new version.
+area: assistant
+level: next
+kind: tip
+since: 0.24.0
+action: nav:chat
+-->
+
+<!-- learn
+id: artifacts-open-in-gmail
+title: Turn a draft into a ready email
+text: Ask for a follow-up email; the draft opens beside the chat and **Open in Gmail** gives you the compose window.
+area: assistant
+level: next
+kind: feature
+since: 0.24.0
+action: chat:Draft a follow-up email for my last meeting
+-->
+
+<!-- learn
+id: artifacts-present-html
+title: Present a deck from the chat
+text: Ask for a slide deck as an HTML page, then press **Present** to show it full screen.
+area: assistant
+level: power
+kind: feature
+since: 0.24.0
+action: nav:chat
+-->
 
 A document, table, email or Slack draft, event, code or HTML page opens in the artifact panel instead of the chat. Each change is a new version; you can edit it, copy it, or export it to a file (the extension follows the kind, for example .md, .csv or a language's extension for code).
 
@@ -23,6 +55,16 @@ An HTML page, such as a slide deck, shows rendered in the panel once it is fully
 Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 
 ### Publishing to claude.ai
+<!-- learn
+id: artifacts-publish-claude-ai
+title: Publish a page to claude.ai
+text: On the Claude provider, a page or doc you ask for is published privately to claude.ai; **Copy Link** shares it.
+area: assistant
+level: power
+kind: feature
+since: 0.24.0
+action: nav:chat
+-->
 
 On the Claude provider, signed in with a claude.ai account, a page, a slide deck or a document you ask for in the main chat is published privately to your claude.ai account instead of the artifact panel. Say "keep it in the app" to get the in-app artifact instead. Drafts to send, tables and code stay in the panel.
 
@@ -31,6 +73,16 @@ The reply ends with a **Published on claude.ai** card naming the page. **Open in
 With an API key, Bedrock, Vertex, Foundry, Codex or Ollama the chat cannot publish. It says so and gives you the in-app artifact.
 
 ### Keeping an artifact in Knowledge
+<!-- learn
+id: artifacts-add-to-knowledge
+title: Keep an artifact in Knowledge
+text: Press **Add to Knowledge** on a document, table or code artifact and the assistant finds it in later chats.
+area: assistant
+level: next
+kind: feature
+since: 0.25.0
+action: nav:chat
+-->
 
 A document, table, code or HTML page has **Add to Knowledge** in its header. It adds the version you see to [knowledge search](search-and-knowledge.md), so the assistant finds it later (HTML is indexed as its text). The version is pinned: when the assistant writes a newer one the button reads **Update in Knowledge**, which is a menu with **Remove from Knowledge**. Until you press it, the index keeps the older version. **Remove from Knowledge** takes it out, and deleting the chat does too. Drafts to send (email, Slack, event) have no button, and neither does a code question chat.
 

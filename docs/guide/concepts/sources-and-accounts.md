@@ -23,6 +23,24 @@ A service that needs you gets a banner on top with **Reconnect**, which opens th
 Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission.
 
 ## Several accounts of one kind
+<!-- learn
+id: sources-second-account
+title: Connect a second workspace
+text: Add another Slack workspace, Google account or Jira site in **Connections**; each syncs on its own.
+area: setup
+level: next
+kind: feature
+since: 0.24.0
+-->
+<!-- learn
+id: sources-pause-account
+title: Pause an account, keep its data
+text: Turn off a Slack or Jira account's **Enabled** switch to stop syncing it without removing anything.
+area: setup
+level: next
+kind: tip
+since: 0.24.0
+-->
 
 Each account syncs on its own. One account failing never stops the others, and its row shows the problem while the rest keep working.
 

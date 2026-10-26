@@ -15,6 +15,17 @@ Events and recordings share one chronology. An event with recordings is one row 
 The list covers the last `calendar.history_days` days (30 by default) and the next 7 days, and opens at Today. A red line marks the current time, and a floating **Now** button jumps back to it.
 
 ### Where events come from
+<!-- learn
+id: calendar-connect
+title: Connect your calendar
+text: Connect Google Calendar or add a CalDAV or ICS calendar, and the **Calendar** tab appears in the sidebar.
+area: meetings
+level: basics
+kind: feature
+since: 0.24.0
+action: connect:calendar
+done_when: calendar.connected
+-->
 
 The daemon syncs calendars on every cycle (every 15 minutes by default) and once when it starts, so a freshly connected calendar fills within about a minute.
 
@@ -23,6 +34,17 @@ Google Calendar fetches `calendar.sync_days_ahead` days ahead (7 by default). Ch
 Connecting a calendar is also what makes the **Calendar** tab appear in the sidebar. With no calendar connected the tab stays hidden.
 
 ### What Prepare reads
+<!-- learn
+id: calendar-prepare
+title: Prepare for a meeting
+text: Click an event in **Calendar** and press **Prepare** for talking points from Slack, Jira and people cards.
+area: meetings
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:calendar
+requires: source:calendar
+-->
 
 **Prepare** runs only when you click it, here in Calendar; nothing is prepared in advance. It builds the prep from:
 
@@ -36,12 +58,34 @@ Connecting a calendar is also what makes the **Calendar** tab appear in the side
 Attendees are matched to Slack people by email. An attendee with no Slack match gets no people context, and the prep says so under **Missing Context**. The result is stored per event, so reopening **Prepare** shows it again.
 
 ### Reminders
+<!-- learn
+id: calendar-join-record
+title: Join and record in one click
+text: The reminder before a meeting with a call link carries **Join + Record**: it opens the call and records it.
+area: meetings
+level: next
+kind: tip
+since: 0.24.0
+action: nav:calendar
+requires: source:calendar
+-->
 
 Before each meeting a notification fires, 5 minutes ahead by default. When the event has a conference link it carries **Join** and **Join + Record**. While the app is open, a banner at the top of the window shows the same countdown with **Join** and **Record**.
 
 If a recording linked to an event is still running 2 minutes after the event ends, a "Meeting ended — still recording" notification with **Stop recording** appears and repeats every 10 minutes. It ignores the reminder switch and the minutes, and only **Pause notifications** silences it. Pre-meeting reminders are held while paused and sent again if the meeting is still ahead when you turn it off.
 
 ## Using it
+<!-- learn
+id: calendar-prep-notes
+title: Steer the prep with your notes
+text: Type what matters into **Your Notes** and press **Regenerate with notes** for a prep built around it.
+area: meetings
+level: next
+kind: tip
+since: 0.24.0
+action: nav:calendar
+requires: source:calendar
+-->
 
 1. Open the **Calendar** tab and click an event. The detail pane shows the agenda and attendees.
 2. Click **Prepare**. The prep opens in the pane; **Refresh** makes a new one.
@@ -52,6 +96,17 @@ If a recording linked to an event is still running 2 minutes after the event end
 To change reminders, go to **Settings → Features → Notifications**: **Meeting reminders** and **Remind before meeting** (0 to 60 minutes; 0 is **Off**).
 
 ### What the prep contains
+<!-- learn
+id: calendar-recap-from-text
+title: Recap a meeting from pasted notes
+text: No recording? Paste your notes and press **Recap from text** under **Meeting Notes** in the event's pane.
+area: meetings
+level: power
+kind: feature
+since: 0.24.0
+action: nav:calendar
+requires: source:calendar
+-->
 
 Talking points carry a priority and a source label such as "track #12". **Missing Context** appears in orange when the data was thin, so you know what the prep could not see.
 

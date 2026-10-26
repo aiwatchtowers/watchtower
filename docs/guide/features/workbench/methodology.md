@@ -7,6 +7,16 @@ The methodology is the set of working rules an agent follows in a workbench: how
 Different teams want different agents. One wants the full flow of features, specs, plans and reviews. Another wants the agent to follow the repository's own rules and nothing else. The methodology lets you choose, without editing skill files by hand.
 
 ## How it works
+<!-- learn
+id: methodology-finish-whole-target
+title: Agents finish the whole target
+text: With **Finish check** on, an agent finishes only when every sub-target is closed and checked against the AI overview.
+area: development
+level: next
+kind: tip
+since: 0.25.0
+action: nav:projects
+-->
 
 Three settings apply to every session of a workbench:
 
@@ -29,6 +39,16 @@ The file is a short frontmatter, then free text. The text is the team's rules fo
 The agent never changes these settings. If anything about them cannot be read, the session runs as strict and on, never weaker.
 
 ## Using it
+<!-- learn
+id: methodology-agent-settings
+title: Choose how strict agents are
+text: Open **Agent Settings…** in a workbench's **…** menu to pick the methodology, ask guard and finish check.
+area: development
+level: power
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 1. Open the **…** menu in the workbench's title row and choose **Agent Settings…**.
 2. Pick a value for **Methodology**, **Ask guard** and **Finish check**. **From folder file** (for **Methodology**) and **Default** (for the checks) mean "do not override", and show the current value and where it comes from.

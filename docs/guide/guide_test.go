@@ -99,9 +99,10 @@ func TestFeaturePagesUnder8KB(t *testing.T) {
 		if !strings.HasPrefix(p, "features/") {
 			continue
 		}
+		// Learn cards are metadata, not text a reader or the model reads.
 		b, _ := files.ReadFile(p)
-		if len(b) > 8192 {
-			t.Errorf("%s is %d bytes (> 8192)", p, len(b))
+		if n := len(stripCards(string(b))); n > 8192 {
+			t.Errorf("%s is %d bytes without its learn cards (> 8192)", p, n)
 		}
 	}
 }

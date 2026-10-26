@@ -17,6 +17,15 @@ In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated d
 Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, the iPhone-sync folder next to them (`MobileHub`), the sync keys in your Keychain and anything already in iCloud. Delete the recordings by hand. To clear iPhone data, turn off **Sync with iPhone** and remove the phone before you reset.
 
 ## Watchtower stays out of Time Machine
+<!-- learn
+id: privacy-time-machine
+title: Your data stays out of Time Machine
+text: Time Machine skips Watchtower's data folders; backups made earlier still hold them, so delete those copies.
+area: setup
+level: next
+kind: tip
+since: 0.25.0
+-->
 
 Time Machine skips two folders: `~/.local/share/watchtower` (the database, Memory, logs, sign-ins) and `~/Library/Application Support/Watchtower` (recordings, iPhone sync). The app marks them again at every launch and daemon start. `~/.config/watchtower` is still backed up: mostly settings, though an old config may still hold a Slack token.
 
@@ -63,6 +72,15 @@ Slack is read-only. The assistant sends or edits something only after you approv
 Other network traffic: calls to each source's own service, Knowledge search opening public links like a browser visit (the site sees your Mac's address; a tracking link can tell its author), a version check against GitHub every 6 hours, and a read of your Claude plan limits from Anthropic using Claude Code's sign-in.
 
 ## What goes to iCloud
+<!-- learn
+id: privacy-iphone-encrypted
+title: iPhone sync is end-to-end encrypted
+text: **Sync with iPhone** goes through your own iCloud, sealed with keys only your Mac and paired phones hold.
+area: iphone
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 Nothing, unless you turn on **Sync with iPhone** in **Settings → Mobile**. It is off by default.
 
@@ -75,12 +93,39 @@ Records are sealed with keys held only by your Mac and your paired phones, so iC
 A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**.
 
 ## How much an assistant can read in one session
+<!-- learn
+id: privacy-read-limit
+title: Start fresh after the read limit
+text: An assistant reads at most 300 times or 5,000 rows per session; past that, start a new chat or session.
+area: assistant
+level: power
+kind: tip
+since: 0.25.0
+-->
+<!-- learn
+id: privacy-audit-log
+title: Audit what assistants read
+text: Every read leaves one content-free line in the Mac's system log, under `com.watchtower.audit`.
+area: setup
+level: power
+kind: feature
+since: 0.25.0
+-->
 
 An assistant can read your synced data at most 300 times, or 5,000 rows, in one session. One read returns at most 256 KB, and a list at most 200 rows. The limit holds for AI Chat, workbench agents, automation runs and any app connected to `watchtower mcp`. Past it the read is refused with **this session's read limit is reached (300 calls / 5000 rows); the owner can start a new session**; a new chat, session or run starts a fresh count. A chat built into a screen counts per message, and each `watchtower tools call` on its own. Your own board, asks and skills do not count.
 
 Every such read leaves one line in the Mac's system log: the tool, the session and the row count, never the text. Your company's security tools can collect it; to look yourself, run `log show --last 1h --predicate 'subsystem == "com.watchtower.audit"'`. The system keeps it a few days, and Watchtower sends it nowhere. A `watchtower` command an agent runs in a workbench terminal or an automation that prints your data (`digest`, `inbox`, `kb search`, …) leaves a line too, without a limit.
 
 ## When something is deleted at the source
+<!-- learn
+id: privacy-source-deletions
+title: Deleted at the source, gone here
+text: Delete a Slack message, mail or Jira comment at its source and Watchtower removes it too, search included.
+area: setup
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 A message, mail, comment or Jira issue you delete at its source disappears from Watchtower too, and from search.
 

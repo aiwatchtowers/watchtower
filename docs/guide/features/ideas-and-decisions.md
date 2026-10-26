@@ -8,6 +8,17 @@ Someone says "we could cache this per tenant" in a thread, and it is buried by l
 
 ## How it works
 
+<!-- learn
+id: ideas-from-chats
+title: Judge decisions from your chats
+text: Ideas and decisions found in your AI chats wait under **Needs your decision**, marked **· Chat**, for your verdict.
+area: planning
+level: next
+kind: feature
+since: 0.25.0
+action: nav:ideas
+-->
+
 The registry is filled in two steps, both by the background sync.
 
 1. **Cheap pre-digests.** Slack digests and meeting recaps already pick out ideas and decisions. Mail, Jira and Linear get their own digest passes over recent threads, issues and comments. That pass is the separate **Stream Digests** feature, which runs about every 6 hours.
@@ -22,6 +33,39 @@ A mention of something you rejected, dropped or put on **Not now** brings it bac
 ## Using it
 
 ### Review what was found
+
+<!-- learn
+id: ideas-review
+title: Judge the ideas it found
+text: Open the Inbox's **Ideas** filter and **Approve**, **Reject** or **Make a Task** from floated ideas.
+area: planning
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:ideas
+-->
+
+<!-- learn
+id: ideas-not-now
+title: Park an idea with Not now
+text: Press **Not now** on an idea to park it; a new mention brings it back under **Needs your decision**.
+area: planning
+level: next
+kind: tip
+since: 0.24.0
+action: nav:ideas
+-->
+
+<!-- learn
+id: ideas-merge
+title: Merge duplicate ideas
+text: Press **Merge…** on an idea to fold a duplicate into it; "Looks similar to #N" suggests one.
+area: planning
+level: power
+kind: tip
+since: 0.24.0
+action: nav:ideas
+-->
 
 Open the Inbox. Ideas and notes waiting for your verdict (and decisions found only in chats), fresh ones and ones brought up again, sit under **Needs your decision** on **All** and **Ideas**. The **Ideas** filter also lists the rest of the registry, newest update first, each row labelled like "Idea · active" or "Decision · superseded", with "· Chat" added for one found in a chat; only merged items are left out.
 
@@ -46,9 +90,31 @@ On the **Ideas** filter, press **+** (**New Idea**), choose **Idea** or **Note**
 
 ### Save one from the chat
 
+<!-- learn
+id: ideas-save-from-chat
+title: Save a decision from the chat
+text: Start a chat message with **decided:** or **fact:** and it is saved to the registry at once.
+area: planning
+level: next
+kind: feature
+since: 0.25.0
+action: nav:chat
+-->
+
 Start a message to the assistant with **решили:** or **decided:** and it is saved as a decision. Start it with **факт:** or **fact:** and it is saved as a fact, a note in the registry. The rest of the message is the text. It is active at once, with no review, and the message shows **Saved as a decision** (or **Saved as a fact**) with **Undo** and **Open in Inbox**. **Undo** only works while the item is unchanged. The prefixes do nothing in a code question chat (no mark appears).
 
 ### Mine an older period
+
+<!-- learn
+id: ideas-past-messages
+title: Find ideas in past messages
+text: Open **⋯** → **Find Ideas in Past Messages…** on the **Ideas** filter and pick a range to mine.
+area: planning
+level: power
+kind: feature
+since: 0.24.0
+action: nav:ideas
+-->
 
 On the **Ideas** filter, open **⋯** → **Find Ideas in Past Messages…**. Pick **2 weeks**, **Month**, **Quarter** or a range on the calendar, then **Find Ideas**. It keeps running when you close the row or leave the Inbox; a **Mining…** mark next to **+** reopens it, with **Stop**. It ends with a summary or the reason it failed.
 

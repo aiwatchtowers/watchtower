@@ -9,6 +9,17 @@ You finish a call and the decisions are already written down: a summary, chapter
 ## How it works
 
 ### Capture
+<!-- learn
+id: recording-record
+title: Record a meeting
+text: Press **Record** on a Calendar event to capture your mic and the call; **Stop** in the pill ends it.
+area: meetings
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:calendar
+done_when: meeting.recorded
+-->
 
 **Record** captures the microphone and the system audio (the other participants). The first time, macOS asks for two permissions: microphone, and system audio recording. While you record, a pill at the bottom right of the window shows the elapsed time and **Stop**, whatever tab you are on. **Stop** is white on red, readable whether or not Watchtower is the active app.
 
@@ -38,6 +49,46 @@ The model downloads once. With the **Meetings** goal chosen at setup, it downloa
 **Preload model before meetings** (on by default) loads the model about 5 minutes before a calendar meeting starts, so **Record** starts at once.
 
 ### What a recording produces
+<!-- learn
+id: recording-action-to-target
+title: Turn an action item into a target
+text: On a recording's **Recap**, press **Target** next to an action item to track it in Targets.
+area: meetings
+level: next
+kind: feature
+since: 0.24.0
+action: nav:calendar
+-->
+<!-- learn
+id: recording-follow-up
+title: Draft a follow-up in your voice
+text: Press **Follow-up draft** on a recording's **Recap** for a message in your own style, ready to copy.
+area: meetings
+level: next
+kind: feature
+since: 0.24.0
+action: nav:calendar
+-->
+<!-- learn
+id: recording-notes
+title: Write meeting notes to share
+text: On a recording's **Notes** tab, press **Generate**, edit the notes in place, then **Copy** them.
+area: meetings
+level: next
+kind: feature
+since: 0.24.0
+action: nav:calendar
+-->
+<!-- learn
+id: recording-chat
+title: Ask about a meeting
+text: Open a recording's **Chat** tab and ask what was decided; the assistant answers from the transcript.
+area: meetings
+level: next
+kind: tip
+since: 0.24.0
+action: nav:calendar
+-->
 
 After the transcript is saved, the recap and chapters are generated on their own. A transcript under 200 characters is saved without them. Speaker labels are `[Я]` for you, from the microphone channel, and `[Speaker 1…N]` for others, with on-device speaker separation.
 
@@ -49,6 +100,16 @@ Each recording has four tabs:
 - **Chat**: talk to the assistant about this meeting.
 
 ## Using it
+<!-- learn
+id: recording-link-event
+title: Link a recording to its event
+text: Recorded without an event? Use **Link to event…** in the recording's header to file it under the meeting.
+area: meetings
+level: power
+kind: tip
+since: 0.24.0
+action: nav:calendar
+-->
 
 1. Click **Record** on an event (10 minutes before it starts, through its end) or in the list header for a meeting without an event.
 2. Click **Stop** in the pill when it ends.
@@ -60,6 +121,24 @@ Audio files are deleted after 30 days (**Delete audio after N days** in **Settin
 **Delete** removes the recording, its transcript, notes, chat and audio after confirmation. The event's recap stays with the event.
 
 ### Naming voices
+<!-- learn
+id: recording-name-voices
+title: Teach Watchtower who is speaking
+text: Choose **Voices to label** in the menu bar icon's menu, pick a name for each voice and press **Confirm**.
+area: meetings
+level: next
+kind: feature
+since: 0.24.0
+-->
+<!-- learn
+id: recording-export-voices
+title: Take your voices to another Mac
+text: In the **Voices** window's **Review**, **Export…** saves a password-protected file that **Import…** reads.
+area: meetings
+level: power
+kind: tip
+since: 0.24.0
+-->
 
 Watchtower learns recurring voices and names speakers automatically. Voice data stays on your Mac.
 

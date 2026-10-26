@@ -9,6 +9,15 @@ You want the latest Watchtower, but an agent is halfway through a long task. An 
 ## How it works
 
 ### Updates and quitting
+<!-- learn
+id: updates-keep-sessions
+title: Quit and keep agents working
+text: Choose **Keep Sessions and Quit** and your sessions keep running; updates never stop them.
+area: development
+level: next
+kind: tip
+since: 0.24.0
+-->
 
 Sessions run in a small background helper, not inside the Watchtower window. An update leaves them running: the agent keeps working, and its helper agents and background jobs (a dev server, a build) keep going. When Watchtower comes back, each session shows its live terminal again.
 

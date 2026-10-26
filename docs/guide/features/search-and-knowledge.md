@@ -20,6 +20,27 @@ You remember a thing was discussed, but not where. Ask the assistant "what did w
 Memory is not part of this index; the assistant reads it separately. A deleted source row leaves the index within one cycle, a Slack message deleted today within a sync cycle or two, an older one when the day-by-day check reaches its day (see [Privacy](../concepts/privacy.md#when-something-is-deleted-at-the-source)).
 
 ### Images and links
+<!-- learn
+id: knowledge-images
+title: Find a screenshot by what it shows
+text: Images in Slack, mail, Confluence and your chats get an AI description, so search finds them by their content.
+area: assistant
+level: next
+kind: feature
+since: 0.25.0
+requires: feature:knowledge-search
+-->
+
+<!-- learn
+id: knowledge-links
+title: Search inside shared links
+text: Public links posted in Slack and Confluence are opened and summarized, so a question finds the page behind them.
+area: assistant
+level: power
+kind: feature
+since: 0.25.0
+requires: feature:knowledge-search
+-->
 
 **Images.** New images in Slack messages, Confluence pages and attachments, mail, and the images you attach in **AI Chat** or to a workbench target get an AI description: what it shows, the text on it, and keys like `PROJ-123`. It joins the message, page or mail as a section labelled "Image (AI description of an attached image)", so a screenshot is found by what it shows, and a key on it links the thread to that issue. Tiny images, tracking pixels and repeated mail logos are skipped. Chat images feed Ideas & Decisions; target images reach the agent with the target.
 
@@ -34,6 +55,28 @@ Only images and links that arrive while Knowledge search is on are processed, ne
 **Confluence in search** uses your Jira sign-in. It is read-only: Watchtower never writes to Confluence from the index. Nothing is fetched until you select a space; after that each cycle loads a bounded amount (about 90 seconds of work), so a big space takes several cycles to arrive.
 
 ## Using it
+<!-- learn
+id: search-slack-message
+title: Find the exact Slack message
+text: Ask **AI Chat** with every word you remember; the answer links straight to the message in Slack.
+area: assistant
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:chat
+-->
+
+<!-- learn
+id: knowledge-confluence-spaces
+title: Add Confluence to search
+text: Pick Confluence spaces under **Connections → Jira** and the assistant reads their pages too.
+area: assistant
+level: next
+kind: feature
+since: 0.24.0
+action: connect:confluence
+done_when: confluence.connected
+-->
 
 **Ask across everything.** Open **AI Chat**, or press **⌘/** anywhere, and ask in plain words. The steps show as "Searched knowledge: ..." so you can see what the assistant looked up. Coding agents in a Workbench and other tools you connect through the **MCP Server** setup use the same index.
 

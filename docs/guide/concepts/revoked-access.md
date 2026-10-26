@@ -19,6 +19,15 @@ From the moment it is scheduled you see a red line under the account in **Connec
 If the account is in error rather than revoked when the time comes, the deletion waits and its line says it is on hold. Once it starts, it runs in small steps over a few sync cycles and finishes even if you turn the setting off; **Re-login** is unavailable until then, and a `watchtower … login` in the terminal is refused with a message pointing to `watchtower accounts purges`. If it fails three times in a row, it stops: the line and a notification show the error, the account syncs again, and any new attempt comes with a new notice.
 
 ## Turning it on
+<!-- learn
+id: revoked-delete-data
+title: Delete a revoked account's data
+text: Turn on **Delete an account's data when its access is revoked** in **Settings → System**, under **Privacy**.
+area: setup
+level: power
+kind: feature
+since: 0.24.0
+-->
 
 1. Open **Settings → System**.
 2. Under **Privacy**, turn on **Delete an account's data when its access is revoked**.

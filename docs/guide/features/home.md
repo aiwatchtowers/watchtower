@@ -8,9 +8,29 @@ After a meeting you want one answer: what is waiting for me? Home puts what need
 
 ## How it works
 
-Home only reads what the app produced and refreshes about every 30 seconds. The feed is on the left; on the right, top to bottom, are **Workbench**, **Links** and **Today in numbers** (one column, in that order, in a narrow window). A zone with nothing to show is left out.
+Home only reads what the app produced, about every 30 seconds. The feed is on the left; on the right, top to bottom, are **Workbench**, **Links**, **Today in numbers** and **Learn Watchtower** (one column in a narrow window). A zone with nothing to show is left out.
 
 ### The feed
+<!-- learn
+id: home-feed
+title: Start the day from Home
+text: Home lists what waits on you above the **NOW** line and your meetings below it; **Done** or **Hide** clears a row.
+area: communication
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:home
+-->
+<!-- learn
+id: home-feed-more
+title: Page through what waits on you
+text: Press **N more** under the feed to see up to 50 waiting rows right on Home, and **Show 50 more** for the next ones.
+area: communication
+level: next
+kind: tip
+since: 0.25.0
+action: nav:home
+-->
 
 Above a **NOW** line is everything that waits on you; below it, your meetings and what is still to come.
 
@@ -54,6 +74,20 @@ The **Links** zone has up to four shortcuts, each shown while its tab (for the b
 
 **AI spend** always shows; a number whose source is off is left out, one that couldn't be read shows "—".
 
+### Learn Watchtower
+<!-- learn
+id: home-learn
+title: Learn a feature at a time
+text: The **Learn Watchtower** zone on Home shows three features to try; **Got it** brings the next ones.
+area: setup
+level: basics
+kind: feature
+since: 0.25.0
+action: nav:home
+-->
+
+The last zone shows three cards about what Watchtower can do: this version's new ones first (marked **NEW**), then your setup areas. Each has a button to try it, **Read more** and **Ask about this**. Its button, **Got it** or using the feature marks it seen; **See all →** lists every card, with **Show again**.
+
 ### Data scheduled for deletion
 
 When an account's data is scheduled for deletion ([Revoked access](../concepts/revoked-access.md)), a red banner at the top names it, with **Reconnect** until the deletion starts.
@@ -64,7 +98,7 @@ On a new install a **Getting ready** zone sits above the columns, its header cou
 
 While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan lines say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead.
 
-A source you haven't connected becomes one dashed row ("Connect Jira to get Workload, Blockers, Project Map and Releases") with a **Connect** button. A row goes only when your company forbids every source behind it: "Connect Jira or mail" stays while mail is allowed. A connected Jira with no board picked keeps a line with **Choose Jira boards**, which opens **Connections** → **Jira**. **Connect** opens **Connections** on that source.
+A source you haven't connected becomes one dashed row ("Connect Jira to get Workload, Blockers, Project Map and Releases") with a **Connect** button. A row goes only when your company forbids every source behind it. A connected Jira with no board picked keeps **Choose Jira boards**, which opens **Connections** → **Jira**.
 
 When every feature is ready or retrying on its own, the zone shrinks to "Everything's ready" for the rest of that launch. It folds three days after it first showed, whatever still waits. An install that was already ready never sees it.
 
@@ -81,11 +115,11 @@ The menu lists Home, Targets, Workbench, Automations and Calendar, then three co
 - **EXECUTION**: Project Map, Releases, Blockers, Workload.
 - **INSIGHTS**: Digests, People, Memory, Statistics.
 
-AI Chat and the TOOLS (Connections, Usage, MCP Server) sit at the bottom. The **Connections** badge counts the services that need you, such as an expired sign-in. FOCUS starts open, the others folded; your folds are remembered.
+AI Chat and the TOOLS (Connections, with a badge for services that need you, Usage, MCP Server) sit at the bottom. FOCUS starts open, the others folded; your folds are remembered.
 
 - **⌘B** folds the menu into an icon rail and back; there each section is one icon with its tabs.
 - Right-click a tab for **Hide**; it moves to the section's **HIDDEN** list, where **Show** brings it back.
-- Until Slack, mail and Jira are connected, a quiet **+ Connect …** line at the bottom names what is missing, unless your company forbids it, and opens **Connections**. Its **×** hides it for good.
+- Until Slack, mail and Jira are connected, a quiet **+ Connect …** line at the bottom names what is missing, unless your company forbids it, and opens **Connections**. **×** hides it for good.
 - Badges show what waits: the Inbox's count, a recap.
 
 Home ends with "Stuck? Press **⌘/** to ask, or open the User Guide."; **⌘/** opens the [assistant over this tab](ai-chat.md).
@@ -97,6 +131,7 @@ Home ends with "Stuck? Press **⌘/** to ask, or open the User Guide."; **⌘/**
 - **A link or number is missing.** Its tab is hidden, or its feature or source is off.
 - **The feed has no Slack, Jira, Linear or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
 - **No meetings below NOW.** Calendar isn't connected or its tab is hidden, or the events are all-day, cancelled or declined.
+- **No Learn Watchtower zone.** The cards couldn't be read; the next launch tries again.
 - **"Couldn't read … — see the log."** A zone (Workbench, the links, or a feed source) couldn't read the local database. Reopen the app; if it persists, check the app log.
 
 A tab stays empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).

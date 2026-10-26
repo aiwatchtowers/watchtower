@@ -3,6 +3,15 @@
 A tour of what to try, in the order it pays off. Each stop is one thing to do, what you will see, what it needs, and a link to the full page. Skip any stop; none depends on the one before except where it says so.
 
 ## Day 1: finish setup and let the first sync run
+<!-- learn
+id: firstweek-tour
+title: Take the first-week tour
+text: Your first week suggests one thing to try each day, in the order it pays off.
+area: setup
+level: basics
+kind: tip
+since: 0.24.0
+-->
 
 - **Try:** pick your goals, connect Slack or Google, and press **Continue**.
 - **See:** Home opens, and the first sync starts in the background.

@@ -15,6 +15,16 @@ Copying from inside the terminal works as in your own terminal: when Claude Code
 Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](updates-and-quitting.md).
 
 ### Session states
+<!-- learn
+id: sessions-states
+title: Read a session's state at a glance
+text: The caption under each session says whether it works, needs approval, waits for you or has finished.
+area: development
+level: basics
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 A caption under the session name says what the agent is doing. When several apply, the first row wins.
 
@@ -49,6 +59,26 @@ The run waits until the session finishes. If you stop it or it exits, the run go
 ## Using it
 
 ### Start, resume and restart
+<!-- learn
+id: sessions-new-session
+title: Start a session with ⌘T
+text: Press ⌘T on a workbench page, or **+** in the sessions panel, to start the default agent in the folder.
+area: development
+level: basics
+kind: shortcut
+since: 0.24.0
+action: hotkey:new-session
+-->
+<!-- learn
+id: sessions-resume
+title: Resume a stopped session
+text: Press **Resume** on a stopped session to continue the conversation where it left off.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 - **+** in the sessions panel starts a session of the default agent (hold it to pick one; ⌘T on a workbench page). It is on screen at once and reads **Starting…** while it is set up (and its [worktree](worktrees-and-cleanup.md) made, when it gets one).
 - **Work on It** on a board card starts a session for that target. See [Board and targets](board-and-targets.md).
@@ -56,6 +86,16 @@ The run waits until the session finishes. If you stop it or it exits, the run go
 - **Settings → System → Workbench → Default Agent** picks the agent for new sessions. Codex differs in a few ways; see [Codex](codex.md).
 
 ### Find a session
+<!-- learn
+id: sessions-go-to
+title: Jump to any session with ⌘K
+text: Press ⌘K on the Workbench tab and type a session name, or `#` and a target number.
+area: development
+level: next
+kind: shortcut
+since: 0.24.0
+action: hotkey:go-to
+-->
 
 - ⌘1…⌘9 open the first nine sessions of the list.
 - **Go to…** (⌘K on the Workbench tab) searches names across every workbench and its sessions. Type `#` and a target number to find the session on that target.
@@ -63,6 +103,16 @@ The run waits until the session finishes. If you stop it or it exits, the run go
 - ⌥⌘S hides and shows the sessions panel.
 
 ### Tidy up the list
+<!-- learn
+id: sessions-quick-delete
+title: Clear finished sessions in one click
+text: Hover a finished or stopped session and click **✕**; **Undo** in the bar brings it back.
+area: development
+level: next
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 - A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers whether it is open. A session you are looking at never jumps.
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.

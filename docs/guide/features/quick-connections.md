@@ -25,6 +25,25 @@ If the server does not say, a tool is allowed when its name starts with get, lis
 **Plain http is refused.** Headers (and OAuth tokens) are sent only over https. Plain http is accepted only for a server on your own Mac (`localhost`, `127.0.0.1`). For a server on your network, use https or an SSH tunnel to localhost.
 
 ## Using it
+<!-- learn
+id: qc-add-connection
+title: Plug another tool into the chat
+text: Add a tool's MCP server under **Connections → Quick Connections** and ask the chat about it, read-only.
+area: assistant
+level: power
+kind: feature
+since: 0.24.0
+-->
+
+<!-- learn
+id: qc-import
+title: Bring in your codex and Claude servers
+text: Click **Import from codex and Claude Code…** to reuse the MCP servers you already set up, under the read-only rules.
+area: assistant
+level: power
+kind: tip
+since: 0.24.0
+-->
 
 1. Open **Connections → Quick Connections** and click **Add Connection**.
 2. Enter a **Name**. Choose **Kind**: **stdio (local process)** runs a command on your Mac (a **Command** and optional arguments, for example `npx -y trello-mcp`); **http (remote server)** takes a **Server URL**.

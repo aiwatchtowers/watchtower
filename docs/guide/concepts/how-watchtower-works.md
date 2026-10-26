@@ -11,6 +11,15 @@ Watchtower copies your work into a database on your Mac, then a background sync 
 The AI runs through the Claude Code or Codex command-line tool (or a local server); see [AI providers, models and cost](ai-providers-and-cost.md).
 
 ## What one sync cycle does
+<!-- learn
+id: how-poll-interval
+title: Sync more or less often
+text: The daemon syncs every 15 minutes; change it with **Poll Interval** in **Settings → System → Sync**.
+area: setup
+level: power
+kind: tip
+since: 0.24.0
+-->
 
 A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, about 15 seconds after the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. A cycle the Mac fell asleep in while fetching stops on wake and is replaced by that fresh one, so the digests never run on data the sleep kept from syncing. A cycle already building digests finishes them first. The daemon keeps running when you close the window and stops when you quit the app.
 
@@ -67,6 +76,15 @@ Two exceptions to the daily hour: on a brand-new install the first briefing and 
 Catch Up, the chat, meeting notes and Workbench sessions are not scheduled. They run when you ask.
 
 ## Why the app says "Optimizing database" at launch
+<!-- learn
+id: how-skip-optimizing
+title: Skip database optimizing for now
+text: If **Optimizing database** runs long at launch, press **Skip for now**; it tries again at the next launch.
+area: setup
+level: power
+kind: tip
+since: 0.24.0
+-->
 
 Some updates free a lot of space inside the database file, and the file only shrinks when Watchtower rewrites it. The first launch after such an update does that before the app opens: the splash shows **Optimizing database —** with the file's size and the time so far, and **This happens rarely, usually after an update.** The background sync waits until it ends.
 

@@ -1,0 +1,6 @@
+# Retired Learn card ids (design §9.7). One line per retired id: the old id,
+# then the id of the card that replaced it. A card's own `replaces` keeps an
+# id retired while that card lives; when you delete a card that has
+# `replaces: [a, b]`, move each of those ids here ("a <deleted-card-id>") so
+# the ids stay retired and the newer card's chain still reaches them.
+# docs/guide/WRITING.md "Learn cards" has the rules.
