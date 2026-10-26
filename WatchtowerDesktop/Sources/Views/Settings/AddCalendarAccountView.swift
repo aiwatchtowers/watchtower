@@ -5,7 +5,7 @@ import WatchtowerCore
 /// Calendar Accounts section and the Calendar tab's not-connected screen.
 /// Three provider cards:
 ///  - Google: redirects to the multi-account `AddGoogleAccountView` sheet
-///    (Settings → Google Accounts) — this view adds no Google logic of its own.
+///    (Connections → Google Accounts) — this view adds no Google logic of its own.
 ///  - CalDAV: a server URL/credentials form; the app password is written to the
 ///    `caldav add` subprocess's stdin, never passed as a flag.
 ///  - ICS: a secret feed link (e.g. Google Calendar's "Secret address in iCal

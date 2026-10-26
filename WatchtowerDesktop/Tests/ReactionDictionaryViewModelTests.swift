@@ -4,7 +4,7 @@ import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The Settings → Slack "Reaction commands" editor's VM: load, trust labels,
+/// The Connections → Slack "Reaction commands" editor's VM: load, trust labels,
 /// and the three GRDB writes, each followed by a reload.
 @MainActor
 final class ReactionDictionaryViewModelTests: XCTestCase {

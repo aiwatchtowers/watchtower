@@ -15,11 +15,11 @@ The tab only exists once a calendar is connected. Events come from the sync, whi
 
 ## Fix
 
-1. No tab: connect a calendar in **Settings → Connections**: **Google** with Calendar switched on, or **Calendar** for a CalDAV account or an ICS feed.
+1. No tab: connect a calendar in **Connections**: **Google** with Calendar switched on, or **Calendar** for a CalDAV account or an ICS feed.
 2. Press the button on the banner. The banner names the problem, and **Reconnect** signs the Google account in again.
 3. A banner "Syncing your calendar — events appear within a minute" is normal after connecting. Wait a minute.
-4. One calendar is missing: in **Settings → Connections → Calendar** find the section **Calendars · <account name>** and switch the calendar on. Calendars of a CalDAV or ICS account are under **Calendars · CalDAV/ICS**.
-5. An event is far away: the list shows the next 7 days. With Google, **Sync days ahead** in **Settings → Connections → Google** (2, 3, 5, 7 or 14) fetches ahead, but the list still shows 7 days.
+4. One calendar is missing: in **Connections → Calendar** find the section **Calendars · <account name>** and switch the calendar on. Calendars of a CalDAV or ICS account are under **Calendars · CalDAV/ICS**.
+5. An event is far away: the list shows the next 7 days. With Google, **Sync days ahead** in **Connections → Google** (2, 3, 5, 7 or 14) fetches ahead, but the list still shows 7 days.
 6. A cancelled event is not listed by design.
 7. Still empty: choose **Sync Now** in the menu bar.
 

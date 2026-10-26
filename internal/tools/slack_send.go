@@ -459,7 +459,7 @@ const SlackNotSentPrefix = "nothing was sent: "
 
 func slackScopeError(account db.SlackAccount) error {
 	return fmt.Errorf("slack workspace %s has not granted Watchtower permission to send messages — %s "+
-		"(Settings → Slack → Reconnect, or 'watchtower slack login --account %d'), then Retry",
+		"(Connections → Slack → Reconnect, or 'watchtower slack login --account %d'), then Retry",
 		slackWorkspaceName(account), SlackSendScopeHint, account.ID)
 }
 

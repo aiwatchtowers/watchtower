@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Sheet for connecting a new Slack workspace, presented from Settings → Slack
+/// Sheet for connecting a new Slack workspace, presented from Connections → Slack
 /// Workspaces. A workspace can have any number of Slack accounts side by side,
 /// each granting access via its own OAuth consent flow — this small form kicks
 /// off `watchtower slack add`, which opens the loopback-browser consent.

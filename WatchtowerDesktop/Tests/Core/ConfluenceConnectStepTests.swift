@@ -61,19 +61,19 @@ final class ConfluenceConnectStepTests: XCTestCase {
     func testLines() {
         XCTAssertEqual(
             ConfluenceConnectStep.line(.selected(["Engineering"])),
-            "Confluence: syncing 1 space you work in — Engineering. Choose more in Settings → Connections → Jira."
+            "Confluence: syncing 1 space you work in — Engineering. Choose more in Connections → Jira."
         )
         XCTAssertEqual(
             ConfluenceConnectStep.line(.selected(["Engineering", "Operations"])),
-            "Confluence: syncing 2 spaces you work in — Engineering, Operations. Choose more in Settings → Connections → Jira."
+            "Confluence: syncing 2 spaces you work in — Engineering, Operations. Choose more in Connections → Jira."
         )
         XCTAssertEqual(
             ConfluenceConnectStep.line(.selected([])),
-            "Confluence: no space you wrote in or viewed in the last 90 days. Choose spaces in Settings → Connections → Jira."
+            "Confluence: no space you wrote in or viewed in the last 90 days. Choose spaces in Connections → Jira."
         )
         XCTAssertEqual(
             ConfluenceConnectStep.line(.failed(["timeout"])),
-            "Confluence: couldn't choose spaces (timeout). Choose them in Settings → Connections → Jira."
+            "Confluence: couldn't choose spaces (timeout). Choose them in Connections → Jira."
         )
         XCTAssertEqual(
             ConfluenceConnectStep.line(.notEnabled),
@@ -83,6 +83,6 @@ final class ConfluenceConnectStepTests: XCTestCase {
             ConfluenceConnectStep.line(.featureOff),
             "Turn on Confluence in search (Settings → Features) to sync your spaces."
         )
-        XCTAssertEqual(ConfluenceConnectStep.line(.noSite), "Confluence: choose spaces in Settings → Connections → Jira.")
+        XCTAssertEqual(ConfluenceConnectStep.line(.noSite), "Confluence: choose spaces in Connections → Jira.")
     }
 }

@@ -208,8 +208,9 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertTrue(model.canSend)
         let sent = await model.send()
         guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
+        let askID = self.askID
         let stored = try await pool.read { d in
-            try Row.fetchOne(d, sql: "SELECT status, answer FROM owner_asks WHERE id = ?", arguments: [self.askID])
+            try Row.fetchOne(d, sql: "SELECT status, answer FROM owner_asks WHERE id = ?", arguments: [askID])
         }
         XCTAssertEqual(stored?["status"] as String?, "answered")
         XCTAssertTrue((stored?["answer"] as String?)?.contains("Mute lasts a day") == true)

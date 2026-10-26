@@ -23,6 +23,7 @@ extension AppState {
         databaseCompaction: DatabaseCompactionStep? = nil,
         peopleRosterRun: @escaping PeopleRosterLoad.Run = { _, _ in (0, "") },
         featuresRunner: any CLIRunnerProtocol = FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)),
+        managedPolicy: [String: Any] = [:],
         onboardingGoals: ((UserDefaults) -> OnboardingGoalsModel)? = nil
     ) -> AppState {
         UserDefaults.standard.removePersistentDomain(forName: isolatedSuiteName)
@@ -38,7 +39,7 @@ extension AppState {
             peopleRosterRun: peopleRosterRun,
             featureManager: FeatureManagerService(runner: featuresRunner),
             onboardingGoals: onboardingGoals?(defaults)
-        ) { [:] } // the managed policy: never this Mac's managed preferences
+        ) { managedPolicy } // never this Mac's managed preferences
         appState.daemonControlOverride = FakeDaemon()
         appState.daemonStartQueue = DaemonStartQueue()
         appState.wireAppDatabaseOverride = { _ in }

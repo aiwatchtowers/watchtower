@@ -271,7 +271,7 @@ Reference
 - Glossary (reference/glossary.md)
 - Organization policy for admins (reference/organization-policy.md)
 
-To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, inbox (your day, messages, tracks and ideas are its filters), calendar, targets, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text.
+To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, inbox (your day, messages, tracks and ideas are its filters), calendar, targets, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, connections (Slack, Google, Jira and the other accounts), usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text.
 ===
 
 === RESPONSE STYLE ===

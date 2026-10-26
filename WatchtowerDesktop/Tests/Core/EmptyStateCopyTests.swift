@@ -6,7 +6,7 @@ final class EmptyStateCopyTests: XCTestCase {
     /// EmptyStateCopyCoverageTests sweeps the real enum).
     private let covered = [
         "catchUp", "briefings", "dayPlan", "inbox", "ideas", "calendar", "targets", "tracks", "projects", "automations",
-        "digests", "people", "memory", "workload", "blockers", "projectMap", "releases", "statistics", "boards",
+        "digests", "people", "memory", "workload", "blockers", "projectMap", "releases", "statistics",
         "inboxMessages", "inboxAutomations"
     ]
 

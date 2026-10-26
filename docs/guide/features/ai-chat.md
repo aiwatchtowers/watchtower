@@ -170,7 +170,7 @@ When your request can be read two ways, the assistant asks with a card of one to
 ## When it's empty or wrong
 
 - **A reply fails.** The card shows the provider's own reason and **Retry**; your message is never lost. A sign-in error names the command for that provider.
-- **Answers miss recent items.** The assistant sees only what has synced. Check the source's status in Settings, or see [Search and knowledge](search-and-knowledge.md).
+- **Answers miss recent items.** The assistant sees only what has synced. Check the source in **Connections**, or see [Search and knowledge](search-and-knowledge.md).
 - **An attachment is refused.** It is over the size cap, or the provider cannot read that type (Codex and Ollama take no images or PDFs).
 - **A project edit seems ignored.** A reply being written finishes first; the change applies from the next message.
 

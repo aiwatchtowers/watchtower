@@ -96,10 +96,12 @@ extension AppState {
     }
 
     /// A Getting ready card's Open: the Inbox filter of a feature whose cards
-    /// live there, else the feature's tab.
+    /// live there, Connections → Jira for Jira, else the feature's tab.
     private func openFeature(_ feature: ReadinessFeature) {
         if let route = InboxRoute.forFeature(feature, today: Self.inboxToday()) {
             openInbox(route)
+        } else if feature == .jira {
+            openConnections(.jira)
         } else if let destination = Self.homeDestination(for: feature) {
             selectedDestination = destination
         }
@@ -144,9 +146,10 @@ extension AppState {
         case .peopleCards: .people
         case .memory: .memory
         case .inbox: .inbox
-        case .knowledgeIndex: .search
+        // The index is the assistant's to search (`search_knowledge`).
+        case .knowledgeIndex: .chat
         case .calendar: .calendar
-        case .jira: .boards
+        case .jira: .connections
         case .linear: .blockers
         }
     }

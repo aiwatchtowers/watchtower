@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Sheet for connecting a new Atlassian site, presented from Settings → Jira.
+/// Sheet for connecting a new Atlassian site, presented from Connections → Jira.
 /// A workspace can have any number of Jira accounts side by side, each
 /// granting access via its own OAuth consent flow — this small form kicks off
 /// `watchtower jira add`, which opens the loopback-browser consent. Structural

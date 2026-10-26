@@ -2,9 +2,11 @@ import SwiftUI
 import WatchtowerCore
 
 /// `briefings`, `dayPlan`, `ideas` and `tracks` were destinations until the
-/// one Inbox (C1). A stored raw value of theirs decodes to nil (a
-/// `sidebar.hiddenItems` entry is ignored), and a `watchtower-nav://` link
-/// naming one opens the matching Inbox filter (`InboxRoute.aliasHosts`).
+/// one Inbox (C1); `search` and `boards` until the Connections tab (#899:
+/// Search is gone, the boards are in Connections → Jira). A stored raw value
+/// of theirs decodes to nil (a `sidebar.hiddenItems` entry is ignored), and a
+/// `watchtower-nav://` link naming one of the first four opens the matching
+/// Inbox filter (`InboxRoute.aliasHosts`); the other two are not links.
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case home
     case chat
@@ -24,8 +26,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case projectMap
     case releases
     case statistics
-    case search
-    case boards
+    case connections
     case usage
     case mcpServer
 
@@ -49,8 +50,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .projectMap: "Project Map"
         case .releases: "Releases"
         case .statistics: "Statistics"
-        case .search: "Search"
-        case .boards: "Boards"
+        case .connections: "Connections"
         case .usage: "Usage"
         case .mcpServer: "MCP Server"
         }
@@ -74,8 +74,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .projectMap: "map"
         case .releases: "shippingbox"
         case .statistics: "chart.bar.xaxis"
-        case .search: "magnifyingglass"
-        case .boards: "rectangle.on.rectangle.angled"
+        case .connections: "powerplug"
         case .usage: "chart.bar"
         case .mcpServer: "terminal"
         }
@@ -97,9 +96,9 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         [.chat]
     }
 
-    /// Tool items (shown below the separator). Search lives here too.
+    /// Tool items (shown below the separator).
     static var toolItems: [Self] {
-        [.search, .boards, .usage, .mcpServer]
+        [.connections, .usage, .mcpServer]
     }
 }
 
@@ -125,7 +124,7 @@ extension SidebarDestination {
     var requiredSources: [SidebarSource]? {
         switch self {
         case .calendar: [.calendar]
-        case .boards, .workload, .projectMap, .releases: [.jira]
+        case .workload, .projectMap, .releases: [.jira]
         // Blockers read Jira and Linear through `tracker_issues`.
         case .blockers: [.jira, .linear]
         // Catch-Up also surfaces tracker mentions and meeting items. The

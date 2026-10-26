@@ -1,7 +1,7 @@
 import GRDB
 
 /// Direct GRDB reads/writes over `reaction_command_map` (+ a `tool_trust`
-/// lookup) — the Settings → Slack "Reaction commands" editor. Swift-owned
+/// lookup) — the Connections → Slack "Reaction commands" editor. Swift-owned
 /// (the `inbox_feedback` dual-path precedent): the table is small and
 /// owner-edited, so there is no daemon contention to arbitrate.
 package enum ReactionDictionaryQueries {

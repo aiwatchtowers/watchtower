@@ -9,7 +9,8 @@ package enum AgentActionDestination: Equatable, Sendable {
     case target(Int)
     case track(Int)
     case url(URL)
-    /// `connect_jira_board` — the Boards tab; there is no per-board selection.
+    /// `connect_jira_board` — Connections → Jira, where the boards are; there
+    /// is no per-board selection.
     case boards
 }
 

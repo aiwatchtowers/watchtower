@@ -3,14 +3,13 @@ import SwiftUI
 import WatchtowerCore
 
 /// In-flight Slack auth/reconnect/disconnect state, hoisted out of
-/// `SlackConnectionDetail` and owned by `ConnectionsSettings` instead. The
+/// `SlackConnectionDetail` and owned by `AppState` (`slackAuthFlow`). The
 /// Connections tab's detail pane is a `@ViewBuilder switch`, so each service
-/// gets its own view identity — switching to another service while a
-/// `SlackConnectionDetail`-local `@State` reconnect/disconnect was running
-/// would tear that state (and the running CLI process reference) down,
-/// orphaning the process and losing the result. Living on `ConnectionsSettings`
-/// instead means this state survives switching services, matching the old
-/// `GeneralSettings` monolith where it lived for the tab's whole lifetime.
+/// gets its own view identity — switching to another service, or to another
+/// tab, while a `SlackConnectionDetail`-local `@State` reconnect/disconnect
+/// was running would tear that state (and the running CLI process reference)
+/// down, orphaning the process and losing the result. On `AppState` it
+/// survives both.
 @MainActor
 @Observable
 final class SlackAuthFlowState {

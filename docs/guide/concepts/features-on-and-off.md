@@ -61,7 +61,7 @@ An empty tab shows an icon, a title ("No briefings yet"), one sentence on what w
 | Status line | Means | What to do |
 |---|---|---|
 | **Off — Turn on** | The feature is off. | **Turn on** switches it on at once and restarts the sync once, without going through **Save**. |
-| **Connect Slack to get this** (or "a calendar", "Jira", "Jira or mail", "a source") | The source it reads is not connected. | Connect it in **Settings → Connections**. |
+| **Connect Slack to get this** (or "a calendar", "Jira", "Jira or mail", "a source") | The source it reads is not connected. | Connect it in **Connections**. |
 | **Needs Slack Digests** (Tracks and People only) | The feature is on, but it runs only while Slack Digests is on, and Slack Digests is off. | **Turn on Slack Digests** switches Slack Digests on (heavy AI use). |
 | **Preparing now** | Its job is running; the sync's progress follows. | Wait. |
 | **Didn't work yet — retries automatically** | Its last run failed; the first line of the reason follows. | Nothing: the next cycle retries. |

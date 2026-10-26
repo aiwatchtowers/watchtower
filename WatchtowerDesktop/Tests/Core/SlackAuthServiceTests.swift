@@ -3,7 +3,7 @@ import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
 
-/// Settings → Slack "Workspace" status used to read `config.yaml`'s
+/// Connections → Slack "Workspace" status used to read `config.yaml`'s
 /// `workspaces.<active>.slack_token`, which the multi-account CLI no longer
 /// writes (it moves the token into `slack_token_<id>.json`), so every
 /// post-migration install showed "Slack not connected" next to healthy

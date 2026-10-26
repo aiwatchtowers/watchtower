@@ -14,15 +14,15 @@ enum SettingsAnchor: Hashable {
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
-    @State private var config = ConfigService()
 
     var body: some View {
         @Bindable var appState = appState
+        let config = appState.sharedConfig
         TabView(selection: $appState.settingsTab) {
             GeneralSettings(config: config)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
-            ConnectionsSettings(config: config)
+            ConnectionsSettings()
                 .environment(appState)
                 .tabItem { Label("Connections", systemImage: "link") }
                 .tag(SettingsTab.connections)
@@ -48,13 +48,7 @@ struct SettingsView: View {
                 .tag(SettingsTab.profile)
         }
         .frame(width: 760, height: 580)
-        // Here where the connect happened: the related-features offer,
-        // closed only through its own buttons.
-        .sheet(isPresented: Binding(
-            get: { appState.showsFeatureSuggestion },
-            set: { _ in }
-        )) {
-            FeatureSuggestionSheet().environment(appState)
-        }
+        // The shared config.yaml copy catches up with a CLI or editor change.
+        .onAppear { appState.sharedConfig.reloadUnlessEdited() }
     }
 }
