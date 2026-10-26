@@ -73,9 +73,11 @@ struct ChatSplitView: View {
                     } else if let projectID = chatVM.openProjectID, let dbPool = appState.databaseManager?.dbPool {
                         ProjectDetailView(
                             projectID: projectID,
+                            chatVM: chatVM,
                             dbPool: dbPool,
                             attachmentsRoot: ChatAttachmentStore.defaultRootDir(),
-                            onNewChat: createNewChat(inProject:),
+                            modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
+                            maxComposerHeight: max(120, geo.size.height * 0.4),
                             onOpenChat: { historyVM.selectedConversationID = $0 },
                             onRenamed: { chatVM.reloadProjects() },
                             onDeleted: { chatVM.projectDeleted($0) },
@@ -242,12 +244,6 @@ struct ChatSplitView: View {
         lastConversationID = chatVM.isOnLanding ? 0 : Int(chatVM.conversationID ?? 0)
         lastViewedAt = Date().timeIntervalSince1970
         lastWorkspace = workspaceKey
-    }
-
-    private func createNewChat(inProject projectID: Int64) {
-        Task {
-            if let id = await chatVM.newConversation(projectID: projectID) { historyVM.selectedConversationID = id }
-        }
     }
 
     private func delete(_ id: Int64) {
