@@ -161,6 +161,25 @@ func TestValidate_WiderFindSameFingerprint(t *testing.T) {
 	assert.Empty(t, got, "a declined edit does not come back under a wider find")
 }
 
+func TestFingerprint_PartsCannotBeConfused(t *testing.T) {
+	k := keyOf(DestSession, 0, "")
+	// Removing " a b" and turning "a" into "b" normalise to the same words;
+	// their fingerprints must still differ.
+	cut, ok := fingerprint(k, "keep a b", "keep")
+	require.True(t, ok)
+	swap, ok := fingerprint(k, "keep a", "keep b")
+	require.True(t, ok)
+	assert.NotEqual(t, cut, swap)
+
+	// Spacing and case do not change the fingerprint.
+	a, _ := fingerprint(k, "Keep it.", "Keep it.\nRun   the TESTS.")
+	b, _ := fingerprint(k, "Keep it.", "Keep it.\nrun the tests")
+	assert.Equal(t, a, b)
+
+	_, ok = fingerprint(k, "Keep it small.", "Keep  it small")
+	assert.False(t, ok, "a spacing or punctuation change is no edit")
+}
+
 func TestValidate_KeepsAtMostSlots(t *testing.T) {
 	in := proposeInputs()
 	in.Open = []db.CoachProposal{{ID: 1, Fingerprint: "other", Destination: DestProcedure, WorkbenchID: 1, Status: "open"}}
@@ -184,7 +203,6 @@ func TestValidate_MalformedReply(t *testing.T) {
 func TestSafeAllowRule(t *testing.T) {
 	for rule, want := range map[string]bool{
 		"Bash(go test:*)":             true,
-		"Bash(rg:*)":                  true,
 		"Bash(cat:*)":                 true,
 		"Bash":                        false,
 		"Bash(*)":                     false,
@@ -198,6 +216,7 @@ func TestSafeAllowRule(t *testing.T) {
 		"Bash(find . -exec rm -rf:*)": false,
 		"Bash(make:*)":                false,
 		"Bash(npm run:*)":             false,
+		"Bash(rg:*)":                  false,
 		"Bash(rg foo:*)":              false,
 		"Bash(go test; rm:*)":         false,
 		"Bash(go  test:*)":            false,

@@ -210,8 +210,8 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 		if !ok || after == t.Text || !kindFits(m.Kind, t.Text, after) || ValidateAfter(t, after) != nil {
 			continue
 		}
-		fp := fingerprint(key, t.Text, after)
-		if known[fp] {
+		fp, changed := fingerprint(key, t.Text, after)
+		if !changed || known[fp] {
 			continue
 		}
 		known[fp] = true
@@ -225,10 +225,19 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 
 // fingerprint identifies an edit by its text and what it changes: the part of
 // before it removes and the part of after it adds (changedPart), so the same
-// edit named with a wider or narrower find gets the same fingerprint.
-func fingerprint(key textKey, before, after string) string {
+// edit named with a wider or narrower find gets the same fingerprint. Each part
+// is normalised on its own by instructions.Fingerprint (letters and digits
+// separated by single spaces, so it never holds "|") and the fields are joined
+// by "|": a removed part cannot be read as an added one. ok is false when the
+// normalised parts are equal: the edit changes only spacing, case or
+// punctuation.
+func fingerprint(key textKey, before, after string) (fp string, ok bool) {
 	removed, added := changedPart(before, after)
-	return instructions.Fingerprint(fmt.Sprintf("%s|%d|%s|%s => %s", key.dest, key.wb, key.prompt, removed, added))
+	r, a := instructions.Fingerprint(removed), instructions.Fingerprint(added)
+	if r == a {
+		return "", false
+	}
+	return fmt.Sprintf("%s|%d|%s|%s|%s", key.dest, key.wb, key.prompt, r, a), true
 }
 
 // citedEvidence keeps the cited refs found in the input (deduplicated, in
@@ -403,14 +412,19 @@ func ValidateAfter(t CurrentText, after string) error {
 
 // safeAllowVerbs is the coach's own allowlist for ~/.claude/settings.json
 // rules, matched exactly: a proposal may add Bash(<verb>:*) only for a verb
-// here, with nothing after it (no arguments, paths or flags). It is narrower
-// than agentreport's tool classes on purpose: the model writes the verb, and a
-// first-word class would let "sed -i", "find . -delete" or any make target
-// through.
+// here, with nothing after it in the rule. It is narrower than agentreport's
+// tool classes on purpose: the model writes the verb, and a first-word class
+// would let "sed -i", "find . -delete" or any make target through.
+//
+// The read/search verbs can neither write nor execute, whatever flags follow
+// them (sed, find and rg are left out: sed -i writes, find -delete/-exec and
+// rg --pre run commands). The build/test commands run project code by design;
+// that is the accepted residual risk, flags such as go test -exec or go build
+// -toolexec included, since a test or build runner already executes the
+// project's code. Every rule still needs the owner's Accept.
 var safeAllowVerbs = map[string]bool{
-	// Read and search: agentreport's read/search programs minus sed and find,
-	// which can write (sed -i) or delete and run commands (find -delete/-exec).
-	"cat": true, "ls": true, "grep": true, "rg": true, "head": true, "tail": true,
+	// Read and search.
+	"cat": true, "ls": true, "grep": true, "head": true, "tail": true,
 	// Build and test: exact toolchain commands only — not make (any target)
 	// and not npm run (any script).
 	"go test": true, "go build": true, "go vet": true, "swift test": true, "swift build": true,
