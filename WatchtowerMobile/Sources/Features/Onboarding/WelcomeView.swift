@@ -82,9 +82,9 @@ struct WelcomeView: View {
         VStack(spacing: Spacing.page) {
             Image("AppIconImage")
                 .resizable()
-                .frame(width: 72, height: 72)
+                .frame(width: PhoneMetrics.appIcon, height: PhoneMetrics.appIcon)
                 // The app icon's own corner (O1), not a card radius.
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: PhoneMetrics.appIcon * Self.iconCorner, style: .continuous))
                 .accessibilityHidden(true)
             VStack(spacing: Spacing.regular) {
                 Text("Watchtower")
@@ -94,13 +94,15 @@ struct WelcomeView: View {
                     .foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(WelcomeFeature.all, id: \.text) { feature in
+                ForEach(Array(WelcomeFeature.all.enumerated()), id: \.element.text) { index, feature in
+                    if index > 0 { CardRowDivider() }
                     FlatRow(icon: .symbol(feature.symbol, tone: .accent), title: feature.text, insets: EdgeInsets()) {
                         EmptyView()
                     }
                     .accessibilityElement(children: .combine)
                 }
             }
+            .card(.plain)
             if let notice = linking.notice {
                 Text(notice.message)
                     .font(.subheadline)
@@ -112,35 +114,51 @@ struct WelcomeView: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// The icon's corner as a share of its side (the system's squircle).
+    private static let iconCorner = 0.22
+
+    /// The scan is the one prominent action; the help and the demo are
+    /// quiet links (mockup 17).
     private var buttons: some View {
-        VStack(spacing: Spacing.medium) {
+        VStack(spacing: Spacing.regular) {
             Text("On your Mac: Settings → Mobile → Use Watchtower on iPhone.")
-                .font(.footnote)
+                .font(TypeScale.meta)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
+                .padding(.bottom, Spacing.regular)
             Button {
                 linking.startScan()
             } label: {
                 Label("Scan the code on your Mac", systemImage: "qrcode.viewfinder")
-                    .frame(maxWidth: .infinity, minHeight: 44)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(ProminentActionStyle())
             NavigationLink {
                 MacNotShowingView()
             } label: {
-                Text("The Mac doesn't show up")
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                QuietLinkLabel(text: "The Mac doesn't show up")
             }
             // No Mac at hand (App Review has none): the demo Macs (#174).
             if let startDemoTour {
                 Button {
                     startDemoTour()
                 } label: {
-                    Text("Try the Demo")
-                        .frame(maxWidth: .infinity, minHeight: 44)
+                    QuietLinkLabel(text: "Try the Demo")
                 }
             }
         }
+    }
+}
+
+/// A quiet link: accent text, no plate, a 44 pt hit area.
+private struct QuietLinkLabel: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(TypeScale.rowTitle)
+            .foregroundStyle(PhoneTone.accent.color)
+            .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch)
+            .contentShape(Rectangle())
     }
 }
 
@@ -149,13 +167,13 @@ struct LinkProgressView: View {
     let text: String
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Spacing.large) {
             ProgressView()
             Text(text)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
         }
-        .padding()
+        .padding(Spacing.large)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

@@ -447,7 +447,7 @@ struct DemoTourBanner: View {
     let exit: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.medium) {
             Image(systemName: "play.rectangle")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
@@ -455,12 +455,12 @@ struct DemoTourBanner: View {
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Exit Demo", action: exit)
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+                .buttonStyle(BannerButtonStyle())
         }
-        .padding(.horizontal)
-        .padding(.vertical, 4)
-        .background(.bar)
+        .padding(.horizontal, Spacing.large)
+        .padding(.vertical, Spacing.small)
+        .background(Fill.card)
+        .overlay(alignment: .bottom) { CardRowDivider() }
     }
 }
 

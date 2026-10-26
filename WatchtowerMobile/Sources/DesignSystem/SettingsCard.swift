@@ -36,15 +36,20 @@ struct SettingsCard<Content: View>: View {
 }
 
 /// One setting row: the title and an optional caption on the left, the
-/// control or value trailing, at least 44 pt tall. One accessibility
-/// element labelled by the title (the caption is its hint).
+/// control or value trailing, at least 44 pt tall. `leadingDot` puts a
+/// status dot in that tone before the title (mockup 16's "MacBook Pro").
+/// One accessibility element labelled by the title (the caption is its hint).
 struct SettingsRow<Trailing: View>: View {
     let title: String
     var caption: String?
+    var leadingDot: PhoneTone?
     @ViewBuilder let trailing: Trailing
 
     var body: some View {
         HStack(spacing: Spacing.medium) {
+            if let leadingDot {
+                Circle().fill(leadingDot.color).frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
+            }
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text(title).font(TypeScale.rowTitle)
                 if let caption {

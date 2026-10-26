@@ -35,33 +35,16 @@ struct MacStatusRow: Equatable {
     }
 }
 
-/// The Your Mac row (bug 10): the name on the left and the dot and state on
-/// the right, on one line. A name too long for that gets the state on a
-/// second line under it, instead of either truncating (Phases 1–2 review).
+/// The This Mac row (mockup 16): the Mac's name with the status dot in its
+/// tone, the state trailing, on one `SettingsRow`.
 struct MacStatusRowView: View {
     let row: MacStatusRow
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            LabeledContent {
-                status
-            } label: {
-                Text(row.label).lineLimit(1)
-            }
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(row.label)
-                status.foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        SettingsRow(title: row.label, leadingDot: row.tone) {
+            Text(row.value)
         }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var status: some View {
-        HStack(spacing: Spacing.compact) {
-            Circle().fill(row.tone.color).frame(width: 8, height: 8)
-            Text(row.value).lineLimit(1)
-        }
+        .accessibilityValue(row.value)
     }
 }
 

@@ -35,6 +35,10 @@ enum PhoneMetrics {
     static let barButton: CGFloat = 46
     /// The small settings switch (mockup `.sw`).
     static let switchSize = CGSize(width: 42, height: 25)
+    /// The app icon on Welcome.
+    static let appIcon: CGFloat = 72
+    /// A large status symbol on a full-screen outcome.
+    static let outcomeSymbol: CGFloat = 48
     /// A thin progress bar.
     static let progressBar: CGFloat = 4
 }

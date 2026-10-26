@@ -76,11 +76,11 @@ struct LinkStepsView: View {
                 StepRow(state: step.state, text: step.text)
             }
             if let hint = model.hint {
-                // Under the step text: the 22 pt icon column plus its 12 pt gap.
+                // Under the step text: the icon column plus its gap.
                 Text(hint)
                     .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
-                    .padding(.leading, 34)
+                    .padding(.leading, PhoneMetrics.stepColumn + Spacing.medium)
             }
         }
         .padding(.horizontal, Spacing.page)
