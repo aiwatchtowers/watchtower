@@ -189,7 +189,7 @@ struct WorkAlertSlice: SliceSource {
     private func openAsks(_ db: Database, published names: [Int64: String]) throws -> [OpenAsk] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, project_id, session_id, kind, title, payload, created_at
-            FROM owner_asks WHERE status = 'open' ORDER BY id
+            FROM owner_asks WHERE status = 'open' AND \(OwnerAskQueries.notInSpecLoop("owner_asks")) ORDER BY id
             """)
         return rows.compactMap { row in
             let id: Int64 = row["id"]

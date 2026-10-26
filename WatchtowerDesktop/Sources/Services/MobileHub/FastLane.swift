@@ -47,6 +47,7 @@ final class FastLane: HubCompanion {
     /// publish on the full tick, which needs no trigger.
     nonisolated static let observedTables: [(table: String, kinds: Set<SliceKind>)] = [
         ("owner_asks", [.ownerAsk, .askAlert]),
+        ("spec_reviews", [.ownerAsk, .askAlert]),
         ("permission_requests", [.permissionRequest, .askAlert])
     ]
     /// What a session state change nudges: the ask kinds and the permission

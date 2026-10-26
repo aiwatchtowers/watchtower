@@ -477,7 +477,7 @@ final class OwnerAsksViewModel {
             sql: """
                 SELECT COUNT(*), MAX(id), SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),
                        MAX(answered_at), MAX(delivered_at), SUM(CASE WHEN session_id IS NULL THEN 1 ELSE 0 END)
-                FROM owner_asks WHERE project_id = ?
+                FROM owner_asks WHERE project_id = ? AND \(OwnerAskQueries.notInSpecLoop("owner_asks"))
                 """,
             arguments: [projectID]
         ) else { return "" }

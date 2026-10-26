@@ -347,7 +347,7 @@ final class WorkbenchBoardViewModel {
             sql: """
                 SELECT COUNT(*), MAX(id), SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),
                        MAX(answered_at), MAX(delivered_at)
-                FROM owner_asks WHERE project_id = ?
+                FROM owner_asks WHERE project_id = ? AND \(OwnerAskQueries.notInSpecLoop("owner_asks"))
                 """,
             arguments: [projectID]
         )
