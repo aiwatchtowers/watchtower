@@ -608,10 +608,18 @@ final class MeetingRecorderCenter {
     }
 
     /// Whether anything but the warm slot holds (or is about to hold) the
-    /// engine: a capture, a live pass still draining, a job transcribing on
-    /// the batch path (`engineJobID` — a job saving live text holds none), or
-    /// a job that has been handed an engine and not parked or used it yet.
-    /// The policy never prewarms — and never unloads — while this is true.
+    /// engine: a capture, a live pass still draining, a running job, or a job
+    /// that has been handed an engine and not parked or used it yet. The
+    /// policy never prewarms — and never unloads — while this is true. Its
+    /// only reader is `warmPolicyTick`.
+    ///
+    /// A running job counts whether or not it holds the engine slot
+    /// (`activeJobID`, not `engineJobID`): a job working from live text parks
+    /// its handed-over engine when it starts and then renders roles for a
+    /// while, and unloading the engine there would make a batch job queued
+    /// right behind it — or the next recording — load it again. That is the
+    /// warm policy's notion of busy only; the live-pass gates still read
+    /// `engineJobID`, so such a job never parks a recording's live pass.
     ///
     /// That last term is not redundant: `stopAndProcess` hands the engine to
     /// the job and releases the live slot in one main-actor step, while the
@@ -620,7 +628,7 @@ final class MeetingRecorderCenter {
     /// would see a free engine and prewarm a second model alongside the one
     /// the job is holding.
     private var isEngineBusy: Bool {
-        isCapturing || liveTask != nil || engineJobID != nil || jobs.contains { $0.engine != nil }
+        isCapturing || liveTask != nil || activeJobID != nil || jobs.contains { $0.engine != nil }
     }
 
     /// The single engine-acquisition point for both load sites

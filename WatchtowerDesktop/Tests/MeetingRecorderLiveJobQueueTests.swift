@@ -429,6 +429,47 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         recorder2.emitLive([Float](repeating: 0, count: 1600))
         await center.stopAndProcess(config: config)
     }
+
+    /// A live-text job parks its engine when it starts, then renders roles and
+    /// saves. A warm-policy tick meanwhile must not unload that engine — the
+    /// job counts as busy — or the next recording would load it again.
+    func testWarmTickDuringALiveTextJobKeepsTheParkedEngine() async throws {
+        let recorder = FakeRecorder()
+        var engineLoads = 0
+        let runner = GatedSaveRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["live one"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = threeWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        recorder.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder.lastStartURL), durationSec: 1)
+        recorder.emitLive([Float](repeating: 0, count: 1600))
+        let stop = Task { await center.stopAndProcess(config: config) }
+        let saving = await waitUntil("the live-text job to be inside its save") { runner.isHoldingASave }
+        guard saving else { runner.releaseAll(); return }
+        XCTAssertTrue(center.isEngineWarm, "the job parked its handed-over engine")
+        XCTAssertNil(center.engineJobID)
+
+        center.warmPolicyTick(config: config) // no meeting ahead: idle, this would unload
+        XCTAssertTrue(center.isEngineWarm, "a running job keeps the warm policy off")
+
+        runner.releaseAll()
+        await stop.value
+        center.warmPolicyTick(config: config)
+        XCTAssertFalse(center.isEngineWarm, "once the queue is idle the policy unloads as before")
+        XCTAssertEqual(engineLoads, 1)
+    }
 }
 
 /// Blocks each window like `GateEngine` (released through `gate`), then throws.
