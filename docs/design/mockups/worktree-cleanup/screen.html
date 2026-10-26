@@ -132,7 +132,7 @@ h1.frame:first-child { margin-top: 0; }
     <div class="section"><span class="chev">▾</span>Can go <span class="count">18</span></div>
     <div class="row"><span class="box"></span><div><div class="name">search-filters</div><div class="branch">wt/search-filters</div></div><span class="cap">Session deleted</span><span class="num">~12 GB</span><span class="cap">9 days ago</span><span><span class="chip green">Merged</span></span></div>
     <div class="row hover"><span class="box"></span><div><div class="name">agent-3f9c0a17d2e4b6c1</div><div class="branch">feature/export-csv</div></div><span class="cap">Subagent</span><span class="num">~12 GB</span><span class="cap">2 days ago</span><span><span class="chip blue">Pushed</span></span></div>
-    <div class="row"><span class="box"></span><div><div class="name">billing-retry</div><div class="branch">wt/billing-retry</div></div><span class="cap">“Billing retry” · 3 h ago</span><span class="num">~11 GB</span><span class="cap">3 hours ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row"><span class="box"></span><div><div class="name">billing-retry</div><div class="branch">wt/billing-retry</div></div><span class="cap">“Billing retry” · finished 9 days ago</span><span class="num">~11 GB</span><span class="cap">9 days ago</span><span><span class="chip green">Merged</span></span></div>
     <div class="row"><span class="box"></span><div><div class="name">agent-a4e21905ca8593e8</div><div class="branch">lane/login-t2</div></div><span class="cap">Subagent</span><span class="num muted"><span class="spin"></span>measuring</span><span class="cap">1 day ago</span><span><span class="chip green">Merged</span></span></div>
     <div class="row"><span class="box"></span><div><div class="name">old-experiment</div><div class="branch">branch only</div></div><span class="cap">—</span><span class="num muted">—</span><span class="cap">2 months ago</span><span><span class="chip green">Merged</span></span></div>
     <div class="row dim"><span class="box off"></span><div><div class="name">onboarding-copy</div><div class="branch">wt/onboarding-copy</div></div><span class="cap">Session deleted</span><span class="num muted"><span class="spin"></span>checking</span><span class="muted">—</span><span class="muted">—</span></div>
@@ -221,6 +221,127 @@ h1.frame:first-child { margin-top: 0; }
   </div>
 </div>
 <p class="note">While removing (between B and C) each selected row shows a spinner in its State cell and leaves the list once removed; Refresh and Clean Up… are disabled; the owner can leave the screen.</p>
+<h1 class="frame">D · One session's scope (a session row's Clean Up…)</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span>Session</span><span>Board</span><span>Files</span></div>
+    <div class="crumb">Clean Up <b>✕</b></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="page">
+    <div class="head"><h2>Clean up worktrees and branches</h2><span class="sub">Nothing goes until you select it and confirm. Unsaved or unpushed work is never removed.</span></div>
+    <div class="progress">Checked just now · this session left 2 worktrees, 2 branches <span class="btn quiet">Refresh</span></div>
+    <div class="toolbar">
+      <div class="toggle on">Session: “Login redirect” ✕</div><div class="search">Search</div>
+      <div class="seg"><span class="on">All</span><span>Worktrees</span><span>Branches</span></div>
+      <div class="menu">Any age</div>
+      <div class="menu">Any owner</div>
+      <div class="toggle">Merged only</div>
+    </div>
+    <div class="cols"><span></span><span>Name</span><span>Owner</span><span class="num sorted">Size ↓</span><span>Last commit</span><span>State</span></div>
+    <div class="section"><span class="chev">▾</span>Can go <span class="count">2</span></div>
+    <div class="row"><span class="box"></span><div><div class="name">login-redirect</div><div class="branch">wt/login-redirect</div></div><span class="cap">“Login redirect” · stopped 1 h ago</span><span class="num">~12 GB</span><span class="cap">20 min ago</span><span><span class="chip blue">Pushed</span></span></div>
+    <div class="row"><span class="box"></span><div><div class="name">agent-5be0c2a19f7d3e64</div><div class="branch">lane/login-redirect-t1</div></div><span class="cap">Subagent</span><span class="num">~96 MB</span><span class="cap">1 hour ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="section"><span class="chev">▸</span>Kept <span class="count">1</span><span class="why">· 1 uncommitted changes</span></div>
+  </div>
+  <div class="footer">
+    <span class="btn quiet">Select All That Can Go</span>
+    <div class="spacer"></div>
+    <span class="total">Nothing selected</span>
+    <span class="btn destructive disabled">Clean Up…</span>
+  </div>
+</div>
+<p class="note">In a session's scope the session’s own worktrees can go although the session was active within 7 days (session mode, as the session sheet today; a worktree its agent is in stays kept); ✕ on the chip widens to the whole workbench and plans again.</p>
+
+<h1 class="frame">E · The whole run failed</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span>Session</span><span>Board</span><span>Files</span></div>
+    <div class="crumb">Clean Up <b>✕</b></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="page">
+    <div class="head"><h2>Clean up worktrees and branches</h2><span class="sub">Nothing goes until you select it and confirm. Unsaved or unpushed work is never removed.</span></div>
+    <div class="result"><span style="color:var(--red-text)">✕</span> <span style="color:var(--red-text)">Clean up failed: git is not reachable (exit 1). Nothing after it was touched.</span><div class="spacer"></div><span class="btn quiet">Retry</span><span class="btn quiet">Dismiss</span></div>
+    <div class="toolbar">
+      <div class="search">Search</div>
+      <div class="seg"><span class="on">All</span><span>Worktrees</span><span>Branches</span></div>
+      <div class="menu">Any age</div>
+      <div class="menu">Any owner</div>
+      <div class="toggle">Merged only</div>
+    </div>
+    <div class="cols"><span></span><span>Name</span><span>Owner</span><span class="num sorted">Size ↓</span><span>Last commit</span><span>State</span></div>
+    <div class="section"><span class="chev">▾</span>Can go <span class="count">2</span></div>
+    <div class="row sel"><span class="box on">✓</span><div><div class="name">import-wizard</div><div class="branch">wt/import-wizard</div></div><span class="cap">Session deleted</span><span class="num">~12 GB</span><span class="cap">5 weeks ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row sel"><span class="box on">✓</span><div><div class="name">old-experiment</div><div class="branch">branch only</div></div><span class="cap">—</span><span class="num muted">—</span><span class="cap">2 months ago</span><span><span class="chip green">Merged</span></span></div>
+  </div>
+  <div class="footer">
+    <span class="btn quiet">Select All That Can Go</span><span class="btn quiet">Clear</span>
+    <div class="spacer"></div>
+    <span class="total"><b>1 worktree, 2 branches</b> · ~12 GB</span>
+    <span class="btn destructive">Clean Up…</span>
+  </div>
+</div>
+<p class="note">Retry re-applies the rows still ticked (a new plan and apply). A failed plan shows the same bar with Retry = plan again; the rows already listed stay.</p>
+
+<h1 class="frame">F · Another cleanup of this workbench is running</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span>Session</span><span>Board</span><span>Files</span></div>
+    <div class="crumb">Clean Up <b>✕</b></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="page">
+    <div class="head"><h2>Clean up worktrees and branches</h2><span class="sub">Nothing goes until you select it and confirm. Unsaved or unpushed work is never removed.</span></div>
+    <div class="progress">Checked 2 min ago · 69 worktrees, 130 branches <span class="btn quiet disabled">Refresh</span></div>
+    <div class="toolbar">
+      <div class="search">Search</div>
+      <div class="seg"><span class="on">All</span><span>Worktrees</span><span>Branches</span></div>
+      <div class="menu">Any age</div>
+      <div class="menu">Any owner</div>
+      <div class="toggle">Merged only</div>
+    </div>
+    <div class="cols"><span></span><span>Name</span><span>Owner</span><span class="num sorted">Size ↓</span><span>Last commit</span><span>State</span></div>
+    <div class="section"><span class="chev">▾</span>Can go <span class="count">18</span></div>
+    <div class="row sel"><span class="box on">✓</span><div><div class="name">search-filters</div><div class="branch">wt/search-filters</div></div><span class="cap">Session deleted</span><span class="num">~12 GB</span><span class="cap">9 days ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row"><span class="box"></span><div><div class="name">agent-3f9c0a17d2e4b6c1</div><div class="branch">feature/export-csv</div></div><span class="cap">Subagent</span><span class="num">~12 GB</span><span class="cap">2 days ago</span><span><span class="chip blue">Pushed</span></span></div>
+  </div>
+  <div class="footer">
+    <span class="btn quiet">Select All That Can Go</span><span class="btn quiet">Clear</span>
+    <div class="spacer"></div>
+    <span class="total">Another cleanup is running — Delete and Clean Up of “Billing export”</span>
+    <span class="btn destructive disabled">Clean Up…</span>
+  </div>
+</div>
+<p class="note">Ticking stays possible; Clean Up… and Refresh come back when the other run ends. The delete dialog shows the same line under a disabled Delete and Clean Up while this screen's apply runs.</p>
+
+<h1 class="frame">G · Nothing to clean up</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span>Session</span><span>Board</span><span>Files</span></div>
+    <div class="crumb">Clean Up <b>✕</b></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="page" style="min-height:260px">
+    <div class="head"><h2>Clean up worktrees and branches</h2><span class="sub">Nothing goes until you select it and confirm. Unsaved or unpushed work is never removed.</span></div>
+    <div class="progress">Checked just now · 1 worktree, 1 branch <span class="btn quiet">Refresh</span></div>
+    <div style="text-align:center; padding:48px 0 56px;">
+      <div style="font-size:26px; color:var(--tertiary)">✓</div>
+      <div style="font-weight:600; margin-top:8px">Nothing to clean up</div>
+      <div class="cap" style="margin-top:4px">The repository has no other worktree or branch that can go. Kept: 1 — unpushed commits.</div>
+      <div style="margin-top:10px"><span class="btn quiet">Show kept</span></div>
+    </div>
+  </div>
+</div>
+
 
 </body>
 </html>

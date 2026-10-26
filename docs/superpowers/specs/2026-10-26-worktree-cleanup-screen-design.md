@@ -1,11 +1,14 @@
 # Clean Up — one screen for worktrees and branches instead of sheets (board #1107) — design
 
-**Status:** draft for the owner's review, round 2 (round 1: ask #629)
+**Status:** draft for the owner's review, round 3 (round 1: ask #629, round 2: ask #630)
 **Builds on:** `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` (board #535) §8, §9, §12; PROJ-18 in
 `docs/inventory/workbench.md`.
 **Mockup:** `docs/design/mockups/worktree-cleanup/screen.html` (open with `#dark` for the dark appearance), rendered
-as `screen-light.png` / `screen-dark.png` beside it — three states: A opened and filling in, B filtered + selected +
-the confirmation, C the result.
+as `screen-light.png` / `screen-dark.png` beside it — seven states: A opened and filling in, B filtered + selected +
+the confirmation, C the result, D one session's scope, E the whole run failed (Retry), F another cleanup of the
+workbench is running, G nothing to clean up. In the whole-workbench scope a row whose session is live or was active
+within 7 days is never under **Can go** — the sweep keeps it `session_recent` (design §9); only a session's own scope
+(D) offers such a session's worktrees.
 
 ![mockup, light](../../design/mockups/worktree-cleanup/screen-light.png)
 
@@ -141,9 +144,11 @@ left and 4 of the 53 removable worktrees still match one. So the column shows wh
    `.claude/worktrees/<name>` on a `wt/` branch, its session gone), **Made by hand** (any other linked worktree).
    Branch-only rows show `—`.
 
-The **Owner** filter offers: Any owner · A session (1) · Subagent · Session deleted · Made by hand. The origin is a
-Desktop-side derivation in WatchtowerCore from the item's `name`/`key`/`branch` (no CLI change); the path rules are
-pinned by tests.
+The **Owner** filter offers: Any owner · A session (1) · Subagent · Session deleted · Made by hand. The origin is
+decided **in Go**, next to the placement code that owns those path and branch rules (`.claude/worktrees`, the `wt/`
+prefix), and sent as a new item key `origin` (`session` / `subagent` / `placed` / `manual`; `""` for branches and
+`lsreg` items) — the Desktop never repeats the rules (round-2 review, ask #630). Pinned by Go tests over the
+placement constants.
 
 ### 4.4 Filters and bulk selection
 
@@ -206,13 +211,20 @@ is unchanged (agents, tests).
 - A worktree's bundle items (`lsreg:` found under it) carry `"worktree":"<root>"` and are emitted with that
   worktree's `checked` event, before sizing (the bundle scan moves ahead of `measureAll`), so a worktree row is
   complete — and can be ticked — once checked. Stale-entry `lsreg` items carry no `worktree`.
-- Items gain two keys, streamed or not (additive, pinned in the JSON key test): `last_commit_at` (RFC 3339 UTC of the
+- Items gain three keys, streamed or not (additive, pinned in the JSON key test): `origin` (§4.3), `last_commit_at` (RFC 3339 UTC of the
   tip's committer date; `""` when unknown) and `merged` (bool: the tip is an ancestor of the local default branch or
   of `refs/remotes/origin/<default>` when it exists, so a branch merged on GitHub while the local `main` lags still
   reads as merged; false when unknown). Both come from one `git for-each-ref` over `refs/heads` plus one per detached
   worktree HEAD.
-- Checks may finish in any order; the Desktop applies events by `key`. `done.plan` is the authority: the Desktop
-  replaces its rows with it.
+- Checks may finish in any order; within one run the Desktop applies events by `key`. `done.plan` is the authority:
+  the Desktop replaces its rows with it.
+- **Events never cross runs** (round-2 review, ask #630). Each plan or apply is one CLI process with its own stdout
+  pipe; `SessionCleanupCenter` gives each run a fresh run id (a counter per scope) and keeps only the current one.
+  **Refresh**, a scope change or closing on a failure first stops the old process (SIGTERM, as the hint watchdog does
+  today) and drops its id; every line read from a pipe is applied only while its run id is still the scope's current
+  one, so a late line of the old process is thrown away, never merged into the new plan's rows. An apply is never
+  stopped this way: while one runs, Refresh and scope changes are disabled (§5). Pinned by a center test that feeds
+  an old run's `checked` line after a Refresh.
 - Apply events only report per item as the apply goes; its logic, order and re-checks (design §7) are unchanged.
 - **Speed.** The work inside the plan keeps its order, except that the listing is emitted first and each item's
   `checked` event as soon as its catches are done; sizes still run after the checks, only for `remove` worktrees.
@@ -221,8 +233,9 @@ is unchanged (agents, tests).
 
 ## 7. Desktop internals
 
-- `SessionCleanupCenter` runs both scopes streamed: per scope it keeps the rows received so far, the stage (listing /
-  checking N of M / sizing N of M / ready / failed) and the plan's time. It still never runs git itself.
+- `SessionCleanupCenter` runs both scopes streamed: per scope it keeps the current run id (§6), the rows received so
+  far, the stage (listing / checking N of M / sizing N of M / ready / failed) and the plan's time. It still never
+  runs git itself.
 - The row model (pairing, origin, filters, sort, "can be chosen", ⇧-range, the totals, the confirmation and result
   texts) is pure WatchtowerCore code (e.g. `CleanupScreenModel`), tested in `Tests/Core`.
 - The apply passes exactly the keys of the ticked rows — for a worktree row its own key, its branch's key when that
@@ -249,13 +262,13 @@ session-sheet guards (`testSweepTicksNothingByDefault`, `testSweepNeverAppliesUn
 unchanged. The session sheet's "`remove` items ticked" (design §12) becomes "nothing ticked" in session scope too —
 one rule for the one screen (stricter, not weaker).
 
-The `--json` output gains two keys (additive); `--stream` is new.
+The `--json` output gains three keys (additive); `--stream` is new.
 
 ## 9. Looks like the mockup — checked twice
 
 - **Before code:** the mockup in `docs/design/mockups/worktree-cleanup/` is the agreed look (this review).
 - **After code, before merge:** the screen is registered in `DesignShotCatalog` on fixture data (`acme`,
-  `example.com`) in the mockup's three states (A filling in, B selected with the confirmation, C result);
+  `example.com`) in the mockup's seven states (A–G);
   `make desktop-shots` renders light and dark; the implementer puts each shot beside the matching mockup PNG, lists
   every difference and fixes it or names why not; the shots and that list go to the owner as a check ask before
   merge (style guide "See your screen", step 4).
@@ -267,8 +280,7 @@ session scope).
 
 ## 11. Left to the builder
 
-- Column widths and the exact empty state of a scope with nothing to clean (from `FeatureEmptyState` /
-  `TabEmptyState`).
+- Column widths; the empty state (mockup G) is built from `TabEmptyState` / `FeatureEmptyState`.
 - Whether rows that leave after removal fade or vanish (`Motion.panel` if they fade).
 - Event decoding details.
 
@@ -280,7 +292,11 @@ session scope).
 - Nothing is pre-selected; one "Select All That Can Go" click is the bulk path — conversation proposal, accepted in
   ask #628.
 - Owner column and an owner filter are needed — ask #629. What can be known is shown: the session, else the
-  worktree's origin (Subagent / Session deleted / Made by hand) — my call, §4.3.
+  worktree's origin (Subagent / Session deleted / Made by hand) — my call, §4.3; the origin is computed in Go, not
+  repeated in Swift — ask #630.
+- Every state has a mockup: session scope, run failure with Retry, another cleanup running, empty — ask #630.
+- Stream events are bound to their run; a late line of a stopped run is dropped — ask #630 (§6).
+- In the whole-workbench scope a live or recent session's items are never under Can go (mockup A fixed) — ask #630.
 - A mockup is a must, and the shipped screen is compared against it before merge — ask #629 (§9).
 - Kit components and `Tone` colours, no stock `Table`; stock `Table` selection cannot refuse rows — ask #629.
 - In memory only: the screen is page state, not a saved pane; a relaunch does not bring it back — ask #629.
