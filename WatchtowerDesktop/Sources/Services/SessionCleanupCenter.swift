@@ -15,6 +15,147 @@ extension ProcessCLIRunner: SessionCleanupRunning {
     }
 }
 
+/// Starts `watchtower workbench cleanup … --json --stream` and hands its
+/// stdout as lines (spec 2026-10-26-worktree-cleanup-screen §6). The
+/// production conformer is `ProcessCLIRunner` over `CodeCLIProcess`.
+protocol SessionCleanupStreaming {
+    func streamCleanup(args: [String], environment: [String: String]) throws -> SessionCleanupStream
+}
+
+/// One streamed cleanup child: its stdout lines (ending at EOF), its exit
+/// once reaped, and a stop (SIGTERM to its group, idempotent).
+struct SessionCleanupStream: Sendable {
+    struct Exit: Equatable, Sendable {
+        let status: Int32
+        /// The failure text as a non-streamed run words it.
+        let message: String
+    }
+
+    let lines: AsyncStream<String>
+    let exit: @Sendable () async -> Exit
+    let stop: @Sendable () -> Void
+}
+
+extension ProcessCLIRunner: SessionCleanupStreaming {
+    func streamCleanup(args: [String], environment: [String: String]) throws -> SessionCleanupStream {
+        let process = try CodeCLIProcess.launch(executable: binaryPath, arguments: args, environment: environment)
+        let output = process.output
+        let lines = AsyncStream<String> { continuation in
+            let reader = Task.detached {
+                var splitter = NDJSONLineSplitter()
+                for await chunk in output {
+                    for line in splitter.append(chunk) { continuation.yield(line) }
+                }
+                if let tail = splitter.finish() { continuation.yield(tail) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in reader.cancel() }
+        }
+        return SessionCleanupStream(
+            lines: lines,
+            exit: {
+                let exit = await process.exitStatus
+                let stderr = exit.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                let message = CLIRunnerError.nonZeroExit(code: exit.status, stderr: stderr).localizedDescription
+                return SessionCleanupStream.Exit(status: exit.status, message: message)
+            },
+            stop: { process.terminateGroup() }
+        )
+    }
+}
+
+/// A streamed run's rows so far (spec §7): what `listed`, `checked`,
+/// `sized` and the apply's `removing`/`removed` said, until `done.plan`
+/// replaces them. `runID` is the scope's run serial it belongs to.
+struct SessionCleanupProgress: Equatable {
+    var runID: Int
+    var items: [SessionCleanupItem] = []
+    /// Keys still waiting for their `checked` event.
+    var checking: Set<String> = []
+    /// Removable worktrees checked and waiting for their size.
+    var sizing: Set<String> = []
+    /// Keys the running apply is removing now.
+    var removing: Set<String> = []
+    var stage: CleanupStage = .listing
+
+    /// A plan's event. `checked` of a key `listed` never named (a stale
+    /// LaunchServices entry, a sweep's branch) is a new row.
+    mutating func absorbPlan(_ event: SessionCleanupEvent, now: Date) {
+        switch event {
+        case let .listed(listed):
+            items = listed
+            checking = Set(listed.map(\.key))
+            sizing = []
+        case let .checked(item):
+            upsert(item)
+            checking.remove(item.key)
+            if item.kind == .worktree, item.action == .remove, !item.bytesKnown { sizing.insert(item.key) }
+        case let .sized(key, bytes, known):
+            if let index = items.firstIndex(where: { $0.key == key }) {
+                items[index].bytes = bytes
+                items[index].bytesKnown = known
+            }
+            sizing.remove(key)
+        case let .done(plan):
+            items = plan.items
+            checking = []
+            sizing = []
+            stage = .ready(at: now)
+            return
+        case .removing, .removed:
+            return
+        }
+        stage = planStage
+    }
+
+    /// An apply's event: a removed row leaves, a kept or failed one takes
+    /// its new state; rows not in `applied` stay as they are. The apply's
+    /// own re-plan lines never reset the rows.
+    mutating func absorbApply(_ event: SessionCleanupEvent, applied: Set<String>) {
+        switch event {
+        case let .removing(key):
+            removing.insert(key)
+        case let .removed(item):
+            removing.remove(item.key)
+            settle(item)
+        case let .done(result):
+            for item in result.items where item.done || applied.contains(item.key) { settle(item) }
+            removing = []
+            stage = .done(result)
+        case .listed, .checked, .sized:
+            break
+        }
+    }
+
+    private mutating func settle(_ item: SessionCleanupItem) {
+        if item.done {
+            items.removeAll { $0.key == item.key }
+        } else {
+            upsert(item)
+        }
+    }
+
+    private mutating func upsert(_ item: SessionCleanupItem) {
+        if let index = items.firstIndex(where: { $0.key == item.key }) {
+            items[index] = item
+        } else {
+            items.append(item)
+        }
+    }
+
+    /// Checking N of M worktrees until every worktree is checked, then
+    /// sizing N of M removable worktrees.
+    private var planStage: CleanupStage {
+        let worktrees = items.filter { $0.kind == .worktree }
+        let unchecked = worktrees.filter { checking.contains($0.key) }.count
+        let toSize = worktrees.filter { $0.action == .remove && !checking.contains($0.key) }.count
+        if unchecked == 0, !sizing.isEmpty {
+            return .sizing(done: toSize - sizing.count, of: toSize)
+        }
+        return .checking(done: worktrees.count - unchecked, of: worktrees.count)
+    }
+}
+
 /// What a cleanup state is kept for: one session (the Delete dialog, the
 /// Clean Up… sheet) or one workbench (the sweep).
 enum SessionCleanupScope: Hashable {
@@ -51,6 +192,11 @@ final class SessionCleanupCenter {
     nonisolated static let terminalSessionVariable = "WATCHTOWER_TERMINAL_SESSION_ID"
 
     private(set) var phases: [SessionCleanupScope: SessionCleanupPhase] = [:]
+    /// Per scope, the streamed run's rows and stage (spec §7).
+    private(set) var progresses: [SessionCleanupScope: SessionCleanupProgress] = [:]
+    /// Per scope, the apply running and its workbench: one cleanup apply
+    /// per workbench at a time (spec §3.2), Delete and Clean Up included.
+    private var applyRuns: [SessionCleanupScope: (serial: Int, workbenchID: Int64)] = [:]
 
     /// The Desktop's live terminals, passed as `--live-session` (Go keeps a
     /// worktree a live session works in). AppState wires it to
@@ -62,6 +208,8 @@ final class SessionCleanupCenter {
 
     /// nil: the watchtower binary was not found; every run fails with that.
     @ObservationIgnored private let runner: (any SessionCleanupRunning)?
+    /// nil: the watchtower binary was not found; every streamed run fails.
+    @ObservationIgnored private let streamer: (any SessionCleanupStreaming)?
     /// Per scope, the newest run started: an older run's answer is dropped.
     @ObservationIgnored private var runSerials: [SessionCleanupScope: Int] = [:]
     /// Per scope, the plan last started by `startPlan`: owned here, never by
@@ -76,15 +224,17 @@ final class SessionCleanupCenter {
     /// A seam for tests.
     @ObservationIgnored var now: () -> Date = { Date() }
 
-    init(runner: (any SessionCleanupRunning)?) {
+    init(runner: (any SessionCleanupRunning)?, streamer: (any SessionCleanupStreaming)? = nil) {
         self.runner = runner
+        self.streamer = streamer
     }
 
     /// The Workbench page's center: the app's process runner (a runner of
     /// another kind cannot take an environment, so runs then fail as
     /// "binary not found") and `terminals`' live sessions.
     static func forWorkbenches(runner: (any CLIRunnerProtocol)?, terminals: TerminalCenter) -> SessionCleanupCenter {
-        let center = SessionCleanupCenter(runner: runner as? ProcessCLIRunner)
+        let process = runner as? ProcessCLIRunner
+        let center = SessionCleanupCenter(runner: process, streamer: process)
         center.liveSessionIDs = { [weak terminals] in terminals?.liveIDs ?? [] }
         return center
     }
@@ -222,7 +372,7 @@ final class SessionCleanupCenter {
         let args = Self.cleanupArguments(
             sessionID: sessionID, workbenchID: workbenchID, live: liveSessionIDs(), applying: items
         )
-        return await runApply(.session(sessionID), args: args)
+        return await runApply(.session(sessionID), workbenchID: workbenchID, args: args)
     }
 
     /// Applies exactly `items` — the sweep keys the owner ticked — to
@@ -231,12 +381,14 @@ final class SessionCleanupCenter {
     func applySweep(workbenchID: Int64, items: [String]) async -> Bool {
         guard !items.isEmpty else { return true }
         let args = Self.sweepArguments(workbenchID: workbenchID, live: liveSessionIDs(), applying: items)
-        return await runApply(.workbench(workbenchID), args: args)
+        return await runApply(.workbench(workbenchID), workbenchID: workbenchID, args: args)
     }
 
-    private func runApply(_ scope: SessionCleanupScope, args: [String]) async -> Bool {
+    private func runApply(_ scope: SessionCleanupScope, workbenchID: Int64, args: [String]) async -> Bool {
         let serial = beginRun(scope, phase: .applying)
+        applyRuns[scope] = (serial, workbenchID)
         let outcome = await runCleanup(args)
+        if applyRuns[scope]?.serial == serial { applyRuns[scope] = nil }
         // A plan never supersedes an apply (it does not start while one
         // runs); only a second apply would.
         if runSerials[scope] == serial {
@@ -266,7 +418,177 @@ final class SessionCleanupCenter {
         guard cleanupPhase(for: scope) != .applying else { return }
         runSerials[scope, default: 0] += 1
         phases[scope] = nil
+        progresses[scope] = nil
         planRuns.removeValue(forKey: scope)?.task.cancel()
+    }
+
+    // MARK: Streamed runs (board #1107, spec 2026-10-26 §6/§7)
+
+    func progress(for scope: SessionCleanupScope) -> SessionCleanupProgress? {
+        progresses[scope]
+    }
+
+    /// True while any cleanup apply of the workbench runs: the screen's, of
+    /// either scope, or Delete and Clean Up's.
+    func isApplying(workbenchID: Int64) -> Bool {
+        applyRuns.values.contains { $0.workbenchID == workbenchID }
+    }
+
+    /// Starts the scope's streamed plan in a task the center owns, as
+    /// `startPlan` does; a plan of the scope still running is stopped first
+    /// and its later lines are dropped (spec §6 "Events never cross runs").
+    /// The rows already shown stay until this run's `listed` replaces them.
+    /// `workbenchID` is the session's workbench (a sweep's is its scope's).
+    /// With `timeLimit` a plan still running after it is stopped and fails.
+    /// Ignored while the scope applies.
+    @discardableResult
+    func startStreamedPlan(
+        _ scope: SessionCleanupScope, workbenchID: Int64, timeLimit: Duration? = nil
+    ) -> Task<Void, Never> {
+        guard cleanupPhase(for: scope) != .applying else { return Task {} }
+        let args = streamArguments(scope, workbenchID: workbenchID)
+        let serial = beginStreamedRun(scope, phase: .planning, stage: .listing)
+        return startOwnedPlan(scope, timeLimit: timeLimit) { center in
+            await center.runStreamedPlan(scope, serial: serial, args: args)
+        }
+    }
+
+    /// Applies exactly `items` to the scope, streamed. Refused (false,
+    /// nothing launched) while another cleanup apply of the workbench runs;
+    /// with no item nothing runs and that counts as success. A plan of the
+    /// scope still running is stopped. The apply itself is never stopped:
+    /// cancelling the returned task leaves the CLI running. True when the
+    /// CLI ran and no item reported an error.
+    @discardableResult
+    func startStreamedApply(_ scope: SessionCleanupScope, workbenchID: Int64, items: [String]) -> Task<Bool, Never> {
+        guard !items.isEmpty else { return Task { true } }
+        guard !isApplying(workbenchID: workbenchID) else { return Task { false } }
+        let args = streamArguments(scope, workbenchID: workbenchID, applying: items)
+        planRuns.removeValue(forKey: scope)?.task.cancel()
+        let serial = beginStreamedRun(scope, phase: .applying, stage: .applying)
+        applyRuns[scope] = (serial, workbenchID)
+        let applied = Set(items)
+        let run = Task { [weak self] () -> Bool in
+            guard let self else { return false }
+            let outcome = await stream(scope, serial: serial, args: args) { $0.absorbApply($1, applied: applied) }
+            if applyRuns[scope]?.serial == serial { applyRuns[scope] = nil }
+            switch outcome {
+            case let .success(result):
+                if runSerials[scope] == serial { phases[scope] = .done(result) }
+                return Self.itemFailures(result) == nil
+            case let .failure(message):
+                if runSerials[scope] == serial { fail(scope, message) }
+                return false
+            }
+        }
+        // A separate task: the caller cancelling its own never reaches the apply.
+        return Task { await run.value }
+    }
+
+    private func runStreamedPlan(_ scope: SessionCleanupScope, serial: Int, args: [String]) async {
+        let outcome = await stream(scope, serial: serial, args: args) { [now = self.now] in $0.absorbPlan($1, now: now()) }
+        guard runSerials[scope] == serial else { return }
+        guard !Task.isCancelled else {
+            if let limit = stoppedAtLimit.removeValue(forKey: scope) {
+                fail(scope, Self.overLimitText(limit))
+            } else {
+                phases[scope] = nil
+                progresses[scope] = nil
+            }
+            return
+        }
+        switch outcome {
+        case let .success(plan):
+            phases[scope] = .ready(plan)
+            readyAt[scope] = now()
+        case let .failure(message):
+            fail(scope, message)
+        }
+    }
+
+    private func beginStreamedRun(_ scope: SessionCleanupScope, phase: SessionCleanupPhase, stage: CleanupStage) -> Int {
+        let serial = beginRun(scope, phase: phase)
+        var progress = progresses[scope] ?? SessionCleanupProgress(runID: serial)
+        progress.runID = serial
+        progress.removing = []
+        progress.stage = stage
+        progresses[scope] = progress
+        return serial
+    }
+
+    private func fail(_ scope: SessionCleanupScope, _ message: String) {
+        phases[scope] = .failed(message)
+        progresses[scope]?.stage = .failed(message)
+    }
+
+    /// Runs one streamed child for the scope's run `serial`: each decoded
+    /// line is applied to the scope's progress through `absorb` — in
+    /// batches, at most every 100 ms — only while `serial` is the scope's
+    /// current run; a bad line or an unknown event is skipped. Cancelling
+    /// the calling task stops the child. A stream without `done` is a
+    /// failure with the CLI's words. Superseded or cancelled: the outcome
+    /// is meaningless and callers drop it.
+    private func stream(
+        _ scope: SessionCleanupScope,
+        serial: Int,
+        args: [String],
+        absorb: @escaping @MainActor (inout SessionCleanupProgress, SessionCleanupEvent) -> Void
+    ) async -> Outcome {
+        guard let streamer else { return .failure(CLIRunnerError.binaryNotFound.localizedDescription) }
+        let environment = Self.cleanupEnvironment(await baseEnvironment())
+        guard runSerials[scope] == serial, !Task.isCancelled else { return .failure("superseded") }
+        let child: SessionCleanupStream
+        do {
+            child = try streamer.streamCleanup(args: args, environment: environment)
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        let isCurrent = { [weak self] in self?.runSerials[scope] == serial }
+        let batches = SessionCleanupEventBatches(interval: Self.eventBatchInterval) { [weak self] events in
+            guard let self, isCurrent(), var progress = progresses[scope] else { return }
+            events.forEach { absorb(&progress, $0) }
+            progresses[scope] = progress
+        }
+        let done: SessionCleanupPlan? = await withTaskCancellationHandler {
+            var done: SessionCleanupPlan?
+            for await line in child.lines {
+                guard isCurrent(), !Task.isCancelled else {
+                    child.stop()
+                    break
+                }
+                guard let event = SessionCleanupEvent.decode(line: line) else { continue }
+                batches.add(event)
+                if case let .done(plan) = event {
+                    done = plan
+                    batches.flush()
+                }
+            }
+            batches.flush()
+            return done
+        } onCancel: {
+            child.stop()
+        }
+        guard isCurrent(), !Task.isCancelled else { return .failure("superseded") }
+        if let done { return .success(done) }
+        let exit = await child.exit()
+        return .failure(exit.status == 0 ? Self.endedWithoutResultText : exit.message)
+    }
+
+    /// How often streamed events reach the view at most (spec §7).
+    nonisolated static let eventBatchInterval: Duration = .milliseconds(100)
+
+    /// A stream that ended cleanly but never said `done`.
+    nonisolated static let endedWithoutResultText = "The cleanup check ended without a result."
+
+    private func streamArguments(_ scope: SessionCleanupScope, workbenchID: Int64, applying items: [String]? = nil) -> [String] {
+        switch scope {
+        case let .session(sessionID):
+            Self.cleanupArguments(
+                sessionID: sessionID, workbenchID: workbenchID, live: liveSessionIDs(), applying: items, stream: true
+            )
+        case let .workbench(id):
+            Self.sweepArguments(workbenchID: id, live: liveSessionIDs(), applying: items, stream: true)
+        }
     }
 
     // MARK: Running
@@ -309,26 +631,27 @@ final class SessionCleanupCenter {
     }
 
     /// `workbench cleanup --session S --workbench W [--live-session L]…
-    /// [--apply --item K…] --json`. Values travel as `--flag=value`, so a
-    /// key is never read as a flag.
+    /// [--apply --item K…] --json [--stream]`. Values travel as
+    /// `--flag=value`, so a key is never read as a flag.
     nonisolated static func cleanupArguments(
-        sessionID: Int64, workbenchID: Int64, live: Set<Int64>, applying items: [String]? = nil
+        sessionID: Int64, workbenchID: Int64, live: Set<Int64>, applying items: [String]? = nil, stream: Bool = false
     ) -> [String] {
         var args = ["workbench", "cleanup", "--session=\(sessionID)", "--workbench=\(workbenchID)"]
         args += live.sorted().map { "--live-session=\($0)" }
         if let items { args += ["--apply"] + items.map { "--item=\($0)" } }
-        return args + ["--json"]
+        return args + ["--json"] + (stream ? ["--stream"] : [])
     }
 
     /// `workbench cleanup --workbench W --sweep [--live-session L]…
-    /// [--apply --item K…] --json` (spec §4: a sweep names no session).
+    /// [--apply --item K…] --json [--stream]` (spec §4: a sweep names no
+    /// session).
     nonisolated static func sweepArguments(
-        workbenchID: Int64, live: Set<Int64>, applying items: [String]? = nil
+        workbenchID: Int64, live: Set<Int64>, applying items: [String]? = nil, stream: Bool = false
     ) -> [String] {
         var args = ["workbench", "cleanup", "--workbench=\(workbenchID)", "--sweep"]
         args += live.sorted().map { "--live-session=\($0)" }
         if let items { args += ["--apply"] + items.map { "--item=\($0)" } }
-        return args + ["--json"]
+        return args + ["--json"] + (stream ? ["--stream"] : [])
     }
 
     /// "x: git refused …; feat/x: …" over the items whose removal failed;
@@ -337,5 +660,43 @@ final class SessionCleanupCenter {
         let failed = result.items.filter { !$0.error.isEmpty }
         guard !failed.isEmpty else { return nil }
         return failed.map { "\($0.name.isEmpty ? $0.key : $0.name): \($0.error)" }.joined(separator: "; ")
+    }
+}
+
+/// Coalesces a streamed run's events (spec §7): the first event goes at
+/// once, later ones wait until `interval` has passed since the last batch.
+@MainActor
+private final class SessionCleanupEventBatches {
+    private let interval: Duration
+    private let deliver: @MainActor ([SessionCleanupEvent]) -> Void
+    private var pending: [SessionCleanupEvent] = []
+    private var lastBatch: ContinuousClock.Instant?
+    private var timer: Task<Void, Never>?
+
+    init(interval: Duration, deliver: @escaping @MainActor ([SessionCleanupEvent]) -> Void) {
+        self.interval = interval
+        self.deliver = deliver
+    }
+
+    func add(_ event: SessionCleanupEvent) {
+        pending.append(event)
+        guard timer == nil else { return }
+        guard let lastBatch, ContinuousClock.now - lastBatch < interval else { return flush() }
+        let due = lastBatch + interval
+        timer = Task { [weak self] in
+            try? await Task.sleep(until: due)
+            guard !Task.isCancelled else { return }
+            self?.flush()
+        }
+    }
+
+    func flush() {
+        timer?.cancel()
+        timer = nil
+        guard !pending.isEmpty else { return }
+        let batch = pending
+        pending = []
+        lastBatch = .now
+        deliver(batch)
     }
 }
