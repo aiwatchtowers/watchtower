@@ -104,7 +104,7 @@ Chats are grouped as **PINNED**, **RECENT** (the last 7 days) and **▸ N older*
 
 The header reads **All chats ⌄**, or **‹ 📁 Project ⌄** inside a project, with **+** for a new chat. The menu has **Find project**, your recent projects ("2 new answers", "1 waiting for approval", "answering" or the age), **New Project…** and **‹ All Chats**. Picking a project opens its page unless the chat on screen is in it. Your level is remembered; **⌘[** goes back to All chats.
 
-Hover a chat and press **✕** to delete it at once; **Undo** (⌘Z) stays for 5 seconds. A chat that is answering or waiting has no ✕, and **Delete…** in the right-click menu still asks first. Click the panel, then **↑/↓** move, **Return** opens, **⌘⌫** deletes and **⌘1–⌘9** open the first nine chats.
+Hover a chat and press **✕** to delete it at once; **Undo** (⌘Z) stays for 5 seconds. A chat that is answering or waiting has no ✕, and **Delete…** in the right-click menu still asks first. Click the panel, then **↑/↓** move, **Return** opens, **⌘⌫** deletes and **⌘1–⌘9** open the first nine chats (they and ⌘[ need the panel shown).
 
 ### Asking from any tab
 <!-- learn

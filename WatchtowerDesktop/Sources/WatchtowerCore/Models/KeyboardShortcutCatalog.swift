@@ -50,8 +50,8 @@ package enum KeyboardShortcutCatalog {
             Entry("Esc", "Stop the answer"),
             Entry("↑", "Edit your last message (in an empty field)"),
             Entry("⌘Return", "Save & Send an edited message"),
-            Entry("⌘1–⌘9", "Open chat 1–9 of the chat list"),
-            Entry("⌘[", "Back to All chats")
+            Entry("⌘1–⌘9", "Open chat 1–9 of the chat list, while it is shown"),
+            Entry("⌘[", "Back to All chats, while the chat list is shown")
         ]),
         Area("Chats Panel", note: "After a click on the panel's empty space, a section label or the older header.", [
             Entry("↑ / ↓", "Move the highlight"),

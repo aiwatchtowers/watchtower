@@ -88,8 +88,8 @@ action: hotkey:search-chats
 | **Esc** | Stop the answer |
 | **↑** | Edit your last message (in an empty field) |
 | **⌘Return** | Save & Send an edited message |
-| **⌘1–⌘9** | Open chat 1–9 of the chat list |
-| **⌘[** | Back to All chats |
+| **⌘1–⌘9** | Open chat 1–9 of the chat list, while it is shown |
+| **⌘[** | Back to All chats, while the chat list is shown |
 
 ### Chats Panel
 

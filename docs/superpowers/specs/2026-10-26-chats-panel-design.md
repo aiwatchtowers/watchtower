@@ -91,7 +91,7 @@ These signals are single closures, each with one owner: `ChatSessionPool.onActio
 
 ### 5.4 Keyboard
 
-As in the sessions panel, once a click on the panel's empty space, a label or the group header gives it the keyboard: ↑/↓ move a cursor (focus ring), Return opens, ⌘⌫ deletes the highlighted chat (with Undo), ⌘Z undoes, ⌘1…⌘9 open the first nine rows of the list (while the Chats tab is on screen).
+As in the sessions panel, once a click on the panel's empty space, a label or the group header gives it the keyboard: ↑/↓ move a cursor (focus ring), Return opens, ⌘⌫ deletes the highlighted chat (with Undo), ⌘Z undoes, ⌘1…⌘9 open the first nine rows of the list (while the Chats panel is visible).
 
 ⌘1…⌘9 are already the Workbench sessions' menu items (`WorkbenchCommands`, "Sessions" menu). Today they are enabled by the Workbench tab's focused scene value (`@FocusedValue(\.workbenchMenu)`, published by `WorkbenchesView`) through `WorkbenchMenuContext.canUseSessionKeys` (no Go to… palette open and a workbench page shown), and `pageTakesKeys(keyWindow)` checks at fire time that the page's window itself is key. Two menu items with the same key equivalent would race, so there stays **one** set of ⌘1…⌘9 items:
 
@@ -148,3 +148,5 @@ CHAT-01..05 untouched: nothing here sends, stores owner text differently or chan
 - Review round 2 (ask #635): the panel refresh goes into the existing `AppState+Chat.swift` closures (no new assignment of the single-closure callbacks); ⌘1…⌘9 enable through a second focused scene value beside `workbenchMenu`/`canUseSessionKeys`.
 - Review round 1 (ask #626): regenerate the system-prompt golden; ⌘1…⌘9 shared with Workbench through one dispatching set; the waiting-for-approval state refreshes on the pool's callbacks; the guide describes the new panel.
 - Waiting for approval outranks answering — controller ruling during implementation (a turn blocked on an Approve shows what the owner must do).
+- ⌘1…⌘9 and ⌘[ act on the Chats panel only while the panel is visible — ask #660.
+- A row click opens the chat and sends the keyboard to the composer (as in Workbench) — ask #660.
