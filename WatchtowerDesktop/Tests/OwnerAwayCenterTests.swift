@@ -83,6 +83,17 @@ final class OwnerAwayCenterTests: XCTestCase {
         XCTAssertFalse(center.isAway)
     }
 
+    func testLockNotificationWinsOverLaggingLiveRead() {
+        center.start()
+        notifications.post(name: OwnerPresenceCenter.screenLockedNotification, object: nil)
+        XCTAssertTrue(center.isAway, "live read still says unlocked")
+        fake.locked = true
+        notifications.post(name: OwnerPresenceCenter.screenUnlockedNotification, object: nil)
+        XCTAssertFalse(center.isAway, "live read still says locked")
+        advance(15)
+        XCTAssertTrue(center.isAway, "the poll re-reads the live value")
+    }
+
     func testIdlePollTurnsAwayAfterThreshold() {
         center.start()
         fake.idle = 179

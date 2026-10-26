@@ -61,6 +61,8 @@ final class OwnerAwayCenter {
     @ObservationIgnored private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     @ObservationIgnored private var cancelPoll: (() -> Void)?
     @ObservationIgnored private var following = false
+    /// Set by the lock notifications, refreshed from the live read at start and each poll.
+    @ObservationIgnored private var screenLocked = false
 
     init(
         box: OwnerAwayBox,
@@ -78,22 +80,32 @@ final class OwnerAwayCenter {
     func start() {
         guard !following else { return }
         following = true
-        let names: [(NotificationCenter, Notification.Name)] = [
-            (sources.distributed, OwnerPresenceCenter.screenLockedNotification),
-            (sources.distributed, OwnerPresenceCenter.screenUnlockedNotification),
-            (sources.workspace, NSWorkspace.screensDidSleepNotification),
-            (sources.workspace, NSWorkspace.screensDidWakeNotification),
-            (sources.workspace, NSWorkspace.sessionDidBecomeActiveNotification),
-            (sources.workspace, NSWorkspace.sessionDidResignActiveNotification)
-        ]
-        for (center, name) in names {
-            let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.evaluate() }
-            }
-            observers.append((center, token))
-        }
+        screenLocked = inputs.screenLocked()
+        observe(sources.distributed, OwnerPresenceCenter.screenLockedNotification) { $0.screenLocked = true }
+        observe(sources.distributed, OwnerPresenceCenter.screenUnlockedNotification) { $0.screenLocked = false }
+        observe(sources.workspace, NSWorkspace.screensDidSleepNotification) { _ in }
+        observe(sources.workspace, NSWorkspace.screensDidWakeNotification) { _ in }
+        observe(sources.workspace, NSWorkspace.sessionDidBecomeActiveNotification) { _ in }
+        observe(sources.workspace, NSWorkspace.sessionDidResignActiveNotification) { _ in }
         evaluate()
         scheduleNextPoll()
+    }
+
+    /// The lock notification is trusted over the live read, which can lag it;
+    /// the poll re-reads the live value.
+    private func observe(
+        _ center: NotificationCenter,
+        _ name: Notification.Name,
+        update: @escaping @MainActor (OwnerAwayCenter) -> Void
+    ) {
+        let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                update(self)
+                self.evaluate()
+            }
+        }
+        observers.append((center, token))
     }
 
     /// Stops following; the box keeps its last value.
@@ -109,6 +121,7 @@ final class OwnerAwayCenter {
         guard following else { return }
         cancelPoll = schedule(Self.pollInterval) { [weak self] in
             guard let self, self.following else { return }
+            self.screenLocked = self.inputs.screenLocked()
             self.evaluate()
             self.scheduleNextPoll()
         }
@@ -117,7 +130,7 @@ final class OwnerAwayCenter {
     private func evaluate() {
         guard following else { return }
         let away = OwnerAwayPolicy.isAway(
-            screenLocked: inputs.screenLocked(), displaysAsleep: inputs.displaysAsleep(),
+            screenLocked: screenLocked, displaysAsleep: inputs.displaysAsleep(),
             idleSeconds: inputs.idleSeconds(), sessionActive: inputs.sessionActive()
         )
         guard away != isAway else {
