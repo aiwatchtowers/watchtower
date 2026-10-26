@@ -1,3 +1,4 @@
+import AppKit
 import GRDB
 import WatchtowerCore
 
@@ -11,10 +12,16 @@ extension AppState {
     }
 
     /// Reconnect from a purge notice (Home's banner, a notification click):
-    /// Settings → Connections on the account's source.
-    func openAccountConnection(source: String) {
-        settingsTab = .connections
-        if let service = ConnectionService(rawValue: source) { settingsConnection = service }
-        openSettingsWindow?()
+    /// the Connections tab on the account's source, in a main window brought
+    /// forward (a click on the notice may come with only Settings or the
+    /// tray open). `windows` and `activate` are `bringMainWindowForward`'s
+    /// test seams.
+    func openAccountConnection(
+        source: String,
+        windows: [NSWindow]? = nil,
+        activate: () -> Void = ActivationPolicyDecision.becomeRegularAndActivate
+    ) {
+        bringMainWindowForward(windows: windows, activate: activate)
+        openConnections(ConnectionService(rawValue: source))
     }
 }

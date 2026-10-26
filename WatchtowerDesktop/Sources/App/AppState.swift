@@ -92,12 +92,16 @@ final class AppState {
     private(set) var ownerPendingSource: String?
 
     /// The Settings window's selected tab: an in-app link opens Settings on it.
-    var settingsTab: SettingsTab = .connections
+    var settingsTab: SettingsTab = .general
     /// A section the tab scrolls to once it shows (the tab clears it).
     var settingsAnchor: SettingsAnchor?
-    /// The Connections tab's selected service, held for the same reason
-    /// (the Inbox cheat sheet → Slack's reaction dictionary).
-    var settingsConnection: ConnectionService = .slack
+    /// The Connections tab's open service (nil: the overview), so a link opens a service.
+    var selectedConnection: ConnectionService?
+    /// A Slack connect in flight survives leaving the Connections tab (`SlackAuthFlowState`).
+    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
+    @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
+    /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
+    @ObservationIgnored lazy var sharedConfig = ConfigService()
 
     /// True while initialize() is running (before DB and onboarding check complete).
     var isLoading: Bool = true
@@ -313,7 +317,7 @@ final class AppState {
     /// Linear Accounts ViewModel — held here so an in-flight consent survives leaving Settings.
     private(set) var linearAccountsViewModel: LinearAccountsViewModel?
 
-    /// Confluence spaces pickers (Settings → Jira), one per Jira account id —
+    /// Confluence spaces pickers (Connections → Jira), one per Jira account id —
     /// held here so a select/unselect or re-consent still running when the
     /// Settings pane goes away finishes and is visible on return.
     private(set) var confluenceSpacesViewModels: [Int64: ConfluenceSpacesViewModel] = [:]
@@ -323,7 +327,7 @@ final class AppState {
     /// the Settings window.
     private(set) var externalConnectionsViewModel: ExternalConnectionsViewModel?
 
-    /// Reaction Dictionary ViewModel (Settings → Slack "Reaction commands"
+    /// Reaction Dictionary ViewModel (Connections → Slack "Reaction commands"
     /// editor) — persists across tab switches like its sibling account VMs
     /// above.
     private(set) var reactionDictionaryViewModel: ReactionDictionaryViewModel?
@@ -1051,12 +1055,11 @@ final class AppState {
     private(set) var isApplyingFeatureSuggestion = false
     private(set) var featureSuggestionError: String?
 
-    /// One of Settings' Add account sheets is up: the feature suggestion
-    /// waits for it.
+    /// One of the Add account sheets is up: the feature suggestion waits for it.
     var isAddingAccount = false
 
-    /// The offer shows in Settings once no Add account sheet is up; it
-    /// closes only through its own buttons.
+    /// The offer shows over the main window once no Add account sheet is
+    /// up; it closes only through its own buttons.
     var showsFeatureSuggestion: Bool {
         !featureSuggestion.isEmpty && !isAddingAccount
     }
@@ -1666,22 +1669,6 @@ final class AppState {
         guard peopleRoster.state == .idle,
               let account = slackAccountsViewModel?.accounts.first(where: { !$0.isGone }) else { return }
         peopleRoster.start(accountID: account.id)
-    }
-
-    /// Re-consents one Slack account from a failed send's card ("sign in
-    /// again to grant send"): the same `slack login --account <id>` flow as
-    /// Settings → Slack → Reconnect. Returns why it failed (nil on success or
-    /// a cancelled sign-in) so the card can say so.
-    func reconnectSlack(accountID: Int64) async -> String? {
-        guard let vm = slackAccountsViewModel else {
-            return "Slack accounts are not loaded yet — open Settings → Slack."
-        }
-        if vm.accounts.isEmpty { await vm.refreshAsync() }
-        guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
-            return "Slack account #\(accountID) is no longer connected."
-        }
-        await vm.relogin(account)
-        return vm.error
     }
 
     func initJiraAccounts(dbPool: DatabasePool) {

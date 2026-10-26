@@ -42,7 +42,7 @@ package enum OrganizationPolicyPresentation {
         return out
     }
 
-    /// A policy source's name as Settings → Connections shows it.
+    /// A policy source's name as the Connections tab shows it.
     package static func sourceName(_ source: String) -> String {
         switch source {
         case "slack": "Slack"

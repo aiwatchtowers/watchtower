@@ -79,6 +79,8 @@ public enum PaneWidth {
     public static let sideListMax: CGFloat = 360
     public static let detailMin: CGFloat = 260
     public static let narrowPage: CGFloat = 420
+    /// The least width of a card in an adaptive grid (the Connections overview).
+    public static let gridCardMin: CGFloat = 240
 }
 
 /// Glyph sizes for chevrons, headers, composer buttons and icon tiles.

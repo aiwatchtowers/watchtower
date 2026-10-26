@@ -3,7 +3,10 @@ import WatchtowerCore
 
 /// Jira detail pane in the Connections tab — the multi-account Atlassian
 /// connections (`jira_accounts` table, migration 00049), each independently
-/// granting access via its own OAuth consent.
+/// granting access via its own OAuth consent — and, once a site is
+/// connected, its boards, Confluence spaces, features, user mapping and
+/// sync (the Boards tab until #899). A board's profile and the features
+/// detail open in place, with a way back.
 ///
 /// Like Slack (and unlike Google), removal is non-destructive: `jira remove`
 /// drops the token and marks the row removed/disabled but leaves
@@ -16,15 +19,60 @@ struct JiraConnectionDetail: View {
     @State private var showAddJiraAccountSheet = false
     @State private var jiraAccountPendingRemoval: JiraAccount?
     @State private var accountBeingRenamed: AccountRenameTarget?
+    @State private var drillIn: JiraDetailItem?
+
+    private var hasSites: Bool { appState.jiraAccountsViewModel?.accounts.isEmpty == false }
 
     var body: some View {
+        if let drillIn {
+            drillInContent(drillIn)
+        } else {
+            settingsForm
+        }
+    }
+
+    private var settingsForm: some View {
         Form {
             jiraSettingsSection
+            if hasSites {
+                JiraBoardsSettingsView { board in withAnimation(Motion.panel) { drillIn = .board(board) } }
+            }
             confluenceSections
+            if hasSites {
+                JiraFeaturesSettingsView { withAnimation(Motion.panel) { drillIn = .features } }
+                JiraUserMappingSettingsView()
+                JiraSyncInfoView()
+            }
         }
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
+    }
+
+    private func drillInContent(_ item: JiraDetailItem) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Spacing.regular) {
+                Button {
+                    withAnimation(Motion.panel) { drillIn = nil }
+                } label: {
+                    Label("Jira", systemImage: "chevron.left")
+                }
+                .buttonStyle(.kitQuiet)
+                Text(item.title)
+                    .font(.title3.weight(.semibold))
+                Spacer()
+            }
+            .padding(.horizontal, Spacing.page)
+            .padding(.vertical, Spacing.medium)
+            switch item {
+            case .board(let board):
+                JiraBoardProfileView(board: board)
+                    .scrollContentBackground(.hidden)
+            case .features:
+                JiraFeaturesDetailView()
+                    .scrollContentBackground(.hidden)
+            }
+        }
     }
 
     @ViewBuilder
@@ -138,25 +186,6 @@ struct JiraConnectionDetail: View {
                 status: appState.accountPurgeCenter?.status
             ))
         }
-
-        if appState.jiraAccountsViewModel?.accounts.isEmpty == false {
-            Section {
-                Button {
-                    appState.selectedDestination = .boards
-                } label: {
-                    HStack {
-                        Label(
-                            "Manage Boards",
-                            systemImage: "rectangle.on.rectangle.angled"
-                        )
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .buttonStyle(.plain)
-            }
-        }
     }
 
     /// One Confluence spaces picker per enabled site — Confluence rides the
@@ -190,5 +219,18 @@ struct JiraConnectionDetail: View {
         if account.isOK { return "Connected" }
         if account.isPurged { return "Data deleted" }
         return account.error.isEmpty ? account.status : account.error
+    }
+}
+
+/// What opens in place of the Jira detail: a board's profile or the features detail.
+enum JiraDetailItem: Hashable {
+    case board(JiraBoard)
+    case features
+
+    var title: String {
+        switch self {
+        case .board(let board): board.name
+        case .features: "Jira Features"
+        }
     }
 }

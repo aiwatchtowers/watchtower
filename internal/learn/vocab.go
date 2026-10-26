@@ -32,7 +32,7 @@ var Signals = []string{
 var navScreens = []string{
 	"home", "chat", "catchUp", "inbox", "calendar", "targets", "projects",
 	"automations", "digests", "people", "memory", "workload", "blockers",
-	"projectMap", "releases", "statistics", "search", "boards", "usage",
+	"projectMap", "releases", "statistics", "connections", "usage",
 	"mcpServer",
 	// InboxRoute.aliasHosts
 	"briefings", "dayPlan", "day-plan", "tracks", "ideas",

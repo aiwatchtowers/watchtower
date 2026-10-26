@@ -75,7 +75,7 @@ final class ConfluenceConnectSelectionTests: XCTestCase {
         ])
         XCTAssertEqual(
             selection.line,
-            "Confluence: syncing 2 spaces you work in — Space ENG, Space OPS. Choose more in Settings → Connections → Jira."
+            "Confluence: syncing 2 spaces you work in — Space ENG, Space OPS. Choose more in Connections → Jira."
         )
     }
 
@@ -106,7 +106,7 @@ final class ConfluenceConnectSelectionTests: XCTestCase {
         let selection = await run(before: before)
         XCTAssertEqual(
             selection.line,
-            "Confluence: couldn't choose spaces (Confluence access isn't granted). Choose them in Settings → Connections → Jira."
+            "Confluence: couldn't choose spaces (Confluence access isn't granted). Choose them in Connections → Jira."
         )
         XCTAssertFalse(selection.line?.contains("watchtower") ?? true, "no raw CLI command")
     }
@@ -118,21 +118,21 @@ final class ConfluenceConnectSelectionTests: XCTestCase {
         XCTAssertEqual(cli.calls.map(\.last), ["--json"])
         XCTAssertEqual(
             selection.line,
-            "Confluence: couldn't choose spaces (couldn't read Confluence access). Choose them in Settings → Connections → Jira."
+            "Confluence: couldn't choose spaces (couldn't read Confluence access). Choose them in Connections → Jira."
         )
     }
 
     func testNoAddedSiteSelectsNowhere() async {
         let selection = await run(before: nil)
         XCTAssertTrue(cli.calls.isEmpty)
-        XCTAssertEqual(selection.line, "Confluence: choose spaces in Settings → Connections → Jira.")
+        XCTAssertEqual(selection.line, "Confluence: choose spaces in Connections → Jira.")
     }
 
     func testNoneFound() async {
         let selection = await run(before: before)
         XCTAssertEqual(
             selection.line,
-            "Confluence: no space you wrote in or viewed in the last 90 days. Choose spaces in Settings → Connections → Jira."
+            "Confluence: no space you wrote in or viewed in the last 90 days. Choose spaces in Connections → Jira."
         )
     }
 }

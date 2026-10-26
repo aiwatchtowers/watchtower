@@ -59,7 +59,7 @@ In **AI Chat** you can ask the assistant to list teams and issues, read an issue
 <!-- learn
 id: linear-connect
 title: Connect Linear
-text: Press **Add Linear Workspace** in **Settings → Connections → Linear**, sign in or paste an API key.
+text: Press **Add Linear Workspace** in **Connections → Linear**, sign in or paste an API key.
 area: tasks
 level: basics
 kind: feature
@@ -68,7 +68,7 @@ action: connect:linear
 done_when: linear.connected
 -->
 
-1. Open **Settings** → **Connections** → **Linear** and press **Add Linear Workspace**. Setup's Linear card opens the same sheet.
+1. Open **Connections** → **Linear** and press **Add Linear Workspace**. Setup's Linear card opens the same sheet.
 2. Pick **Sign in with Linear** and approve in the browser, or pick **API key** and paste a key you created in Linear under Settings → Account → Security & access. Press **Connect**. While the browser sign-in runs, **Cancel** stops it.
 3. Wait for the first sync, then tick the teams to sync under **Teams** in the same pane.
 4. To pause a workspace, switch **Enabled** off; its synced issues stay. **Remove** disconnects it and keeps the synced issues too.

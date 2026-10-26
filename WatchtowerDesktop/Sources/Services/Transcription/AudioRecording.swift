@@ -7,11 +7,11 @@ struct RecordingResult: Equatable {
 }
 
 /// One ~100 ms window of live capture levels for the recording UI's meters.
-/// Both values are RMS over the RAW pre-gain samples — the `rec_X.activity`
-/// sidecar's convention — so the meter reflects what the mic actually picks
-/// up, not what `MicAGC` makes of it.
+/// Both values are RMS over the pre-AGC samples — the `rec_X.activity`
+/// sidecar's convention — so the meter reflects what is being captured, not
+/// what `MicAGC` makes of it (a muted mic reads 0).
 struct CaptureLevels: Equatable, Sendable {
-    let mic: Float     // raw pre-AGC mic RMS over the last ~100 ms
+    let mic: Float     // pre-AGC (post-mute) mic RMS over the last ~100 ms
     let system: Float  // system-channel RMS over the same window
 }
 
@@ -32,6 +32,11 @@ protocol AudioRecording: AnyObject {
     var liveSamples: AsyncStream<[Float]> { get }
     /// Throttled (~10 Hz) live level pairs; finishes on stop(). Optional to consume.
     var liveLevels: AsyncStream<CaptureLevels> { get }
+    /// Keeps the owner's microphone out of the recording while `muted`; the
+    /// call audio is still captured. Starts unmuted on every `start`.
+    /// No default: a recorder that cannot mute must say so here rather than
+    /// let the indicator claim a mute it never applied.
+    func setMicMuted(_ muted: Bool)
 }
 
 enum AudioRecordingError: LocalizedError {

@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Settings → Jira → Confluence: pick which Confluence spaces of one Jira
+/// Connections → Jira → Confluence: pick which Confluence spaces of one Jira
 /// account's Atlassian site sync into knowledge search. Reads the
 /// AppState-owned `ConfluenceSpacesViewModel` for the account, so a toggle
 /// or re-consent still running when this pane goes away finishes anyway.

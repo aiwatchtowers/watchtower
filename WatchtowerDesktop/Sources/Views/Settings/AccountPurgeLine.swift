@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The purge line under an account in Settings → Connections (board #601):
+/// The purge line under an account in the Connections tab (board #601):
 /// red while a purge is scheduled or running, secondary once the data was
 /// deleted. The text comes from `AccountPurgeNoticePolicy`.
 struct AccountPurgeLine: View {

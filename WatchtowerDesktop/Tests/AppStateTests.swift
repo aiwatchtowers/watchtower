@@ -1262,6 +1262,38 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(appState.featureSuggestion.isEmpty)
     }
 
+    /// The offer sits over the main window (#899: connects happen in the
+    /// Connections tab): presented once a suggestion waits and no Add
+    /// account sheet is up. ViewInspector cannot open a native sheet, so the
+    /// wiring is checked in the sources: the main window applies the
+    /// presenter, the Settings window no longer shows the offer.
+    func testMainWindowPresentsTheFeatureOffer() async throws {
+        let (dbManager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let appState = AppState.isolated(featuresRunner: LiveFeaturesRunner(disabled: ["stream-digests"]))
+        appState.daemonControlOverride = FakeDaemon()
+        appState.databaseManager = dbManager
+        await appState.refreshConnectedSources()
+        let presenter = FeatureSuggestionPresenter(appState: appState)
+        XCTAssertFalse(presenter.isPresented, "nothing to offer yet")
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+        XCTAssertTrue(presenter.isPresented)
+        appState.isAddingAccount = true
+        XCTAssertFalse(presenter.isPresented, "never over an Add account sheet")
+
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+        let navigation = try String(contentsOf: sources.appendingPathComponent("App/Navigation.swift"), encoding: .utf8)
+        let settings = try String(contentsOf: sources.appendingPathComponent("Views/Settings/SettingsView.swift"), encoding: .utf8)
+        XCTAssertTrue(navigation.contains(".modifier(FeatureSuggestionPresenter(appState: appState))"))
+        XCTAssertFalse(settings.contains("FeatureSuggestion"))
+    }
+
     func testNotNowEnablesNothing() async throws {
         let runner = featuresRunner(disabled: ["stream-digests", "next-step"])
         let appState = AppState.isolated(featuresRunner: runner)

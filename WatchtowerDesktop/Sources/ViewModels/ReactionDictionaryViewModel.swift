@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
-/// Drives the Settings → Slack "Reaction commands" editor. `reaction_command_map`
+/// Drives the Connections → Slack "Reaction commands" editor. `reaction_command_map`
 /// (migration 00063) maps an emoji to a registered agent-actions tool; the
 /// owner reacts with that emoji in Slack and Watchtower dispatches the tool as
 /// an agent action (`internal/reactioncmd`). This VM writes directly via GRDB

@@ -42,6 +42,8 @@ private final class JoinFakeRecorder: AudioRecording, @unchecked Sendable {
         startContinuation = nil
     }
 
+    func setMicMuted(_ muted: Bool) {}
+
     func stop() async throws -> RecordingResult {
         liveContinuation.finish()
         if let stopResult { return stopResult }

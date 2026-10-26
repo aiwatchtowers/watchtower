@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// Sheet for connecting a new Google account (Calendar and/or Gmail),
-/// presented from Settings → Google Accounts. Unlike the IMAP/CalDAV "Add"
+/// presented from Connections → Google Accounts. Unlike the IMAP/CalDAV "Add"
 /// sheets, there's only one provider here — Google — so this is a single
 /// form rather than a stack of provider cards.
 struct AddGoogleAccountView: View {

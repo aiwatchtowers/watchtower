@@ -8,7 +8,7 @@ import WatchtowerCore
 /// `JiraBoardPicker.sites`) with `jira --account N boards`, lists them with
 /// the current selection checked (grouped by site when there are several),
 /// and on Done writes only the changes through `jira boards select|deselect`.
-/// Skip leaves everything as it is; the Boards tab and the Jira tabs' empty
+/// Skip leaves everything as it is; Connections → Jira and the Jira tabs' empty
 /// states keep the Choose Jira boards action. No foreground sync and no
 /// daemon restart here: the sheet's `JiraAccountsViewModel.finishBoardStep`
 /// wires the daemon once, and the daemon syncs the chosen boards (and starts

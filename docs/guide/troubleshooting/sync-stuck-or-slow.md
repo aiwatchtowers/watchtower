@@ -33,4 +33,4 @@ The menu shows **Syncing: …** and then **Daemon running · idle**, and the tab
 
 ## If it did not help
 
-If the sync runs but a tab stays empty, see [A tab is empty](tab-is-empty.md). If it fails on one source, check its row in **Settings → Connections**. How a cycle is ordered is in [How Watchtower works](../concepts/how-watchtower-works.md).
+If the sync runs but a tab stays empty, see [A tab is empty](tab-is-empty.md). If it fails on one source, check its row in **Connections**. How a cycle is ordered is in [How Watchtower works](../concepts/how-watchtower-works.md).

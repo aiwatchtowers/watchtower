@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
-/// Drives the multi-site Jira connections shown in Settings → Jira and the
+/// Drives the multi-site Jira connections shown in Connections → Jira and the
 /// add-site sheet. Each row is a DB-backed `jira_accounts` record — any number
 /// of Atlassian sites side by side, each independently granting access via its
 /// own OAuth consent flow and carrying its own token file. Owned by AppState
@@ -18,6 +18,10 @@ final class JiraAccountsViewModel {
     private(set) var accounts: [JiraAccount] = []
     var isConnecting = false
     var error: String?
+    /// The last account read failed; nil once one succeeds. Only the read:
+    /// an action's failure stays in `error` (the Connections tab's
+    /// "Couldn't read accounts" reads this).
+    private(set) var readError: String?
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
@@ -84,9 +88,11 @@ final class JiraAccountsViewModel {
         do {
             let rows = try await dbPool.read { db in try JiraAccountQueries.fetchAll(db) }
             self.accounts = rows
+            readError = nil
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
+            readError = self.error
         }
     }
 
@@ -241,7 +247,7 @@ final class JiraAccountsViewModel {
         await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
     }
 
-    /// Settings → Jira → Confluence "Grant Confluence access": the same
+    /// Connections → Jira → Confluence "Grant Confluence access": the same
     /// re-consent flow with `--with-confluence`, so the new grant carries the
     /// Confluence scopes.
     func reloginWithConfluence(accountID: Int) async {
@@ -252,7 +258,7 @@ final class JiraAccountsViewModel {
         )
     }
 
-    /// Settings → Jira → Confluence "Allow editing": the same re-consent flow
+    /// Connections → Jira → Confluence "Allow editing": the same re-consent flow
     /// with `--with-confluence-write`, so the new grant also carries the
     /// Confluence write scopes the assistant's page edits need.
     func reloginWithConfluenceWrite(accountID: Int) async {

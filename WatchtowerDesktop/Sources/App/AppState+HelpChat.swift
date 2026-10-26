@@ -33,7 +33,7 @@ extension AppState {
             now: Date())
     }
 
-    /// Opens the popup with `prefill` in its composer (Search's Ask in chat); an existing draft is kept.
+    /// Opens the popup with `prefill` in its composer (an analytics hint's Discuss); an existing draft is kept.
     func openHelpChat(prefill: String) {
         ensureChatViewModels()
         guard let chatViewModel else { return }
@@ -84,7 +84,8 @@ extension AppState {
         if let route = InboxRoute.fromNavHost(raw, today: Self.inboxToday()) {
             openInbox(route)
         } else if let destination = SidebarDestination(rawValue: raw) {
-            selectedDestination = destination
+            // Connections opens on its overview, like a sidebar click.
+            if destination == .connections { openConnections() } else { selectedDestination = destination }
         } else {
             return
         }

@@ -140,7 +140,7 @@ struct SpacingPage: View {
     static let paneWidths = [
         Step(name: "sideListMin", value: PaneWidth.sideListMin), Step(name: "sideListIdeal", value: PaneWidth.sideListIdeal),
         Step(name: "sideListMax", value: PaneWidth.sideListMax), Step(name: "detailMin", value: PaneWidth.detailMin),
-        Step(name: "narrowPage", value: PaneWidth.narrowPage)
+        Step(name: "narrowPage", value: PaneWidth.narrowPage), Step(name: "gridCardMin", value: PaneWidth.gridCardMin)
     ]
 
     @State private var chosen = Step(name: "regular", value: Spacing.regular)

@@ -4,7 +4,7 @@ import WatchtowerCore
 /// Sheet for connecting a new email source, presented from the Settings →
 /// Email Accounts section. Three provider cards:
 ///  - Gmail: redirects to the multi-account `AddGoogleAccountView` sheet
-///    (Settings → Google Accounts) — this view adds no Gmail logic of its own.
+///    (Connections → Google Accounts) — this view adds no Gmail logic of its own.
 ///  - Outlook: OAuth via `EmailAccountsViewModel.connectOutlook`, same loopback-
 ///    browser flow shape as Gmail but multi-account.
 ///  - IMAP: a host/port/credentials form; the password is written to the

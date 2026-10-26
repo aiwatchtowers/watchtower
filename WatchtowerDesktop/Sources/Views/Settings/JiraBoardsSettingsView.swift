@@ -1,5 +1,6 @@
-import SwiftUI
 import GRDB
+import OSLog
+import SwiftUI
 import WatchtowerCore
 
 struct JiraBoardsSettingsView: View {
@@ -17,6 +18,7 @@ struct JiraBoardsSettingsView: View {
     /// Analysis runs are owned app-wide so leaving this screen mid-run does not
     /// discard the spinner, the failure, or the post-run refresh.
     private var analysisCenter: JiraBoardAnalysisCenter { .shared }
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "jira-boards")
 
     var body: some View {
         Section("Boards") {
@@ -324,7 +326,12 @@ struct JiraBoardsSettingsView: View {
                     guard !Task.isCancelled else { break }
                     self.boards = newBoards
                 }
-            } catch {}
+            } catch {
+                // The list stops following the database: say so instead of
+                // showing a list that silently goes stale.
+                Self.log.error("board observation failed: \(error.localizedDescription, privacy: .public)")
+                toggleError = "The board list stopped updating: \(error.localizedDescription)"
+            }
         }
     }
 

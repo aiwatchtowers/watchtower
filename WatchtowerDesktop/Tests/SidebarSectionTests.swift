@@ -85,7 +85,7 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertNil(SidebarSection.containing(.targets))
         XCTAssertNil(SidebarSection.containing(.calendar))
         XCTAssertNil(SidebarSection.containing(.chat))
-        XCTAssertNil(SidebarSection.containing(.search))
+        XCTAssertNil(SidebarSection.containing(.usage))
     }
 
     // MARK: - Auto-expand on navigation
@@ -255,7 +255,7 @@ final class SidebarSectionTests: XCTestCase {
         }
         // Automations' feature is unmanaged by onboarding, so a dev-only
         // install keeps whatever state it has (here: on).
-        XCTAssertEqual(Set(visible), [.home, .inbox, .workbench, .automations, .chat, .targets, .search, .usage, .mcpServer])
+        XCTAssertEqual(Set(visible), [.home, .inbox, .workbench, .automations, .chat, .targets, .connections, .usage, .mcpServer])
     }
 
     func testDevOnlyFallbackIsHome() {
@@ -269,7 +269,7 @@ final class SidebarSectionTests: XCTestCase {
 
     func testFallbackIsHomeEvenWhenInboxShows() {
         XCTAssertEqual(
-            SidebarDestination.fallbackDestination(current: .boards, disabled: [], connected: ConnectedSources(slack: true)),
+            SidebarDestination.fallbackDestination(current: .workload, disabled: [], connected: ConnectedSources(slack: true)),
             .home
         )
     }
@@ -329,7 +329,7 @@ final class SidebarSectionTests: XCTestCase {
         for (tab, connected, expected) in cases {
             XCTAssertEqual(tab.isVisible(disabledFeatures: [], connected: connected), expected, "\(tab) with \(connected)")
         }
-        for tab in [SidebarDestination.boards, .workload, .blockers, .projectMap, .releases] {
+        for tab in [SidebarDestination.workload, .blockers, .projectMap, .releases] {
             XCTAssertTrue(tab.isVisible(disabledFeatures: [], connected: ConnectedSources(jira: true)), "\(tab)")
             XCTAssertFalse(tab.isVisible(disabledFeatures: [], connected: ConnectedSources(slack: true, mail: true, calendar: true)), "\(tab)")
         }

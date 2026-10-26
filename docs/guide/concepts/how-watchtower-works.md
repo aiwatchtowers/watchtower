@@ -50,7 +50,7 @@ Times are local. "Every cycle" means every 15 minutes by default.
 | Reaction commands | Every cycle, right after the Slack sync; the [Reactions](../features/automations-rules.md) built-in composes each | Slack; Reactions on (on by default) |
 | Calendar events, mail | Every cycle | An account connected; calendar and Gmail sync on (on by default) |
 | Jira issues | Every cycle, at most every 15 minutes (own interval) | A Jira site connected |
-| Linear issues | Every cycle, at most every 15 minutes (own interval) | A Linear workspace connected in **Settings** → **Connections** → **Linear** |
+| Linear issues | Every cycle, at most every 15 minutes (own interval) | A Linear workspace connected in **Connections** → **Linear** |
 | Confluence pages | Every cycle | A space picked; Confluence in search on |
 | Channel digests | Every cycle, for channels with new messages | Slack Digests on |
 | Daily rollup | Every cycle, once there are new digests (at least two channels); gives up after 3 failed tries a day | Slack Digests on |

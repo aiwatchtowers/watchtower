@@ -1,6 +1,6 @@
 # Settings
 
-Seven tabs, in this order: **General**, **Connections**, **Features**, **Meetings**, **System**, **Mobile**, **Profile**. Settings opens on **Connections**. Tabs that edit configuration share one **Save** bar (⌘S); the **Mobile** switch and the **Skills** card apply at once. This page lists only what the screen does not explain.
+Seven tabs, in this order: **General**, **Connections**, **Features**, **Meetings**, **System**, **Mobile**, **Profile**. Settings opens on **General**. Tabs that edit configuration share one **Save** bar (⌘S); the **Mobile** switch and the **Skills** card apply at once. This page lists only what the screen does not explain.
 
 ## General
 <!-- learn
@@ -17,13 +17,13 @@ since: 0.24.0
 
 ## Connections
 
-A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connections) with a status dot: green connected, red when an account has an error or needs re-login, gray not set up. You never type an account name: Watchtower names each after what it connected to; **Rename…** changes it (Linear has no **Rename…**). See [Sources and accounts](../concepts/sources-and-accounts.md).
+This tab only has **Open Connections**: your accounts live in the **Connections** tab of the main window (TOOLS in the sidebar). There, a card per service (Slack, Google, Email, Calendar, Jira, Linear, Quick Connections) has a status dot: green connected, red when an account has an error or needs re-login, gray not set up. Click a card for the service's accounts and settings. You never type an account name: Watchtower names each after what it connected to; **Rename…** changes it (Linear has no **Rename…**). See [Sources and accounts](../concepts/sources-and-accounts.md).
 
 - **Remove** stops syncing and deletes the sign-in. Slack, Jira and Linear keep their synced data (with [revoked-access deletion](../concepts/revoked-access.md) on, until 30 days without access); Google deletes its synced mail and events; Email and Calendar do too, although their dialogs say they are kept (see [Known issues](../troubleshooting/known-issues.md)). A disabled account (**Enabled** off, Slack, Jira and Linear only) stops syncing and keeps its data.
 - After you connect a source, a **Turn on related features?** sheet may offer features that source can feed. Nothing turns on unless you press **Turn on**. See [Features on and off](../concepts/features-on-and-off.md).
 - **Slack** — **Reconnect** also grants a newly needed permission, such as sending messages from chat. The emoji-to-action list used by the [Inbox](../features/inbox.md) action strip is edited on the **Reactions** card in **Automations** → **Built in** ([Reactions and tracks in Automations](../features/automations-rules.md)); here **Open** takes you there.
 - **Google** — **Add Google Account** grants Calendar and/or Gmail per account. **Sync days ahead** for Calendar: 2, 3, 5, 7 or 14. See [Calendar](../features/calendar-and-meeting-prep.md) and [Mail](../features/mail.md).
-- **Jira** — **Manage Boards** selects boards, shows board profiles and user mapping. See [Jira and Linear](../features/jira-and-linear.md).
+- **Jira** — below the sites, **Boards** selects boards and opens a board's profile, then **Jira Features**, **User Mapping** and **Sync**. See [Jira and Linear](../features/jira-and-linear.md).
 - **Linear** — workspaces (browser sign-in or API key), **Enabled**, **Re-login**, **Remove**, and the **Teams** to sync per workspace. See [Linear](../features/linear.md).
 - **Confluence** (under each Jira site) — pick spaces to sync into search. **Grant Confluence access** and **Allow editing** are extra sign-ins; switching a space off removes its synced content. See [Search and knowledge](../features/search-and-knowledge.md).
 - **Quick Connections** — outside tool servers the assistant may read from; write tools never reach the chat. See [Quick Connections](../features/quick-connections.md).

@@ -135,7 +135,7 @@ extension AppState {
         _ = try result.get()
     }
 
-    /// Settings → Slack disconnect as one item: stop, disconnect, start, so
+    /// Connections → Slack disconnect as one item: stop, disconnect, start, so
     /// no other start lands between them. Whether the disconnect went through.
     /// The start is skipped during the compaction step.
     func disconnectSlackOnQueue(
