@@ -194,13 +194,19 @@ package enum ChatConversationQueries {
         """, arguments: [now, id])
     }
 
-    /// The owner saw this chat at `at` (Chats panel spec §5.2). Never moves
-    /// the mark back, and leaves `updated_at` alone: reading is not activity.
-    /// Unchecked — a chat deleted meanwhile needs no mark.
-    package static func markRead(_ db: Database, id: Int64, at: Date) throws {
+    /// The owner saw this chat (Chats panel spec §5.2): `read_at` becomes
+    /// "read through" the `created_at` of its last complete answer on the
+    /// active branch (`ChatHistoryQueries.lastAnswerAt`), not the clock — an
+    /// answer still streaming (a `partial` row, created when its turn began)
+    /// is not covered, so its completion off screen leaves the chat unread.
+    /// No complete answer yet = nothing changes. Never moves the mark back,
+    /// and leaves `updated_at` alone: reading is not activity. Unchecked — a
+    /// chat deleted meanwhile needs no mark.
+    package static func markRead(_ db: Database, id: Int64) throws {
+        guard let through = try ChatHistoryQueries.lastAnswerAt(db, conversationID: id) else { return }
         try db.execute(sql: """
             UPDATE chat_conversations SET read_at = MAX(COALESCE(read_at, 0), ?) WHERE id = ?
-            """, arguments: [at.timeIntervalSince1970, id])
+            """, arguments: [through, id])
     }
 
     package static func delete(_ db: Database, id: Int64) throws {

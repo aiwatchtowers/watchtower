@@ -49,29 +49,86 @@ final class ChatHistoryQueriesTests: XCTestCase {
         XCTAssertEqual(row?.lastAnswerAt, Date(timeIntervalSince1970: 20))
     }
 
-    func testUnreadAgainstReadAtAndMarkRead() throws {
+    func testUnreadAgainstReadAt() throws {
         let db = try TestDatabase.create()
-        let (conv, before) = try db.write { d -> (Int64, ChatPanelRow?) in
+        let row = try db.write { d -> ChatPanelRow? in
             let conv = try TestDatabase.insertChatConversation(d, title: "c", updatedAt: 5)
             let msg = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "a", createdAt: 20)
             try setLeaf(d, conv, msg)
             try d.execute(sql: "UPDATE chat_conversations SET read_at = 10 WHERE id = ?", arguments: [conv])
-            return (conv, try ChatHistoryQueries.panelRows(d, projectID: nil).first)
-        }
-        XCTAssertEqual(before?.isUnread, true)
-        let after = try db.write { d -> ChatPanelRow? in
-            try ChatConversationQueries.markRead(d, id: conv, at: Date(timeIntervalSince1970: 25))
             return try ChatHistoryQueries.panelRows(d, projectID: nil).first
         }
-        XCTAssertEqual(after?.isUnread, false)
-        XCTAssertEqual(after?.conversation.readAt, 25)
-        XCTAssertEqual(after?.conversation.updatedAt, 5, "reading is not activity")
-        // An older mark never moves it back.
-        let stale = try db.write { d -> Double? in
-            try ChatConversationQueries.markRead(d, id: conv, at: Date(timeIntervalSince1970: 15))
-            return try ChatConversationQueries.fetchByID(d, id: conv)?.readAt
+        XCTAssertEqual(row?.isUnread, true)
+    }
+
+    func testMarkReadCoversTheCompleteAnswer() throws {
+        let db = try TestDatabase.create()
+        let row = try db.write { d -> ChatPanelRow? in
+            let conv = try TestDatabase.insertChatConversation(d, title: "c", updatedAt: 5)
+            let msg = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "a", createdAt: 20)
+            try setLeaf(d, conv, msg)
+            try ChatConversationQueries.markRead(d, id: conv)
+            return try ChatHistoryQueries.panelRows(d, projectID: nil).first
         }
-        XCTAssertEqual(stale, 25)
+        XCTAssertEqual(row?.isUnread, false)
+        XCTAssertEqual(row?.conversation.readAt, 20, "read through the answer, not the clock")
+        XCTAssertEqual(row?.conversation.updatedAt, 5, "reading is not activity")
+    }
+
+    /// Opened mid-turn, left, the turn finishes off screen: still unread.
+    func testMarkReadMidTurnLeavesTheLaterCompletionUnread() throws {
+        let db = try TestDatabase.create()
+        let (conv, partial) = try db.write { d -> (Int64, Int64) in
+            let conv = try TestDatabase.insertChatConversation(d, title: "c")
+            let earlier = try TestDatabase.insertChatMessage(
+                d, conversationID: conv, role: "assistant", text: "earlier", createdAt: 10)
+            let user = try TestDatabase.insertChatMessage(
+                d, conversationID: conv, role: "user", text: "q", parentID: earlier, createdAt: 15)
+            let partial = try TestDatabase.insertChatMessage(
+                d, conversationID: conv, role: "assistant", text: "", parentID: user, status: "partial", createdAt: 20)
+            try setLeaf(d, conv, partial)
+            try ChatConversationQueries.markRead(d, id: conv)
+            return (conv, partial)
+        }
+        let finished = try db.write { d -> ChatPanelRow? in
+            try d.execute(sql: "UPDATE chat_messages SET text = 'done', status = 'complete' WHERE id = ?",
+                          arguments: [partial])
+            return try ChatHistoryQueries.panelRows(d, projectID: nil).first { $0.id == conv }
+        }
+        XCTAssertEqual(finished?.conversation.readAt, 10, "the partial answer was not covered")
+        XCTAssertEqual(finished?.isUnread, true)
+    }
+
+    func testMarkReadWithoutAnAnswerAndNeverBackwards() throws {
+        let db = try TestDatabase.create()
+        let (fresh, older) = try db.write { d -> (Double?, Double?) in
+            let empty = try TestDatabase.insertChatConversation(d, title: "empty")
+            try ChatConversationQueries.markRead(d, id: empty)
+            let conv = try TestDatabase.insertChatConversation(d, title: "c")
+            let msg = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "a", createdAt: 20)
+            try setLeaf(d, conv, msg)
+            try d.execute(sql: "UPDATE chat_conversations SET read_at = 30 WHERE id = ?", arguments: [conv])
+            try ChatConversationQueries.markRead(d, id: conv)
+            return (try ChatConversationQueries.fetchByID(d, id: empty)?.readAt,
+                    try ChatConversationQueries.fetchByID(d, id: conv)?.readAt)
+        }
+        XCTAssertNil(fresh, "no complete answer: the mark stays unset")
+        XCTAssertEqual(older, 30, "never moved back")
+    }
+
+    func testLastAnswerAtFollowsTheActiveBranch() throws {
+        let db = try TestDatabase.create()
+        let at = try db.write { d -> Double? in
+            let conv = try TestDatabase.insertChatConversation(d, title: "b")
+            let user = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "user", text: "q", createdAt: 1)
+            let shown = try TestDatabase.insertChatMessage(
+                d, conversationID: conv, role: "assistant", text: "shown", parentID: user, createdAt: 2)
+            try TestDatabase.insertChatMessage(
+                d, conversationID: conv, role: "assistant", text: "other", parentID: user, createdAt: 3)
+            try setLeaf(d, conv, shown)
+            return try ChatHistoryQueries.lastAnswerAt(d, conversationID: conv)
+        }
+        XCTAssertEqual(at, 2)
     }
 
     func testPendingCountAndOldestTool() throws {
