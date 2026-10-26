@@ -21,6 +21,11 @@ final class ChatHistoryViewModel {
     var lastError: String?
     /// All chats or one project's (spec §4), remembered per workspace.
     private(set) var level: ChatPanelLevel
+    /// The project switcher's rows as last read (`loadSwitcherSummaries`),
+    /// without the live answering counts (`switcherRows`).
+    private(set) var switcherSummaries: [ChatProjectSwitcherPresentation.Summary] = []
+    /// Why the switcher's read failed; nil once one succeeds.
+    private(set) var switcherError: String?
     /// The "▸ N older" group is open; remembered per level and workspace.
     var olderExpanded: Bool {
         didSet { defaults.set(olderExpanded, forKey: olderExpandedKey(level)) }
@@ -81,6 +86,29 @@ final class ChatHistoryViewModel {
 
     private func olderExpandedKey(_ level: ChatPanelLevel) -> String {
         Self.olderExpandedKey(level, workspace: workspace)
+    }
+
+    // MARK: - Project switcher
+
+    /// Re-reads the switcher's projects (the popover asks on open).
+    func loadSwitcherSummaries() async {
+        do {
+            switcherSummaries = try await dbManager.dbPool.read { try ChatProjectQueries.switcherSummaries($0) }
+            switcherError = nil
+        } catch {
+            switcherError = "Could not load projects: \(error.localizedDescription)"
+        }
+    }
+
+    /// The switcher's projects, latest activity first, with each one's
+    /// answering chats counted live; call it at render time so the view
+    /// follows the pool.
+    var switcherRows: [ChatProjectSwitcherPresentation.Summary] {
+        ChatProjectSwitcherPresentation.rows(
+            switcherSummaries,
+            chats: allRows.map { (id: $0.id, projectID: $0.conversation.projectID) },
+            isAnswering: isAnswering
+        )
     }
 
     // MARK: - Rows

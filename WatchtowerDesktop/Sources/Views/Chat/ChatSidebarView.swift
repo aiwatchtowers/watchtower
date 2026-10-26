@@ -2,7 +2,9 @@ import SwiftUI
 import WatchtowerCore
 
 /// History on the left (spec 2026-10-26 §6): Pinned / Recent / the folded
-/// "▸ N older", with rename, pin, archive, delete. Projects (Phase 4) sit above.
+/// "▸ N older", with rename, pin, archive, delete. The header switches
+/// between All chats and one project (§4); a project's first row is its
+/// Project overview.
 /// Shaped like the Workbench sessions panel: section labels in the app
 /// sidebar's style, rows as tabs, and the chat (or project page) on screen
 /// is a tab that runs on into the conversation beside it (`panelTab`, with
@@ -25,12 +27,7 @@ struct ChatSidebarView: View {
     var body: some View {
         let conversationIDs = historyVM.visibleRowIDs
         VStack(spacing: 0) {
-            HStack {
-                Text("Chats").font(.headline)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            ChatPanelHeader(historyVM: historyVM, projectName: levelProjectName, actions: headerActions)
             // No List selection: its highlight would draw over the tab. The
             // tab follows `historyVM.selectedConversationID`, a row selects
             // on its own click (VoiceOver has the row's action) and ↑/↓ move
@@ -40,8 +37,7 @@ struct ChatSidebarView: View {
             // selected before it is listed (the policy keeps it pending).
             ScrollViewReader { proxy in
                 List {
-                    newChatRow
-                    projectsSection
+                    if let projectID = historyVM.level.projectID { projectOverviewRow(projectID) }
                     ForEach(historyVM.sections) { section in
                         if section.kind == .older {
                             olderLabel(count: section.items.count)
@@ -66,7 +62,7 @@ struct ChatSidebarView: View {
                 .onChange(of: historyVM.selectedConversationID, initial: true) { _, id in
                     proxy.followSelection(scroll.panelScrollTarget(selecting: id, rows: conversationIDs))
                 }
-                // Project rows are keyed by `sidebarRowKey` strings, never a chat id.
+                // The Project overview row is keyed by a string, never a chat id.
                 .onChange(of: conversationIDs) { _, ids in
                     proxy.followSelection(scroll.panelScrollTarget(rows: ids))
                 }
@@ -95,46 +91,37 @@ struct ChatSidebarView: View {
         }
     }
 
-    /// A labelled row above PROJECTS, so a new chat does not hide behind ⌘N
-    /// or an icon. Same path as ⌘N and the toolbar's New chat (`onNewChat`).
-    private var newChatRow: some View {
-        Label("New chat", systemImage: "square.and.pencil")
-            .lineLimit(1)
-            .panelTab(isSelected: false)
-            .onTapGesture(perform: onNewChat)
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { onNewChat() }
-            .help("New Chat (⌘N)")
-            .accessibilityLabel("New chat")
-            .accessibilityHint("Opens the start page for a new chat. Shortcut: Command N.")
+    /// The level's project name; nil at All chats. A project not (yet) in
+    /// `chatVM.projects` — just created, reloading — still reads as one.
+    private var levelProjectName: String? {
+        guard let id = historyVM.level.projectID else { return nil }
+        return chatVM.projects.first { $0.id == id }?.name ?? "Project"
     }
 
-    /// Projects above the history (spec §6.1). Opening one clears the
-    /// history selection, so picking the previously shown chat afterwards
-    /// is still a selection change that leaves the project page.
-    @ViewBuilder
-    private var projectsSection: some View {
-        sectionLabel(Text("PROJECTS")) {
-            Button {
+    private var headerActions: ChatPanelHeaderActions {
+        ChatPanelHeaderActions(
+            newChat: onNewChat,
+            selectProject: { historyVM.selectLevel(.project($0)) },
+            newProject: {
                 historyVM.selectedConversationID = nil
-                Task { await chatVM.createProject(name: "") }
-            } label: {
-                Image(systemName: "plus").imageScale(.small)
-            }
-            .buttonStyle(.borderless)
-            .help("New Project")
-            .accessibilityLabel("New Project")
-        }
-        // Keyed apart from the chats: the list's rows share one identity
-        // space, and project and chat ids both count from 1.
-        ForEach(chatVM.projects, id: \.sidebarRowKey) { project in
-            Label(project.name, systemImage: "folder")
-                .lineLimit(1)
-                .panelTab(isSelected: chatVM.openProjectID == project.id)
-                .onTapGesture { open(project.id) }
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { open(project.id) }
-        }
+                Task {
+                    if let id = await chatVM.createProject(name: "") { historyVM.selectLevel(.project(id)) }
+                }
+            },
+            showAll: { historyVM.selectLevel(.all) }
+        )
+    }
+
+    /// A project's first row (spec §4): its page, the tab while it is on
+    /// screen. Keyed apart from the chats, whose ids also count from 1.
+    private func projectOverviewRow(_ projectID: Int64) -> some View {
+        Label("Project overview", systemImage: "folder")
+            .lineLimit(1)
+            .panelTab(isSelected: chatVM.openProjectID == projectID)
+            .onTapGesture { open(projectID) }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { open(projectID) }
+            .id("project-overview-\(projectID)")
     }
 
     private func chatRow(_ conv: ChatConversation) -> some View {
@@ -159,17 +146,14 @@ struct ChatSidebarView: View {
             .accessibilityAction { historyVM.olderExpanded.toggle() }
     }
 
-    /// A section's label row (PROJECTS, PINNED, RECENT…) in the app sidebar's
-    /// style, aligned with the tabs' text, with an optional trailing control.
-    private func sectionLabel(
-        _ title: Text, @ViewBuilder trailing: () -> some View = { EmptyView() }
-    ) -> some View {
-        HStack(spacing: 4) {
+    /// A section's label row (PINNED, RECENT…) in the app sidebar's
+    /// style, aligned with the tabs' text.
+    private func sectionLabel(_ title: Text) -> some View {
+        HStack(spacing: Spacing.small) {
             title
                 .sidebarSectionLabel()
                 .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 4)
-            trailing()
+            Spacer(minLength: Spacing.small)
         }
         .frame(minHeight: 18)
         .padding(.top, 8)
@@ -212,10 +196,4 @@ struct ChatSidebarView: View {
         Divider()
         Button("Delete…", role: .destructive) { deleting = conv }
     }
-}
-
-private extension ChatProject {
-    /// The history list's row identity for a project row, distinct from any
-    /// chat's id (`ChatSidebarView.projectsSection`).
-    var sidebarRowKey: String { "project-\(id)" }
 }

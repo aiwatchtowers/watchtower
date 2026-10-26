@@ -43,6 +43,16 @@ final class ChatProjectSwitcherTests: XCTestCase {
                        [SwitcherSegment(text: "8d", tone: .secondary)])
     }
 
+    func testRowsCountAnsweringChatsPerProjectAndOrder() {
+        let summaries = [summary(1, "old", at: 10, answering: 5), summary(2, "new", at: 20)]
+        let chats: [(id: Int64, projectID: Int64?)] = [(10, 1), (11, 1), (12, 2), (13, nil), (14, 1)]
+        let answering: Set<Int64> = [10, 11, 13]
+        let rows = Presentation.rows(summaries, chats: chats) { answering.contains($0) }
+        XCTAssertEqual(rows.map(\.id), [2, 1])
+        // A stale count is replaced, a chat outside any project counts nowhere.
+        XCTAssertEqual(rows.map(\.answeringCount), [0, 2])
+    }
+
     func testSwitcherSummaries() throws {
         let db = try TestDatabase.create()
         try db.write { d in

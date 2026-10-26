@@ -41,6 +41,25 @@ package enum ChatProjectSwitcherPresentation {
         }
     }
 
+    /// The switcher's rows: each project's `answeringCount` set to how many
+    /// of its listed chats `isAnswering` (the live pool, asked at render
+    /// time), latest activity first.
+    package static func rows(
+        _ summaries: [Summary],
+        chats: [(id: Int64, projectID: Int64?)],
+        isAnswering: (Int64) -> Bool
+    ) -> [Summary] {
+        var answering: [Int64: Int] = [:]
+        for chat in chats {
+            if let projectID = chat.projectID, isAnswering(chat.id) { answering[projectID, default: 0] += 1 }
+        }
+        return ordered(summaries.map { summary in
+            var summary = summary
+            summary.answeringCount = answering[summary.id] ?? 0
+            return summary
+        })
+    }
+
     /// Case- and diacritic-insensitive substring match on the project name
     /// only; the order is kept.
     package static func matching(_ rows: [Summary], query: String) -> [Summary] {
