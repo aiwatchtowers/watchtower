@@ -506,34 +506,43 @@ final class SessionCleanupCenterTests: XCTestCase {
         XCTAssertEqual(plan.removableKeys, [CleanupStreamFixture.wtA])
     }
 
+    /// A late line of a stopped run never reaches the new run's rows
+    /// (spec §6): run 1's `checked` waits in its coalescing window (widened
+    /// to 10 s here) when Refresh lands, and its stream — reads that ignore
+    /// cancellation — still yields a line after the bump, which ends run 1
+    /// and flushes that window only after run 2's `listed` is shown.
     func testStaleRunLinesAreDropped() async {
         let (center, streamer) = streamedCenter()
+        center.eventBatchInterval = .seconds(10)
+        streamer.ignoresCancellation = true
         let first = center.startStreamedPlan(.workbench(2), workbenchID: 2)
         await waitUntil("run 1") { streamer.runs.count == 1 }
         let old = streamer.runs[0]
         old.send(CleanupStreamFixture.listed)
+        old.send(CleanupStreamFixture.checked(CleanupStreamFixture.wtA))
         await waitUntil("run 1 listed") { center.progress(for: .workbench(2))?.items.count == 3 }
         let firstID = center.progress(for: .workbench(2))?.runID
 
         center.startStreamedPlan(.workbench(2), workbenchID: 2)
-        await waitUntil("run 2") { streamer.runs.count == 2 }
         XCTAssertEqual(old.stopCount, 1, "Refresh stops the old process")
-        let fresh = streamer.runs[1]
-        fresh.send(CleanupStreamFixture.listed)
+        await waitUntil("run 2") { streamer.runs.count == 2 }
+        streamer.runs[1].send(CleanupStreamFixture.listed)
         await waitUntil("run 2 listed") {
             let progress = center.progress(for: .workbench(2))
             return progress?.runID != firstID && progress?.stage == .checking(done: 0, of: 2)
         }
-        let before = center.progress(for: .workbench(2))
 
-        old.send(CleanupStreamFixture.checked(CleanupStreamFixture.wtA))
+        old.send(CleanupStreamFixture.checked(CleanupStreamFixture.wtB))
         old.send(CleanupStreamFixture.donePlan)
         old.finish()
         await first.value
-        try? await Task.sleep(for: .milliseconds(150))
 
-        XCTAssertEqual(center.progress(for: .workbench(2)), before, "a late line of the stopped run changes nothing")
-        XCTAssertEqual(center.cleanupPhase(for: .workbench(2)), .planning)
+        let progress = center.progress(for: .workbench(2))
+        XCTAssertEqual(progress?.stage, .checking(done: 0, of: 2), "no line of run 1 counted in run 2")
+        XCTAssertEqual(progress?.checking.contains(CleanupStreamFixture.wtA), true)
+        XCTAssertEqual(progress?.checking.contains(CleanupStreamFixture.wtB), true)
+        XCTAssertEqual(progress?.items.first { $0.key == CleanupStreamFixture.wtA }?.action, .unknown(""))
+        XCTAssertEqual(center.cleanupPhase(for: .workbench(2)), .planning, "run 1's done is not run 2's plan")
     }
 
     func testStreamWithoutDoneIsAFailedPlan() async {
@@ -599,6 +608,34 @@ final class SessionCleanupCenterTests: XCTestCase {
         runner.release()
         _ = await applying.value
         XCTAssertFalse(center.isApplying(workbenchID: 2))
+    }
+
+    /// Delete and Clean Up while a streamed apply of the same scope runs is
+    /// refused: it never bumps the serial, so the streamed apply is never
+    /// stopped and its `done` lands.
+    func testSecondApplyNeverStopsAStreamedApply() async {
+        let runner = FakeSessionCleanupRunner(replies: [.success(CleanupFixture.applied)])
+        let streamer = ScriptedCleanupStreamer()
+        streamers.append(streamer)
+        let center = SessionCleanupCenter(runner: runner, streamer: streamer)
+
+        let streamed = center.startStreamedApply(.session(9), workbenchID: 2, items: [CleanupStreamFixture.wtA])
+        await waitUntil("streamed apply") { streamer.runs.count == 1 }
+        let refused = await center.applyCleanup(sessionID: 9, workbenchID: 2, items: ["branch:feat/x"])
+        let refusedSweep = await center.applySweep(workbenchID: 2, items: ["branch:feat/x"])
+
+        XCTAssertFalse(refused)
+        XCTAssertFalse(refusedSweep)
+        XCTAssertTrue(runner.calls.isEmpty, "nothing launched")
+        XCTAssertEqual(center.cleanupPhase(for: .session(9)), .applying)
+        streamer.runs[0].send(CleanupStreamFixture.doneApply())
+        streamer.runs[0].finish()
+        let ok = await streamed.value
+        XCTAssertTrue(ok)
+        XCTAssertEqual(streamer.runs[0].stopCount, 0, "the streamed apply was never stopped")
+        guard case .done = center.cleanupPhase(for: .session(9)) else {
+            return XCTFail("its done lands, got \(center.cleanupPhase(for: .session(9)))")
+        }
     }
 
     func testApplyEventsMoveRows() async {

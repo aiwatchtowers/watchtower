@@ -17,10 +17,20 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
         private var waiters: [CheckedContinuation<SessionCleanupStream.Exit, Never>] = []
         private var stops = 0
 
-        init(args: [String], environment: [String: String]) {
+        /// `ignoresCancellation`: the lines go through a channel whose
+        /// reads ignore the reader's cancellation, as a pipe read already
+        /// under way would — so a line sent after a stop is really read.
+        init(args: [String], environment: [String: String], ignoresCancellation: Bool) {
             self.args = args
             self.environment = environment
-            (lines, continuation) = AsyncStream.makeStream(of: String.self)
+            let (source, continuation) = AsyncStream.makeStream(of: String.self)
+            self.continuation = continuation
+            if ignoresCancellation {
+                let channel = UncancellableLines(source)
+                lines = AsyncStream { await channel.next() }
+            } else {
+                lines = source
+            }
         }
 
         var stopCount: Int { lock.withLock { stops } }
@@ -64,11 +74,13 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
 
     private let lock = NSLock()
     private var started: [Run] = []
+    /// See `Run.init`.
+    var ignoresCancellation = false
 
     var runs: [Run] { lock.withLock { started } }
 
     func streamCleanup(args: [String], environment: [String: String]) throws -> SessionCleanupStream {
-        let run = Run(args: args, environment: environment)
+        let run = Run(args: args, environment: environment, ignoresCancellation: ignoresCancellation)
         lock.withLock { started.append(run) }
         return run.stream()
     }
@@ -76,6 +88,47 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
     /// Ends every run (tearDown): no task stays parked on an exit.
     func finishAll() {
         runs.forEach { $0.finish(status: 1, message: "torn down") }
+    }
+}
+
+/// Reads `source` in a task of its own: a caller cancelled while it waits
+/// still gets the next line.
+private final class UncancellableLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer: [String] = []
+    private var ended = false
+    private var waiter: CheckedContinuation<String?, Never>?
+
+    init(_ source: AsyncStream<String>) {
+        Task.detached { [self] in
+            for await line in source { deliver(line) }
+            deliver(nil)
+        }
+    }
+
+    private func deliver(_ line: String?) {
+        let resume: CheckedContinuation<String?, Never>? = lock.withLock {
+            if let waiting = waiter {
+                waiter = nil
+                if line == nil { ended = true }
+                return waiting
+            }
+            if let line { buffer.append(line) } else { ended = true }
+            return nil
+        }
+        resume?.resume(returning: line)
+    }
+
+    func next() async -> String? {
+        await withCheckedContinuation { continuation in
+            let ready: String?? = lock.withLock {
+                if !buffer.isEmpty { return .some(buffer.removeFirst()) }
+                if ended { return .some(nil) }
+                waiter = continuation
+                return nil
+            }
+            if let ready { continuation.resume(returning: ready) }
+        }
     }
 }
 

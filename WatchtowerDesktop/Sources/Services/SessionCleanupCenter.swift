@@ -223,6 +223,9 @@ final class SessionCleanupCenter {
     @ObservationIgnored private var readyAt: [SessionCleanupScope: Date] = [:]
     /// A seam for tests.
     @ObservationIgnored var now: () -> Date = { Date() }
+    /// How often streamed events reach the view at most (spec §7). A seam
+    /// for tests.
+    @ObservationIgnored var eventBatchInterval: Duration = .milliseconds(100)
 
     init(runner: (any SessionCleanupRunning)?, streamer: (any SessionCleanupStreaming)? = nil) {
         self.runner = runner
@@ -384,7 +387,11 @@ final class SessionCleanupCenter {
         return await runApply(.workbench(workbenchID), workbenchID: workbenchID, args: args)
     }
 
+    /// Refused (false, nothing launched, no phase change) while another
+    /// cleanup apply of the workbench runs: its serial bump would otherwise
+    /// supersede that apply (spec §3.2).
     private func runApply(_ scope: SessionCleanupScope, workbenchID: Int64, args: [String]) async -> Bool {
+        guard !isApplying(workbenchID: workbenchID) else { return false }
         let serial = beginRun(scope, phase: .applying)
         applyRuns[scope] = (serial, workbenchID)
         let outcome = await runCleanup(args)
@@ -453,9 +460,11 @@ final class SessionCleanupCenter {
         }
     }
 
-    /// Applies exactly `items` to the scope, streamed. Refused (false,
-    /// nothing launched) while another cleanup apply of the workbench runs;
-    /// with no item nothing runs and that counts as success. A plan of the
+    /// Applies exactly `items` to the scope, streamed. Refused while another
+    /// cleanup apply of the workbench runs: false, nothing launched, no
+    /// phase or progress change — callers check `isApplying(workbenchID:)`
+    /// first to tell a refusal from a failed apply. With no item nothing
+    /// runs and that counts as success. A plan of the
     /// scope still running is stopped. The apply itself is never stopped:
     /// cancelling the returned task leaves the CLI running. True when the
     /// CLI ran and no item reported an error.
@@ -466,11 +475,16 @@ final class SessionCleanupCenter {
         let args = streamArguments(scope, workbenchID: workbenchID, applying: items)
         planRuns.removeValue(forKey: scope)?.task.cancel()
         let serial = beginStreamedRun(scope, phase: .applying, stage: .applying)
+        // The apply re-checks every item; no row waits for the plan's checks.
+        progresses[scope]?.checking = []
+        progresses[scope]?.sizing = []
         applyRuns[scope] = (serial, workbenchID)
         let applied = Set(items)
         let run = Task { [weak self] () -> Bool in
             guard let self else { return false }
-            let outcome = await stream(scope, serial: serial, args: args) { $0.absorbApply($1, applied: applied) }
+            let outcome = await stream(scope, serial: serial, args: args, stoppable: false) {
+                $0.absorbApply($1, applied: applied)
+            }
             if applyRuns[scope]?.serial == serial { applyRuns[scope] = nil }
             switch outcome {
             case let .success(result):
@@ -486,7 +500,7 @@ final class SessionCleanupCenter {
     }
 
     private func runStreamedPlan(_ scope: SessionCleanupScope, serial: Int, args: [String]) async {
-        let outcome = await stream(scope, serial: serial, args: args) { [now = self.now] in $0.absorbPlan($1, now: now()) }
+        let outcome = await stream(scope, serial: serial, args: args, stoppable: true) { [now = self.now] in $0.absorbPlan($1, now: now()) }
         guard runSerials[scope] == serial else { return }
         guard !Task.isCancelled else {
             if let limit = stoppedAtLimit.removeValue(forKey: scope) {
@@ -525,13 +539,17 @@ final class SessionCleanupCenter {
     /// line is applied to the scope's progress through `absorb` — in
     /// batches, at most every 100 ms — only while `serial` is the scope's
     /// current run; a bad line or an unknown event is skipped. Cancelling
-    /// the calling task stops the child. A stream without `done` is a
-    /// failure with the CLI's words. Superseded or cancelled: the outcome
-    /// is meaningless and callers drop it.
+    /// the calling task stops a `stoppable` child (a plan); an apply's is
+    /// never stopped — a superseded apply's lines are read and dropped. A
+    /// stream without `done` is a failure with the CLI's words; after
+    /// `done` the child's exit is awaited (reaped) and `done` stands.
+    /// Superseded or cancelled: the outcome is meaningless and callers drop
+    /// it.
     private func stream(
         _ scope: SessionCleanupScope,
         serial: Int,
         args: [String],
+        stoppable: Bool,
         absorb: @escaping @MainActor (inout SessionCleanupProgress, SessionCleanupEvent) -> Void
     ) async -> Outcome {
         guard let streamer else { return .failure(CLIRunnerError.binaryNotFound.localizedDescription) }
@@ -544,7 +562,7 @@ final class SessionCleanupCenter {
             return .failure(error.localizedDescription)
         }
         let isCurrent = { [weak self] in self?.runSerials[scope] == serial }
-        let batches = SessionCleanupEventBatches(interval: Self.eventBatchInterval) { [weak self] events in
+        let batches = SessionCleanupEventBatches(interval: eventBatchInterval) { [weak self] events in
             guard let self, isCurrent(), var progress = progresses[scope] else { return }
             events.forEach { absorb(&progress, $0) }
             progresses[scope] = progress
@@ -553,6 +571,7 @@ final class SessionCleanupCenter {
             var done: SessionCleanupPlan?
             for await line in child.lines {
                 guard isCurrent(), !Task.isCancelled else {
+                    guard stoppable else { continue }
                     child.stop()
                     break
                 }
@@ -566,16 +585,13 @@ final class SessionCleanupCenter {
             batches.flush()
             return done
         } onCancel: {
-            child.stop()
+            if stoppable { child.stop() }
         }
         guard isCurrent(), !Task.isCancelled else { return .failure("superseded") }
-        if let done { return .success(done) }
         let exit = await child.exit()
+        if let done { return .success(done) }
         return .failure(exit.status == 0 ? Self.endedWithoutResultText : exit.message)
     }
-
-    /// How often streamed events reach the view at most (spec §7).
-    nonisolated static let eventBatchInterval: Duration = .milliseconds(100)
 
     /// A stream that ended cleanly but never said `done`.
     nonisolated static let endedWithoutResultText = "The cleanup check ended without a result."
