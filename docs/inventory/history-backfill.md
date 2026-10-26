@@ -7,10 +7,10 @@
 > AI assistant: when working in `internal/historybackfill/`, `internal/db/history_backfill.go`,
 > `internal/daemon/history_backfill.go`, `internal/digest/backfill.go`, the `FirstSyncFrom` /
 > `FetchRange` / `BackfillSearch` code in `internal/sync/`, `internal/gmail/`, `internal/imap/`,
-> `internal/planusage/gate.go` or `cmd/backfill.go`, read this file first. Any proposed change
+> or `cmd/backfill.go`, read this file first. Any proposed change
 > that would break a guard test or remove a contract must be raised as a question before touching code.
 
-**Module:** `internal/historybackfill/` + `internal/db/history_backfill.go` + `internal/daemon/history_backfill.go` + `internal/digest/backfill.go` + `internal/ideas/backfill_account.go` + `internal/jira/sync.go` (`FirstSyncFrom`) + `internal/sync/search_sync.go` (`BackfillSearch`, `FirstSyncFrom`) + `internal/gmail/sync.go` + `internal/imap/sync.go` (`FetchRange`, `FirstSyncFrom`) + `internal/planusage/gate.go` + `cmd/backfill.go` + Desktop `BackfillQueries` / `BackfillProgress`
+**Module:** `internal/historybackfill/` + `internal/db/history_backfill.go` + `internal/daemon/history_backfill.go` + `internal/digest/backfill.go` + `internal/ideas/backfill_account.go` + `internal/jira/sync.go` (`FirstSyncFrom`) + `internal/sync/search_sync.go` (`BackfillSearch`, `FirstSyncFrom`) + `internal/gmail/sync.go` + `internal/imap/sync.go` (`FetchRange`, `FirstSyncFrom`) + `cmd/backfill.go` + Desktop `BackfillQueries` / `BackfillProgress`
 **Last full audit:** 2026-10-15
 
 ## BACKFILL-01 — Only a source's first sync starts a backfill

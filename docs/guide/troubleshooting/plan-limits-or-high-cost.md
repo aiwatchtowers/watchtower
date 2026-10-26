@@ -25,7 +25,7 @@ Your Claude plan limit belongs to your Claude account, so Watchtower's backgroun
 
 ## How to check
 
-**Usage** shows fewer AI calls for the next day, and the 5-hour percentage grows slower. History backfill resumes by itself when no limit is projected to be hit.
+**Usage** shows fewer AI calls for the next day, and the 5-hour percentage grows slower. History backfill runs on at its own pace; the plan limit never pauses it.
 
 ## If it did not help
 
