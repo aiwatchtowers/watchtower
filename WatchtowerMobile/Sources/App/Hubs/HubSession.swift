@@ -163,6 +163,8 @@ final class HubSession {
     let deviceSettings: DeviceSettings
     /// This hub's work-alert push subscription; nil for the demo.
     let alertRegistrar: AlertSubscriptionRegistrar?
+    /// A shared-scope hub's local work alerts, posted after each fetch (ask #622); nil in any other scope.
+    @ObservationIgnored private let sharedAlerts: SharedAlertPoster?
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
@@ -385,6 +387,7 @@ final class HubSession {
         notifications: NotificationCenter = .default,
         subscriptionSaver: (any SubscriptionSaving)? = nil,
         alertCleaner: DeliveredAlertCleaner? = nil,
+        alertPosting: LocalAlertPosting? = nil,
         startsActive: Bool = true,
         uploadRetriesAllowed: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         replicaObservesSuspension: Bool = false,
@@ -472,17 +475,14 @@ final class HubSession {
         if !startsActive {
             recorder.setForeground(false)
         }
-        feed = RelayFeed(
-            transport: secure,
-            store: store,
-            outbox: outbox,
-            uploads: uploader,
-            onActionApplied: hydrateAfterEcho
-        )
+        feed = RelayFeed(transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrateAfterEcho)
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
             scope: databaseScope, transport: transport, saver: subscriptionSaver)
+        sharedAlerts = Self.makeSharedAlerts(
+            hubID: hubID, scope: databaseScope, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
+            posting: alertPosting)
         workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
@@ -508,6 +508,26 @@ final class HubSession {
         }
         let (cleaner, hubID) = (alertCleaner, hubID)
         Task { @MainActor in await cleaner.clear(hubID: hubID, snapshot: snapshot, fetchedAt: fetchedAt, now: Date()) }
+    }
+
+    /// The poster of a shared-scope hub's work alerts, over this phone's keys for the hub; nil in any other scope or
+    /// without keys. A private-scope hub never posts locally: its push subscription delivers.
+    private static func makeSharedAlerts(
+        hubID: String,
+        scope: CloudDatabaseScope?,
+        keys: PhoneKeys?,
+        store: ReplicaStore,
+        defaults: UserDefaults,
+        posting: LocalAlertPosting?
+    ) -> SharedAlertPoster? {
+        guard case .shared = scope, let keys else { return nil }
+        return SharedAlertPoster(hubID: hubID, store: store, keys: keys.store, defaults: defaults, posting: posting ?? .live)
+    }
+
+    /// Posts a shared-scope hub's new work alerts after a fetch or engine apply, in the background too (a silent
+    /// push is when they matter); the phone's "When work stops" switch decides.
+    private func postSharedAlerts() async {
+        await sharedAlerts?.postNew(enabled: deviceSettings.workAlerts)
     }
 
     /// The `device` settings (sealed like every other write: the hub drops a plaintext `device` record) and the
@@ -949,6 +969,7 @@ final class HubSession {
         lastSyncAt = fetchedAt
         lastFetchError = nil
         sweepDeliveredAlerts(fetchedAt: fetchedAt)
+        await postSharedAlerts()
         var routed = 0
         do {
             routed = try await feed.pollOnce()
@@ -989,6 +1010,7 @@ final class HubSession {
         let appliedAt = now()
         lastSyncAt = appliedAt
         sweepDeliveredAlerts(fetchedAt: appliedAt)
+        await postSharedAlerts()
         do {
             _ = try await feed.pollOnce()
         } catch {

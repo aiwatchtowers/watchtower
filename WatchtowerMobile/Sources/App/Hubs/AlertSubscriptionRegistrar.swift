@@ -34,7 +34,8 @@ struct CloudKitSubscriptionSaver: SubscriptionSaving {
 
 /// One hub's work-alert push subscription (D14): registered while the phone's "When work stops" switch is on, removed
 /// when it is off. A private-scope hub gets the `WatchtowerSignal` query subscription (saving by ID replaces, so a
-/// repeat is harmless); a shared-scope hub has none, so that phone gets no work alerts yet (ask #622).
+/// repeat is harmless); a shared-scope hub has none: the phone posts its alerts itself after each fetch
+/// (`SharedAlertPoster`, ask #622).
 @MainActor
 final class AlertSubscriptionRegistrar {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AlertSubscription")
@@ -95,7 +96,7 @@ final class AlertSubscriptionRegistrar {
 enum WorkAlertsCopy {
     static let title = "When work stops"
     static let footer = "Asks, approvals and finished or failed sessions, only while you're away from your Mac."
-    static let sharedFootnote = "Alerts don't reach a phone on another Apple ID yet."
+    static let sharedFootnote = "Alerts may be late on this phone."
 
     static func footer(anyShared: Bool) -> String {
         anyShared ? "\(footer) \(sharedFootnote)" : footer
