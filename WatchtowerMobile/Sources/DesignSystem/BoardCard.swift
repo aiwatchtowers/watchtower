@@ -7,7 +7,9 @@ import WatchtowerKit
 /// `PriorityMark`, medium gray, since the phone's orange is waiting only; a
 /// priority from a newer Mac draws no chip), the status
 /// chip in the status tone, a counter ("1/2"), a progress bar grey while
-/// partial and green when complete, and the live sessions.
+/// partial and green when complete, the live sessions, and an optional
+/// meta line (open asks in the waiting tone, session count, PR) below the
+/// chips.
 struct BoardCardModel: Equatable {
     let numberText: String
     let title: String
@@ -19,6 +21,8 @@ struct BoardCardModel: Equatable {
     let progressTone: PhoneTone
     /// "1 session", "2 sessions"; nil without a live session.
     let sessionsText: String?
+    /// Whole-item meta (asks, sessions, PR); empty draws no line.
+    let details: [MetaItem]
     let isDone: Bool
 
     /// `statusText` is the column's or status's label (the screen's
@@ -31,7 +35,8 @@ struct BoardCardModel: Equatable {
         priority: WorkbenchTargetPriority,
         counter: String? = nil,
         progress: Double? = nil,
-        liveSessions: Int = 0
+        liveSessions: Int = 0,
+        details: [MetaItem] = []
     ) {
         let style = TargetStatusStyle.of(status)
         numberText = "#\(number)"
@@ -48,12 +53,14 @@ struct BoardCardModel: Equatable {
         self.progress = progress.map { min(1, max(0, $0)) }
         progressTone = (progress ?? 0) >= 1 ? .green : .gray
         sessionsText = liveSessions > 0 ? "\(liveSessions) session\(liveSessions == 1 ? "" : "s")" : nil
+        self.details = details
         isDone = status == .done
     }
 
     var toneUses: [ToneUse] {
         [ToneUse(element: "board card \(numberText) status", tone: tone, role: .status)]
             + chips.map { ToneUse(element: "board card \(numberText) chip \($0.text)", tone: $0.tone, role: $0.dot ? .priority : .status) }
+            + details.map { ToneUse(element: "board card \(numberText) \($0.text)", tone: $0.tone, role: $0.role) }
             + (progress == nil ? [] : [ToneUse(element: "board card \(numberText) progress", tone: progressTone, role: .progress)])
     }
 }
@@ -99,6 +106,9 @@ struct BoardCard: View {
                         .font(TypeScale.meta)
                         .foregroundStyle(.secondary)
                     }
+                }
+                if !model.details.isEmpty {
+                    MetaLine(items: model.details).font(TypeScale.meta)
                 }
                 if let progress = model.progress {
                     ThinProgressBar(value: progress, tone: model.progressTone)

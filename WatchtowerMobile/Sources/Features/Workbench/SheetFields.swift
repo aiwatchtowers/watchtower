@@ -14,7 +14,7 @@ struct SheetField<Content: View>: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, Spacing.small)
             content
-                .font(.subheadline)
+                .font(TypeScale.rowTitle)
                 .padding(.horizontal, Spacing.cozy)
                 .padding(.vertical, Spacing.regular)
                 .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)

@@ -9,7 +9,10 @@ struct BoardView: View {
     let workbenchID: Int64
     let now: Date
     @State private var filter = BoardFilter.open
-    @State private var showDone = false
+    /// The owner flipped the Done fold from the filter's default (closed
+    /// under Open, open under Archive, where every archived target stays
+    /// visible); a filter change resets it.
+    @State private var doneFlipped = false
     @State private var sendError: String?
 
     var body: some View {
@@ -46,6 +49,13 @@ struct BoardView: View {
         }
     }
 
+    /// Closed under Open (mockup 5), open under Archive, unless flipped.
+    static func doneFoldOpen(flipped: Bool, filter: BoardFilter) -> Bool {
+        (filter == .archive) != flipped
+    }
+
+    private var showDone: Bool { Self.doneFoldOpen(flipped: doneFlipped, filter: filter) }
+
     private func writes(_ rows: [BoardWriteRow]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
@@ -62,7 +72,7 @@ struct BoardView: View {
     private func laneView(_ lane: BoardLane) -> some View {
         if lane.isDone {
             Button {
-                withAnimation(Motion.toggle) { showDone.toggle() }
+                withAnimation(Motion.toggle) { doneFlipped.toggle() }
             } label: {
                 HStack(spacing: Spacing.regular) {
                     Image(systemName: showDone ? "chevron.down" : "chevron.right")
@@ -116,7 +126,10 @@ struct BoardView: View {
     private func chipRow(_ board: BoardModel) -> some View {
         HStack(spacing: 0) {
             ForEach(BoardFilter.allCases) { chip in
-                FilterChip(title: chip.title, count: board.count(chip), isSelected: chip == filter) { filter = chip }
+                FilterChip(title: chip.title, count: board.count(chip), isSelected: chip == filter) {
+                    filter = chip
+                    doneFlipped = false
+                }
             }
         }
     }
@@ -132,7 +145,9 @@ struct BoardLane: Identifiable, Equatable {
 
     var id: String { (isDone ? "done:" : "lane:") + title }
 
-    /// Roots grouped by their status label in first-seen order; done roots
+    /// Roots grouped by their label, `column ?? status label` (the replica
+    /// carries no column order, so lanes follow first-seen board order and a
+    /// parent falls into its status lane, not its children's); done roots
     /// share one lane, placed last.
     static func lanes(_ roots: [BoardNode]) -> [Self] {
         var order: [String] = []

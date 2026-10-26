@@ -101,7 +101,9 @@ struct BoardRowModel: Equatable, Identifiable {
             number: target.id, title: target.text, status: target.status, statusText: statusText, priority: target.priority,
             counter: target.childrenCount > 0 ? "\(doneChildren)/\(target.childrenCount)" : nil,
             progress: progressValue,
-            liveSessions: sessions.filter { [.working, .running].contains($0.stateKind) }.count
+            liveSessions: sessions.filter { [.working, .running].contains($0.stateKind) }.count,
+            // The live-session dot is on the card already.
+            details: details.filter { $0.text != "Session working" }
         )
     }
 

@@ -264,18 +264,12 @@ struct BoardTargetDetailView: View {
     private func subTargets(_ detail: BoardTargetDetailModel) -> some View {
         if !detail.children.isEmpty || !detail.isReadOnly {
             SectionHeader(detail.children.isEmpty ? "Sub-targets" : detail.childrenHeader)
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
                 ForEach(detail.children) { child in
                     NavigationLink(value: BoardTargetRoute(id: child.id)) {
-                        FlatRow(
-                            icon: .symbol(child.statusGlyph, tone: child.statusTone), title: child.title, isDimmed: child.isDimmed,
-                            insets: EdgeInsets(top: Spacing.regular, leading: 0, bottom: Spacing.regular, trailing: 0)
-                        ) {
-                            if child.hasMetaLine { MetaLine(items: child.details) }
-                        }
+                        BoardCard(model: child.card, isDimmed: child.isDimmed)
                     }
                     .buttonStyle(.plain)
-                    CardRowDivider()
                 }
                 if !detail.isReadOnly {
                     Button {
@@ -285,9 +279,9 @@ struct BoardTargetDetailView: View {
                             .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)
                             .contentShape(Rectangle())
                     }
+                    .card(.plain, padding: EdgeInsets(top: Spacing.tight, leading: Spacing.medium, bottom: Spacing.tight, trailing: Spacing.medium))
                 }
             }
-            .card(.plain, padding: EdgeInsets(top: Spacing.tight, leading: Spacing.medium, bottom: Spacing.tight, trailing: Spacing.medium))
         }
     }
 
@@ -333,7 +327,7 @@ struct BoardTargetDetailView: View {
                     .accessibilityLabel("Reply to \(comment.author)")
                 }
             }
-            Text(comment.body).font(.subheadline)
+            Text(comment.body).font(TypeScale.rowTitle)
         }
     }
 
@@ -364,7 +358,7 @@ struct BoardTargetDetailView: View {
                 Button {
                     send(detail)
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+                    Image(systemName: "arrow.up.circle.fill").font(TypeScale.pageTitle)
                 }
                 .frame(minWidth: PhoneMetrics.minTouch, minHeight: PhoneMetrics.minTouch)
                 .disabled(!draft.canSend || detail.composerSending(replyRoot: replyTo?.rootID))
