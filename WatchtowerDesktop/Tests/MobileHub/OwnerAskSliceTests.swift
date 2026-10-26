@@ -159,6 +159,22 @@ final class OwnerAskSliceTests: XCTestCase {
         XCTAssertEqual(try line(), "No findings", "a new finish is decoded")
     }
 
+    /// A Not useful mark is a mark, not a comment: the phone's counts line
+    /// is about the findings and does not change with it.
+    func testSpecReviewLinesCountsNotUseful() throws {
+        let id = try insertAsk(kind: "review")
+        try dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, result, queued_at, finished_at)
+                VALUES (?, 'done', '{"blind_spots":[{"key":"c"}]}', '2026-10-25T10:00:00Z', '2026-10-25T10:05:00Z')
+                """, arguments: [id])
+            try SpecReviewQueries.setMark(db, askID: id, mark: .init(key: "c", state: .notUseful), now: Date())
+        }
+        let records = try dbPool.read { try OwnerAskSlice().records($0) }
+        let payload = try SliceJSON.objects(records).first { ($0["id"] as? NSNumber)?.int64Value == id }
+        XCTAssertEqual((payload?["spec_review"] as? [String: Any])?["line"] as? String, "1 blind spot")
+    }
+
     func testAnOpenReviewMatchesTheKitFixture() throws {
         let ask = try insertReview(snapshot: "# Plan\n\nStep 1.\n")
         let payload = try payload(ask)

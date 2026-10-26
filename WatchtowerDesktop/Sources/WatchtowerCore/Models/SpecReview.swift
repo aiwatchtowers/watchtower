@@ -319,6 +319,8 @@ package struct SpecReviewRow: FetchableRecord, Equatable, Sendable {
 
 package enum SpecReviewMarkState: String, Sendable {
     case ok, comment, viewed
+    /// The finding is noise. For the coach only: never sent to the author.
+    case notUseful = "not_useful"
 }
 
 /// The owner's mark on a finding (`ch:<n>` keys carry `viewed` for chapters).

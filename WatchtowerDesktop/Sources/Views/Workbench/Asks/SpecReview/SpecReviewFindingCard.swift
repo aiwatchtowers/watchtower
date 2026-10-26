@@ -86,7 +86,7 @@ struct SpecReviewQuote: View {
     }
 }
 
-/// The owner's mark on one finding: **Fine as is** and **Comment** while
+/// The owner's mark on one finding: **Fine as is**, **Comment** and **Not useful** while
 /// unmarked; the mark with Undo, or the comment with Edit and Remove, once
 /// marked. A comment is written in place (⌘↩ saves, Esc cancels).
 struct SpecReviewMarkControls: View {
@@ -109,6 +109,14 @@ struct SpecReviewMarkControls: View {
                         Spacer()
                         Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                     }
+                case .notUseful:
+                    HStack(spacing: Spacing.regular) {
+                        Label("Not useful", systemImage: "hand.thumbsdown.fill")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.secondary)
+                        Spacer()
+                        Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
+                    }
                 case .comment:
                     VStack(alignment: .leading, spacing: Spacing.small) {
                         Label("Your comment", systemImage: "text.bubble.fill")
@@ -125,6 +133,7 @@ struct SpecReviewMarkControls: View {
                     HStack(spacing: Spacing.regular) {
                         Button("Fine as is") { Task { await model.mark(key, .ok) } }.buttonStyle(.kitSecondary)
                         Button("Comment") { startEditing() }.buttonStyle(.kitSecondary)
+                        Button("Not useful") { Task { await model.mark(key, .notUseful) } }.buttonStyle(.kitSecondary)
                     }
                 }
             }
