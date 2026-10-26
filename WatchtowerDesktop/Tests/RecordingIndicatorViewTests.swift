@@ -252,7 +252,8 @@ final class RecordingIndicatorViewTests: XCTestCase {
         // Dropped at (284, 244): centre (434, 264) is the top-leading quadrant.
         XCTAssertEqual(placed.corner, .topLeading)
         XCTAssertEqual(placed.offset, CGSize(width: 284 - pad, height: 244 - pad))
-        XCTAssertFalse(placed.isDocked)
+        XCTAssertEqual(placed.occupiedHeight(stack: stack, window: window), 0,
+                       "a stack moved off its edge pushes no neighbour")
     }
 
     /// A release within `dockDistance` of a corner's spot docks on that
@@ -261,7 +262,6 @@ final class RecordingIndicatorViewTests: XCTestCase {
         let moved = RecordingIndicatorPlacement(corner: .bottomTrailing, offset: CGSize(width: -200, height: 0))
         let home = moved.released(translation: CGSize(width: 190, height: 10), stack: stack, window: window)
         XCTAssertEqual(home, RecordingIndicatorPlacement(corner: .bottomTrailing, offset: .zero))
-        XCTAssertTrue(home.isDocked)
         let alongEdge = RecordingIndicatorPlacement(corner: .bottomTrailing, offset: .zero)
             .released(translation: CGSize(width: -100, height: -10), stack: stack, window: window)
         XCTAssertEqual(alongEdge.offset, CGSize(width: -100, height: 0))
@@ -281,6 +281,35 @@ final class RecordingIndicatorViewTests: XCTestCase {
         XCTAssertEqual(outward.clampedOffset(stack: stack, window: window), .zero)
         // A stack wider than the window has no room to move.
         XCTAssertEqual(far.clampedOffset(stack: CGSize(width: 2000, height: 900), window: window), .zero)
+    }
+
+    /// The neighbours on the stack's edge step aside while it is drawn flush
+    /// with that edge — docked, slid along it, or clamped back onto it by a
+    /// smaller window — and not once it is moved off the edge.
+    func testNeighboursClearTheStackWhileItSitsOnItsEdge() {
+        let occupied = RecordingIndicatorInset.occupiedHeight(stackHeight: stack.height)
+        let slid = RecordingIndicatorPlacement(corner: .bottomTrailing, offset: CGSize(width: -100, height: 0))
+        XCTAssertEqual(slid.occupiedHeight(stack: stack, window: window), occupied)
+        let topSlid = RecordingIndicatorPlacement(corner: .topLeading, offset: CGSize(width: 300, height: 0))
+        XCTAssertEqual(topSlid.occupiedHeight(stack: stack, window: window), occupied)
+        let raised = RecordingIndicatorPlacement(corner: .bottomTrailing, offset: CGSize(width: 0, height: -100))
+        XCTAssertEqual(raised.occupiedHeight(stack: stack, window: window), 0)
+        // Stored off the edge, but a window with no vertical room draws it flush.
+        let short = CGSize(width: 1000, height: stack.height + 2 * pad)
+        XCTAssertEqual(raised.occupiedHeight(stack: stack, window: short), occupied)
+    }
+
+    /// A drag starts from where the stack is drawn, not from a stored offset
+    /// a larger window allowed: no jump at the start of the drag.
+    func testReleaseStartsFromTheClampedOffset() {
+        let far = RecordingIndicatorPlacement(corner: .topLeading, offset: CGSize(width: 900, height: 900))
+        let placed = far.released(translation: CGSize(width: -10, height: -10), stack: stack, window: window)
+        // Clamped start (668, 528) minus 10: centre (824, 554) is bottom-trailing,
+        // 10 pt short of that corner's spot on each axis, so it docks there.
+        XCTAssertEqual(placed, RecordingIndicatorPlacement(corner: .bottomTrailing, offset: .zero))
+        let mid = RecordingIndicatorPlacement(corner: .topLeading, offset: CGSize(width: 900, height: 100))
+            .released(translation: CGSize(width: -200, height: 0), stack: stack, window: window)
+        XCTAssertEqual(mid, RecordingIndicatorPlacement(corner: .topTrailing, offset: CGSize(width: -200, height: 100)))
     }
 
     /// Before the window is measured nothing moves or clamps.

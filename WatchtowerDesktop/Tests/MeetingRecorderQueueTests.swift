@@ -1532,6 +1532,8 @@ private final class GatedFailingRecorder: AudioRecording, @unchecked Sendable {
         throw AudioRecordingError.microphonePermissionDenied
     }
 
+    func setMicMuted(_ muted: Bool) {}
+
     func stop() async throws -> RecordingResult {
         throw AudioRecordingError.deviceSetupFailed("never started")
     }

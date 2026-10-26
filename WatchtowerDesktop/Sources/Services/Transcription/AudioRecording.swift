@@ -34,11 +34,9 @@ protocol AudioRecording: AnyObject {
     var liveLevels: AsyncStream<CaptureLevels> { get }
     /// Keeps the owner's microphone out of the recording while `muted`; the
     /// call audio is still captured. Starts unmuted on every `start`.
+    /// No default: a recorder that cannot mute must say so here rather than
+    /// let the indicator claim a mute it never applied.
     func setMicMuted(_ muted: Bool)
-}
-
-extension AudioRecording {
-    func setMicMuted(_ muted: Bool) {}
 }
 
 enum AudioRecordingError: LocalizedError {

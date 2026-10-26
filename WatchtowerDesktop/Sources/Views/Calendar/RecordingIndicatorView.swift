@@ -58,8 +58,8 @@ struct RecordingIndicatorView: View {
     @AppStorage(RecordingIndicatorPlacement.offsetYKey) private var offsetY = 0.0
     /// The window's content size, which the stack is kept inside.
     var windowSize: CGSize = .zero
-    /// Receives the stack's full extent from its corner's edge while it is
-    /// docked there, 0 once the stack is empty or moved away.
+    /// Receives the stack's full extent from its corner's edge while it sits
+    /// on that edge, 0 once the stack is empty or moved off it.
     var onOccupiedHeightChange: (CGFloat) -> Void = { _ in }
     /// The stack's offset while it is being dragged. A gesture state, so it
     /// returns to zero however the drag ends — released, or cancelled when
@@ -72,7 +72,7 @@ struct RecordingIndicatorView: View {
     }
 
     private var occupiedHeight: CGFloat {
-        placement.isDocked ? RecordingIndicatorInset.occupiedHeight(stackHeight: stackSize.height) : 0
+        placement.occupiedHeight(stack: stackSize, window: windowSize)
     }
 
     /// Whether the active capture has a live transcript to offer: the engine

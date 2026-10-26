@@ -23,7 +23,7 @@ done_when: meeting.recorded
 
 **Record** captures the microphone and the system audio (the other participants). The first time, macOS asks for two permissions: microphone, and system audio recording. While you record, a pill at the bottom right of the window shows the elapsed time and **Stop**, whatever tab you are on. **Stop** is white on red, readable whether or not Watchtower is the active app.
 
-The pill floats over the window. Drag it by its background anywhere in the window: it stays where you drop it, across launches, and snaps back into a corner when you drop it close to one. The live-transcript panel opens from it toward the middle of the window. Nothing on the screen moves to make room for it, so if it covers something, drag it aside.
+The pill floats over the window. Drag it by its background anywhere in the window: it stays where you drop it, across launches, and snaps flush to an edge or into a corner when you drop it close to one. The live-transcript panel opens from it toward the middle of the window. Nothing on the screen moves to make room for it, so if it covers something, drag it aside.
 
 Click the microphone icon on the pill to mute yourself in the recording. While it shows a red crossed-out microphone, your voice is not recorded and its meter stays flat; the other participants are still recorded. This mutes only the recording, not you in the call itself. Every recording starts unmuted.
 

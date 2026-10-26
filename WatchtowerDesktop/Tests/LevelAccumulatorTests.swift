@@ -117,6 +117,9 @@ extension MeetingRecorderCenterTests {
 
         await center.stopAndProcess(config: singleWindowConfig())
         XCTAssertFalse(center.micMuted, "the mute ends with the capture")
+        center.setMicMuted(true)
+        XCTAssertFalse(center.micMuted, "nothing to mute once the capture is over")
+        XCTAssertEqual(recorder.mutedCalls, [true, false, true])
     }
 
     // The live warning: after the call was heard, two minutes of silence on

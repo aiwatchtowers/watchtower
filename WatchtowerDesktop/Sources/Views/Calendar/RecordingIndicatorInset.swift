@@ -31,10 +31,14 @@ struct RecordingIndicatorPlacement: Equatable {
     var corner: RecordingIndicatorCorner
     var offset: CGSize
 
-    /// Docked in its corner: only then do the neighbours sharing the edge
-    /// (`extractPillLift`, `bannerDrop`) step aside — a stack the owner
-    /// moved elsewhere pushes nothing.
-    var isDocked: Bool { offset == .zero }
+    /// The stack's extent from its corner's edge that the neighbours on that
+    /// edge (`extractPillLift`, `bannerDrop`) must clear: the whole stack
+    /// while it is drawn flush with the edge — slid along it or not — and 0
+    /// once the owner moved it off the edge.
+    func occupiedHeight(stack: CGSize, window: CGSize) -> CGFloat {
+        clampedOffset(stack: stack, window: window).height == 0
+            ? RecordingIndicatorInset.occupiedHeight(stackHeight: stack.height) : 0
+    }
 
     /// The offset kept inside `window` for a stack of `stack` size: the
     /// stack moves only toward the window's interior from its corner, and

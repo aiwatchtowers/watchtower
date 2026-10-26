@@ -4,7 +4,7 @@ import SwiftUI
 /// (#397): the pills sit where the owner left them, the content keeps its
 /// full size, and the two neighbours that share the window's edges — the
 /// extract pill (bottom-trailing) and the meeting banner (top) — step aside
-/// while the pills are docked in their corner. Per window, so each window
+/// while the pills sit on their edge. Per window, so each window
 /// measures itself, and a live resize re-evaluates this view rather than
 /// the whole App body.
 struct RecordingIndicatorHost<Content: View>: View {

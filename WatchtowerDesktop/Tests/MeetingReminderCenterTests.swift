@@ -22,6 +22,8 @@ private final class ReminderFakeRecorder: AudioRecording, @unchecked Sendable {
 
     func start(to url: URL) async throws {}
 
+    func setMicMuted(_ muted: Bool) {}
+
     func stop() async throws -> RecordingResult {
         liveContinuation.finish()
         throw AudioRecordingError.deviceSetupFailed("ReminderFakeRecorder never stops")
