@@ -547,7 +547,7 @@ Spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md`, con
 
 ### Design layer (design pass)
 
-`Sources/DesignSystem/` names the values the Mac uses, so the phone's screens stop inventing their own: `PhoneTone` (moved here), `Spacing`/`Radius`/`RowInsets`, `TypeScale`, the target status glyph and tone (`TargetStatusStyle`, the Mac's model table), `PriorityDot` (high red, low blue, medium none), `card(_:)`, `Pill`/`CountBadge`/`FilterChip`, `FlatRow`/`RowDivider`/`SectionHeader`, `BottomActionBar`/`ProminentActionStyle`/`RecordButton`, and `SessionDot`/`ThinProgressBar`/`StepRow`/`FlowRow`. There is no custom colour or font: semantic SwiftUI colours, Dynamic Type and SF Symbols, accent system blue. Spec: `docs/superpowers/specs/2026-10-11-mobile-design-pass-design.md` §2.
+`Sources/DesignSystem/` names the values the Mac uses, so the phone's screens stop inventing their own: `PhoneTone` (moved here), `Spacing`/`Radius`/`RowInsets`, `TypeScale`, the target status glyph and tone (`TargetStatusStyle`, the Mac's model table), `PriorityMark` (high red, low blue, medium none), `card(_:)`, `Pill`/`CountBadge`/`FilterChip`, `FlatRow`/`RowDivider`/`SectionHeader`, `BottomActionBar`/`ProminentActionStyle`/`RecordButton`, and `SessionDot`/`ThinProgressBar`/`StepRow`/`FlowRow`. There is no custom colour or font: semantic SwiftUI colours, Dynamic Type and SF Symbols, accent system blue. Spec: `docs/superpowers/specs/2026-10-11-mobile-design-pass-design.md` §2.
 
 ### App shell (A11)
 

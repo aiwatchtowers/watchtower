@@ -22,7 +22,8 @@ struct LinkedDevice: Equatable, Sendable {
 /// - "Answer permission prompts from this phone" (`permissions_requested`,
 ///   default off, #517): its own request, never implied by typing,
 /// - "When work stops" alerts (`workAlerts`, default on; phone-wide, kept in the
-///   app group's defaults, which the notification extension also reads).
+///   app group's defaults). The switch works by saving or deleting each hub's
+///   push subscription; the notification extension never reads it.
 ///
 /// The Workbench choices are requests to the Mac: each change rewrites
 /// the phone's `device` record while it is linked. Before linking, the

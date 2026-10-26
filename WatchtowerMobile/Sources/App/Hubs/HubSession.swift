@@ -509,8 +509,8 @@ final class HubSession {
     }
 
     /// The `device` settings (sealed like every other write: the hub drops a plaintext `device` record) and the
-    /// hub's alert subscription. The alerts switch is the phone's, kept in the app group's defaults the
-    /// notification extension also reads.
+    /// hub's alert subscription. The alerts switch is the phone's, kept in the app group's defaults; it works by
+    /// saving or deleting the subscription (the notification extension never reads it).
     private static func makeDeviceSettings(
         secure: SecureTransport,
         defaults: UserDefaults,

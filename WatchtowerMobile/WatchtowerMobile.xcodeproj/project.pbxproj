@@ -20,6 +20,7 @@
 		0A54345DFDE0F6C63CD51F01 /* AppRootRelinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 053CC4A750066E97EA5E2292 /* AppRootRelinkTests.swift */; };
 		0ADDDA35A16D26B70C26EB04 /* SessionReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD7E1A1B3D8C6356582CA3F /* SessionReportView.swift */; };
 		0AFE1BA59E2563FDE53F7FB9 /* EventRecordingStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6958689BAB5EA3759F3BF525 /* EventRecordingStatus.swift */; };
+		0C39756A17F727F6090C782D /* PriorityMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2074A6BD5934DD6A23F717F4 /* PriorityMark.swift */; };
 		0C648FDCF07EA4907AAA801C /* SessionChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B86AC0DDCAB04B7FE9713D /* SessionChatView.swift */; };
 		0E146E046F62B4933A70AD59 /* PermissionAnswerWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF08EF4BD6F8B5CD6BA56C66 /* PermissionAnswerWiringTests.swift */; };
 		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
@@ -56,7 +57,6 @@
 		367439AFE0CF39AEC536AE91 /* AskText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D4A928B7D44789719D76D58 /* AskText.swift */; };
 		3797D2F34049E3A69D4E55C2 /* SendGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A9A8CE46252B64C968083D /* SendGuard.swift */; };
 		3801F0A3B71A6F6A2F3A8C49 /* MacsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C16B55E71B360AC75DB5207 /* MacsModelTests.swift */; };
-		38E9A174BD8B8379E7A3E617 /* PriorityDot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94430172C5E3FCFC507CA7A6 /* PriorityDot.swift */; };
 		390A2DF54CDB7734D895E9F2 /* StartSheetWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85CF6FB6B18EC8CAC1C2671C /* StartSheetWiringTests.swift */; };
 		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
 		39AEE33DBF4A276999156B19 /* AskFormModel+Status.swift in Sources */ = {isa = PBXBuildFile; fileRef = 297FDFC3CED17D5BE064E1CC /* AskFormModel+Status.swift */; };
@@ -280,6 +280,7 @@
 		1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardTargetDetailView.swift; sourceTree = "<group>"; };
 		1EE3DBFF44464842CBDA8890 /* HubListModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubListModel.swift; sourceTree = "<group>"; };
 		20344BC6FD6EAD7CEF59003C /* PhoneKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneKeychain.swift; sourceTree = "<group>"; };
+		2074A6BD5934DD6A23F717F4 /* PriorityMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PriorityMark.swift; sourceTree = "<group>"; };
 		213E158A5D0210D86957A491 /* SessionRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRowTests.swift; sourceTree = "<group>"; };
 		21796AC66F21FE6C6873DF84 /* BatteryDiagnosticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryDiagnosticsTests.swift; sourceTree = "<group>"; };
 		2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Calendar.swift"; sourceTree = "<group>"; };
@@ -374,7 +375,6 @@
 		8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderTests.swift; sourceTree = "<group>"; };
 		8F901DED70633FBEDDF22415 /* ChatBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatBubble.swift; sourceTree = "<group>"; };
 		905A0FD1465978EE86B75D1C /* RecordingHold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingHold.swift; sourceTree = "<group>"; };
-		94430172C5E3FCFC507CA7A6 /* PriorityDot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PriorityDot.swift; sourceTree = "<group>"; };
 		9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsListView.swift; sourceTree = "<group>"; };
 		966D1C67FDCDE327204EEB07 /* AskAnswerer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskAnswerer.swift; sourceTree = "<group>"; };
 		969182E81C510D6382CFF39A /* DemoSeed+E2E.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+E2E.swift"; sourceTree = "<group>"; };
@@ -741,7 +741,7 @@
 				5B85A2B36DAACBD5D32F41F6 /* Parts.swift */,
 				972F58018C997D775DD0EAA1 /* PhoneTone.swift */,
 				8273B56D197DE1234DF9D87B /* Pill.swift */,
-				94430172C5E3FCFC507CA7A6 /* PriorityDot.swift */,
+				2074A6BD5934DD6A23F717F4 /* PriorityMark.swift */,
 				AE2448E3D10E3EFE8D35624C /* SettingsCard.swift */,
 				4370633AF1D0F0F0B5E833F9 /* StateLine.swift */,
 				0D403CB3F9A7FA2CB7C28C34 /* TargetStatusStyle.swift */,
@@ -1140,7 +1140,7 @@
 				D702907EE7D2F154351AF83B /* PhoneRecordingsModel.swift in Sources */,
 				9EB2B0C11F51971D49AF4FE1 /* PhoneTone.swift in Sources */,
 				8EE51E7A85C5FE1C582B4761 /* Pill.swift in Sources */,
-				38E9A174BD8B8379E7A3E617 /* PriorityDot.swift in Sources */,
+				0C39756A17F727F6090C782D /* PriorityMark.swift in Sources */,
 				2F47C10DBB0A5DCFEB6B5474 /* QuestionAskView.swift in Sources */,
 				F7B8E24A6579D709545DD78A /* RecapModel.swift in Sources */,
 				2845132B2A7150A900A1A0F2 /* RecapView.swift in Sources */,
