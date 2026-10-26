@@ -1,0 +1,104 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/agentlogdb"
+	"watchtower/internal/coach"
+	"watchtower/internal/db"
+	"watchtower/internal/digest"
+)
+
+type coachCalls struct{ judge, propose int }
+
+func stubCoach(t *testing.T, proposeErr error) *coachCalls {
+	t.Helper()
+	c := &coachCalls{}
+	oj, op := runCoachJudge, runCoachProposer
+	runCoachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) { c.judge++; return 0, 0, nil }
+	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
+		c.propose++
+		return 1, &digest.Usage{InputTokens: 5}, proposeErr
+	}
+	t.Cleanup(func() { runCoachJudge, runCoachProposer = oj, op })
+	return c
+}
+
+// coachDaemon is a daemon with an open agentlog.db, as in production.
+func coachDaemon(t *testing.T) (*Daemon, *db.DB) {
+	d, database, _ := newBackfillDaemon(t)
+	al, err := agentlogdb.Open(t.TempDir() + "/agentlog.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	d.SetAgentLogDB(al, "")
+	return d, database
+}
+
+func TestPhaseCoach_WeeklyStamp(t *testing.T) {
+	d, database := coachDaemon(t)
+	c := stubCoach(t, nil)
+
+	d.phaseCoach(context.Background())
+	d.phaseCoach(context.Background())
+	assert.Equal(t, coachCalls{1, 1}, *c)
+	assert.Equal(t, []string{"coach"}, pipelineRunNames(t, database))
+	assert.FileExists(t, d.lastCoachPath())
+
+	d.lastCoach = time.Now().Add(-6 * 24 * time.Hour)
+	d.phaseCoach(context.Background())
+	assert.Equal(t, 1, c.propose, "six days is too early")
+
+	d.lastCoach = time.Now().Add(-8 * 24 * time.Hour)
+	d.phaseCoach(context.Background())
+	assert.Equal(t, coachCalls{2, 2}, *c)
+}
+
+func TestPhaseCoach_NearLimitJudgesOnly(t *testing.T) {
+	d, database := coachDaemon(t)
+	c := stubCoach(t, nil)
+	now := time.Now()
+	require.NoError(t, database.UpsertPlanUsageStatus(db.PlanUsageStatus{
+		State: "ok", Plan: "max", FetchedAt: &now, UpdatedAt: now, BreakdownJSON: "[]",
+		LimitsJSON: `[{"key":"session","projection":{"state":"will_hit"}}]`,
+	}))
+
+	d.phaseCoach(context.Background())
+	assert.Equal(t, coachCalls{1, 0}, *c)
+	assert.FileExists(t, d.lastCoachPath())
+}
+
+func TestPhaseCoach_FailureStillStamps(t *testing.T) {
+	d, _ := coachDaemon(t)
+	c := stubCoach(t, errors.New("boom"))
+
+	d.phaseCoach(context.Background())
+	assert.False(t, d.lastCoach.IsZero())
+	assert.FileExists(t, d.lastCoachPath())
+	d.phaseCoach(context.Background())
+	assert.Equal(t, 1, c.propose, "a failed run waits for the next week")
+}
+
+func TestPhaseCoach_NoCatchUp(t *testing.T) {
+	d, _ := coachDaemon(t)
+	c := stubCoach(t, nil)
+	d.lastCoach = time.Now().AddDate(0, 0, -30)
+
+	d.phaseCoach(context.Background())
+	d.phaseCoach(context.Background())
+	assert.Equal(t, coachCalls{1, 1}, *c, "a month-old stamp gives exactly one run")
+}
+
+func TestPhaseCoach_NoAgentLogSkipsJudge(t *testing.T) {
+	d, _, buf := newBackfillDaemon(t)
+	c := stubCoach(t, nil)
+
+	d.phaseCoach(context.Background())
+	assert.Equal(t, coachCalls{0, 1}, *c)
+	assert.Contains(t, buf.String(), "judging skipped")
+}
