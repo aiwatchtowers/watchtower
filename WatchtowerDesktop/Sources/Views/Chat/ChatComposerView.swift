@@ -8,6 +8,7 @@ struct ChatComposerView: View {
     @Bindable var chatVM: ChatViewModel
     let modelSuggestions: [String]
     let maxHeight: CGFloat
+    var placeholder = "Ask about your work…"
     /// The caret at the time of the last edit (UTF-16 offset) — needed to
     /// resolve the active `@`/`/` trigger on a mouse-click pick, which carries
     /// no caret of its own (spec §6.2).
@@ -42,7 +43,7 @@ struct ChatComposerView: View {
                 onSend: { Task { await chatVM.sendDraft() } },
                 // Nothing to stop while the turn's rows are being written.
                 onStop: chatVM.canStop ? { chatVM.stop() } : nil,
-                placeholder: "Ask about your work…",
+                placeholder: placeholder,
                 dictationTargetID: "chat.workspace",
                 maxHeight: maxHeight,
                 onEscape: { chatVM.stop() },

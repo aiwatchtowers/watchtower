@@ -7,7 +7,7 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 - **All synced data and AI results.** The database lives in `~/.local/share/watchtower/<workspace>/watchtower.db`, next to Memory's notes and the search index. Meeting recordings are in `~/Library/Application Support/Watchtower/recordings`.
 - **Sign-ins.** OAuth tokens for Slack, Google, Jira and Linear are stored as separate files in that folder, readable only by your user. Quick Connection secrets are the same.
 - **Meeting transcription.** Audio is captured and transcribed on the Mac. The speech models are downloaded once, on first use, then run locally. Recording audio is deleted after 30 days (**Settings → Meetings → Delete audio after N days**); transcript text is kept.
-- **Search.** The Knowledge search index is local; only its image descriptions and link summaries use AI (below).
+- **Knowledge search.** The index is local; only its image descriptions and link summaries use AI (below).
 - **Mechanical features.** Attention detection and Claude plan limits make no AI calls.
 
 Removing an account deletes its sign-in file. With **Delete an account's data when its access is revoked** on, a revoked account's synced data is deleted after a 72-hour notice, and so is a source's that Watchtower has not reached for 30 days: see [Revoked access deletes an account's data](revoked-access.md).
@@ -57,8 +57,8 @@ Every AI feature sends the relevant text to the provider you chose in [AI provid
 - **Mail and Jira digests:** the text of new mail and changed issues and comments.
 - **Briefing, day plan, Catch Up:** your calendar, targets, digests and attention items.
 - **Meeting recaps and the meeting chat:** the transcript.
-- **AI Chat:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider.
-- **Asking with ⌘/:** the same as AI Chat, plus a short note on the tab you are on, its empty-state status line and the selected item's title. The note is sent with that message only and is not stored.
+- **Chats:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider.
+- **Asking with ⌘/:** the same as Chats, plus a short note on the tab you are on, its empty-state status line and the selected item's title. The note is sent with that message only and is not stored.
 - **Automations:** a confirmed automation sends data to the provider on its own schedule whenever its recipe calls `llm()` or `agent()`.
 - **Knowledge search:** new images (strong model) and the text of public pages that synced Slack or Confluence links point to (light model). See [Images and links](../features/search-and-knowledge.md#images-and-links).
 - **Workbench sessions:** run by Claude Code or Codex in your folder, so they go to that agent's provider. Anything that agent reads or writes is its provider's concern.
@@ -112,7 +112,7 @@ kind: feature
 since: 0.25.0
 -->
 
-An assistant can read your synced data at most 300 times, or 5,000 rows, in one session. One read returns at most 256 KB, and a list at most 200 rows. The limit holds for AI Chat, workbench agents, automation runs and any app connected to `watchtower mcp`. Past it the read is refused with **this session's read limit is reached (300 calls / 5000 rows); the owner can start a new session**; a new chat, session or run starts a fresh count. A chat built into a screen counts per message, and each `watchtower tools call` on its own. Your own board, asks and skills do not count.
+An assistant can read your synced data at most 300 times, or 5,000 rows, in one session. One read returns at most 256 KB, and a list at most 200 rows. The limit holds for the main chat, workbench agents, automation runs and any app connected to `watchtower mcp`. Past it the read is refused with **this session's read limit is reached (300 calls / 5000 rows); the owner can start a new session**; a new chat, session or run starts a fresh count. A chat built into a screen counts per message, and each `watchtower tools call` on its own. Your own board, asks and skills do not count.
 
 Every such read leaves one line in the Mac's system log: the tool, the session and the row count, never the text. Your company's security tools can collect it; to look yourself, run `log show --last 1h --predicate 'subsystem == "com.watchtower.audit"'`. The system keeps it a few days, and Watchtower sends it nowhere. A `watchtower` command an agent runs in a workbench terminal or an automation that prints your data (`digest`, `inbox`, `kb search`, …) leaves a line too, without a limit.
 

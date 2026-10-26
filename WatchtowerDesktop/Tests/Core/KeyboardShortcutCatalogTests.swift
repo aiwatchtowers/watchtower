@@ -26,7 +26,7 @@ final class KeyboardShortcutCatalogTests: XCTestCase {
     /// The areas the owner named (ask #194) are there.
     func testTheNamedAreasAreListed() {
         let titles = Set(KeyboardShortcutCatalog.areas.map(\.title))
-        for title in ["Global", "AI Chat", "Targets", "Workbench", "Files Editor"] {
+        for title in ["Global", "Chats", "Targets", "Workbench", "Files Editor"] {
             XCTAssertTrue(titles.contains(title), title)
         }
     }

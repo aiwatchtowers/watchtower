@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 
-/// Every Settings → Connections service is either a policy source (#608,
+/// Every Connections tab service is either a policy source (#608,
 /// `AllowedSources`) or named here as not one, so a new service is never
 /// silently unchecked.
 final class ConnectionServicePolicyTests: XCTestCase {

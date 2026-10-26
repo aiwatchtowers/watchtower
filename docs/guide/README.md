@@ -58,7 +58,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Digests](features/digests.md) — per-channel, daily, mail, Jira and meeting summaries in one feed, with a journal of decisions
 - [People](features/people.md) — a card per colleague with style, role and tips, plus a team summary
 - [Statistics](features/statistics.md) — channel and user activity, and the mute switch that decides what the AI reads
-- [Search and knowledge](features/search-and-knowledge.md) — find a Slack message, or let the assistant search everything you have synced
+- [Search and knowledge](features/search-and-knowledge.md) — let the assistant search everything you have synced
 
 ## Workbench
 
@@ -81,9 +81,10 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 ## Automations & AI
 
-- [AI Chat](features/ai-chat.md) — ask the assistant about your work or about Watchtower, from its tab or with ⌘/ over any tab; attach files, organize chats into projects
-- [Artifacts in the AI Chat](features/ai-chat-artifacts.md) — documents, drafts, tables and HTML pages the assistant writes: edit, comment, export, present
-- [Writing and changing things from the AI Chat](features/ai-chat-actions.md) — proposals you approve: tasks, Jira, Slack messages, Confluence edits, automation drafts
+- [Chats](features/ai-chat.md) — ask the assistant about your work or about Watchtower, from its tab or with ⌘/ over any tab; attach files, organize chats into projects
+- [Chat projects](features/ai-chat-projects.md) — shared instructions, files and pinned sources for a set of chats
+- [Artifacts in Chats](features/ai-chat-artifacts.md) — documents, drafts, tables and HTML pages the assistant writes: edit, comment, export, present
+- [Writing and changing things from Chats](features/ai-chat-actions.md) — proposals you approve: tasks, Jira, Slack messages, Confluence edits, automation drafts
 - [Quick Connections](features/quick-connections.md) — plug other tools' MCP servers into the chat as read-only sources
 - [Memory](features/memory.md) — the assistant's long-term notebook of people, projects and beliefs, in plain files you can edit
 - [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants
@@ -103,6 +104,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [iPhone](features/iphone.md) — answer asks, edit the Workbench board, start sessions and record meetings from your phone, through your own iCloud
 - [iPhone: permission prompts and interrupts](features/iphone-agent-prompts.md) — allow or deny a Claude Code permission prompt and interrupt a working agent from your phone
+- [iPhone: the workchat](features/iphone-workbench.md) — follow a session's chat, answer what waits on you and write to the agent from your phone, even while it works
+- [iPhone: work alerts](features/iphone-alerts.md) — alerts when work stops while you are away from your Mac; tap one to open its ask or session
 - [Menu bar and updates](features/menu-bar-and-updates.md) — what the menu shows, what closing and quitting do, and how updates arrive
 - [Claude Code integration](features/claude-code-integration.md) — let your coding agent query Watchtower through a read-only MCP server and three skills
 

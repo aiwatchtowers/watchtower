@@ -153,14 +153,39 @@ final class ChatProjectQueriesTests: XCTestCase {
         }
     }
 
+    /// A chat with a message, as the panel lists it.
+    @discardableResult
+    private func insertAnswered(_ d: Database, title: String, projectID: Int64?) throws -> Int64 {
+        let id = try insertConversation(d, title: title, projectID: projectID)
+        let msg = try TestDatabase.insertChatMessage(d, conversationID: id, role: "user", text: title)
+        try d.execute(sql: "UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?", arguments: [msg, id])
+        return id
+    }
+
     func testConversationsListsOnlyThisProjectsUnarchivedChats() throws {
         try db.write { d in
             let p = try ChatProjectQueries.create(d, name: "P")
-            try insertConversation(d, title: "in", projectID: p.id)
-            try insertConversation(d, title: "outside", projectID: nil)
-            let archived = try insertConversation(d, title: "old", projectID: p.id)
+            try insertAnswered(d, title: "in", projectID: p.id)
+            try insertAnswered(d, title: "outside", projectID: nil)
+            let archived = try insertAnswered(d, title: "old", projectID: p.id)
             try d.execute(sql: "UPDATE chat_conversations SET archived_at = 5 WHERE id = ?", arguments: [archived])
             XCTAssertEqual(try ChatProjectQueries.conversations(d, projectID: p.id).map(\.title), ["in"])
+        }
+    }
+
+    /// The panel's rule: a chat with neither a message nor a file (the
+    /// page's unsent draft) is not listed; one with only a file is.
+    func testConversationsLeavesOutEmptyDrafts() throws {
+        try db.write { d in
+            let p = try ChatProjectQueries.create(d, name: "P")
+            try insertAnswered(d, title: "asked", projectID: p.id)
+            try insertConversation(d, title: "draft", projectID: p.id)
+            let withFile = try insertConversation(d, title: "file", projectID: p.id)
+            try d.execute(sql: """
+                INSERT INTO chat_attachments (conversation_id, name, mime, size, path, sha256, created_at)
+                VALUES (?, 'a.pdf', 'application/pdf', 1, '/tmp/a.pdf', 'h', 1)
+                """, arguments: [withFile])
+            XCTAssertEqual(Set(try ChatProjectQueries.conversations(d, projectID: p.id).map(\.title)), ["asked", "file"])
         }
     }
 

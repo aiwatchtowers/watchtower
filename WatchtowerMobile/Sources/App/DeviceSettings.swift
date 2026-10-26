@@ -21,7 +21,9 @@ struct LinkedDevice: Equatable, Sendable {
 /// - "Start sessions from this phone" (`start_sessions`, default on),
 /// - "Answer permission prompts from this phone" (`permissions_requested`,
 ///   default off, #517): its own request, never implied by typing,
-/// - "New asks" alerts (default on; the notification code reads it).
+/// - "When work stops" alerts (`workAlerts`, default on; phone-wide, kept in the
+///   app group's defaults). The switch works by saving or deleting each hub's
+///   push subscription; the notification extension never reads it.
 ///
 /// The Workbench choices are requests to the Mac: each change rewrites
 /// the phone's `device` record while it is linked. Before linking, the
@@ -30,7 +32,7 @@ struct LinkedDevice: Equatable, Sendable {
 /// build) is every hub's default until a link completes and adopts it.
 /// Every choice is persisted in `UserDefaults`, so it survives a relaunch;
 /// the Workbench choices per hub (each Mac has its own `device` record),
-/// the alerts choice once for the phone.
+/// the alerts choice once for the phone (in `alertDefaults`).
 /// The record goes out sealed (`SecureTransport`, mobile E2E): the hub
 /// drops a plaintext `device` record, and takes a sealed one only when its
 /// payload names the sending device.
@@ -40,8 +42,10 @@ final class DeviceSettings {
     private(set) var typingRequested: Bool
     private(set) var startSessions: Bool
     private(set) var permissionsRequested: Bool
-    var newAskAlerts: Bool {
-        didSet { defaults.set(newAskAlerts, forKey: Keys.newAskAlerts) }
+    /// Phone-wide, so `AppEnvironment.setWorkAlerts` sets it on every hub's settings and registers or removes each
+    /// hub's push subscription.
+    var workAlerts: Bool {
+        didSet { alertDefaults.set(workAlerts, forKey: Keys.workAlerts) }
     }
 
     /// Why a toggle went back: its write failed. Cleared once that
@@ -59,6 +63,7 @@ final class DeviceSettings {
 
     @ObservationIgnored private let transport: SecureTransport
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let alertDefaults: UserDefaults
     @ObservationIgnored private let keys: Keys
     @ObservationIgnored private let now: @Sendable () -> Date
     /// The last queued device-record write. Writes run one at a time, in
@@ -81,12 +86,16 @@ final class DeviceSettings {
 
     /// The `UserDefaults` keys: the Workbench choices under the hub's id.
     private struct Keys {
-        static let newAskAlerts = "notifications.newAsks"
+        static let workAlerts = "notifications.workAlerts"
+        /// The earlier "New asks" switch: its value carries over once.
+        static let legacyNewAskAlerts = "notifications.newAsks"
         let typingRequested: String
         let startSessions: String
         let permissionsRequested: String
+        let lastDeviceWrite: String
 
         init(hubID: String) {
+            lastDeviceWrite = "hub.\(hubID).device.lastWriteAt"
             typingRequested = "hub.\(hubID).device.typingRequested"
             startSessions = "hub.\(hubID).device.startSessions"
             permissionsRequested = "hub.\(hubID).device.permissionsRequested"
@@ -96,11 +105,14 @@ final class DeviceSettings {
     init(
         transport: SecureTransport,
         defaults: UserDefaults,
+        alertDefaults: UserDefaults? = nil,
         hubID: String,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.defaults = defaults
+        let alertDefaults = alertDefaults ?? defaults
+        self.alertDefaults = alertDefaults
         let keys = Keys(hubID: hubID)
         self.keys = keys
         self.now = now
@@ -114,7 +126,20 @@ final class DeviceSettings {
             ?? defaults.object(forKey: unlinked.startSessions) as? Bool ?? true
         permissionsRequested = defaults.object(forKey: keys.permissionsRequested) as? Bool
             ?? defaults.object(forKey: unlinked.permissionsRequested) as? Bool ?? false
-        newAskAlerts = defaults.object(forKey: Keys.newAskAlerts) as? Bool ?? true
+        workAlerts = Self.loadWorkAlerts(alertDefaults: alertDefaults, legacy: defaults)
+    }
+
+    /// The phone-wide alerts switch. Without a value of its own it takes the old "New asks" one (from either
+    /// store), writes it under the new key and drops the old, so the choice is made once.
+    private static func loadWorkAlerts(alertDefaults: UserDefaults, legacy: UserDefaults) -> Bool {
+        if let own = alertDefaults.object(forKey: Keys.workAlerts) as? Bool { return own }
+        let carried = alertDefaults.object(forKey: Keys.legacyNewAskAlerts) as? Bool
+            ?? legacy.object(forKey: Keys.legacyNewAskAlerts) as? Bool
+        guard let carried else { return true }
+        alertDefaults.set(carried, forKey: Keys.workAlerts)
+        alertDefaults.removeObject(forKey: Keys.legacyNewAskAlerts)
+        legacy.removeObject(forKey: Keys.legacyNewAskAlerts)
+        return carried
     }
 
     /// The link to this hub completed: the choices it shows (a value of
@@ -135,12 +160,37 @@ final class DeviceSettings {
         }
     }
 
-    /// Deletes `hubID`'s Workbench choices (its link was removed).
+    /// A device record older than this is rewritten on the return to the foreground: its `seen_at` is how the
+    /// Mac knows this phone is in touch (keep-awake, ask #614).
+    nonisolated static let touchAfter: TimeInterval = 3600
+
+    /// Rewrites the `device` record when the last write is older than `touchAfter`. Any write counts (a toggle
+    /// carries `seen_at` too). Not linked, or the Mac not accepting writes: nothing is sent. A failed write is
+    /// logged and leaves the stamp alone, so the next return retries it.
+    func touchIfStale() async {
+        guard linkedDevice != nil else { return }
+        let last = defaults.object(forKey: keys.lastDeviceWrite) as? Double
+        if let last, now().timeIntervalSince1970 - last < Self.touchAfter, last <= now().timeIntervalSince1970 { return }
+        let prior = lastWrite
+        let write = Task { [weak self] in
+            await prior?.value
+            if await self?.writeDeviceRecord() != nil {
+                Self.logger.warning("keep-awake touch not sent; the next return to the foreground tries again")
+            }
+        }
+        lastWrite = write
+        await write.value
+    }
+
+    /// Deletes `hubID`'s Workbench choices and its shared-alert seen list (its link was removed).
     static func removeChoices(of hubID: String, defaults: UserDefaults) {
         let keys = Keys(hubID: hubID)
         defaults.removeObject(forKey: keys.typingRequested)
         defaults.removeObject(forKey: keys.startSessions)
         defaults.removeObject(forKey: keys.permissionsRequested)
+        defaults.removeObject(forKey: keys.lastDeviceWrite)
+        // A link made again starts with a silent first fetch.
+        defaults.removeObject(forKey: SharedAlertPoster.postedDefaultsKey(hubID: hubID))
     }
 
     func setTypingRequested(_ value: Bool) async {
@@ -206,6 +256,7 @@ final class DeviceSettings {
             typingRequested: typingRequested,
             startSessions: startSessions,
             permissionsRequested: permissionsRequested,
+            seenAt: unlinked ? nil : now,
             updatedAt: now
         )
     }
@@ -250,6 +301,7 @@ final class DeviceSettings {
         guard let payload = devicePayload() else { return nil }
         do {
             try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
+            defaults.set(payload.updatedAt.timeIntervalSince1970, forKey: keys.lastDeviceWrite)
             return nil
         } catch {
             Self.logger.error("device record write failed: \(error.localizedDescription, privacy: .public)")

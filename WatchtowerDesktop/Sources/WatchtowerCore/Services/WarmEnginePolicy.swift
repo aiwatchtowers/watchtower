@@ -47,8 +47,11 @@ package enum WarmEnginePolicy {
     /// - `.unload` — warm present but NOTHING holds it: no capture, no job, no
     ///   ongoing meeting, no meeting starting in ≤ `prewarmLead` (or toggle
     ///   OFF, or key mismatch);
-    /// - engine busy → never prewarm, never unload the busy engine (the warm
-    ///   slot is empty while busy anyway; the guard is defensive).
+    /// - engine busy (a capture, a live pass, a running job, a job holding a
+    ///   handed-over engine) → never prewarm, never unload. The warm slot can
+    ///   be full while busy: a running job parks its engine there once it no
+    ///   longer needs it, and the recording or job behind it is about to take
+    ///   it — unloading it would only force a reload.
     package static func decide(
         toggleEnabled: Bool,
         engineBusy: Bool,

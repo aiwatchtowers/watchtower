@@ -233,6 +233,8 @@ struct MainNavigationView: View {
         } message: {
             Text("Your Google authorization expired or was revoked. Reconnect to resume calendar sync.")
         }
+        // After a connect in the Connections tab: the related-features offer.
+        .modifier(FeatureSuggestionPresenter(appState: appState))
         .onAppear { applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
@@ -386,10 +388,8 @@ struct MainNavigationView: View {
             ReleaseDashboardView()
         case .statistics:
             StatisticsView()
-        case .search:
-            SearchView()
-        case .boards:
-            BoardsView()
+        case .connections:
+            ConnectionsTabView()
         case .usage:
             UsageView()
         case .mcpServer:

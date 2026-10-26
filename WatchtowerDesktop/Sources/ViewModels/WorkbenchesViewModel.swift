@@ -125,6 +125,8 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// The spec review author loop's rounds per session (#1121).
+    @ObservationIgnored weak var specReviewLoop: SpecReviewLoopCenter?
     /// Agent analytics (#298): the Analytics pane's reports. AppState wires
     /// its own; nil = a pane with nothing to show.
     @ObservationIgnored weak var agentAnalytics: AgentAnalyticsCenter?

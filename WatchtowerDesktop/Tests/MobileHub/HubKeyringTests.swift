@@ -459,15 +459,15 @@ final class HubKeyringTests: XCTestCase {
         let ring = try keyring(sidecar, store: InMemoryHubKeyStore())
         try ring.ensureGroupKeys()
         let stamp = Date()
-        _ = try sidecar.markAlerted([7], at: stamp)
-        try sidecar.setHash("alert-hash", for: SliceKind.askAlert.recordName(id: "7"))
+        _ = try sidecar.noteWorkAlerts(["ask-7"], at: stamp)
+        try sidecar.setHash("alert-hash", for: SliceKind.askAlert.recordName(id: "ask-7"))
 
         try ring.rotate(reason: .manual)
 
-        let (generation, alerted) = try sidecar.markAlerted([], at: stamp)
-        XCTAssertEqual(alerted[7]?.generation, generation, "the alert is still published in the new generation")
+        let (generation, alerted) = try sidecar.noteWorkAlerts([], at: stamp)
+        XCTAssertEqual(alerted["ask-7"]?.generation, generation, "the alert is still published in the new generation")
         let hashes = try sidecar.hashes(forKind: .askAlert)
-        XCTAssertEqual(Array(hashes.keys), [SliceKind.askAlert.recordName(id: "7")], "its record stays known")
+        XCTAssertEqual(Array(hashes.keys), [SliceKind.askAlert.recordName(id: "ask-7")], "its record stays known")
         XCTAssertNotEqual(hashes.values.first, "alert-hash", "but its hash no longer matches: it is resealed")
     }
 

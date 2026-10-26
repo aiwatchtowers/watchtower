@@ -139,6 +139,8 @@ type Idea struct {
 // Result is the validated reviewer reply: what Plan 2 reads and the Desktop
 // decodes. JSON keys are pinned by testdata/result_keys.golden. Idea is nil
 // (and the key left out) when the reviewer gave none or it was dropped.
+// Verdicts (author-loop rounds 2+ only) rule on the previous round's open
+// items; the key is left out when there are none.
 type Result struct {
 	Summary      string         `json:"summary"`
 	Idea         *Idea          `json:"idea,omitempty"`
@@ -147,6 +149,7 @@ type Result struct {
 	BlindSpots   []BlindSpot    `json:"blind_spots"`
 	Checks       []Check        `json:"checks"`
 	Resolved     []Resolved     `json:"resolved"`
+	Verdicts     []Verdict      `json:"verdicts,omitempty"`
 	Chapters     []Chapter      `json:"chapters"`
 	Notes        []string       `json:"notes"`
 	CodeRead     bool           `json:"code_read"`
@@ -168,4 +171,7 @@ type Sources struct {
 	Spec         string
 	Folder       string
 	PrevComments []string
+	// PrevOpenKeys is the previous round's open items of an author loop:
+	// the only keys a verdict may name.
+	PrevOpenKeys map[string]bool
 }

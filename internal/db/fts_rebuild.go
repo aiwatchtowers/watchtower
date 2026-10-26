@@ -134,10 +134,7 @@ func MessagesSearchPendingAt(dbPath string) (bool, error) {
 }
 
 // messagesSearchPending reads the pending key and whether the legacy table
-// exists; pending is either. The Desktop's Search screen reads the same rule
-// through its Swift twin, SearchQueries.messagesIndexRebuildPending
-// (WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/SearchQueries.swift);
-// a change here changes both, and both test the same states.
+// exists; pending is either.
 func messagesSearchPending(q queryRower) (pending, hasLegacy bool, err error) {
 	if _, pending, err = readMaintenance(q, maintFTSRebuildPending); err != nil {
 		return false, false, err

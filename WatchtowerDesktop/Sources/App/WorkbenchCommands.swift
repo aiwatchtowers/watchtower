@@ -42,7 +42,7 @@ private struct WorkbenchMenuContextKey: FocusedValueKey {
 }
 
 /// Published by the focused session chat pane while a subagent is open in
-/// it: pops one level (⌘[ through "Back to Workbenches").
+/// it: pops one level (⌘[ through View → Back, `ItemShortcutCommands`).
 private struct SessionChatPopKey: FocusedValueKey {
     typealias Value = () -> Void
 }
@@ -64,7 +64,6 @@ extension FocusedValues {
 /// the title row keeps its buttons, without shortcuts.
 struct WorkbenchCommands: Commands {
     @FocusedValue(\.workbenchMenu) private var context
-    @FocusedValue(\.sessionChatPop) private var sessionChatPop
     let appState: AppState
 
     /// The page's chords act only while its window itself is key: a sheet
@@ -98,18 +97,8 @@ struct WorkbenchCommands: Commands {
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
             .disabled(context?.canTogglePanel != true)
-            // The focused session chat's open subagent pops first (#711).
-            Button("Back to Workbenches") {
-                onPage { context in
-                    switch context.backAction(popAvailable: sessionChatPop != nil) {
-                    case .popSubagent: sessionChatPop?()
-                    case .showAllWorkbenches: context.vm.showAllWorkbenches()
-                    case nil: break
-                    }
-                }
-            }
-            .keyboardShortcut("[", modifiers: .command)
-            .disabled(context?.backAction(popAvailable: sessionChatPop != nil) == nil)
+            // ⌘[ (Back) and ⌘1…⌘9 (Go to Item) are the View menu's shared
+            // items (`ItemShortcutCommands`, spec 2026-10-26 §4, §5.4).
             Divider()
             // Board #412: the one key that may take the keyboard from the
             // terminal — the owner's explicit chord; the bare A stays the
@@ -120,17 +109,6 @@ struct WorkbenchCommands: Commands {
                 .disabled(appState.workbenchesViewModel?.canShowWaitingStack(
                     shownID: appState.openQuicklyCenter.keyWorkbench?.id
                 ) != true)
-            Divider()
-            // ⌘1…⌘9: the sessions panel's numbering (`openSession(atShortcut:)`).
-            Menu("Sessions") {
-                ForEach(1...SessionSwitcherPresentation.maxShortcut, id: \.self) { n in
-                    Button("Session \(n)") {
-                        onPage { context in Task { await context.vm.openSession(atShortcut: n) } }
-                    }
-                    .keyboardShortcut(KeyEquivalent(Character(String(n))), modifiers: .command)
-                    .disabled(context?.canUseSessionKeys != true)
-                }
-            }
         }
     }
 }

@@ -381,7 +381,7 @@ struct WatchtowerApp: App {
 
     private var rootContent: some View {
         // The recorder pills, the extract pill and the meeting banner over
-        // every screen, with a band kept free for the pills (#397).
+        // every screen, the pills floating where the owner left them (#397).
         RecordingIndicatorHost { NavigationRoot() }
             .frame(minWidth: 800, minHeight: 600)
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
@@ -485,6 +485,9 @@ struct WatchtowerApp: App {
             WorkbenchCommands(appState: appState)
             // #711: ⌃` Show Terminal / Show Workchat, in the View menu.
             WorkchatCommands()
+            // View → Back (⌘[) and Go to Item (⌘1…⌘9): the Workbench page's
+            // and the Chats tab's, one set (spec 2026-10-26 §4, §5.4).
+            ItemShortcutCommands()
             // Only while a workbench window is key (spec §10, ruling R36):
             // `keyWorkbench` is the workbench on screen while its window (or
             // its Open Quickly panel) is key. Inside Monaco these chords reach

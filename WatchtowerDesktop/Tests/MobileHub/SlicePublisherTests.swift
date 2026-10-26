@@ -65,7 +65,7 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(SlicePublisher.Timing.standard.urgentTick, .seconds(10))
         XCTAssertEqual(SlicePublisher.Timing.standard.fastWindow, .seconds(1))
         XCTAssertEqual(SlicePublisher.Timing.standard.fastSpacing, .seconds(2))
-        XCTAssertEqual(SlicePublisher.urgentKinds, [.ownerAsk, .askAlert, .deviceGrant, .permissionRequest])
+        XCTAssertEqual(SlicePublisher.urgentKinds, [.ownerAsk, .askAlert, .deviceGrant, .permissionRequest, .sessionChat])
         XCTAssertEqual(SlicePublisher.unlinkedKinds, [.deviceGrant])
         XCTAssertTrue(SlicePublisher.sliceSQL.isEmpty, "A publishes no SQL slice; B and C add sources")
     }
@@ -677,6 +677,22 @@ final class SlicePublisherTests: XCTestCase {
         try await publisher.publishOnce()
 
         XCTAssertEqual(wireSaves().map(\.recordName), [try wireName("owner_ask-1"), try wireName("workbench-1")])
+    }
+
+    /// The near-live chat is urgent but never ahead of an ask.
+    func testAsksPublishBeforeChat() async throws {
+        let chat = StubSliceSource(kind: .sessionChat)
+        let ask = StubSliceSource(kind: .ownerAsk)
+        let bench = StubSliceSource(kind: .workbench)
+        for source in [chat, ask, bench] { source.setPayload(Data(#"{"v":1}"#.utf8)) }
+        let publisher = makePublisher([chat, bench, ask])
+
+        try await publisher.publishOnce()
+
+        XCTAssertEqual(
+            wireSaves().map(\.recordName),
+            [try wireName("owner_ask-1"), try wireName("session_chat-1"), try wireName("workbench-1")]
+        )
     }
 
     /// The first linked cycle's full pass failed: the next cycle publishes

@@ -87,6 +87,8 @@ final class ConfigService {
     private var diskGmailEnabled = true
     /// `privacy.purge_revoked_data` as last read from or written to disk.
     private var diskPurgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The editable fields as the last `reload()` or `save()` left them.
+    @ObservationIgnored private var loadedFields: [String: String] = [:]
 
     convenience init() {
         self.init(configPath: Constants.configPath)
@@ -116,6 +118,7 @@ final class ConfigService {
     }
 
     func reload() {
+        defer { loadedFields = editableFields }
         guard let str = readConfigText() else { return }
 
         do {
@@ -429,6 +432,42 @@ final class ConfigService {
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
         adoptGoogleSyncSwitches(from: yaml)
+        loadedFields = editableFields
+    }
+
+    /// An edit made here still waits for `save()`.
+    var hasUnsavedEdits: Bool { editableFields != loadedFields }
+
+    /// Re-reads config.yaml when nothing awaits `save()`: the one shared copy
+    /// (`AppState.sharedConfig`) catches up with a CLI or editor change each
+    /// time Settings or the Connections tab shows, and never drops an edit.
+    func reloadUnlessEdited() {
+        if !hasUnsavedEdits { reload() }
+    }
+
+    /// Bookkeeping, not settings: left out of the edit check.
+    private static let nonEditableFields: Set<String> = [
+        "configPath", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
+        "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields"
+    ]
+
+    /// Every settings field (the stored properties, by reflection, so a new
+    /// one is covered without a list to keep in step), rendered for comparison.
+    private var editableFields: [String: String] {
+        var fields: [String: String] = [:]
+        for child in Mirror(reflecting: self).children {
+            guard let label = child.label, !label.hasPrefix("_$"), !Self.nonEditableFields.contains(label) else { continue }
+            fields[label] = Self.comparable(child.value)
+        }
+        return fields
+    }
+
+    /// A field's value as text that is equal exactly when the value is: a
+    /// dictionary (`jiraFeatures`) by its sorted keys, since two equal
+    /// dictionaries may print their keys in different orders.
+    private static func comparable(_ value: Any) -> String {
+        guard let dict = value as? [String: Any] else { return String(describing: value) }
+        return dict.sorted { $0.key < $1.key }.map { "\($0.key):\(String(describing: $0.value))" }.joined(separator: ",")
     }
 
     /// A Google sync switch differs from what is on disk: the owner flipped
@@ -451,6 +490,10 @@ final class ConfigService {
         diskGmailEnabled = ((yaml["gmail"] as? [String: Any])?["enabled"] as? Bool) ?? true
         calendarEnabled = diskCalendarEnabled
         gmailEnabled = diskGmailEnabled
+        // What came from disk is no edit: only these two fields join the
+        // baseline, so an unsaved edit elsewhere still counts.
+        let current = editableFields
+        for label in ["_calendarEnabled", "_gmailEnabled"] { loadedFields[label] = current[label] }
     }
 
     /// Load the current on-disk config as a raw YAML dictionary, without

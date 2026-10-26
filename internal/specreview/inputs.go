@@ -491,8 +491,9 @@ func firstPath(s string) string {
 	return ""
 }
 
-// previous renders a re-round's previous document and the owner's comments
-// on it (PrevComments, what resolved[] may quote).
+// previous renders a re-round's previous document, the previous findings
+// (an author loop's round 2+: the open items with the author's replies) and
+// the owner's comments on it (PrevComments, what resolved[] may quote).
 func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 	if !ask.PreviousAskID.Valid {
 		return nil
@@ -511,7 +512,15 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 		in.note("the previous round's document was trimmed to %d characters", maxPrevDocRunes)
 	}
 	in.add("previous_round ask:"+strconv.FormatInt(prev.ID, 10), doc)
-	if err := in.previousFindings(d, prev.ID); err != nil {
+	loop, err := loopRound(d, ask.ID)
+	if err != nil {
+		return err
+	}
+	if loop != nil {
+		if err := in.previousOpenItems(d, prev.ID, loop.Replies); err != nil {
+			return err
+		}
+	} else if err := in.previousFindings(d, prev.ID); err != nil {
 		return err
 	}
 	if prev.Status != "answered" && prev.Status != "delivered" {
@@ -533,6 +542,69 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 	}
 	if b.Len() > 0 {
 		in.add("previous_comments", b.String())
+	}
+	return nil
+}
+
+// loopRound is the ask's review row when it is round 2 or later of an author
+// loop, else nil.
+func loopRound(d *db.DB, askID int64) (*db.SpecReview, error) {
+	row, err := d.GetSpecReview(askID)
+	if errors.Is(err, db.ErrSpecReviewNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if row.Loop != "author" || row.Round < 2 {
+		return nil, nil
+	}
+	return row, nil
+}
+
+// previousOpenItems renders the previous round's open items of an author loop
+// with the author's reply to each (a missing reply is fixed), one line each:
+// the keys a verdict may name (PrevOpenKeys).
+func (in *inputs) previousOpenItems(d *db.DB, prevID int64, repliesJSON string) error {
+	in.src.PrevOpenKeys = map[string]bool{}
+	row, err := d.GetSpecReview(prevID)
+	if errors.Is(err, db.ErrSpecReviewNotFound) {
+		in.note("the previous round's review is gone")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, open, err := decodeLoop(row)
+	if err != nil {
+		in.note("the previous round's open items left out: %v", err)
+		return nil
+	}
+	replies, err := decodeReplies(repliesJSON)
+	if err != nil {
+		in.note("the author's replies left out: %v", err)
+	}
+	replyOf := map[string]Reply{}
+	for _, rp := range replies {
+		replyOf[rp.Key] = rp
+	}
+	var b strings.Builder
+	for _, it := range open {
+		in.src.PrevOpenKeys[it.Key] = true
+		fmt.Fprintf(&b, "[%s] %s: %s — author: ", oneLineText(it.Key), it.Kind, oneLineText(it.Text))
+		rp, ok := replyOf[it.Key]
+		switch {
+		case ok && rp.Reply == ReplyDisagree:
+			b.WriteString("disagree: " + oneLineText(rp.Note))
+		case ok && strings.TrimSpace(rp.Note) != "":
+			b.WriteString("fixed (" + oneLineText(rp.Note) + ")")
+		default:
+			b.WriteString("fixed")
+		}
+		b.WriteString("\n")
+	}
+	if b.Len() > 0 {
+		in.add("previous_open_items ask:"+strconv.FormatInt(prevID, 10), b.String())
 	}
 	return nil
 }

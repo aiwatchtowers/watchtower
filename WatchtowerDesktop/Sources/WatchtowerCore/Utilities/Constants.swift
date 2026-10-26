@@ -14,6 +14,8 @@ package enum Constants {
     /// UserDefaults key of the opt-in mobile hub toggle (Settings → Mobile,
     /// off by default in every flavor; mobile POC spec §6.1).
     package static let mobileSyncEnabledKey = "mobileSyncEnabled"
+    /// Settings → Mobile → "Keep this Mac awake for the iPhone"; absent reads on (ask #614).
+    package static let mobileKeepAwakeKey = "mobileKeepAwake"
 
     /// Directory of the active workspace: `active_workspace` from config.yaml,
     /// or — when the key is missing — the one workspace directory holding a

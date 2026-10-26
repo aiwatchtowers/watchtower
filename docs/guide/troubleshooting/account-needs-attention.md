@@ -1,6 +1,6 @@
 # An account needs attention
 
-A service in **Settings → Connections** shows a red dot, an account row has a **Re-login** button, or a row says it stopped syncing. One account failing never stops the others, so the rest of Watchtower keeps working on what it has.
+A service in **Connections** shows a red dot, an account row has a **Re-login** button, or a row says it stopped syncing. One account failing never stops the others, so the rest of Watchtower keeps working on what it has.
 
 ## What you see
 
@@ -19,7 +19,7 @@ The service revoked or expired the sign-in (a password change, an admin removing
 
 1. **Slack:** on the account row press **Re-login**, then approve in the browser. A healthy row shows **Reconnect**, which also grants new permissions such as sending messages.
 2. **Google and Jira:** press **Re-login** on the row and approve in the browser.
-3. **Linear:** in **Settings** → **Connections** → **Linear**, press **Re-login** on the row. A browser workspace signs in again; an API-key workspace asks for a new key. `watchtower linear login --account N` does the same in a terminal.
+3. **Linear:** in **Connections** → **Linear**, press **Re-login** on the row. A browser workspace signs in again; an API-key workspace asks for a new key. `watchtower linear login --account N` does the same in a terminal.
 4. **Email (IMAP, Outlook) and CalDAV or ICS:** these rows have no **Re-login**. Remove the account and add it again, using SSL or STARTTLS for mail and an https URL for CalDAV.
    **Known issue:** removing a Google, Email or Calendar account deletes the mail or events synced from it, though the dialog says they are kept. Before you remove one, make sure you can live without the old mail or events; adding the account again syncs recent mail and events from the server again, and older mail returns through [history backfill](../concepts/history-backfill.md). Slack and Jira keep their data. See [Known issues](known-issues.md).
 

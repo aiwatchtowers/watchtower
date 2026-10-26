@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// Sheet for adding a new Quick Connection (owner-managed external MCP
-/// server), presented from Settings → Quick Connections. Mirrors
+/// server), presented from Connections → Quick Connections. Mirrors
 /// `AddSlackAccountView`'s shape: the connect call is `async` and awaited
 /// directly, so the sheet dismisses on success rather than watching a
 /// separate "connecting" transition.

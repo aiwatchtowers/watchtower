@@ -19,6 +19,7 @@ final class FakeRecorder: AudioRecording, @unchecked Sendable {
     private(set) var startCalls = 0
     private(set) var stopCalls = 0
     private(set) var lastStartURL: URL?
+    private(set) var mutedCalls: [Bool] = []
 
     // Live-sample plumbing: a test can push samples then finish, or leave it to
     // finish on stop() (the default: empty stream → live pass yields nothing).
@@ -47,6 +48,8 @@ final class FakeRecorder: AudioRecording, @unchecked Sendable {
         lastStartURL = url
         if let startError { throw startError }
     }
+
+    func setMicMuted(_ muted: Bool) { mutedCalls.append(muted) }
 
     func stop() async throws -> RecordingResult {
         stopCalls += 1

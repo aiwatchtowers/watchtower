@@ -241,9 +241,10 @@ Workbench
 - Agent analytics (features/agent-analytics.md)
 
 Automations & AI
-- AI Chat (features/ai-chat.md)
-- Artifacts in the AI Chat (features/ai-chat-artifacts.md)
-- Writing and changing things from the AI Chat (features/ai-chat-actions.md)
+- Chats (features/ai-chat.md)
+- Chat projects (features/ai-chat-projects.md)
+- Artifacts in Chats (features/ai-chat-artifacts.md)
+- Writing and changing things from Chats (features/ai-chat-actions.md)
 - Quick Connections (features/quick-connections.md)
 - Memory (features/memory.md)
 - Automations (features/automations.md)
@@ -261,6 +262,8 @@ Meetings & calendar
 Apps & integration
 - iPhone (features/iphone.md)
 - iPhone: permission prompts and interrupts (features/iphone-agent-prompts.md)
+- iPhone: the workchat (features/iphone-workbench.md)
+- iPhone: work alerts (features/iphone-alerts.md)
 - Menu bar and updates (features/menu-bar-and-updates.md)
 - Claude Code integration (features/claude-code-integration.md)
 
@@ -271,7 +274,7 @@ Reference
 - Glossary (reference/glossary.md)
 - Organization policy for admins (reference/organization-policy.md)
 
-To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, inbox (your day, messages, tracks and ideas are its filters), calendar, targets, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text.
+To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, inbox (your day, messages, tracks and ideas are its filters), calendar, targets, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, connections (Slack, Google, Jira and the other accounts), usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text.
 ===
 
 === RESPONSE STYLE ===

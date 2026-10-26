@@ -215,13 +215,39 @@ extension HomeShotFixtures {
 }
 
 extension HomeShotFixtures {
-    /// Settings → Connections with Jira forbidden by a sample profile: the
+    /// The Connections tab on Jira, forbidden by a sample profile: the
     /// row's lock, the notice and the locked Add button.
     @MainActor static func connectionsBlocked() -> AnyView {
         let appState = AppState { ["AllowedSources": ["slack", "google"]] }
         appState.managedPolicy.refresh()
-        appState.settingsConnection = .jira
-        let config = ConfigService(configPath: NSTemporaryDirectory() + "watchtower-shots-config.yaml")
-        return AnyView(ConnectionsSettings(config: config).environment(appState))
+        appState.selectedConnection = .jira
+        appState.sharedConfig = ConfigService(configPath: NSTemporaryDirectory() + "watchtower-shots-config.yaml")
+        return AnyView(ConnectionsTabView().environment(appState))
+    }
+
+    /// The Connections overview (#899): a Slack workspace with an expired
+    /// token (its banner), healthy Google and Jira, nothing else connected.
+    @MainActor static func connectionsOverview() -> AnyView {
+        func summary(_ service: ConnectionService, _ accounts: [ConnectionAccountState]) -> ConnectionSummary {
+            ConnectionSummary(service: service, accounts: accounts, blocked: false)
+        }
+        let summaries = ConnectionService.allCases.map { service -> ConnectionSummary in
+            switch service {
+            case .slack:
+                summary(.slack, [
+                    ConnectionAccountState(name: "acme", isOK: false, status: "revoked", error: "token expired"),
+                    ConnectionAccountState(name: "acme-labs", isOK: true, status: "ok", error: "")
+                ])
+            case .google:
+                summary(.google, [ConnectionAccountState(name: "owner@example.com", isOK: true, status: "ok", error: "")])
+            case .jira:
+                summary(.jira, [ConnectionAccountState(name: "acme.atlassian.net", isOK: true, status: "ok", error: "")])
+            case .quickConnections:
+                summary(.quickConnections, [ConnectionAccountState(name: "notion", isOK: true, status: "ok", error: "")])
+            default:
+                summary(service, [])
+            }
+        }
+        return AnyView(ConnectionsOverviewContent(summaries: summaries) { _ in })
     }
 }

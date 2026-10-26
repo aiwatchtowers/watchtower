@@ -5,8 +5,8 @@ import os
 import WatchtowerKit
 import WatchtowerSync
 
-/// A session's chat (the main feed, or one subagent's), pushed from the
-/// session detail or from a subagent row.
+/// A session's chat: the main feed (the workchat's, `agentID` nil) or one
+/// subagent's, pushed from its row.
 struct SessionChatRoute: Hashable {
     let sessionID: Int64
     /// nil for the main feed.

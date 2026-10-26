@@ -476,6 +476,56 @@ final class HubBootTests: XCTestCase {
 }
 
 extension HubBootTests {
+    // MARK: - Keeping the Mac in touch (keep-awake, ask #614)
+
+    private final class MutableClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+        init(_ value: Date) { self.value = value }
+        var now: Date { lock.withLock { value } }
+        func advance(_ seconds: TimeInterval) { lock.withLock { value = value.addingTimeInterval(seconds) } }
+    }
+
+    private func touchDefaults() throws -> UserDefaults {
+        let name = "hub-boot-touch-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testTheForegroundRewritesTheDeviceRecordOnlyWhenTheLastWriteIsOverAnHourOld() async throws {
+        let inner = InMemoryCloudTransport()
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_800_000_000))
+        let settings = DeviceSettings(
+            transport: try TestPhone.transport(over: inner), defaults: try touchDefaults(), hubID: TestHub.acme,
+            now: { clock.now } // swiftlint:disable:this trailing_closure
+        )
+        settings.linkedDevice = device
+
+        await settings.touchIfStale()
+        var written = try await TestPhone.deviceWrites(in: inner)
+        XCTAssertEqual(written.count, 1, "the first foreground writes")
+        XCTAssertEqual(written.first?.seenAt, clock.now)
+
+        clock.advance(3599)
+        await settings.touchIfStale()
+        let stillOne = try await TestPhone.deviceWrites(in: inner)
+        XCTAssertEqual(stillOne.first?.seenAt, written.first?.seenAt, "under an hour: no new write")
+
+        clock.advance(2)
+        await settings.touchIfStale()
+        written = try await TestPhone.deviceWrites(in: inner)
+        XCTAssertEqual(written.first?.seenAt, clock.now, "over an hour: rewritten with a new seen_at")
+    }
+
+    func testAnUnlinkedPhoneWritesNothingOnTheForeground() async throws {
+        let inner = InMemoryCloudTransport()
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: inner), defaults: try touchDefaults(), hubID: TestHub.acme)
+        await settings.touchIfStale()
+        let written = try await TestPhone.deviceWrites(in: inner)
+        XCTAssertTrue(written.isEmpty)
+    }
+
     // MARK: - Leftover legacy keys (ruling 3)
 
     /// A kill between the migration's registry write and its removal of the

@@ -33,7 +33,7 @@ requires: source:linear
 <!-- learn
 id: linear-chat-change
 title: Change Linear issues from the chat
-text: Ask **AI Chat** to create, move or assign a Linear issue; nothing changes in Linear until you press Approve.
+text: Ask **Chats** to create, move or assign a Linear issue; nothing changes in Linear until you press Approve.
 area: tasks
 level: next
 kind: feature
@@ -44,7 +44,7 @@ requires: source:linear
 <!-- learn
 id: linear-at-mention
 title: Point the assistant at an issue
-text: In **AI Chat**, type @ and a Linear issue key to hand the assistant that issue.
+text: In **Chats**, type @ and a Linear issue key to hand the assistant that issue.
 area: tasks
 level: power
 kind: tip
@@ -53,13 +53,13 @@ action: nav:chat
 requires: source:linear
 -->
 
-In **AI Chat** you can ask the assistant to list teams and issues, read an issue with its comments and status history, or change Linear: create an issue, add a comment, move an issue to another state, assign it, or edit its title, priority, labels, due date and estimate. Every change is a proposal: it waits in the chat's action card until you press Approve, and Linear changes only then. If you press Retry after a failed create, no second issue is made. The assistant can only choose a state, label or person that Linear knows for that team; a label that does not exist is refused, not created. Teams you did not select for sync have no states to choose from, so select the team first. Type `@` and an issue key to point the assistant at a Linear issue.
+In **Chats** you can ask the assistant to list teams and issues, read an issue with its comments and status history, or change Linear: create an issue, add a comment, move an issue to another state, assign it, or edit its title, priority, labels, due date and estimate. Every change is a proposal: it waits in the chat's action card until you press Approve, and Linear changes only then. If you press Retry after a failed create, no second issue is made. The assistant can only choose a state, label or person that Linear knows for that team; a label that does not exist is refused, not created. Teams you did not select for sync have no states to choose from, so select the team first. Type `@` and an issue key to point the assistant at a Linear issue.
 
 ## Using it
 <!-- learn
 id: linear-connect
 title: Connect Linear
-text: Press **Add Linear Workspace** in **Settings → Connections → Linear**, sign in or paste an API key.
+text: Press **Add Linear Workspace** in **Connections → Linear**, sign in or paste an API key.
 area: tasks
 level: basics
 kind: feature
@@ -68,7 +68,7 @@ action: connect:linear
 done_when: linear.connected
 -->
 
-1. Open **Settings** → **Connections** → **Linear** and press **Add Linear Workspace**. Setup's Linear card opens the same sheet.
+1. Open **Connections** → **Linear** and press **Add Linear Workspace**. Setup's Linear card opens the same sheet.
 2. Pick **Sign in with Linear** and approve in the browser, or pick **API key** and paste a key you created in Linear under Settings → Account → Security & access. Press **Connect**. While the browser sign-in runs, **Cancel** stops it.
 3. Wait for the first sync, then tick the teams to sync under **Teams** in the same pane.
 4. To pause a workspace, switch **Enabled** off; its synced issues stay. **Remove** disconnects it and keeps the synced issues too.

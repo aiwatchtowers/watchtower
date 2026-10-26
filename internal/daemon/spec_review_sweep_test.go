@@ -30,7 +30,7 @@ func specReviewAsk(t *testing.T, database *db.DB, queuedAt time.Time) int64 {
 		if err != nil {
 			return err
 		}
-		return database.QueueSpecReview(tx, id, queuedAt)
+		return database.QueueSpecReview(tx, id, queuedAt, nil)
 	}))
 	return id
 }
@@ -201,7 +201,7 @@ func TestSpecReviewSweep_GivesUpAfterThreeAttempts(t *testing.T) {
 	id := specReviewAsk(t, database, time.Now().Add(-5*time.Minute))
 	for range 2 { // attempt 1 -> 3
 		require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
-			return database.QueueSpecReview(tx, id, time.Now().Add(-5*time.Minute))
+			return database.QueueSpecReview(tx, id, time.Now().Add(-5*time.Minute), nil)
 		}))
 	}
 
@@ -221,4 +221,130 @@ func TestSpecReviewSweep_NoLauncherNoSweep(t *testing.T) {
 	row, err := database.GetSpecReview(id)
 	require.NoError(t, err)
 	assert.Equal(t, 1, row.Attempt)
+}
+
+// specLoopAsk makes specReviewAsk's review an author loop; bound gives the ask
+// a live terminal session.
+func specLoopAsk(t *testing.T, database *db.DB, bound bool) int64 {
+	t.Helper()
+	id := specReviewAsk(t, database, time.Now().Add(-5*time.Minute))
+	_, err := database.Exec(`UPDATE spec_reviews SET loop = 'author', round = 1 WHERE ask_id = ?`, id)
+	require.NoError(t, err)
+	if bound {
+		res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+			SELECT project_id, 'claude', 'S', '/tmp/x', 'uuid-1' FROM owner_asks WHERE id = ?`, id)
+		require.NoError(t, err)
+		sid, err := res.LastInsertId()
+		require.NoError(t, err)
+		_, err = database.Exec(`UPDATE owner_asks SET session_id = ? WHERE id = ?`, sid, id)
+		require.NoError(t, err)
+	}
+	return id
+}
+
+func specLoopDone(t *testing.T, database *db.DB, id int64, finished time.Time) {
+	t.Helper()
+	_, err := database.Exec(`UPDATE spec_reviews SET status = 'done', result = '{}', finished_at = ? WHERE ask_id = ?`,
+		finished.UTC().Format("2006-01-02T15:04:05Z"), id)
+	require.NoError(t, err)
+}
+
+func loopEnd(t *testing.T, database *db.DB, id int64) (string, string) {
+	t.Helper()
+	row, err := database.GetSpecReview(id)
+	require.NoError(t, err)
+	return row.Loop, row.LoopEnd
+}
+
+func TestSpecReviewSweep_LoopTimeoutReveals(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	stale := specLoopAsk(t, database, true)
+	specLoopDone(t, database, stale, time.Now().Add(-31*time.Minute))
+	fresh := specLoopAsk(t, database, true)
+	specLoopDone(t, database, fresh, time.Now().Add(-5*time.Minute))
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	loop, end := loopEnd(t, database, stale)
+	assert.Equal(t, "owner", loop)
+	assert.Equal(t, "timeout", end)
+	loop, _ = loopEnd(t, database, fresh)
+	assert.Equal(t, "author", loop, "inside the 30 minutes")
+}
+
+func TestSpecReviewSweep_LoopSessionGoneReveals(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	gone := specLoopAsk(t, database, false)
+	live := specLoopAsk(t, database, true)
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	loop, end := loopEnd(t, database, gone)
+	assert.Equal(t, "owner", loop)
+	assert.Equal(t, "session_gone", end)
+	loop, _ = loopEnd(t, database, live)
+	assert.Equal(t, "author", loop)
+}
+
+func TestSpecReviewSweep_LoopRunsWithoutLauncher(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t) // no SetSpecReviewLaunch
+	id := specLoopAsk(t, database, false)
+	d.phaseSpecReviewSweep(context.Background())
+	loop, _ := loopEnd(t, database, id)
+	assert.Equal(t, "owner", loop)
+}
+
+func TestSpecReviewSweep_DeadReviewerRevealsLoop(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	recordLaunches(d)
+	id := specLoopAsk(t, database, true)
+	helper := exec.Command("true")
+	require.NoError(t, helper.Run())
+	ok, err := database.ClaimSpecReview(id, helper.Process.Pid, time.Now())
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	row, err := database.GetSpecReview(id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Equal(t, "owner", row.Loop)
+	assert.Equal(t, "reviewer_failed", row.LoopEnd)
+}
+
+// A loop row left failed or skipped (the immediate reveal after the reviewer's
+// failure or skip did not land) on an open, session-bound ask is revealed by
+// the sweep, so the ask never stays hidden for good (SPECREVIEW-04).
+func TestSpecReviewSweep_FailedOrSkippedLoopReveals(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	failed := specLoopAsk(t, database, true)
+	skipped := specLoopAsk(t, database, true)
+	_, err := database.Exec(`UPDATE spec_reviews SET status = 'failed', reason = 'boom' WHERE ask_id = ?`, failed)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE spec_reviews SET status = 'skipped', reason = 'plan near limit' WHERE ask_id = ?`, skipped)
+	require.NoError(t, err)
+
+	d.sweepSpecLoops(time.Now())
+
+	for _, id := range []int64{failed, skipped} {
+		loop, end := loopEnd(t, database, id)
+		assert.Equal(t, "owner", loop, "ask %d", id)
+		assert.Equal(t, "reviewer_failed", end, "ask %d", id)
+	}
+}
+
+// A done loop row whose finished_at cannot be read is logged, not skipped in
+// silence: its timeout cannot run.
+func TestSpecReviewSweep_UnreadableFinishedAtIsLogged(t *testing.T) {
+	d, database, logs := newBackfillDaemon(t)
+	id := specLoopAsk(t, database, true)
+	_, err := database.Exec(`UPDATE spec_reviews SET status = 'done', result = '{}', finished_at = 'not a time' WHERE ask_id = ?`, id)
+	require.NoError(t, err)
+
+	d.sweepSpecLoops(time.Now())
+
+	loop, _ := loopEnd(t, database, id)
+	assert.Equal(t, "author", loop)
+	assert.Contains(t, logs.String(), "unreadable finished_at")
 }

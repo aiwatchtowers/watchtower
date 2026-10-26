@@ -86,9 +86,8 @@ struct WorkbenchSwitcherPopover: View {
     }
 }
 
-/// One workbench: a check on the current one (the row highlighted), the
-/// name on the full width over the state segments; the folder is the
-/// row's tooltip, so the state never squeezes the name.
+/// One workbench: the shared switcher row over the workbench's name, its
+/// folder as the tooltip and its state segments.
 struct WorkbenchSwitcherRow: View {
     let row: WorkbenchSwitcherSummary
     let isCurrent: Bool
@@ -96,60 +95,12 @@ struct WorkbenchSwitcherRow: View {
     let onSelect: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark")
-                    .font(.caption)
-                    .opacity(isCurrent ? 1 : 0)
-                    .accessibilityHidden(!isCurrent)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.project.name)
-                        .font(.callout.weight(isCurrent ? .semibold : .regular))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    if !segments.isEmpty {
-                        HStack(spacing: 6) {
-                            WorkbenchStateSegments(segments: segments)
-                        }
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 6)
-            .frame(minHeight: 32)
-            .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(isCurrent ? Color.accentColor.opacity(0.12) : .clear)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(row.project.folderPath)
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
-    }
-}
-
-/// A workbench's state text (`WorkbenchSwitcherPresentation.stateSegments`):
-/// new comments as a blue badge, blocked in orange, the rest grey. The
-/// switcher's rows and the go-to palette's workbench rows show it.
-struct WorkbenchStateSegments: View {
-    let segments: [WorkbenchSwitcherPresentation.Segment]
-
-    var body: some View {
-        ForEach(segments, id: \.text) { segment in
-            segmentView(segment)
-        }
-    }
-
-    @ViewBuilder
-    private func segmentView(_ segment: WorkbenchSwitcherPresentation.Segment) -> some View {
-        switch segment.tone {
-        case .comments:
-            CountBadge(text: segment.text)
-        case .blocked:
-            Text(segment.text).font(.caption2).foregroundStyle(.orange).lineLimit(1).fixedSize()
-        case .sessions, .age:
-            Text(segment.text).font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
-        }
+        SwitcherPopoverRow(
+            name: row.project.name,
+            isCurrent: isCurrent,
+            tooltip: row.project.folderPath,
+            segments: segments.map(\.switcherSegment),
+            onSelect: onSelect
+        )
     }
 }

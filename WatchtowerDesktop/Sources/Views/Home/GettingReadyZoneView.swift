@@ -93,8 +93,8 @@ struct GettingReadyZoneView: View {
         return Set(concerned.prefix(1).map(\.feature))
     }
 
-    /// "Connect Jira to get Boards, Workload, Blockers, Project Map and
-    /// Releases": the tabs the row's features fill, each named once.
+    /// "Connect Jira to get Workload, Blockers, Project Map and Releases":
+    /// the tabs the row's features fill, each named once.
     static func connectLine(_ row: GettingReadySourceRow) -> String {
         var titles: [String] = []
         for feature in row.features {
@@ -105,11 +105,11 @@ struct GettingReadyZoneView: View {
         return "\(row.source.actionTitle) to get \(joinedNames(titles))"
     }
 
-    /// Jira fills five tabs; an Inbox feature names its filter ("Your day"
+    /// Jira fills four tabs; an Inbox feature names its filter ("Your day"
     /// for the brief and the plan); every other feature its Open's tab.
     private static func featureTabTitles(for feature: ReadinessFeature) -> [String] {
         if feature == .jira {
-            return [SidebarDestination.boards, .workload, .blockers, .projectMap, .releases].map(\.title)
+            return [SidebarDestination.workload, .blockers, .projectMap, .releases].map(\.title)
         }
         if let route = InboxRoute.forFeature(feature, today: "") {
             return [route.filter == .day ? "Your day" : route.filter.title]

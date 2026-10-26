@@ -258,7 +258,10 @@ final class FastLaneTests: XCTestCase {
         let wall = self.wall
         let publisher = SlicePublisher(
             dbPool: pool, state: sidecar, transport: transport.sealing(names: sidecar),
-            sources: [terminalSlice(liveness), AskAlertSlice(sidecar: sidecar) { wall.now }]
+            sources: [
+                terminalSlice(liveness),
+                WorkAlertSlice(sidecar: sidecar, isAway: { true }, liveness: { liveness.current }, now: { wall.now })
+            ]
         )
         let log = NudgeLog()
         let lane = makeLane(center, liveness: liveness) { kinds in
@@ -419,6 +422,33 @@ final class FastLaneTests: XCTestCase {
         XCTAssertTrue(FastLane.stateChangeKinds.isSubset(of: SlicePublisher.urgentKinds), "the publisher keeps these nudges")
     }
 
+    /// Spec 2026-10-25-mobile-workbench-remote §5.2: the owner leaving the Mac nudges the work alerts, so a stop
+    /// left unresolved pushes at once; coming back nudges nothing. The away center's own closure keeps firing and is
+    /// restored on stop.
+    func testGoingAwayNudgesTheWorkAlerts() {
+        let away = OwnerAwayCenter(box: OwnerAwayBox())
+        var seen: [Bool] = []
+        away.onChange = { seen.append($0) }
+        let log = NudgeLog()
+        let lane = FastLane(
+            dbPool: pool, agentStates: nil, terminalCenter: terminals, liveness: SessionLivenessBox(), ownerAway: away,
+            nudge: { log.record($0) }, sessionStateChanged: { _ in }
+        )
+        lanes.append(lane)
+        lane.start()
+
+        away.onChange?(true)
+        away.onChange?(false)
+
+        XCTAssertEqual(log.nudges, [[.askAlert]])
+        XCTAssertEqual(seen, [true, false])
+        XCTAssertTrue(FastLane.awayKinds.isSubset(of: SlicePublisher.urgentKinds), "the publisher keeps the nudge")
+        lane.stop()
+        away.onChange?(true)
+        XCTAssertEqual(log.nudges, [[.askAlert]], "a stopped lane is unhooked")
+        XCTAssertEqual(seen, [true, false, true], "the earlier closure is back")
+    }
+
     func testStartCopiesTheLivenessAndNudgesNothing() async throws {
         let bench = try await workbench()
         let row = try await session(in: bench)
@@ -512,11 +542,12 @@ final class FastLaneTests: XCTestCase {
 
     // MARK: - Table observation
 
-    /// Only the asks and the permission requests (#517) are observed:
-    /// every other table's writes publish on the full tick, which a nudge
-    /// could not bring forward.
+    /// Only the asks and the permission requests (#517) are observed, each
+    /// with the alert kind (a new request is a permission alert): every
+    /// other table's writes publish on the full tick, which a nudge could
+    /// not bring forward.
     func testTheDesktopsOwnAskWritesNudgeTheAskKinds() async throws {
-        XCTAssertEqual(FastLane.observedTables.map(\.table), ["owner_asks", "permission_requests"])
+        XCTAssertEqual(FastLane.observedTables.map(\.table), ["owner_asks", "spec_reviews", "permission_requests"])
         XCTAssertTrue(
             FastLane.observedTables.allSatisfy { $0.kinds.isSubset(of: SlicePublisher.urgentKinds) },
             "an observation nudges only kinds the fast lane keeps"
@@ -541,7 +572,7 @@ final class FastLaneTests: XCTestCase {
                 """, arguments: [row.id, bench.project])
         }
         await awaitHubCondition("a permission request write nudges") {
-            log.nudges.contains { $0 == [.permissionRequest] }
+            log.nudges.contains { $0 == [.permissionRequest, .askAlert] }
         }
 
         lane.stop()
@@ -633,5 +664,10 @@ final class FastLaneTests: XCTestCase {
         XCTAssertTrue(lane.isRunning)
         companion.stop()
         XCTAssertFalse(lane.isRunning)
+    }
+
+    func testFastLaneObservesSpecReviews() {
+        let entry = FastLane.observedTables.first { $0.table == "spec_reviews" }
+        XCTAssertEqual(entry?.kinds, [.ownerAsk, .askAlert], "a loop flip hides or shows an ask without touching owner_asks")
     }
 }

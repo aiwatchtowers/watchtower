@@ -3,7 +3,7 @@ import GRDB
 import WatchtowerCore
 
 /// Drives the multi-account IMAP/Outlook email connections shown in
-/// Settings → Email Accounts and the AddEmailAccountView sheet. Unlike Gmail
+/// Connections → Email Accounts and the AddEmailAccountView sheet. Unlike Gmail
 /// (a single OAuth token file owned by `GmailAuthService`), each row here is a
 /// DB-backed `email_accounts` record — any number of IMAP mailboxes plus
 /// Outlook OAuth accounts side by side. Owned by AppState so the accounts
@@ -14,6 +14,10 @@ final class EmailAccountsViewModel {
     private(set) var accounts: [EmailAccount] = []
     var isRunning = false
     var error: String?
+    /// The last account read failed; nil once one succeeds. Only the read:
+    /// an action's failure stays in `error` (the Connections tab's
+    /// "Couldn't read accounts" reads this).
+    private(set) var readError: String?
 
     private let dbPool: DatabasePool
     /// Resolves the CLI binary for `rename`; injectable so tests can run a stand-in.
@@ -45,9 +49,11 @@ final class EmailAccountsViewModel {
         do {
             let rows = try await dbPool.read { db in try EmailAccountQueries.fetchAll(db) }
             self.accounts = rows
+            readError = nil
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
+            readError = self.error
         }
     }
 

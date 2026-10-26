@@ -9,7 +9,7 @@ import WatchtowerSync
 /// from the last request, and the phone repeats the request while its Chat
 /// screen is open. Per watch:
 /// - one run when the watch opens;
-/// - every `Timing.every` (10 s) while the session is live;
+/// - every `Timing.every` (3 s) while the session is live;
 /// - once more after the session stopped being live, to publish the end of
 ///   its chat; a finished session otherwise runs once per watch.
 ///
@@ -18,7 +18,9 @@ import WatchtowerSync
 /// ever in the clear on disk on the Mac (the sealed slice records wait in the
 /// hub's transport queue). An expired watch loses its payload, so the
 /// record leaves the phone. A failed, undecodable or hung run keeps the last
-/// payload and the next run is scheduled as usual. It never touches the relay
+/// payload and the next run is scheduled as usual. A run that changes a
+/// stored payload calls `onChange` (the hub nudges the publisher's fast lane,
+/// so the chat reaches the phone within seconds). It never touches the relay
 /// processor.
 final class SessionChatRunner: HubCompanion, Sendable {
     /// `toolUseID` is the CLI's `--subagent` selector, nil for the main feed.
@@ -35,7 +37,7 @@ final class SessionChatRunner: HubCompanion, Sendable {
         /// How often the loop looks for due watches.
         let wake: Duration
 
-        static let standard = Self(every: .seconds(10), watch: .seconds(300), timeout: .seconds(30), wake: .seconds(2))
+        static let standard = Self(every: .seconds(3), watch: .seconds(300), timeout: .seconds(30), wake: .seconds(2))
     }
 
     struct Key: Hashable, Sendable {
@@ -78,6 +80,14 @@ final class SessionChatRunner: HubCompanion, Sendable {
     /// Bumped by `start()` and `stop()`: a pass that began under another
     /// generation stops before its next run and stores nothing.
     let generation = OSAllocatedUnfairLock(initialState: 0)
+    private let changeHandler = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
+    /// Called after a run stored a payload that differs from the previous one
+    /// (the first payload of a watch included). Payloads carry no clock, so an
+    /// unchanged feed is byte-identical.
+    var onChange: (@Sendable () -> Void)? {
+        get { changeHandler.withLock { $0 } }
+        set { changeHandler.withLock { $0 = newValue } }
+    }
     private let logger = Logger(subsystem: Constants.bundleID, category: "SessionChatRunner")
 
     init(
@@ -224,15 +234,18 @@ final class SessionChatRunner: HubCompanion, Sendable {
             let (live, stamp) = (isLive(key.sessionID), now())
             do {
                 let payload = try SessionChatPayload.encode(feed, sessionID: key.sessionID, agentID: key.agentID, live: live)
-                watches.withLock { watches in
+                let changed = watches.withLock { watches -> Bool in
                     // A watch that expired or was dropped meanwhile stays gone;
                     // one past its end is dropped by the next sweep, never stored into.
-                    guard var watch = watches[key], watch.expires > clock() else { return }
+                    guard var watch = watches[key], watch.expires > clock() else { return false }
+                    let changed = watch.payload != payload
                     watch.payload = payload
                     watch.fetchedAt = stamp
                     watch.storedLive = live
                     watches[key] = watch
+                    return changed
                 }
+                if changed { onChange?() }
             } catch {
                 logger.error("encoding the session chat \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             }

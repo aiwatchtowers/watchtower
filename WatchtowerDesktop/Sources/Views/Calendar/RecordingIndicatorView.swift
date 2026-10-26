@@ -36,11 +36,13 @@ private extension View {
 /// survives navigation. Hidden only when nothing is capturing, the queue is
 /// empty, and nothing is waiting for the user.
 ///
-/// It sits in one of the window's corners (`RecordingIndicatorCorner`, kept
-/// across launches): dragging a pill by its capsule background moves the
-/// stack, and on release it snaps to the corner nearest the pointer. Only
-/// the backgrounds carry the drag, so every button keeps its clicks; the
-/// expanded live panel carries none (a drag there selects transcript text).
+/// It floats over the content, anchored to a window corner
+/// (`RecordingIndicatorCorner`) at the owner's offset from it, both kept
+/// across launches: dragging a pill by its capsule background moves the
+/// stack anywhere in the window (`RecordingIndicatorPlacement.released`).
+/// Only the backgrounds carry the drag, so every button keeps its clicks;
+/// the expanded live panel carries none (a drag there selects transcript
+/// text).
 ///
 /// Capture and post-processing are decoupled in the Center, so the stack renders
 /// `captureState` and the `jobs` queue side by side (a recording capsule plus one
@@ -52,35 +54,25 @@ struct RecordingIndicatorView: View {
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage(RecordingIndicatorCorner.storageKey) private var corner = RecordingIndicatorCorner.default
-    /// The window's content size, which the release point is snapped in.
+    @AppStorage(RecordingIndicatorPlacement.offsetXKey) private var offsetX = 0.0
+    @AppStorage(RecordingIndicatorPlacement.offsetYKey) private var offsetY = 0.0
+    /// The window's content size, which the stack is kept inside.
     var windowSize: CGSize = .zero
-    /// Receives the space the window must keep free on the corner's edge
-    /// while pills show (`RecordingIndicatorInset.reservedHeight`) and the
-    /// stack's full extent, both 0 once the stack is empty.
-    var onLayoutChange: (RecordingIndicatorLayout) -> Void = { _ in }
+    /// Receives the stack's full extent from its corner's edge while it sits
+    /// on that edge, 0 once the stack is empty or moved off it.
+    var onOccupiedHeightChange: (CGFloat) -> Void = { _ in }
     /// The stack's offset while it is being dragged. A gesture state, so it
     /// returns to zero however the drag ends — released, or cancelled when
     /// the pill under the pointer goes away.
     @GestureState(resetTransaction: Transaction(animation: .snappy)) private var dragOffset = CGSize.zero
-    @State private var stackHeight: CGFloat = 0
-    /// Height of the model-download capsules drawn between the recorder
-    /// pills and the window's edge, read only while one shows.
-    @State private var provisionerHeight: CGFloat = 0
+    @State private var stackSize: CGSize = .zero
 
-    private var layout: RecordingIndicatorLayout {
-        let provisionerShown = !appState.transcriptionModelProvisioner.downloads.isEmpty
-        let reserved = RecordingIndicatorInset.reservedHeight(
-            stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
-            belowPanelHeight: provisionerShown ? provisionerHeight : 0)
-        return RecordingIndicatorLayout(reservedInset: reserved,
-                                        occupiedHeight: RecordingIndicatorInset.occupiedHeight(stackHeight: stackHeight))
+    private var placement: RecordingIndicatorPlacement {
+        RecordingIndicatorPlacement(corner: corner, offset: CGSize(width: offsetX, height: offsetY))
     }
 
-    /// The same condition `recordingView` renders the expanded panel under.
-    private var expandedPanelShown: Bool {
-        let center = appState.meetingRecorderCenter
-        guard case .recording = center.captureState else { return false }
-        return expanded && showsLiveAffordance(center)
+    private var occupiedHeight: CGFloat {
+        placement.occupiedHeight(stack: stackSize, window: windowSize)
     }
 
     /// Whether the active capture has a live transcript to offer: the engine
@@ -109,14 +101,14 @@ struct RecordingIndicatorView: View {
                 }
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stackHeight = $0 }
-        .onChange(of: layout, initial: true) { _, layout in onLayoutChange(layout) }
-        .offset(dragOffset)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { stackSize = $0 }
+        .onChange(of: occupiedHeight, initial: true) { _, height in onOccupiedHeightChange(height) }
+        .offset(placement.clampedOffset(stack: stackSize, window: windowSize) + dragOffset)
         .padding(RecordingIndicatorInset.outerPadding)
     }
 
-    /// Moves the stack with the pointer and, on release, snaps it to the
-    /// corner nearest the pointer. Carried by the pills' capsule backgrounds
+    /// Moves the stack with the pointer and, on release, leaves it where it
+    /// was dropped (`RecordingIndicatorPlacement.released`). Carried by the pills' capsule backgrounds
     /// (`indicatorCapsule`); the minimum distance leaves a click on one a
     /// click.
     private var moveGesture: AnyGesture<Void> {
@@ -124,7 +116,13 @@ struct RecordingIndicatorView: View {
             DragGesture(minimumDistance: 6, coordinateSpace: .named(RecordingIndicatorCorner.coordinateSpace))
                 .updating($dragOffset) { value, offset, _ in offset = value.translation }
                 .onEnded { value in
-                    withAnimation(.snappy) { corner = corner.snapped(releasedAt: value.location, in: windowSize) }
+                    let placed = placement.released(translation: value.translation,
+                                                    stack: stackSize, window: windowSize)
+                    withAnimation(.snappy) {
+                        corner = placed.corner
+                        offsetX = placed.offset.width
+                        offsetY = placed.offset.height
+                    }
                 }
                 .map { _ in () }
         )
@@ -154,13 +152,15 @@ struct RecordingIndicatorView: View {
     /// an enabled button always does something.
     @ViewBuilder
     private func jobQueue(_ center: MeetingRecorderCenter) -> some View {
-        let split = Self.visibleJobs(center.jobs, activeID: center.activeJobID)
+        let split = Self.jobPillItems(center)
         let retriable = center.retriableFailureID
         let dismissable = center.dismissableFailureID
-        ForEach(split.visible) { job in
+        ForEach(split.visible) { item in
+            let job = item.job
             RecordingJobPill(
                 title: job.title ?? "Recording",
                 phase: job.phase,
+                waitingForCapture: item.waitingForCapture,
                 canRetry: job.id == retriable,
                 canDismiss: job.id == dismissable,
                 retry: { retry(center) },
@@ -186,7 +186,6 @@ struct RecordingIndicatorView: View {
                         moveGesture: moveGesture)
                 }
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
         }
     }
 
@@ -202,12 +201,23 @@ struct RecordingIndicatorView: View {
     }
 
     /// Compact mic + system level meters answering "is my mic alive" and "is
-    /// system audio actually being captured" at a glance.
+    /// system audio actually being captured" at a glance. The mic icon is the
+    /// mute toggle: a muted mic stays out of the recording (its meter reads
+    /// silence), while the call is still captured.
     @ViewBuilder
     private func captureLevelIndicators(_ center: MeetingRecorderCenter) -> some View {
-        Image(systemName: "mic.fill")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+        Button {
+            center.setMicMuted(!center.micMuted)
+        } label: {
+            Image(systemName: center.micMuted ? "mic.slash.fill" : "mic.fill")
+                .font(.caption2)
+                .foregroundStyle(center.micMuted ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+        }
+        .buttonStyle(.plain)
+        .help(center.micMuted
+              ? "Unmute: your microphone is not being recorded"
+              : "Mute your microphone in the recording (the call is still recorded)")
+        .accessibilityLabel(center.micMuted ? "Unmute microphone" : "Mute microphone")
         MicLevelBars(level: center.captureLevels.mic, barCount: 3)
             .help("Microphone level")
         Image(systemName: "speaker.wave.2.fill")
@@ -407,7 +417,7 @@ struct RecordingIndicatorView: View {
     static let maxVisibleJobPills = 3
 
     /// The job actually being worked comes first, then the queue fills the
-    /// remaining slots in order. Plain FIFO order would be enough if failures
+    /// remaining slots in order. Plain stop order would be enough if failures
     /// left the queue, but they stay for retry — three stale failures at the
     /// head would push the running job out of sight, which is exactly when the
     /// user wants to see it.
@@ -415,9 +425,13 @@ struct RecordingIndicatorView: View {
     /// Which job that is comes from the Center (`activeJobID`), not from a
     /// phase: the queue claims a job before its first phase update, and with
     /// diarization off it can stay `.queued`-looking throughout. With nothing
-    /// active yet, the job the queue will work next — the first non-failed one —
-    /// leads instead. The promotion is unconditional, so crossing the visible
-    /// cap never reshuffles the pills already on screen.
+    /// active, the oldest non-failed job leads instead — usually the one the
+    /// queue works next, though not always: the queue starts the oldest job
+    /// that CAN start, so while a recording captures a batch job at the head
+    /// waits ("Waiting for the recording to stop") and a later live-text job
+    /// goes first. Between jobs that shows for a moment only — the next job's
+    /// own promotion follows at once. The promotion is unconditional, so
+    /// crossing the visible cap never reshuffles the pills already on screen.
     static func visibleJobs(_ jobs: [MeetingRecorderCenter.ProcessingJob],
                             activeID: MeetingRecorderCenter.ProcessingJob.ID?)
         -> (visible: [MeetingRecorderCenter.ProcessingJob], overflow: Int) {
@@ -429,9 +443,32 @@ struct RecordingIndicatorView: View {
         return (visible, jobs.count - visible.count)
     }
 
-    static func jobPhaseLabel(_ phase: MeetingRecorderCenter.ProcessingJob.Phase) -> String {
+    /// One job pill's inputs read off the Center: the job, and whether the
+    /// queue holds it back for the running recording.
+    struct JobPillItem: Identifiable {
+        let job: MeetingRecorderCenter.ProcessingJob
+        let waitingForCapture: Bool
+        var id: MeetingRecorderCenter.ProcessingJob.ID { job.id }
+    }
+
+    /// The job pills the stack shows (`visibleJobs`), each with its
+    /// `jobsWaitingForCapture` flag.
+    static func jobPillItems(_ center: MeetingRecorderCenter) -> (visible: [JobPillItem], overflow: Int) {
+        let split = visibleJobs(center.jobs, activeID: center.activeJobID)
+        let items = split.visible.map {
+            JobPillItem(job: $0, waitingForCapture: center.jobsWaitingForCapture.contains($0.id))
+        }
+        return (items, split.overflow)
+    }
+
+    /// `waitingForCapture`: a queued job that has to transcribe and waits only
+    /// for the running recording to release the engine
+    /// (`MeetingRecorderCenter.jobsWaitingForCapture`) — said so, because a
+    /// bare "Queued" for the length of a meeting reads as stuck.
+    static func jobPhaseLabel(_ phase: MeetingRecorderCenter.ProcessingJob.Phase,
+                              waitingForCapture: Bool = false) -> String {
         switch phase {
-        case .queued: return "Queued"
+        case .queued: return waitingForCapture ? "Waiting for the recording to stop" : "Queued"
         case let .transcribing(done, total):
             return total > 0 ? "Transcribing \(done)/\(total)" : "Transcribing…"
         case .diarizing: return "Identifying speakers…"
@@ -455,6 +492,8 @@ struct RecordingIndicatorView: View {
 struct RecordingJobPill: View {
     let title: String
     let phase: MeetingRecorderCenter.ProcessingJob.Phase
+    /// A queued job held back by the running recording (see `jobPhaseLabel`).
+    var waitingForCapture = false
     /// Whether the Center's single-slot retry/dismiss would act on *this* job;
     /// the buttons render disabled otherwise rather than silently no-opping.
     let canRetry: Bool
@@ -492,7 +531,8 @@ struct RecordingJobPill: View {
             case .queued:
                 Image(systemName: "clock").foregroundStyle(.secondary)
                 titleText
-                Text("Queued").font(.callout).foregroundStyle(.secondary)
+                Text(RecordingIndicatorView.jobPhaseLabel(phase, waitingForCapture: waitingForCapture))
+                    .font(.callout).foregroundStyle(.secondary)
             case .transcribing, .diarizing, .summarizing:
                 ProgressView().controlSize(.small)
                 Text(RecordingIndicatorView.jobPhaseLabel(phase)).font(.callout)
@@ -543,5 +583,11 @@ struct ModelDownloadPill: View {
             }
         }
         .frame(maxWidth: 420)
+    }
+}
+
+private extension CGSize {
+    static func + (lhs: CGSize, rhs: CGSize) -> CGSize {
+        CGSize(width: lhs.width + rhs.width, height: lhs.height + rhs.height)
     }
 }

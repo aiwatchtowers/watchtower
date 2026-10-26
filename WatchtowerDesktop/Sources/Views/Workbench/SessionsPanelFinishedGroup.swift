@@ -23,7 +23,8 @@ struct SessionsPanelSessionRow: View {
             actions: actions,
             openAsks: openAsks,
             reportLine: row.showsStateLabel ? reportLine : nil,
-            reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
+            reportProgress: row.showsStateLabel && !showsSpecReviewLine
+                ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
             closedAsks: closedAsks > 0
                 ? OwnerAskClosedButton(vm: vm, projectID: projectID, sessionID: row.id, count: closedAsks)
                 : nil,
@@ -47,10 +48,20 @@ struct SessionsPanelSessionRow: View {
     }
 
     /// The report line, or "Cleaning up…" while Delete and Clean Up or a
-    /// Clean Up… apply runs on this row (board #535).
+    /// Clean Up… apply runs on this row (board #535), or the spec review
+    /// author loop's round while one of its asks is in the loop (#1121).
     private var reportLine: String? {
-        if isCleaningUp || vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying { return "Cleaning up…" }
+        if showsCleaningUp { return "Cleaning up…" }
+        if let line = vm.specReviewLine(sessionID: row.id) { return line }
         return vm.reportLine(sessionID: row.id, projectID: projectID)
+    }
+
+    private var showsCleaningUp: Bool {
+        isCleaningUp || vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying
+    }
+
+    private var showsSpecReviewLine: Bool {
+        !showsCleaningUp && vm.specReviewLine(sessionID: row.id) != nil
     }
 
     private var isCleaningUp: Bool { vm.cleaningUpSessions.contains(row.id) }
@@ -73,34 +84,5 @@ struct SessionsPanelSessionRow: View {
                 if case let .confirm(busy) = await vm.deleteQuicklyOrConfirm(session) { actions.delete(busy) }
             }
         }
-    }
-}
-
-/// The "▸ N finished" / "▾ N finished" header at the bottom of SESSIONS
-/// (board #480, spec 2026-10-12-sessions-panel-design §4.5): a click opens
-/// or folds the group, remembered per workbench.
-struct SessionsPanelFinishedHeader: View {
-    let count: Int
-    let expanded: Bool
-    let onFold: () -> Void
-
-    var body: some View {
-        Button(action: onFold) {
-            HStack(spacing: 4) {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.caption2.weight(.semibold))
-                    .frame(width: 10)
-                Text("\(count) finished")
-                    .font(.caption)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .listRowSeparator(.hidden)
-        .help(expanded ? "Hide finished sessions" : "Show finished sessions")
-        .accessibilityLabel("\(count) finished session\(count == 1 ? "" : "s"), \(expanded ? "expanded" : "collapsed")")
-        .accessibilityAddTraits(.isHeader)
     }
 }

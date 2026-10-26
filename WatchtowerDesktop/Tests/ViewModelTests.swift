@@ -389,88 +389,6 @@ final class AIProviderTests: XCTestCase {
     }
 }
 
-// MARK: - SearchViewModel
-
-final class SearchViewModelTests: XCTestCase {
-    private var dbManager: DatabaseManager!
-    private var dbPath: String!
-
-    override func setUp() {
-        super.setUp()
-        do {
-            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
-        } catch {
-            XCTFail("setUp failed: \(error)")
-        }
-    }
-
-    override func tearDown() {
-        TestDatabase.cleanup(path: dbPath)
-        super.tearDown()
-    }
-
-    @MainActor
-    func testEmptyQueryClearsResults() {
-        let vm = SearchViewModel(dbManager: dbManager)
-        vm.query = "   "
-        vm.search()
-
-        XCTAssertTrue(vm.results.isEmpty)
-    }
-
-    @MainActor
-    func testInitialState() {
-        let vm = SearchViewModel(dbManager: dbManager)
-
-        XCTAssertEqual(vm.query, "")
-        XCTAssertTrue(vm.results.isEmpty)
-        XCTAssertFalse(vm.isSearching)
-        XCTAssertNil(vm.errorMessage)
-    }
-
-    @MainActor
-    func testSearchSetsIsSearching() async throws {
-        let vm = SearchViewModel(dbManager: dbManager)
-        vm.query = "hello"
-        vm.search()
-
-        // Await the search itself (debounce included), not a fixed sleep.
-        await vm.searchTask?.value
-
-        // After completion, isSearching should be false
-        XCTAssertFalse(vm.isSearching)
-    }
-
-    @MainActor
-    func testSearchCancelsOnNewQuery() async throws {
-        let vm = SearchViewModel(dbManager: dbManager)
-        vm.query = "first"
-        vm.search()
-
-        // Immediately issue new search, cancelling previous
-        vm.query = "  "
-        vm.search()
-
-        XCTAssertTrue(vm.results.isEmpty)
-    }
-
-    @MainActor
-    func testSearchCancelsPreviousTask() async throws {
-        let vm = SearchViewModel(dbManager: dbManager)
-        vm.query = "alpha"
-        vm.search()
-
-        // Issue second query before debounce completes
-        vm.query = "beta"
-        vm.search()
-
-        // Wait for the surviving search to finish, not a fixed sleep.
-        await vm.searchTask?.value
-
-        XCTAssertFalse(vm.isSearching)
-    }
-}
-
 // MARK: - TracksViewModel
 
 final class TracksViewModelTests: XCTestCase {
@@ -617,7 +535,9 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testDeleteSelectedSwitchesToFirst() async throws {
+    /// Deleting the selected chat selects no other (none is marked read
+    /// without being shown; the view lands).
+    func testDeleteSelectedClearsTheSelection() async throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
         let conv1Row = await vm.createConversation()
         let conv1 = try XCTUnwrap(conv1Row)
@@ -627,8 +547,8 @@ final class ChatHistoryViewModelTests: XCTestCase {
 
         await vm.deleteConversation(conv2.id)
 
-        XCTAssertEqual(vm.conversations.count, 1)
-        XCTAssertEqual(vm.selectedConversationID, conv1.id)
+        XCTAssertEqual(vm.conversations.map(\.id), [conv1.id])
+        XCTAssertNil(vm.selectedConversationID)
     }
 
     @MainActor
@@ -677,7 +597,7 @@ final class ChatHistoryViewModelTests: XCTestCase {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
         XCTAssertTrue(vm.conversations.isEmpty)
 
-        vm.load()
+        vm.reloadRows()
 
         // load() is async via Task.detached, give it a moment
         let expectation = XCTestExpectation(description: "load completes")

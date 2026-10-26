@@ -42,7 +42,7 @@ Your reply does not close a mail item. Slack, Jira and calendar items resolve wh
 <!-- learn
 id: mail-connect-gmail
 title: Bring your Gmail in
-text: Add a Google account in **Settings → Connections** with **Gmail** on; mail to you joins Slack and Jira.
+text: Add a Google account in **Connections** with **Gmail** on; mail to you joins Slack and Jira.
 area: communication
 level: basics
 kind: feature
@@ -53,7 +53,7 @@ action: connect:google
 <!-- learn
 id: mail-connect-imap
 title: Connect Outlook or an IMAP mailbox
-text: Under **Email** in **Settings → Connections**, click **Add Account** and pick **Connect Outlook** or **IMAP**.
+text: Under **Email** in **Connections**, click **Add Account** and pick **Connect Outlook** or **IMAP**.
 area: communication
 level: next
 kind: feature
@@ -61,12 +61,12 @@ since: 0.24.0
 action: connect:imap
 -->
 
-1. Open **Settings → Connections**.
+1. Open **Connections**.
 2. For Gmail with Calendar, use **Google** and click **Add Google Account**. Leave **Gmail** switched on and click **Connect**.
 3. For Gmail on its own, Outlook or another IMAP mailbox, use **Email** and click **Add Account**. Choose **Connect Gmail**, **Connect Outlook** or fill in the **IMAP** form (host, username, password; port, security and folder wait under **Advanced** with the usual 993, SSL and `INBOX`) and click **Test and Connect**.
 4. Wait for the next sync cycle, then check **Catch Up** or the next briefing.
 
-Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** under **Settings → Connections → Google**. Remove one account with **Remove**.
+Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** under **Connections → Google**. Remove one account with **Remove**.
 
 ## When it's empty or wrong
 

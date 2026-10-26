@@ -34,4 +34,24 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(BoardRowModel(plain, snapshot: without).statusText, "In progress")
         XCTAssertEqual(try XCTUnwrap(BoardTargetDetailModel(targetID: plain.id, snapshot: without, now: now)).statusLabel, "In progress")
     }
+
+    /// The board card keeps the old rows' meta: open asks in the waiting
+    /// tone and the PR text (the live-session dot is the card's own).
+    func testCardCarriesAsksAndPR() throws {
+        let snapshot = try demoSnapshot(now: now)
+        let target = try XCTUnwrap(snapshot.targets.first { $0.id == 415 })
+        let card = BoardRowModel(target, snapshot: snapshot).card
+        let asks = try XCTUnwrap(card.details.first { $0.role == .ask })
+        XCTAssertEqual(asks.text, "2 asks")
+        XCTAssertEqual(asks.tone, .waitingForYou)
+        XCTAssertTrue(card.details.contains { $0.text == "PR #175" })
+        XCTAssertFalse(card.details.contains { $0.text == "Session working" })
+    }
+
+    func testDoneFoldFollowsTheFilter() {
+        XCTAssertFalse(BoardView.doneFoldOpen(flipped: false, filter: .open))
+        XCTAssertTrue(BoardView.doneFoldOpen(flipped: false, filter: .archive))
+        XCTAssertTrue(BoardView.doneFoldOpen(flipped: true, filter: .open))
+        XCTAssertFalse(BoardView.doneFoldOpen(flipped: true, filter: .archive))
+    }
 }

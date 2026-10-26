@@ -249,7 +249,7 @@ final class HomeViewTests: XCTestCase {
         var tapped: HomeLink?
         let rows = [GettingReadySourceRow(source: .jira, features: [.jira])]
         let view = makeContent(viewSnapshot(.shown(cards: [], sourceRows: rows))) { tapped = $0 }
-        XCTAssertNoThrow(try view.inspect().find(text: "Connect Jira to get Boards, Workload, Blockers, Project Map and Releases"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Connect Jira to get Workload, Blockers, Project Map and Releases"))
         try view.inspect().find(button: "Connect Jira").tap()
         XCTAssertEqual(tapped, .connect(.jira))
         // Two features on one tab name it once; the others by their tab.

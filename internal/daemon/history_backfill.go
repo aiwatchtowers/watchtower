@@ -16,7 +16,6 @@ import (
 	"watchtower/internal/gmail"
 	"watchtower/internal/historybackfill"
 	"watchtower/internal/ideas"
-	"watchtower/internal/planusage"
 	"watchtower/internal/sync"
 )
 
@@ -223,17 +222,9 @@ func (d *Daemon) historyBackfillHooksDone() bool {
 // runner calls it on every Step while that holds; the stamp file makes it
 // run-once, and is written only when both succeeded, so a failure is retried
 // on the next Step. Neither touches lastPeople nor the attempt budgets. The
-// runner calls it under its budget ctx, and while the Claude plan limit is
-// near the hooks wait — held, not failed, no stamp — for a later Step (R21).
+// runner calls it under its budget ctx.
 func (d *Daemon) onSlackBackfillDone(ctx context.Context, floor time.Time) error {
 	if d.historyBackfillHooksDone() {
-		return nil
-	}
-	st, err := d.db.GetPlanUsageStatus()
-	if err != nil {
-		d.logger.Printf("history backfill: plan usage status: %v", err) // unreadable: does not block
-	} else if planusage.NearLimit(st) {
-		d.logger.Printf("history backfill: Claude plan limit near, the Slack-done follow-ups wait")
 		return nil
 	}
 	var firstErr error

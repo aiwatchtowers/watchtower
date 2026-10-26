@@ -54,6 +54,9 @@ type OwnerAskFilter struct {
 	// ExcludeAutomation leaves automation runs' asks out (a session-side
 	// reader: list_asks).
 	ExcludeAutomation bool
+	// ExcludeSpecLoop leaves out asks whose spec review is still in the
+	// author loop (hidden from the owner until it ends).
+	ExcludeSpecLoop bool
 }
 
 // Withdrawn reasons (owner_asks.withdrawn_reason).
@@ -292,6 +295,9 @@ func (db *DB) ListOwnerAsks(workbenchID int64, f OwnerAskFilter) ([]OwnerAsk, er
 	}
 	if f.ExcludeAutomation {
 		q += ` AND ` + notAutomationAsk
+	}
+	if f.ExcludeSpecLoop {
+		q += ` AND NOT EXISTS (SELECT 1 FROM spec_reviews r WHERE r.ask_id = a.id AND r.loop = 'author')`
 	}
 	q += ` ORDER BY CASE a.status WHEN 'answered' THEN 0 WHEN 'open' THEN 1 ELSE 2 END, a.id DESC`
 	if f.Limit > 0 {

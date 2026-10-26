@@ -27,7 +27,7 @@ final class ReplicaWiringTests: XCTestCase {
         .workbenchComment: 3,
         .sessionReport: 3,
         .sessionTimeline: 5,
-        .sessionChat: 1,
+        .sessionChat: 2,
         .calendarEvent: 6,
         .meetingTranscript: 1
     ]

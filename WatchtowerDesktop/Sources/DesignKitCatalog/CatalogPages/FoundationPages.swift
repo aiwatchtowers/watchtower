@@ -24,7 +24,7 @@ struct ColoursPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.hero) {
             PageSection("Surfaces") {
-                Sample("A side panel beside a tab's content, as in AI Chat and the Workbench",
+                Sample("A side panel beside a tab's content, as in Chats and the Workbench",
                        usage: "panel.panelBackground()  ·  content.detailBackground()") {
                     HStack(spacing: 0) {
                         VStack(alignment: .leading, spacing: Spacing.compact) {
@@ -140,7 +140,7 @@ struct SpacingPage: View {
     static let paneWidths = [
         Step(name: "sideListMin", value: PaneWidth.sideListMin), Step(name: "sideListIdeal", value: PaneWidth.sideListIdeal),
         Step(name: "sideListMax", value: PaneWidth.sideListMax), Step(name: "detailMin", value: PaneWidth.detailMin),
-        Step(name: "narrowPage", value: PaneWidth.narrowPage)
+        Step(name: "narrowPage", value: PaneWidth.narrowPage), Step(name: "gridCardMin", value: PaneWidth.gridCardMin)
     ]
 
     static let listLayout = [
@@ -393,6 +393,7 @@ struct TypographyPage: View {
 
 struct IconsPage: View {
     private let sizes: [(Step, String, String)] = [
+        (Step(name: "stateDot", value: IconSize.stateDot), "circle.fill", "a panel row's state dot"),
         (Step(name: "chevron", value: IconSize.chevron), "chevron.down", "a menu label's chevron"),
         (Step(name: "header", value: IconSize.header), "rectangle.split.2x1", "header and toolbar glyphs"),
         (Step(name: "composer", value: IconSize.composer), "paperclip", "the composer's buttons"),

@@ -20,6 +20,15 @@ final class ChatLandingPolicyTests: XCTestCase {
         ChatLandingPolicy.decide(last: last, lastViewedAt: viewedAgo.map { now.addingTimeInterval(-$0) }, now: now)
     }
 
+    /// ⌘N / New Chat follow the panel's project only while the panel is
+    /// visible; a hidden panel's remembered level lands outside projects.
+    func testANewChatFollowsTheProjectOnlyWhileThePanelIsVisible() {
+        XCTAssertEqual(ChatLandingPolicy.newChatProject(level: .project(7), panelVisible: true), 7)
+        XCTAssertNil(ChatLandingPolicy.newChatProject(level: .project(7), panelVisible: false))
+        XCTAssertNil(ChatLandingPolicy.newChatProject(level: .all, panelVisible: true))
+        XCTAssertNil(ChatLandingPolicy.newChatProject(level: .all, panelVisible: false))
+    }
+
     func testResumeWindowIsTwoHours() {
         XCTAssertEqual(ChatLandingPolicy.resumeWindow, 2 * 60 * 60)
     }

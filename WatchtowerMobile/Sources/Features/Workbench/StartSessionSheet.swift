@@ -78,54 +78,68 @@ struct StartSessionSheet: View {
     // MARK: - Form
 
     private func form(_ model: StartSessionFormModel) -> some View {
-        Form {
-            Section {
-                LabeledContent("Workbench", value: model.workbenchName)
-                if fixedTargetID != nil {
-                    LabeledContent("Target") {
-                        Text(model.targetLabel ?? "").font(.callout).lineLimit(2)
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.medium) {
+                SheetField(label: "Workbench") { Text(model.workbenchName) }
+                SheetField(label: "Target") {
+                    if fixedTargetID != nil {
+                        Text(model.targetLabel ?? "").lineLimit(2)
+                    } else {
+                        Picker("Target", selection: targetBinding(model)) {
+                            Text("Choose a target").tag(Int64?.none)
+                            ForEach(model.targetOptions) { Text($0.label).tag(Int64?.some($0.id)) }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                } else {
-                    Picker("Target", selection: targetBinding(model)) {
-                        Text("Choose a target").tag(Int64?.none)
-                        ForEach(model.targetOptions) { Text($0.label).tag(Int64?.some($0.id)) }
+                }
+                if model.target != nil {
+                    SheetField(label: "Brief the session gets") {
+                        TextEditor(text: $draft.brief)
+                            .frame(minHeight: PhoneMetrics.minTouch * 3)
+                            .scrollContentBackground(.hidden)
+                            .disabled(!model.grant.typingAllowed)
+                            .foregroundStyle(model.grant.typingAllowed ? .primary : .secondary)
+                            .accessibilityLabel("Brief the session gets")
                     }
-                    .frame(minHeight: 44)
+                    if let caption = model.briefCaption {
+                        Text(caption).font(TypeScale.meta).foregroundStyle(.secondary).padding(.horizontal, Spacing.small)
+                    }
                 }
-                LabeledContent("Agent", value: model.agent)
-                    .accessibilityHint("The only agent in this version")
-            }
-            if model.target != nil {
-                Section {
-                    TextEditor(text: $draft.brief)
-                        .frame(minHeight: 128)
-                        .font(.callout)
-                        .disabled(!model.grant.typingAllowed)
-                        .foregroundStyle(model.grant.typingAllowed ? .primary : .secondary)
-                        .accessibilityLabel("Brief the session gets")
-                } header: {
-                    Text("Brief the session gets")
-                } footer: {
-                    if let caption = model.briefCaption { Text(caption) }
-                }
-                Section {
-                    Toggle("Bring the window forward on the Mac", isOn: $draft.bringForward)
-                        .frame(minHeight: 44)
-                    Toggle("Plan first, then ask me", isOn: $draft.planFirst)
-                        .frame(minHeight: 44)
-                }
-            }
-            if let existing = model.existing {
-                Section("This target has a session") {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(existing.title).font(.subheadline)
-                        Text(existing.caption).font(.caption).foregroundStyle(.secondary)
+                optionsCard(model)
+                if let existing = model.existing {
+                    SectionHeader("This target has a session")
+                    VStack(alignment: .leading, spacing: Spacing.tight) {
+                        Text(existing.title).font(TypeScale.rowTitle)
+                        Text(existing.caption).font(TypeScale.meta).foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .combine)
+                    .card()
+                }
+            }
+            .padding(Spacing.large)
+        }
+        .background(Color(.systemBackground))
+        .safeAreaInset(edge: .bottom, spacing: 0) { formButtons(model) }
+    }
+
+    /// Agent, and the two switches, on one card (mockup 12).
+    private func optionsCard(_ model: StartSessionFormModel) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsRow(title: "Agent") { Text(model.agent) }
+                .accessibilityHint("The only agent in this version")
+            if model.target != nil {
+                CardRowDivider()
+                SettingsRow(title: "Bring the window forward on the Mac") {
+                    Toggle("", isOn: $draft.bringForward).toggleStyle(SmallSwitchStyle())
+                }
+                CardRowDivider()
+                SettingsRow(title: "Plan first, then ask me") {
+                    Toggle("", isOn: $draft.planFirst).toggleStyle(SmallSwitchStyle())
                 }
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { formButtons(model) }
+        .card(.plain, padding: EdgeInsets(top: Spacing.tight, leading: Spacing.medium, bottom: Spacing.tight, trailing: Spacing.medium))
     }
 
     private func targetBinding(_ model: StartSessionFormModel) -> Binding<Int64?> {
@@ -141,7 +155,16 @@ struct StartSessionSheet: View {
         )
     }
 
+    @ViewBuilder
     private func formButtons(_ model: StartSessionFormModel) -> some View {
+        if model.existing == nil, model.startCaption == nil {
+            PrimaryActionBar(primary: BarAction(title: "Start session", isEnabled: model.canStart) { start(.new, model) })
+        } else {
+            pairedButtons(model)
+        }
+    }
+
+    private func pairedButtons(_ model: StartSessionFormModel) -> some View {
         BottomActionBar {
             VStack(spacing: Spacing.regular) {
                 if let caption = model.startCaption {
@@ -170,35 +193,51 @@ struct StartSessionSheet: View {
         Button(action: action) {
             Text(title).frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.large)
+        .buttonStyle(SecondaryActionStyle())
     }
 
     // MARK: - Progress
 
     private func progressView(_ progress: StartProgressModel, _ model: StartSessionFormModel) -> some View {
-        List {
-            Section {
-                ForEach(progress.steps) { step in
-                    StepRow(state: Self.stepState(step.state), text: step.title)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityValue(Self.stepValue(step.state))
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                SectionHeader(model.progressHeader)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(progress.steps) { step in
+                        StepRow(state: Self.stepState(step.state), text: step.title)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityValue(Self.stepValue(step.state))
+                    }
+                    if let waiting = progress.waitingLine {
+                        Label(waiting, systemImage: "clock")
+                            .font(TypeScale.meta)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, Spacing.regular)
+                    }
+                    if let failure = progress.failure {
+                        Text(failure)
+                            .font(.subheadline)
+                            .foregroundStyle(PhoneTone.red.color)
+                            .padding(.vertical, Spacing.regular)
+                    }
+                    if progress.isEnded {
+                        Text(SessionStartText.ended)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, Spacing.regular)
+                    }
                 }
-                if let waiting = progress.waitingLine {
-                    Label(waiting, systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                .card()
+                if progress.failure == nil && !progress.isEnded {
+                    Text(SessionStartText.leaveHint)
+                        .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, Spacing.small)
                 }
-                if let failure = progress.failure {
-                    Text(failure).font(.subheadline).foregroundStyle(PhoneTone.red.color)
-                }
-                if progress.isEnded {
-                    Text(SessionStartText.ended).font(.subheadline).foregroundStyle(.secondary)
-                }
-            } header: {
-                Text(model.progressHeader)
-            } footer: {
-                if progress.failure == nil && !progress.isEnded { Text(SessionStartText.leaveHint) }
             }
+            .padding(Spacing.large)
         }
+        .background(Color(.systemBackground))
         .safeAreaInset(edge: .bottom, spacing: 0) { progressButtons(progress, model) }
     }
 
