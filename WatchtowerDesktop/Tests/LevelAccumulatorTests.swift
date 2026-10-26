@@ -82,6 +82,43 @@ extension MeetingRecorderCenterTests {
         }
     }
 
+    /// The mute reaches the recorder only while a capture runs, and every
+    /// capture ends unmuted.
+    func testMicMuteForwardsToTheRecorderAndResetsOnStop() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 3)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        center.setMicMuted(true)
+        XCTAssertFalse(center.micMuted, "no capture, nothing to mute")
+        XCTAssertEqual(recorder.mutedCalls, [])
+
+        await center.startRecording(eventID: nil, title: "Mute")
+        XCTAssertFalse(center.micMuted, "a capture starts unmuted")
+        center.setMicMuted(true)
+        XCTAssertTrue(center.micMuted)
+        center.setMicMuted(false)
+        center.setMicMuted(true)
+        XCTAssertEqual(recorder.mutedCalls, [true, false, true])
+
+        await center.stopAndProcess(config: singleWindowConfig())
+        XCTAssertFalse(center.micMuted, "the mute ends with the capture")
+    }
+
     // The live warning: after the call was heard, two minutes of silence on
     // the system channel raise `callAudioSilentSince`; the call coming back
     // clears it, and so does stopping.

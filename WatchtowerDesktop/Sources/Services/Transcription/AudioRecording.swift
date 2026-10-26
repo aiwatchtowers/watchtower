@@ -32,6 +32,13 @@ protocol AudioRecording: AnyObject {
     var liveSamples: AsyncStream<[Float]> { get }
     /// Throttled (~10 Hz) live level pairs; finishes on stop(). Optional to consume.
     var liveLevels: AsyncStream<CaptureLevels> { get }
+    /// Keeps the owner's microphone out of the recording while `muted`; the
+    /// call audio is still captured. Starts unmuted on every `start`.
+    func setMicMuted(_ muted: Bool)
+}
+
+extension AudioRecording {
+    func setMicMuted(_ muted: Bool) {}
 }
 
 enum AudioRecordingError: LocalizedError {

@@ -201,12 +201,23 @@ struct RecordingIndicatorView: View {
     }
 
     /// Compact mic + system level meters answering "is my mic alive" and "is
-    /// system audio actually being captured" at a glance.
+    /// system audio actually being captured" at a glance. The mic icon is the
+    /// mute toggle: a muted mic stays out of the recording (its meter reads
+    /// silence), while the call is still captured.
     @ViewBuilder
     private func captureLevelIndicators(_ center: MeetingRecorderCenter) -> some View {
-        Image(systemName: "mic.fill")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+        Button {
+            center.setMicMuted(!center.micMuted)
+        } label: {
+            Image(systemName: center.micMuted ? "mic.slash.fill" : "mic.fill")
+                .font(.caption2)
+                .foregroundStyle(center.micMuted ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+        }
+        .buttonStyle(.plain)
+        .help(center.micMuted
+              ? "Unmute: your microphone is not being recorded"
+              : "Mute your microphone in the recording (the call is still recorded)")
+        .accessibilityLabel(center.micMuted ? "Unmute microphone" : "Mute microphone")
         MicLevelBars(level: center.captureLevels.mic, barCount: 3)
             .help("Microphone level")
         Image(systemName: "speaker.wave.2.fill")

@@ -65,6 +65,11 @@ final class SystemAudioRecorder: AudioRecording {
         impl = nil
         return try recorder.stop()
     }
+
+    func setMicMuted(_ muted: Bool) {
+        guard #available(macOS 14.4, *), let recorder = impl as? TapRecorderImpl else { return }
+        recorder.setMicMuted(muted)
+    }
 }
 
 /// Accumulates per-frame raw mic/system samples into ~100 ms RMS pairs for the
@@ -134,6 +139,11 @@ private final class TapRecorderImpl {
     /// recording into the next. nil = the `transcription.micAGC` gate is off,
     /// and the mix line below is then exactly what it was before the AGC.
     private var micAGC: MicAGC?
+    /// The owner's mute (`setMicMuted`) and the mic term's current scale,
+    /// which glides to 0 or 1 across one IO cycle so a toggle never clicks.
+    /// Both touched only on `writeQueue`, like the accumulators.
+    private var micMuted = false
+    private var micMuteGain: Float = 1
     /// Rebuilds the tap on a default-device change; nil when the
     /// `transcription.reattachSystemAudio` gate is off or its listener could
     /// not be installed. Lives on `controlQueue`.
@@ -281,6 +291,10 @@ private final class TapRecorderImpl {
         levelsContinuation?.finish()
     }
 
+    func setMicMuted(_ muted: Bool) {
+        writeQueue.async { self.micMuted = muted }
+    }
+
     // MARK: Capture path
 
     /// Mixes one IO cycle to mono: buffer 0 is the mic sub-device, the rest is
@@ -374,9 +388,16 @@ private final class TapRecorderImpl {
             from: previousGain, to: micAGC?.appliedGain ?? 1, frameCount: frameCount
         )
         var agcGain = glide.start
+        // The mute scales the mic before the sidecar, the meter and the mix:
+        // a muted owner is absent from the file, from the «Я» heuristic and
+        // from the meter alike. The AGC above keeps judging the raw mic, so
+        // unmuting resumes at a gain that matches the room.
+        let muteTarget: Float = micMuted ? 0 : 1
+        let muteStep = (muteTarget - micMuteGain) / Float(frameCount)
 
         for frame in 0..<frameCount {
-            let mic = channelAverage(firstBuffer, frame: frame)
+            micMuteGain += muteStep
+            let mic = channelAverage(firstBuffer, frame: frame) * micMuteGain
             let system = systemAverage(frame: frame)
             // The sidecar records the RAW pre-gain mic level on purpose:
             // RoleAssigner's «Я» heuristic compares mic vs system RMS, so
@@ -393,6 +414,7 @@ private final class TapRecorderImpl {
             out[frame] = tanhf(system + 0.9 * agcGain * mic)
             agcGain += glide.step
         }
+        micMuteGain = muteTarget
         if let levels = levelAccumulator.flush(sampleRate: format.sampleRate) {
             levelsContinuation?.yield(levels)
         }

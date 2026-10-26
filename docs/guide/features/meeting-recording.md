@@ -25,6 +25,8 @@ done_when: meeting.recorded
 
 The pill floats over the window. Drag it by its background anywhere in the window: it stays where you drop it, across launches, and snaps back into a corner when you drop it close to one. The live-transcript panel opens from it toward the middle of the window. Nothing on the screen moves to make room for it, so if it covers something, drag it aside.
 
+Click the microphone icon on the pill to mute yourself in the recording. While it shows a red crossed-out microphone, your voice is not recorded and its meter stays flat; the other participants are still recorded. This mutes only the recording, not you in the call itself. Every recording starts unmuted.
+
 After **Stop**, the recording joins a queue, and each queued recording gets its own pill: "Transcribing 2/5", "Identifying speakers…", "Summarizing…".
 
 You can start a new recording while an old one is processing. Only one transcription runs at a time, so while an earlier recording is still being transcribed, the new live panel reads "Waiting for previous transcription… live transcript will catch up." It catches up as soon as that transcription ends.
