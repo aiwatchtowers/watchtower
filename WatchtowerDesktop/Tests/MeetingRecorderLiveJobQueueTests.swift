@@ -133,8 +133,8 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
     /// together — meeting 2 starts while meeting 1's live tail is still
     /// draining. Meeting 1's job has live text, so it is saved while meeting 2
     /// records (it used to sit "Queued" until meeting 2 stopped), and meeting
-    /// 2's live pass takes the engine meeting 1 handed to its job instead of
-    /// loading a second one.
+    /// 2's live pass gets meeting 1's engine straight from the drained tail
+    /// instead of loading a second one — whichever of the two then runs first.
     func testStopThenImmediateStartSavesTheLiveJobDuringTheNextCapture() async throws {
         let recorder1 = FakeRecorder()
         let recorder2 = FakeRecorder()
@@ -179,7 +179,7 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.isCapturing)
         let running = await waitUntil("meeting 2's live pass to run") { center.liveEngineState == .running }
         guard running else { return }
-        XCTAssertEqual(engineLoads, 1, "meeting 2's live pass took the handed-over engine — never two loaded")
+        XCTAssertEqual(engineLoads, 1, "meeting 2's live pass took the tail's engine — never two loaded")
 
         recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
         recorder2.emitLive([Float](repeating: 0, count: 1600))

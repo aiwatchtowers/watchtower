@@ -463,9 +463,10 @@ final class MeetingRecorderCenter {
 
     /// Test seam into the handover gap (see `isEngineBusy`): fires once per
     /// stop that owned the live pass, in the same main-actor step in which
-    /// `stopAndProcess` hands the live engine (nil if its load failed) to the
-    /// job and releases the live slot — after both, and before the job's own
-    /// task can claim `activeJobID`. Lets a test tick the warm policy exactly
+    /// `stopAndProcess` hands the live engine (nil if its load failed) on — to
+    /// a recording parked on the tail, else to the job — and releases the
+    /// live slot — after both, and before the job's own task can claim
+    /// `activeJobID`. Lets a test tick the warm policy exactly
     /// there instead of racing the scheduler to observe the gap. Nil in
     /// production.
     @ObservationIgnored var onLiveEngineHandedToJobForTesting: (() -> Void)?
@@ -1097,8 +1098,11 @@ final class MeetingRecorderCenter {
     /// provider that simply does not support live — only sets
     /// `liveEngineState` to `.unavailable` and leaves the batch fallback to
     /// handle stop. The loaded transcriber is stashed either way so the
-    /// recording's job reuses it instead of loading twice.
-    private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig) {
+    /// recording's job reuses it instead of loading twice. `handed` is an
+    /// engine the previous recording's drained tail passed straight on (its
+    /// key already checked against Settings); otherwise `takeWarmOrLoad`.
+    private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig,
+                               handed: LoadedEngine? = nil) {
         liveChunks = []
         liveEngineState = .loading
         loadedEngine = nil
@@ -1114,9 +1118,13 @@ final class MeetingRecorderCenter {
             }
             let loaded: LoadedEngine
             do {
-                // Warm-slot fast path: a parked (or currently prewarming)
-                // engine is taken instead of loading a second one.
-                loaded = try await self.takeWarmOrLoad(config)
+                if let handed {
+                    loaded = handed
+                } else {
+                    // Warm-slot fast path: a parked (or currently prewarming)
+                    // engine is taken instead of loading a second one.
+                    loaded = try await self.takeWarmOrLoad(config)
+                }
             } catch {
                 // A failed model download is on screen already (its pill has
                 // Retry); the batch pass at Stop tries the download again.
@@ -1242,16 +1250,23 @@ final class MeetingRecorderCenter {
                     $0.liveDurationSec = result.durationSec
                 }
             }
-            // The engine the live pass loaded moves to the job (with the key
-            // it was loaded for), so a batch fallback reuses it instead of
-            // loading a second one. A job with live text parks it once it
-            // starts — unless a recording's live pass takes it over first
-            // (`takeWarmOrLoad`), e.g. the one parked on this tail, started
-            // just below.
-            updateJob(job.id) { $0.engine = loadedEngine }
+            // The engine the live pass loaded (with the key it was loaded
+            // for) goes straight to a recording parked on this tail, so that
+            // recording's live pass neither loads a second one nor depends on
+            // running before this job does. Otherwise the job carries it, so
+            // a batch fallback reuses it instead of loading again — a job
+            // with live text parks it once it starts, unless a later
+            // recording's live pass takes it over first (`takeWarmOrLoad`).
+            // A stale engine (Settings switched provider/model since the
+            // load) never reaches a new pass: the job carries it, and the warm
+            // slot drops it as stale.
+            let liveEngine = loadedEngine
             jobsAwaitingLiveTail.remove(job.id)
             plannedInputs[job.id] = nil // the live text (if any) decides it now
-            releaseLiveEngineSlot()
+            let current = liveEngine.flatMap { $0.key == engineKey() ? $0 : nil }
+            if !releaseLiveEngineSlot(handing: current) {
+                updateJob(job.id) { $0.engine = liveEngine }
+            }
             onLiveEngineHandedToJobForTesting?()
         } else {
             // Capture ended, but the previous recording's tail still holds the
@@ -1275,16 +1290,19 @@ final class MeetingRecorderCenter {
     }
 
     /// Releases the engine slot a finished capture's live pass held and hands it
-    /// on: to a recording that started while the tail was draining, otherwise to
-    /// whatever the queue has parked. Split from clearing `captureState`, which
-    /// happens the moment Stop is pressed — a new recording may start
-    /// immediately, while the engine stays claimed until the tail has drained.
-    private func releaseLiveEngineSlot() {
+    /// on: to a recording that started while the tail was draining (with
+    /// `engine`, when given), otherwise to whatever the queue has parked.
+    /// Split from clearing `captureState`, which happens the moment Stop is
+    /// pressed — a new recording may start immediately, while the engine
+    /// stays claimed until the tail has drained. Returns whether a live pass
+    /// took `engine`; false leaves it with the caller.
+    private func releaseLiveEngineSlot(handing engine: LoadedEngine?) -> Bool {
         liveTask = nil
         loadedEngine = nil
         liveGeneration += 1
-        startPendingLivePass()
+        let started = startPendingLivePass(handing: engine)
         wakeQueueWaiters()
+        return engine != nil && started
     }
 
     // MARK: - Retry / recovery
@@ -1546,12 +1564,16 @@ final class MeetingRecorderCenter {
         startPendingLivePass()
     }
 
-    /// A recording that started while this job held the engine slot loads its
-    /// live engine now and drains the samples buffered since second zero.
-    private func startPendingLivePass() {
-        guard case .recording = captureState, let pending = pendingLiveStart else { return }
+    /// A recording whose live pass waited for the engine slot starts it now
+    /// — on `engine` when one is handed over, else loading its own — and
+    /// drains the samples buffered since second zero. Returns whether a pass
+    /// was parked and started.
+    @discardableResult
+    private func startPendingLivePass(handing engine: LoadedEngine? = nil) -> Bool {
+        guard case .recording = captureState, let pending = pendingLiveStart else { return false }
         pendingLiveStart = nil
-        startLivePass(recorder: pending.recorder, config: pending.config)
+        startLivePass(recorder: pending.recorder, config: pending.config, handed: engine)
+        return true
     }
 
     private func runJob(jobID: ProcessingJob.ID, input: JobInput?, config: TranscriptionConfig) async {
