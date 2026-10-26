@@ -165,6 +165,31 @@ final class CleanupScreenViewTests: XCTestCase {
         XCTAssertNil(vm.pageScreen(projectID: projectID))
     }
 
+    /// Agent Settings across a workbench switch (board #1150, review F1):
+    /// the screen stays open on its workbench, an unsaved instruction draft
+    /// stays that workbench's — never shown in another's field — and
+    /// closing the screen keeps it until Save.
+    func testAgentSettingsDraftsStayWithTheirWorkbench() async throws {
+        let session = try await insertSession("Login redirect")
+        let vm = try await page(showing: session)
+        let projectID = projectID
+        let other = try await pool.write { try TestDatabase.insertWorkbench($0, name: "gizmo", folder: "/tmp/example-gizmo") }
+        await vm.reload()
+        vm.openAgentSettingsScreen(projectID: projectID)
+        vm.agentSettingsDrafts[projectID, default: [:]][.session] = "Use make"
+
+        await vm.switchTo(workbenchID: other)
+        XCTAssertNil(vm.pageScreen(projectID: other), "the other workbench has no screen open")
+        XCTAssertNil(vm.agentSettingsDrafts[other]?[.session], "the draft is not the other workbench's")
+        await vm.switchTo(workbenchID: projectID)
+
+        XCTAssertEqual(vm.pageScreen(projectID: projectID), .agentSettings, "the screen is still open")
+        XCTAssertTrue(vm.isObscured(sessionID: session.id, projectID: projectID))
+        XCTAssertEqual(vm.agentSettingsDrafts[projectID]?[.session], "Use make")
+        vm.closePageScreen(projectID: projectID)
+        XCTAssertEqual(vm.agentSettingsDrafts[projectID]?[.session], "Use make", "closing keeps the unsaved text")
+    }
+
     /// Leaving for another workbench and coming back is not an owner pick:
     /// the screen is still open with its ticks and its ready plan (spec
     /// §3.1), and the session behind it stays covered.

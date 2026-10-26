@@ -15,7 +15,6 @@ struct AgentSettingsScreen: View {
     let project: Workbench
     @Environment(AppState.self) private var appState
     @State private var busy = false
-    @State private var drafts: [InstructionField: String] = [:]
     @State private var showPreview = false
     @FocusState private var focused: Bool
 
@@ -116,6 +115,7 @@ struct AgentSettingsScreen: View {
             }
             caption(key.choiceHelp(shown))
         }
+        .accessibilityElement(children: .contain)
     }
 
     private func fileRow(_ state: WorkbenchMethodologyState) -> some View {
@@ -132,6 +132,7 @@ struct AgentSettingsScreen: View {
                 caption(note, color: Tone.warning)
             }
         }
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: Instructions
@@ -160,9 +161,16 @@ struct AgentSettingsScreen: View {
             suggestions: state.suggestions(for: field, workbenchID: project.id),
             detail: { "\($0.sessionCount) sessions in this workbench" },
             error: vm.instructionErrors[project.id]?[field], busy: busy,
-            draft: Binding(get: { drafts[field] }, set: { drafts[field] = $0 }),
+            draft: Binding(
+                get: { vm.agentSettingsDrafts[project.id]?[field] },
+                set: { vm.agentSettingsDrafts[project.id, default: [:]][field] = $0 }
+            ),
             onSave: { body in
-                run { if await vm.saveInstruction(projectID: project.id, field: field, body: body) { drafts[field] = nil } }
+                run {
+                    if await vm.saveInstruction(projectID: project.id, field: field, body: body) {
+                        vm.agentSettingsDrafts[project.id]?[field] = nil
+                    }
+                }
             },
             onDecide: { row, add in
                 run { await vm.decideSuggestion(projectID: project.id, field: field, id: row.id, add: add) }

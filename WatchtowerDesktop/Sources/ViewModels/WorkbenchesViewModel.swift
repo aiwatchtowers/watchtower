@@ -180,6 +180,10 @@ final class WorkbenchesViewModel {
     /// The workbenches whose Agent Settings screen is open (board #1150):
     /// in memory only, like `cleanupScreens`; one page screen at a time.
     var agentSettingsScreens: Set<Int64> = []
+    /// Agent Settings' unsaved instruction text per workbench and field: it
+    /// outlives the screen (a workbench switch, Esc, ✕) until Save stores
+    /// it, and never shows in another workbench's field.
+    var agentSettingsDrafts: [Int64: [InstructionField: String]] = [:]
     /// Per workbench, the one-time "old worktrees use ~N GB" hint while it
     /// is up (open question 2 of the cleanup spec, owner approved).
     var cleanupHints: [Int64: String] = [:]
