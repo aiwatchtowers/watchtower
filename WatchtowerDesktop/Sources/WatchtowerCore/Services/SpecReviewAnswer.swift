@@ -16,9 +16,14 @@ package enum SpecReviewAnswer {
     /// verdict — with the marks' comments after its own; a `verdict`
     /// replaces the base's. `rendered` hands over the snapshot already
     /// rendered (a caller's cache); nil renders it here.
+    ///
+    /// `loop` is the ledger of a review whose author loop ended (spec
+    /// 2026-10-26 §7): the comments are then the loop's (`loopComments`)
+    /// and the verdict is always `approved`.
     package static func build(
         result: SpecReviewResult?,
         marks: [String: SpecReviewMark],
+        loop: [SpecReviewLedgerEntry]? = nil,
         base: OwnerAskAnswer = OwnerAskAnswer(),
         verdict: OwnerAskAnswer.Verdict? = nil,
         snapshot: String,
@@ -26,8 +31,56 @@ package enum SpecReviewAnswer {
     ) -> OwnerAskAnswer {
         var answer = base
         if let verdict { answer.verdict = verdict }
+        if let loop {
+            answer.verdict = .approved
+            answer.comments += loopComments(
+                ledger: loop, result: result, marks: marks, snapshot: snapshot, rendered: rendered
+            )
+            return answer
+        }
         answer.comments += comments(result: result, marks: marks, snapshot: snapshot, rendered: rendered)
         return answer
+    }
+
+    /// A finished loop's comments, in ledger order: each `comment` mark on a
+    /// ledger key — **Reviewer is right** on a dispute, **Reopen** on a fix —
+    /// anchored at the entry's `where`, else its finding's chapter heading,
+    /// else the document's first heading. `ok` marks (**Author is right**)
+    /// and unpicked disputes send nothing.
+    package static func loopComments(
+        ledger: [SpecReviewLedgerEntry],
+        result: SpecReviewResult?,
+        marks: [String: SpecReviewMark],
+        snapshot: String,
+        rendered render: (() -> RenderedDocument)? = nil
+    ) -> [OwnerAskAnswer.Comment] {
+        let marked = ledger.filter { marks[$0.item.key]?.state == .comment }
+        guard !marked.isEmpty else { return [] }
+        let rendered = render?() ?? DocumentRendering.render(snapshot)
+        return marked.compactMap { entry in
+            guard let mark = marks[entry.item.key] else { return nil }
+            let chapter = result?.findings.first { $0.key == entry.item.key }?.chapter
+            let anchor = entry.item.anchor.flatMap { $0.quote.isEmpty ? nil : ($0.heading, $0.quote) }
+                ?? result.flatMap { r in chapter.flatMap { chapterAnchor(result: r, key: $0, snapshot: snapshot) } }
+                ?? firstHeadingAnchor(snapshot)
+            return comment(heading: anchor.0, quote: anchor.1, body: loopBody(entry, owner: mark.body), in: rendered)
+        }
+    }
+
+    /// "Reviewer is right: <text> — <verdict note>" for a dispute,
+    /// "Reopened: <text>" for a fix the owner reopened; the owner's words
+    /// after a blank line when given.
+    package static func loopBody(_ entry: SpecReviewLedgerEntry, owner body: String) -> String {
+        let text = entry.item.text
+        let head: String
+        if entry.verdict == "resolved" {
+            head = "Reopened: \(text)"
+        } else {
+            let note = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
+            head = note.isEmpty ? "Reviewer is right: \(text)" : "Reviewer is right: \(text) — \(note)"
+        }
+        let owner = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        return owner.isEmpty ? head : "\(head)\n\n\(owner)"
     }
 
     /// The comments the marks give, in findings order, then the comments of
