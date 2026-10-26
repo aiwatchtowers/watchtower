@@ -16,9 +16,12 @@ import (
 // (FILES-01).
 
 const (
-	// claudeMDGrowth is how many runes one edit may add to the file: the
-	// budget is its current length plus this.
+	// claudeMDGrowth is how many runes one edit may add to the file.
 	claudeMDGrowth = 400
+	// claudeMDMaxRunes is the ceiling the coach's edits never push the file
+	// past (owner, ask #659): a file at or over it may only stay the same size
+	// or shrink, so the coach can only cut there.
+	claudeMDMaxRunes = 4000
 	// claudeMDMaxBytes is the largest file the coach will read or write.
 	claudeMDMaxBytes = 256 * 1024
 )
@@ -62,14 +65,24 @@ func readClaudeMDFile(path string) (raw []byte, mode fs.FileMode, exists bool, e
 }
 
 // readClaudeMD is the file's text as a CurrentText: a missing file is an empty
-// text the coach may append to; budget is its length plus claudeMDGrowth.
+// text the coach may append to; the budget is claudeMDBudget.
 func readClaudeMD(path string) (CurrentText, error) {
 	raw, _, _, err := readClaudeMDFile(path)
 	if err != nil {
 		return CurrentText{}, err
 	}
 	return CurrentText{Destination: DestClaudeMDUser, Text: string(raw),
-		Budget: utf8.RuneCount(raw) + claudeMDGrowth}, nil
+		Budget: claudeMDBudget(utf8.RuneCount(raw))}, nil
+}
+
+// claudeMDBudget is the most runes an edit may leave in a file of n runes:
+// n + claudeMDGrowth, capped at claudeMDMaxRunes; a file already at or over
+// the ceiling keeps n (an edit may not grow it).
+func claudeMDBudget(n int) int {
+	if n >= claudeMDMaxRunes {
+		return n
+	}
+	return min(n+claudeMDGrowth, claudeMDMaxRunes)
 }
 
 // replaceClaudeMD makes the file hold to, only while it still holds from (an

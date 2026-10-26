@@ -174,6 +174,21 @@ func TestValidate_ClaudeMDGrowthCap(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestClaudeMDBudget_Ceiling(t *testing.T) {
+	assert.Equal(t, claudeMDGrowth, claudeMDBudget(0))
+	assert.Equal(t, 1000+claudeMDGrowth, claudeMDBudget(1000))
+	assert.Equal(t, claudeMDMaxRunes, claudeMDBudget(claudeMDMaxRunes-100), "growth stops at the ceiling")
+	assert.Equal(t, claudeMDMaxRunes, claudeMDBudget(claudeMDMaxRunes), "at the ceiling: no growth")
+	assert.Equal(t, 5000, claudeMDBudget(5000), "over the ceiling: only the same size or a cut")
+
+	big := CurrentText{Destination: DestClaudeMDUser, Text: strings.Repeat("a", 5000), Budget: claudeMDBudget(5000)}
+	require.Error(t, ValidateAfter(big, big.Text+"b"), "a file over the ceiling may not grow")
+	require.NoError(t, ValidateAfter(big, strings.Repeat("a", 4990)), "a cut passes")
+	near := CurrentText{Destination: DestClaudeMDUser, Text: strings.Repeat("a", 3900), Budget: claudeMDBudget(3900)}
+	require.NoError(t, ValidateAfter(near, near.Text+strings.Repeat("b", 100)))
+	require.Error(t, ValidateAfter(near, near.Text+strings.Repeat("b", 101)), "never past the ceiling")
+}
+
 func TestCollect_ClaudeMDMissingIsEmptyText(t *testing.T) {
 	fakeHome(t)
 	d := openDBs(t)
