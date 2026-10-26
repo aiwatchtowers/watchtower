@@ -39,7 +39,7 @@ final class ScreenshotTourTests: XCTestCase {
         let root = try makeDemoRoot()
         try await poll(timeout: 20, { Self.isHydrated(root.env) }, "the demo seed hydrated")
         let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
-        let shots = Self.workbenchShots() + Self.calendarShots() + Self.onboardingShots()
+        let shots = Self.designSystemShots() + Self.workbenchShots() + Self.calendarShots() + Self.onboardingShots()
         for shot in shots {
             let end = shot.hasEnd ? "\(shot.number)e-\(shot.slug)" : nil
             try await host.capture("\(shot.number)-\(shot.slug)", shot.make(root.env), endName: end)
@@ -166,6 +166,26 @@ final class ScreenshotTourTests: XCTestCase {
     }
 
     // MARK: - The tour table (the review's screen numbers)
+
+    /// DS1–DS8: the design system's parts in the redesign mockups' states
+    /// (`docs/design/mobile/mockups.html`, the screen number in each slug),
+    /// for a side-by-side check against the mockups.
+    static func designSystemShots() -> [Shot] {
+        let gallery = "../Tests/Support/DesignSystemGallery.swift"
+        let pages: [(String, String, @MainActor () -> AnyView)] = [
+            ("DS1", "now-m1", { AnyView(DesignSystemGallery.nowPage) }),
+            ("DS2", "workchat-working-m3", { AnyView(DesignSystemGallery.workchatWorkingPage) }),
+            ("DS3", "workchat-waiting-m4", { AnyView(DesignSystemGallery.workchatWaitingPage) }),
+            ("DS4", "board-m5", { AnyView(DesignSystemGallery.boardPage) }),
+            ("DS5", "calendar-m7", { AnyView(DesignSystemGallery.calendarPage) }),
+            ("DS6", "mac-asleep-m8", { AnyView(DesignSystemGallery.workchatAsleepPage) }),
+            ("DS7", "parts-bars-m9-12", { AnyView(DesignSystemGallery.actionsPage) }),
+            ("DS8", "settings-m16", { AnyView(DesignSystemGallery.settingsPage) })
+        ]
+        return pages.map { number, slug, page in
+            Shot(number: number, slug: slug, source: gallery, reached: .leaf) { _ in page() }
+        }
+    }
 
     static func workbenchShots() -> [Shot] {
         let acme = DemoSeed.acmeID

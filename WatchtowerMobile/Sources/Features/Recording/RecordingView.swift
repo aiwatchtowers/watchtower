@@ -133,7 +133,7 @@ private struct RecordingCaptureView: View {
             } label: {
                 ZStack {
                     Circle().fill(PhoneTone.red.color)
-                    RoundedRectangle(cornerRadius: Radius.chip).fill(.white).frame(width: 30, height: 30)
+                    RoundedRectangle(cornerRadius: Radius.control).fill(.white).frame(width: 30, height: 30)
                 }
                 .frame(width: 88, height: 88)
             }

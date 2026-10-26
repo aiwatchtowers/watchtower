@@ -65,8 +65,8 @@ struct AskRow: View {
 
 /// "Waiting for you" as one waiting card of flat ask rows (design pass spec
 /// N4, S2, D4): each row its own link to the ask's form (a permission
-/// request's to its session), rows separated by
-/// `RowDivider`s, an optional header on top. For a `ScrollView` only: one
+/// request's to its session), rows split by a `CardRowDivider`, an
+/// optional header on top. For a `ScrollView` only: one
 /// `List` row cannot hold several links.
 struct WaitingStack<Header: View>: View {
     let asks: [WaitingCardModel]
@@ -77,7 +77,7 @@ struct WaitingStack<Header: View>: View {
             header
             ForEach(Array(asks.enumerated()), id: \.element.id) { index, ask in
                 if index > 0 {
-                    RowDivider()
+                    CardRowDivider(inset: Spacing.large)
                 }
                 link(ask)
             }

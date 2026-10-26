@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The Mac's type roles at iPhone sizes (design pass spec §2.8); everything
 /// else uses system styles directly. Monospaced is only for counts, times,
-/// keys and code; no role is uppercase. Meta lines use `.caption`, because
+/// keys and code; only `capsHeader` is uppercase. Meta lines use `.caption`, because
 /// `.caption2` is too small for a whole line on a phone; `.caption2` stays
 /// for badges and pills.
 enum TypeScale {
@@ -10,8 +10,13 @@ enum TypeScale {
     static let screenTitle = Font.title3.weight(.semibold)
     /// Session title, Saved recording.
     static let pageTitle = Font.title2.weight(.semibold)
-    /// Section labels, never uppercase.
+    /// A system `List` section label, never uppercase.
     static let sectionHeader = Font.footnote.weight(.semibold)
+    /// The caps section header of a scroll view (mockups' `.sec`, the
+    /// Desktop Home's zone titles): uppercased with `Tracking.caps`.
+    static let capsHeader = Font.caption2.weight(.semibold)
+    /// A board lane's title (mockup 5's `.lane`), sentence case.
+    static let laneHeader = Font.footnote.weight(.semibold)
     /// A flat row's title, a card's body text.
     static let rowTitle = Font.callout
     /// Workbench name, next-meeting title.

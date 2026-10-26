@@ -117,7 +117,7 @@ struct WorkbenchView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if !menu.waiting.isEmpty {
-                    SectionHeader(menu.waitingHeader, tone: menu.waitingHeaderTone)
+                    SectionHeader(menu.waitingHeader, tone: menu.waitingHeaderTone).padding(.horizontal, Spacing.large)
                     WaitingStack(asks: menu.waiting)
                         .padding(.horizontal, Spacing.large)
                 }
@@ -139,14 +139,11 @@ struct WorkbenchView: View {
                     .foregroundStyle(.secondary)
                     .padding(RowInsets.flat)
                 }
-                SectionHeader("Sessions")
+                SectionHeader("Sessions").padding(.horizontal, Spacing.large)
                 if let empty = menu.sessionsEmptyText {
                     Text(empty).foregroundStyle(.secondary).padding(.horizontal, Spacing.large)
                 } else {
-                    ForEach(Array(menu.sessions.enumerated()), id: \.element.id) { index, row in
-                        if index > 0 {
-                            RowDivider()
-                        }
+                    ForEach(menu.sessions) { row in
                         NavigationLink(value: SessionRoute(id: row.id)) { SessionRowView(row: row) }
                             .buttonStyle(.plain)
                     }

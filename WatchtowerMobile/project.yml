@@ -60,6 +60,10 @@ targets:
         product: WatchtowerKit
       - package: WatchtowerKit
         product: WatchtowerSync
+      # The design tokens shared with the Desktop (Spacing, Radius, Fill,
+      # Stroke, Tone, Motion …), re-exported by DesignSystem/Metrics.swift.
+      - package: WatchtowerKit
+        product: WatchtowerDesign
       - package: GRDB
         product: GRDB
       # App extensions are embedded into the app's PlugIns folder.
