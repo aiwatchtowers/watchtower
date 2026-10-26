@@ -26,7 +26,8 @@ Out of scope: chat search (⌘K stays as is), archive view, the phone, any Go-si
 - `SidebarDestination.chat.title` → "Chats". The raw value `chat`, the `watchtower-nav://chat` screen name, `EmptyStateCopyTable` keys and every stored identifier stay (persona-merge rule: stable legacy identifiers).
 - Every user-visible string that names the tab ("Open in AI Chat", "the AI Chat tab", the shortcut catalog's area "AI Chat", help/tooltips, Inbox card buttons) says "Chats" / "Open in Chats". Code comments and type names are not renamed.
 - The guide: pages keep their paths (`docs/guide/features/ai-chat*.md` — Learn cards and `guide.Map()` link by path); their text and titles say "Chats". `docs/inventory/chat.md`'s title says "main chat (Chats tab)"; no contract changes.
-- Go prompts that name the tab for the model (`appGuideSection`, the nav rule) follow the guide; if any Go string says "AI Chat" to the user it changes too.
+- Go prompts that name the tab for the model (`appGuideSection`, the nav rule) follow the guide; if any Go string says "AI Chat" to the user it changes too. The main chat's system-prompt golden (`internal/chat/testdata/system_prompt_main.golden`, which lists the guide's page titles) is regenerated with the new titles.
+- The guide also **describes the new panel**, not only the new name: the switcher and the two levels, the row states, delete with Undo, the keyboard, the older group and the project page (`docs/guide/features/ai-chat.md`, the shortcuts reference).
 
 ## 4. Panel header and the project switcher
 
@@ -76,6 +77,8 @@ Precedence top to bottom. The dot has an accessibility label naming the state; t
 
 The rows read their line 2 and the unread/approval state through one query (`ChatHistoryQueries.panelRows`) — one pass over `chat_conversations` with correlated subqueries for the last assistant message and the pending-action count — observed with `ValueObservation` like today's list. "Answering" comes from the pool, not the database.
 
+A pending `agent_actions` row is written by the session's MCP subprocess (Go), which a `ValueObservation` in this process does not see. The panel therefore also re-reads its rows on the pool's `onActionAwaited` (a proposal was just written) and `onTurnFinished` callbacks — the same signals `ChatViewModel` already uses to refresh its action feed — and an Approve/Reject in the app is a Swift write the observation sees.
+
 ### 5.3 Delete with Undo
 
 - Hover (or the keyboard cursor) shows ✕ on the row. A click deletes at once and shows the Undo bar under the list (the `SessionDeleteToast` shape): "Chat “…” deleted · Undo ⌘Z". The real `DELETE` runs when the bar times out (same delay as sessions), another delete replaces it, or the tab is left/the app quits.
@@ -84,7 +87,9 @@ The rows read their line 2 and the unread/approval state through one query (`Cha
 
 ### 5.4 Keyboard
 
-As in the sessions panel, once a click on the panel's empty space, a label or the group header gives it the keyboard: ↑/↓ move a cursor (focus ring), Return opens, ⌘⌫ deletes the highlighted chat (with Undo), ⌘Z undoes, ⌘1…⌘9 open the first nine rows of the list (while the Chats tab is on screen). A row click opens the chat and sends focus to the composer, as today. The shortcut catalog's "Chats" area lists them.
+As in the sessions panel, once a click on the panel's empty space, a label or the group header gives it the keyboard: ↑/↓ move a cursor (focus ring), Return opens, ⌘⌫ deletes the highlighted chat (with Undo), ⌘Z undoes, ⌘1…⌘9 open the first nine rows of the list (while the Chats tab is on screen).
+
+⌘1…⌘9 are already the Workbench sessions' menu items (`WorkbenchCommands`, "Sessions" menu). Two menu items with the same key equivalent would race, so there stays **one** set of ⌘1…⌘9 items: they dispatch to the screen on screen — the key workbench's sessions panel, or the Chats panel's rows — and are disabled elsewhere. The menu is renamed to fit both ("Go to Item 1…9" under the View or Window menu), and a test pins that each screen gets the keys and the other does not. A row click opens the chat and sends focus to the composer, as today. The shortcut catalog's "Chats" area lists them.
 
 ## 6. Groups
 
@@ -115,7 +120,9 @@ CHAT-01..05 untouched: nothing here sends, stores owner text differently or chan
 
 - WatchtowerCore: `ChatHistoryGrouping` (three groups, pinned, folded), `ChatProjectSwitcherPresentation` (order, match, segments), the row state precedence, line-2 text, `panelRows` query (unread, pending, last answer on the active branch, project prefix).
 - Desktop: render tests in the `ChatSidebarRenderTests` style for the header at both levels, rows in each state, the older group; delete + Undo timing (`PendingChatDeletes` twin of `PendingSessionDeletes`); the read mark on select and on turn finish.
-- Go: the migration (`TestAllTablesExist` unaffected; schema golden + Desktop test schema regenerated).
+- Go: the migration (`TestAllTablesExist` unaffected; schema golden + Desktop test schema regenerated); the system-prompt golden after the guide titles change; `go test ./docs/guide`.
+- The pending-approval state appearing without a list reload (a proposal written by another process, signalled through `onActionAwaited`).
+- ⌘1…⌘9 dispatch: Workbench on screen → sessions, Chats on screen → chat rows, elsewhere disabled.
 - `make desktop-shots` of the panel and the project page before review.
 
 ## Decisions
@@ -127,3 +134,4 @@ CHAT-01..05 untouched: nothing here sends, stores owner text differently or chan
 - The switcher is **the Workbench switcher's shape** (‹, Find field, RECENT with state segments, New Project…, All Chats); no "Project Settings…" item — conversation (owner's screenshot of the workbench switcher).
 - Mockups on the canvas accepted ("ну норм. Делаем") — conversation.
 - **No project description field** — conversation (proposed by the agent, consistent with "prefer simple designs").
+- Review round 1 (ask #626): regenerate the system-prompt golden; ⌘1…⌘9 shared with Workbench through one dispatching set; the waiting-for-approval state refreshes on the pool's callbacks; the guide describes the new panel.

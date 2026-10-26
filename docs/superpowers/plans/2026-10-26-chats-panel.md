@@ -55,6 +55,7 @@ Every implementer reads the spec section its task names, `docs/review/review-rul
 - `SidebarDestination.chat.title`, `KeyboardShortcutCatalog` area, every user-visible "AI Chat" string in `WatchtowerDesktop/Sources` (buttons "Open in AI Chat" → "Open in Chats", help, tooltips, empty-state copy). Leave raw values, identifiers, code comments and type names.
 - Go: grep `internal/` and `cmd/` for user/model-facing "AI Chat" (prompts, nav rule) and update.
 - Guide: text and titles in `docs/guide/**` (paths unchanged); `go test ./docs/guide` (8 KB cap, learn cards).
+- Regenerate the main chat's system-prompt golden (`internal/chat/testdata/system_prompt_main.golden` lists the guide titles): `go test ./internal/chat -run <its golden test> -update`, then `go test ./internal/chat`.
 - Update tests that assert the old strings.
 - Checks: `make test-swift FILTER='<touched test classes>'`, `go test ./docs/guide ./internal/<touched>`, `make lint-swift`.
 
@@ -65,6 +66,7 @@ Every implementer reads the spec section its task names, `docs/review/review-rul
 - `ChatHistoryViewModel`: `level: ChatPanelLevel` (`.all` / `.project(id)`), persisted per workspace in UserDefaults with fallback to `.all` when the project is gone; `rows` observed through `panelRows(projectID:)`; `sections` = the three groups; `olderExpanded` per level (UserDefaults); `pinnedOlderRow` (the on-screen chat inside a folded group).
 - Read marks: `markRead(id)` when a conversation is selected and when `ChatViewModel.onTurnFinished` fires for the shown conversation (wire in `AppState+Chat.swift` / `ChatView`).
 - Answering: rows read `ChatSessionPool.runningTurnID(conversationID:)` at render time.
+- Cross-process writes: re-read the panel rows on `ChatViewModel.onActionAwaited` and `onTurnFinished` (the session's MCP subprocess writes the pending `agent_actions` row, which `ValueObservation` does not see). Test: a pending action written outside the observation shows after `onActionAwaited`.
 - `ChatViewModel`: `landingProjectID` — the landing (and `+` in a project) creates the conversation with that project; `selectAdjacent` follows the new row order.
 - Tests (Desktop): level persistence and fallback, read mark on select and turn finish, landing in a project creates the chat in it.
 - Checks: `make test-swift FILTER='ChatHistoryViewModel|ChatViewModelLanding'`, `make lint-swift`.
@@ -95,7 +97,8 @@ Every implementer reads the spec section its task names, `docs/review/review-rul
 - `PendingChatDeletes` (Core, the `PendingSessionDeletes` twin — or generalise that type if it reads cleanly): hide on ✕, commit after the window, on another delete, on leaving the tab and on quit (hook into the quit path the session deletes use); Undo restores.
 - ✕ on hover/cursor only when the row is neither answering nor waiting; the context menu's Delete… keeps the alert.
 - Undo bar under the list (`SessionDeleteToast` shape, generalised or a chat twin).
-- Keyboard: a `SessionsPanelKeyView`-style key handler — ↑/↓ cursor, Return, ⌘⌫, ⌘Z, ⌘1…⌘9 (registered only while the Chats tab is on screen; check no clash with the Workbench registration). `KeyboardShortcutCatalog` "Chats" entries.
+- Keyboard: a `SessionsPanelKeyView`-style key handler — ↑/↓ cursor, Return, ⌘⌫, ⌘Z. `KeyboardShortcutCatalog` "Chats" entries.
+- ⌘1…⌘9 (spec §5.4): turn `WorkbenchCommands`' "Sessions" menu into one shared set of items that dispatch to the screen on screen — the key workbench's sessions (`openSession(atShortcut:)`) or the Chats rows — disabled elsewhere; rename it to fit both. The dispatch decision is a pure function in Core with tests (Workbench → sessions, Chats → chats, other tabs → disabled).
 - Tests: pending-delete timing (injected clock), undo, commit on quit, keyboard policy.
 - Checks: `make test-swift FILTER='PendingChatDeletes|ChatPanelKeys|ChatSidebarRender'`, `make lint-swift`.
 
