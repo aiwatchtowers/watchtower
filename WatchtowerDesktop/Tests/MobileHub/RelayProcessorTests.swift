@@ -86,7 +86,8 @@ final class RelayProcessorTests: XCTestCase {
     func testAnAdmittedActionStampsThePhoneContact() async throws {
         dispatcher.register(.boardCommentAdd) { _ in .applied(["comment_id": .integer(1)]) }
         try await transport.save([try pendingActionRecord(kind: .boardCommentAdd, entityID: "7")])
-        let at = Date()
+        // Whole seconds: Date -> timeIntervalSince1970 -> Date is not bit-exact for a fractional now.
+        let at = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded())
         XCTAssertNil(sidecar.lastPhoneContact())
 
         let clock: @Sendable () -> Date = { at }
