@@ -166,6 +166,21 @@ final class RecordingIndicatorViewTests: XCTestCase {
         XCTAssertTrue(texts.contains("Weekly sync"))
     }
 
+    /// A queued batch job held back by the running recording says why, rather
+    /// than reading "Queued" for the length of a meeting.
+    func test_queuedPillWaitingForCaptureSaysSo() throws {
+        XCTAssertEqual(RecordingIndicatorView.jobPhaseLabel(.queued, waitingForCapture: true),
+                       "Waiting for the recording to stop")
+        XCTAssertEqual(RecordingIndicatorView.jobPhaseLabel(.diarizing, waitingForCapture: true),
+                       "Identifying speakers…", "only a queued job can be waiting for the recording")
+        let view = RecordingJobPill(
+            title: "Weekly sync", phase: .queued, waitingForCapture: true,
+            canRetry: false, canDismiss: false, retry: {}, dismiss: {})
+        let texts = try view.inspect().findAll(ViewType.Text.self).map { try $0.string() }
+        XCTAssertTrue(texts.contains("Waiting for the recording to stop"))
+        XCTAssertFalse(texts.contains("Queued"))
+    }
+
     func test_failedPillActionsReportPerJob() throws {
         var retried = false
         var dismissed = false

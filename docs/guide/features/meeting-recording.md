@@ -27,7 +27,9 @@ Drag the pill by its background to any corner of the window. It snaps to the nea
 
 After **Stop**, the recording joins a queue, and each queued recording gets its own pill: "Transcribing 2/5", "Identifying speakers…", "Summarizing…".
 
-You can start a new recording while an old one is processing. Only one transcription runs at a time, so the new one keeps capturing and its live panel reads "Waiting for previous transcription… live transcript will catch up."
+You can start a new recording while an old one is processing. Only one transcription runs at a time, so while an earlier recording is still being transcribed, the new live panel reads "Waiting for previous transcription… live transcript will catch up." It catches up as soon as that transcription ends.
+
+A recording whose live transcript is ready is saved right after **Stop**, even while the next meeting records. One that has to be transcribed from its audio (every recording, with live transcription off) waits until the recording in progress stops; its pill reads "Waiting for the recording to stop".
 
 If the call goes quiet, you get a warning. When nothing has come from the call for over 2 minutes after it was heard, the pill shows **No call audio** in orange and a notification fires. It usually means the output device changed.
 

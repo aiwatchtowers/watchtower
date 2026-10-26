@@ -218,7 +218,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
         var claimedWhileCapturing: [Bool] = []
-        center.onEngineSlotClaimedForTesting = { claimedWhileCapturing.append(center.isCapturing) }
+        center.onJobTurnStartedForTesting = { claimedWhileCapturing.append(center.isCapturing) }
         let config = singleWindowConfig()
 
         await center.startRecording(eventID: "evt-desk", title: "Desk", config: config)

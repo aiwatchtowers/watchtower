@@ -135,7 +135,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         // How many transcripts had been saved when each job claimed the engine
         // slot: a job that started alongside job 1 would claim at 0, not 1.
         var savesAtClaim: [Int] = []
-        center.onEngineSlotClaimedForTesting = { savesAtClaim.append(runner.savedTranscripts.count) }
+        center.onJobTurnStartedForTesting = { savesAtClaim.append(runner.savedTranscripts.count) }
         let config = singleWindowConfig()
 
         await center.startRecording(eventID: nil, title: "First", config: config)
@@ -1022,13 +1022,16 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
     /// A stop-time error cancels the live pass, but cancellation cannot interrupt
     /// an in-progress `transcribeWindow` — the engine is still resident. So the
     /// slot may only be handed on once that orphan has actually exited, or a
-    /// parked job loads a second model alongside it.
+    /// parked batch job loads a second model alongside it. (Job A is a batch
+    /// job — its live pass heard only silence — because a job with live text
+    /// needs no engine and does not wait for the slot at all.)
     func testStopErrorHandsTheEngineSlotOnOnlyAfterTheOrphanExits() async throws {
         let recorder1 = FakeRecorder()
         let recorder2 = FakeRecorder()
         var recorderCalls = 0
-        let liveGate1 = GateEngine(texts: ["live A"])
-        let liveGate2 = GateEngine(texts: ["live B"])
+        // One live engine for both recordings: B's live pass takes over the
+        // engine A handed to its job. A's window is silence → batch job.
+        let liveGate = GateEngine(texts: [""])
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
@@ -1036,7 +1039,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
-                return TestTranscriber(engineLoads == 1 ? liveGate1 : liveGate2)
+                return TestTranscriber(engineLoads == 1 ? liveGate : ScriptedEngine(texts: ["batch A"]))
             },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
@@ -1051,8 +1054,8 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
         recorder1.emitLive([Float](repeating: 0, count: 1600))
         let stopA = Task { await center.stopAndProcess(config: config) }
-        var enteredA = liveGate1.enteredStream.makeAsyncIterator()
-        _ = await enteredA.next()
+        var entered = liveGate.enteredStream.makeAsyncIterator()
+        _ = await entered.next()
 
         // Recording B starts while A's tail drains, then takes the slot over.
         await center.startRecording(eventID: nil, title: "B", config: config)
@@ -1060,18 +1063,18 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         // Two windows, so B's live pass has a decidable cut and parks in the
         // engine while still recording.
         recorder2.emitLive([Float](repeating: 0, count: 3200))
-        liveGate1.release()
-        var enteredB = liveGate2.enteredStream.makeAsyncIterator()
-        _ = await enteredB.next()
-        XCTAssertEqual(engineLoads, 2)
-        XCTAssertEqual(center.jobs.first?.phase, .queued, "job A re-parked behind B's live pass")
+        liveGate.release()
+        _ = await entered.next()
+        let callsBeforeOrphan = liveGate.completedCalls
+        XCTAssertEqual(engineLoads, 1, "B's live pass took over the engine A handed to its job")
+        XCTAssertEqual(center.jobs.first?.phase, .queued, "batch job A re-parked behind B's live pass")
 
         // B's stop errors while its own live pass is still inside the engine.
         // Waiting cannot prove job A stayed parked, so the claim seam records
         // whether it took the slot while the orphan was still inside the engine.
         var claimedWhileOrphanResident = false
-        center.onEngineSlotClaimedForTesting = {
-            if liveGate2.completedCalls == 0 { claimedWhileOrphanResident = true }
+        center.onJobTurnStartedForTesting = {
+            if liveGate.completedCalls == callsBeforeOrphan { claimedWhileOrphanResident = true }
         }
         recorder2.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
         await center.stopAndProcess(config: config)
@@ -1083,8 +1086,9 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
                        "the orphaned live pass still holds the engine, so job A must not start")
         XCTAssertEqual(runner.savedTranscripts, [],
                        "nothing may be saved while the cancelled pass is still resident")
+        XCTAssertEqual(engineLoads, 1, "no second engine while the orphan is resident")
 
-        liveGate2.release()
+        liveGate.release()
         let ran = await waitUntil("job A to run once the orphan exited") {
             runner.savedTranscripts.count == 1
         }
@@ -1092,8 +1096,9 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         XCTAssertFalse(claimedWhileOrphanResident,
                        "job A must not claim the engine slot while the orphaned live pass is resident")
         await stopA.value
-        XCTAssertEqual(runner.savedTranscripts, ["live A"])
-        XCTAssertEqual(engineLoads, 2, "job A reuses the engine handed to it, never a third")
+        XCTAssertEqual(runner.savedTranscripts, ["batch A"])
+        XCTAssertEqual(engineLoads, 2,
+                       "the orphan's engine is dropped when it exits; job A loads only after that")
     }
 
     /// A slow engine load orphaned by a stop-time error is still resident, so a
