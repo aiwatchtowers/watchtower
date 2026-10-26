@@ -32,15 +32,17 @@ enum PhoneTone: Equatable, Sendable {
         }
     }
 
+    /// The status colours come from the Desktop's `Tone.status(_:)` table
+    /// (one copy in WatchtowerDesign); orange stays named here only.
     var color: Color {
         switch self {
-        case .green: .green
+        case .green: Tone.status("green")
         case .orange: .orange
-        case .blue: .blue
-        case .red: .red
-        case .purple: .purple
-        case .teal: .teal
-        case .gray: .gray
+        case .blue: Tone.status("blue")
+        case .red: Tone.status("red")
+        case .purple: Tone.status("purple")
+        case .teal: Tone.status("teal")
+        case .gray: Tone.status("gray")
         case .secondary: .secondary
         case .accent: .accentColor
         }

@@ -13,7 +13,8 @@ final class PublicAPISurfaceTests: XCTestCase {
         .deletingLastPathComponent()  // …/Tests
         .deletingLastPathComponent()  // …/WatchtowerDesktop
 
-    private static let kitModules = ["WatchtowerSync", "WatchtowerKit"]
+    /// WatchtowerDesign (the shared tokens) is DesignKit's, never Core's.
+    private static let kitModules = ["WatchtowerSync", "WatchtowerKit", "WatchtowerDesign"]
 
     func testNoCoreSourceImportsTheKit() throws {
         let coreDir = Self.desktopDir.appendingPathComponent("Sources/WatchtowerCore")
@@ -36,6 +37,7 @@ final class PublicAPISurfaceTests: XCTestCase {
         XCTAssertTrue(Self.importsKit("@testable import WatchtowerKit"))
         XCTAssertTrue(Self.importsKit("@_exported import WatchtowerSync"))
         XCTAssertTrue(Self.importsKit("  import struct WatchtowerSync.CloudRecord"))
+        XCTAssertTrue(Self.importsKit("import WatchtowerDesign"))
         XCTAssertFalse(Self.importsKit("import WatchtowerCore"))
         XCTAssertFalse(Self.importsKit("// mentions WatchtowerSync in a comment"))
     }

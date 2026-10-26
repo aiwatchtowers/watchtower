@@ -16,7 +16,7 @@ The reference is the app's own good screens: Workbench, Calendar and AI Chat. A 
 
 ## Tokens
 
-Use the token, never the number. The scale is closed: a screen that needs a new step adds a token to `DesignKit/` in the same PR.
+Use the token, never the number. The scale is closed: a screen that needs a new step adds a token in the same PR. The tokens below (all but `Surface`, which is macOS-only and stays in `DesignKit/`) live in the Kit's `WatchtowerKit/Sources/WatchtowerDesign/`, one copy that `DesignKit` re-exports and the iPhone app reads too; `TokenTests` there pins every value.
 
 | Token | Values |
 |---|---|
@@ -99,4 +99,4 @@ Every new screen is looked at before it merges.
 3. Open both PNGs and look: soft fills, no hard borders, nothing stock-looking, nothing clipped.
 4. Attach them to the PR. A new window also goes to the owner as a review ask with its shots before merge.
 
-PNGs can be produced via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift`, only when absorbing legacy code, never to hide new violations. The script refuses a baseline that gains any violation the old one did not have (it lists them and leaves the file alone); a new rule that deliberately absorbs legacy hits passes `--allow-new <rule-id>` (repeatable) for that rule only.
+PNGs can be produced via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift` (the phone's, `WatchtowerMobile/.swiftlint-baseline.json`, with `--root WatchtowerMobile`), only when absorbing legacy code, never to hide new violations. The script refuses a baseline that gains any violation the old one did not have (it lists them and leaves the file alone); a new rule that deliberately absorbs legacy hits passes `--allow-new <rule-id>` (repeatable) for that rule only.
