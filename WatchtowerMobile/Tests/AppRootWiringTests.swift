@@ -309,6 +309,21 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false])
     }
 
+    /// A `CloudKitTransport` in a process without the iCloud entitlement (this unsigned host) gets no alert
+    /// subscription: neither its start nor its removal may build a `CKContainer`, which would kill the process.
+    func testAnUnentitledCloudKitHubNeverTouchesCloudKitForItsAlertSubscription() async throws {
+        let root = try makeRoot(links: [linkRecord()], persistentTransport: true)
+        let first = try session(root, TestHub.acme)
+        try await poll { first.isBootstrapped }
+        XCTAssertFalse(CloudKitTransport.entitlementPresent(), "the test host is unsigned")
+        XCTAssertTrue(first.startsEngine)
+        XCTAssertNil(first.alertRegistrar, "no live saver without the entitlement")
+
+        _ = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
+
+        XCTAssertNil(root.env.session(TestHub.acme))
+    }
+
     /// Ruling 2: the row goes before the removal's first wait, so a kill
     /// anywhere in it (here: held in the hand-over, a save running) never
     /// brings the hub back at the next launch.

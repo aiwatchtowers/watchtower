@@ -522,8 +522,9 @@ final class HubSession {
         return (settings, registrar)
     }
 
-    /// The hub's alert subscription, only over the live engine (or a saver a test injects): a CloudKit container
-    /// needs the app's entitlement.
+    /// The hub's alert subscription, only over the live engine (or a saver a test injects). A CloudKit container
+    /// raises an uncatchable exception in a process without the app's iCloud entitlement (the unsigned test host,
+    /// where a `CloudKitTransport` never starts its engine either), so the live saver needs both.
     private static func makeAlertRegistrar(
         hubID: String,
         kind: TransportKind,
@@ -532,9 +533,15 @@ final class HubSession {
         saver: (any SubscriptionSaving)?
     ) -> AlertSubscriptionRegistrar? {
         guard kind == .cloudKit, let scope,
-              let saver = saver ?? (transport is CloudKitTransport ? CloudKitSubscriptionSaver() : nil)
+              let saver = saver ?? liveSaver(transport: transport)
         else { return nil }
         return AlertSubscriptionRegistrar(hubID: hubID, scope: scope, saver: saver)
+    }
+
+    /// The private database's saver, only for a `CloudKitTransport` in an entitled process.
+    private static func liveSaver(transport: any CloudSyncTransport) -> (any SubscriptionSaving)? {
+        guard transport is CloudKitTransport, CloudKitTransport.entitlementPresent() else { return nil }
+        return CloudKitSubscriptionSaver()
     }
 
     /// The recording uploader: sealed through `secure`, re-sending only
