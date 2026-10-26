@@ -156,6 +156,14 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
     package var error: String
     /// Sweep only: whose the item probably is.
     package var owner: SessionCleanupOwner?
+    /// Who made the worktree (a branch has none).
+    package var origin: SessionCleanupOrigin
+    /// The newest commit's time; nil when unknown.
+    package var lastCommitAt: Date?
+    /// Merged into the default branch.
+    package var merged: Bool
+    /// A bundle's own worktree path; "" when it has none.
+    package var worktree: String
 
     package var id: String { key }
 
@@ -175,7 +183,11 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         detail: String = "",
         done: Bool = false,
         error: String = "",
-        owner: SessionCleanupOwner? = nil
+        owner: SessionCleanupOwner? = nil,
+        origin: SessionCleanupOrigin = .none,
+        lastCommitAt: Date? = nil,
+        merged: Bool = false,
+        worktree: String = ""
     ) {
         self.key = key
         self.kind = kind
@@ -189,10 +201,16 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         self.done = done
         self.error = error
         self.owner = owner
+        self.origin = origin
+        self.lastCommitAt = lastCommitAt
+        self.merged = merged
+        self.worktree = worktree
     }
 
     package enum CodingKeys: String, CodingKey {
         case key, kind, name, branch, bytes, action, reason, detail, done, error, owner
+        case origin, merged, worktree
+        case lastCommitAt = "last_commit_at"
         case bytesKnown = "bytes_known"
     }
 
@@ -211,7 +229,19 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
         error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
         owner = try c.decodeIfPresent(SessionCleanupOwner.self, forKey: .owner)
+        origin = SessionCleanupOrigin(rawValue: try c.decodeIfPresent(String.self, forKey: .origin) ?? "") ?? .none
+        let stamp = try c.decodeIfPresent(String.self, forKey: .lastCommitAt) ?? ""
+        lastCommitAt = stamp.isEmpty ? nil : ISO8601DateFormatter().date(from: stamp)
+        merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false
+        worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
     }
+}
+
+/// Who made a worktree, as Go's origin classifier names it. An absent or
+/// unknown value is `.none`.
+package enum SessionCleanupOrigin: String, Equatable, Hashable, Sendable {
+    case session, subagent, placed, manual
+    case none = ""
 }
 
 /// Why an item is kept (or what an apply did instead), as Go's

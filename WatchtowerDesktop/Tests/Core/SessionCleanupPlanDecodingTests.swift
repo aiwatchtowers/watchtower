@@ -115,4 +115,30 @@ final class SessionCleanupPlanDecodingTests: XCTestCase {
         let decoded = try decode(#"{"items":[{"key":"k","kind":"worktree","action":"remove"}]}"#)
         XCTAssertEqual(decoded.items, [SessionCleanupItem(key: "k", kind: .worktree, action: .remove)])
     }
+
+    func testNewItemKeysDecode() throws {
+        let plan = try decode("""
+            {"items":[
+             {"key":"wt:/tmp/acme/a","kind":"worktree","action":"remove","origin":"subagent",
+              "last_commit_at":"2026-10-20T10:30:00Z","merged":true,"worktree":"/tmp/acme/a"},
+             {"key":"br:x","kind":"branch","action":"keep","origin":"surprise"},
+             {"key":"wt:/tmp/acme/b","kind":"worktree","action":"remove"}]}
+            """)
+        let first = plan.items[0]
+        XCTAssertEqual(first.origin, .subagent)
+        XCTAssertEqual(first.lastCommitAt, ISO8601DateFormatter().date(from: "2026-10-20T10:30:00Z"))
+        XCTAssertTrue(first.merged)
+        XCTAssertEqual(first.worktree, "/tmp/acme/a")
+        XCTAssertEqual(plan.items[1].origin, SessionCleanupOrigin.none)
+        let bare = plan.items[2]
+        XCTAssertEqual(bare.origin, SessionCleanupOrigin.none)
+        XCTAssertNil(bare.lastCommitAt)
+        XCTAssertFalse(bare.merged)
+        XCTAssertEqual(bare.worktree, "")
+        for raw in ["session", "subagent", "placed", "manual"] {
+            let item = try JSONDecoder().decode(
+                SessionCleanupItem.self, from: Data(#"{"key":"k","kind":"worktree","action":"keep","origin":"\#(raw)"}"#.utf8))
+            XCTAssertEqual(item.origin.rawValue, raw)
+        }
+    }
 }
