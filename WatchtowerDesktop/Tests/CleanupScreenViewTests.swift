@@ -135,6 +135,31 @@ final class CleanupScreenViewTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: projectID).visiblePanes.first, .session(second.id))
     }
 
+    /// Leaving for another workbench and coming back is not an owner pick:
+    /// the screen is still open with its ticks and its ready plan (spec
+    /// §3.1), and the session behind it stays covered.
+    func testWorkbenchRoundTripKeepsTheScreen() async throws {
+        let session = try await insertSession("Login redirect")
+        let vm = try await page(showing: session)
+        let projectID = projectID
+        let other = try await pool.write { try TestDatabase.insertWorkbench($0, name: "gizmo", folder: "/tmp/example-gizmo") }
+        await vm.reload()
+        await vm.openCleanupScreen(projectID: projectID).value
+        guard case .ready = vm.sessionCleanup?.cleanupPhase(for: .workbench(projectID)) else { return XCTFail("no plan") }
+        let worktree = "worktree:/tmp/example/.claude/worktrees/x"
+        vm.cleanupScreens[projectID]?.ticks = [worktree]
+
+        await vm.switchTo(workbenchID: other)
+        await vm.switchTo(workbenchID: projectID)
+
+        XCTAssertTrue(vm.cleanupScreenOpen(projectID: projectID), "the screen is still open")
+        XCTAssertEqual(vm.cleanupScreens[projectID]?.ticks, [worktree])
+        guard case .ready = vm.sessionCleanup?.cleanupPhase(for: .workbench(projectID)) else {
+            return XCTFail("the ready plan is kept")
+        }
+        XCTAssertTrue(vm.isObscured(sessionID: session.id, projectID: projectID))
+    }
+
     /// ⌘A and Esc are the screen's only while the Search field does not have
     /// the keyboard; there they select and clear its text.
     func testShortcutsStepAsideForTheSearchField() {
@@ -181,21 +206,30 @@ final class CleanupScreenViewTests: XCTestCase {
         vm.cleanupRunWorkbenches[99] = nil
     }
 
-    /// The footer never mistakes the screen's own apply for another cleanup:
-    /// while `sweepRuns` holds it, the line is the total.
+    /// The footer never mistakes the screen's own apply for another cleanup
+    /// (the line is the total while it runs), and names an apply of the
+    /// other scope as one: the screen widened while a session's ran.
     func testOwnApplyIsNotAnotherCleanup() async throws {
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         let projectID = projectID
         await vm.openCleanupScreen(projectID: projectID).value
         let state = try XCTUnwrap(vm.cleanupScreens[projectID])
         vm.sweepRuns[projectID] = Task { false }
-        defer { vm.sweepRuns[projectID] = nil }
+        vm.sweepRunScopes[projectID] = state.scope
+        defer {
+            vm.sweepRuns[projectID] = nil
+            vm.sweepRunScopes[projectID] = nil
+        }
         let footer = CleanupFooter(
             vm: vm, projectID: projectID, model: try XCTUnwrap(vm.cleanupScreenModel(projectID: projectID)),
             state: state, ticks: .constant([]), confirming: .constant(false)
         )
         XCTAssertThrowsError(try footer.inspect().find(text: CleanupFooter.anotherRunning))
         XCTAssertTrue(try footer.inspect().find(button: "Clean Up…").isDisabled(), "its own apply still runs")
+
+        vm.sweepRunScopes[projectID] = .session(5)
+        XCTAssertNoThrow(try footer.inspect().find(text: CleanupFooter.anotherRunning), "a session's apply is another")
+        XCTAssertTrue(try footer.inspect().find(button: "Clean Up…").isDisabled())
     }
 
     /// The terminal host moves the keyboard in a main-queue block, which runs

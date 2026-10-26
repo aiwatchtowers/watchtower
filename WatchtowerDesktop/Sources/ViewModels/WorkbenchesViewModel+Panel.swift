@@ -126,6 +126,10 @@ extension WorkbenchesViewModel {
         drill(into: id)
         let ticket = beginSwitch(projectID: id)
         guard await loadSessions(projectID: id), selectedWorkbenchID == id else { return }
+        // Coming back to a workbench whose Clean Up screen is open is not
+        // a pick: the screen stays, over the workspace as it was (spec
+        // 2026-10-26 §3.1).
+        guard !cleanupScreenOpen(projectID: id) else { return }
         let rows = terminalSessions[id] ?? []
         let active = activeSessionID(projectID: id)
         if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row, ticket: ticket) }

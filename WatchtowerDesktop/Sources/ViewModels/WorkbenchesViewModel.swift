@@ -168,6 +168,9 @@ final class WorkbenchesViewModel {
     /// The Clean Up screen's applies this view model owns, per workbench
     /// (either scope): closing the screen or leaving the page cancels none.
     var sweepRuns: [Int64: Task<Bool, Never>] = [:]
+    /// The scope each `sweepRuns` apply runs for: the screen says "Another
+    /// cleanup is running" when it shows another scope.
+    var sweepRunScopes: [Int64: SessionCleanupScope] = [:]
     /// The Clean Up screen per workbench while it is open (board #1107,
     /// spec 2026-10-26-worktree-cleanup-screen §3.1): page state in memory
     /// only, never a `WorkspacePane` or a `WorkspaceLayout` value.

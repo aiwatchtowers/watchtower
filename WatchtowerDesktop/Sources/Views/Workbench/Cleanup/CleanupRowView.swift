@@ -99,8 +99,10 @@ struct CleanupRowView: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(ticked ? [.isSelected] : [])
         .accessibilityValue(row.canChoose ? (ticked ? "Selected" : "Not selected") : "")
-        .accessibilityAction(named: ticked ? "Unselect" : "Select") {
-            if row.canChoose { onClick(false) }
+        .accessibilityActions {
+            if row.canChoose {
+                Button(ticked ? "Unselect" : "Select") { onClick(false) }
+            }
         }
     }
 

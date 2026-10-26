@@ -28,9 +28,7 @@ struct CleanupFooter: View {
     var body: some View {
         let live = model.liveTicks(ticks)
         let free = vm.canRefreshCleanup(projectID: projectID)
-        // This screen's own apply (`sweepRuns`, until its run fully ends)
-        // is not "another" cleanup.
-        let otherRuns = !free && vm.sweepRuns[projectID] == nil
+        let otherRuns = vm.cleanupBlockedByAnotherRun(projectID: projectID)
         let keys = Self.shortcuts(searchFocused: searchFocused)
         HStack(spacing: Spacing.regular) {
             Button("Select All That Can Go") {

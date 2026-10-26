@@ -138,6 +138,15 @@ extension WorkbenchesViewModel {
         sessionCleanup != nil && !cleanupApplyRuns(projectID: projectID)
     }
 
+    /// Clean Up… and Refresh wait for a cleanup apply that is not the
+    /// screen's own on the scope it shows — a Delete and Clean Up, or the
+    /// screen's apply of the other scope: the footer says "Another cleanup
+    /// is running" then.
+    func cleanupBlockedByAnotherRun(projectID: Int64) -> Bool {
+        guard sessionCleanup != nil, !canRefreshCleanup(projectID: projectID) else { return false }
+        return sweepRunScopes[projectID] != cleanupScreens[projectID]?.scope
+    }
+
     /// True while a cleanup apply of workbench `projectID` runs: the Delete
     /// dialog's **Delete and Clean Up** waits (Delete Only does not).
     func deleteAndCleanUpBlocked(projectID: Int64) -> Bool {
@@ -197,6 +206,7 @@ extension WorkbenchesViewModel {
             return ok
         }
         sweepRuns[projectID] = run
+        sweepRunScopes[projectID] = state.scope
         return await run.value
     }
 
@@ -210,6 +220,7 @@ extension WorkbenchesViewModel {
             cleaningUpSessions.remove(sessionID)
         }
         sweepRuns[projectID] = nil
+        sweepRunScopes[projectID] = nil
         // The screen on this scope shows the result, a failure included.
         guard cleanupScreens[projectID]?.scope != scope else { return }
         if let failure {
