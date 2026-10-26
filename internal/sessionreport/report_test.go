@@ -352,3 +352,14 @@ func TestProj14_ReportNeverWritesTheBoard(t *testing.T) {
 	_, err = SessionRefs(ctx, d, 1, 2)
 	require.NoError(t, err)
 }
+
+func TestSessionReport_HiddenLoopAskNotOnYou(t *testing.T) {
+	d := loadFixture(t, "scope.sql")
+	_, err := d.Exec(`INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES (1, 'queued', '2026-10-02T09:00:00Z', 'author')`)
+	require.NoError(t, err)
+	assert.Empty(t, build(t, d, 3).OnYou, "an ask in the author loop is not on the owner yet")
+
+	_, err = d.Exec(`UPDATE spec_reviews SET loop = 'owner' WHERE ask_id = 1`)
+	require.NoError(t, err)
+	assert.Len(t, build(t, d, 3).OnYou, 1)
+}
