@@ -2280,7 +2280,7 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     queued_at   TEXT NOT NULL,
     started_at  TEXT NOT NULL DEFAULT '',
     finished_at TEXT NOT NULL DEFAULT ''
-);
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS spec_review_marks (
     ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
     item_key   TEXT NOT NULL,

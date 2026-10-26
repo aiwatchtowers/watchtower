@@ -24,7 +24,7 @@ struct HubSwitcherChip: View {
                     CountBadge(count: otherAsks, tone: .waitingForYou)
                 }
             }
-            .frame(minHeight: 44)
+            .frame(minHeight: PhoneMetrics.minTouch)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

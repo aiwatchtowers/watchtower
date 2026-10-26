@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// An opaque bottom bar (design pass spec §2.10): a hairline on top, the
-/// content padded 16 × 10, on `Color(.systemBackground)` down to the screen
-/// edge. Goes in `.safeAreaInset(edge: .bottom, spacing: 0)`. It replaces the
-/// translucent `.background(.bar)` bars, which let the content under them
-/// show through (bugs 4 and 8).
+/// An opaque bottom bar (mockups' `.primarybar`, design pass spec §2.10): a
+/// hairline on top, the content padded 16 × 10, on
+/// `Color(.systemBackground)` down to the screen edge. Goes in
+/// `.safeAreaInset(edge: .bottom, spacing: 0)`. Opaque on purpose: the
+/// translucent `.background(.bar)` let the content under it show through
+/// (bugs 4 and 8).
 struct BottomActionBar<Content: View>: View {
     @ViewBuilder var content: Content
 
@@ -13,35 +14,100 @@ struct BottomActionBar<Content: View>: View {
             Divider()
             content
                 .padding(.horizontal, Spacing.large)
-                .padding(.vertical, 10)
+                .padding(.vertical, Spacing.cozy)
         }
         .background(Color(.systemBackground), ignoresSafeAreaEdges: .bottom)
     }
 }
 
-/// The one primary action of a bar: full width, 50 pt, a capsule in the
-/// button's tint (accent by default) with a white semibold label. Disabled,
-/// it keeps its shape as a grey capsule with a secondary label: on iOS 26 a
-/// disabled `.borderedProminent` renders nearly transparent (bugs 5 and 6).
-/// The secondary button of a pair stays `.bordered` with `.controlSize(.large)`.
-struct ProminentActionStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        ProminentActionLabel(configuration: configuration)
+/// One button of a `PrimaryActionBar`.
+struct BarAction {
+    let title: String
+    var isEnabled = true
+    let action: () -> Void
+}
+
+/// A screen's one prominent action at the bottom (mockups 9–12): the
+/// primary button full width, or a secondary and a primary sharing the
+/// width ("Request changes" · "Approve"), in a `BottomActionBar`.
+///
+///     .safeAreaInset(edge: .bottom, spacing: 0) {
+///         PrimaryActionBar(primary: BarAction(title: "Start session") { start() })
+///     }
+struct PrimaryActionBar: View {
+    let primary: BarAction
+    var secondary: BarAction?
+
+    /// The buttons' titles in reading order: the secondary first.
+    var titles: [String] {
+        [secondary?.title, primary.title].compactMap { $0 }
+    }
+
+    @ViewBuilder private var buttons: some View {
+        if let secondary {
+            Button(secondary.title, action: secondary.action)
+                .buttonStyle(SecondaryActionStyle())
+                .disabled(!secondary.isEnabled)
+        }
+        Button(primary.title, action: primary.action)
+            .buttonStyle(ProminentActionStyle())
+            .disabled(!primary.isEnabled)
+    }
+
+    var body: some View {
+        BottomActionBar {
+            // Side by side; stacked when a large text size would not fit
+            // the pair on one line.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Spacing.regular) { buttons }
+                VStack(spacing: Spacing.regular) { buttons }
+            }
+        }
     }
 }
 
-private struct ProminentActionLabel: View {
+/// The one primary action (mockup `.btn.pri` in a bar): full width, 46 pt,
+/// the container radius in the button's tint (accent by default) with a
+/// white semibold label. Disabled, it keeps its shape on the card fill with
+/// a secondary label: on iOS 26 a disabled `.borderedProminent` renders
+/// nearly transparent (bugs 5 and 6).
+struct ProminentActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        ActionLabel(configuration: configuration, isProminent: true)
+    }
+}
+
+/// The secondary action beside a primary one (mockup `.btn.sec2`): the
+/// same shape on the card fill under a hairline, a primary label.
+struct SecondaryActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        ActionLabel(configuration: configuration, isProminent: false)
+    }
+}
+
+private struct ActionLabel: View {
     let configuration: ButtonStyleConfiguration
+    let isProminent: Bool
     @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.container, style: .continuous)
+        let tinted = isProminent && isEnabled
         configuration.label
             .font(.body.weight(.semibold))
-            .foregroundStyle(isEnabled ? Color.white : Color.secondary)
-            .frame(maxWidth: .infinity, minHeight: 50)
-            .background(isEnabled ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.tertiarySystemFill)), in: Capsule())
-            .opacity(configuration.isPressed ? 0.8 : 1)
-            .contentShape(Capsule())
+            .multilineTextAlignment(.center)
+            .padding(.vertical, Spacing.small)
+            .foregroundStyle(tinted ? Color.white : isEnabled ? Color.primary : Color.secondary)
+            .padding(.horizontal, Spacing.medium)
+            .frame(maxWidth: .infinity, minHeight: PhoneMetrics.barButton)
+            .background(tinted ? AnyShapeStyle(.tint) : AnyShapeStyle(Fill.card), in: shape)
+            .overlay {
+                if !tinted {
+                    shape.strokeBorder(Stroke.hairlineColor, lineWidth: Stroke.hairline)
+                }
+            }
+            .opacity(configuration.isPressed ? PhoneOpacity.pressed : 1)
+            .contentShape(shape)
     }
 }
 

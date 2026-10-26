@@ -75,7 +75,7 @@ A row is the `TerminalSessionRow` shape: a 16 pt dot column, then two lines.
 
 Precedence top to bottom: waiting for approval > answering > unread > read. The dot has an accessibility label naming the state; the line-2 text is not repeated to VoiceOver when it says the same.
 
-**Read state (new):** migration `00160_chat_read_at.sql` adds `read_at REAL` to `chat_conversations` and sets it to `updated_at` for every existing row (no chat lights up as unread on upgrade). Swift is the only writer (as for every chat table): a conversation shown on screen is marked read when it is selected and again when a turn finishes on it while shown. A turn that finishes on a chat not on screen leaves it unread. Mirrored into `schema.sql`, the snapshot and the generated Swift test schema.
+**Read state (new):** migration `00161_chat_read_at.sql` adds `read_at REAL` to `chat_conversations` and sets it to `updated_at` for every existing row (no chat lights up as unread on upgrade). Swift is the only writer (as for every chat table): a conversation shown on screen is marked read when it is selected and again when a turn finishes on it while shown. A turn that finishes on a chat not on screen leaves it unread. Mirrored into `schema.sql`, the snapshot and the generated Swift test schema.
 
 The rows read their line 2 and the unread/approval state through one query (`ChatHistoryQueries.panelRows`) — one pass over `chat_conversations` with correlated subqueries for the last assistant message and the pending-action count — observed with `ValueObservation` like today's list. "Answering" comes from the pool, not the database.
 

@@ -376,11 +376,15 @@ final class AppState {
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
+    /// The spec review author loop (#1121): each finished round typed into
+    /// the author's session, and the session rows' round line.
+    private(set) var specReviewLoopCenter: SpecReviewLoopCenter?
     /// The Analytics pane's `agents report` runs and Turn On (#298).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
+    @ObservationIgnored let ownerAwayCenter = OwnerAwayCenter(box: OwnerAwayBox())
     /// Raises an unanswered Chat question into an owner ask (owner asks v2,
     /// Part 5); nil without a CLI runner.
     private(set) var chatQuestionEscalator: ChatQuestionEscalator?
@@ -726,10 +730,12 @@ final class AppState {
                     self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    self?.specReviewLoopCenter?.stop()
                     // An agents report / enable child gets SIGTERM.
                     self?.agentAnalyticsCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
+                    self?.ownerAwayCenter.stop()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
                     // Sessions waiting in the Undo batch were deleted in the
@@ -1806,6 +1812,10 @@ final class AppState {
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
+        let specReviewLoop = SpecReviewLoopCenter(
+            dbPool: dbPool, delivery: lineDelivery, cli: WorkbenchCLI(runner: cliRunner ?? UnresolvedCLIRunner())
+        )
+        vm.specReviewLoop = specReviewLoop
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
         workbenchesViewModel?.stop()
         workbenchesViewModel = vm
@@ -1816,6 +1826,8 @@ final class AppState {
         sessionLineDelivery = lineDelivery
         sessionReportCenter?.stop()
         sessionReportCenter = reports
+        specReviewLoopCenter?.stop()
+        specReviewLoopCenter = specReviewLoop
         replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload; off screen, once a window shows).
         notices.start()
@@ -1823,7 +1835,9 @@ final class AppState {
         vm.asks.start()
         agentStates.start()
         reports.start()
+        specReviewLoop.start()
         ownerPresenceCenter?.start()
+        ownerAwayCenter.start()
         chatQuestionEscalator?.start()
         vm.startHostReattach()
         // Old pasted Workchat files go once the reattach is done; the runs
@@ -2036,10 +2050,7 @@ final class AppState {
 
     /// Re-resolves `owner` off the main thread. A failed read keeps the last value (logged):
     /// a transient error must not flip a known owner to unknown and hide Generate.
-    ///
-    /// Reads can finish out of order (an account VM's init refresh racing a
-    /// later reload); like `refreshConnectedSources()`, an older read never
-    /// overwrites a newer one.
+    /// Like `refreshConnectedSources()`, an older read never overwrites a newer one.
     func refreshOwner() async {
         guard let pool = databaseManager?.dbPool else { return }
         ownerGeneration += 1

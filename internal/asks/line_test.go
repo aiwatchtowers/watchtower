@@ -42,6 +42,37 @@ func TestDeliveryLineFixtures(t *testing.T) {
 	}
 }
 
+// specReviewLineFixture is one testdata/spec_review_lines file, which the
+// Swift twin reproduces.
+type specReviewLineFixture struct {
+	AskID int64  `json:"ask_id"`
+	Round int    `json:"round"`
+	Items int    `json:"items"`
+	Line  string `json:"line"`
+}
+
+func TestSpecReviewLine_Fixtures(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("testdata", "spec_review_lines", "*.json"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no spec review line fixtures: %v", err)
+	}
+	for _, path := range files {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var f specReviewLineFixture
+			if err := json.Unmarshal(raw, &f); err != nil {
+				t.Fatal(err)
+			}
+			if got := SpecReviewLine(f.AskID, f.Round, f.Items); got != f.Line {
+				t.Fatalf("got  %q\nwant %q", got, f.Line)
+			}
+		})
+	}
+}
+
 // The line is typed into a terminal: nothing in it may submit early or carry
 // an escape. Every control scalar (C0, DEL, C1, format) and line separator
 // becomes a space — the WorkbenchCommentPrompt rule.

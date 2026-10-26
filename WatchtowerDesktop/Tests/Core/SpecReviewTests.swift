@@ -275,4 +275,57 @@ final class SpecReviewTests: XCTestCase {
         XCTAssertNil(SpecReviewDecisions.items(in: "## Decisionsless\n- a\n"))
         XCTAssertNil(SpecReviewDecisions.items(in: "## Open decisions\n- a\n"))
     }
+
+    // MARK: - Author loop answer (spec 2026-10-26 §7)
+
+    private func loopLedger() throws -> [SpecReviewLedgerEntry] {
+        try JSONDecoder().decode([SpecReviewLedgerEntry].self, from: Data("""
+        [{"key":"ag:1","text":"Mute lasts a day","round":1,"reply":{"reply":"fixed","note":""},"verdict":"resolved","settled":2},
+         {"key":"bs:2","text":"No undo","where":{"heading":"Behaviour","quote":"Muting lasts twenty-four hours"},
+          "reply":{"reply":"disagree","note":"out of scope"},"verdict":"disputed","verdict_note":"still needed","settled":2},
+         {"key":"ck:3","text":"q","verdict":"unsettled","verdict_note":"","settled":3}]
+        """.utf8))
+    }
+
+    func testLoopAnswerKeepsTheOwnersVerdict() throws {
+        let marks = ["bs:2": SpecReviewMark(key: "bs:2", state: .comment, body: "do it"),
+                     "ck:3": SpecReviewMark(key: "ck:3", state: .comment),
+                     "ag:1": SpecReviewMark(key: "ag:1", state: .comment, body: "wrong")]
+        // The loop screen's Approve.
+        let a = SpecReviewAnswer.build(result: nil, marks: marks, loop: try loopLedger(), verdict: .approved, snapshot: snapshot)
+        XCTAssertEqual(a.verdict, .approved)
+        // The classic footer's or the phone's Request changes on an owner-loop row.
+        var changes = OwnerAskAnswer()
+        changes.verdict = .changes
+        XCTAssertEqual(SpecReviewAnswer.build(result: nil, marks: marks, loop: try loopLedger(), base: changes, snapshot: snapshot).verdict,
+                       .changes, "a loop never turns the owner's Request changes into approved")
+        XCTAssertEqual(SpecReviewAnswer.build(result: nil, marks: [:], loop: [], base: changes, snapshot: snapshot).verdict,
+                       .changes, "an empty ledger (round 1's reviewer failed) keeps the owner's verdict too")
+        XCTAssertEqual(a.comments.map(\.body), [
+            "Reopened: Mute lasts a day\n\nwrong",
+            "Reviewer is right: No undo — still needed\n\ndo it",
+            "Reviewer is right: q"
+        ])
+        XCTAssertEqual(a.comments[1].heading, "Behaviour")
+        XCTAssertEqual(a.comments[1].quote, "Muting lasts twenty-four hours")
+        XCTAssertEqual(a.comments[2].heading, "Title", "no where, no chapter: the first heading")
+    }
+
+    func testLoopBodyDropsTheAuthorsReasonCopiedAsTheVerdictNote() throws {
+        let entries = try JSONDecoder().decode([SpecReviewLedgerEntry].self, from: Data("""
+        [{"key":"a","text":"t","note":"","reply":{"reply":"disagree","note":"no"},"verdict":"unsettled","verdict_note":"no"},
+         {"key":"b","text":"t","note":"own","reply":{"reply":"disagree","note":"no"},"verdict":"unsettled","verdict_note":"no"},
+         {"key":"c","text":"t","note":"own","reply":{"reply":"disagree","note":"no"},"verdict":"disputed","verdict_note":"still"}]
+        """.utf8))
+        XCTAssertEqual(SpecReviewAnswer.loopBody(entries[0], owner: ""), "Reviewer is right: t")
+        XCTAssertEqual(SpecReviewAnswer.loopBody(entries[1], owner: ""), "Reviewer is right: t — own")
+        XCTAssertEqual(SpecReviewAnswer.loopBody(entries[2], owner: "x"), "Reviewer is right: t — still\n\nx")
+    }
+
+    func testLoopUnpickedAndAuthorRightSendNothing() throws {
+        let marks = ["bs:2": SpecReviewMark(key: "bs:2", state: .ok)]
+        let a = SpecReviewAnswer.build(result: nil, marks: marks, loop: try loopLedger(), verdict: .approved, snapshot: snapshot)
+        XCTAssertEqual(a.verdict, .approved)
+        XCTAssertTrue(a.comments.isEmpty)
+    }
 }

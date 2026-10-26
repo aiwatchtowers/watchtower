@@ -1,27 +1,70 @@
 import SwiftUI
 
-/// A small capsule label (design pass spec §2.6). Tinted: the tone at 0.14
-/// under the tone's text. Neutral: secondary on secondary at 0.12.
-/// Monospaced only for branch names.
+/// One chip's data: the text, its tone and the Desktop `Chip`'s leading dot
+/// (a priority chip).
+struct PillItem: Equatable {
+    let text: String
+    let tone: PhoneTone
+    var dot = false
+}
+
+/// A small capsule label, the Desktop's `Chip` (mockups 5, 9): the tone at
+/// `ChipTint.fillOpacity` inside a `ChipTint.strokeOpacity` hairline, the
+/// text in the tone, an optional leading dot. Neutral: secondary on the same
+/// recipe. Monospaced only for branch names.
+///
+///     Pill(item: PillItem(text: "High", tone: .red, dot: true))
+///     Pill(text: "feature/x", style: .neutral, monospaced: true)
 struct Pill: View {
     enum Style {
         case tinted, neutral
+    }
+
+    struct Paint: Equatable {
+        let fill: Color
+        let stroke: Color
+        let text: Color
     }
 
     let text: String
     var tone: PhoneTone = .secondary
     var style: Style = .tinted
     var monospaced = false
+    var dot = false
+
+    init(text: String, tone: PhoneTone = .secondary, style: Style = .tinted, monospaced: Bool = false, dot: Bool = false) {
+        self.text = text
+        self.tone = tone
+        self.style = style
+        self.monospaced = monospaced
+        self.dot = dot
+    }
+
+    init(item: PillItem) {
+        self.init(text: item.text, tone: item.tone, dot: item.dot)
+    }
+
+    static func paint(_ style: Style, tone: PhoneTone) -> Paint {
+        let color = style == .tinted ? tone.color : Color.secondary
+        return Paint(fill: color.opacity(ChipTint.fillOpacity), stroke: color.opacity(ChipTint.strokeOpacity), text: color)
+    }
 
     var body: some View {
-        Text(text)
-            .font(monospaced ? Font.caption2.monospaced() : TypeScale.pill)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .foregroundStyle(style == .tinted ? tone.color : Color.secondary)
-            .background(style == .tinted ? tone.color.opacity(0.14) : Color.secondary.opacity(0.12), in: Capsule())
+        let paint = Self.paint(style, tone: tone)
+        HStack(spacing: Spacing.small) {
+            if dot {
+                Circle().fill(paint.text).frame(width: PhoneMetrics.priorityDot, height: PhoneMetrics.priorityDot)
+            }
+            Text(text)
+                .font(monospaced ? Font.caption2.monospaced() : TypeScale.pill)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, Spacing.compact)
+        .padding(.vertical, Spacing.tight)
+        .foregroundStyle(paint.text)
+        .background(paint.fill, in: Capsule())
+        .overlay(Capsule().strokeBorder(paint.stroke, lineWidth: ChipTint.strokeWidth))
     }
 }
 
@@ -43,7 +86,7 @@ struct CountBadge: View {
     }
 }
 
-/// A filter chip: the title and its count, a capsule inset by 7 inside a
+/// A filter chip: the title and its count, a capsule inset by 8 inside a
 /// 44 pt tall hit area, accent when selected.
 struct FilterChip: View {
     let title: String
@@ -61,9 +104,9 @@ struct FilterChip: View {
             }
             .font(.footnote)
             .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-            .padding(.horizontal, 10)
-            .frame(minHeight: 44)
-            .background(isSelected ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.12), in: Capsule().inset(by: 7))
+            .padding(.horizontal, Spacing.cozy)
+            .frame(minHeight: PhoneMetrics.minTouch)
+            .background(isSelected ? Fill.selected : Fill.card, in: Capsule().inset(by: Spacing.regular))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

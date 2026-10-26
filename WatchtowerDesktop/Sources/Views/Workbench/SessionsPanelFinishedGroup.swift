@@ -23,7 +23,8 @@ struct SessionsPanelSessionRow: View {
             actions: actions,
             openAsks: openAsks,
             reportLine: row.showsStateLabel ? reportLine : nil,
-            reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
+            reportProgress: row.showsStateLabel && !showsSpecReviewLine
+                ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
             closedAsks: closedAsks > 0
                 ? OwnerAskClosedButton(vm: vm, projectID: projectID, sessionID: row.id, count: closedAsks)
                 : nil,
@@ -47,10 +48,20 @@ struct SessionsPanelSessionRow: View {
     }
 
     /// The report line, or "Cleaning up…" while Delete and Clean Up or a
-    /// Clean Up… apply runs on this row (board #535).
+    /// Clean Up… apply runs on this row (board #535), or the spec review
+    /// author loop's round while one of its asks is in the loop (#1121).
     private var reportLine: String? {
-        if isCleaningUp || vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying { return "Cleaning up…" }
+        if showsCleaningUp { return "Cleaning up…" }
+        if let line = vm.specReviewLine(sessionID: row.id) { return line }
         return vm.reportLine(sessionID: row.id, projectID: projectID)
+    }
+
+    private var showsCleaningUp: Bool {
+        isCleaningUp || vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) == .applying
+    }
+
+    private var showsSpecReviewLine: Bool {
+        !showsCleaningUp && vm.specReviewLine(sessionID: row.id) != nil
     }
 
     private var isCleaningUp: Bool { vm.cleaningUpSessions.contains(row.id) }

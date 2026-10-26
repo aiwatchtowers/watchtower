@@ -7,6 +7,7 @@ const (
 	maxBlindSpots   = 100
 	maxChecks       = 300
 	maxResolved     = 300
+	maxVerdicts     = 300
 	maxNotes        = 20
 
 	maxFieldRunes   = 600  // runes of any one free-text field

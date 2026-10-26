@@ -226,13 +226,26 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(rows[1].text, "recordings updates: failed 1×, last 5 min. ago: database is locked (recovered)")
     }
 
+    // MARK: - Notifications
+
+    func testTheAlertsSwitchReadsWhenWorkStopsWithItsFooter() {
+        XCTAssertEqual(WorkAlertsCopy.title, "When work stops")
+        XCTAssertEqual(
+            WorkAlertsCopy.footer(anyShared: false),
+            "Asks, approvals and finished or failed sessions, only while you're away from your Mac.")
+        XCTAssertEqual(
+            WorkAlertsCopy.footer(anyShared: true),
+            "Asks, approvals and finished or failed sessions, only while you're away from your Mac. "
+                + "Alerts may be late on this phone.")
+    }
+
     // MARK: - Workbench toggles
 
-    func testTogglesDefaultToTypingOffStartSessionsOnNewAsksOn() throws {
+    func testTogglesDefaultToTypingOffStartSessionsOnWorkAlertsOn() throws {
         let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: try makeDefaults(), hubID: TestHub.acme)
         XCTAssertFalse(settings.typingRequested)
         XCTAssertTrue(settings.startSessions)
-        XCTAssertTrue(settings.newAskAlerts)
+        XCTAssertTrue(settings.workAlerts)
     }
 
     /// The spy counts every save call: the in-memory transport collapses
@@ -299,10 +312,10 @@ final class SettingsWiringTests: XCTestCase {
         var snapshot = try demoSnapshot(now: now)
         snapshot.permissionRequests = [try mirror(PermissionRequest.self, permissionRequestJSON(7, session: 12))]
         func card(_ grant: DeviceGrant?) throws -> PermissionCardModel {
-            try XCTUnwrap(SessionDetailModel(
-                sessionID: 12, snapshot: snapshot, report: nil, timeline: nil, now: now,
-                permissions: PermissionAccess(grant: grant, requested: settings.permissionsRequested)
-            )?.permission)
+            try XCTUnwrap(PermissionCardModel.card(
+                for: try XCTUnwrap(snapshot.session(12)), in: snapshot,
+                access: PermissionAccess(grant: grant, requested: settings.permissionsRequested), now: now
+            ))
         }
         XCTAssertEqual(try card(nil).hint, .turnOn)
 
@@ -359,13 +372,24 @@ final class SettingsWiringTests: XCTestCase {
 
         await acme.setTypingRequested(true)
         await acme.setStartSessions(false)
-        acme.newAskAlerts = false
+        acme.workAlerts = false
 
         let home = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.home)
         XCTAssertFalse(home.typingRequested, "another hub keeps its own default")
         XCTAssertTrue(home.startSessions)
-        XCTAssertFalse(home.newAskAlerts, "the alerts choice is the phone's")
+        XCTAssertFalse(home.workAlerts, "the alerts choice is the phone's")
         XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested)
+    }
+
+    /// A removed link takes its shared-alert seen list along: a link made again starts with a silent first fetch.
+    func testRemovingAHubsChoicesDropsItsSharedAlertSeenList() throws {
+        let defaults = try makeDefaults()
+        let (acme, home) = (SharedAlertPoster.postedDefaultsKey(hubID: TestHub.acme), SharedAlertPoster.postedDefaultsKey(hubID: TestHub.home))
+        defaults.set(["wire-1": "ask-1"], forKey: acme)
+        defaults.set(["wire-2": "ask-2"], forKey: home)
+        DeviceSettings.removeChoices(of: TestHub.acme, defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: acme))
+        XCTAssertNotNil(defaults.object(forKey: home), "another hub keeps its own")
     }
 
     /// A choice made while unlinked goes to the first hub with no value of

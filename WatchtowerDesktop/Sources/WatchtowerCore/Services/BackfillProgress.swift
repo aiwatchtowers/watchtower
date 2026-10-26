@@ -4,17 +4,13 @@ import Foundation
 package enum BackfillProgress {
     private static let day: Double = 86_400
 
-    /// nil when nothing is loading (no rows, or every row done/off). The plan
-    /// limit copy wins; otherwise only running rows count, and rows that are
-    /// all paused (a revoked account) ask for a reconnect (R22). Rows held by
+    /// nil when nothing is loading (no rows, or every row done/off). Only running rows count, and rows
+    /// that are all paused (a revoked account) ask for a reconnect (R22). Rows held by
     /// a transient failure (offline, a service down) are counted as waiting;
     /// when every running row is held the line says it waits and retries (#580).
     package static func line(_ rows: [BackfillRow]) -> String? {
         let active = rows.filter { $0.status == "running" || $0.status == "paused" }
         guard !active.isEmpty else { return nil }
-        if active.contains(where: { $0.waiting == "plan_limit" }) {
-            return "Loading history paused — Claude plan limit"
-        }
         let running = active.filter { $0.status == "running" }
         guard !running.isEmpty else { return "Loading history paused — reconnect the account" }
         let held = running.filter { $0.waiting == "held" }.count

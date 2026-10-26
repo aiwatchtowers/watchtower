@@ -1,7 +1,7 @@
 ---
 name: watchtower-flow
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or a group of targets is worked. Watchtower's default methodology, on top of the watchtower-workbench skill.
-x-watchtower-pack: v11
+x-watchtower-pack: v12
 ---
 
 # Watchtower Flow
@@ -13,6 +13,7 @@ This is the workbench's methodology preset: how features, specs and plans land o
 - **A feature is agreed** with the owner → `create_targets` with one target for it: text = the feature's name, intent = one or two sentences on what done means. If a target on the board already covers it, use that one instead.
 - **Group related targets — before every `create_targets`.** Read the board (`workbench_board`) and look for targets on the same topic as the new one: the same feature, screen, component or kind of fix. If they already sit under a common group target, create the new one under that group (`parent_id`). If they are loose at the top level, first create a group target for them (text = the shared topic, intent = what the group covers), move the related targets under it (`update_target` with `parent_id`), then create the new one under it too. Only a target with no topical neighbour goes to the top level. Do not regroup targets the owner placed on purpose; if a grouping is unclear, ask the owner (`ask_owner`, `kind: question`) instead of guessing.
 - **A spec, plan or design is written** → ask the owner to review it, every time, as the `watchtower-workbench` skill's "Asking the owner" says. The review happens in Watchtower — not in a chat artifact, not in the terminal, anywhere else.
+- **The review may be a loop** — for a spec or a plan the ask may start an author loop (`spec_review: "author_loop"`): wait for the findings line, read `get_spec_review`, fix each finding or disagree with a real reason, and file the next round with `previous_ask_id` and `review_replies`, as the `watchtower-workbench` skill's "Asking the owner" says. After an approval with comments, apply them and carry on without another review round.
 - **Every spec carries a `## Decisions` section:** one line per owner decision, with its source — `ask #N` or `conversation`. The reviewer checks the spec against it. Mockups agreed in a brainstorm are committed to `docs/design/mockups/<feature>/` and linked from the spec; they hold no live-install data. A plan names its spec in a `**Spec:**` header line. File the review with `doc_type: spec` or `plan`.
 - **A plan is written** → also `create_targets` in one call, one sub-target per plan task, under the feature target (`parent_id` = the feature target's id). Text = the task's title; intent = the plan path plus the task number, e.g. `docs/plans/feature-x.md — Task 3`, so any later session can find the task's steps. Nest deeper with `parent_key` only where the plan itself nests.
 

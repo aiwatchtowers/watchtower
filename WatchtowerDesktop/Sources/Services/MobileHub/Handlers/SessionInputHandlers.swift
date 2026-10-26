@@ -73,6 +73,9 @@ final class SessionInputHandlers: HubCompanion {
     /// Lines on their first try, inside `send` (no sidecar row yet; the
     /// relay's `begun` covers them).
     private var firstTries: Set<String> = []
+    /// Lines whose last gate answered go while the agent worked: their echo
+    /// says so (`while_busy`).
+    private var goneWhileBusy: Set<String> = []
     private var running = true
     /// The later echoes, one after another.
     private var echoes: Task<Void, Never>?
@@ -124,6 +127,9 @@ final class SessionInputHandlers: HubCompanion {
         }
     }
 
+    /// The lines marked as gone while the agent worked and not settled yet (tests).
+    var busyMarkCount: Int { goneWhileBusy.count }
+
     /// Waits for the later echoes queued so far (tests).
     func echoesSettled() async {
         await echoes?.value
@@ -146,6 +152,7 @@ final class SessionInputHandlers: HubCompanion {
                 lineDelivery.dropHeld(sessionID: sessionID) { $0 == .input(recordName) }
             }
             owned = [:]
+            goneWhileBusy = []
         }
     }
 
@@ -265,6 +272,7 @@ final class SessionInputHandlers: HubCompanion {
         }
         guard retry else {
             verdicts[line.recordName] = nil
+            noteBusy(line)
             return .go
         }
         do {
@@ -279,14 +287,26 @@ final class SessionInputHandlers: HubCompanion {
             return .hold
         }
         verdicts[line.recordName] = nil
+        noteBusy(line)
         return .go
+    }
+
+    private func noteBusy(_ line: PhoneLine) {
+        if control.isWorking(line.sessionID) {
+            goneWhileBusy.insert(line.recordName)
+        } else {
+            goneWhileBusy.remove(line.recordName)
+        }
     }
 
     private func verdict(_ line: PhoneLine) -> Verdict? {
         if let failure = standingFailure(line) { return .fail(failure) }
         // The state was read right before (the delivery's fresh read): a
         // session it does not list was deleted.
-        switch control.lineCheck(line.sessionID) {
+        // Only Claude sessions reach this handler (`isBoardSession`), and Claude
+        // Code queues a line typed mid-turn: a working agent does not hold it
+        // (PROJ-16 amended, ask #614). A permission prompt still does.
+        switch control.workchatLineCheck(line.sessionID) {
         case .go: return nil
         case .sessionGone: return .fail(.sessionNotRunning)
         case .hold(.needsApproval): return .hold(.needsApproval)
@@ -303,10 +323,20 @@ final class SessionInputHandlers: HubCompanion {
         return nil
     }
 
+    /// A try's resolution; a line that is over (not held) leaves its busy mark.
     private func resolve(_ delivery: SessionLineDelivery.Delivery, of line: PhoneLine) -> Resolution {
+        let resolution = settle(delivery, of: line, whileBusy: goneWhileBusy.contains(line.recordName))
+        if case .held = resolution {} else { goneWhileBusy.remove(line.recordName) }
+        return resolution
+    }
+
+    private func settle(_ delivery: SessionLineDelivery.Delivery, of line: PhoneLine, whileBusy: Bool) -> Resolution {
         let verdict = verdicts.removeValue(forKey: line.recordName)
         switch delivery {
-        case .submitted: return .final(.applied(["delivery": .string("submitted")]))
+        case .submitted:
+            var result: [String: JSONValue] = ["delivery": .string("submitted")]
+            if whileBusy { result["while_busy"] = .bool(true) }
+            return .final(.applied(result))
         case .typed: return .final(.applied(["delivery": .string("typed")]))
         case .copied: return .final(.failed(.cannotType, message: Self.cannotTypeMessage))
         case .noSession:
@@ -364,6 +394,7 @@ final class SessionInputHandlers: HubCompanion {
     private func finish(_ line: PhoneLine, _ outcome: ActionOutcome) {
         lineDelivery.dropHeld(sessionID: line.sessionID) { $0 == line.key }
         owned[line.recordName] = nil
+        goneWhileBusy.remove(line.recordName)
         do {
             try sidecar.removeHeldLine(line.recordName)
         } catch {

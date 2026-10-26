@@ -6,6 +6,12 @@ import WatchtowerCore
 extension AppState: MobileSettingsHost {}
 
 extension AppState {
+    /// "Keep this Mac awake for the iPhone": on unless the owner turned it off (ask #614).
+    var isMobileKeepAwakeEnabled: Bool {
+        get { mobileSyncDefaults.object(forKey: Constants.mobileKeepAwakeKey) as? Bool ?? true }
+        set { mobileSyncDefaults.set(newValue, forKey: Constants.mobileKeepAwakeKey) }
+    }
+
     /// The owner's toggle, outvoted by the organization's `MobileSync = off`
     /// (#608); the stored toggle itself is never rewritten by the policy.
     var isMobileSyncEnabled: Bool {
@@ -132,7 +138,10 @@ extension AppState {
             WorkbenchCommentSlice(),
             sessions,
             OwnerAskSlice(),
-            AskAlertSlice(sidecar: storage.sidecar),
+            WorkAlertSlice(
+                sidecar: storage.sidecar, isAway: { [box = ownerAwayBox] in box.read() }, liveness: { liveness.current },
+                hiddenIDs: { hidden.current }
+            ),
             PermissionRequestSlice { liveness.current },
             CalendarEventSlice(),
             MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
@@ -156,6 +165,7 @@ extension AppState {
         // recording jobs) are normal kinds: the next full tick diffs them.
         let fastLane = FastLane(
             dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
+            ownerAway: ownerAwayCenter,
             nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
             sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
                 gitRefresher?.sessionStateChanged(workbenchID: workbench)
@@ -163,8 +173,11 @@ extension AppState {
             },
             sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
         )
+        // A changed watched chat goes out within seconds, not on the next tick.
+        chats?.onChange = { [weak publisher] in publisher?.nudge(kinds: [.sessionChat]) }
+        let keepAwake = makeKeepAwake(dbPool: dbPool, sidecar: sidecar, liveness: liveness, hasPhone: hasPhone)
         let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, chats, inputs]
-        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
+        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings, keepAwake]
         let hub = try assembleMobileHub(
             storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
             recordingUploads: .init { [recordings, mobileSyncPolicy] upload, audio in
@@ -174,6 +187,19 @@ extension AppState {
         )
         wireTyping(hub.linkCenter, inputs: inputs)
         return hub
+    }
+
+    /// The Mac stays awake while a session runs and the phone has been in touch (ask #614).
+    private func makeKeepAwake(
+        dbPool: DatabasePool, sidecar: HubSyncState, liveness: SessionLivenessBox, hasPhone: @escaping @Sendable () -> Bool
+    ) -> KeepAwakeCompanion {
+        let defaults = mobileSyncDefaults
+        return KeepAwakeCompanion(
+            assertion: MacAwakeAssertion(),
+            enabled: { defaults.object(forKey: Constants.mobileKeepAwakeKey) as? Bool ?? true },
+            liveBoardSessions: { KeepAwakeCompanion.liveBoardSessions(dbPool, liveIDs: liveness.current.liveIDs) },
+            lastPhoneContact: { hasPhone() ? sidecar.lastPhoneContact() : nil }
+        )
     }
 
     /// The Undo batch's sessions (PROJ-17) into `hidden` now and on every

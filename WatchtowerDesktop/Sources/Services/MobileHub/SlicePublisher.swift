@@ -31,7 +31,7 @@ extension SliceSource {
 ///   publishes the normal kinds, so they cost at most one save batch per
 ///   30 s, sent when CKSyncEngine schedules it;
 /// - the urgent kinds (`urgentKinds`: asks, ask alerts, link grants,
-///   permission requests) are also diffed every 10 s on their own (Go's
+///   permission requests, and the watched session chat) are also diffed every 10 s on their own (Go's
 ///   writes, which no nudge sees), and the fast lane: `nudge(kinds:)` keeps only urgent kinds,
 ///   coalesces them for 1 s, then diffs only them, with at least 2 s
 ///   between two fast sends. Any cycle that saved or deleted an urgent
@@ -104,11 +104,13 @@ final class SlicePublisher: Sendable {
     /// alert, a phone's link grant (the phone waits 60 s for it) and a
     /// permission prompt a session waits on (#517). Every other kind rides
     /// the 30 s full tick.
-    static let urgentKinds: Set<SliceKind> = [.ownerAsk, .askAlert, .deviceGrant, .permissionRequest]
+    static let urgentKinds: Set<SliceKind> = [.ownerAsk, .askAlert, .deviceGrant, .permissionRequest, .sessionChat]
 
-    /// The order a cycle diffs the kinds in: the urgent ones first.
+    /// The order a cycle diffs the kinds in: the urgent ones first, the
+    /// near-live chat after the ask kinds (asks stay first).
     static let publishOrder: [SliceKind] =
-        SliceKind.allCases.filter { urgentKinds.contains($0) } + SliceKind.allCases.filter { !urgentKinds.contains($0) }
+        SliceKind.allCases.filter { urgentKinds.contains($0) && $0 != .sessionChat } + [.sessionChat]
+            + SliceKind.allCases.filter { !urgentKinds.contains($0) }
 
     /// What is published while no phone is linked: the link flow's answer.
     static let unlinkedKinds: Set<SliceKind> = [.deviceGrant]

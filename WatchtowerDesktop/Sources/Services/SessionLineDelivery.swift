@@ -49,6 +49,9 @@ final class SessionLineDelivery {
         case review(Int64)
         /// A line from the Workchat composer (#711), by its bubble's id.
         case workchat(UUID)
+        /// A spec review round's findings line for the author (#1121), by
+        /// ask id.
+        case specReview(Int64)
     }
 
     /// What became of a held line when the held lines were tried again.
@@ -165,6 +168,16 @@ final class SessionLineDelivery {
     func statesRead() {
         guard ownReads == 0 else { return }
         Task { [weak self] in await self?.deliverHeld() }
+    }
+
+    /// The launch's reattach of the session host's runs is done
+    /// (`TerminalCenter.hostRunsSettled`): before it, a session not live may
+    /// only be one not reattached yet.
+    var hostRunsSettled: Bool { terminalCenter?.hostRunsSettled == true }
+
+    /// Whether the session runs now.
+    func isLive(_ sessionID: Int64) -> Bool {
+        terminalCenter?.liveIDs.contains(sessionID) == true
     }
 
     /// When a line was last submitted into the session (its Return sent);
@@ -325,7 +338,7 @@ extension SessionLineDelivery.LineKey {
     var keepsFormatCharacters: Bool {
         switch self {
         case .input, .workchat: true
-        case .ask, .review: false
+        case .ask, .review, .specReview: false
         }
     }
 
@@ -342,13 +355,14 @@ extension SessionLineDelivery.LineKey {
         case .input: "SessionInput"
         case .review: "review"
         case .workchat: "Workchat"
+        case .specReview: "SpecReviewLoop"
         }
     }
 
     fileprivate var logNoun: String {
         switch self {
         case .ask: "answer"
-        case .input, .review, .workchat: "line"
+        case .input, .review, .workchat, .specReview: "line"
         }
     }
 }

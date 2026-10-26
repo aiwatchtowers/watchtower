@@ -29,11 +29,12 @@ struct RecordingView: View {
 /// The live capture.
 private struct RecordingCaptureView: View {
     @Environment(AppEnvironment.self) private var env
+    @ScaledMetric(relativeTo: .largeTitle) private var timerSize = RecorderMetrics.timer
 
     var body: some View {
         let recorder = env.recorder
         let chrome = RecorderChrome(phase: recorder.phase)
-        VStack(spacing: 20) {
+        VStack(spacing: Spacing.page) {
             HStack {
                 Button("Minimize") { recorder.minimize() }
                 Spacer()
@@ -54,32 +55,31 @@ private struct RecordingCaptureView: View {
             }
 
             Text(recorder.contextLabel)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(TypeScale.screenTitle)
                 .multilineTextAlignment(.center)
 
             // A capture for another hub than the one on screen names its Mac.
             if let hubName = env.captureHubName {
                 Text("Recording for \(hubName)")
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(PhoneTone.red.color)
             }
 
             Spacer(minLength: 0)
 
             Text(recorder.timerText)
-                .font(.system(size: 64, weight: .light, design: .monospaced))
+                .font(.system(size: timerSize, weight: .light, design: .monospaced))
                 .monospacedDigit()
                 .accessibilityLabel("Recorded \(recorder.timerText)")
 
             WaveformBars(levels: recorder.levels)
-                .frame(height: 64)
+                .frame(height: RecorderMetrics.waveformHeight)
                 .accessibilityHidden(true)
 
             if let notice = recorder.capNotice {
                 Text(notice)
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(PhoneTone.red.color)
             }
 
             Text(recorder.statusLine)
@@ -118,8 +118,8 @@ private struct RecordingCaptureView: View {
     }
 
     private func controls(_ recorder: PhoneRecorderController, _ chrome: RecorderChrome) -> some View {
-        HStack(alignment: .center, spacing: 36) {
-            RoundButton(systemImage: chrome.leftSystemImage, label: chrome.leftTitle, size: 64) {
+        HStack(alignment: .top, spacing: RecorderMetrics.controlGap) {
+            RoundButton(systemImage: chrome.leftSystemImage, label: chrome.leftTitle, size: RecorderMetrics.round) {
                 if chrome.resumes {
                     recorder.resume()
                 } else {
@@ -131,22 +131,27 @@ private struct RecordingCaptureView: View {
             Button {
                 Task { await recorder.stop() }
             } label: {
-                ZStack {
-                    Circle().fill(PhoneTone.red.color)
-                    RoundedRectangle(cornerRadius: Radius.chip).fill(.white).frame(width: 30, height: 30)
+                VStack(spacing: Spacing.compact) {
+                    ZStack {
+                        Circle().fill(PhoneTone.red.color)
+                        RoundedRectangle(cornerRadius: Radius.control)
+                            .fill(.white)
+                            .frame(width: RecorderMetrics.stopGlyph, height: RecorderMetrics.stopGlyph)
+                    }
+                    .frame(width: RecorderMetrics.stop, height: RecorderMetrics.stop)
+                    Text("Stop").font(TypeScale.meta).foregroundStyle(.secondary)
                 }
-                .frame(width: 88, height: 88)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Stop")
             .disabled(!chrome.areCaptureControlsEnabled)
 
-            RoundButton(systemImage: "bookmark.fill", label: "Mark moment", size: 64) {
+            RoundButton(systemImage: "bookmark.fill", label: "Mark moment", size: RecorderMetrics.round) {
                 recorder.markMoment()
             }
             .disabled(!chrome.areCaptureControlsEnabled)
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, Spacing.regular)
     }
 }
 
@@ -159,13 +164,14 @@ private struct RoundButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 6) {
+            VStack(spacing: Spacing.compact) {
                 Image(systemName: systemImage)
                     .font(.title2)
                     .frame(width: size, height: size)
-                    .background(Circle().fill(Color(.secondarySystemFill)))
+                    .background(Circle().fill(Fill.card))
+                    .overlay(Circle().strokeBorder(Stroke.hairlineColor, lineWidth: Stroke.hairline))
                 Text(label)
-                    .font(.caption)
+                    .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
             }
         }
@@ -181,7 +187,7 @@ private struct WaveformBars: View {
     var body: some View {
         GeometryReader { proxy in
             let count = PhoneRecorderController.waveformBars
-            let spacing: CGFloat = 3
+            let spacing = RecorderMetrics.barGap
             let width = max(1, (proxy.size.width - spacing * CGFloat(count - 1)) / CGFloat(count))
             let padded = Array(repeating: Float(0), count: max(0, count - levels.count)) + levels.suffix(count)
             HStack(alignment: .center, spacing: spacing) {
@@ -190,9 +196,10 @@ private struct WaveformBars: View {
                         .fill(
                             WaveformStyle.isSilent(padded[index])
                                 ? AnyShapeStyle(HierarchicalShapeStyle.quaternary)
-                                : AnyShapeStyle(PhoneTone.red.color.opacity(0.85))
+                                : AnyShapeStyle(PhoneTone.red.color)
                         )
                         .frame(width: width, height: WaveformStyle.height(padded[index], in: proxy.size.height))
+                        .opacity(WaveformStyle.isSilent(padded[index]) ? 1 : PhoneOpacity.waveform)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -211,25 +218,28 @@ private struct RecordingSavedView: View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             let snapshot = env.phoneRecordings.snapshot
             let recording = snapshot.recording(saved.id)
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: Spacing.large) {
                 Text("Saved · \(PhoneRecorderController.clockText(saved.durationSec))")
                     .font(TypeScale.pageTitle)
-                    .padding(.top, 24)
+                    .padding(.top, Spacing.wide)
 
                 if let notice = env.recorder.endNotice {
                     Text(notice)
                         .font(.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(PhoneTone.red.color)
                 }
-                StepRow(state: .done, text: "Saved on the phone")
-                if let recording {
-                    let upload = PhoneUploadStage(recording: recording, heartbeat: snapshot.heartbeat, now: context.date)
-                    uploadStep(upload)
-                    transcriptStep(PhoneTranscriptStage(job: snapshot.jobs[saved.id]))
-                } else {
-                    StepRow(state: .current, text: "Sending to your Mac")
-                    StepRow(state: .todo, text: "Transcript and recap")
+                VStack(alignment: .leading, spacing: 0) {
+                    StepRow(state: .done, text: "Saved on the phone")
+                    if let recording {
+                        let upload = PhoneUploadStage(recording: recording, heartbeat: snapshot.heartbeat, now: context.date)
+                        uploadStep(upload)
+                        transcriptStep(PhoneTranscriptStage(job: snapshot.jobs[saved.id]))
+                    } else {
+                        StepRow(state: .current, text: "Sending to your Mac")
+                        StepRow(state: .todo, text: "Transcript and recap")
+                    }
                 }
+                .card()
 
                 Text("Mac asleep? The file waits in iCloud; the Mac transcribes it when it wakes.")
                     .font(.footnote)
@@ -237,13 +247,8 @@ private struct RecordingSavedView: View {
 
                 Spacer()
 
-                Button {
-                    env.showRecordings()
-                } label: {
-                    Text("See recordings").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                Button("See recordings") { env.showRecordings() }
+                    .buttonStyle(ProminentActionStyle())
             }
         }
     }
@@ -255,13 +260,13 @@ private struct RecordingSavedView: View {
         case .waitingForMac: StepRow(state: .waiting, text: stage.label)
         case .delivered: StepRow(state: .done, text: stage.label)
         case .failed:
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
                 StepRow(state: .failed, text: stage.label)
                 if stage.offersRetry {
                     Button("Retry") {
                         Task { await env.recorder.retry(id: saved.id) }
                     }
-                    .padding(.leading, 34)
+                    .padding(.leading, PhoneMetrics.stepColumn + Spacing.medium)
                 }
             }
         }
@@ -285,7 +290,7 @@ private struct RecordingEndedView: View {
 
     var body: some View {
         let recorder = env.recorder
-        VStack(spacing: 16) {
+        VStack(spacing: Spacing.large) {
             Spacer()
             Image(systemName: recorder.phase == .tooShort ? "waveform.slash" : "mic.slash")
                 .font(.largeTitle)
@@ -297,13 +302,8 @@ private struct RecordingEndedView: View {
                 Link("Open Settings", destination: settings)
             }
             Spacer()
-            Button {
-                recorder.close()
-            } label: {
-                Text("Close").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
+            Button("Close") { recorder.close() }
+                .buttonStyle(SecondaryActionStyle())
         }
     }
 }
@@ -317,7 +317,7 @@ struct RecordingMiniBar: View {
         Button {
             recorder.reopen()
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.regular) {
                 Image(systemName: "circle.fill").font(.caption2)
                 Text(recorder.phase == .recording ? "REC" : "PAUSED").font(.footnote.weight(.bold))
                 Text(recorder.timerText).font(.footnote.monospacedDigit())
@@ -328,9 +328,9 @@ struct RecordingMiniBar: View {
                 Text("Return").font(.footnote)
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.red)
+            .padding(.horizontal, Spacing.large)
+            .padding(.vertical, Spacing.cozy)
+            .background(PhoneTone.red.color)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
@@ -338,4 +338,18 @@ struct RecordingMiniBar: View {
                 ?? "Recording \(recorder.timerText). Return to the recorder"
         )
     }
+}
+
+/// The recorder's own sizes (mockup 14: calm and big), beside `PhoneMetrics`.
+private enum RecorderMetrics {
+    /// The timer's base size; scales with Dynamic Type.
+    static let timer: CGFloat = 64
+    static let waveformHeight: CGFloat = 64
+    static let barGap: CGFloat = 3
+    /// Pause and Mark moment.
+    static let round: CGFloat = 64
+    /// Stop and its white square.
+    static let stop: CGFloat = 88
+    static let stopGlyph: CGFloat = 30
+    static let controlGap: CGFloat = 36
 }

@@ -16,6 +16,19 @@ func DeliveryLine(id int64, kind string, a Answer) string {
 	return OneLine(line)
 }
 
+// SpecReviewLine is the one line the Desktop types into the ask's session
+// when a spec review has findings to address; the Swift twin is pinned by
+// testdata/spec_review_lines.
+func SpecReviewLine(askID int64, round, items int) string {
+	noun := "findings"
+	if items == 1 {
+		noun = "finding"
+	}
+	line := fmt.Sprintf("Spec review of ask #%d, round %d: %d %s to address — read them with get_spec_review %d using the watchtower-workbench skill.",
+		askID, round, items, noun, askID)
+	return OneLine(line)
+}
+
 func short(kind string, a Answer) string {
 	switch {
 	case a.Dismissed:

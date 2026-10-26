@@ -10,8 +10,6 @@ import (
 	"syscall"
 
 	"watchtower/internal/config"
-	"watchtower/internal/db"
-	"watchtower/internal/planusage"
 	"watchtower/internal/tools"
 )
 
@@ -20,17 +18,9 @@ import (
 var specReviewExe = os.Executable
 
 // specReviewLauncher returns the launcher ask_owner starts the independent
-// spec reviewer with (docs/features/spec-review.md). It skips, rather than
-// launches, when the Claude plan is near its limit: the reviewer is
-// background work and the ask is filed either way.
-func specReviewLauncher(cfg *config.Config, database *db.DB) tools.SpecReviewLauncher {
+// spec reviewer with (docs/features/spec-review.md).
+func specReviewLauncher(cfg *config.Config) tools.SpecReviewLauncher {
 	return func(askID int64) error {
-		if p := cfg.AI.Provider; p == "" || p == "claude" {
-			// An unreadable status does not block (planusage.NearLimit's rule).
-			if st, err := database.GetPlanUsageStatus(); err == nil && planusage.NearLimit(st) {
-				return tools.ErrSpecReviewSkipped{Reason: "plan near limit"}
-			}
-		}
 		exe, err := specReviewExe()
 		if err != nil {
 			return fmt.Errorf("locating the watchtower binary: %w", err)

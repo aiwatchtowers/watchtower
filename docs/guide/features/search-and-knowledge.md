@@ -46,7 +46,7 @@ requires: feature:knowledge-search
 
 **Links.** New links in Slack and Confluence are opened and summarized: "Link (AI summary of a fetched public page)". Never opened: links in mail, links whose address carries a token, key or signature or reads like `/reset`, `/invite` or `/login`, addresses on your Mac or local network, Slack, Atlassian, Linear, Gmail and Google Calendar links (already synced), Google Docs and Drive links, and addresses with a port other than the usual web ones. Login pages are not summarized.
 
-Only images and links that arrive while Knowledge search is on are processed, never older ones. Images need Claude or Codex as the provider (with Ollama they wait); near your Claude plan limit the work pauses.
+Only images and links that arrive while Knowledge search is on are processed, never older ones. Images need Claude or Codex as the provider (with Ollama they wait).
 
 - Opening a link fetches the page from your Mac like a browser visit: the site sees your Mac's address and the time, and a tracking link can tell its author the link was opened.
 - Text read off a screenshot is stored and searchable as it is, passwords and tokens included.
@@ -94,7 +94,7 @@ done_when: confluence.connected
 - **The chat doesn't find something recent.** The index trails the sync by one daemon cycle. For Slack, results may say "NN% indexed" during a first big load.
 - **"Confluence sync is turned off."** Press **Enable** in the Confluence section; it restarts the background sync.
 - **"No Confluence spaces found on this site."** Your Atlassian account sees no spaces, or the grant does not cover Confluence. Press **Grant Confluence access** or sign in again.
-- **A screenshot or link isn't found.** It is processed in the next cycle or two. With Ollama images wait, near the plan limit both pause, and anything from before Knowledge search was on is never processed.
+- **A screenshot or link isn't found.** It is processed in the next cycle or two. With Ollama images wait, and anything from before Knowledge search was on is never processed.
 - **A workbench file is missing.** Files that `.gitignore` excludes are not indexed, and other workbenches never see them.
 
 ## Related

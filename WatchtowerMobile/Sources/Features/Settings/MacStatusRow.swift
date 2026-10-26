@@ -35,33 +35,16 @@ struct MacStatusRow: Equatable {
     }
 }
 
-/// The Your Mac row (bug 10): the name on the left and the dot and state on
-/// the right, on one line. A name too long for that gets the state on a
-/// second line under it, instead of either truncating (Phases 1–2 review).
+/// The This Mac row (mockup 16): the Mac's name with the status dot in its
+/// tone, the state trailing, on one `SettingsRow`.
 struct MacStatusRowView: View {
     let row: MacStatusRow
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            LabeledContent {
-                status
-            } label: {
-                Text(row.label).lineLimit(1)
-            }
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(row.label)
-                status.foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        SettingsRow(title: row.label, leadingDot: row.tone) {
+            Text(row.value)
         }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var status: some View {
-        HStack(spacing: Spacing.compact) {
-            Circle().fill(row.tone.color).frame(width: 8, height: 8)
-            Text(row.value).lineLimit(1)
-        }
+        .accessibilityValue(row.value)
     }
 }
 
@@ -77,5 +60,77 @@ enum LastSyncText {
         // before iOS 18), so shift `last` by how far `now` is from it.
         let shifted = last.addingTimeInterval(Date().timeIntervalSince(now))
         return shifted.formatted(Date.RelativeFormatStyle(presentation: .named, unitsStyle: .abbreviated, locale: locale))
+    }
+}
+
+/// Where the Mac is, for the screens that act on it (spec §5.6): online
+/// while its heartbeat is under 2100 s old (`MacStatus.isOnline`, the rule
+/// Settings' row reads; one stamped ahead of the phone's clock is online),
+/// asleep with an older heartbeat from a still-linked Mac, offline with no
+/// heartbeat or no link.
+enum MacReachability: Equatable {
+    case online
+    case asleep(lastSeen: Date)
+    case offline
+
+    static func of(heartbeat: Date?, linked: Bool, now: Date) -> Self {
+        guard linked, let heartbeat else { return .offline }
+        return MacStatus.isOnline(lastHeartbeat: heartbeat, now: now) ? .online : .asleep(lastSeen: heartbeat)
+    }
+
+    var isOnline: Bool { self == .online }
+
+    /// The last contact a live state is "as of" while the Mac is asleep.
+    var asOf: Date? {
+        if case let .asleep(lastSeen) = self { return lastSeen }
+        return nil
+    }
+
+    /// The Mac status chip's state; an unlinked phone has no Mac to name.
+    func chipState(linked: Bool) -> MacChipState {
+        switch self {
+        case .online: .online
+        case let .asleep(lastSeen): .asleep(lastSeen: lastSeen)
+        case .offline: linked ? .offline(lastSeen: nil) : .notLinked
+        }
+    }
+}
+
+/// The workchat's banner while the Mac is not online (mockup 8): "**Your
+/// Mac is asleep** · last seen 12 min ago. New lines go when it wakes."
+struct MacAwayBanner: Equatable {
+    let title: String
+    let detail: String
+
+    init?(_ mac: MacReachability, now: Date) {
+        switch mac {
+        case .online:
+            return nil
+        case let .asleep(lastSeen):
+            title = "Your Mac is asleep"
+            detail = " · last seen \(LastSeen.phrase(lastSeen, now: now)). New lines go when it wakes."
+        case .offline:
+            title = "Your Mac is offline"
+            detail = ". New lines go when it is back."
+        }
+    }
+
+    var text: String { title + detail }
+}
+
+extension AppEnvironment {
+    /// The active Mac's reachability at `now`, from its heartbeat and link.
+    func macReachability(now: Date) -> MacReachability {
+        .of(heartbeat: workbenchReplica.snapshot.heartbeat?.updatedAt, linked: linkedDevice != nil, now: now)
+    }
+
+    /// The Mac status chip of Now and the Calendar (mockups 1, 7).
+    func macChip(now: Date) -> MacStatusChipModel {
+        let linked = linkedDevice != nil
+        return MacStatusChipModel(
+            macName: workbenchReplica.snapshot.heartbeat?.macName ?? "",
+            state: macReachability(now: now).chipState(linked: linked),
+            now: now
+        )
     }
 }

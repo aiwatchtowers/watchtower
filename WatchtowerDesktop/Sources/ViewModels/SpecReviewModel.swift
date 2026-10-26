@@ -89,6 +89,8 @@ final class SpecReviewModel {
             let (row, marks) = try await dbPool.read { db in
                 (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID))
             }
+            // A finished author loop opens on its disputes (spec 2026-10-26 §6).
+            if self.row == nil, row?.loop == .owner { phase = .wrapup }
             self.row = row
             self.marks = marks
             if chapterKey == nil || !chapters.contains(where: { $0.key == chapterKey }) {
@@ -174,8 +176,9 @@ final class SpecReviewModel {
         let askID = ask.id
         var about = ""
         if state == .comment {
-            let finding = row?.result?.findings.first { $0.key == key }
-            about = finding?.text ?? marks[key]?.about ?? ""
+            let finding = row?.result?.findings.first { $0.key == key }?.text
+                ?? row?.ledger.first { $0.item.key == key }?.item.text
+            about = finding ?? marks[key]?.about ?? ""
         }
         let mark = SpecReviewMark(key: key, state: state, body: body, about: about)
         let stamp = now()
@@ -199,6 +202,49 @@ final class SpecReviewModel {
         } catch {
             lastError = "Could not clear the mark: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Author loop (spec 2026-10-26 §6)
+
+    /// The reviewer↔author loop ended and the owner has the last word: the
+    /// screen shows the disputes and the author's fixes instead of marks.
+    var isLoop: Bool { row?.loop == .owner }
+
+    /// Disputed and unsettled findings, in ledger order.
+    var disputes: [SpecReviewLedgerEntry] { row.map(SpecReviewLoop.disputed) ?? [] }
+
+    /// Findings the reviewer judged fixed by the author.
+    var fixes: [SpecReviewLedgerEntry] { row.map(SpecReviewLoop.fixed) ?? [] }
+
+    var endedEarly: Bool { row.map(SpecReviewLoop.endedEarly) ?? false }
+
+    /// Disputes the owner has not picked a side on; Approve counts them as
+    /// **Author is right**.
+    var unpickedDisputeCount: Int {
+        disputes.filter { marks[$0.item.key] == nil }.count
+    }
+
+    /// **Reviewer is right** (a `comment` mark, the owner's words optional)
+    /// or **Author is right** (`ok`).
+    func pick(_ key: String, reviewerRight: Bool, body: String = "") async {
+        if reviewerRight {
+            await mark(key, .comment, body: body.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else {
+            await mark(key, .ok)
+        }
+    }
+
+    /// **Reopen** a fix: a `comment` mark that needs the owner's words.
+    /// Returns false, saving nothing, for a blank body.
+    @discardableResult
+    func reopen(_ key: String, body: String) async -> Bool {
+        let body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else {
+            lastError = "Say what is wrong with the fix to reopen it."
+            return false
+        }
+        await mark(key, .comment, body: body)
+        return true
     }
 
     // MARK: - Derived screen state
@@ -303,11 +349,19 @@ final class SpecReviewModel {
     /// or in the margin.
     var canSend: Bool { row?.result != nil && commentCount + draftCommentCount > 0 }
 
-    /// Approve asks once when findings are still unmarked.
-    var needsApproveConfirm: Bool { unmarkedCount > 0 }
+    /// Approve asks once when findings are still unmarked. A finished
+    /// author loop's Approve is one press, except after an early end with
+    /// a dispute nobody answered.
+    var needsApproveConfirm: Bool {
+        isLoop ? endedEarly && unpickedDisputeCount > 0 : unmarkedCount > 0
+    }
 
     var approveConfirmMessage: String {
-        "\(unmarkedCount) finding\(unmarkedCount == 1 ? " is" : "s are") not marked. Approve anyway?"
+        if isLoop {
+            let n = unpickedDisputeCount
+            return "\(n) disputed finding\(n == 1 ? " was" : "s were") never answered — approve anyway?"
+        }
+        return "\(unmarkedCount) finding\(unmarkedCount == 1 ? " is" : "s are") not marked. Approve anyway?"
     }
 
     /// What `verdict` hands to the ask's one answer path: the draft (margin

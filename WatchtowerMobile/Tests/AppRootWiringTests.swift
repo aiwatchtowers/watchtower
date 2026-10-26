@@ -309,6 +309,21 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false])
     }
 
+    /// A `CloudKitTransport` in a process without the iCloud entitlement (this unsigned host) gets no alert
+    /// subscription: neither its start nor its removal may build a `CKContainer`, which would kill the process.
+    func testAnUnentitledCloudKitHubNeverTouchesCloudKitForItsAlertSubscription() async throws {
+        let root = try makeRoot(links: [linkRecord()], persistentTransport: true)
+        let first = try session(root, TestHub.acme)
+        try await poll { first.isBootstrapped }
+        XCTAssertFalse(CloudKitTransport.entitlementPresent(), "the test host is unsigned")
+        XCTAssertTrue(first.startsEngine)
+        XCTAssertNil(first.alertRegistrar, "no live saver without the entitlement")
+
+        _ = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
+
+        XCTAssertNil(root.env.session(TestHub.acme))
+    }
+
     /// Ruling 2: the row goes before the removal's first wait, so a kill
     /// anywhere in it (here: held in the hand-over, a save running) never
     /// brings the hub back at the next launch.
@@ -379,6 +394,21 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(try registry.rows().isEmpty)
         XCTAssertTrue(root.showsOnboarding)
         XCTAssertEqual(farewellChecks.map(\.hubID), [TestHub.acme, TestHub.home], "each unlink waited for its farewell")
+    }
+
+    /// A tapped alert of another Mac brings that hub on screen, then pushes its screen; one of an unknown hub
+    /// opens nothing.
+    func testATappedAlertSwitchesTheHubAndPushesItsRoute() async throws {
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
+
+        root.open(.session(hubID: TestHub.home, sessionID: 11))
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
+        XCTAssertEqual(root.env.navigation.tab, .workbench)
+        XCTAssertEqual(root.env.navigation.workbenchPath.count, 1, "the switch reset the stack, then the route went on")
+
+        root.open(.ask(hubID: "no-such-hub", askID: 1))
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
+        XCTAssertEqual(root.env.navigation.alertOnScreen, .session(hubID: TestHub.home, sessionID: 11))
     }
 
     /// An inactive hub's unlink leaves the hub on screen where it is.

@@ -381,7 +381,7 @@ struct WatchtowerApp: App {
 
     private var rootContent: some View {
         // The recorder pills, the extract pill and the meeting banner over
-        // every screen, with a band kept free for the pills (#397).
+        // every screen, the pills floating where the owner left them (#397).
         RecordingIndicatorHost { NavigationRoot() }
             .frame(minWidth: 800, minHeight: 600)
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.

@@ -274,6 +274,9 @@ enum DesignShotCatalog {
             DesignShot(name: "spec-review-wrapup", size: NSSize(width: 760, height: 900)) {
                 SpecReviewShotFixtures.screen(.wrapup)
             },
+            DesignShot(name: "spec-review-loop", size: NSSize(width: 760, height: 1180)) {
+                SpecReviewShotFixtures.loop()
+            },
             DesignShot(name: "spec-review-running", size: NSSize(width: 760, height: 360)) {
                 SpecReviewShotFixtures.running()
             },

@@ -128,7 +128,7 @@ func Build(ctx context.Context, d *db.DB, workbenchID, sessionID int64, opts Opt
 	if err != nil {
 		return Report{}, err
 	}
-	asks, err := d.ListOwnerAsks(workbenchID, db.OwnerAskFilter{Statuses: []string{"open"}, SessionID: sessionID})
+	asks, err := d.ListOwnerAsks(workbenchID, db.OwnerAskFilter{Statuses: []string{"open"}, SessionID: sessionID, ExcludeSpecLoop: true})
 	if err != nil {
 		return Report{}, err
 	}

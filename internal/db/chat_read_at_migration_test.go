@@ -8,14 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMigration00160_ExistingRowsReadNewRowsNull: a conversation that existed
+// TestMigration00161_ExistingRowsReadNewRowsNull: a conversation that existed
 // before the migration reads as already read (read_at = updated_at); one
 // inserted after it starts with NULL.
-func TestMigration00160_ExistingRowsReadNewRowsNull(t *testing.T) {
+func TestMigration00161_ExistingRowsReadNewRowsNull(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "w.db")
 	d, err := Open(path)
 	require.NoError(t, err)
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 159))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 160))
 	_, err = d.Exec(`INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'old', 10, 25.5)`)
 	require.NoError(t, err)
 	require.NoError(t, d.Close())

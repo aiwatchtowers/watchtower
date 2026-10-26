@@ -110,6 +110,15 @@ struct MobileSettingsView: View {
                 Text(MobileSettingsViewModel.corpNotice)
                     .foregroundStyle(.secondary)
             }
+            if model.isOn {
+                Toggle("Keep this Mac awake for the iPhone", isOn: Binding(
+                    get: { model.keepAwake },
+                    set: { model.setKeepAwake($0) }
+                ))
+                Text("While a session runs and your iPhone has been in touch in the last 24 hours, this Mac does not "
+                    + "go to sleep on its own. A closed lid on battery still sleeps it.")
+                    .foregroundStyle(.secondary)
+            }
         } footer: {
             Text("This Mac becomes the hub the iPhone app syncs with, through your own iCloud.")
         }

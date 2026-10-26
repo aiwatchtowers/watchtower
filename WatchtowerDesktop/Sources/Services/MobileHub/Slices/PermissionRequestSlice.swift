@@ -69,7 +69,32 @@ struct PermissionRequestSlice: SliceSource {
         }
     }
 
+    /// One pending request a hook still waits on, as `records` publishes it (the work alerts read the same rows).
+    struct Pending {
+        let id: Int64
+        let sessionID: Int64
+        let workbenchID: Int64
+        let toolName: String
+        let summary: String
+        let summaryClipped: Bool
+        let createdAt: Date
+    }
+
     func records(_ db: Database) throws -> [SliceRecord] {
+        let stamp = now()
+        let encoder = RelayCoder.makeEncoder()
+        return try pending(db).map { row in
+            let summary = Self.wireSummary(row.summary, clippedByGo: row.summaryClipped)
+            let payload = Payload(
+                id: row.id, sessionID: row.sessionID, workbenchID: row.workbenchID, toolName: row.toolName,
+                summary: summary.text, summaryClipped: summary.clipped ? true : nil, createdAt: row.createdAt
+            )
+            return SliceRecord(kind: kind, id: String(row.id), modifiedAt: stamp, payload: try encoder.encode(payload))
+        }
+    }
+
+    /// The pending requests of live board Claude sessions in the published workbenches, not stale, in id order.
+    func pending(_ db: Database) throws -> [Pending] {
         let published = Set(try WorkbenchSlice.publishedWorkbenchRefs(db).map(\.id))
         guard !published.isEmpty else { return [] }
         let stamp = now()
@@ -82,20 +107,16 @@ struct PermissionRequestSlice: SliceSource {
             WHERE r.status = 'pending' AND s.kind = 'claude'
             ORDER BY r.id
             """)
-        let encoder = RelayCoder.makeEncoder()
-        return try rows.compactMap { row in
+        return rows.compactMap { row in
             let session: Int64 = row["terminal_session_id"]
             let project: Int64? = row["project_id"]
-            let created = SliceDate.parse(row["created_at"] ?? "")
             guard let project, published.contains(project),
+                  let created = SliceDate.parse(row["created_at"] ?? ""),
                   !Self.isStale(created: created, live: live.contains(session), now: stamp) else { return nil }
-            let id: Int64 = row["id"]
-            let summary = Self.wireSummary(row["summary"] ?? "", clippedByGo: row["summary_clipped"] ?? false)
-            let payload = Payload(
-                id: id, sessionID: session, workbenchID: row["workbench_id"], toolName: row["tool_name"] ?? "",
-                summary: summary.text, summaryClipped: summary.clipped ? true : nil, createdAt: created ?? Date(timeIntervalSince1970: 0)
+            return Pending(
+                id: row["id"], sessionID: session, workbenchID: row["workbench_id"], toolName: row["tool_name"] ?? "",
+                summary: row["summary"] ?? "", summaryClipped: row["summary_clipped"] ?? false, createdAt: created
             )
-            return SliceRecord(kind: kind, id: String(id), modifiedAt: stamp, payload: try encoder.encode(payload))
         }
     }
 

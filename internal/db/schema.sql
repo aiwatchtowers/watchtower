@@ -2759,7 +2759,13 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     attempt     INTEGER NOT NULL DEFAULT 0,
     queued_at   TEXT NOT NULL,
     started_at  TEXT NOT NULL DEFAULT '',
-    finished_at TEXT NOT NULL DEFAULT ''
+    finished_at TEXT NOT NULL DEFAULT '',
+    loop        TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), -- author loop (00160): '' none, author = fixing, owner = ended
+    round       INTEGER NOT NULL DEFAULT 0,
+    replies     TEXT NOT NULL DEFAULT '',   -- JSON the author sent with this round
+    open_items  TEXT NOT NULL DEFAULT '',   -- JSON this round hands the author
+    ledger      TEXT NOT NULL DEFAULT '',   -- JSON of the loop's settled items so far
+    loop_end    TEXT NOT NULL DEFAULT ''
 );
 
 -- The owner's per-item marks on a spec review (00158); the Desktop writes them.

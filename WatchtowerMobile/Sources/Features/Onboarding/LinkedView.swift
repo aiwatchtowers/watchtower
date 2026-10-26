@@ -12,9 +12,8 @@ struct LinkedView: View {
                 Task { await linking.finish() }
             } label: {
                 Text("Continue")
-                    .frame(maxWidth: .infinity, minHeight: 44)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(ProminentActionStyle())
         }
     }
 }
@@ -31,16 +30,15 @@ struct LinkFailureView: View {
                     linking.startScan()
                 } label: {
                     Text("Scan again")
-                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(ProminentActionStyle())
             }
             Button {
                 linking.dismiss()
             } label: {
                 Text("Close")
-                    .frame(maxWidth: .infinity, minHeight: 44)
             }
+            .buttonStyle(SecondaryActionStyle())
         }
     }
 }
@@ -58,7 +56,7 @@ private struct LinkOutcomeLayout<Actions: View>: View {
         VStack(spacing: Spacing.page) {
             Spacer()
             Image(systemName: systemImage)
-                .font(.system(size: 48))
+                .font(.system(size: PhoneMetrics.outcomeSymbol))
                 .foregroundStyle(tone.color)
             VStack(spacing: Spacing.regular) {
                 Text(title)

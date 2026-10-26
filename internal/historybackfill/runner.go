@@ -13,7 +13,6 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/logredact"
-	"watchtower/internal/planusage"
 	"watchtower/internal/policy"
 )
 
@@ -53,7 +52,6 @@ type Store interface {
 	SetHistoryBackfillLastError(id int64, msg string, now time.Time) error
 	HoldHistoryBackfill(id int64, msg string, now time.Time) error
 	ReleaseHistoryBackfillHold(id int64, now time.Time) error
-	GetPlanUsageStatus() (*db.PlanUsageStatus, error)
 }
 
 // Runner is the daemon's history backfill phase.
@@ -71,8 +69,6 @@ type Runner struct {
 	// Steps; Step updates it.
 	Cursor *int64
 }
-
-const waitingPlanLimit = "plan_limit"
 
 // MaxHold is how long a row may stay held by transient failures before each
 // further hold counts as a strike, so a failure that never clears ends in
@@ -155,9 +151,6 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 		return r.fail(ctx, bctx, row, fromTS, from, to, fmt.Errorf("fetch: %w", err))
 	}
 
-	if r.nearLimit() {
-		return true, r.markPlanLimitWaiting(row)
-	}
 	if err := r.clearWaiting(row); err != nil {
 		return true, err
 	}
@@ -205,19 +198,6 @@ func (r *Runner) applyAccountState(row *db.HistoryBackfill) (active bool, err er
 		}
 	}
 	return true, nil
-}
-
-// markPlanLimitWaiting records that the plan gate holds the row.
-func (r *Runner) markPlanLimitWaiting(row *db.HistoryBackfill) error {
-	if row.Waiting == waitingPlanLimit {
-		return nil
-	}
-	if err := r.Store.SetHistoryBackfillWaiting(row.ID, waitingPlanLimit, r.Now()); err != nil {
-		return err
-	}
-	row.Waiting = waitingPlanLimit
-	r.logf("history backfill: Claude plan limit near, processing waits (%s account %d)", row.SourceKind, row.AccountID)
-	return nil
 }
 
 // fail records a chunk failure; the third failure of a chunk skips it. A
@@ -302,7 +282,7 @@ func (r *Runner) releaseHold(row *db.HistoryBackfill) error {
 	return nil
 }
 
-// idle clears what only holds while the row runs — the plan-gate wait and a
+// idle clears what only holds while the row runs — a stale plan-limit wait and a
 // hold — for a row that is paused or has no source wired.
 func (r *Runner) idle(row *db.HistoryBackfill) error {
 	if err := r.clearWaiting(row); err != nil {
@@ -322,9 +302,9 @@ func (r *Runner) advance(row *db.HistoryBackfill, reachedTS float64) error {
 	return nil
 }
 
-// clearWaiting drops waiting=plan_limit. It means "the plan gate holds this
-// row" and is only true while the gate holds it: a row that passed the gate,
-// is paused, has no source wired or failed its fetch clears it (F6).
+// clearWaiting drops a stale waiting=plan_limit left by an older version (the
+// plan gate is gone, ask #655): nothing writes it any more, a row that runs,
+// is paused, has no source wired or failed its fetch clears it.
 func (r *Runner) clearWaiting(row *db.HistoryBackfill) error {
 	if row.Waiting == "" {
 		return nil
@@ -342,16 +322,6 @@ func (r *Runner) setStatus(row *db.HistoryBackfill, status string) error {
 	}
 	row.Status = status
 	return nil
-}
-
-// nearLimit reads the plan gate; an unreadable status does not block.
-func (r *Runner) nearLimit() bool {
-	st, err := r.Store.GetPlanUsageStatus()
-	if err != nil {
-		r.logf("history backfill: plan usage status: %v", err)
-		return false
-	}
-	return planusage.NearLimit(st)
 }
 
 func (r *Runner) source(kind string, id int64) Source {

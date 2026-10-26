@@ -14,14 +14,20 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertNotEqual(PhoneTone.waitingForYou, .gray)
     }
 
-    /// §2.9: the Mac's spacing steps plus 20 for page margins; one radius
-    /// per role; the flat row's insets.
-    func testTheMetricsNameTheMacsSteps() {
+    /// The phone reads the Desktop's tokens (WatchtowerDesign, one copy):
+    /// its spacing steps and radii; a card takes the container radius; the
+    /// flat row's insets stay the phone's own.
+    func testTheMetricsAreTheDesktopsTokens() {
         XCTAssertEqual(
-            [Spacing.tight, Spacing.small, Spacing.compact, Spacing.regular, Spacing.medium, Spacing.large, Spacing.page],
-            [2, 4, 6, 8, 12, 16, 20]
+            [Spacing.tight, Spacing.small, Spacing.compact, Spacing.regular, Spacing.cozy,
+             Spacing.medium, Spacing.large, Spacing.page, Spacing.wide, Spacing.hero],
+            [2, 4, 6, 8, 10, 12, 16, 20, 24, 40]
         )
-        XCTAssertEqual([Radius.chip, Radius.row, Radius.card], [6, 8, 12])
+        XCTAssertEqual(
+            [Radius.mark, Radius.control, Radius.row, Radius.container, Radius.bubble, Radius.pill],
+            [4, 6, 8, 10, 16, 18]
+        )
+        XCTAssertEqual(Card.radius, Radius.container)
         XCTAssertEqual(RowInsets.flat, EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
         XCTAssertEqual(RowInsets.card, EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
     }
@@ -48,9 +54,9 @@ final class DesignSystemTests: XCTestCase {
         }
     }
 
-    /// §2.4: medium and unknown draw no dot; high is red, low blue; never
+    /// §2.4: medium and unknown get no mark; high is red, low blue; never
     /// orange.
-    func testOnlyHighAndLowGetAPriorityDot() {
+    func testOnlyHighAndLowGetAPriorityMark() {
         XCTAssertEqual(PriorityMark.tone(.high), .red)
         XCTAssertEqual(PriorityMark.tone(.low), .blue)
         XCTAssertNil(PriorityMark.tone(.medium))
@@ -60,20 +66,53 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertNil(PriorityMark.accessibilityLabel(.medium))
     }
 
-    /// §2.5: one radius, three paints; the dark waiting fill is weaker on
-    /// purpose (orange at 0.10 on black reads brown).
+    /// The Desktop's card (mockups 1–5): the soft `Fill.card` under a
+    /// hairline, never an opaque system fill; a waiting card tints the same
+    /// recipe in the waiting tone; the highlighted one is the board's
+    /// selected card (`Fill.selected` under the accent selection stroke).
     func testTheCardPaints() {
-        let waitingLight = Card.paint(.waiting, scheme: .light)
-        let waitingDark = Card.paint(.waiting, scheme: .dark)
-        XCTAssertEqual(waitingLight.fill, PhoneTone.waitingForYou.color.opacity(0.10))
-        XCTAssertEqual(waitingDark.fill, PhoneTone.waitingForYou.color.opacity(0.06))
-        XCTAssertEqual(waitingLight.stroke, PhoneTone.waitingForYou.color.opacity(0.45))
-        XCTAssertEqual(waitingDark.stroke, PhoneTone.waitingForYou.color.opacity(0.30))
-        XCTAssertEqual(waitingLight.lineWidth, 1)
-        XCTAssertEqual(Card.paint(.plain, scheme: .dark).lineWidth, 0.5)
-        XCTAssertEqual(Card.paint(.highlighted, scheme: .dark).fill, Color.accentColor.opacity(0.14))
-        XCTAssertEqual(Card.paint(.highlighted, scheme: .light).lineWidth, 1.5)
-        XCTAssertEqual(Card.padding, EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
+        XCTAssertEqual(Card.paint(.plain), Card.Paint(fill: Fill.card, stroke: Stroke.hairlineColor, lineWidth: Stroke.hairline))
+        XCTAssertEqual(Card.paint(.waiting), Card.Paint(
+            fill: PhoneTone.waitingForYou.color.opacity(Fill.cardOpacity),
+            stroke: PhoneTone.waitingForYou.color,
+            lineWidth: Stroke.hairline
+        ))
+        XCTAssertEqual(Card.paint(.highlighted), Card.Paint(fill: Fill.selected, stroke: .accentColor, lineWidth: Stroke.selection))
+        XCTAssertEqual(Card.padding, EdgeInsets(top: Spacing.cozy, leading: Spacing.medium, bottom: Spacing.cozy, trailing: Spacing.medium))
+    }
+
+    /// The Desktop's `Chip`: the tone at `ChipTint.fillOpacity` inside a
+    /// `ChipTint.strokeOpacity` outline, the text in the tone; neutral is
+    /// secondary on the same recipe.
+    func testThePillPaints() {
+        let tinted = Pill.paint(.tinted, tone: .red)
+        XCTAssertEqual(tinted.fill, PhoneTone.red.color.opacity(ChipTint.fillOpacity))
+        XCTAssertEqual(tinted.stroke, PhoneTone.red.color.opacity(ChipTint.strokeOpacity))
+        XCTAssertEqual(tinted.text, PhoneTone.red.color)
+        let neutral = Pill.paint(.neutral, tone: .red)
+        XCTAssertEqual(neutral.fill, Color.secondary.opacity(ChipTint.fillOpacity))
+        XCTAssertEqual(neutral.stroke, Color.secondary.opacity(ChipTint.strokeOpacity))
+        XCTAssertEqual(neutral.text, .secondary)
+    }
+
+    /// `.kitRow`'s plate on the phone: clear at rest, `Fill.selected` when
+    /// selected; rows are separated by space, not dividers.
+    func testARowPlateIsClearUnlessSelected() {
+        XCTAssertEqual(RowPlate.fill(isSelected: false), .clear)
+        XCTAssertEqual(RowPlate.fill(isSelected: true), Fill.selected)
+    }
+
+    /// The Desktop's `SessionLiveDot`: a filled circle while the process
+    /// runs, a ring otherwise.
+    func testTheSessionDotIsTheDesktopsLiveDot() {
+        XCTAssertEqual(SessionDot.symbol(isRing: false), "circle.fill")
+        XCTAssertEqual(SessionDot.symbol(isRing: true), "circle")
+    }
+
+    /// The caps section header (Home's zone titles) reads its count too.
+    func testTheSectionHeaderSpeaksItsCount() {
+        XCTAssertEqual(SectionHeader.spokenLabel("Waiting for you", count: 3), "Waiting for you, 3")
+        XCTAssertEqual(SectionHeader.spokenLabel("Working", count: nil), "Working")
     }
 
     /// §2.11 and review focus 4: items wrap 6 pt apart with 4 pt between

@@ -237,7 +237,7 @@ func pinProjectSurface(t *testing.T, reg *tools.Registry, main, target, reaction
 	workbenchTools := []string{
 		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "list_comments", "add_comment", "resolve_comment",
-		"ask_owner", "get_ask", "get_review", "list_asks", "withdraw_ask", "finish_session",
+		"ask_owner", "get_ask", "get_review", "get_spec_review", "list_asks", "withdraw_ask", "finish_session",
 		"annotate_changes", "reply_review_comment",
 	}
 	project := surfaceToolNames(reg, "project")

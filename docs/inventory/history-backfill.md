@@ -7,10 +7,10 @@
 > AI assistant: when working in `internal/historybackfill/`, `internal/db/history_backfill.go`,
 > `internal/daemon/history_backfill.go`, `internal/digest/backfill.go`, the `FirstSyncFrom` /
 > `FetchRange` / `BackfillSearch` code in `internal/sync/`, `internal/gmail/`, `internal/imap/`,
-> `internal/planusage/gate.go` or `cmd/backfill.go`, read this file first. Any proposed change
+> or `cmd/backfill.go`, read this file first. Any proposed change
 > that would break a guard test or remove a contract must be raised as a question before touching code.
 
-**Module:** `internal/historybackfill/` + `internal/db/history_backfill.go` + `internal/daemon/history_backfill.go` + `internal/digest/backfill.go` + `internal/ideas/backfill_account.go` + `internal/jira/sync.go` (`FirstSyncFrom`) + `internal/sync/search_sync.go` (`BackfillSearch`, `FirstSyncFrom`) + `internal/gmail/sync.go` + `internal/imap/sync.go` (`FetchRange`, `FirstSyncFrom`) + `internal/planusage/gate.go` + `cmd/backfill.go` + Desktop `BackfillQueries` / `BackfillProgress`
+**Module:** `internal/historybackfill/` + `internal/db/history_backfill.go` + `internal/daemon/history_backfill.go` + `internal/digest/backfill.go` + `internal/ideas/backfill_account.go` + `internal/jira/sync.go` (`FirstSyncFrom`) + `internal/sync/search_sync.go` (`BackfillSearch`, `FirstSyncFrom`) + `internal/gmail/sync.go` + `internal/imap/sync.go` (`FetchRange`, `FirstSyncFrom`) + `cmd/backfill.go` + Desktop `BackfillQueries` / `BackfillProgress`
 **Last full audit:** 2026-10-15
 
 ## BACKFILL-01 — Only a source's first sync starts a backfill
@@ -54,19 +54,19 @@
 
 **Locked since:** 2026-10-15
 
-## BACKFILL-03 — The plan gate holds processing, not the fetch
+## BACKFILL-03 — Retired 2026-10-26 (owner, ask #655): no plan gate
 
-**Status:** Enforced
+**Status:** Retired
 
-**Observable:** When the 5-hour or weekly Claude plan limit projects `will_hit` or `hit`, the runner still fetches the chunk (idempotent) but does not process or advance it: the row shows `waiting = plan_limit` and the Step ends. A missing, stale or malformed plan status does not block.
+**Observable:** The Claude plan never holds backfill work. The runner fetches, processes and advances a chunk whatever the plan status says, and the Slack-done follow-ups run in the same Step; nothing writes `waiting = plan_limit` any more (a stale value on an old row is cleared when the row next runs; the column's CHECK still allows it, so no table rebuild). The 5-minute budget per Step is the only brake.
 
-**Why locked:** The backfill must never eat the owner's plan limit, and the fetch staying idempotent is what makes waiting safe.
+**Why retired:** A weekly projection fired right after a reset (2% used, extrapolated from under an hour of samples) and skipped work with plenty of plan left. The owner ruled that gating on the plan is not the app's business; plan usage stays information only (`internal/planusage`, menu bar, notifications, `usage plan`).
 
 **Test guards:**
-- `internal/historybackfill/runner_test.go::TestRunner_PlanGateHoldsChunk`
-- `internal/planusage/gate_test.go::TestNearLimit`
+- `internal/historybackfill/runner_test.go::TestRunner_NoPlanGate`
+- `internal/daemon/history_backfill_test.go::TestOnSlackBackfillDone_NoPlanGate`
 
-**Locked since:** 2026-10-15
+**Locked since:** 2026-10-15; retired 2026-10-26
 
 ## Changelog
 
@@ -74,3 +74,4 @@
 - 2026-10-16 (final fix wave, controller rulings R19/R25): BACKFILL-01 sharpened, not weakened — the Slack upper is the day after the exclusive `after:` date (`TestFirstSyncFrom_FreshAccountCompletedRun` now expects D + 1 day), and a Gmail first sync needs a non-empty listing (new guard `TestSync_FirstSyncFromFalseOnEmptyList`; `TestSync_FirstSyncFrom` unchanged).
 - 2026-10-16 (R28/R29): Jira joins BACKFILL-01 as a source (`source_kind` 'jira', `jira.Syncer.FirstSyncFrom`, new guards `TestSync_FirstSyncFrom` in `internal/jira` and `TestPhaseJiraSync_FirstSyncStartsBackfill`). The Gmail backfill's AI step is now account-scoped (`ideas.BackfillEmail`); no contract weakened.
 - 2026-10-16 (R30): the Gmail upper is when the first sync started, so the first sync's own week is mined too; `TestSync_FirstSyncFrom` (gmail) now expects ≈ the sync start. Not weakened: the start conditions are unchanged.
+- 2026-10-26 (owner, ask #655): BACKFILL-03 retired, rewritten with approval — the plan gate (`planusage.NearLimit`) is removed everywhere (backfill chunks, the Slack-done hooks, media describe, instruction suggestions); guards `TestRunner_PlanGateHoldsChunk` and `TestNearLimit` deleted, replaced by `TestRunner_NoPlanGate` and `TestOnSlackBackfillDone_NoPlanGate`.
