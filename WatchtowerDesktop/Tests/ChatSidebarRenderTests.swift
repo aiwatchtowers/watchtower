@@ -152,18 +152,19 @@ final class ChatSidebarRenderTests: XCTestCase {
         XCTAssertEqual(try probe.pixel(page, x: edge, y: Rows.Project.first), detail, "the shown chat is the tab")
     }
 
-    /// Row centres (y, in points) in the history column.
+    /// Row centres (y, in points) in the history column; a chat row has
+    /// two lines (title, second line).
     private enum Rows {
         static let header = 18
-        /// Under the header: TODAY, then the chats (the newest first).
+        /// Under the header: RECENT, then the chats (the newest first).
         enum AllChats {
-            static let first = 78
-            static let second = 104
+            static let first = 85
+            static let second = 125
         }
-        /// Under the header: Project overview, TODAY, then the chats.
+        /// Under the header: Project overview, RECENT, then the chats.
         enum Project {
             static let overview = 50
-            static let first = 104
+            static let first = 111
         }
     }
 }

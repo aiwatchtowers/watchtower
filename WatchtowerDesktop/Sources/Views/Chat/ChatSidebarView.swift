@@ -40,13 +40,14 @@ struct ChatSidebarView: View {
                     if let projectID = historyVM.level.projectID { projectOverviewRow(projectID) }
                     ForEach(historyVM.sections) { section in
                         if section.kind == .older {
-                            olderLabel(count: section.items.count)
+                            olderHeader(count: section.items.count)
+                            // Folded: only the chat on screen, pinned under the header.
                             ForEach(historyVM.olderExpanded ? section.items : historyVM.pinnedOlderRow.map { [$0] } ?? []) {
-                                chatRow($0.conversation)
+                                chatRow($0)
                             }
                         } else {
                             sectionLabel(Text(section.kind.title.uppercased()))
-                            ForEach(section.items) { chatRow($0.conversation) }
+                            ForEach(section.items) { chatRow($0) }
                         }
                     }
                 }
@@ -124,9 +125,17 @@ struct ChatSidebarView: View {
             .id("project-overview-\(projectID)")
     }
 
-    private func chatRow(_ conv: ChatConversation) -> some View {
-        Text(conv.displayTitle)
-            .lineLimit(1)
+    /// A chat's row: its state dot, title and second line (spec §5.1);
+    /// "Answering" is read live from the pool at render time. In All chats
+    /// a project chat's second line names its project.
+    private func chatRow(_ row: ChatPanelRow) -> some View {
+        let conv = row.conversation
+        let state = historyVM.state(of: row)
+        return ChatPanelRowView(
+            row: row,
+            state: state,
+            secondLine: state.secondLine(for: row, now: historyVM.now(), showsProject: historyVM.level == .all)
+        )
             .panelTab(isSelected: historyVM.selectedConversationID == conv.id)
             .onTapGesture { select(conv.id) }
             .accessibilityAddTraits(.isButton)
@@ -134,16 +143,13 @@ struct ChatSidebarView: View {
             .contextMenu { menu(conv) }
     }
 
-    /// The folded older group's header, "▸ N older" (spec §6); a click
-    /// opens or folds it.
-    private func olderLabel(count: Int) -> some View {
-        sectionLabel(Text("\(historyVM.olderExpanded ? "▾" : "▸") \(count) OLDER"))
-            .contentShape(Rectangle())
-            .onTapGesture { historyVM.olderExpanded.toggle() }
-            .accessibilityAddTraits(.isButton)
-            .accessibilityLabel("\(count) older chats")
-            .accessibilityValue(historyVM.olderExpanded ? "Expanded" : "Collapsed")
-            .accessibilityAction { historyVM.olderExpanded.toggle() }
+    /// The older group's header, "▸ N older" (spec §6), the sessions
+    /// panel's "▸ N finished": a click opens or folds it, remembered per level.
+    private func olderHeader(count: Int) -> some View {
+        PanelFoldHeader(count: count, label: "older", itemName: "chat", expanded: historyVM.olderExpanded) {
+            historyVM.olderExpanded.toggle()
+        }
+        .padding(.top, Spacing.regular)
     }
 
     /// A section's label row (PINNED, RECENT…) in the app sidebar's

@@ -366,6 +366,7 @@ struct TypographyPage: View {
 
 struct IconsPage: View {
     private let sizes: [(Step, String, String)] = [
+        (Step(name: "stateDot", value: IconSize.stateDot), "circle.fill", "a panel row's state dot"),
         (Step(name: "chevron", value: IconSize.chevron), "chevron.down", "a menu label's chevron"),
         (Step(name: "header", value: IconSize.header), "rectangle.split.2x1", "header and toolbar glyphs"),
         (Step(name: "composer", value: IconSize.composer), "paperclip", "the composer's buttons"),

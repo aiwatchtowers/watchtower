@@ -45,8 +45,11 @@ final class ChatPanelRowTests: XCTestCase {
 
     func testStatePrecedence() throws {
         let unreadPending = try row(readAt: nil, pending: 1, tool: "create_target")
-        XCTAssertEqual(ChatPanelRowState(row: unreadPending, isAnswering: true), .answering)
+        // A live turn blocked on an Approve card waits for the owner.
+        XCTAssertEqual(ChatPanelRowState(row: unreadPending, isAnswering: true), .waitingForApproval)
         XCTAssertEqual(ChatPanelRowState(row: unreadPending, isAnswering: false), .waitingForApproval)
+        XCTAssertEqual(ChatPanelRowState(row: try row(readAt: nil), isAnswering: true), .answering)
+        XCTAssertEqual(ChatPanelRowState(row: try row(readAt: now.timeIntervalSince1970), isAnswering: true), .answering)
         XCTAssertEqual(ChatPanelRowState(row: try row(readAt: nil), isAnswering: false), .unread)
         XCTAssertEqual(ChatPanelRowState(row: try row(readAt: now.timeIntervalSince1970), isAnswering: false), .read)
         XCTAssertEqual(ChatPanelRowState(row: try row(answeredAgo: nil), isAnswering: false), .read)
