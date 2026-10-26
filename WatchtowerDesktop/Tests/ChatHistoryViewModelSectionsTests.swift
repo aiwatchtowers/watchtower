@@ -20,7 +20,7 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
     private func loaded() async -> ChatHistoryViewModel {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
         let done = expectation(description: "load")
-        vm.load { done.fulfill() }
+        vm.reloadRows { done.fulfill() }
         await fulfillment(of: [done], timeout: 5)
         return vm
     }

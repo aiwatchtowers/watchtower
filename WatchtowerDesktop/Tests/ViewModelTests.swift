@@ -595,7 +595,7 @@ final class ChatHistoryViewModelTests: XCTestCase {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
         XCTAssertTrue(vm.conversations.isEmpty)
 
-        vm.load()
+        vm.reloadRows()
 
         // load() is async via Task.detached, give it a moment
         let expectation = XCTestExpectation(description: "load completes")

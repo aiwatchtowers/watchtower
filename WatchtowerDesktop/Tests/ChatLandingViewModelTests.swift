@@ -495,7 +495,7 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertTrue(vm.composerAttachments.pending.isEmpty)
 
         let loaded = expectation(description: "load")
-        history.load { loaded.fulfill() }
+        history.reloadRows { loaded.fulfill() }
         await fulfillment(of: [loaded], timeout: 5)
         history.selectedConversationID = other
         XCTAssertTrue(history.sections.flatMap(\.items).contains { $0.id == draft })
