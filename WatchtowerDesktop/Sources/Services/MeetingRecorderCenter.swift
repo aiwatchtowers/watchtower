@@ -222,6 +222,11 @@ final class MeetingRecorderCenter {
     /// meters. Zero whenever nothing is being captured.
     private(set) var captureLevels: CaptureLevels = .init(mic: 0, system: 0)
 
+    /// Whether the owner muted their microphone in the active capture
+    /// (`setMicMuted`). False whenever nothing is being captured: every
+    /// capture starts unmuted.
+    private(set) var micMuted = false
+
     /// Seconds into the active capture where the call audio went silent, once
     /// the silence has lasted `CallAudioWatch.minGapSec` after the call had
     /// been heard; nil otherwise and whenever nothing is being captured. The
@@ -982,6 +987,14 @@ final class MeetingRecorderCenter {
         }
     }
 
+    /// Keeps the owner's microphone out of the active capture while `muted`
+    /// (the call audio is still recorded). No-op when nothing is captured.
+    func setMicMuted(_ muted: Bool) {
+        guard case .recording = captureState, let recorder else { return }
+        recorder.setMicMuted(muted)
+        micMuted = muted
+    }
+
     /// Mirrors the active recorder's throttled level pairs into
     /// `captureLevels`, zeroing them when the stream finishes on its own
     /// (`recorder.stop()`). A cancelled task skips the trailing reset — the
@@ -1021,7 +1034,8 @@ final class MeetingRecorderCenter {
     }
 
     /// Ends the level feed for a capture that is over: every path that clears
-    /// `captureState` runs this so the meters never show a stale level. The
+    /// `captureState` runs this so the meters never show a stale level (and
+    /// no stale mute). The
     /// generation bump fences out a value the cancelled task had already
     /// received but not yet written.
     private func stopLevelsTask() {
@@ -1029,6 +1043,7 @@ final class MeetingRecorderCenter {
         levelsTask?.cancel()
         levelsTask = nil
         captureLevels = .init(mic: 0, system: 0)
+        micMuted = false
         setCallAudioSilentSince(nil)
     }
 

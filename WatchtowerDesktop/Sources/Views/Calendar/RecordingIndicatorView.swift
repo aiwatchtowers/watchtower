@@ -36,11 +36,13 @@ private extension View {
 /// survives navigation. Hidden only when nothing is capturing, the queue is
 /// empty, and nothing is waiting for the user.
 ///
-/// It sits in one of the window's corners (`RecordingIndicatorCorner`, kept
-/// across launches): dragging a pill by its capsule background moves the
-/// stack, and on release it snaps to the corner nearest the pointer. Only
-/// the backgrounds carry the drag, so every button keeps its clicks; the
-/// expanded live panel carries none (a drag there selects transcript text).
+/// It floats over the content, anchored to a window corner
+/// (`RecordingIndicatorCorner`) at the owner's offset from it, both kept
+/// across launches: dragging a pill by its capsule background moves the
+/// stack anywhere in the window (`RecordingIndicatorPlacement.released`).
+/// Only the backgrounds carry the drag, so every button keeps its clicks;
+/// the expanded live panel carries none (a drag there selects transcript
+/// text).
 ///
 /// Capture and post-processing are decoupled in the Center, so the stack renders
 /// `captureState` and the `jobs` queue side by side (a recording capsule plus one
@@ -52,35 +54,25 @@ struct RecordingIndicatorView: View {
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage(RecordingIndicatorCorner.storageKey) private var corner = RecordingIndicatorCorner.default
-    /// The window's content size, which the release point is snapped in.
+    @AppStorage(RecordingIndicatorPlacement.offsetXKey) private var offsetX = 0.0
+    @AppStorage(RecordingIndicatorPlacement.offsetYKey) private var offsetY = 0.0
+    /// The window's content size, which the stack is kept inside.
     var windowSize: CGSize = .zero
-    /// Receives the space the window must keep free on the corner's edge
-    /// while pills show (`RecordingIndicatorInset.reservedHeight`) and the
-    /// stack's full extent, both 0 once the stack is empty.
-    var onLayoutChange: (RecordingIndicatorLayout) -> Void = { _ in }
+    /// Receives the stack's full extent from its corner's edge while it sits
+    /// on that edge, 0 once the stack is empty or moved off it.
+    var onOccupiedHeightChange: (CGFloat) -> Void = { _ in }
     /// The stack's offset while it is being dragged. A gesture state, so it
     /// returns to zero however the drag ends — released, or cancelled when
     /// the pill under the pointer goes away.
     @GestureState(resetTransaction: Transaction(animation: .snappy)) private var dragOffset = CGSize.zero
-    @State private var stackHeight: CGFloat = 0
-    /// Height of the model-download capsules drawn between the recorder
-    /// pills and the window's edge, read only while one shows.
-    @State private var provisionerHeight: CGFloat = 0
+    @State private var stackSize: CGSize = .zero
 
-    private var layout: RecordingIndicatorLayout {
-        let provisionerShown = !appState.transcriptionModelProvisioner.downloads.isEmpty
-        let reserved = RecordingIndicatorInset.reservedHeight(
-            stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
-            belowPanelHeight: provisionerShown ? provisionerHeight : 0)
-        return RecordingIndicatorLayout(reservedInset: reserved,
-                                        occupiedHeight: RecordingIndicatorInset.occupiedHeight(stackHeight: stackHeight))
+    private var placement: RecordingIndicatorPlacement {
+        RecordingIndicatorPlacement(corner: corner, offset: CGSize(width: offsetX, height: offsetY))
     }
 
-    /// The same condition `recordingView` renders the expanded panel under.
-    private var expandedPanelShown: Bool {
-        let center = appState.meetingRecorderCenter
-        guard case .recording = center.captureState else { return false }
-        return expanded && showsLiveAffordance(center)
+    private var occupiedHeight: CGFloat {
+        placement.occupiedHeight(stack: stackSize, window: windowSize)
     }
 
     /// Whether the active capture has a live transcript to offer: the engine
@@ -109,14 +101,14 @@ struct RecordingIndicatorView: View {
                 }
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stackHeight = $0 }
-        .onChange(of: layout, initial: true) { _, layout in onLayoutChange(layout) }
-        .offset(dragOffset)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { stackSize = $0 }
+        .onChange(of: occupiedHeight, initial: true) { _, height in onOccupiedHeightChange(height) }
+        .offset(placement.clampedOffset(stack: stackSize, window: windowSize) + dragOffset)
         .padding(RecordingIndicatorInset.outerPadding)
     }
 
-    /// Moves the stack with the pointer and, on release, snaps it to the
-    /// corner nearest the pointer. Carried by the pills' capsule backgrounds
+    /// Moves the stack with the pointer and, on release, leaves it where it
+    /// was dropped (`RecordingIndicatorPlacement.released`). Carried by the pills' capsule backgrounds
     /// (`indicatorCapsule`); the minimum distance leaves a click on one a
     /// click.
     private var moveGesture: AnyGesture<Void> {
@@ -124,7 +116,13 @@ struct RecordingIndicatorView: View {
             DragGesture(minimumDistance: 6, coordinateSpace: .named(RecordingIndicatorCorner.coordinateSpace))
                 .updating($dragOffset) { value, offset, _ in offset = value.translation }
                 .onEnded { value in
-                    withAnimation(.snappy) { corner = corner.snapped(releasedAt: value.location, in: windowSize) }
+                    let placed = placement.released(translation: value.translation,
+                                                    stack: stackSize, window: windowSize)
+                    withAnimation(.snappy) {
+                        corner = placed.corner
+                        offsetX = placed.offset.width
+                        offsetY = placed.offset.height
+                    }
                 }
                 .map { _ in () }
         )
@@ -188,7 +186,6 @@ struct RecordingIndicatorView: View {
                         moveGesture: moveGesture)
                 }
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
         }
     }
 
@@ -204,12 +201,23 @@ struct RecordingIndicatorView: View {
     }
 
     /// Compact mic + system level meters answering "is my mic alive" and "is
-    /// system audio actually being captured" at a glance.
+    /// system audio actually being captured" at a glance. The mic icon is the
+    /// mute toggle: a muted mic stays out of the recording (its meter reads
+    /// silence), while the call is still captured.
     @ViewBuilder
     private func captureLevelIndicators(_ center: MeetingRecorderCenter) -> some View {
-        Image(systemName: "mic.fill")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+        Button {
+            center.setMicMuted(!center.micMuted)
+        } label: {
+            Image(systemName: center.micMuted ? "mic.slash.fill" : "mic.fill")
+                .font(.caption2)
+                .foregroundStyle(center.micMuted ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+        }
+        .buttonStyle(.plain)
+        .help(center.micMuted
+              ? "Unmute: your microphone is not being recorded"
+              : "Mute your microphone in the recording (the call is still recorded)")
+        .accessibilityLabel(center.micMuted ? "Unmute microphone" : "Mute microphone")
         MicLevelBars(level: center.captureLevels.mic, barCount: 3)
             .help("Microphone level")
         Image(systemName: "speaker.wave.2.fill")
@@ -575,5 +583,11 @@ struct ModelDownloadPill: View {
             }
         }
         .frame(maxWidth: 420)
+    }
+}
+
+private extension CGSize {
+    static func + (lhs: CGSize, rhs: CGSize) -> CGSize {
+        CGSize(width: lhs.width + rhs.width, height: lhs.height + rhs.height)
     }
 }
