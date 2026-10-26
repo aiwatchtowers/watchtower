@@ -40,13 +40,14 @@ The agent (`specReviewCLIAgent`, cmd) runs the configured provider in read-folde
 
 - `run --ask N` (hidden) — the detached child; the exit status is the run's.
 - `start --ask N [--force]` — `RequeueSpecReview` (attempt back to 1: the sweep's 3-launch cap counts automatic relaunches only) and launch. No plan-limit gate: the owner pressed Run. A queued review is launched again; a running one is refused (exit 3); a done, failed or skipped one needs `--force` (exit 3 without). A failed launch leaves the row queued for the sweep.
-- `show --ask N [--json]` — pinned `--json` keys: `ask_id`, `status`, `reason`, `provider`, `model`, `dropped`, `attempt`, `queued_at`, `started_at`, `finished_at`, `result` (the validated result or `null`), `marks` (item key to `{state, body, about, updated_at}`; `about`, a comment's finding text, is left out when not known). The database is opened read-only.
+- `show --ask N [--json]` — pinned `--json` keys: `ask_id`, `status`, `reason`, `provider`, `model`, `dropped`, `attempt`, `queued_at`, `started_at`, `finished_at`, `result` (the validated result or `null`), `marks` (item key to `{state, body, about, updated_at}`; `state` is `ok`, `comment`, `viewed` or, since 2026-10-26, `not_useful`; `about`, a comment's finding text, is left out when not known). The database is opened read-only.
 
 ## Desktop — the findings screen
 
 - `SpecReviewModel` (`WatchtowerDesktop/Sources/ViewModels/`) drives one open review ask of a spec or a plan: its `spec_reviews` row and `spec_review_marks` (read through `SpecReviewQueries`, the marks written there), the 3 s poll while the reviewer is queued or running, Run / Re-run reviewer (`workbench spec-review start --force`; exit 3 = already running), and the derived Meaning / Chapters / Wrap-up state (findings by chapter, a trailing Other, unmarked counts, orphans of a re-run, the Decisions list of a spec — a plan shows none). It is built on the app's pool by `OwnerAskDrawer`; `followReviewer` looks for a row not written yet (10 × the poll interval) and then starts the poll.
 - Drawer modes (`SpecReviewPresentation.drawerMode`): `loading` until the first read returns (nothing shown, so the classic view never flashes), `review` (the screen) for a done result or a reviewer still working, `classic` with a status strip (failed, skipped, or working after **Read the spec**) or a banner (a result that arrived while the classic view was open). Under the screen the footer's verdict buttons and the draft keys stand aside.
 - One answer builder. Every answer to a review ask ends in `OwnerAsksViewModel.answer(_:with:)` — the classic footer's Request changes / Approve, the screen's Send / Approve, a Quick answer and the phone's relay (`AskAnswerHandler`). For a review ask (not a dismissal) it reads the row and the marks from the database at answer time and appends `SpecReviewAnswer`'s comments: comment marks only, in findings order, placed in the rendered snapshot (off the main actor); with no result (queued, running, failed) every comment mark goes out as "From the previous run: <about> — <body>". The screen itself hands over only the draft (margin comments, question answers, note) and the verdict, so nothing is sent twice and nothing depends on the screen having been opened.
+- **Not useful** (2026-10-26, agent coach #1120): a third button on a finding beside **Fine as is** and **Comment**; the mark reads "Not useful" with **Undo** (`SpecReviewMarkState.notUseful`, `SpecReviewFindingCard`, `SpecReviewWrapUpView.markGlyph`). It is the coach's noise signal (`docs/features/agent-coach.md`) and `SpecReviewAnswer` never sends it to the author. An older app reading a newer row skips the unknown state.
 - The phone's `owner_ask` slice carries one `spec_review` line per review ask: one query for all the slice's review rows, a done review's counts decoded once per `finished_at` (`SpecReviewLines`).
 
 ## Rulings that changed behaviour against the spec
@@ -58,7 +59,8 @@ The agent (`specReviewCLIAgent`, cmd) runs the configured provider in read-folde
 
 ## v1 limits
 
-- Phone: a one-line status only; no findings screen.
+- Phone: a one-line status only; no findings screen, and it writes no marks (a Not useful mark is not counted in its line).
+- `spec_reviews.findings` (migration 00160) is the number of findings in the stored result when the review finished (`-1` before the migration); the coach reads it for the first round's count because a re-run replaces `result`.
 - Ollama has no file tools, so its reviews are from the data alone and are marked `code_read: false`.
 - Marks are the Desktop's alone: the phone answers a review ask without seeing them (they still go with its answer).
 - The sweep is the last step of `runSync`: a lost start can wait one whole cycle, and a cycle cancelled before the end skips it.
