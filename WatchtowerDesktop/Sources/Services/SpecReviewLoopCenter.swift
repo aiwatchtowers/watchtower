@@ -8,13 +8,20 @@ import WatchtowerCore
 @MainActor
 protocol SpecReviewLineDelivering: AnyObject {
     /// Where the line went. A held or queued line is not kept: the center
-    /// tries it again on its next poll.
+    /// tries it again on its next poll. `.noSession` only when the session
+    /// is surely gone: never before the launch's reattach of hosted runs is
+    /// done, nor when a new run of it started meanwhile (both `.held`).
     func deliverSpecReviewLine(_ line: String, askID: Int64, sessionID: Int64) async -> SessionLineDelivery.Delivery
 }
 
 extension SessionLineDelivery: SpecReviewLineDelivering {
     func deliverSpecReviewLine(_ line: String, askID: Int64, sessionID: Int64) async -> Delivery {
-        let delivery = await deliverLine(line, key: .specReview(askID), sessionID: sessionID) { _ in }
+        var delivery = await deliverLine(line, key: .specReview(askID), sessionID: sessionID) { _ in }
+        // A session not reattached yet after Keep Sessions and Quit or an
+        // update is not gone: revealing it would end a live author's loop.
+        if delivery == .noSession, !hostRunsSettled || isLive(sessionID) {
+            delivery = .held
+        }
         if delivery == .held || delivery == .queued {
             // The center's next poll owns the retry: the line must not also
             // go from the held queue, nor after the round was revealed.

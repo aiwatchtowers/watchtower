@@ -146,6 +146,23 @@ final class SessionLineDeliveryTests: XCTestCase {
         XCTAssertTrue(vm.lineDelivery.heldKeys(sessionID: s.id).isEmpty)
     }
 
+    /// A session not live before the launch's reattach of hosted runs is
+    /// done may still come back: the spec review line is held (retried on
+    /// the loop center's next poll), never `.noSession` (which reveals).
+    func testSpecReviewLineHeldForAGoneSessionUntilHostRunsSettle() async throws {
+        let (_, s, _) = try await seed()
+        let vm = makeVM()
+        let notLive = s.id + 100
+
+        let early = await vm.lineDelivery.deliverSpecReviewLine("line", askID: 7, sessionID: notLive)
+        XCTAssertEqual(early, .held)
+        XCTAssertTrue(vm.lineDelivery.heldKeys(sessionID: notLive).isEmpty)
+
+        center.markHostRunsSettled()
+        let settled = await vm.lineDelivery.deliverSpecReviewLine("line", askID: 7, sessionID: notLive)
+        XCTAssertEqual(settled, .noSession)
+    }
+
     /// One queue per session: an ask's answer written while another line is
     /// in its pause waits, then goes on its own — each line pasted and
     /// submitted in turn, never two in one prompt.

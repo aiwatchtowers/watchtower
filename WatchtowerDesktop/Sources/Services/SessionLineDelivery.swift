@@ -170,6 +170,16 @@ final class SessionLineDelivery {
         Task { [weak self] in await self?.deliverHeld() }
     }
 
+    /// The launch's reattach of the session host's runs is done
+    /// (`TerminalCenter.hostRunsSettled`): before it, a session not live may
+    /// only be one not reattached yet.
+    var hostRunsSettled: Bool { terminalCenter?.hostRunsSettled == true }
+
+    /// Whether the session runs now.
+    func isLive(_ sessionID: Int64) -> Bool {
+        terminalCenter?.liveIDs.contains(sessionID) == true
+    }
+
     /// When a line was last submitted into the session (its Return sent);
     /// nil when none was this launch.
     func submittedAt(_ sessionID: Int64) -> Date? {
