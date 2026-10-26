@@ -56,13 +56,14 @@ Only images and links that arrive while Knowledge search is on are processed, ne
 
 ## Using it
 <!-- learn
-id: search-slack-message
+id: search-ask-chat-for-message
 title: Find the exact Slack message
 text: Ask **AI Chat** with every word you remember; the answer links straight to the message in Slack.
 area: assistant
 level: basics
 kind: feature
-since: 0.24.0
+since: next
+replaces: [search-slack-message]
 action: nav:chat
 -->
 
@@ -78,7 +79,7 @@ action: connect:confluence
 done_when: confluence.connected
 -->
 
-**Ask across everything.** Open **AI Chat**, or press **⌘/** anywhere, and ask in plain words. The steps show as "Searched knowledge: ..." so you can see what the assistant looked up. Coding agents in a Workbench and other tools you connect through the **MCP Server** setup use the same index.
+**Ask across everything.** Open **AI Chat**, or press **⌘/**, and ask in plain words. The steps show as "Searched knowledge: ..." so you can see what the assistant looked up. Coding agents in a Workbench and other tools you connect through the **MCP Server** setup use the same index.
 
 **Add Confluence.** When you add a Jira site, **Also connect Confluence** is ticked: the same sign-in grants Confluence, and **Choose Boards** selects up to five spaces you wrote in or viewed in the last 90 days and names them. Nothing is selected while **Confluence in search** is off. To change them, or to add Confluence to a site connected without it:
 
