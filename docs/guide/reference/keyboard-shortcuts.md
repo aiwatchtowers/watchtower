@@ -88,7 +88,11 @@ action: hotkey:search-chats
 | **Esc** | Stop the answer |
 | **↑** | Edit your last message (in an empty field) |
 | **⌘Return** | Save & Send an edited message |
-| **↑ / ↓** | Previous / next chat (in the chat list) |
+| **↑ / ↓** | Previous / next chat (in the Chats panel, after a click on it) |
+| **Return** | Open the highlighted chat (in the Chats panel) |
+| **⌘⌫** | Delete the highlighted chat; **⌘Z** undoes it for 5 seconds |
+| **⌘1–⌘9** | Open chat 1–9 of the list (**View** → **Go to Item**, shared with the Workbench) |
+| **⌘[** | Back to All chats from a project (**View** → **Back**, shared with the Workbench) |
 
 ### Targets
 
@@ -121,7 +125,7 @@ since: 0.24.0
 action: hotkey:waiting-for-you
 -->
 
-The Workbench menu lists most of these.
+The Workbench menu lists most of these; ⌘1–⌘9 and ⌘[ now live under **View**, shared with Chats.
 
 | Keys | Action |
 |---|---|

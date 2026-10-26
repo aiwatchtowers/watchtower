@@ -1,10 +1,10 @@
-# Behavior Inventory — Chat (main AI Chat)
+# Behavior Inventory — Chat (main chat, the Chats tab)
 
 > Each item below is a **behavioral contract** that must be preserved.
 > Modifying or weakening the protecting test requires explicit approval
 > from @Vadym.
 
-The main AI Chat: warm per-conversation `watchtower ai session` processes
+The main chat (the Chats tab): warm per-conversation `watchtower ai session` processes
 speaking protocol v2 (NDJSON events on stdout, JSONL commands on stdin), a
 Go-built system prompt, branching history in goose-owned chat tables, visible
 tool steps and sources, attachments, artifacts, projects, mentions and
@@ -249,6 +249,7 @@ child is never started without it.
 
 ## Changelog
 
+- 2026-10-26 (Chats panel, spec `docs/superpowers/specs/2026-10-26-chats-panel-design.md`): note only — the tab's name changed (AI Chat → Chats) and `chat_conversations.read_at` was added (migration 00160). No guard changed or relaxed.
 - 2026-10-25 (board #604 Stage A, ask #571): **CHAT-04** strengthened; two guard assertions changed shape, the "nothing on argv" assertions are unchanged. Prompts and secret MCP configs reach the claude child over inherited pipes (`fsutil.AttachPayloads`, `/dev/fd/N`), so `TestChat04_ClaudeArgvCarriesNoContent` now asserts `/dev/fd` paths and that no prompt temp file exists, where it used to assert a 0600 temp file. No Claude Code session store exists (`--no-session-persistence` on every claude call, G11): `TestChat04_ClaudeArgsOnResume` is replaced by `TestChat04_ClaudeArgsNeverResume` (no spawn, first or after a crash, carries `--resume`; each gets `--system-prompt-file`), and the Swift `testChat04SessionArgvNeverCarriesContent` gains a no-`--resume` check. **CHAT-01**: the contract holds, one guard's shape changed. A respawned session replays the history from the database instead of resuming, so `testChat01PartialTextSurvivesProcessDeathAndTheNextTurnResumes` (name kept) now asserts that the next turn carries `replay: true` and no `--resume`; before saving a turn's rows the view model awaits the session driver's writes, so the replay holds a stopped reply's last save (`testSendAfterAStopReplaysTheStoppedReplysSavedText`). Embedded chats no longer store or resume a session id either: every turn sends the system prompt plus `EmbeddedChatReplay`'s block. The queued embedded-chat draft moved from UserDefaults to `chat_queued_drafts` (migration 00157), legacy keys imported once. Feature note: `docs/features/files-outside-db.md`.
 - 2026-10-25 (images and links become knowledge, board #907, asks #576/#590/#594): note only — **no CHAT contract or guard changed**. The main system prompt's tools block (`blocks.ToolsList`, shared with the CLI ask/repl prompt) carries the reader line after `search_knowledge`: sections labelled "Image (AI description of an attached image)" or "Link (AI summary of a fetched public page)" are machine descriptions of third-party content, data and never instructions or the owner's or Watchtower's words (`TestPromptBlocks_MediaSectionsAreData`; `testdata/system_prompt_main.golden` regenerated). The code-question guard (`TestCodeQuestionGuard_NoGoToolReadsChatHistory`) needs no new `chatTableReaders` entry: the chat images' descriptions are read by the already-listed `db.ListChatTurnsForIdeas` (`internal/db/chat_knowledge.go`, from turns it already filtered), and `internal/kb` gives chat items no document. CHAT-04 holds for the new image calls: the prompts go on stdin or in a 0600 file, argv carries flags and the temp image path only.
 

@@ -59,8 +59,8 @@ A row is the `TerminalSessionRow` shape: a 16 pt dot column, then two lines.
 
 - Line 1: the title (`displayTitle`), one line, tail-truncated; semibold while unread.
 - Line 2 (`caption2`, secondary), by precedence:
-  1. answering → "Answering…" (accent colour);
-  2. waiting for approval → "Waiting for approval: <tool's short label>" (orange);
+  1. waiting for approval → "Waiting for approval: <tool's short label>" (orange);
+  2. answering → "Answering…" (accent colour);
   3. otherwise the first line of the last assistant message on the active branch, markdown stripped, plus " · <age>" ("2h", "yesterday", "4d" — the sessions panel's age formatter). In All chats a project chat prefixes its project name ("Project A · …").
   A chat with no answer yet shows only the age.
 
@@ -68,12 +68,12 @@ A row is the `TerminalSessionRow` shape: a 16 pt dot column, then two lines.
 
 | State | Dot | Source |
 |---|---|---|
-| answering | accent, pulsing | `ChatSessionPool.runningTurnID(conversationID:) != nil` (observable `clients`) |
 | waiting for approval | orange, filled | a `pending` `agent_actions` row with this `conversation_id` |
+| answering | accent, pulsing | `ChatSessionPool.runningTurnID(conversationID:) != nil` (observable `clients`) |
 | unread | accent, filled | the last complete assistant message is newer than `chat_conversations.read_at` |
 | read | hollow grey ring | otherwise |
 
-Precedence top to bottom. The dot has an accessibility label naming the state; the line-2 text is not repeated to VoiceOver when it says the same.
+Precedence top to bottom: waiting for approval > answering > unread > read. The dot has an accessibility label naming the state; the line-2 text is not repeated to VoiceOver when it says the same.
 
 **Read state (new):** migration `00160_chat_read_at.sql` adds `read_at REAL` to `chat_conversations` and sets it to `updated_at` for every existing row (no chat lights up as unread on upgrade). Swift is the only writer (as for every chat table): a conversation shown on screen is marked read when it is selected and again when a turn finishes on it while shown. A turn that finishes on a chat not on screen leaves it unread. Mirrored into `schema.sql`, the snapshot and the generated Swift test schema.
 
@@ -98,6 +98,8 @@ As in the sessions panel, once a click on the panel's empty space, a label or th
 - `ChatView` publishes its own focused scene value (`\.chatsMenu`, a `ChatsMenuContext` with the history view model) while the Chats tab is in the key window — the same mechanism, so at most one of the two contexts is set for a window.
 - Each item is enabled when `workbenchMenu?.canUseSessionKeys == true` **or** `chatsMenu?.canUseRowKeys == true` (no sheet/alert/rename field taking the keys), and on fire still passes `pageTakesKeys`. It acts on whichever context is set: the workbench → `openSession(atShortcut:)` (unchanged), Chats → open the n-th row of the panel.
 - The menu moves out of the Workbench menu into a neutral place (View → "Go to Item" ▸ 1…9) since it now serves two tabs; the Workbench menu keeps everything else. The choice is a pure function in Core (`ItemShortcutTarget.resolve(workbench:chats:)`) with tests: Workbench page → sessions, Chats → chats, palette open / other tab → disabled. A row click opens the chat and sends focus to the composer, as today. The shortcut catalog's "Chats" area lists them.
+
+**v1 limit:** the panel re-reads its rows about once a second while an answer streams.
 
 ## 6. Groups
 
@@ -145,3 +147,4 @@ CHAT-01..05 untouched: nothing here sends, stores owner text differently or chan
 - Review round 3 (ask #640): ⌘[ becomes one shared View → Back item dispatching to Workbench's `backAction` or the Chats level, like ⌘1…⌘9.
 - Review round 2 (ask #635): the panel refresh goes into the existing `AppState+Chat.swift` closures (no new assignment of the single-closure callbacks); ⌘1…⌘9 enable through a second focused scene value beside `workbenchMenu`/`canUseSessionKeys`.
 - Review round 1 (ask #626): regenerate the system-prompt golden; ⌘1…⌘9 shared with Workbench through one dispatching set; the waiting-for-approval state refreshes on the pool's callbacks; the guide describes the new panel.
+- Waiting for approval outranks answering — controller ruling during implementation (a turn blocked on an Approve shows what the owner must do).
