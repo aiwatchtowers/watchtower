@@ -1,6 +1,6 @@
-# Writing and changing things from the AI Chat
+# Writing and changing things from Chats
 
-The assistant in the [AI Chat](ai-chat.md) can do more than answer: it can create a task, comment on a Jira issue, send a Slack message, edit a Confluence page or draft an automation. Every one of these waits for your approval first.
+The assistant in [Chats](ai-chat.md) can do more than answer: it can create a task, comment on a Jira issue, send a Slack message, edit a Confluence page or draft an automation. Every one of these waits for your approval first.
 
 ## Why use it
 
@@ -123,7 +123,7 @@ The card can be approved only while that reply is still running. Once the chat's
 
 ## Related
 
-- [AI Chat](ai-chat.md)
+- [Chats](ai-chat.md)
 - [Quick Connections](quick-connections.md): other tools the chat can read from
 - [Automations](automations.md)
 

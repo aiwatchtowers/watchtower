@@ -124,7 +124,7 @@ struct InboxCardButtons: View {
     private func help(_ action: InboxCardAction) -> String {
         switch action.kind {
         case .link(let url): url.absoluteString
-        case .chat: "Opens AI Chat with this card"
+        case .chat: "Opens Chats with this card"
         case let .agent(task, ref): InboxCardTexts.agentActionHelp(task, workbench: workbenchName(for: ref))
         case .reply: "Sends this choice to the automation"
         }

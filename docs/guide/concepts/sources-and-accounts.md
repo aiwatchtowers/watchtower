@@ -17,8 +17,8 @@ A service that needs you gets a banner on top with **Reconnect**, which opens th
 | **Email** | Connections → Email | New mail from an IMAP or Outlook mailbox | Knowledge search, Catch Up, Attention detection |
 | **Calendar** | Connections → Calendar | A CalDAV account or an ICS feed | Calendar, meeting prep, Day Plan |
 | **Jira** | Connections → Jira | Issues, boards, sprints, releases and comments of a Jira Cloud site; Confluence spaces you pick under the site. Boards are chosen in the same place | Targets, Workload, Blockers, Knowledge search, Ideas |
-| **Linear** | Connections → Linear | Issues, cycles and projects of the teams you select ([Linear](../features/linear.md)) | Blockers, weekly digest progress, AI Chat; identifies you as the owner |
-| **Quick Connections** | Connections → Quick Connections | Nothing is synced. The assistant can call an external tool server (MCP) you add, only when you ask in chat | The AI Chat. See [Quick Connections](../features/quick-connections.md) |
+| **Linear** | Connections → Linear | Issues, cycles and projects of the teams you select ([Linear](../features/linear.md)) | Blockers, weekly digest progress, the main chat; identifies you as the owner |
+| **Quick Connections** | Connections → Quick Connections | Nothing is synced. The assistant can call an external tool server (MCP) you add, only when you ask in chat | The main chat. See [Quick Connections](../features/quick-connections.md) |
 
 Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission.
 

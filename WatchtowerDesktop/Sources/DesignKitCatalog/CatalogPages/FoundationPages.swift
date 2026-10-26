@@ -24,7 +24,7 @@ struct ColoursPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.hero) {
             PageSection("Surfaces") {
-                Sample("A side panel beside a tab's content, as in AI Chat and the Workbench",
+                Sample("A side panel beside a tab's content, as in Chats and the Workbench",
                        usage: "panel.panelBackground()  ·  content.detailBackground()") {
                     HStack(spacing: 0) {
                         VStack(alignment: .leading, spacing: Spacing.compact) {

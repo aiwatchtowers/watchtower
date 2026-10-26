@@ -81,9 +81,9 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 ## Automations & AI
 
-- [AI Chat](features/ai-chat.md) — ask the assistant about your work or about Watchtower, from its tab or with ⌘/ over any tab; attach files, organize chats into projects
-- [Artifacts in the AI Chat](features/ai-chat-artifacts.md) — documents, drafts, tables and HTML pages the assistant writes: edit, comment, export, present
-- [Writing and changing things from the AI Chat](features/ai-chat-actions.md) — proposals you approve: tasks, Jira, Slack messages, Confluence edits, automation drafts
+- [Chats](features/ai-chat.md) — ask the assistant about your work or about Watchtower, from its tab or with ⌘/ over any tab; attach files, organize chats into projects
+- [Artifacts in Chats](features/ai-chat-artifacts.md) — documents, drafts, tables and HTML pages the assistant writes: edit, comment, export, present
+- [Writing and changing things from Chats](features/ai-chat-actions.md) — proposals you approve: tasks, Jira, Slack messages, Confluence edits, automation drafts
 - [Quick Connections](features/quick-connections.md) — plug other tools' MCP servers into the chat as read-only sources
 - [Memory](features/memory.md) — the assistant's long-term notebook of people, projects and beliefs, in plain files you can edit
 - [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants

@@ -115,7 +115,7 @@ The menu lists Home, Targets, Workbench, Automations and Calendar, then three co
 - **EXECUTION**: Project Map, Releases, Blockers, Workload.
 - **INSIGHTS**: Digests, People, Memory, Statistics.
 
-AI Chat and the TOOLS (Connections, with a badge for services that need you, Usage, MCP Server) sit at the bottom. FOCUS starts open, the others folded; your folds are remembered.
+Chats and the TOOLS (Connections, with a badge for services that need you, Usage, MCP Server) sit at the bottom. FOCUS starts open, the others folded; your folds are remembered.
 
 - **⌘B** folds the menu into an icon rail and back; there each section is one icon with its tabs.
 - Right-click a tab for **Hide**; it moves to the section's **HIDDEN** list, where **Show** brings it back.
