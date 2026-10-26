@@ -62,7 +62,7 @@ func (d *Daemon) saveLastCoach() {
 // after every run, a failed one included. A near plan limit skips only the
 // model call. Logs carry counts, never text.
 func (d *Daemon) phaseCoach(ctx context.Context) {
-	if d.db == nil {
+	if d.db == nil || ctx.Err() != nil {
 		return
 	}
 	now := time.Now()
@@ -77,7 +77,11 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		d.logger.Printf("coach: Claude plan limit near, proposals skipped")
 	}
 	d.trackedPipelineRun("coach", func() pipelineRunStats {
+		// A cycle cancelled mid-run (sleep/wake) must not cost the week.
 		defer func() {
+			if ctx.Err() != nil {
+				return
+			}
 			d.lastCoach = now
 			d.saveLastCoach()
 		}()
@@ -96,7 +100,7 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 			d.logger.Printf("coach: collecting signals: %v (retried next week)", err)
 			return pipelineRunStats{err: err}
 		}
-		p := &coach.Proposer{DB: d.db, Gen: coachGeneratorFactory(d.config), Now: time.Now, Logger: d.logger, Lang: d.config.Digest.Language}
+		p := &coach.Proposer{DB: d.db, Gen: coachGeneratorFactory(d.config), Now: func() time.Time { return now }, Logger: d.logger, Lang: d.config.Digest.Language}
 		n, usage, err := runCoachProposer(ctx, p, in)
 		stats := pipelineRunStats{items: n, err: err}
 		if usage != nil {

@@ -102,3 +102,23 @@ func TestPhaseCoach_NoAgentLogSkipsJudge(t *testing.T) {
 	assert.Equal(t, coachCalls{0, 1}, *c)
 	assert.Contains(t, buf.String(), "judging skipped")
 }
+
+func TestPhaseCoach_CancelledRunDoesNotStamp(t *testing.T) {
+	d, _ := coachDaemon(t)
+	c := stubCoach(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
+		c.propose++
+		cancel()
+		return 0, nil, ctx.Err()
+	}
+
+	d.phaseCoach(ctx)
+	assert.True(t, d.lastCoach.IsZero(), "a cancelled run keeps the week")
+	assert.NoFileExists(t, d.lastCoachPath())
+
+	d.phaseCoach(ctx) // entry on a cancelled ctx is a no-op
+	assert.Equal(t, 1, c.propose)
+	d.phaseCoach(context.Background())
+	assert.Equal(t, 2, c.propose, "the next cycle runs again")
+}
