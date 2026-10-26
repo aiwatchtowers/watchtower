@@ -1055,7 +1055,7 @@ context_id TEXT,
 created_at REAL NOT NULL,
 updated_at REAL NOT NULL
 , pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
-CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER)
+CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL)
 
 table	chat_fts
 CREATE VIRTUAL TABLE chat_fts USING fts5(
@@ -4334,6 +4334,7 @@ GROUP BY up.ancestor
 11	model	TEXT	notnull=0	dflt=NULL	pk=0
 12	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
 13	active_leaf_message_id	INTEGER	notnull=0	dflt=NULL	pk=0
+14	read_at	REAL	notnull=0	dflt=NULL	pk=0
 
 ## chat_fts
 0	text		notnull=0	dflt=NULL	pk=0

@@ -31,6 +31,12 @@ final class ProjectDetailViewModel {
     /// The instructions as last read or written: a save of the same text is
     /// skipped (it would retire every chat's session for nothing).
     private var savedInstructions = ""
+    /// The Instructions card's editor text while it is open (nil = the
+    /// preview). Nothing is written until Save; Cancel drops it.
+    var instructionsEditor: String?
+
+    /// The Knowledge card's list: files, then pinned sources.
+    var knowledge: [ProjectKnowledgeItem] { ProjectKnowledgeItem.merged(files: files, sources: sources) }
 
     private let dbPool: DatabasePool
     /// Every write of this view model, in order (board #670).
@@ -70,6 +76,12 @@ final class ProjectDetailViewModel {
         errorMessage = nil
     }
 
+    /// Re-reads the row and lists, drafts untouched (a chat deleted from
+    /// the panel's Undo bar left the project).
+    func reloadLists() {
+        if refresh() { errorMessage = nil }
+    }
+
     func instructionsEdited(_ text: String) {
         guard draftsLoaded else { return }
         instructionsDraft = text
@@ -93,6 +105,42 @@ final class ProjectDetailViewModel {
         pendingSave?.cancel()
         pendingSave = nil
         return await saveInstructions()
+    }
+
+    func beginInstructionsEdit() {
+        guard draftsLoaded else { return }
+        instructionsEditor = instructionsDraft
+    }
+
+    /// Cancel: the stored text stays, also over a draft a failed Save left
+    /// behind (the page's closing flush would write it otherwise).
+    func cancelInstructionsEdit() {
+        instructionsEditor = nil
+        pendingSave?.cancel()
+        pendingSave = nil
+        instructionsDraft = savedInstructions
+    }
+
+    /// Save: the editor's text is written now. A failed write keeps the
+    /// editor open with its text, `errorMessage` says why.
+    @discardableResult
+    func commitInstructionsEdit() async -> Bool {
+        guard let text = instructionsEditor, draftsLoaded else { return false }
+        instructionsEdited(text)
+        guard await flush() else { return false }
+        // Text typed while the save waited stays in the editor.
+        if instructionsEditor == text { instructionsEditor = nil }
+        return true
+    }
+
+    /// The remove button of a Knowledge row.
+    func removeKnowledge(_ id: ProjectKnowledgeItem.Key) async {
+        switch id {
+        case .file(let fileID):
+            if let file = files.first(where: { $0.id == fileID }) { await removeFile(file) }
+        case .source(let sourceID):
+            if let source = sources.first(where: { $0.id == sourceID }) { await removeSource(source) }
+        }
     }
 
     func rename(_ name: String) async {

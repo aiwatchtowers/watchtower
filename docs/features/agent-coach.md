@@ -4,7 +4,7 @@ Spec: `docs/superpowers/specs/2026-10-26-agent-coach-design.md`. Plan 1 ships th
 
 Once a week the daemon reads what already exists (the owner's marks on spec review findings, first-round code review comments, the owner's lines to agents and chats, Analytics hints), asks the strong-tier model for concrete edits to the owner's own setup, validates them in Go and stores them as proposals. **Nothing is applied without the owner's Accept.** An accepted edit is measured for 14 days and gets a verdict.
 
-## Tables (migration 00161)
+## Tables (migration 00162)
 
 - `coach_proposals` — one proposed edit: `fingerprint` (UNIQUE, from the destination and the change, so a declined or superseded edit never returns), `kind` (`add`/`cut`/`replace`), `destination`, `workbench_id` (NULL = global), `prompt_id`, `title`, `why`, `metric`, the whole `before_text`/`after_text`, `evidence` (JSON `[{kind,ref}]`, at most 12), `sources` (distinct sources, recomputed in Go), `status` (`open`/`accepted`/`declined`/`superseded`/`rolled_back`), `reverts_id` (a cut of an earlier no-effect edit), `baseline`/`baseline_n`, `verdict` (`works`/`no_effect`/`too_little_data`), `verdict_value`, timestamps.
 - `prompt_additions` — owner-approved lines added to a Watchtower prompt (`prompt_id`, `text`, `proposal_id`).

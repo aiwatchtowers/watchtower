@@ -20,6 +20,14 @@ package enum ChatLandingPolicy {
     package static let pinnedLimit = 5
     package static let recentLimit = 6
 
+    /// The project ⌘N / New Chat / `+` lands in: the panel's project while
+    /// the panel is visible and shows one, else none — a hidden panel's
+    /// remembered level never files a new chat into a project (controller
+    /// ruling on spec 2026-10-26 §4).
+    package static func newChatProject(level: ChatPanelLevel, panelVisible: Bool) -> Int64? {
+        panelVisible ? level.projectID : nil
+    }
+
     package enum Decision: Equatable, Sendable {
         case resume(Int64)
         case landing

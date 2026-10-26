@@ -71,6 +71,17 @@ enum DesignShotCatalog {
             DesignShot(name: "buttons", size: NSSize(width: 460, height: 64)) {
                 AnyView(DesignShotFixtures.buttons().padding(12).shotFrame().panelBackground())
             },
+            // The chat project page (spec 2026-10-26 §7): the cards beside
+            // the chats from 900 pt of content, below them under it.
+            DesignShot(name: "chat-project-page-wide", size: NSSize(width: 1100, height: 720)) {
+                ProjectPageShotFixtures.page()
+            },
+            DesignShot(name: "chat-project-page-narrow", size: NSSize(width: 640, height: 1000)) {
+                ProjectPageShotFixtures.page()
+            },
+            DesignShot(name: "chat-project-page-empty", size: NSSize(width: 1100, height: 520)) {
+                ProjectPageShotFixtures.page(empty: true)
+            },
             // Home (#717): two columns from 900 pt of content, one below.
             DesignShot(name: "home-wide", size: NSSize(width: 1280, height: 960)) {
                 HomeShotFixtures.home()
@@ -333,6 +344,7 @@ enum DesignShotFixtures {
         OneInboxShotFixtures.cleanUp()
         AutomationShotFixtures.cleanUp()
         BuiltinShotFixtures.cleanUp()
+        ProjectPageShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

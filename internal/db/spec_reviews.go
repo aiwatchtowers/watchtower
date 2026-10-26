@@ -26,7 +26,7 @@ type SpecReview struct {
 	Status, Reason, Result          string
 	Provider, Model, DocSHA         string
 	Dropped, PID, Attempt           int
-	Findings                        int // findings counted in Result; -1 = not counted (rows from before 00161)
+	Findings                        int // findings counted in Result; -1 = not counted (rows from before 00162)
 	QueuedAt, StartedAt, FinishedAt string
 	// Author loop (00160). The JSON columns are written by the loop code.
 	Loop, Replies, OpenItems, Ledger, LoopEnd string

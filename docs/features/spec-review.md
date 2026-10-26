@@ -72,7 +72,7 @@ For a spec or plan ask bound to a terminal session on a surface with a launcher,
 ## v1 limits
 
 - Phone: a one-line status only; no findings screen, and it writes no marks (a Not useful mark is not counted in its line).
-- `spec_reviews.findings` (migration 00161) is the number of findings in the stored result when the review first finished (a re-run, a `--force` start or a sweep relaunch never rewrites it) (`-1` before the migration); the coach reads it for the first round's count because a re-run replaces `result`.
+- `spec_reviews.findings` (migration 00162) is the number of findings in the stored result when the review first finished (a re-run, a `--force` start or a sweep relaunch never rewrites it) (`-1` before the migration); the coach reads it for the first round's count because a re-run replaces `result`.
 - Ollama has no file tools, so its reviews are from the data alone and are marked `code_read: false`.
 - Marks are the Desktop's alone: the phone answers a review ask without seeing them (they still go with its answer).
 - The sweep is the last step of `runSync`: a lost start can wait one whole cycle, and a cycle cancelled before the end skips it.

@@ -557,9 +557,10 @@ final class AppState {
         // Once per launch, before anything is shown or listed.
         cvm.cleanUpUntouchedConversations()
         let hvm = ChatHistoryViewModel(dbManager: db)
-        hvm.load()
+        hvm.reloadRows()
+        hvm.startObserving()
         Self.wireChat(cvm, history: hvm)
-        wireActionStripRefresh(cvm)
+        wireActionStripRefresh(cvm, history: hvm)
         chatViewModel = cvm
         chatHistoryViewModel = hvm
     }

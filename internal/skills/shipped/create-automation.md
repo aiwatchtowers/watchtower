@@ -247,7 +247,7 @@ section says. Never put secrets in a recipe.
 | Kind | Field | What the owner's press does |
 |---|---|---|
 | Link | `open: "<url>"` | Opens the page |
-| Chat | `chat: "<first message>"` | Starts an AI Chat with that message (at most 4 KB) |
+| Chat | `chat: "<first message>"` | Starts a chat in Chats with that message (at most 4 KB) |
 | Agent | `agent: {task, workbench?}` | Hands the task to an agent session (task at most 4 KB) |
 | Reply | `reply: "<value>", data?: {...}` | Runs this same automation once more (value at most 100 characters, `data` at most 8 KB of JSON) |
 

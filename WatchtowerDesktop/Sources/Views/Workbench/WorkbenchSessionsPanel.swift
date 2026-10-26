@@ -114,7 +114,7 @@ struct WorkbenchSessionsPanel: View {
         }
         .onMove { vm.moveSessions(mainSessions, projectID: project.id, from: $0, to: $1) }
         if sections.finishedCount > 0 {
-            SessionsPanelFinishedHeader(count: sections.finishedCount, expanded: sections.expanded) {
+            PanelFoldHeader(count: sections.finishedCount, label: "finished", itemName: "session", expanded: sections.expanded) {
                 vm.setFinishedGroupExpanded(!sections.expanded, projectID: project.id)
                 vm.requestPanelKeyboard()
             }

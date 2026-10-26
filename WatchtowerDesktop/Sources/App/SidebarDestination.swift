@@ -35,7 +35,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .home: "Home"
-        case .chat: "AI Chat"
+        case .chat: "Chats"
         case .catchUp: "Catch Up"
         case .inbox: "Inbox"
         case .calendar: "Calendar"

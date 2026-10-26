@@ -149,6 +149,16 @@ final class ChatConversationQueriesTests: XCTestCase {
             XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: untouched, createdAt: stamp + 1))
             XCTAssertTrue(try ChatConversationQueries.deleteIfUntouched(d, id: untouched, createdAt: stamp))
             XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: untouched, createdAt: stamp), "already gone")
+            // A landing in a project: its draft matches only with that project.
+            let inProjectAt = try created(inProject)
+            XCTAssertEqual(
+                try ChatConversationQueries.fetchUntouched(d, id: inProject, createdAt: inProjectAt, projectID: project.id)?.id,
+                inProject
+            )
+            XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(
+                d, id: inProject, createdAt: inProjectAt, projectID: project.id + 1))
+            XCTAssertTrue(try ChatConversationQueries.deleteIfUntouched(
+                d, id: inProject, createdAt: inProjectAt, projectID: project.id))
         }
     }
 

@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Chats panel mockups</title>
+<style>
+body{margin:0;padding:24px;background:#0f0f10;color:#e6e6e8;font-family:-apple-system,system-ui,sans-serif}
+h2{font-size:14px;color:#a1a1a6;margin:24px 0 10px}
+.board{overflow-x:auto}
+body{margin:0}
+a{color:#4da3ff}a:hover{color:#7dbcff}
+body{margin:0}
+a{color:#4da3ff}a:hover{color:#7dbcff}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(10,132,255,.55)}70%{box-shadow:0 0 0 6px rgba(10,132,255,0)}100%{box-shadow:0 0 0 0 rgba(10,132,255,0)}}
+</style></head><body>
+<h1 style="font-size:18px">Chats panel redesign — mockups (2026-10-26)</h1>
+<h2>Chats — window</h2>
+<div class="board">
+
+<div style="width: 1200px; height: 760px; box-sizing: border-box; display: flex; background: #1b1b1d; color: #e6e6e8; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; font-size: 13px; border-radius: 12px; overflow: hidden; border: 1px solid #3a3a3c">
+
+<div style="width: 190px; flex-shrink: 0; background: #2a2a2d; display: flex; flex-direction: column; padding: 12px 10px; gap: 2px; border-right: 1px solid #3a3a3c">
+<div style="display: flex; gap: 8px; padding: 2px 4px 14px">
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #ff5f57"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #febc2e"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #28c840"></span>
+</div>
+<div style="padding: 5px 8px; border-radius: 6px; color: #d0d0d3">Home</div>
+<div style="padding: 5px 8px; border-radius: 6px; color: #d0d0d3">Inbox</div>
+<div style="padding: 5px 8px; border-radius: 6px; background: #0a64d0; color: #ffffff; font-weight: 500">Chats</div>
+<div style="padding: 5px 8px; border-radius: 6px; color: #d0d0d3">Workbench</div>
+<div style="padding: 5px 8px; border-radius: 6px; color: #d0d0d3">Automations</div>
+<div style="padding: 5px 8px; border-radius: 6px; color: #d0d0d3">Calendar</div>
+<div style="padding: 5px 8px; border-radius: 6px; color: #d0d0d3">People</div>
+<div style="padding: 5px 8px; border-radius: 6px; color: #d0d0d3">Search</div>
+</div>
+
+<div style="width: 290px; flex-shrink: 0; background: #232325; display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; gap: 6px; padding: 10px 12px">
+<button style="flex-grow: 1; display: flex; align-items: center; gap: 6px; background: transparent; border: 0; color: #f2f2f4; font: inherit; font-size: 14px; font-weight: 600; padding: 4px 6px; border-radius: 6px; text-align: left; cursor: pointer">
+<span>All chats</span>
+<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" stroke="#a8a8ad" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg>
+</button>
+<button aria-label="New chat" style="width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: 6px; cursor: pointer">
+<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v10M2 7h10" stroke="#d0d0d3" stroke-width="1.6" stroke-linecap="round"></path></svg>
+</button>
+</div>
+
+<div style="padding: 0 12px 2px; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: #8e8e93">PINNED</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1">
+<div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Amazon Bedrock: обзор сервиса</div>
+<div style="font-size: 11px; color: #a1a1a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Сравнил цены Claude на Bedrock · 2 ч</div>
+</div>
+</div>
+
+<div style="padding: 10px 12px 2px; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: #8e8e93">RECENT</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start; background: #1b1b1d; margin-left: 6px; border-radius: 7px 0 0 7px">
+<span style="width: 8px; height: 8px; border-radius: 4px; background: #0a84ff; margin-top: 5px; flex-shrink: 0; animation: pulse 1.6s infinite"></span>
+<div style="min-width: 0; flex-grow: 1">
+<div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500">Yesterday's mail: CI failure</div>
+<div style="font-size: 11px; color: #6cb4ff">Отвечает…</div>
+</div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; background: #ff9f0a; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1">
+<div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Запуск автоматизаций в Watchtower</div>
+<div style="font-size: 11px; color: #ffb340">Ждёт апрув: сообщение в Slack</div>
+</div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; background: #0a84ff; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1">
+<div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600">OSC 52: копирование в буфер</div>
+<div style="font-size: 11px; color: #a1a1a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Готово: printf '\e]52;c;…' · вчера</div>
+</div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1">
+<div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Квартальный план команды</div>
+<div style="font-size: 11px; color: #a1a1a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Project A · Три цели и метрики · 4 д</div>
+</div>
+</div>
+
+<button style="display: flex; align-items: center; gap: 6px; margin: 8px 12px 0; padding: 4px 2px; background: transparent; border: 0; color: #a1a1a6; font: inherit; font-size: 12px; cursor: pointer; text-align: left">
+<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 2l3 3-3 3" stroke="#a1a1a6" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg>
+<span>24 older</span>
+</button>
+<div style="flex-grow: 1"></div>
+</div>
+
+<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; padding: 12px 20px; border-bottom: 1px solid #2c2c2e; gap: 10px">
+<span style="font-weight: 600; font-size: 14px">Yesterday's mail: CI failure</span>
+<span style="font-size: 11px; color: #a1a1a6">Claude · Opus</span>
+</div>
+<div style="flex-grow: 1; padding: 24px 40px; display: flex; flex-direction: column; gap: 16px">
+<div style="align-self: flex-end; max-width: 420px; background: #2c2c2e; border-radius: 12px; padding: 10px 14px">Что вчера пришло по почте про упавший CI?</div>
+<div style="max-width: 560px; line-height: 1.5; color: #d8d8dc">Нашёл два письма от GitHub Actions: <b>lint</b> в ветке feature/718 упал на gofmt, а <b>Swift tests</b> — на флаке в LockMetrics…</div>
+<div style="display: flex; gap: 6px; align-items: center; color: #6cb4ff; font-size: 12px">
+<span style="width: 6px; height: 6px; border-radius: 3px; background: #0a84ff"></span>
+<span>Пишет ответ</span>
+</div>
+</div>
+<div style="margin: 0 40px 24px; border: 1px solid #3a3a3c; border-radius: 12px; padding: 12px 14px; color: #8e8e93">Спросить что-нибудь…</div>
+</div>
+
+</div>
+</div>
+<h2>Panel states</h2>
+<div class="board">
+
+<div style="width: 1040px; height: 760px; box-sizing: border-box; padding: 30px; display: flex; gap: 40px; background: #141416; color: #e6e6e8; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; font-size: 13px">
+
+<div style="width: 300px; display: flex; flex-direction: column; gap: 12px">
+<div style="font-size: 12px; color: #a1a1a6; font-weight: 600">1 · Свитчер проектов открыт</div>
+<div style="flex-grow: 1; background: #232325; border: 1px solid #3a3a3c; border-radius: 10px; position: relative; overflow: hidden">
+<div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px">
+<svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true"><path d="M7 2L2 7l5 5" stroke="#a1a1a6" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+<svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><path d="M1.5 3h5l1.2 1.5h6.8v8h-13z" stroke="#a1a1a6" stroke-width="1.3" fill="none" stroke-linejoin="round"></path></svg>
+<span style="font-size: 15px; font-weight: 700">Q4 research</span>
+<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" stroke="#a1a1a6" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg>
+<span style="flex-grow: 1"></span>
+<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v10M2 7h10" stroke="#d0d0d3" stroke-width="1.6" stroke-linecap="round"></path></svg>
+</div>
+<div style="position: absolute; top: 40px; left: 74px; width: 14px; height: 14px; background: #343437; border-left: 1px solid #58585c; border-top: 1px solid #58585c; transform: rotate(45deg); z-index: 2"></div>
+<div style="position: absolute; top: 46px; left: 8px; width: 282px; background: #343437; border: 1px solid #58585c; border-radius: 14px; padding: 8px; box-shadow: 0 14px 36px rgba(0,0,0,.55); display: flex; flex-direction: column; gap: 2px; z-index: 1">
+<div style="border: 2px solid #3d7fd9; border-radius: 8px; padding: 6px 8px; color: #8e8e93; font-size: 14px; background: #1f1f21">Find project</div>
+<div style="padding: 8px 6px 2px; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: #a1a1a6">RECENT</div>
+<div style="display: flex; gap: 8px; padding: 6px 8px; border-radius: 8px; background: #3e4554">
+<span style="width: 14px; color: #e6e6e8">✓</span>
+<div style="display: flex; flex-direction: column; gap: 3px">
+<span style="font-weight: 700; font-size: 14px">Q4 research</span>
+<div style="display: flex; gap: 6px; align-items: center; font-size: 12px; font-weight: 600"><span style="background: #2f7de1; color: #fff; border-radius: 9px; padding: 1px 7px">1 new answer</span><span style="color: #6cb4ff">1 answering</span></div>
+</div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 8px; border-radius: 8px">
+<span style="width: 14px"></span>
+<div style="display: flex; flex-direction: column; gap: 3px">
+<span style="font-weight: 700; font-size: 14px">Hiring</span>
+<div style="display: flex; gap: 6px; font-size: 12px; font-weight: 600"><span style="color: #ffb340">1 waiting for approval</span></div>
+</div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 8px; border-radius: 8px">
+<span style="width: 14px"></span>
+<div style="display: flex; flex-direction: column; gap: 3px">
+<span style="font-weight: 700; font-size: 14px">Project A</span>
+<span style="font-size: 12px; color: #a1a1a6; font-weight: 600">8d</span>
+</div>
+</div>
+<div style="height: 1px; background: #58585c; margin: 6px 4px"></div>
+<div style="display: flex; gap: 10px; align-items: center; padding: 5px 8px; font-size: 14px">
+<svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M1.5 3h5l1.2 1.5h6.8v8h-13z" stroke="#d0d0d3" stroke-width="1.3" fill="none" stroke-linejoin="round"></path><path d="M14 1v4M12 3h4" stroke="#d0d0d3" stroke-width="1.3" stroke-linecap="round"></path></svg>
+<span>New Project…</span>
+</div>
+<div style="display: flex; gap: 10px; align-items: center; padding: 5px 8px; font-size: 14px">
+<svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M11 2L6 7l5 5" stroke="#d0d0d3" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+<span>All Chats</span>
+</div>
+</div>
+<div style="padding: 400px 14px 0; color: #6e6e73; font-size: 12px; line-height: 1.5">Как свитчер воркбенча: ‹, ⌘[ и «All Chats» возвращают к общему списку. Статусы проекта — по его чатам. Настройки проекта — строка «Project overview» в панели.</div>
+</div>
+</div>
+
+<div style="width: 300px; display: flex; flex-direction: column; gap: 12px">
+<div style="font-size: 12px; color: #a1a1a6; font-weight: 600">2 · Наведение: ✕ и Undo</div>
+<div style="flex-grow: 1; background: #232325; border: 1px solid #3a3a3c; border-radius: 10px; display: flex; flex-direction: column; overflow: hidden">
+<div style="display: flex; align-items: center; padding: 10px 12px; font-size: 14px; font-weight: 600"><span style="flex-grow: 1; padding: 4px 6px">All chats</span></div>
+<div style="padding: 0 12px 2px; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: #8e8e93">RECENT</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1"><div>OSC 52: копирование в буфер</div><div style="font-size: 11px; color: #a1a1a6">Готово: printf '\e]52;c;…' · вчера</div></div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 8px 6px 14px; align-items: flex-start; background: #2c2c2f; margin: 0 6px; border-radius: 6px">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1"><div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Квартальный план команды</div><div style="font-size: 11px; color: #a1a1a6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Три цели и метрики · 4 д</div></div>
+<button aria-label="Delete chat" style="width: 20px; height: 20px; border-radius: 10px; border: 0; background: #48484a; display: flex; align-items: center; justify-content: center; margin-top: 4px; flex-shrink: 0">
+<svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M1 1l6 6M7 1L1 7" stroke="#e6e6e8" stroke-width="1.4" stroke-linecap="round"></path></svg>
+</button>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1"><div>Amazon Bedrock: обзор</div><div style="font-size: 11px; color: #a1a1a6">Сравнил цены · 5 д</div></div>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="margin: 10px; padding: 8px 10px; background: #2f2f32; border: 1px solid #48484a; border-radius: 8px; display: flex; align-items: center; gap: 8px; font-size: 12px">
+<span style="flex-grow: 1; color: #d0d0d3">Чат «Black Friday идеи» удалён</span>
+<button style="background: transparent; border: 0; color: #4da3ff; font: inherit; font-weight: 600; cursor: pointer">Undo ⌘Z</button>
+</div>
+</div>
+</div>
+
+<div style="width: 300px; display: flex; flex-direction: column; gap: 12px">
+<div style="font-size: 12px; color: #a1a1a6; font-weight: 600">3 · «older» раскрыт, панель с клавиатурой</div>
+<div style="flex-grow: 1; background: #232325; border: 1px solid #3a3a3c; border-radius: 10px; display: flex; flex-direction: column; overflow: hidden">
+<div style="display: flex; align-items: center; padding: 10px 12px; font-size: 14px; font-weight: 600"><span style="flex-grow: 1; padding: 4px 6px">All chats</span></div>
+<div style="padding: 0 12px 2px; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: #8e8e93">RECENT</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1"><div>OSC 52: копирование в буфер</div><div style="font-size: 11px; color: #a1a1a6">Готово · вчера</div></div>
+</div>
+<div style="display: flex; align-items: center; gap: 6px; margin: 8px 12px 2px; color: #a1a1a6; font-size: 12px">
+<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" stroke="#a1a1a6" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg>
+<span>24 older</span>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1"><div>Миграция на SQLCipher</div><div style="font-size: 11px; color: #a1a1a6">Порядок шагов Stage 2 · 12 д</div></div>
+</div>
+<div style="display: flex; gap: 8px; padding: 5px 9px 5px 11px; align-items: flex-start; margin: 0 3px; border: 2px solid #0a84ff; border-radius: 6px">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1"><div>Отпуск в декабре</div><div style="font-size: 11px; color: #a1a1a6">Даты и замены · 18 д</div></div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0; flex-grow: 1"><div>Сравнение MCP-серверов</div><div style="font-size: 11px; color: #a1a1a6">Таблица из 6 вариантов · 1 мес</div></div>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="padding: 10px 14px; font-size: 11px; color: #8e8e93; line-height: 1.6; border-top: 1px solid #2c2c2e">↑ ↓ курсор · Return открыть · ⌘⌫ удалить · ⌘Z вернуть · ⌘1…⌘9 первые девять</div>
+</div>
+</div>
+
+</div>
+</div>
+<h2>Project page</h2>
+<div class="board">
+
+<div style="width: 1200px; height: 760px; box-sizing: border-box; display: flex; background: #1b1b1d; color: #e6e6e8; font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif; font-size: 13px; border-radius: 12px; overflow: hidden; border: 1px solid #3a3a3c">
+
+<div style="width: 190px; flex-shrink: 0; background: #2a2a2d; display: flex; flex-direction: column; padding: 12px 10px; gap: 2px; border-right: 1px solid #3a3a3c">
+<div style="display: flex; gap: 8px; padding: 2px 4px 14px">
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #ff5f57"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #febc2e"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #28c840"></span>
+</div>
+<div style="padding: 5px 8px; color: #d0d0d3">Home</div>
+<div style="padding: 5px 8px; color: #d0d0d3">Inbox</div>
+<div style="padding: 5px 8px; border-radius: 6px; background: #0a64d0; color: #ffffff; font-weight: 500">Chats</div>
+<div style="padding: 5px 8px; color: #d0d0d3">Workbench</div>
+<div style="padding: 5px 8px; color: #d0d0d3">Automations</div>
+</div>
+
+<div style="width: 290px; flex-shrink: 0; background: #232325; display: flex; flex-direction: column">
+<div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px">
+<div style="flex-grow: 1; display: flex; align-items: center; gap: 8px">
+<svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true"><path d="M7 2L2 7l5 5" stroke="#a1a1a6" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+<svg width="16" height="14" viewBox="0 0 16 14" aria-hidden="true"><path d="M1.5 3h5l1.2 1.5h6.8v8h-13z" stroke="#a1a1a6" stroke-width="1.3" fill="none" stroke-linejoin="round"></path></svg>
+<span style="font-size: 15px; font-weight: 700">Q4 research</span>
+<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" stroke="#a1a1a6" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg>
+</div>
+<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" style="margin: 0 7px"><path d="M7 2v10M2 7h10" stroke="#d0d0d3" stroke-width="1.6" stroke-linecap="round"></path></svg>
+</div>
+<div style="display: flex; gap: 8px; padding: 7px 12px 7px 14px; align-items: center; background: #1b1b1d; margin-left: 6px; border-radius: 7px 0 0 7px">
+<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 4.5h4l1 1.5h5v5.5H2z" stroke="#a1a1a6" stroke-width="1.3" fill="none" stroke-linejoin="round"></path></svg>
+<span style="font-weight: 500">Project overview</span>
+</div>
+<div style="padding: 10px 12px 2px; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: #8e8e93">RECENT</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; background: #0a84ff; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0"><div style="font-weight: 600">Конкуренты: ценовые модели</div><div style="font-size: 11px; color: #a1a1a6">Готово: таблица из 5 игроков · 1 ч</div></div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0"><div>Интервью с клиентами: выводы</div><div style="font-size: 11px; color: #a1a1a6">7 тем, 3 повторяются · вчера</div></div>
+</div>
+<div style="display: flex; gap: 8px; padding: 6px 12px 6px 14px; align-items: flex-start">
+<span style="width: 8px; height: 8px; border-radius: 4px; border: 1.5px solid #6e6e73; box-sizing: border-box; margin-top: 5px; flex-shrink: 0"></span>
+<div style="min-width: 0"><div>Черновик отчёта для команды</div><div style="font-size: 11px; color: #a1a1a6">Структура из 4 разделов · 3 д</div></div>
+</div>
+</div>
+
+<div style="flex-grow: 1; min-width: 0; display: flex; gap: 32px; padding: 36px 40px">
+
+<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px">
+<div style="display: flex; align-items: flex-start; gap: 10px">
+<div style="flex-grow: 1">
+<div style="font-size: 24px; font-weight: 700">Q4 research</div>
+<div style="color: #a1a1a6; margin-top: 4px">Рынок и конкуренты к планированию Q4</div>
+</div>
+<button aria-label="Project menu" style="width: 28px; height: 28px; border: 0; border-radius: 6px; background: #2c2c2e; color: #d0d0d3; font-size: 16px; line-height: 1">⋯</button>
+</div>
+<div style="border: 1px solid #48484a; border-radius: 14px; background: #232325; padding: 14px 16px; display: flex; flex-direction: column; gap: 14px">
+<div style="color: #8e8e93">Новый чат в «Q4 research»…</div>
+<div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #a1a1a6">
+<span style="padding: 3px 8px; border: 1px solid #48484a; border-radius: 6px">＋</span>
+<span style="padding: 3px 8px; border: 1px solid #48484a; border-radius: 6px">Claude · Opus ▾</span>
+<span style="flex-grow: 1"></span>
+<span style="width: 26px; height: 26px; border-radius: 13px; background: #0a84ff; display: flex; align-items: center; justify-content: center; color: #fff">↑</span>
+</div>
+</div>
+<div style="font-size: 11px; font-weight: 700; letter-spacing: .04em; color: #8e8e93; margin-top: 8px">CHATS IN THIS PROJECT · 3</div>
+<div style="display: flex; flex-direction: column; border-top: 1px solid #2c2c2e">
+<div style="padding: 11px 2px; border-bottom: 1px solid #2c2c2e; display: flex; gap: 12px"><span style="flex-grow: 1; font-weight: 500">Конкуренты: ценовые модели</span><span style="color: #a1a1a6; font-size: 12px">1 ч назад</span></div>
+<div style="padding: 11px 2px; border-bottom: 1px solid #2c2c2e; display: flex; gap: 12px"><span style="flex-grow: 1">Интервью с клиентами: выводы</span><span style="color: #a1a1a6; font-size: 12px">вчера</span></div>
+<div style="padding: 11px 2px; border-bottom: 1px solid #2c2c2e; display: flex; gap: 12px"><span style="flex-grow: 1">Черновик отчёта для команды</span><span style="color: #a1a1a6; font-size: 12px">3 дня назад</span></div>
+</div>
+</div>
+
+<div style="width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 14px">
+<div style="background: #232325; border: 1px solid #3a3a3c; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center"><span style="flex-grow: 1; font-weight: 600">Instructions</span><a href="#" style="font-size: 12px">Edit</a></div>
+<div style="color: #b4b4b9; font-size: 12px; line-height: 1.5">Отвечай коротко, таблицами где можно. Цифры — только из источников проекта, со ссылкой. Валюта — USD.</div>
+</div>
+<div style="background: #232325; border: 1px solid #3a3a3c; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center"><span style="flex-grow: 1; font-weight: 600">Knowledge</span><button aria-label="Add knowledge" style="border: 0; background: #3a3a3c; color: #e6e6e8; border-radius: 6px; padding: 2px 8px; font: inherit; font-size: 12px">＋ Add</button></div>
+<div style="font-size: 11px; color: #8e8e93">Ассистент смотрит сюда первым в каждом чате проекта</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: #2c2c2e; border-radius: 7px"><span style="font-size: 10px; font-weight: 700; color: #1b1b1d; background: #b4b4b9; border-radius: 3px; padding: 1px 4px">PDF</span><span style="flex-grow: 1">market-report-2026.pdf</span></div>
+<div style="display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: #2c2c2e; border-radius: 7px"><span style="font-size: 10px; font-weight: 700; color: #1b1b1d; background: #b4b4b9; border-radius: 3px; padding: 1px 4px">MD</span><span style="flex-grow: 1">interview-notes.md</span></div>
+<div style="display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: #2c2c2e; border-radius: 7px"><span style="font-size: 10px; font-weight: 700; color: #fff; background: #4a7ce0; border-radius: 3px; padding: 1px 4px">JIRA</span><span style="flex-grow: 1">Проект RESEARCH</span></div>
+<div style="display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: #2c2c2e; border-radius: 7px"><span style="font-size: 10px; font-weight: 700; color: #fff; background: #8e5bd0; border-radius: 3px; padding: 1px 4px">SLACK</span><span style="flex-grow: 1">#market-intel</span></div>
+</div>
+<div style="border: 1px dashed #48484a; border-radius: 8px; padding: 10px; text-align: center; font-size: 11px; color: #8e8e93">Перетащи файлы сюда</div>
+</div>
+</div>
+
+</div>
+</div>
+</div>
+</body></html>

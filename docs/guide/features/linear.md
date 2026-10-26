@@ -33,7 +33,7 @@ requires: source:linear
 <!-- learn
 id: linear-chat-change
 title: Change Linear issues from the chat
-text: Ask **AI Chat** to create, move or assign a Linear issue; nothing changes in Linear until you press Approve.
+text: Ask **Chats** to create, move or assign a Linear issue; nothing changes in Linear until you press Approve.
 area: tasks
 level: next
 kind: feature
@@ -44,7 +44,7 @@ requires: source:linear
 <!-- learn
 id: linear-at-mention
 title: Point the assistant at an issue
-text: In **AI Chat**, type @ and a Linear issue key to hand the assistant that issue.
+text: In **Chats**, type @ and a Linear issue key to hand the assistant that issue.
 area: tasks
 level: power
 kind: tip
@@ -53,7 +53,7 @@ action: nav:chat
 requires: source:linear
 -->
 
-In **AI Chat** you can ask the assistant to list teams and issues, read an issue with its comments and status history, or change Linear: create an issue, add a comment, move an issue to another state, assign it, or edit its title, priority, labels, due date and estimate. Every change is a proposal: it waits in the chat's action card until you press Approve, and Linear changes only then. If you press Retry after a failed create, no second issue is made. The assistant can only choose a state, label or person that Linear knows for that team; a label that does not exist is refused, not created. Teams you did not select for sync have no states to choose from, so select the team first. Type `@` and an issue key to point the assistant at a Linear issue.
+In **Chats** you can ask the assistant to list teams and issues, read an issue with its comments and status history, or change Linear: create an issue, add a comment, move an issue to another state, assign it, or edit its title, priority, labels, due date and estimate. Every change is a proposal: it waits in the chat's action card until you press Approve, and Linear changes only then. If you press Retry after a failed create, no second issue is made. The assistant can only choose a state, label or person that Linear knows for that team; a label that does not exist is refused, not created. Teams you did not select for sync have no states to choose from, so select the team first. Type `@` and an issue key to point the assistant at a Linear issue.
 
 ## Using it
 <!-- learn

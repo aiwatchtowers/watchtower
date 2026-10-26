@@ -213,10 +213,11 @@ struct GoToPalette: View {
             Image(systemName: "square.grid.2x2").foregroundStyle(.secondary).frame(width: 12)
             Text(row.project.name).font(.callout).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
-            WorkbenchStateSegments(segments: WorkbenchSwitcherPresentation.stateSegments(
+            let segments = WorkbenchSwitcherPresentation.stateSegments(
                 summary: row, newComments: row.summary.unreadAgentComments,
                 workingCount: vm.workingSessionCount(workbenchID: row.id), now: now
-            ))
+            )
+            SwitcherStateSegments(segments: segments.map(\.switcherSegment))
         }
     }
 

@@ -164,7 +164,7 @@ struct SessionLiveDot: View {
 
     var body: some View {
         Image(systemName: SessionStatePresentation.isRing(state) ? "circle" : "circle.fill")
-            .font(.system(size: 7))
+            .font(.system(size: IconSize.stateDot))
             .foregroundStyle(SessionStatePresentation.color(for: state).color)
             // Background agents run: the dot pulses; Reduce Motion keeps it still.
             .symbolEffect(.pulse, isActive: SessionStatePresentation.pulses(state) && !reduceMotion)

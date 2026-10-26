@@ -4,10 +4,10 @@ import XCTest
 @testable import WatchtowerDesktop
 
 /// Renders every `DesignShotCatalog` entry in light and dark mode (style
-/// guide #719, spec §6). Each shot must draw something — more than one
-/// distinct colour — and with `DESKTOP_SHOTS_DIR` set it lands as
-/// `<dir>/<name>-light.png` and `<dir>/<name>-dark.png` for a by-eye
-/// before/after comparison (`make desktop-shots`). Nothing asserts pixels.
+/// guide #719, spec §6) under `make desktop-shots`. Each shot must draw
+/// something — more than one distinct colour — and lands as
+/// `<dir>/<name>-light.png` and `<dir>/<name>-dark.png` in `DESKTOP_SHOTS_DIR`
+/// for a by-eye before/after comparison. Nothing asserts pixels.
 @MainActor
 final class DesignShotsTests: XCTestCase {
     override static func tearDown() {
@@ -15,16 +15,23 @@ final class DesignShotsTests: XCTestCase {
         super.tearDown()
     }
 
-    func testEveryShotRenders() throws {
+    func testShotNamesAreUnique() {
         let shots = DesignShotCatalog.all
         XCTAssertFalse(shots.isEmpty, "the catalog registers no shots")
         XCTAssertEqual(Set(shots.map(\.name)).count, shots.count, "shot names are file stems and must be unique")
+    }
 
-        let outputDir = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"]
-            .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
-        if let outputDir {
-            try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+    /// Rendering every shot costs ~100 s, so it runs only under
+    /// `make desktop-shots` (which sets `DESKTOP_SHOTS_DIR`), never in the
+    /// unfiltered suite (style guide spec §6).
+    func testEveryShotRenders() throws {
+        guard let outputDir = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"]
+            .flatMap({ $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) })
+        else {
+            throw XCTSkip("DESKTOP_SHOTS_DIR is not set; run `make desktop-shots`")
         }
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+        let shots = DesignShotCatalog.all
 
         for shot in shots {
             // A zero height means "as tall as the content".
@@ -38,9 +45,7 @@ final class DesignShotsTests: XCTestCase {
                 let data = try probe.png(shot.make(), appearance)
                 let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data))
                 XCTAssertGreaterThan(Self.distinctColours(bitmap, limit: 2), 1, "\(shot.name)-\(suffix) is blank")
-                if let outputDir {
-                    try data.write(to: outputDir.appendingPathComponent("\(shot.name)-\(suffix).png"))
-                }
+                try data.write(to: outputDir.appendingPathComponent("\(shot.name)-\(suffix).png"))
             }
         }
     }

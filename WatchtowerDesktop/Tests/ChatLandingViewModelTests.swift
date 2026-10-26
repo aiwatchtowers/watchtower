@@ -138,7 +138,8 @@ final class ChatLandingViewModelTests: XCTestCase {
         let projectID = try XCTUnwrap(project)
         vm.enterTab(rememberedConversationID: nil, lastViewedAt: nil, now: Date().addingTimeInterval(3 * window))
         XCTAssertEqual(vm.openProjectID, projectID)
-        XCTAssertFalse(vm.isOnLanding)
+        XCTAssertEqual(vm.landingProjectID, projectID, "still the page's composer, in its project")
+        XCTAssertNil(vm.conversationID)
     }
 
     /// The landing's first keystroke makes the conversation and prewarms its
@@ -290,7 +291,7 @@ final class ChatLandingViewModelTests: XCTestCase {
         vm.openProject(projectID)
         await vm.writesSettled()
         XCTAssertEqual(vm.openProjectID, projectID)
-        XCTAssertFalse(vm.isOnLanding)
+        XCTAssertEqual(vm.landingProjectID, projectID, "the page's composer is the landing's, in the project")
         XCTAssertNil(history.selectedConversationID)
         XCTAssertNil(vm.conversationID)
         XCTAssertFalse(try rowExists(draftID), "the untouched draft goes (I-2)")
@@ -495,10 +496,10 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertTrue(vm.composerAttachments.pending.isEmpty)
 
         let loaded = expectation(description: "load")
-        history.load { loaded.fulfill() }
+        history.reloadRows { loaded.fulfill() }
         await fulfillment(of: [loaded], timeout: 5)
         history.selectedConversationID = other
-        XCTAssertTrue(history.sections.flatMap(\.conversations).contains { $0.id == draft })
+        XCTAssertTrue(history.sections.flatMap(\.items).contains { $0.id == draft })
         XCTAssertTrue(ChatLandingPolicy.recents(history.conversations).contains { $0.id == draft })
 
         vm.select(conversationID: draft)
