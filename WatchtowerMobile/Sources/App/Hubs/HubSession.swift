@@ -166,8 +166,10 @@ final class HubSession {
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
-    /// Takes settled work alerts out of Notification Center after each replica read and each successful fetch.
+    /// Takes settled work alerts out of Notification Center after each successful fetch or engine apply.
     private let alertCleaner: DeliveredAlertCleaner
+    /// The sweep's own decode cache: its reads never race the screens' observation over one cache.
+    @ObservationIgnored private let alertSweepCache = ReplicaDecodeCache()
     /// The calendar slices as the Calendar and Now tabs draw them.
     let calendarReplica = CalendarReplicaModel()
     /// The phone recorder (record a meeting or a voice note), owned for the
@@ -481,30 +483,30 @@ final class HubSession {
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
             scope: databaseScope, transport: transport, saver: subscriptionSaver)
-        startWorkbenchReplica(store: store)
+        workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
         startBoot(startWork, notifications: notifications)
     }
 
-    /// Starts the Workbench replica; each new snapshot also takes this hub's settled alerts out of Notification Center.
-    private func startWorkbenchReplica(store: ReplicaStore) {
-        let hubID = hubID
-        let cleaner = alertCleaner
-        workbenchReplica.onSnapshot = { [weak self] snapshot in
-            Task { @MainActor in
-                await cleaner.clear(hubID: hubID, snapshot: snapshot, fetchedAt: self?.lastSyncAt, now: Date())
+    /// Takes this hub's settled alerts out of Notification Center after a successful fetch or engine apply, even
+    /// one that changed nothing. The snapshot is read from the store right after that hydrate, never the screens'
+    /// in-memory one, which lags it: an ask or a stopped state the hydrate just brought must not read as absent or
+    /// still working under this fetch's time. Only while the app is active (so unlocked, every stored row open);
+    /// the return to the foreground fetches or applies, and sweeps then.
+    private func sweepDeliveredAlerts(fetchedAt: Date) {
+        guard isActive else { return }
+        let snapshot: WorkbenchReplicaSnapshot
+        do {
+            snapshot = try store.reader.read { [store, alertSweepCache] db in
+                try WorkbenchReplicaSnapshot.read(from: db, store: store, cache: alertSweepCache)
             }
+        } catch {
+            Self.logger.error("alert sweep read failed: \(error.localizedDescription, privacy: .public)")
+            return
         }
-        workbenchReplica.start(store: store)
-    }
-
-    /// A successful fetch makes absences and working states in the replica trustworthy, so it sweeps settled alerts
-    /// even when the snapshot did not change (no observation fires then). The snapshot is the replica as the screens
-    /// see it; one the fetch changed is swept again when its observation lands.
-    private func sweepDeliveredAlerts() {
-        let (cleaner, hubID, snapshot, fetchedAt) = (alertCleaner, hubID, workbenchReplica.snapshot, lastSyncAt)
+        let (cleaner, hubID) = (alertCleaner, hubID)
         Task { @MainActor in await cleaner.clear(hubID: hubID, snapshot: snapshot, fetchedAt: fetchedAt, now: Date()) }
     }
 
@@ -943,9 +945,10 @@ final class HubSession {
             Self.logger.error("replica hydrate failed (\(what, privacy: .public)): \(error.localizedDescription, privacy: .public)")
             return .failed
         }
-        lastSyncAt = now()
+        let fetchedAt = now()
+        lastSyncAt = fetchedAt
         lastFetchError = nil
-        sweepDeliveredAlerts()
+        sweepDeliveredAlerts(fetchedAt: fetchedAt)
         var routed = 0
         do {
             routed = try await feed.pollOnce()
@@ -983,8 +986,9 @@ final class HubSession {
             Self.logger.error("engine fetch apply failed: \(error.localizedDescription, privacy: .public)")
             return
         }
-        lastSyncAt = now()
-        sweepDeliveredAlerts()
+        let appliedAt = now()
+        lastSyncAt = appliedAt
+        sweepDeliveredAlerts(fetchedAt: appliedAt)
         do {
             _ = try await feed.pollOnce()
         } catch {

@@ -263,4 +263,56 @@ final class NotificationRouterTests: XCTestCase {
         XCTAssertEqual(outcome, .noData, "nothing new arrived")
         try await poll({ sweeps > before }, "the fetch swept the delivered alerts")
     }
+
+    /// The sweep judges a fetch by what that fetch brought in: an ask and a stopped state that arrive in this very
+    /// hydrate keep their alerts (the screens' snapshot may still predate them), and a truly settled alert goes.
+    func testAFetchSweepsWithTheReplicaItHydratedNotAnOlderSnapshot() async throws {
+        let delivered = Date().addingTimeInterval(-600)
+        let stoppedAt = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 - 300).rounded())
+        let stopKey = WorkAlertKey.stop(session: 10, stateAt: stoppedAt)
+        var removed: Set<String> = []
+        let hubID = DemoSeed.hubID
+        let cleaner = DeliveredAlertCleaner(
+            delivered: {
+                [
+                    (id: "arriving-ask", date: delivered, userInfo: [WorkAlertContent.Key.hub: hubID, WorkAlertContent.Key.key: "ask-900"]),
+                    (id: "arriving-stop", date: delivered, userInfo: [WorkAlertContent.Key.hub: hubID, WorkAlertContent.Key.key: stopKey]),
+                    (id: "settled", date: delivered, userInfo: [WorkAlertContent.Key.hub: hubID, WorkAlertContent.Key.key: "ask-99999"])
+                ]
+            },
+            remove: { removed.formUnion($0) }
+        )
+        let transport = InMemoryCloudTransport()
+        let defaults = try makeDefaults()
+        let sleeper = TickSleeper()
+        let env = try HubSession(
+            transport: transport, replicaPath: try makeReplicaPath(), transportKind: .inMemoryDemo, defaults: defaults,
+            recordingsDirectory: try makeRecordingsDirectory(), alertCleaner: cleaner,
+            sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
+        )
+        addTeardownBlock { @MainActor in env.stop() }
+        try await poll({ env.isLooping && sleeper.waitingCount == 1 && removed.contains("settled") }, "booted and swept")
+        XCTAssertEqual(try XCTUnwrap(env.workbenchReplica.snapshot.session(10)).stateKind, .working, "the demo session works")
+
+        let hub = DemoSeed.hubTransport(inner: transport, seq: DemoSeed.hubSeq(defaults: defaults, now: Date()))
+        try await hub.save([
+            try DemoSeed.record(kind: .ownerAsk, id: 900, json: DemoSeed.JSON.ask(900, workbench: DemoSeed.acmeID), modifiedAt: Date()),
+            try DemoSeed.record(
+                kind: .terminalSession, id: 10,
+                json: DemoSeed.JSON.session(10, workbench: DemoSeed.acmeID, [
+                    "state_kind": "stopped", "state_at": stoppedAt.timeIntervalSince1970
+                ]),
+                modifiedAt: Date()
+            )
+        ])
+        removed = []
+
+        let outcome = await env.handlePush(inForeground: true)
+
+        XCTAssertEqual(outcome, .newData)
+        try await poll({ removed.contains("settled") }, "the fetch swept")
+        try await poll({ env.workbenchReplica.snapshot.openAsks().contains { $0.id == 900 } }, "the screens caught up")
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(removed, ["settled"], "an ask and a stop that arrived in this fetch keep their alerts")
+    }
 }

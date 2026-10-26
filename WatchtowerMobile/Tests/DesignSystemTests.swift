@@ -54,9 +54,9 @@ final class DesignSystemTests: XCTestCase {
         }
     }
 
-    /// §2.4: medium and unknown draw no dot; high is red, low blue; never
+    /// §2.4: medium and unknown get no mark; high is red, low blue; never
     /// orange.
-    func testOnlyHighAndLowGetAPriorityDot() {
+    func testOnlyHighAndLowGetAPriorityMark() {
         XCTAssertEqual(PriorityMark.tone(.high), .red)
         XCTAssertEqual(PriorityMark.tone(.low), .blue)
         XCTAssertNil(PriorityMark.tone(.medium))
