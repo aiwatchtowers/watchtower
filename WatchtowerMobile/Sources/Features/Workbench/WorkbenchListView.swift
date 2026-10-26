@@ -18,7 +18,8 @@ struct WorkbenchListView: View {
     private var replica: WorkbenchReplicaModel { env.workbenchReplica }
 
     var body: some View {
-        NavigationStack {
+        @Bindable var navigation = env.navigation
+        return NavigationStack(path: $navigation.workbenchPath) {
             content
                 .navigationTitle("Workbenches")
                 .hubSwitcher()

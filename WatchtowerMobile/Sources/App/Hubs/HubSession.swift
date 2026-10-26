@@ -166,6 +166,8 @@ final class HubSession {
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
+    /// Takes settled work alerts out of Notification Center after each replica read; 
+    private let alertCleaner = DeliveredAlertCleaner.live
     /// The calendar slices as the Calendar and Now tabs draw them.
     let calendarReplica = CalendarReplicaModel()
     /// The phone recorder (record a meeting or a voice note), owned for the
@@ -478,11 +480,21 @@ final class HubSession {
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
             scope: databaseScope, transport: transport, saver: subscriptionSaver)
-        workbenchReplica.start(store: store)
+        startWorkbenchReplica(store: store)
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
         startBoot(startWork, notifications: notifications)
+    }
+
+    /// Starts the Workbench replica; each new snapshot also takes this hub's settled alerts out of Notification Center.
+    private func startWorkbenchReplica(store: ReplicaStore) {
+        let hubID = hubID
+        let cleaner = alertCleaner
+        workbenchReplica.onSnapshot = { snapshot in
+            Task { @MainActor in await cleaner.clear(hubID: hubID, snapshot: snapshot) }
+        }
+        workbenchReplica.start(store: store)
     }
 
     /// The `device` settings (sealed like every other write: the hub drops a plaintext `device` record) and the

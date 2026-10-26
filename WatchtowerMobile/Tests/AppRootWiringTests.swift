@@ -381,6 +381,21 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(farewellChecks.map(\.hubID), [TestHub.acme, TestHub.home], "each unlink waited for its farewell")
     }
 
+    /// A tapped alert of another Mac brings that hub on screen, then pushes its screen; one of an unknown hub
+    /// opens nothing.
+    func testATappedAlertSwitchesTheHubAndPushesItsRoute() async throws {
+        let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)
+
+        root.open(.session(hubID: TestHub.home, sessionID: 11))
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
+        XCTAssertEqual(root.env.navigation.tab, .workbench)
+        XCTAssertEqual(root.env.navigation.workbenchPath.count, 1, "the switch reset the stack, then the route went on")
+
+        root.open(.ask(hubID: "no-such-hub", askID: 1))
+        XCTAssertEqual(root.env.activeHubID, TestHub.home)
+        XCTAssertEqual(root.env.navigation.alertOnScreen, .session(hubID: TestHub.home, sessionID: 11))
+    }
+
     /// An inactive hub's unlink leaves the hub on screen where it is.
     func testUnlinkingAnInactiveHubKeepsTheActiveOne() async throws {
         let root = try makeRoot(links: [linkRecord(), linkRecord(TestHub.home, macName: "Home Mac")], active: TestHub.acme)

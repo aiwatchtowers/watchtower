@@ -1,4 +1,5 @@
 import Observation
+import SwiftUI
 
 /// A screen pushed on the Calendar tab's stack.
 enum CalendarRoute: Hashable {
@@ -15,6 +16,28 @@ enum CalendarRoute: Hashable {
 final class AppNavigation {
     var tab: RootTabView.Tab = .now
     var calendarPath: [CalendarRoute] = []
+    /// The Workbench tab's stack: a tapped alert pushes its screen here.
+    var workbenchPath = NavigationPath()
+    /// The screen the last alert tap pushed and the stack depth right after, so an alert for the screen still on
+    /// top is not shown again (`AlertDestination.foregroundOptions`).
+    private(set) var openedAlert: (destination: AlertDestination, depth: Int)?
+
+    /// The destination's screen when it is the top of the Workbench tab.
+    var alertOnScreen: AlertDestination? {
+        guard tab == .workbench, let openedAlert, workbenchPath.count == openedAlert.depth else { return nil }
+        return openedAlert.destination
+    }
+
+    /// Selects the Workbench tab and pushes the destination on its stack, from the root.
+    func show(_ destination: AlertDestination) {
+        tab = .workbench
+        workbenchPath = NavigationPath()
+        switch destination {
+        case let .ask(_, askID): workbenchPath.append(AskRoute(id: askID))
+        case let .session(_, sessionID): workbenchPath.append(SessionRoute(id: sessionID))
+        }
+        openedAlert = (destination, workbenchPath.count)
+    }
 
     /// The Calendar tab with the Recordings list on top: one list, never a
     /// stack of them.
@@ -28,5 +51,7 @@ final class AppNavigation {
     /// tabs' own and start over with the tab tree the switch rebuilds.
     func resetStacks() {
         calendarPath = []
+        workbenchPath = NavigationPath()
+        openedAlert = nil
     }
 }

@@ -163,6 +163,8 @@ final class WorkbenchReplicaModel {
     /// The decoded kinds between reads (and the tests' decode counter).
     @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
+    /// Hears every new snapshot (the hub session clears settled alerts from it).
+    @ObservationIgnored var onSnapshot: ((WorkbenchReplicaSnapshot) -> Void)?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "WorkbenchReplicaModel")
 
     /// Re-read when a stamp changes (any kind's write) or the overlay does;
@@ -199,6 +201,7 @@ final class WorkbenchReplicaModel {
             }
         }
         snapshot = value
+        onSnapshot?(value)
         let waiting = value.openAskCount
         if waiting != openAskCount {
             openAskCount = waiting
