@@ -498,7 +498,7 @@ final class ChatLandingViewModelTests: XCTestCase {
         history.load { loaded.fulfill() }
         await fulfillment(of: [loaded], timeout: 5)
         history.selectedConversationID = other
-        XCTAssertTrue(history.sections.flatMap(\.conversations).contains { $0.id == draft })
+        XCTAssertTrue(history.sections.flatMap(\.items).contains { $0.id == draft })
         XCTAssertTrue(ChatLandingPolicy.recents(history.conversations).contains { $0.id == draft })
 
         vm.select(conversationID: draft)

@@ -29,7 +29,7 @@ final class ChatHistoryViewModel {
     /// The history column. A chat with neither a message nor an unsent file
     /// (the Chat landing's draft, an untouched project chat) is listed only
     /// while it is the one selected, i.e. on screen.
-    var sections: [ChatHistorySection] {
+    var sections: [ChatHistorySection<ChatConversation>] {
         let listed = filteredConversations.filter {
             $0.activeLeafMessageID != nil || $0.hasAttachments || $0.id == selectedConversationID
         }
@@ -42,7 +42,7 @@ final class ChatHistoryViewModel {
     /// end. Returns whether the selection moved.
     @discardableResult
     func selectAdjacent(by offset: Int) -> Bool {
-        let ids = sections.flatMap(\.conversations).map(\.id)
+        let ids = sections.flatMap(\.items).map(\.id)
         guard !ids.isEmpty, offset != 0 else { return false }
         let target: Int
         if let current = selectedConversationID, let index = ids.firstIndex(of: current) {

@@ -28,6 +28,11 @@ package enum TimeFormatting {
     /// "2d". Nil for an unreadable stamp.
     package static func shortAge(from isoString: String, now: Date) -> String? {
         guard let date = parseISO(isoString) else { return nil }
+        return shortAge(from: date, now: now)
+    }
+
+    /// `shortAge(from:now:)` for a `Date` (the chat panel's rows).
+    package static func shortAge(from date: Date, now: Date) -> String {
         let interval = now.timeIntervalSince(date)
         if interval < 60 { return "just now" }
         if interval < 3600 { return "\(Int(interval / 60))m" }
