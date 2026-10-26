@@ -158,8 +158,8 @@ struct MicAGC {
 
 /// The owner's mic mute (`AudioRecording.setMicMuted`) as a per-cycle gain
 /// on the mic term. A toggle glides over one IO cycle instead of stepping
-/// (a step is an audible click), landing exactly on the target at the
-/// cycle's last frame, so every cycle after a mute is silent to the bit.
+/// (a step is an audible click), reaching the target by the cycle's last
+/// frame; every cycle after a mute is silent to the bit.
 struct MicMute {
     var muted = false
     private(set) var gain: Float = 1
