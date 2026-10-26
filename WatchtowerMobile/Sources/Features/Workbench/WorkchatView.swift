@@ -126,8 +126,8 @@ struct WorkchatView: View {
         WorkchatModel(
             session: session, chat: chat.chat, snapshot: replica.snapshot, input: input(session, now: now),
             permission: PermissionCardModel.card(for: session, in: replica.snapshot, access: permissions, now: now),
-            macOnline: MacStatus(heartbeat: replica.snapshot.heartbeat, now: now).isOnline, now: now,
-            sentRequestID: permissions.sentRequestID
+            mac: env.macReachability(now: now), now: now,
+            sentRequestID: permissions.sentRequestID, finishDelivery: env.sessionInputs.finishDeliveries[session.id]
         )
     }
 
@@ -149,6 +149,11 @@ struct WorkchatView: View {
     private func content(_ session: TerminalSessionState, _ model: WorkchatModel) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             header(session, model)
+            if let banner = model.banner {
+                MacAwayBannerView(banner: banner)
+                    .padding(.horizontal, Spacing.large)
+                    .padding(.bottom, Spacing.regular)
+            }
             feed(session, model)
         }
     }
@@ -163,9 +168,7 @@ struct WorkchatView: View {
                 .accessibilityAddTraits(.isHeader)
             // Ticks every second; the rest of the screen follows the replica.
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                let asOf = MacStatus(heartbeat: replica.snapshot.heartbeat, now: context.date).isOnline
-                    ? nil : replica.snapshot.heartbeat?.updatedAt
-                StateLine(model: WorkchatModel.stateLine(session, asOf: asOf, now: context.date))
+                StateLine(model: WorkchatModel.stateLine(session, asOf: env.macReachability(now: context.date).asOf, now: context.date))
             }
         }
         .padding(.horizontal, Spacing.large)
@@ -182,12 +185,15 @@ struct WorkchatView: View {
                 }
                 dialog(model, hasOwnLines: !lines.isEmpty)
                 ForEach(chat.sentLines) { line in
-                    ChatBubble(role: .owner, text: line.text, caption: env.sessionInputs.lineDeliveries[line.id]?.caption)
+                    ChatBubble(role: .owner, text: line.text, caption: env.sessionInputs.lineDeliveries[line.id]?.caption(for: session.agent))
                 }
                 ForEach(lines) { PendingLineView(row: $0, onCancel: cancelLine, onDismiss: dismissLine) }
                 ForEach(actions.stopRows + actions.interruptRows) { StopRowView(row: $0, onDismiss: dismissStop) }
                 ForEach(model.answerRows) { AnswerRowView(row: $0, onDismiss: dismissLine) }
                 if let notice = model.answerNotice {
+                    ChatBubble(role: .watchtower, text: notice)
+                }
+                if let notice = model.finishNotice {
                     ChatBubble(role: .watchtower, text: notice)
                 }
                 if let card = model.permission {
@@ -453,6 +459,28 @@ struct WorkchatEntryRow: View {
         [subagent.type.isEmpty ? "Subagent" : subagent.type, subagent.description, SessionChatEntryRow.statusText(subagent.status).lowercased()]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
+    }
+}
+
+/// The Mac away (mockup 8): a moon, "**Your Mac is asleep** · last seen
+/// 12 min ago. New lines go when it wakes." on a gray tint.
+private struct MacAwayBannerView: View {
+    let banner: MacAwayBanner
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+            Image(systemName: "moon.fill").foregroundStyle(.secondary).accessibilityHidden(true)
+            Text(banner.title).fontWeight(.semibold) + Text(banner.detail)
+        }
+        .font(.footnote)
+        .padding(.vertical, Spacing.cozy)
+        .padding(.horizontal, Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            PhoneTone.gray.color.opacity(ChipTint.fillOpacity),
+            in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous)
+        )
+        .accessibilityElement(children: .combine)
     }
 }
 

@@ -13,7 +13,7 @@ final class OrangeToneTests: XCTestCase {
     func testOrangeOnlyOnWaitingAndAskElementsAcrossTheDemoScreens() throws {
         let now = Date()
         let snapshot = try demoSnapshot(now: now)
-        var uses: [ToneUse] = NowModel(snapshot: snapshot, now: now).toneUses
+        var uses: [ToneUse] = NowModel(snapshot: snapshot, linked: true, now: now).toneUses
         for workbench in snapshot.workbenches {
             uses += WorkbenchCardModel(workbench).toneUses
             uses += try XCTUnwrap(WorkbenchMenuModel(workbenchID: workbench.id, snapshot: snapshot, now: now)).toneUses
@@ -87,14 +87,14 @@ final class OrangeToneTests: XCTestCase {
         for status in ["ok", "error", "revoked", "expired", ""] {
             XCTAssertTrue(AccountStatusStyle(status: status).toneUses.allSatisfy { $0.tone != .orange }, "account status \(status)")
         }
-        XCTAssertNotEqual(NowModel(snapshot: snapshot, now: now).macChipTone, .orange)
+        XCTAssertNotEqual(NowModel(snapshot: snapshot, linked: true, now: now).chip.tone, .orange)
         snapshot.heartbeat = HeartbeatPayload(
             updatedAt: now, appVersion: "1.0", hubID: "hub", macName: "Acme Mac", flavor: .default,
             lastPublishAt: now, lastRelayAt: now, relayBacklog: 0, accounts: [],
             enabledAt: now, ownerUser: "_user", sharing: .none
         )
-        XCTAssertNotEqual(NowModel(snapshot: snapshot, now: now).macChipTone, .orange)
-        XCTAssertNotEqual(NowModel(snapshot: snapshot, now: now.addingTimeInterval(800)).macChipTone, .orange)
+        XCTAssertNotEqual(NowModel(snapshot: snapshot, linked: true, now: now).chip.tone, .orange)
+        XCTAssertNotEqual(NowModel(snapshot: snapshot, linked: true, now: now.addingTimeInterval(2_800)).chip.tone, .orange)
     }
 
     /// The calendar draws red (recording), purple (the Mac transcribing),

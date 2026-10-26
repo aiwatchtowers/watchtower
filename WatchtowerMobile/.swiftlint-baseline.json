@@ -195,21 +195,6 @@
     }
   },
   {
-    "text": "            HStack(spacing: 5) {",
-    "violation": {
-      "severity": "error",
-      "location": {
-        "line": 88,
-        "character": 20,
-        "file": "Sources/Features/Now/NowView.swift"
-      },
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleName": "kit_no_raw_metrics",
-      "ruleIdentifier": "kit_no_raw_metrics",
-      "ruleDescription": ""
-    }
-  },
-  {
     "text": "                    .padding(.leading, 34)",
     "violation": {
       "ruleIdentifier": "kit_no_raw_metrics",

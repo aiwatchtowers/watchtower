@@ -70,6 +70,10 @@ struct AgendaView: View {
         )
         return ScrollViewReader { proxy in
             List {
+                // The Mac's status, as on Now (mockup 7).
+                MacStatusChip(model: env.macChip(now: now))
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: Spacing.large, bottom: 0, trailing: Spacing.large))
                 Section {
                     WeekStripView(strip: strip, select: { selectedDay = $0 }, shiftWeek: shiftWeek)
                         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))

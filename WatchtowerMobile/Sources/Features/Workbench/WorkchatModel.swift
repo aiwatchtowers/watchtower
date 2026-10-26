@@ -79,6 +79,12 @@ struct WorkchatModel: Equatable {
     /// "Sent to the session" once the Mac applied this phone's answer.
     let answerNotice: String?
     let composer: ComposerState
+    /// "Your Mac is asleep · …" above the feed while the Mac is not online
+    /// (mockup 8).
+    let banner: MacAwayBanner?
+    /// "Finish · Sent to the session" once the Mac applied this phone's
+    /// Finish, until the next line.
+    let finishNotice: String?
     /// The session's board target, for "Open board target".
     let targetID: Int64?
 
@@ -88,15 +94,18 @@ struct WorkchatModel: Equatable {
         snapshot: WorkbenchReplicaSnapshot,
         input: SessionInputModel,
         permission: PermissionCardModel?,
-        macOnline: Bool,
+        mac: MacReachability,
         now: Date,
-        sentRequestID: Int64? = nil
+        sentRequestID: Int64? = nil,
+        finishDelivery: SessionInputDelivery? = nil
     ) {
         id = session.id
         title = session.title
         workbenchName = snapshot.workbench(session.workbenchID)?.name ?? ""
         targetID = session.targetID
-        stateLine = Self.stateLine(session, asOf: macOnline ? nil : snapshot.heartbeat?.updatedAt, now: now)
+        stateLine = Self.stateLine(session, asOf: mac.asOf, now: now)
+        banner = MacAwayBanner(mac, now: now)
+        finishNotice = finishDelivery.map { "Finish · \($0.resolved(for: session.agent).text)" }
         entries = chat?.entries ?? []
         let asks = snapshot.asks
             .filter { $0.status == .open && $0.sessionID == session.id }
@@ -115,7 +124,7 @@ struct WorkchatModel: Equatable {
             .hidden(input.typingHint)
         } else if let approval = input.approvalText {
             .approval(approval)
-        } else if !macOnline {
+        } else if !mac.isOnline {
             .macAway(BoardWriteText.waitingForMac)
         } else {
             .ready(footnote: SessionInputModel.footnote(session.agent))

@@ -39,7 +39,8 @@ final class WorkchatWiringTests: XCTestCase {
         _ session: TerminalSessionState,
         _ snapshot: WorkbenchReplicaSnapshot,
         typing: Bool = true,
-        chat: SessionChat? = nil
+        chat: SessionChat? = nil,
+        finish: SessionInputDelivery? = nil
     ) -> WorkchatModel {
         let access = PermissionAccess(grant: grant(typing: typing), requested: true)
         let input = SessionInputModel(
@@ -49,7 +50,7 @@ final class WorkchatWiringTests: XCTestCase {
         return WorkchatModel(
             session: session, chat: chat, snapshot: snapshot, input: input,
             permission: PermissionCardModel.card(for: session, in: snapshot, access: access, now: now),
-            macOnline: MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline, now: now
+            mac: .of(heartbeat: snapshot.heartbeat?.updatedAt, linked: true, now: now), now: now, finishDelivery: finish
         )
     }
 
@@ -130,8 +131,8 @@ final class WorkchatWiringTests: XCTestCase {
         try await outbox.applyEcho(echo)
 
         try await poll({ inputs.lineDeliveries[echo.id] != nil }, "the applied echo arrived")
-        XCTAssertEqual(inputs.lineDeliveries[echo.id]?.caption, "Queued · the agent reads it at its next step")
-        XCTAssertEqual(SessionInputDelivery.submitted.caption, "Sent")
+        XCTAssertEqual(inputs.lineDeliveries[echo.id]?.caption(for: .claudeCode), "Queued · the agent reads it at its next step")
+        XCTAssertEqual(SessionInputDelivery.submitted.caption(for: .claudeCode), "Sent")
         XCTAssertEqual(SessionInputModel.heldText(.agentBusy), "Queued · sends when the agent stops")
     }
 
@@ -145,6 +146,63 @@ final class WorkchatWiringTests: XCTestCase {
         XCTAssertEqual(ComposerBarModel(text: "", mode: .message).placeholder, "Message the session…")
         XCTAssertEqual(model(try session(10), replica, typing: false).composer, .hidden(.waitingForMac))
         XCTAssertEqual(model(try session(15, ["live": false, "state_kind": "stopped"]), replica).composer, .hidden(nil))
+    }
+
+    func testAStaleHeartbeatShowsMacAsleepAndHoldsTheComposerCaption() throws {
+        let lastSeen = now.addingTimeInterval(-2_400)
+        let replica = try snapshot(heartbeatAt: lastSeen)
+        let asleep = model(try XCTUnwrap(replica.session(10)), replica)
+
+        XCTAssertEqual(asleep.banner?.title, "Your Mac is asleep")
+        XCTAssertEqual(asleep.banner?.text, "Your Mac is asleep · last seen 40 min ago. New lines go when it wakes.")
+        XCTAssertEqual(asleep.stateLine.visibleText, "Working · running tests · as of 40 min ago")
+        XCTAssertEqual(asleep.composer, .macAway("Waiting for your Mac"))
+        XCTAssertEqual(asleep.composer.bar?.note, "Waiting for your Mac")
+        XCTAssertNil(model(try XCTUnwrap(replica.session(10)), try snapshot()).banner, "no banner while the Mac is online")
+    }
+
+    func testQueuedCaptionOnlyForClaudeSessions() async throws {
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let inputs = SessionInputSender.sending(through: outbox, store: store)
+        let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: AskDraftStore())
+        await outbox.setAppliedObserver(HubSession.appliedObserver(
+            askAnswerer: answerer, sessionStarts: SessionStarter.sending(through: outbox, store: store), sessionInputs: inputs
+        ))
+        try await inputs.send(sessionID: 10, text: "Also bump the version.")
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .applied
+        echo.result = ["delivery": .string("submitted"), "while_busy": .bool(true)]
+        try await outbox.applyEcho(echo)
+
+        try await poll({ inputs.lineDeliveries[echo.id] != nil }, "the applied echo arrived")
+        let delivery = try XCTUnwrap(inputs.lineDeliveries[echo.id])
+        XCTAssertEqual(delivery.caption(for: .claudeCode), "Queued · the agent reads it at its next step")
+        XCTAssertEqual(delivery.caption(for: .codexCLI), "Sent", "send while busy is Claude's only (PROJ-16)")
+    }
+
+    func testAnAppliedFinishSaysWhereItWent() async throws {
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        let inputs = SessionInputSender.sending(through: outbox, store: store)
+        let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: AskDraftStore())
+        await outbox.setAppliedObserver(HubSession.appliedObserver(
+            askAnswerer: answerer, sessionStarts: SessionStarter.sending(through: outbox, store: store), sessionInputs: inputs
+        ))
+        try await inputs.finish(sessionID: 10)
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .applied
+        echo.result = ["delivery": .string("submitted")]
+        try await outbox.applyEcho(echo)
+
+        try await poll({ inputs.finishDeliveries[10] != nil }, "the applied finish arrived")
+        let replica = try snapshot()
+        let workchat = model(try XCTUnwrap(replica.session(10)), replica, finish: inputs.finishDeliveries[10])
+        XCTAssertEqual(workchat.finishNotice, "Finish · Sent to the session")
+        XCTAssertNil(model(try XCTUnwrap(replica.session(10)), replica).finishNotice)
+
+        try await inputs.send(sessionID: 10, text: "One more thing.")
+        XCTAssertNil(inputs.finishDeliveries[10], "a new line clears the finish notice")
     }
 
     func testSubagentScreenHasNoComposer() {

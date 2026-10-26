@@ -14,6 +14,16 @@ A Claude Code session takes your line while it works and reads it at its next st
 
 ## Using it
 
+### Now and sessions
+
+**Now** starts with your Mac: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
+
+- **Waiting for you**, newest first across workbenches: asks (a question with suggested answers takes one tap), permission prompts, and sessions that stopped or failed. The first 20 show; the rest are **N more on your Mac**.
+- **Working**: sessions whose agent is working, each with its timer.
+- **Next meeting**, with **Record**.
+
+A workbench opens on its sessions in the Mac's sessions panel order: **Waiting for you**, **Working**, **Ready to check**, **Not running**, then **N finished** folded. **N closed** at the end holds answered asks.
+
 ### Follow a session
 
 Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start, and a subagent row opens that subagent's own chat, which is read-only.
@@ -39,7 +49,7 @@ The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interru
 
 - **Asking your Mac…** then **Your Mac has not sent this chat yet. Is it awake?**: the Mac is asleep or offline; the chat appears once it answers.
 - **Unlock this iPhone to see the chat.**: the chat is sealed until the phone is unlocked.
-- **Waiting for your Mac** under your line, and a state line that reads **as of 12 min ago**: the Mac is not online. The line goes when it is back.
+- **Your Mac is asleep · last seen 40 min ago. New lines go when it wakes.** above the chat, **Waiting for your Mac** under the field and your line, and a state line that reads **as of 40 min ago**: the Mac has not checked in for over 35 minutes. The line goes when it is back.
 - **Answer the request above** or **Needs approval on the Mac** instead of the field: the agent waits on a permission prompt, and nothing else goes to it until that is answered.
 - No field at all: typing is off for this phone; the bar says why, with **Turn On**.
 
