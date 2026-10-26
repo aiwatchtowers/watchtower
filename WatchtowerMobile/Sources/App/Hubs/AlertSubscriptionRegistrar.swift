@@ -95,7 +95,7 @@ final class AlertSubscriptionRegistrar {
 enum WorkAlertsCopy {
     static let title = "When work stops"
     static let footer = "Asks, approvals and finished or failed sessions, only while you're away from your Mac."
-    static let sharedFootnote = "Alerts may be late on this phone."
+    static let sharedFootnote = "Alerts don't reach a phone on another Apple ID yet."
 
     static func footer(anyShared: Bool) -> String {
         anyShared ? "\(footer) \(sharedFootnote)" : footer
