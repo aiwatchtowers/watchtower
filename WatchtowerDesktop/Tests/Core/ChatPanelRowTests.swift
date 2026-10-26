@@ -61,33 +61,53 @@ final class ChatPanelRowTests: XCTestCase {
 
     // MARK: second line
 
+    private func line(_ text: String, _ age: String? = nil) -> ChatPanelSecondLine {
+        ChatPanelSecondLine(text: text, age: age)
+    }
+
     func testSecondLineAnsweringAndWaiting() throws {
         let pending = try row(pending: 2, tool: "create_target", project: "Project A")
-        XCTAssertEqual(ChatPanelRowState.answering.secondLine(for: pending, now: now, showsProject: true), "Answering…")
+        XCTAssertEqual(ChatPanelRowState.answering.secondLine(for: pending, now: now, showsProject: true), line("Answering…"))
         XCTAssertEqual(ChatPanelRowState.waitingForApproval.secondLine(for: pending, now: now, showsProject: true),
-                       "Waiting for approval: \(ReactionToolCatalog.title(for: "create_target"))")
+                       line("Waiting for approval: \(ReactionToolCatalog.title(for: "create_target"))"))
         let noTool = try row(pending: 1, tool: nil)
         XCTAssertEqual(ChatPanelRowState.waitingForApproval.secondLine(for: noTool, now: now, showsProject: false),
-                       "Waiting for approval")
+                       line("Waiting for approval"))
+    }
+
+    /// The tool is named as its approval card names it, never by its id.
+    func testWaitingNamesTheToolByItsCardTitleOrNotAtAll() throws {
+        let connector = try row(pending: 1, tool: ConnectorCallProposal.tool)
+        XCTAssertEqual(ChatPanelRowState.waitingForApproval.secondLine(for: connector, now: now, showsProject: false),
+                       line("Waiting for approval: Use a claude.ai connector"))
+        let unknown = try row(pending: 1, tool: "some_future_tool")
+        XCTAssertEqual(ChatPanelRowState.waitingForApproval.secondLine(for: unknown, now: now, showsProject: false),
+                       line("Waiting for approval"))
     }
 
     func testSecondLinePreviewAgeAndProject() throws {
         let inProject = try row(preview: "Done.", project: "Project A")
         XCTAssertEqual(ChatPanelRowState.read.secondLine(for: inProject, now: now, showsProject: true),
-                       "Project A · Done. · 2h")
+                       line("Project A · Done.", "2h"))
         XCTAssertEqual(ChatPanelRowState.unread.secondLine(for: inProject, now: now, showsProject: false),
-                       "Done. · 2h")
+                       line("Done.", "2h"))
         let plain = try row(answeredAgo: 4 * 86_400, preview: "Done.")
-        XCTAssertEqual(ChatPanelRowState.read.secondLine(for: plain, now: now, showsProject: true), "Done. · 4d")
+        let shown = ChatPanelRowState.read.secondLine(for: plain, now: now, showsProject: true)
+        XCTAssertEqual(shown, line("Done.", "4d"))
+        XCTAssertEqual(shown.ageLabel, "· 4d")
+        XCTAssertEqual(shown.joined, "Done. · 4d")
     }
 
     /// No answer yet: only the age, of the chat itself (three days here).
     func testSecondLineWithoutAnswerShowsOnlyTheAge() throws {
         let fresh = try row(answeredAgo: nil, preview: "")
-        XCTAssertEqual(ChatPanelRowState.read.secondLine(for: fresh, now: now, showsProject: true), "3d")
+        let shown = ChatPanelRowState.read.secondLine(for: fresh, now: now, showsProject: true)
+        XCTAssertEqual(shown, line("", "3d"))
+        XCTAssertEqual(shown.ageLabel, "3d")
+        XCTAssertEqual(shown.joined, "3d")
         let inProject = try row(answeredAgo: nil, preview: "", project: "Project A")
         XCTAssertEqual(ChatPanelRowState.read.secondLine(for: inProject, now: now, showsProject: true),
-                       "Project A · 3d")
+                       line("Project A", "3d"))
     }
 
     // MARK: preview

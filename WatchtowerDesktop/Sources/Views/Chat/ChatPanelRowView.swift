@@ -10,7 +10,7 @@ struct ChatPanelRowView<Accessory: View>: View {
     let row: ChatPanelRow
     let state: ChatPanelRowState
     /// The second line (`ChatPanelRowState.secondLine`).
-    let secondLine: String
+    let secondLine: ChatPanelSecondLine
     @ViewBuilder let accessory: () -> Accessory
 
     var body: some View {
@@ -24,11 +24,23 @@ struct ChatPanelRowView<Accessory: View>: View {
                     .fontWeight(row.isUnread ? .semibold : .regular)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(secondLine)
-                    .font(.caption2)
-                    .foregroundStyle(state.secondLineStyle)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                // A long preview is cut; its age after it never is.
+                HStack(spacing: Spacing.small) {
+                    if !secondLine.text.isEmpty {
+                        Text(secondLine.text)
+                            .font(.caption2)
+                            .foregroundStyle(state.secondLineStyle)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    if let age = secondLine.ageLabel {
+                        Text(age)
+                            .font(.caption2)
+                            .foregroundStyle(state.secondLineStyle)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+                }
             }
             Spacer(minLength: 0)
             accessory()
@@ -39,7 +51,7 @@ struct ChatPanelRowView<Accessory: View>: View {
 }
 
 extension ChatPanelRowView where Accessory == EmptyView {
-    init(row: ChatPanelRow, state: ChatPanelRowState, secondLine: String) {
+    init(row: ChatPanelRow, state: ChatPanelRowState, secondLine: ChatPanelSecondLine) {
         self.init(row: row, state: state, secondLine: secondLine) { EmptyView() }
     }
 }

@@ -126,7 +126,11 @@ final class ChatPanelRowViewTests: XCTestCase {
         XCTAssertEqual(try waitingLine.attributes().foregroundColor(), Tone.warning)
         let answeringLine = try view(answering).inspect().find(text: "Answering…")
         XCTAssertEqual(try answeringLine.attributes().foregroundColor(), .accentColor)
-        XCTAssertNoThrow(try view(read).inspect().find(ViewType.Text.self) { try $0.string().hasPrefix("read one answer · ") })
+        // The preview and its age are two texts: a long preview is cut, its age never.
+        let preview = try view(read).inspect().find(text: "read one answer")
+        XCTAssertEqual(try preview.lineLimit(), 1)
+        let age = try view(read).inspect().find(ViewType.Text.self) { try $0.string().hasPrefix("· ") }
+        XCTAssertNoThrow(try age.fixedSize())
     }
 
     /// A pending proposal outranks a live turn: the row waits for the owner.
@@ -203,10 +207,10 @@ final class ChatPanelRowViewTests: XCTestCase {
         }
         let history = await history()
         let sidebar = sidebar(history)
-        XCTAssertNoThrow(try sidebar.inspect().find(ViewType.Text.self) { try $0.string().hasPrefix("acme · planning answer · ") })
+        XCTAssertNoThrow(try sidebar.inspect().find(text: "acme · planning answer"))
 
         history.selectLevel(.project(projectID))
-        XCTAssertNoThrow(try sidebar.inspect().find(ViewType.Text.self) { try $0.string().hasPrefix("planning answer · ") })
+        XCTAssertNoThrow(try sidebar.inspect().find(text: "planning answer"))
         XCTAssertThrowsError(try sidebar.inspect().find(ViewType.Text.self) { try $0.string().hasPrefix("acme · ") })
     }
 }
