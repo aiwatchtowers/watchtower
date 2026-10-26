@@ -148,6 +148,7 @@
 		B4A66F05DE7C4B0EDB09BC6A /* HubRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39F534AB8FCE553B8BC57C4D /* HubRegistry.swift */; };
 		B4FA44EE0DD4DE0608F96849 /* LinkFailure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 004FC7832564F980605115E3 /* LinkFailure.swift */; };
 		B521C0A7CE08614B0B07701E /* RootTabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E0130D4D7506019B5820AB5 /* RootTabTests.swift */; };
+		B5CC3D2F94F0DAF760917509 /* SheetFields.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D32DD2E12439637BC13F46C /* SheetFields.swift */; };
 		B9B674ED85033FEC7C980E90 /* DesignSystemPartsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F6A20D265102417FF1AB618 /* DesignSystemPartsTests.swift */; };
 		BA607823AC1A146724C0F666 /* AgendaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D576A6CEC011983BF063A3B7 /* AgendaView.swift */; };
 		BB09A6BF6F1DDFEFA3D4EE89 /* MetricHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56918895035C3877F703E1A9 /* MetricHistory.swift */; };
@@ -356,6 +357,7 @@
 		8AE856C04E56DC5BC73E2622 /* MultiHubEnvironmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiHubEnvironmentTests.swift; sourceTree = "<group>"; };
 		8C16B55E71B360AC75DB5207 /* MacsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacsModelTests.swift; sourceTree = "<group>"; };
 		8CE5870D1C2DF528494FD4A0 /* HubSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSession.swift; sourceTree = "<group>"; };
+		8D32DD2E12439637BC13F46C /* SheetFields.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetFields.swift; sourceTree = "<group>"; };
 		8D4AE5C921A6AC94DFAB6997 /* LinkSeams.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkSeams.swift; sourceTree = "<group>"; };
 		8E07C17598ED48BD297EF162 /* TypeScale.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypeScale.swift; sourceTree = "<group>"; };
 		8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderTests.swift; sourceTree = "<group>"; };
@@ -691,6 +693,7 @@
 				9A806A63CB29EB2AAA0A4132 /* SessionInputSender.swift */,
 				632B2CCD45974D7A72711DA9 /* SessionStarter.swift */,
 				3CE2AFF40128A95677A48428 /* SessionStartModels.swift */,
+				8D32DD2E12439637BC13F46C /* SheetFields.swift */,
 				BB2B9F86CF3089D68AE6D92D /* StartSessionFormModel.swift */,
 				AB2EA3DB88312AF8F548C2C0 /* StartSessionSheet.swift */,
 				4673C1CEA0854A241126E600 /* TellSessionBar.swift */,
@@ -1145,6 +1148,7 @@
 				3B22414D2DC93304FBB9F14A /* SettingsCard.swift in Sources */,
 				51B012D3BEEDE7C564291497 /* SettingsView.swift in Sources */,
 				EA24F0F9A7FA7AC5481E8A53 /* SettingsViewModel.swift in Sources */,
+				B5CC3D2F94F0DAF760917509 /* SheetFields.swift in Sources */,
 				09617116645C4C21D6186218 /* StartSessionFormModel.swift in Sources */,
 				645E4C039AA033B8351C973D /* StartSessionSheet.swift in Sources */,
 				9191FD86BB27AD1B521425EE /* StateLine.swift in Sources */,

@@ -135,81 +135,6 @@
     }
   },
   {
-    "text": "        VStack(alignment: .leading, spacing: 3) {",
-    "violation": {
-      "location": {
-        "line": 275,
-        "file": "Sources/Features/Workbench/BoardTargetDetailView.swift",
-        "character": 37
-      },
-      "ruleDescription": "",
-      "ruleName": "kit_no_raw_metrics",
-      "severity": "error",
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleIdentifier": "kit_no_raw_metrics"
-    }
-  },
-  {
-    "text": "        VStack(alignment: .leading, spacing: 8) {",
-    "violation": {
-      "severity": "error",
-      "ruleIdentifier": "kit_no_raw_metrics",
-      "ruleName": "kit_no_raw_metrics",
-      "ruleDescription": "",
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "location": {
-        "line": 11,
-        "file": "Sources/Features/Workbench/ConflictPrompt.swift",
-        "character": 37
-      }
-    }
-  },
-  {
-    "text": "            HStack(spacing: 12) {",
-    "violation": {
-      "ruleName": "kit_no_raw_metrics",
-      "ruleDescription": "",
-      "location": {
-        "character": 20,
-        "file": "Sources/Features/Workbench/ConflictPrompt.swift",
-        "line": 13
-      },
-      "ruleIdentifier": "kit_no_raw_metrics",
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "severity": "error"
-    }
-  },
-  {
-    "text": "        .padding(.vertical, 4)",
-    "violation": {
-      "ruleDescription": "",
-      "location": {
-        "character": 9,
-        "file": "Sources/Features/Workbench/ConflictPrompt.swift",
-        "line": 24
-      },
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleName": "kit_no_raw_metrics",
-      "severity": "error",
-      "ruleIdentifier": "kit_no_raw_metrics"
-    }
-  },
-  {
-    "text": "        VStack(alignment: .leading, spacing: 4) {",
-    "violation": {
-      "ruleName": "kit_no_raw_metrics",
-      "severity": "error",
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleIdentifier": "kit_no_raw_metrics",
-      "location": {
-        "file": "Sources/Features/Workbench/ConflictPrompt.swift",
-        "character": 37,
-        "line": 37
-      },
-      "ruleDescription": ""
-    }
-  },
-  {
     "text": "            LazyVStack(spacing: 10) {",
     "violation": {
       "ruleIdentifier": "kit_no_raw_metrics",
@@ -871,21 +796,6 @@
   },
   {
     "violation": {
-      "ruleIdentifier": "kit_no_raw_metrics",
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleName": "kit_no_raw_metrics",
-      "location": {
-        "file": "Sources/Features/Workbench/StartSessionSheet.swift",
-        "character": 49,
-        "line": 120
-      },
-      "ruleDescription": "",
-      "severity": "error"
-    },
-    "text": "                    VStack(alignment: .leading, spacing: 2) {"
-  },
-  {
-    "violation": {
       "location": {
         "character": 16,
         "line": 8,
@@ -898,21 +808,6 @@
       "severity": "error"
     },
     "text": "        HStack(spacing: 4) {"
-  },
-  {
-    "violation": {
-      "ruleDescription": "",
-      "ruleName": "kit_no_raw_metrics",
-      "ruleIdentifier": "kit_no_raw_metrics",
-      "severity": "error",
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "location": {
-        "line": 106,
-        "file": "Sources/Features/Workbench/WorkbenchListView.swift",
-        "character": 28
-      }
-    },
-    "text": "                    HStack(spacing: 3) {"
   },
   {
     "violation": {

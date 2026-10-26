@@ -56,6 +56,8 @@ struct BoardRowModel: Equatable, Identifiable {
     let progressTone = PhoneTone.green
     /// A done target shown for context under Open: drawn greyed.
     let isDimmed: Bool
+    /// The Desktop's board card for this target (mockup 5).
+    let card: BoardCardModel
 
     init(_ target: WorkbenchTarget, snapshot: WorkbenchReplicaSnapshot) {
         id = target.id
@@ -94,6 +96,13 @@ struct BoardRowModel: Equatable, Identifiable {
             details.append(BoardDetail(text: target.pr.allSatisfy(\.isNumber) ? "PR #\(target.pr)" : "PR", tone: .secondary, role: .info))
         }
         self.details = details
+        let doneChildren = snapshot.targets.filter { $0.parentID == target.id && $0.status == .done }.count
+        card = BoardCardModel(
+            number: target.id, title: target.text, status: target.status, statusText: statusText, priority: target.priority,
+            counter: target.childrenCount > 0 ? "\(doneChildren)/\(target.childrenCount)" : nil,
+            progress: progressValue,
+            liveSessions: sessions.filter { [.working, .running].contains($0.stateKind) }.count
+        )
     }
 
     /// The Mac's status glyph and tone (`TargetStatusStyle`, design pass

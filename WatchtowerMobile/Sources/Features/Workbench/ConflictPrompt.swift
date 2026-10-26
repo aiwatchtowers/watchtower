@@ -1,64 +1,64 @@
 import SwiftUI
 
 /// "Changed on the Mac to X — apply anyway?" with Yes (send again over the
-/// Mac's value) and No (drop the change).
+/// Mac's value) and No (drop the change): the design system's prominent and
+/// secondary buttons sharing the width.
 struct ConflictPrompt: View {
     let prompt: String
     let onYes: () -> Void
     let onNo: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(prompt).font(.subheadline)
-            HStack(spacing: 12) {
+            HStack(spacing: Spacing.medium) {
                 Button("Yes", action: onYes)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(ProminentActionStyle())
                     .accessibilityLabel("Yes, apply anyway")
                 Button("No", role: .cancel, action: onNo)
-                    .buttonStyle(.bordered)
+                    .buttonStyle(SecondaryActionStyle())
                     .accessibilityLabel("No, keep the Mac's value")
             }
-            // Large size: each button itself is at least 44 pt tall.
-            .controlSize(.large)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Spacing.small)
     }
 }
 
 /// One of the phone's board writes the Mac has not applied: its request,
 /// then "Sending…" / "Waiting for your Mac", the Mac's refusal with
-/// Dismiss, or the conflict prompt.
+/// Dismiss, or the conflict prompt. Flat: the caller puts it on a card.
 struct BoardWriteRowView: View {
     let row: BoardWriteRow
     let onApplyAnyway: (BoardWriteRow) -> Void
     let onDismiss: (BoardWriteRow) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(row.title).font(.subheadline)
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            Text(row.title).font(TypeScale.rowTitle)
             switch row.state {
             case let .sending(caption):
                 Label(caption, systemImage: "clock")
-                    .font(.caption)
+                    .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
             case let .failed(message):
                 HStack(alignment: .firstTextBaseline) {
                     Text(message)
-                        .font(.caption)
+                        .font(TypeScale.meta)
                         .foregroundStyle(PhoneTone.red.color)
-                    Spacer(minLength: 8)
+                    Spacer(minLength: Spacing.regular)
                     Button { onDismiss(row) } label: {
                         Text("Dismiss")
-                            .frame(minHeight: 44)
+                            .frame(minHeight: PhoneMetrics.minTouch)
                             .contentShape(Rectangle())
                     }
-                    .font(.caption)
+                    .font(TypeScale.meta)
                     .accessibilityLabel("Dismiss the failed change")
                 }
             case let .conflict(prompt):
                 ConflictPrompt(prompt: prompt, onYes: { onApplyAnyway(row) }, onNo: { onDismiss(row) })
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .buttonStyle(.borderless)
     }
 }
