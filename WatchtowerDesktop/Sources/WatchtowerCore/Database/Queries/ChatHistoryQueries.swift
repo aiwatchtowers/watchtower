@@ -45,7 +45,7 @@ package enum ChatHistoryQueries {
     /// chat without a leaf has no branches and reads every message, as
     /// `ChatTreeQueries` does. Message ids grow from parent to child, so the
     /// newest answer on the path is its largest id.
-    private static func lastAnswerCTE(listed predicate: String) -> String {
+    package static func lastAnswerCTE(listed predicate: String) -> String {
         """
         WITH RECURSIVE listed AS (
             SELECT * FROM chat_conversations WHERE \(predicate)

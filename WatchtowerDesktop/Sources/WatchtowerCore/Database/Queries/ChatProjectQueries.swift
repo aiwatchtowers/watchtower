@@ -23,6 +23,33 @@ package enum ChatProjectQueries {
             """)
     }
 
+    /// One row per active project for the Chats project switcher: latest
+    /// standalone chat `updated_at` (else the project's own), the chats with
+    /// an unread answer and the pending approvals — the same definitions as
+    /// `ChatHistoryQueries.panelRows` (`ChatPanelRow.isUnread`). Answering
+    /// counts come from the pool at render time. Unsorted.
+    package static func switcherSummaries(_ db: Database) throws -> [ChatProjectSwitcherPresentation.Summary] {
+        let rows = try Row.fetchAll(db, sql: """
+            \(ChatHistoryQueries.lastAnswerCTE(listed: "context_type IS NULL AND archived_at IS NULL AND project_id IS NOT NULL"))
+            SELECT p.id, p.name,
+                COALESCE((SELECT MAX(c.updated_at) FROM listed c WHERE c.project_id = p.id), p.updated_at) AS last_activity,
+                (SELECT COUNT(*) FROM listed c
+                 JOIN last_answer la ON la.conversation_id = c.id
+                 JOIN chat_messages answer ON answer.id = la.message_id
+                 WHERE c.project_id = p.id AND (c.read_at IS NULL OR answer.created_at > c.read_at)) AS unread,
+                (SELECT COUNT(*) FROM agent_actions x JOIN listed c ON c.id = x.conversation_id
+                 WHERE c.project_id = p.id AND x.status = 'pending') AS waiting
+            FROM chat_projects p WHERE p.archived_at IS NULL
+            """)
+        return rows.map {
+            ChatProjectSwitcherPresentation.Summary(
+                id: $0["id"], name: $0["name"],
+                lastActivity: Date(timeIntervalSince1970: $0["last_activity"]),
+                unreadCount: $0["unread"], waitingCount: $0["waiting"]
+            )
+        }
+    }
+
     package static func fetchByID(_ db: Database, id: Int64) throws -> ChatProject? {
         try ChatProject.fetchOne(db, sql: "SELECT * FROM chat_projects WHERE id = ?", arguments: [id])
     }
