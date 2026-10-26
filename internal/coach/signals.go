@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -313,15 +312,20 @@ func currentTexts(d *db.DB) ([]CurrentText, error) {
 		if len(adds) == 0 && id != prompts.SpecReview {
 			continue // the spec reviewer is always shown: it is the main target
 		}
-		lines := make([]string, len(adds))
-		for i, a := range adds {
-			lines[i] = a.Text
-		}
 		out = append(out, CurrentText{Destination: DestPromptAdd, PromptID: id,
-			Text: strings.Join(lines, "\n"), Budget: prompts.MaxAdditionRunes})
+			Text: joinAdditions(adds), Budget: prompts.MaxAdditionRunes})
 	}
 	out = append(out, CurrentText{Destination: DestSettingsAllow, Text: strings.Join(readAllowList(), "\n")})
 	return out, nil
+}
+
+// joinAdditions is a prompt's additions as one text, one per line.
+func joinAdditions(adds []db.PromptAddition) string {
+	lines := make([]string, len(adds))
+	for i, a := range adds {
+		lines[i] = a.Text
+	}
+	return strings.Join(lines, "\n")
 }
 
 // readAllowList reads permissions.allow of ~/.claude/settings.json, read-only.
@@ -332,23 +336,11 @@ func readAllowList() []string {
 	if err != nil || home == "" {
 		return nil
 	}
-	path := filepath.Join(home, ".claude", "settings.json")
-	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
-		return nil
-	}
-	raw, err := os.ReadFile(path)
+	rules, err := readAllowRules(claudeSettingsPath(home))
 	if err != nil {
 		return nil
 	}
-	var s struct {
-		Permissions struct {
-			Allow []string `json:"allow"`
-		} `json:"permissions"`
-	}
-	if json.Unmarshal(raw, &s) != nil {
-		return nil
-	}
-	return s.Permissions.Allow
+	return rules
 }
 
 func loadProposals(d *db.DB, in *Inputs) error {

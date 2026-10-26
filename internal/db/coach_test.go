@@ -50,14 +50,16 @@ func TestCoachProposal_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, n)
 
-	require.NoError(t, d.MarkCoachAccepted(id, 2.5, 4, now.Add(time.Hour)))
+	base := 2.5
+	require.NoError(t, d.MarkCoachAccepted(id, "after edited", &base, 4, now.Add(time.Hour)))
 	acc, err := d.ListCoachProposals("accepted")
 	require.NoError(t, err)
 	require.Len(t, acc, 1)
 	require.NotNil(t, acc[0].Baseline)
 	assert.Equal(t, 2.5, *acc[0].Baseline)
 	assert.Equal(t, 4, acc[0].BaselineN)
-	assert.Error(t, d.MarkCoachAccepted(id, 1, 1, now), "only from open")
+	assert.Equal(t, "after edited", acc[0].AfterText)
+	assert.Error(t, d.MarkCoachAccepted(id, "x", nil, 1, now), "only from open")
 
 	v := 1.0
 	require.NoError(t, d.SetCoachVerdict(id, "works", &v, now.Add(2*time.Hour)))
@@ -129,6 +131,36 @@ func TestPromptAdditions_OrderAndDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "second", got[0].Text)
+}
+
+func TestEditPromptAdditions_OneTransaction(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	p1, err := d.InsertCoachProposal(coachFixture("e1"), now)
+	require.NoError(t, err)
+	keep, err := d.AddPromptAddition("briefing", "keep", 0, now)
+	require.NoError(t, err)
+	drop, err := d.AddPromptAddition("briefing", "drop", p1, now)
+	require.NoError(t, err)
+	other, err := d.AddPromptAddition("other", "x", 0, now)
+	require.NoError(t, err)
+
+	added, err := d.EditPromptAdditions("briefing", []int64{drop}, []PromptAddition{{Text: "new", ProposalID: p1}}, now)
+	require.NoError(t, err)
+	require.Len(t, added, 1)
+	got, err := d.ListPromptAdditions("briefing")
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, keep, got[0].ID)
+	assert.Equal(t, "new", got[1].Text)
+	assert.Equal(t, p1, got[1].ProposalID)
+
+	// A row of another prompt refuses the whole edit: nothing is added.
+	_, err = d.EditPromptAdditions("briefing", []int64{other}, []PromptAddition{{Text: "never"}}, now)
+	require.ErrorIs(t, err, ErrCoachStateChanged)
+	got, err = d.ListPromptAdditions("briefing")
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
 }
 
 func TestFirstRoundSpecFindings_SkipsFollowUpsAndUncounted(t *testing.T) {

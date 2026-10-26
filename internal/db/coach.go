@@ -234,11 +234,17 @@ func (db *DB) DecideCoachProposal(id int64, from, to string, now time.Time) erro
 	return coachCAS(res, err, "deciding coach proposal")
 }
 
-// MarkCoachAccepted accepts an open proposal and stores the metric baseline
-// (and the number of observations behind it) measured at that moment.
-func (db *DB) MarkCoachAccepted(id int64, baseline float64, n int, now time.Time) error {
-	res, err := db.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, baseline = ?, baseline_n = ?
-		WHERE id = ? AND status = 'open'`, coachStamp(now), baseline, n, id)
+// MarkCoachAccepted accepts an open proposal: it stores the destination text
+// as written (after, which may be the owner's edit of the proposed text) and
+// the metric baseline with the number of observations behind it, measured at
+// that moment. A nil baseline (nothing measurable) is stored as NULL.
+func (db *DB) MarkCoachAccepted(id int64, after string, baseline *float64, n int, now time.Time) error {
+	var b any
+	if baseline != nil {
+		b = *baseline
+	}
+	res, err := db.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, after_text = ?,
+		baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`, coachStamp(now), after, b, n, id)
 	return coachCAS(res, err, "accepting coach proposal")
 }
 
@@ -305,6 +311,46 @@ func (db *DB) DeletePromptAdditionsOf(proposalID int64) error {
 		return fmt.Errorf("deleting prompt additions: %w", err)
 	}
 	return nil
+}
+
+// EditPromptAdditions removes the given rows of one prompt and adds rows, in
+// one transaction; each added row keeps its own ProposalID (0 = none). It
+// returns the ids of the added rows. A remove id that is not a row of
+// promptID refuses the whole edit.
+func (db *DB) EditPromptAdditions(promptID string, removeIDs []int64, add []PromptAddition, now time.Time) ([]int64, error) {
+	var added []int64
+	err := db.WithTx(func(tx *sql.Tx) error {
+		for _, id := range removeIDs {
+			res, err := tx.Exec(`DELETE FROM prompt_additions WHERE id = ? AND prompt_id = ?`, id, promptID)
+			if err != nil {
+				return fmt.Errorf("removing prompt addition %d: %w", id, err)
+			}
+			if err := requireAffected(res, fmt.Errorf("prompt addition %d: %w", id, ErrCoachStateChanged)); err != nil {
+				return err
+			}
+		}
+		for _, a := range add {
+			var pid any
+			if a.ProposalID != 0 {
+				pid = a.ProposalID
+			}
+			res, err := tx.Exec(`INSERT INTO prompt_additions (prompt_id, text, proposal_id, created_at) VALUES (?, ?, ?, ?)`,
+				promptID, a.Text, pid, coachStamp(now))
+			if err != nil {
+				return fmt.Errorf("adding prompt addition: %w", err)
+			}
+			id, err := res.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("adding prompt addition: %w", err)
+			}
+			added = append(added, id)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return added, nil
 }
 
 // FirstRoundSpecFindings sums the counted findings (spec_reviews.findings >= 0)
