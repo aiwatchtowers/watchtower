@@ -288,7 +288,9 @@ final class RelayProcessor: Sendable {
                 self.lastActivity.withLock { $0 = self.now() }
                 // The phone says when it was last in touch (`seen_at`); an unlink is no contact, a replayed old
                 // record is not contact now.
-                if payload.unlinked != true { self.noteContact(min(payload.seenAt ?? payload.updatedAt, self.now())) }
+                if payload.unlinked != true, (try? self.admitsDevice(payload.deviceID, origin: origin)) == true {
+                    self.noteContact(min(payload.seenAt ?? payload.updatedAt, self.now()))
+                }
                 try await deviceRecords.handle(record)
             }, budgeted: false)
         case RelayRecordKind.hello.rawValue:

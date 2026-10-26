@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import IOKit.pwr_mgt
 import os
 import WatchtowerCore
@@ -77,6 +78,13 @@ final class KeepAwakeCompanion: HubCompanion, @unchecked Sendable {
         self.liveBoardSessions = liveBoardSessions
         self.lastPhoneContact = lastPhoneContact
         self.now = now
+    }
+
+    /// Live board sessions: the workbenches with a live agent session (plain shells never count), by the
+    /// slice's own query.
+    static func liveBoardSessions(_ pool: DatabasePool, liveIDs: Set<Int64>) -> Int {
+        guard !liveIDs.isEmpty else { return 0 }
+        return (try? pool.read { try TerminalSessionSlice.liveWorkbenchIDs($0, liveIDs: liveIDs).count }) ?? 0
     }
 
     func evaluate() async {

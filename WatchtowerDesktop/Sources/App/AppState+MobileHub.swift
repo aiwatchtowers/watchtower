@@ -114,7 +114,7 @@ extension AppState {
         let keepAwake = KeepAwakeCompanion(
             assertion: MacAwakeAssertion(),
             enabled: { defaults.object(forKey: Constants.mobileKeepAwakeKey) as? Bool ?? true },
-            liveBoardSessions: { liveness.current.liveIDs.count },
+            liveBoardSessions: { KeepAwakeCompanion.liveBoardSessions(dbPool, liveIDs: liveness.current.liveIDs) },
             lastPhoneContact: { hasPhone() ? sidecar.lastPhoneContact() : nil }
         )
         let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, chats, inputs]

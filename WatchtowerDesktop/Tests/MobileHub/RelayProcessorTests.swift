@@ -127,6 +127,27 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(sidecar.lastPhoneContact(), seen, "an older time never lowers the stamp")
     }
 
+    func testARemovedPhonesDeviceRecordStampsNoContactWhileAnotherPhoneIsLinked() async throws {
+        let now = Date()
+        let payload = DevicePayload(
+            deviceID: testPhoneID, name: "iPhone", model: "iPhone18,1", appVersion: "0.0.0-test", scope: .private,
+            userRecordName: "_owner-acme", typingRequested: false, startSessions: true, seenAt: now, updatedAt: now
+        )
+        try await transport.save([try TestRelayPhone.seal(try CloudRecordFactory.record(for: payload, modifiedAt: now))])
+        try await sidecar.queue.write { try $0.execute(sql: "DELETE FROM devices WHERE device_id = ? COLLATE NOCASE", arguments: [testPhoneID]) }
+        try sidecar.linkTestDevice(UUID().uuidString)
+        let clock: @Sendable () -> Date = { now }
+        let records = RelayProcessor.DeviceRecords { _ in }
+        let processor = RelayProcessor(
+            transport: testSecureTransport(transport, keys: hubKeys), sidecar: sidecar, dispatcher: dispatcher,
+            hubID: "hub-acme", deviceRecords: records, now: clock
+        )
+
+        _ = try await processor.processOnce()
+
+        XCTAssertNil(sidecar.lastPhoneContact())
+    }
+
     // MARK: - Key-authenticated phones (mobile E2E spec §2.2, D4, D9, D10)
 
     /// A plain probe from `deviceID`, `createdAt` = `created`.

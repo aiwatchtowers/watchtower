@@ -1,7 +1,9 @@
 import Foundation
 import XCTest
 @testable import WatchtowerDesktop
+import GRDB
 import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 final class MacAwakeAssertionTests: XCTestCase {
@@ -69,5 +71,19 @@ final class MacAwakeAssertionTests: XCTestCase {
         companion.stop()
         XCTAssertFalse(assertion.isHolding)
         XCTAssertEqual(power.released, [1])
+    }
+
+    func testALiveShellAloneIsNotABoardSession() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let (shell, agent) = try pool.write { db -> (Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            return (
+                try SliceSeed.insertSession(db, projectID: project, kind: "shell"),
+                try SliceSeed.insertSession(db, projectID: project, kind: "claude")
+            )
+        }
+        XCTAssertEqual(KeepAwakeCompanion.liveBoardSessions(pool, liveIDs: [shell]), 0)
+        XCTAssertEqual(KeepAwakeCompanion.liveBoardSessions(pool, liveIDs: [shell, agent]), 1)
     }
 }

@@ -273,13 +273,14 @@ final class MobileSettingsViewModel {
 
     // MARK: - The toggle
 
-    /// The opt-in toggle; turning on needs a signed build. Turning off
-    /// closes an open QR sheet and its link first.
+    /// "Keep this Mac awake for the iPhone" (ask #614).
     func setKeepAwake(_ enabled: Bool) {
         host.isMobileKeepAwakeEnabled = enabled
         keepAwake = enabled
     }
 
+    /// The opt-in toggle; turning on needs a signed build. Turning off
+    /// closes an open QR sheet and its link first.
     func setEnabled(_ enabled: Bool) async {
         guard !enabled || entitlementPresent else { return }
         if !enabled { await linkSheetDismissed() }
