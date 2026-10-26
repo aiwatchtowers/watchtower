@@ -215,9 +215,13 @@ is unchanged (agents, tests).
 - `listed` comes from the cheap git listing only (worktree list, branch list, default branch). A failure before
   `listed` is the old exit-1 path; a stream that ends without `done` is a failed plan for the Desktop (rows stay, with
   the error in the progress line).
-- A worktree's bundle items (`lsreg:` found under it) carry `"worktree":"<root>"` and are emitted with that
-  worktree's `checked` event, before sizing (the bundle scan moves ahead of `measureAll`), so a worktree row is
-  complete — and can be ticked — once checked. Stale-entry `lsreg` items carry no `worktree`.
+- A worktree's bundle items (`lsreg:` found under it) and, in a session's scope, its orphan `process:` items carry
+  `"worktree":"<root>"` (the root, as in the worktree's key — the worktree's own `name` is only the folder's base
+  name) and are emitted with that worktree's `checked` event, before sizing (the bundle scan moves ahead of
+  `measureAll`), so a worktree row is complete — and can be ticked — once checked. The Desktop folds both into the
+  worktree's row and sends their keys with it; a process is never a row of its own (Go acts on a `process:` key only
+  through its worktree's removal, and terminates the orphans only when every one of them is named). Stale-entry
+  `lsreg` items carry no `worktree`. (Amended 2026-10-26 in the final review: orphans carry `worktree` too.)
 - Items gain three keys, streamed or not (additive, pinned in the JSON key test): `origin` (§4.3), `last_commit_at` (RFC 3339 UTC of the
   tip's committer date; `""` when unknown) and `merged` (bool: the tip is an ancestor of the local default branch or
   of `refs/remotes/origin/<default>` when it exists, so a branch merged on GitHub while the local `main` lags still
