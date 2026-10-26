@@ -13,7 +13,9 @@ import (
 
 // Value is one measured number. Known is false when its denominator was zero
 // (no tasks, no active time, no reviews): V is then 0 and means nothing. N is
-// how many units the value averages over.
+// how many units the value averages over: tasks for Corrections, TaskHours and
+// TaskCostUSD, sessions for OwnerLoop, reviews for SpecFindings, review rounds
+// for ReviewComments.
 type Value struct {
 	V     float64
 	N     int
@@ -41,7 +43,10 @@ func ratio(num, den float64, n int) Value {
 
 // Measure computes the metrics over [since, until). workbenchID 0 is every
 // workbench with analytics on: numerators and denominators are summed first
-// and divided once, so a busy workbench weighs more than an idle one.
+// and divided once, so a busy workbench weighs more than an idle one. With
+// workbench 0 the agent metrics cover the analytics-on workbenches only, while
+// the spec-review and review-comment counts cover every workbench. Sessions
+// that start at or after until are left out.
 func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until time.Time) (Metrics, error) {
 	ids := []int64{workbenchID}
 	if workbenchID == 0 {
@@ -60,10 +65,8 @@ func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until tim
 		}
 		tasks += len(ov.Tasks) + ov.TasksMore
 		corrections += float64(ov.Trouble.Interrupts + ov.Trouble.Rejections)
-		for _, t := range ov.Tasks {
-			agentMS += float64(t.AgentMS)
-			costUSD += t.CostUSD
-		}
+		agentMS += float64(ov.TasksAgentMS)
+		costUSD += ov.TasksCostUSD
 		ownerMS += float64(ov.Time.OwnerMS)
 		activeMS += float64(ov.Time.ActiveMS)
 		m.Sessions += ov.Totals.Sessions

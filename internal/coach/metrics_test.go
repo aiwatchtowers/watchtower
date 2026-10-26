@@ -204,3 +204,24 @@ func TestMeasure_SpecFindingsFirstRoundOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, late.SpecFindings.Known, "outside the period")
 }
+
+func TestMeasure_UntilBoundsSessions(t *testing.T) {
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	d.session(t, wb, "s", ids, 1, 1.0)
+	before, err := Measure(d.DB, d.al, wb, time.Time{}, t0.Add(-time.Minute))
+	require.NoError(t, err)
+	assert.Zero(t, before.Sessions, "the session starts after until")
+	assert.False(t, before.OwnerLoop.Known)
+	assert.Equal(t, 1, measure(t, d, wb).Sessions)
+}
+
+func TestMeasure_MoreThanTasksMaxTasks(t *testing.T) {
+	d := openDBs(t)
+	n := agentreport.TasksMax + 10
+	wb, ids := d.workbench(t, "a", n)
+	d.session(t, wb, "s", ids, 0, 6.0)
+	m := measure(t, d, wb)
+	assert.Equal(t, n, m.TaskCostUSD.N)
+	assert.InDelta(t, 6.0/float64(n), m.TaskCostUSD.V, 0.01, "numerator covers every task, not the listed 50")
+}
