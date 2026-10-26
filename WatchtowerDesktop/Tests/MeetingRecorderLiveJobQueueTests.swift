@@ -328,4 +328,118 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         XCTAssertEqual(engineLoads, 1, "never a second engine")
         XCTAssertTrue(center.jobs.isEmpty)
     }
+
+    // MARK: - Engine slot release after a batch transcription
+
+    /// A batch job lets go of the engine slot once its transcription is over:
+    /// a recording started while it saves runs its live pass at once — not
+    /// `.waiting` for the save — on the engine the job just parked.
+    func testRecordingStartedWhileABatchJobSavesRunsItsLivePassOnTheParkedEngine() async throws {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        var engineLoads = 0
+        let runner = GatedSaveRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["batch one", "live two"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = threeWindowConfig()
+        var captureOnly = config
+        captureOnly.liveTranscription = false
+
+        await center.startRecording(eventID: nil, title: "First", config: captureOnly)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
+        let stopFirst = Task { await center.stopAndProcess(config: captureOnly) }
+        let saving = await waitUntil("the batch job to be inside its save") { runner.isHoldingASave }
+        guard saving else { runner.releaseAll(); return }
+        XCTAssertEqual(center.jobs.first?.phase, .summarizing)
+        XCTAssertNotNil(center.activeJobID, "the job still has its turn")
+        XCTAssertNil(center.engineJobID, "a batch job past its transcription holds no engine")
+
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        XCTAssertNotEqual(center.liveEngineState, .waiting, "the live pass must not wait for the save")
+        let running = await waitUntil("the second recording's live pass to run") {
+            center.liveEngineState == .running
+        }
+        XCTAssertTrue(running)
+        XCTAssertEqual(engineLoads, 1, "the live pass takes the engine the batch job parked")
+
+        runner.releaseAll()
+        await stopFirst.value
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        recorder2.emitLive([Float](repeating: 0, count: 1600))
+        await center.stopAndProcess(config: config)
+        XCTAssertEqual(runner.savedTranscripts, ["batch one", "live two"])
+        XCTAssertEqual(engineLoads, 1, "one engine across both meetings")
+        XCTAssertTrue(center.jobs.isEmpty)
+    }
+
+    /// A batch job whose transcription throws releases the engine slot too:
+    /// the recording parked on it starts its live pass once the job failed.
+    func testBatchJobWhoseTranscriptionThrowsReleasesTheParkedLivePass() async throws {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        var engineLoads = 0
+        let failing = FailAfterGateEngine()
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(engineLoads == 1 ? failing : ScriptedEngine(texts: ["live two"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { TranscriptCapturingRunner(stdout: self.recapOKEnvelope) },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = threeWindowConfig()
+        var captureOnly = config
+        captureOnly.liveTranscription = false
+
+        await center.startRecording(eventID: nil, title: "First", config: captureOnly)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
+        let stopFirst = Task { await center.stopAndProcess(config: captureOnly) }
+        var entered = failing.gate.enteredStream.makeAsyncIterator()
+        _ = await entered.next() // the batch job is transcribing
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        XCTAssertEqual(center.liveEngineState, .waiting, "a batch job still transcribing owns the engine")
+
+        failing.gate.release()
+        await stopFirst.value
+        XCTAssertTrue(center.jobs.first?.phase.isFailed == true)
+        XCTAssertNil(center.engineJobID)
+        let running = await waitUntil("the parked live pass to run") { center.liveEngineState == .running }
+        XCTAssertTrue(running, "the failed job released the engine slot")
+        XCTAssertEqual(engineLoads, 2, "the thrown engine is dropped and the live pass loads fresh")
+
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        recorder2.emitLive([Float](repeating: 0, count: 1600))
+        await center.stopAndProcess(config: config)
+    }
+}
+
+/// Blocks each window like `GateEngine` (released through `gate`), then throws.
+final class FailAfterGateEngine: WhisperWindowEngine, @unchecked Sendable {
+    struct EngineError: Error {}
+    let gate = GateEngine(texts: [])
+
+    func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
+
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
+        _ = try await gate.transcribeWindow(samples, language: language, prompt: prompt)
+        throw EngineError()
+    }
 }
