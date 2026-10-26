@@ -252,6 +252,19 @@ final class KitFixtureTests: XCTestCase {
         )
     }
 
+    func testDeviceSeenAtIsWrittenOnlyWhenSet() throws {
+        let device = DevicePayload(
+            deviceID: "D2", name: "iPhone", model: "iPhone16,1", appVersion: "0.16.0", scope: .private,
+            userRecordName: "_owner", typingRequested: false, startSessions: true,
+            seenAt: t0.addingTimeInterval(30), updatedAt: t0
+        )
+        try assertFixture(
+            device,
+            // swiftlint:disable:next line_length
+            #"{"app_version":"0.16.0","device_id":"D2","model":"iPhone16,1","name":"iPhone","scope":"private","seen_at":1700000030,"start_sessions":true,"typing_requested":false,"updated_at":1700000000,"user_record_name":"_owner"}"#
+        )
+    }
+
     func testDeviceRecordGoesToRelayZone() throws {
         let device = DevicePayload(
             deviceID: "D3", name: "iPhone", model: "iPhone16,1", appVersion: "0.16.0", scope: .private,

@@ -120,7 +120,7 @@ public struct SessionChat: SliceMirror, Equatable {
     public let sessionID: Int64
     /// nil for the main feed.
     public let agentID: String?
-    /// The session is still running; the Mac refreshes a live chat every 10 s.
+    /// The session is still running; the Mac refreshes a live chat every 3 s and sends a change at once.
     public let live: Bool
     /// Older entries cut by the 300-entry and byte caps.
     public let entriesMore: Int

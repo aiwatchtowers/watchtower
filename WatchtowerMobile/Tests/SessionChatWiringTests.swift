@@ -5,7 +5,7 @@ import XCTest
 @testable import WatchtowerMobile
 
 /// The phone's session chat (board #486, FEED-05): the request on appear and
-/// every 60 s, the screen's states, the subagent route and the Tell bar rule.
+/// every 60 s, the screen's states, the subagent route and the composer rule.
 @MainActor
 final class SessionChatWiringTests: XCTestCase {
     private let now = Date()
@@ -217,7 +217,7 @@ final class SessionChatWiringTests: XCTestCase {
         XCTAssertEqual(SessionChatViewModel.earlierText(1), "1 earlier message — open on the Mac")
     }
 
-    // MARK: - The Tell bar rule is the session detail's
+    // MARK: - The composer follows the typing grant
 
     private func inputModel(typing: Bool) throws -> SessionInputModel {
         var snapshot = try demoSnapshot(now: now)
@@ -234,11 +234,11 @@ final class SessionChatWiringTests: XCTestCase {
         return SessionInputModel(session: session, snapshot: snapshot, grant: grant, typingRequested: true, delivered: nil, now: now)
     }
 
-    func testTellBarHiddenWithoutTypingGrant() throws {
+    func testComposerHiddenWithoutTypingGrant() throws {
         XCTAssertFalse(try inputModel(typing: false).showsBar)
     }
 
-    func testTellBarShownWithTypingGrant() throws {
+    func testComposerShownWithTypingGrant() throws {
         XCTAssertTrue(try inputModel(typing: true).showsBar)
     }
 

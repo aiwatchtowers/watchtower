@@ -44,7 +44,7 @@ struct HubListSheet: View {
                     } label: {
                         HubListRow(item: item)
                     }
-                    .listRowInsets(RowInsets.flat)
+                    .macsListRow()
                     // A Mac whose data could not be opened never goes on
                     // screen: Forget it in Settings → Macs.
                     .disabled(item.unopened)
@@ -58,16 +58,19 @@ struct HubListSheet: View {
                     } label: {
                         Label("Add Mac", systemImage: "qrcode.viewfinder")
                     }
-                    .frame(minHeight: 44)
+                    .buttonStyle(SecondaryActionStyle())
                     .disabled(!canAdd)
-                } footer: {
+                    .macsListRow()
                     if !canAdd {
-                        Text("You can link up to \(HubRegistry.limit) Macs").font(TypeScale.meta)
+                        Text("You can link up to \(HubRegistry.limit) Macs")
+                            .font(TypeScale.meta)
+                            .foregroundStyle(.secondary)
+                            .macsListRow()
                     }
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .macsList()
     }
 }
 
@@ -87,7 +90,7 @@ struct HubListRow: View {
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 HStack(spacing: Spacing.compact) {
                     if !item.removedByMac {
-                        Circle().fill(item.dotTone.color).frame(width: 8, height: 8)
+                        Circle().fill(item.dotTone.color).frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
                     }
                     Text(item.statusText)
                     if let flavor = item.flavor {

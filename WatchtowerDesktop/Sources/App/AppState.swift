@@ -381,6 +381,7 @@ final class AppState {
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
+    @ObservationIgnored let ownerAwayCenter = OwnerAwayCenter(box: OwnerAwayBox())
     /// Raises an unanswered Chat question into an owner ask (owner asks v2,
     /// Part 5); nil without a CLI runner.
     private(set) var chatQuestionEscalator: ChatQuestionEscalator?
@@ -729,6 +730,7 @@ final class AppState {
                     self?.agentAnalyticsCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
+                    self?.ownerAwayCenter.stop()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
                     // Sessions waiting in the Undo batch were deleted in the
@@ -1823,6 +1825,7 @@ final class AppState {
         agentStates.start()
         reports.start()
         ownerPresenceCenter?.start()
+        ownerAwayCenter.start()
         chatQuestionEscalator?.start()
         vm.startHostReattach()
         // Old pasted Workchat files go once the reattach is done; the runs
@@ -2035,10 +2038,7 @@ final class AppState {
 
     /// Re-resolves `owner` off the main thread. A failed read keeps the last value (logged):
     /// a transient error must not flip a known owner to unknown and hide Generate.
-    ///
-    /// Reads can finish out of order (an account VM's init refresh racing a
-    /// later reload); like `refreshConnectedSources()`, an older read never
-    /// overwrites a newer one.
+    /// Like `refreshConnectedSources()`, an older read never overwrites a newer one.
     func refreshOwner() async {
         guard let pool = databaseManager?.dbPool else { return }
         ownerGeneration += 1

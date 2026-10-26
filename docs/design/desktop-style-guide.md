@@ -16,7 +16,7 @@ The reference is the app's own good screens: Workbench, Calendar and AI Chat. A 
 
 ## Tokens
 
-Use the token, never the number. The scale is closed: a screen that needs a new step adds a token to `DesignKit/` in the same PR.
+Use the token, never the number. The scale is closed: a screen that needs a new step adds a token in the same PR. The tokens below (all but `Surface`, which is macOS-only and stays in `DesignKit/`) live in the Kit's `WatchtowerKit/Sources/WatchtowerDesign/`, one copy that `DesignKit` re-exports and the iPhone app reads too; `TokenTests` there pins every value.
 
 | Token | Values |
 |---|---|

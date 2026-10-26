@@ -6,7 +6,7 @@ import WatchtowerSync
 /// last pushed per DataZone record (`slice_state`), small hub values
 /// (`hub_meta`), the exactly-once ledger of relay records
 /// (`relay_processed`, spec §5.2 rule 1), the asks already alerted
-/// (`alerted_asks`, spec §4.7), where each phone answer's line went
+/// (`work_alerts`, spec §4.7), where each phone answer's line went
 /// (`ask_answer_deliveries`, spec §5.2/§6.2), the phone recordings the
 /// hub ingested (`phone_recordings`, spec §6.4/§4.12), the last capped
 /// session reports (`session_reports`, spec §4.8) and the hub-observed
@@ -56,6 +56,16 @@ final class HubSyncState: Sendable {
         try HubSyncState(queue: DatabaseQueue())
     }
 
+    /// The ask-only ledger of earlier builds: every row was pushed when it was written.
+    private static func migrateAlertedAsks(_ db: Database) throws {
+        guard try db.tableExists("alerted_asks") else { return }
+        try db.execute(sql: """
+            INSERT OR IGNORE INTO work_alerts (key, seen_at, pushed_at, generation)
+            SELECT 'ask-' || ask_id, at, at, generation FROM alerted_asks
+            """)
+        try db.execute(sql: "DROP TABLE alerted_asks")
+    }
+
     /// One IMMEDIATE transaction: two instances opening an old file at once
     /// (a relaunch overlap, a duplicate app) take the write lock in turn
     /// under the busy timeout, so the second sees the upgraded columns
@@ -72,9 +82,10 @@ final class HubSyncState: Sendable {
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS alerted_asks (
-                    ask_id INTEGER PRIMARY KEY,
-                    at REAL NOT NULL,
+                CREATE TABLE IF NOT EXISTS work_alerts (
+                    key TEXT PRIMARY KEY,
+                    seen_at REAL NOT NULL,
+                    pushed_at REAL,
                     generation INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS relay_processed (
@@ -125,6 +136,7 @@ final class HubSyncState: Sendable {
                 """)
             try Self.createLinkTables(db)
             try Self.createKeyTables(db)
+            try Self.migrateAlertedAsks(db)
             try Self.createSliceAssetTable(db)
             // A sidecar created before the ledger kept echoes and buffer
             // marks gains the columns; its old `done` rows hold neither (no
@@ -801,60 +813,65 @@ final class HubSyncState: Sendable {
         )
     }
 
-    // MARK: - Ask alerts (spec §4.7)
+    // MARK: - Work alerts (spec §4.7, mobile workbench remote spec §5.2)
 
-    /// When an ask's `ask_alert` was first written, and in which sync
-    /// generation: an alert is published only in the generation that wrote
-    /// it. A reset forgets an unconfirmed alert of the wiped generation (no
-    /// recorded hash, within the lifetime) so it is stamped again; every
-    /// other row is kept, so a new account's zone never gets an alert the
-    /// old zone got.
-    struct AlertedAsk: Equatable, Sendable {
-        let at: Date
+    /// What the hub remembers of one alert key (`ask-<id>`, ...): when it was first seen, when its push was
+    /// raised (`nil` while only seen, e.g. the owner was at the Mac) and in which sync generation. An alert is
+    /// published only in the generation that wrote it. A reset forgets an unconfirmed alert of the wiped
+    /// generation (no recorded hash, within the lifetime) so it is stamped again; every other row is kept, so a
+    /// new account's zone never gets an alert the old zone got.
+    struct WorkAlertMark: Equatable, Sendable {
+        let seenAt: Date
+        let pushedAt: Date?
         let generation: Int
     }
 
-    /// Remembers each of `askIDs` not alerted yet as alerted at `date` in
-    /// the current generation (a remembered one keeps its first stamp), and
-    /// returns that generation with every remembered ask. One write
-    /// transaction, so two cycles never alert one ask twice and a reset
-    /// cannot land between the stamp and the generation it is compared to.
-    func markAlerted(_ askIDs: [Int64], at date: Date) throws -> (generation: Int, alerted: [Int64: AlertedAsk]) {
+    /// Remembers each of `keys` not known yet as seen at `date` in the current generation (a remembered one
+    /// keeps its first stamp); also records the push of each of `pushing` (a subset of `keys`) not pushed yet at `date`,
+    /// moving it to the current generation (an alert is published in the generation that pushed it). Returns that
+    /// generation with every remembered key. One write transaction, so two overlapping cycles read the same pushes
+    /// they decide on and never push one key twice, and a reset cannot land between the stamp and the generation it
+    /// is compared to.
+    func noteWorkAlerts(
+        _ keys: [String], pushing: Set<String> = [], at date: Date
+    ) throws -> (generation: Int, marks: [String: WorkAlertMark]) {
         try queue.write { db in
             let generation = try Self.generation(db)
-            for id in askIDs {
+            for key in keys {
                 try db.execute(
-                    sql: "INSERT INTO alerted_asks (ask_id, at, generation) VALUES (?, ?, ?) ON CONFLICT(ask_id) DO NOTHING",
-                    arguments: [id, date.timeIntervalSince1970, generation]
+                    sql: "INSERT INTO work_alerts (key, seen_at, generation) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING",
+                    arguments: [key, date.timeIntervalSince1970, generation]
                 )
+                if pushing.contains(key) {
+                    try db.execute(
+                        sql: "UPDATE work_alerts SET pushed_at = ?, generation = ? WHERE key = ? AND pushed_at IS NULL",
+                        arguments: [date.timeIntervalSince1970, generation, key]
+                    )
+                }
             }
-            return (generation, try Self.fetchAlerted(db))
+            let rows = try Row.fetchAll(db, sql: "SELECT key, seen_at, pushed_at, generation FROM work_alerts")
+            return (generation, Dictionary(uniqueKeysWithValues: rows.map { row in
+                let pushed: Double? = row["pushed_at"]
+                return (row["key"] as String, WorkAlertMark(
+                    seenAt: Date(timeIntervalSince1970: row["seen_at"]),
+                    pushedAt: pushed.map { Date(timeIntervalSince1970: $0) },
+                    generation: row["generation"]
+                ))
+            }))
         }
     }
 
-    func alertedAsks() throws -> [Int64: AlertedAsk] {
-        try queue.read(Self.fetchAlerted)
-    }
-
-    /// Forgets the asks alerted before `date` that are not in `keeping` (the
-    /// asks still open): a closed ask never reopens, while an open one must
-    /// stay remembered, or it would alert a second time.
-    func pruneAlertedAsks(olderThan date: Date, keeping: Set<Int64>) throws {
+    /// Forgets the keys seen before `date` that are not in `keeping` (the work still open): a closed ask
+    /// never reopens, while an open one must stay remembered, or it would alert a second time.
+    func pruneWorkAlerts(olderThan date: Date, keeping: Set<String>) throws {
         try queue.write { db in
-            let stale = try Int64.fetchAll(
-                db, sql: "SELECT ask_id FROM alerted_asks WHERE at < ?", arguments: [date.timeIntervalSince1970]
+            let stale = try String.fetchAll(
+                db, sql: "SELECT key FROM work_alerts WHERE seen_at < ?", arguments: [date.timeIntervalSince1970]
             )
-            for id in stale where !keeping.contains(id) {
-                try db.execute(sql: "DELETE FROM alerted_asks WHERE ask_id = ?", arguments: [id])
+            for key in stale where !keeping.contains(key) {
+                try db.execute(sql: "DELETE FROM work_alerts WHERE key = ?", arguments: [key])
             }
         }
-    }
-
-    private static func fetchAlerted(_ db: Database) throws -> [Int64: AlertedAsk] {
-        let rows = try Row.fetchAll(db, sql: "SELECT ask_id, at, generation FROM alerted_asks")
-        return Dictionary(uniqueKeysWithValues: rows.map {
-            ($0["ask_id"] as Int64, AlertedAsk(at: Date(timeIntervalSince1970: $0["at"]), generation: $0["generation"]))
-        })
     }
 
     // MARK: - Account-change reset
@@ -889,13 +906,13 @@ final class HubSyncState: Sendable {
         try queue.write { db in
             try db.execute(
                 sql: """
-                    DELETE FROM alerted_asks WHERE generation = ? AND at >= ? AND NOT EXISTS (
-                        SELECT 1 FROM slice_state WHERE record_name = ? || alerted_asks.ask_id
+                    DELETE FROM work_alerts WHERE generation = ? AND seen_at >= ? AND NOT EXISTS (
+                        SELECT 1 FROM slice_state WHERE record_name = ? || work_alerts.key
                     )
                     """,
                 arguments: [
                     try Self.generation(db),
-                    now.addingTimeInterval(-AskAlertSlice.lifetime).timeIntervalSince1970,
+                    now.addingTimeInterval(-WorkAlertSlice.lifetime).timeIntervalSince1970,
                     SliceKind.askAlert.recordName(id: "")
                 ]
             )
@@ -936,7 +953,7 @@ final class HubSyncState: Sendable {
                 """,
             arguments: [generationKey, String(generation + 1)])
         try db.execute(
-            sql: "UPDATE alerted_asks SET generation = ? WHERE generation = ?", arguments: [generation + 1, generation])
+            sql: "UPDATE work_alerts SET generation = ? WHERE generation = ?", arguments: [generation + 1, generation])
     }
 
     /// The sync generation counter: 0 until the first `wipeSyncState(now:)`.

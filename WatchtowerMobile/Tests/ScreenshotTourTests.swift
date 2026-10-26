@@ -36,21 +36,22 @@ final class ScreenshotTourTests: XCTestCase {
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
         try ScreenshotHost.clear(dir)
-        let root = try makeDemoRoot()
+        let (root, demo) = try makeDemoRoot()
         try await poll(timeout: 20, { Self.isHydrated(root.env) }, "the demo seed hydrated")
         let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
-        let shots = Self.workbenchShots() + Self.calendarShots() + Self.onboardingShots()
+        let shots = Self.designSystemShots() + Self.workbenchShots() + Self.calendarShots() + Self.onboardingShots()
         for shot in shots {
             let end = shot.hasEnd ? "\(shot.number)e-\(shot.slug)" : nil
             try await host.capture("\(shot.number)-\(shot.slug)", shot.make(root.env), endName: end)
         }
+        let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
         let recorderRows = try await captureRecorder(into: dir, linking: root.linking)
-        try ScreenshotHost.writeIndex(Self.indexRows(shots) + recorderRows, to: dir)
+        try ScreenshotHost.writeIndex(Self.indexRows(shots) + asleepRows + recorderRows, to: dir)
 
         let pngs = try FileManager.default
             .contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])
             .filter { $0.pathExtension == "png" }
-        XCTAssertEqual(pngs.count, 2 * (shots.count + shots.filter(\.hasEnd).count + recorderRows.count))
+        XCTAssertEqual(pngs.count, 2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count))
         for png in pngs {
             XCTAssertGreaterThan(try png.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0, 0, png.lastPathComponent)
         }
@@ -58,12 +59,27 @@ final class ScreenshotTourTests: XCTestCase {
 
     // MARK: - The demo
 
-    private func makeDemoRoot() throws -> AppRoot {
+    /// The primary demo Mac's transport and the defaults holding its seq
+    /// ceiling, for a later save in the hub's name.
+    private struct DemoHub {
+        let transport: InMemoryCloudTransport
+        let defaults: UserDefaults
+    }
+
+    private func makeDemoRoot() throws -> (AppRoot, DemoHub) {
         let defaults = try makeDefaults()
+        var primary: InMemoryCloudTransport?
         let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults)
         for hub in DemoSeed.hubs {
+            // The demo Mac allows typing; the phone's own toggle is on, so the
+            // workchat shows its composer.
+            defaults.set(true, forKey: "hub.\(hub.hubID).device.typingRequested")
+            let transport = InMemoryCloudTransport()
+            if hub == DemoSeed.primary {
+                primary = transport
+            }
             let session = try HubSession(
-                transport: InMemoryCloudTransport(),
+                transport: transport,
                 replicaPath: try makeReplicaPath(),
                 transportKind: .inMemoryDemo,
                 hubID: hub.hubID,
@@ -74,7 +90,30 @@ final class ScreenshotTourTests: XCTestCase {
             env.add(session)
         }
         env.activate(DemoSeed.primary.hubID)
-        return try AppRoot.demo(env, defaults: defaults)
+        let demo = DemoHub(transport: try XCTUnwrap(primary), defaults: defaults)
+        return (try AppRoot.demo(env, defaults: defaults), demo)
+    }
+
+    /// 01s, 09s (mockup 8): the primary Mac's heartbeat 40 min old, so the
+    /// Mac is asleep: Now's chip and working times "as of", the workchat's
+    /// banner and composer note. Last of the app shots: the Mac stays asleep.
+    private func captureMacAsleep(_ env: AppEnvironment, demo: DemoHub, host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let stale = Date().addingTimeInterval(-2_400)
+        let beat = try XCTUnwrap(DemoSeed.records(now: stale).first { $0.recordName == HeartbeatPayload.recordName })
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
+        try await sealing.save([beat])
+        _ = await env.refresh(.pull)
+        try await poll(timeout: 20, { env.macReachability(now: Date()) != .online }, "the demo Mac fell asleep")
+        try await host.capture("01s-now-mac-asleep", Self.app(.now)(env))
+        try await host.capture("09s-session-10-mac-asleep", NavigationStack {
+            WorkchatView(replica: env.workbenchReplica, sessionID: 10, store: env.store, requester: env.chatRequests)
+        })
+        return [
+            ScreenshotHost.IndexRow(number: "01s", view: "NowView", source: "Features/Now/NowView.swift", reached: "full app, Mac asleep"),
+            ScreenshotHost.IndexRow(
+                number: "09s", view: "WorkchatView", source: "Features/Workbench/WorkchatView.swift", reached: "bare stack, Mac asleep"
+            )
+        ]
     }
 
     private static func isHydrated(_ env: AppEnvironment) -> Bool {
@@ -167,6 +206,26 @@ final class ScreenshotTourTests: XCTestCase {
 
     // MARK: - The tour table (the review's screen numbers)
 
+    /// DS1–DS8: the design system's parts in the redesign mockups' states
+    /// (`docs/design/mobile/mockups.html`, the screen number in each slug),
+    /// for a side-by-side check against the mockups.
+    static func designSystemShots() -> [Shot] {
+        let gallery = "../Tests/Support/DesignSystemGallery.swift"
+        let pages: [(String, String, @MainActor () -> AnyView)] = [
+            ("DS1", "now-m1", { AnyView(DesignSystemGallery.nowPage) }),
+            ("DS2", "workchat-working-m3", { AnyView(DesignSystemGallery.workchatWorkingPage) }),
+            ("DS3", "workchat-waiting-m4", { AnyView(DesignSystemGallery.workchatWaitingPage) }),
+            ("DS4", "board-m5", { AnyView(DesignSystemGallery.boardPage) }),
+            ("DS5", "calendar-m7", { AnyView(DesignSystemGallery.calendarPage) }),
+            ("DS6", "mac-asleep-m8", { AnyView(DesignSystemGallery.workchatAsleepPage) }),
+            ("DS7", "parts-bars-m9-12", { AnyView(DesignSystemGallery.actionsPage) }),
+            ("DS8", "settings-m16", { AnyView(DesignSystemGallery.settingsPage) })
+        ]
+        return pages.map { number, slug, page in
+            Shot(number: number, slug: slug, source: gallery, reached: .leaf) { _ in page() }
+        }
+    }
+
     static func workbenchShots() -> [Shot] {
         let acme = DemoSeed.acmeID
         let source = "Features/Workbench/"
@@ -196,18 +255,22 @@ final class ScreenshotTourTests: XCTestCase {
         ]
     }
 
-    /// 09 waiting (asks, report, chips), 10 needs approval, 11 finished,
-    /// 12 failed.
+    /// The workchat (mockups 3, 4, 8): 09 waiting (inline asks), 09w
+    /// working (the timer, a sent line), 10 needs approval, 11 finished,
+    /// 12 failed; 12r the report and timeline behind the actions menu.
     static func sessionShots() -> [Shot] {
-        [("09", 11, "waiting"), ("10", 12, "needs-approval"), ("11", 13, "finished"), ("12", 16, "failed")].map { number, id, slug in
-            Shot(
-                number: number, slug: "session-\(id)-\(slug)", source: "Features/Workbench/SessionDetailView.swift",
-                reached: .bareStack,
-                make: stack {
-                    SessionDetailView(replica: $0.workbenchReplica, sessionID: id, store: $0.store, requester: $0.reportRequests)
-                }
-            )
-        }
+        let workchat = "Features/Workbench/WorkchatView.swift"
+        let shots = [("09", 11, "waiting"), ("09w", 10, "working"), ("10", 12, "needs-approval"), ("11", 13, "finished"), ("12", 16, "failed")]
+            .map { number, id, slug in
+                Shot(number: number, slug: "session-\(id)-\(slug)", source: workchat, reached: .bareStack, make: stack {
+                    WorkchatView(replica: $0.workbenchReplica, sessionID: id, store: $0.store, requester: $0.chatRequests)
+                })
+            }
+        return shots + [
+            Shot(number: "12r", slug: "session-11-report", source: "Features/Workbench/SessionReportView.swift", reached: .bareStack, make: stack {
+                SessionReportView(replica: $0.workbenchReplica, sessionID: 11, store: $0.store, requester: $0.reportRequests)
+            })
+        ]
     }
 
     /// 13 question, 14 review, 15 check, 16 answered, 17 withdrawn.

@@ -11,22 +11,23 @@ struct SettingsView: View {
     @State private var confirmingUnlink = false
 
     var body: some View {
-        Form {
-            yourMacSection
-            accountsSection
-            workbenchSection
-            notificationsSection
-            if let battery = model.battery {
-                BatterySection(report: battery)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                yourMacSection
+                accountsSection
+                workbenchSection
+                notificationsSection
+                if let battery = model.battery {
+                    BatterySection(report: battery)
+                }
+                SettingsCard(title: "Chat") {
+                    SettingsRow(title: "Chat without the Mac — later") { EmptyView() }
+                }
+                .disabled(true)
+                unlinkSection
             }
-            Section {
-                Text("Chat without the Mac — later")
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("Chat")
-            }
-            .disabled(true)
-            unlinkSection
+            .padding(.horizontal, Spacing.large)
+            .padding(.bottom, Spacing.wide)
         }
         .navigationTitle("Settings")
         // A new device id or a new environment (the link flow swaps it)
@@ -47,48 +48,63 @@ struct SettingsView: View {
     // MARK: - Your Mac
 
     private var yourMacSection: some View {
-        Section("This Mac") {
+        SettingsCard(title: "This Mac") {
             // The status turns offline by the clock alone, so re-evaluate it
-            // periodically, not only on replica writes. One row: the Form
-            // lays a TimelineView's views out in one cell.
+            // periodically, not only on replica writes.
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 let row = MacStatusRow(status: MacStatus(heartbeat: model.snapshot.heartbeat, now: context.date), now: context.date)
-                MacStatusRowView(row: row)
-                // Nothing at all while every observation is healthy.
-                ForEach(model.diagnostics(now: context.date)) { row in
-                    Text(row.text)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 0) {
+                    MacStatusRowView(row: row)
+                    // Nothing at all while every observation is healthy.
+                    ForEach(model.diagnostics(now: context.date)) { row in
+                        note(row.text)
+                    }
                 }
             }
-            // Its own TimelineView: a Form lays one TimelineView's views out
-            // in one cell, and "3 min. ago" moves with the clock alone.
+            CardRowDivider()
+            // Its own TimelineView: "3 min. ago" moves with the clock alone.
             TimelineView(.periodic(from: .now, by: 30)) { _ in
-                LabeledContent("Last sync", value: LastSyncText.string(env.lastSyncAt))
+                SettingsRow(title: "Last sync") { Text(LastSyncText.string(env.lastSyncAt)) }
             }
-            LabeledContent("Queued", value: "\(model.snapshot.queuedCount)")
+            CardRowDivider()
+            SettingsRow(title: "Queued") { Text("\(model.snapshot.queuedCount)") }
             if env.transportKind == .inMemoryDemo {
-                LabeledContent("Sync", value: "Demo")
+                CardRowDivider()
+                SettingsRow(title: "Sync") { Text("Demo") }
             }
             if env.transportKind == .cloudKit || !linking.links.isEmpty {
+                CardRowDivider()
                 NavigationLink {
                     MacsView()
                 } label: {
-                    LabeledContent("Macs", value: "\(linking.links.count + linking.unreadableHubIDs.count)")
+                    SettingsRow(title: "Macs") {
+                        HStack(spacing: Spacing.regular) {
+                            Text("\(linking.links.count + linking.unreadableHubIDs.count)")
+                            Image(systemName: "chevron.right").font(TypeScale.badge)
+                        }
+                    }
                 }
+                .buttonStyle(.plain)
             }
             if model.waitingForKeys {
-                Text(SettingsViewModel.waitingForKeysNotice)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                CardRowDivider()
+                note(SettingsViewModel.waitingForKeysNotice)
             }
             if let notice = model.formatNotice {
-                Text(notice)
-                    .font(.footnote)
-                    .foregroundStyle(PhoneTone.red.color)
+                CardRowDivider()
+                note(notice, tone: PhoneTone.red.color)
             }
         }
         .onChange(of: env.lastSyncAt) { model.refreshFormatNotice() }
+    }
+
+    /// A line of explanation inside a card.
+    private func note(_ text: String, tone: Color = Color.secondary) -> some View {
+        Text(text)
+            .font(TypeScale.meta)
+            .foregroundStyle(tone)
+            .padding(.vertical, Spacing.regular)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Accounts (read-only)
@@ -96,18 +112,19 @@ struct SettingsView: View {
     @ViewBuilder private var accountsSection: some View {
         let accounts = model.snapshot.heartbeat?.accounts ?? []
         if !accounts.isEmpty {
-            Section {
-                ForEach(Array(accounts.enumerated()), id: \.offset) { _, account in
-                    LabeledContent {
-                        AccountStatusLabel(style: AccountStatusStyle(status: account.status))
-                    } label: {
+            SettingsCard(title: "Accounts", footer: "Accounts are managed on your Mac.") {
+                ForEach(Array(accounts.enumerated()), id: \.offset) { index, account in
+                    if index > 0 { CardRowDivider() }
+                    HStack(spacing: Spacing.medium) {
                         Label(account.label, systemImage: Self.symbol(for: account.kind))
+                            .font(TypeScale.rowTitle)
+                        Spacer(minLength: Spacing.medium)
+                        AccountStatusLabel(style: AccountStatusStyle(status: account.status))
+                            .font(.subheadline)
                     }
+                    .frame(minHeight: PhoneMetrics.minTouch)
+                    .accessibilityElement(children: .combine)
                 }
-            } header: {
-                Text("Accounts")
-            } footer: {
-                Text("Accounts are managed on your Mac.")
             }
         }
     }
@@ -125,40 +142,51 @@ struct SettingsView: View {
 
     private var workbenchSection: some View {
         let settings = env.deviceSettings
-        return Section {
-            Toggle("Type into sessions from this phone", isOn: Binding(
-                get: { settings.typingRequested },
-                set: { value in Task { await settings.setTypingRequested(value) } }
-            ))
-            Toggle("Start sessions from this phone", isOn: Binding(
-                get: { settings.startSessions },
-                set: { value in Task { await settings.setStartSessions(value) } }
-            ))
-            Toggle("Answer permission prompts from this phone", isOn: Binding(
-                get: { settings.permissionsRequested },
-                set: { value in Task { await settings.setPermissionsRequested(value) } }
-            ))
-        } header: {
-            Text("Workbench")
-        } footer: {
-            workbenchFooter(settings)
+        let typing = Binding(
+            get: { settings.typingRequested },
+            set: { value in Task { await settings.setTypingRequested(value) } }
+        )
+        let start = Binding(
+            get: { settings.startSessions },
+            set: { value in Task { await settings.setStartSessions(value) } }
+        )
+        let permissions = Binding(
+            get: { settings.permissionsRequested },
+            set: { value in Task { await settings.setPermissionsRequested(value) } }
+        )
+        return VStack(alignment: .leading, spacing: 0) {
+            SettingsCard(title: "Workbench", footer: workbenchFooter(settings)) {
+                switchRow("Type into sessions from this phone", isOn: typing)
+                CardRowDivider()
+                switchRow("Start sessions from this phone", isOn: start)
+                CardRowDivider()
+                switchRow("Answer permission prompts from this phone", isOn: permissions)
+            }
+            if let error = settings.lastError {
+                Text(error)
+                    .font(TypeScale.meta)
+                    .foregroundStyle(PhoneTone.red.color)
+                    .padding(.horizontal, Spacing.small)
+                    .padding(.top, Spacing.compact)
+            }
         }
     }
 
-    @ViewBuilder
-    private func workbenchFooter(_ settings: DeviceSettings) -> some View {
-        if let error = settings.lastError {
-            Text(error).foregroundStyle(.red)
-        } else {
-            let lines = [
-                settings.typingRequested ? "Typing: \(Self.typingCaption(grant: model.snapshot.grant))" : nil,
-                settings.startSessions ? "Starting sessions: \(Self.startSessionsCaption(grant: model.snapshot.grant))" : nil,
-                settings.permissionsRequested ? "Permission prompts: \(Self.permissionsCaption(grant: model.snapshot.grant))" : nil
-            ].compactMap { $0 }
-            if !lines.isEmpty {
-                Text(lines.joined(separator: "\n"))
-            }
+    private func switchRow(_ title: String, isOn: Binding<Bool>) -> some View {
+        SettingsRow(title: title) {
+            Toggle("", isOn: isOn).labelsHidden().toggleStyle(SmallSwitchStyle())
         }
+    }
+
+    /// The Mac's answer to each request made; an error is drawn apart, in red.
+    private func workbenchFooter(_ settings: DeviceSettings) -> String? {
+        guard settings.lastError == nil else { return nil }
+        let lines = [
+            settings.typingRequested ? "Typing: \(Self.typingCaption(grant: model.snapshot.grant))" : nil,
+            settings.startSessions ? "Starting sessions: \(Self.startSessionsCaption(grant: model.snapshot.grant))" : nil,
+            settings.permissionsRequested ? "Permission prompts: \(Self.permissionsCaption(grant: model.snapshot.grant))" : nil
+        ].compactMap { $0 }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     /// The typing request's answer from the Mac (spec §4.13).
@@ -211,12 +239,19 @@ struct SettingsView: View {
     @ViewBuilder private var unlinkSection: some View {
         if let link = activeLink, Self.offersUnlink(transportKind: env.transportKind, link: link),
            let ask = Self.removalAsk(for: activeItem) {
-            Section {
-                Button("\(ask.button) \(ask.name)", role: .destructive) {
+            VStack(alignment: .leading, spacing: 0) {
+                Button(role: .destructive) {
                     confirmingUnlink = true
+                } label: {
+                    Text("\(ask.button) \(ask.name)")
+                        .font(TypeScale.rowEmphasis)
+                        .foregroundStyle(PhoneTone.red.color)
+                        .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch)
+                        .card(.plain, padding: EdgeInsets())
                 }
-                .frame(minHeight: 44)
+                .buttonStyle(.plain)
                 .disabled(linking.isBusy)
+                .padding(.top, Spacing.large)
                 .confirmationDialog(ask.title, isPresented: $confirmingUnlink, titleVisibility: .visible) {
                     Button(ask.button, role: .destructive) {
                         Task {
@@ -229,8 +264,11 @@ struct SettingsView: View {
                 } message: {
                     Text(ask.message)
                 }
-            } footer: {
                 Text("To use Watchtower here again, scan a new code on the Mac.")
+                    .font(TypeScale.meta)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Spacing.small)
+                    .padding(.top, Spacing.compact)
             }
         }
     }
@@ -238,9 +276,12 @@ struct SettingsView: View {
     // MARK: - Notifications
 
     private var notificationsSection: some View {
-        @Bindable var settings = env.deviceSettings
-        return Section("Notifications") {
-            Toggle("New asks", isOn: $settings.newAskAlerts)
+        let alerts = Binding(
+            get: { env.deviceSettings.workAlerts },
+            set: { value in Task { await env.setWorkAlerts(value) } }
+        )
+        return SettingsCard(title: "Notifications", footer: WorkAlertsCopy.footer(anyShared: env.anyHubShared)) {
+            switchRow(WorkAlertsCopy.title, isOn: alerts)
         }
     }
 }
@@ -253,7 +294,7 @@ private struct AccountStatusLabel: View {
         HStack(spacing: Spacing.compact) {
             switch style.mark {
             case .dot:
-                Circle().fill(style.tone.color).frame(width: 8, height: 8)
+                Circle().fill(style.tone.color).frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
             case let .symbol(name):
                 Image(systemName: name).foregroundStyle(style.tone.color)
             case .textOnly:

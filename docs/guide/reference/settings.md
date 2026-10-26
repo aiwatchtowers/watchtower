@@ -47,6 +47,7 @@ since: 0.24.0
   - One **Notifications** section holds every switch: **Pause notifications**, **Decision notifications**, **Briefing notifications**, **Workbench notifications**, **Claude plan limits**, **Notify about unknown voices** and **Meeting reminders** with **Remind before meeting** (0–60 minutes; 0 is **Off**).
   - **Pause notifications** (off by default) silences every notice, including the "still recording" alert, which no other switch affects. When you turn it off, new decisions and briefings, plan-limit warnings and reminders for meetings still ahead are sent; an update is announced on a later check; the rest are dropped.
   - **Send Test Notification** works even while paused.
+  - Alerts on your iPhone are set on the phone, under Settings → **Notifications** → **When work stops**. See [Watchtower on iPhone](../features/iphone.md).
 
 ## Meetings
 
@@ -65,6 +66,7 @@ since: 0.24.0
 ## Mobile
 
 - **Sync with iPhone** (off by default) makes this Mac the hub for the iPhone app, through your own iCloud. On a build without iCloud signing it says **Needs a signed build**. **Use Watchtower on iPhone** shows a QR code valid for 10 minutes. See [iPhone](../features/iphone.md).
+- **Keep this Mac awake for the iPhone** (on by default; shown while Sync with iPhone is on) stops the Mac from sleeping on its own while a session runs and a linked phone has been in touch in the last 24 hours. A closed lid on battery still sleeps the Mac.
 - Each linked phone shows **Same Apple ID** or **Shared** and one line per permission, each with **Allow…** or **Revoke**: typing into your sessions, starting sessions (allowed only once typing is: **Starting sessions needs typing**) and answering permission prompts. **Remove…** unlinks it.
 
 ## Profile

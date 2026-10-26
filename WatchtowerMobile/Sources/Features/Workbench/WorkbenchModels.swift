@@ -21,11 +21,19 @@ struct SessionRowModel: Equatable, Identifiable {
     let metaItems: [MetaItem]
     let openAsks: Int
     let openAsksTone = PhoneTone.waitingForYou
+    /// The sessions list's meta (mockup 2): the Mac's caption alone (the
+    /// time trails the row), then the report items.
+    let panelMetaItems: [MetaItem]
+    /// The sessions list's trailing time: m:ss while a live session works,
+    /// else the age of its state ("4m").
+    let time: String?
     /// The Mac's orange states plus a session with open asks (finished with
     /// open asks): the only sessions whose orange is a waiting element.
     private let isWaiting: Bool
 
-    init(_ session: TerminalSessionState, now: Date) {
+    /// `asOf`: the Mac's last contact while it is asleep; a live session's
+    /// time then reads "as of …" instead of counting on.
+    init(_ session: TerminalSessionState, now: Date, asOf: Date? = nil) {
         let since = session.live ? session.stateAt : session.lastActiveAt
         let caption = since.map { "\(session.stateCaption) · \(CompactAge.string(from: $0, now: now))" }
             ?? session.stateCaption
@@ -55,6 +63,26 @@ struct SessionRowModel: Equatable, Identifiable {
             items.append(MetaItem(text: "\(session.closedAsks) closed", tone: .secondary, role: .info))
         }
         metaItems = items
+        var panel = [MetaItem(text: session.stateCaption, tone: tone, role: .session(isWaiting: isWaiting))]
+        // The open-ask count the badge of `SessionRowView` shows, unless the
+        // Mac's caption already says it ("Finished · 1 ask open").
+        let asksOpen = session.openAsks == 1 ? "1 ask open" : "\(session.openAsks) asks open"
+        if session.openAsks > 0, !session.stateCaption.contains(asksOpen) {
+            panel.append(MetaItem(text: asksOpen, tone: openAsksTone, role: .ask))
+        }
+        panelMetaItems = panel + items.dropFirst()
+        let counts = session.live && [.working, .running].contains(session.stateKind) && session.stateAt != nil
+        time = StateLineModel(
+            glyph: nil, tone: tone, caption: session.stateCaption, isWaiting: !counts,
+            stateAt: counts ? session.stateAt : (since ?? session.lastActiveAt), now: now,
+            asOf: session.live ? asOf : nil
+        ).time
+    }
+
+    /// The sessions list's icon (mockup 2): the Mac's glyph on a disc, else
+    /// the dot.
+    var icon: FlatRowIcon {
+        glyph.map { .state(glyph: $0, tone: tone) } ?? .session(tone: tone, isRing: isRing)
     }
 
     var toneUses: [ToneUse] {
@@ -218,59 +246,117 @@ struct WorkbenchCardModel: Equatable, Identifiable {
     }
 }
 
-/// Level 2 of the Workbench tab: the branch and board counts, the
-/// Waiting-for-you stack with its closed asks, and the SESSIONS list.
+/// One section of a workbench's sessions (mockup 2).
+struct SessionSection: Equatable, Identifiable {
+    let title: String
+    let tone: PhoneTone
+    let rows: [SessionRowModel]
+
+    var id: String { title }
+}
+
+/// Level 2 of the Workbench tab: the branch and board counts, then the
+/// sessions in the Desktop sessions panel's order (spec §5.5, mockup 2):
+/// Waiting for you, Working, Ready to check, Not running, then "▸ N
+/// finished" folded; asks whose session is not listed wait on top, and the
+/// closed asks fold at the end.
 struct WorkbenchMenuModel {
     let id: Int64
     let title: String
     /// The branch, "detached", or nil when the Mac has none yet.
     let branch: String?
     let boardCounts: [BoardCountItem]
-    let waiting: [WaitingCardModel]
+    /// The non-empty sections, in the panel's order; rows newest first.
+    let sections: [SessionSection]
+    /// Finished with no open ask, newest first: the folded group.
+    let finished: [SessionRowModel]
+    /// "6 finished"; nil when none.
+    let finishedLabel: String?
+    /// Open asks whose session this list does not show (none, or another
+    /// workbench's), newest first.
+    let unattachedAsks: [WaitingCardModel]
     /// Answered, delivered and withdrawn asks, newest first.
     let closedAsks: [OwnerAsk]
     let closedLabel: String?
-    /// Live first, then by latest activity.
-    let sessions: [SessionRowModel]
     /// "No sessions yet" when the workbench has none.
     let sessionsEmptyText: String?
-    /// "Waiting for you · N".
-    let waitingHeader: String
-    let waitingHeaderTone = PhoneTone.waitingForYou
 
-    init?(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date) {
+    /// `asOf`: the Mac's last contact while it is asleep
+    /// (`MacReachability.asOf`), so live rows stop counting.
+    init?(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, asOf: Date?) {
         guard let workbench = snapshot.workbench(workbenchID) else { return nil }
         id = workbench.id
         title = workbench.name
         let branchName = workbench.detached ? "detached" : workbench.branch
         branch = branchName.isEmpty ? nil : branchName
         boardCounts = BoardCounts.items(workbench)
-        waiting = snapshot.pendingPermissions.filter { $0.workbenchID == workbenchID }
+        let sessions = snapshot.sessions
+            .filter { $0.workbenchID == workbenchID }
+            .sorted { $0.lastActiveAt != $1.lastActiveAt ? $0.lastActiveAt > $1.lastActiveAt : $0.id > $1.id }
+        var grouped: [Group: [SessionRowModel]] = [:]
+        for session in sessions {
+            grouped[Group(session), default: []].append(SessionRowModel(session, now: now, asOf: asOf))
+        }
+        sections = Group.listed.compactMap { group in
+            grouped[group].map { SessionSection(title: group.title, tone: group.tone, rows: $0) }
+        }
+        finished = grouped[.finished] ?? []
+        finishedLabel = finished.isEmpty ? nil : "\(finished.count) finished"
+        let listed = Set(sessions.map(\.id))
+        unattachedAsks = snapshot.openAsks(in: workbenchID)
+            .filter { $0.sessionID.map { !listed.contains($0) } ?? true }
             .map { WaitingCardModel($0, snapshot: snapshot, now: now) }
-            + snapshot.openAsks(in: workbenchID).map { WaitingCardModel($0, snapshot: snapshot, now: now) }
         closedAsks = snapshot.asks
             .filter { $0.workbenchID == workbenchID && $0.status != .open }
             .sorted(by: WorkbenchReplicaSnapshot.newestFirst)
         closedLabel = closedAsks.isEmpty ? nil : "\(closedAsks.count) closed"
-        waitingHeader = "Waiting for you · \(waiting.count)"
-        sessions = snapshot.sessions
-            .filter { $0.workbenchID == workbenchID }
-            .sorted { lhs, rhs in
-                if lhs.live != rhs.live { return lhs.live }
-                return lhs.lastActiveAt != rhs.lastActiveAt ? lhs.lastActiveAt > rhs.lastActiveAt : lhs.id < rhs.id
-            }
-            .map { SessionRowModel($0, now: now) }
         sessionsEmptyText = sessions.isEmpty ? "No sessions yet" : nil
     }
 
+    /// Where a session sits in the list, by the Mac's state: the owner's
+    /// move (an ask, an approval, a finished session's open ask, a stopped
+    /// or failed turn), the agent's, a verdict, not running, or done.
+    private enum Group: CaseIterable {
+        case waiting, working, readyToCheck, notRunning, finished
+
+        static let listed: [Self] = [.waiting, .working, .readyToCheck, .notRunning]
+
+        init(_ session: TerminalSessionState) {
+            switch session.stateKind {
+            case .waitingOnAsk, .needsApproval, .stopped, .failed: self = .waiting
+            case .finished: self = session.openAsks > 0 ? .waiting : .finished
+            case .readyToCheck: self = .readyToCheck
+            case .working, .running: self = .working
+            case .notStarted: self = .notRunning
+            default: self = session.live ? .working : .notRunning
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .waiting: "Waiting for you"
+            case .working: "Working"
+            case .readyToCheck: "Ready to check"
+            case .notRunning: "Not running"
+            case .finished: "Finished"
+            }
+        }
+
+        var tone: PhoneTone {
+            self == .waiting ? .waitingForYou : .secondary
+        }
+    }
+
     var toneUses: [ToneUse] {
-        [ToneUse(element: "workbench \(id) waiting header", tone: waitingHeaderTone, role: .waiting)]
+        sections.filter { $0.tone == .waitingForYou }
+            .map { ToneUse(element: "workbench \(id) \($0.title) header", tone: $0.tone, role: .waiting) }
             + boardCounts.map { ToneUse(element: "workbench \(id) \($0.text)", tone: $0.tone, role: $0.role) }
-            + waiting.map(\.toneUse) + sessions.flatMap(\.toneUses)
+            + unattachedAsks.map(\.toneUse)
+            + (sections.flatMap(\.rows) + finished).flatMap(\.toneUses)
     }
 }
 
-/// One session-state count with its dot (Workbench card, Now chips).
+/// One session-state count with its dot (Workbench card).
 struct SessionStateCount: Equatable, Identifiable {
     let label: String
     let amount: Int
@@ -294,18 +380,6 @@ struct SessionStateCount: Equatable, Identifiable {
             Self(label: "failed", amount: counts.failed, tone: .red, isRing: true, isWaiting: false),
             Self(label: "stopped", amount: counts.stopped, tone: .secondary, isRing: true, isWaiting: false)
         ].filter { $0.amount > 0 }
-    }
-
-    static func sum(_ all: [Workbench.SessionCounts]) -> Workbench.SessionCounts {
-        Workbench.SessionCounts(
-            working: all.reduce(0) { $0 + $1.working },
-            waiting: all.reduce(0) { $0 + $1.waiting },
-            needsApproval: all.reduce(0) { $0 + $1.needsApproval },
-            finished: all.reduce(0) { $0 + $1.finished },
-            failed: all.reduce(0) { $0 + $1.failed },
-            stopped: all.reduce(0) { $0 + $1.stopped },
-            notRunning: all.reduce(0) { $0 + $1.notRunning }
-        )
     }
 
     var toneUse: ToneUse {

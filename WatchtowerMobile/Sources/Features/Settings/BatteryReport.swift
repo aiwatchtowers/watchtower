@@ -94,23 +94,23 @@ struct BatterySection: View {
     let report: BatteryReport
 
     var body: some View {
-        Section {
-            ForEach(report.counterRows) { row in
-                LabeledContent(row.label, value: row.value)
+        SettingsCard(
+            title: "Battery",
+            footer: "Counts are today · yesterday. iOS sends a MetricKit report about once a day, for the day before."
+        ) {
+            ForEach(Array(report.counterRows.enumerated()), id: \.element.id) { index, row in
+                if index > 0 { CardRowDivider() }
+                SettingsRow(title: row.label) { Text(row.value) }
             }
+            CardRowDivider()
             if report.metricRows.isEmpty {
-                Text("No MetricKit report yet")
-                    .foregroundStyle(.secondary)
+                SettingsRow(title: "No MetricKit report yet") { EmptyView() }
             } else {
-                ForEach(report.metricRows) { row in
-                    LabeledContent(row.label, value: row.value)
+                ForEach(Array(report.metricRows.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { CardRowDivider() }
+                    SettingsRow(title: row.label) { Text(row.value) }
                 }
             }
-        } header: {
-            Text("Battery")
-        } footer: {
-            Text("Counts are today · yesterday. iOS sends a MetricKit report about once a day, for the day before.")
         }
-        .font(.footnote)
     }
 }

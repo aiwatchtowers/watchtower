@@ -1,17 +1,29 @@
 import os
 import SwiftUI
 import UIKit
+import UserNotifications
 import WatchtowerSync
 
 /// The silent-push wake path: CKSyncEngine owns subscriptions and push
 /// registration (and fetches on a push by itself); the app turns a
 /// `content-available` push into a light fetch that rides the engine's.
-final class AppDelegate: NSObject, UIApplicationDelegate {
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     /// Set once the root exists. Static because a background push launch
     /// reaches the delegate before any view appears; weak because the
     /// app's boot state owns the root. Read through the root, since the link
     /// flow replaces its environment.
-    @MainActor static weak var root: AppRoot?
+    @MainActor static weak var root: AppRoot? {
+        didSet { openPendingTap() }
+    }
+
+    /// A tap that launched the app arrives before the root exists; it opens once the root does.
+    @MainActor private static var pendingTap: AlertDestination?
+
+    @MainActor private static func openPendingTap() {
+        guard let root, let tap = pendingTap else { return }
+        pendingTap = nil
+        root.open(tap)
+    }
 
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppDelegate")
 
@@ -33,6 +45,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let environment = ProcessInfo.processInfo.environment
         guard !WatchtowerMobileApp.Boot.isHostingTests(environment) else { return true }
         countsLaunch = true
+        UNUserNotificationCenter.current().delegate = self
         let diagnostics = BatteryDiagnostics.shared
         recordColdLaunch(coldLaunch.launched(
             forRemoteNotification: launchOptions?[.remoteNotification] != nil,
@@ -50,6 +63,31 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             MainActor.assumeIsolated { ReplicaObservationGate.shared.setSuspended(true) }
         }
         return true
+    }
+
+    /// A work alert arriving in the foreground: a banner and sound, unless its screen is already on top.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        let destination = AlertDestination.destination(userInfo: notification.request.content.userInfo)
+        return await MainActor.run {
+            AlertDestination.foregroundOptions(for: destination, onScreen: Self.root?.env.navigation.alertOnScreen)
+        }
+    }
+
+    /// A tap on a work alert opens its screen.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let destination = AlertDestination.destination(userInfo: response.notification.request.content.userInfo)
+        else { return }
+        await MainActor.run {
+            Self.pendingTap = destination
+            Self.openPendingTap()
+        }
     }
 
     /// The scene became active: the first activation of a process not yet
@@ -409,7 +447,7 @@ struct DemoTourBanner: View {
     let exit: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.medium) {
             Image(systemName: "play.rectangle")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
@@ -417,12 +455,12 @@ struct DemoTourBanner: View {
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Exit Demo", action: exit)
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+                .buttonStyle(BannerButtonStyle())
         }
-        .padding(.horizontal)
-        .padding(.vertical, 4)
-        .background(.bar)
+        .padding(.horizontal, Spacing.large)
+        .padding(.vertical, Spacing.small)
+        .background(Fill.card)
+        .overlay(alignment: .bottom) { CardRowDivider() }
     }
 }
 
