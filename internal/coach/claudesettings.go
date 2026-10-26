@@ -23,6 +23,21 @@ var (
 	errSettingsChanged    = errors.New("settings.json changed while it was being written")
 )
 
+// settingsErr wraps a file-system error without its path (the owner's home
+// folder): a *PathError or *LinkError keeps only its operation and cause, so
+// errors.Is still sees the cause (FILES-01).
+func settingsErr(what string, err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return fmt.Errorf("%s: %s: %w", what, pe.Op, pe.Err)
+	}
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return fmt.Errorf("%s: %s: %w", what, le.Op, le.Err)
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
 // claudeSettingsPath is <home>/.claude/settings.json.
 func claudeSettingsPath(home string) string { return filepath.Join(home, ".claude", "settings.json") }
 
@@ -82,14 +97,14 @@ func readSettingsFile(path string) (raw []byte, mode fs.FileMode, exists bool, e
 		return nil, 0, false, nil
 	}
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("reading settings.json: %w", err)
+		return nil, 0, false, settingsErr("reading settings.json", err)
 	}
 	if !fi.Mode().IsRegular() {
 		return nil, 0, false, errSettingsNotRegular
 	}
 	raw, err = os.ReadFile(path)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("reading settings.json: %w", err)
+		return nil, 0, false, settingsErr("reading settings.json", err)
 	}
 	return raw, fi.Mode().Perm(), true, nil
 }
@@ -164,7 +179,7 @@ func editAllowRules(path string, edit func([]string) []string) (before, after []
 	out = append(out, '\n')
 	if !exists {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return nil, nil, fmt.Errorf("creating the settings folder: %w", err)
+			return nil, nil, settingsErr("creating the settings folder", err)
 		}
 		raw = nil
 	}
@@ -186,7 +201,7 @@ func RestoreFile(path string, before []byte) error {
 			return nil
 		}
 		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("removing settings.json: %w", err)
+			return settingsErr("removing settings.json", err)
 		}
 		return nil
 	}
@@ -204,7 +219,7 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode, expect []byte, 
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".settings.json.coach-*")
 	if err != nil {
-		return fmt.Errorf("writing settings.json: %w", err)
+		return settingsErr("writing settings.json", err)
 	}
 	defer func() {
 		if err != nil {
@@ -213,18 +228,18 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode, expect []byte, 
 	}()
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("writing settings.json: %w", err)
+		return settingsErr("writing settings.json", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("writing settings.json: %w", err)
+		return settingsErr("writing settings.json", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("writing settings.json: %w", err)
+		return settingsErr("writing settings.json", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("writing settings.json: %w", err)
+		return settingsErr("writing settings.json", err)
 	}
 	cur, _, exists, err := readSettingsFile(path)
 	if err != nil {
@@ -234,7 +249,7 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode, expect []byte, 
 		return errSettingsChanged
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("writing settings.json: %w", err)
+		return settingsErr("writing settings.json", err)
 	}
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync() // best effort: the rename is durable once the folder is

@@ -127,3 +127,29 @@ func TestRemoveAllowRules_KeepsTheRest(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"B", "C"}, rules)
 }
+
+func TestWriteFileAtomic_RefusesAChangedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"a":2}`), 0o600))
+	err := writeFileAtomic(path, []byte(`{"b":1}`), 0o600, []byte(`{"a":1}`), true)
+	require.ErrorIs(t, err, errSettingsChanged)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, `{"a":2}`, string(raw), "nothing replaced")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "the temp file is removed")
+
+	// A file that appeared while it was expected to be absent.
+	require.ErrorIs(t, writeFileAtomic(path, []byte(`{}`), 0o600, nil, false), errSettingsChanged)
+}
+
+func TestSettingsErrors_CarryNoPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing-folder", "settings.json")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "missing-folder"), nil, 0o600)) // a file where the folder should be
+	_, _, err := AppendAllowRules(path, []string{"Bash(go test:*)"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), dir)
+}

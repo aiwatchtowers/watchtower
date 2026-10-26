@@ -52,9 +52,12 @@ func (a *Applier) now() time.Time {
 // Accept applies an open proposal. edited "" applies the proposed text;
 // otherwise edited is the owner's own whole after-text, checked by the same
 // rules. The destination must still hold the proposal's before-text, else the
-// proposal is superseded and ErrStale returned. The destination is written
-// first, then the status; when the status write fails the before-state is put
-// back.
+// proposal is superseded and ErrStale returned; an owner text is written by a
+// compare-and-set on that before-text, so an edit made after the check is
+// never overwritten. When the destination already holds the proposal's
+// after-text (an earlier Accept wrote it but failed to record it), only the
+// status is written. The destination is written first, then the status; when
+// the status write fails the before-state is put back.
 func (a *Applier) Accept(id int64, edited string) error {
 	p, err := a.DB.GetCoachProposal(id)
 	if err != nil {
@@ -63,30 +66,40 @@ func (a *Applier) Accept(id int64, edited string) error {
 	if p.Status != "open" {
 		return fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
+	if p.Destination == DestClaudeMDUser {
+		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, errNotSupported)
+	}
+	now := a.now()
+	// The slow measure runs first so the read and the write stay adjacent.
+	baseline, n, err := a.baseline(p, now)
+	if err != nil {
+		return fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
+	}
 	cur, err := a.readCurrent(p)
 	if err != nil {
 		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
-	}
-	now := a.now()
-	if cur.Text != p.BeforeText {
-		if err := a.DB.DecideCoachProposal(id, "open", "superseded", now); err != nil {
-			return fmt.Errorf("coach proposal %d: %w", id, err)
-		}
-		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, ErrStale)
 	}
 	after := p.AfterText
 	if edited != "" {
 		after = edited
 	}
+	if cur.Text != p.BeforeText {
+		if cur.Text == p.AfterText || cur.Text == after {
+			if err := a.DB.MarkCoachAccepted(id, cur.Text, baseline, n, now); err != nil {
+				return fmt.Errorf("accepting coach proposal %d: %w", id, err)
+			}
+			return nil
+		}
+		return a.supersede(p, now)
+	}
 	if err := ValidateAfter(cur, after); err != nil {
 		return logredact.Errorf("coach proposal %d (%s): %w: %s", id, p.Destination, ErrInvalidEdit,
 			logredact.Text(err.Error()))
 	}
-	baseline, n, err := a.baseline(p, now)
-	if err != nil {
-		return fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
-	}
 	w, err := a.writeDestination(p, cur, after, now)
+	if errors.Is(err, ErrStale) {
+		return a.supersede(p, now)
+	}
 	if err != nil {
 		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}
@@ -100,6 +113,14 @@ func (a *Applier) Accept(id int64, edited string) error {
 	return nil
 }
 
+// supersede closes p because its destination no longer holds its before-text.
+func (a *Applier) supersede(p db.CoachProposal, now time.Time) error {
+	if err := a.DB.DecideCoachProposal(p.ID, "open", "superseded", now); err != nil {
+		return fmt.Errorf("coach proposal %d: %w", p.ID, err)
+	}
+	return fmt.Errorf("coach proposal %d (%s): %w", p.ID, p.Destination, ErrStale)
+}
+
 // Decline closes an open proposal for good: its fingerprint never returns.
 func (a *Applier) Decline(id int64) error {
 	if err := a.DB.DecideCoachProposal(id, "open", "declined", a.now()); err != nil {
@@ -109,8 +130,8 @@ func (a *Applier) Decline(id int64) error {
 }
 
 // Rollback undoes an accepted proposal. When the destination no longer holds
-// the accepted text and force is false, nothing is written and it returns a
-// unified diff (accepted → now) with ErrChangedSince. An owner text gets its
+// the accepted edit (stillHolds) and force is false, nothing is written and it
+// returns a unified diff (accepted → now) with ErrChangedSince. An owner text gets its
 // before-text back; a prompt loses the additions this proposal made and gets
 // back the ones it removed; the allow list loses the rules this proposal
 // added, every other key and rule staying as it is.
@@ -126,11 +147,15 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}
-	if cur.Text != p.AfterText && !force {
+	holds, err := a.stillHolds(p, cur)
+	if err != nil {
+		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+	}
+	if !holds && !force {
 		return unifiedDiff(p.AfterText, cur.Text), fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, ErrChangedSince)
 	}
 	now := a.now()
-	if err := a.restoreDestination(p, now); err != nil {
+	if err := a.restoreDestination(p, cur, now); err != nil {
 		return "", fmt.Errorf("rolling back coach proposal %d (%s): %w", id, p.Destination, err)
 	}
 	// The destination is back; only the status is left. An accepted proposal
@@ -139,6 +164,58 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 		return "", fmt.Errorf("rolling back coach proposal %d: %w", id, err)
 	}
 	return "", nil
+}
+
+// stillHolds is whether the destination still contains p's accepted edit: an
+// owner text is exactly the after-text; a prompt still has every row this
+// proposal added, with the same text; the allow list still has every rule the
+// proposal added. Later additions and rules of others do not count.
+func (a *Applier) stillHolds(p db.CoachProposal, cur CurrentText) (bool, error) {
+	switch p.Destination {
+	case DestPromptAdd:
+		rows, err := a.DB.ListPromptAdditions(p.PromptID)
+		if err != nil {
+			return false, err
+		}
+		added := linesAdded(p.BeforeText, p.AfterText)
+		left := countLines(added)
+		tagged := 0
+		for _, r := range rows {
+			if r.ProposalID != p.ID {
+				continue
+			}
+			tagged++
+			if k := strings.TrimSpace(r.Text); left[k] > 0 {
+				left[k]--
+				continue
+			}
+			return false, nil
+		}
+		return tagged == len(added), nil
+	case DestSettingsAllow:
+		have := countLines(nonEmptyLines(cur.Text))
+		for _, r := range linesAdded(p.BeforeText, p.AfterText) {
+			if have[r] == 0 {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	return cur.Text == p.AfterText, nil
+}
+
+// linesAdded is the lines of after that before lacks (counting repeats).
+func linesAdded(before, after string) []string {
+	had := countLines(nonEmptyLines(before))
+	var out []string
+	for _, l := range nonEmptyLines(after) {
+		if had[l] > 0 {
+			had[l]--
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 func (a *Applier) baseline(p db.CoachProposal, now time.Time) (*float64, int, error) {
@@ -228,12 +305,14 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 	return t, nil
 }
 
-func (a *Applier) setText(p db.CoachProposal, body string) error {
+// swapText sets p's owner text to body only while it is still from; false
+// when someone changed it in between.
+func (a *Applier) swapText(p db.CoachProposal, from, body string) (bool, error) {
 	f := instructionField(p.Destination)
 	if p.WorkbenchID == 0 {
-		return a.DB.SetOwnerInstruction(f, body)
+		return a.DB.SwapOwnerInstruction(f, from, body)
 	}
-	return a.DB.SetWorkbenchInstruction(p.WorkbenchID, f, body)
+	return a.DB.SwapWorkbenchInstruction(p.WorkbenchID, f, from, body)
 }
 
 // written is a destination write: the text the destination now holds (stored
@@ -247,19 +326,24 @@ type written struct {
 func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after string, now time.Time) (written, error) {
 	switch p.Destination {
 	case DestSession, DestProcedure, DestChat:
-		if err := a.setText(p, after); err != nil {
+		ok, err := a.swapText(p, cur.Text, after)
+		if err != nil {
 			return written{}, err
 		}
+		if !ok {
+			return written{}, ErrStale
+		}
 		return written{result: after, undo: func() error {
-			if t, err := a.readCurrent(p); err != nil || t.Text != after {
-				return errors.Join(err, ErrChangedSince)
+			ok, err := a.swapText(p, after, cur.Text)
+			if err == nil && !ok {
+				err = ErrChangedSince
 			}
-			return a.setText(p, cur.Text)
+			return err
 		}}, nil
 	case DestPromptAdd:
 		return a.writeAdditions(p, after, now)
 	case DestSettingsAllow:
-		return a.writeAllow(cur, after)
+		return a.writeAllow(p, cur, after)
 	}
 	return written{}, errNotSupported
 }
@@ -309,25 +393,33 @@ func (a *Applier) writeAdditions(p db.CoachProposal, after string, now time.Time
 	}}, nil
 }
 
-// writeAllow appends the rules of after the allow list lacks. ValidateAfter
-// has already refused an after that drops a rule.
-func (a *Applier) writeAllow(cur CurrentText, after string) (written, error) {
+// writeAllow appends the rules the proposal adds (after − its before-text);
+// ValidateAfter has already refused an after that drops a rule. The result is
+// the list as read plus those rules, so a rule someone else adds meanwhile is
+// never recorded as this proposal's.
+func (a *Applier) writeAllow(p db.CoachProposal, cur CurrentText, after string) (written, error) {
 	path, err := a.settingsPath()
 	if err != nil {
 		return written{}, err
 	}
-	before, out, err := AppendAllowRules(path, nonEmptyLines(after))
+	rules := linesAdded(p.BeforeText, after)
+	before, out, err := AppendAllowRules(path, rules)
 	if err != nil {
 		return written{}, err
 	}
+	result := nonEmptyLines(cur.Text)
+	have := countLines(result)
+	for _, r := range rules {
+		if have[r] == 0 {
+			have[r]++
+			result = append(result, r)
+		}
+	}
+	w := written{result: strings.Join(result, "\n"), undo: func() error { return nil }}
 	if bytes.Equal(before, out) {
-		return written{result: cur.Text, undo: func() error { return nil }}, nil
+		return w, nil
 	}
-	d, err := parseSettings(out)
-	if err != nil {
-		return written{}, err
-	}
-	return written{result: strings.Join(d.allow, "\n"), undo: func() error {
+	w.undo = func() error {
 		raw, _, _, err := readSettingsFile(path)
 		if err != nil {
 			return err
@@ -336,14 +428,19 @@ func (a *Applier) writeAllow(cur CurrentText, after string) (written, error) {
 			return errSettingsChanged
 		}
 		return RestoreFile(path, before)
-	}}, nil
+	}
+	return w, nil
 }
 
 // restoreDestination puts p's before-state back (see Rollback).
-func (a *Applier) restoreDestination(p db.CoachProposal, now time.Time) error {
+func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now time.Time) error {
 	switch p.Destination {
 	case DestSession, DestProcedure, DestChat:
-		return a.setText(p, p.BeforeText)
+		ok, err := a.swapText(p, cur.Text, p.BeforeText)
+		if err == nil && !ok {
+			err = ErrChangedSince
+		}
+		return err
 	case DestPromptAdd:
 		rows, err := a.DB.ListPromptAdditions(p.PromptID)
 		if err != nil {
@@ -383,14 +480,7 @@ func (a *Applier) restoreDestination(p db.CoachProposal, now time.Time) error {
 		if err != nil {
 			return err
 		}
-		had := countLines(nonEmptyLines(p.BeforeText))
-		var added []string
-		for _, r := range nonEmptyLines(p.AfterText) {
-			if had[r] == 0 {
-				added = append(added, r)
-			}
-		}
-		_, _, err = removeAllowRules(path, added)
+		_, _, err = removeAllowRules(path, linesAdded(p.BeforeText, p.AfterText))
 		return err
 	}
 	return errNotSupported

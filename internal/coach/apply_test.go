@@ -321,3 +321,129 @@ func TestUnifiedDiff_EmptySides(t *testing.T) {
 	assert.Equal(t, "--- accepted\n+++ now\n@@ -1,1 +0,0 @@\n-a\n", unifiedDiff("a", ""))
 	assert.Equal(t, "--- accepted\n+++ now\n@@ -1,1 +1,1 @@\n-a\n+b\n", unifiedDiff("a", "b"))
 }
+
+func TestAccept_TextChangedBetweenReadAndWriteIsStale(t *testing.T) {
+	d := openDBs(t)
+	a := newApplier(t, d)
+	wb, _ := d.workbench(t, "a", 0)
+	for _, scope := range []int64{0, wb} {
+		set := func(body string) {
+			if scope == 0 {
+				require.NoError(t, d.SetOwnerInstruction(db.InstructionSession, body))
+			} else {
+				require.NoError(t, d.SetWorkbenchInstruction(scope, db.InstructionSession, body))
+			}
+		}
+		set("Before.")
+		p := db.CoachProposal{Destination: DestSession, WorkbenchID: scope, BeforeText: "Before.", AfterText: "After."}
+		cur, err := a.readCurrent(p)
+		require.NoError(t, err)
+		set("The owner's edit.") // lands after the stale check
+		_, err = a.writeDestination(p, cur, "After.", applyNow)
+		require.ErrorIs(t, err, ErrStale)
+		got, err := a.readCurrent(p)
+		require.NoError(t, err)
+		assert.Equal(t, "The owner's edit.", got.Text, "scope %d: the owner's edit is never overwritten", scope)
+	}
+}
+
+func TestAccept_AfterTextAlreadyLiveFinishesStatus(t *testing.T) {
+	d := openDBs(t)
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionSession, "Before."))
+	id := propose(t, d, db.CoachProposal{Destination: DestSession, BeforeText: "Before.", AfterText: "Before. After."})
+	// An earlier Accept wrote the text, then failed to record the status.
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionSession, "Before. After."))
+
+	require.NoError(t, newApplier(t, d).Accept(id, ""))
+	p := proposal(t, d, id)
+	assert.Equal(t, "accepted", p.Status, "not superseded")
+	assert.Equal(t, "Before. After.", p.AfterText)
+	got, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.Equal(t, "Before. After.", got.Session)
+}
+
+func TestRollback_PromptAdditionSurvivesLaterAdditions(t *testing.T) {
+	d := openDBs(t)
+	a := newApplier(t, d)
+	id := propose(t, d, db.CoachProposal{Destination: DestPromptAdd, PromptID: prompts.SpecReview, AfterText: "Skip naming."})
+	require.NoError(t, a.Accept(id, ""))
+	_, err := d.AddPromptAddition(prompts.SpecReview, "A later line.", 0, applyNow)
+	require.NoError(t, err)
+
+	diff, err := a.Rollback(id, false)
+	require.NoError(t, err, "the proposal's own row is intact")
+	assert.Empty(t, diff)
+	adds, err := d.ListPromptAdditions(prompts.SpecReview)
+	require.NoError(t, err)
+	require.Len(t, adds, 1)
+	assert.Equal(t, "A later line.", adds[0].Text)
+
+	// Its own row edited away: a plain rollback refuses.
+	id2 := propose(t, d, db.CoachProposal{Destination: DestPromptAdd, PromptID: prompts.SpecReview,
+		BeforeText: "A later line.", AfterText: "A later line.\nSkip style."})
+	require.NoError(t, a.Accept(id2, ""))
+	adds, err = d.ListPromptAdditions(prompts.SpecReview)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE prompt_additions SET text = 'Skip style, mostly.' WHERE id = ?`, adds[1].ID)
+	require.NoError(t, err)
+	_, err = a.Rollback(id2, false)
+	require.ErrorIs(t, err, ErrChangedSince)
+	assert.Equal(t, "accepted", proposal(t, d, id2).Status)
+}
+
+func TestRollback_AllowRuleSurvivesLaterRules(t *testing.T) {
+	d := openDBs(t)
+	a := newApplier(t, d)
+	path := claudeSettingsPath(a.Home)
+	id := propose(t, d, db.CoachProposal{Destination: DestSettingsAllow, AfterText: "Bash(go test:*)"})
+	require.NoError(t, a.Accept(id, ""))
+	_, _, err := AppendAllowRules(path, []string{"Bash(ls:*)"}) // Claude Code adds one later
+	require.NoError(t, err)
+
+	_, err = a.Rollback(id, false)
+	require.NoError(t, err)
+	rules, err := readAllowRules(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Bash(ls:*)"}, rules)
+
+	// The proposal's rule gone already: a plain rollback refuses.
+	id2 := propose(t, d, db.CoachProposal{Destination: DestSettingsAllow, BeforeText: "Bash(ls:*)", AfterText: "Bash(ls:*)\nBash(go vet:*)"})
+	require.NoError(t, a.Accept(id2, ""))
+	_, _, err = removeAllowRules(path, []string{"Bash(go vet:*)"})
+	require.NoError(t, err)
+	_, err = a.Rollback(id2, false)
+	require.ErrorIs(t, err, ErrChangedSince)
+}
+
+func TestAccept_AllowRecordsOnlyItsOwnRules(t *testing.T) {
+	d := openDBs(t)
+	a := newApplier(t, d)
+	path := claudeSettingsPath(a.Home)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	// The file gains a rule after the read and before the append.
+	require.NoError(t, os.WriteFile(path, []byte(`{"permissions":{"allow":["Read","Bash(ls:*)"]}}`), 0o600))
+	p := db.CoachProposal{Destination: DestSettingsAllow, BeforeText: "Read", AfterText: "Read\nBash(go test:*)"}
+	w, err := a.writeDestination(p, CurrentText{Destination: DestSettingsAllow, Text: "Read"}, p.AfterText, applyNow)
+	require.NoError(t, err)
+	assert.Equal(t, "Read\nBash(go test:*)", w.result)
+	rules, err := readAllowRules(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Read", "Bash(ls:*)", "Bash(go test:*)"}, rules)
+}
+
+func TestAccept_AllowListMayOnlyGrow(t *testing.T) {
+	require.Error(t, ValidateAfter(CurrentText{Destination: DestSettingsAllow, Text: "Read\nBash(ls:*)"}, "Bash(ls:*)"))
+
+	d := openDBs(t)
+	a := newApplier(t, d)
+	path := claudeSettingsPath(a.Home)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	orig := []byte(`{"permissions":{"allow":["Read"]}}`)
+	require.NoError(t, os.WriteFile(path, orig, 0o600))
+	id := propose(t, d, db.CoachProposal{Destination: DestSettingsAllow, BeforeText: "Read", AfterText: "Read\nBash(go test:*)"})
+	require.ErrorIs(t, a.Accept(id, "Bash(go test:*)"), ErrInvalidEdit)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, orig, raw)
+}
