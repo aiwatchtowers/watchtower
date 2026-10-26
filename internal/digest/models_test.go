@@ -33,6 +33,8 @@ func TestTierForSource(t *testing.T) {
 		"workbench.review_overview", "workbench.review_lessons",
 		// The spec reviewer (spec 2026-10-25-spec-review-design §3).
 		"workbench.spec_review",
+		// The agent coach's weekly proposals (spec 2026-10-26-agent-coach-design §6).
+		prompts.CoachPropose,
 	}
 	for _, src := range strong {
 		if got := TierForSource(src); got != TierStrong {

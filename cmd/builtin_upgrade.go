@@ -355,7 +355,9 @@ func customisedLegacyPrompt(store *prompts.Store, database *db.DB, id, role stri
 	if row == nil || !row.Customized || strings.TrimSpace(row.Template) == "" {
 		return "", false, nil
 	}
-	tmpl, _, err := prompts.Resolve(store, id, role)
+	// The raw read: Resolve would append the owner's additions, which are
+	// not part of the row and must not be carried into the recipe.
+	tmpl, _, err := store.GetForRole(id, role)
 	if err != nil {
 		return "", false, err
 	}

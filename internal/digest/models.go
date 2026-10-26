@@ -42,6 +42,8 @@ func TierForSource(source string) Tier {
 		"media.summarize_link":
 		return TierLight
 	default:
+		// Strong by absence, among others: coach.propose (the agent coach's
+		// weekly edits to the owner's setup).
 		return TierStrong
 	}
 }

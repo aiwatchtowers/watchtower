@@ -80,6 +80,10 @@ Spec: `docs/superpowers/specs/2026-10-23-chat-owner-instructions-design.md`. PRO
 - **Desktop.** Settings -> Profile -> Instructions (`InstructionsSettingsSection`: "For chats and agents", "Only in chats" with "Added from chats" lines and **Open chat**, "Target procedure", Preview of both slots); System -> Workbench keeps a pointer; `RememberCenter` and `RememberMarkView` in the chat composers.
 - **Guards.** `TestProj22_RememberWritesOwnerWordsVerbatim`, `TestProj22_WorkbenchTextsNeverInChatSlot`.
 
+## Coach
+
+Since 2026-10-26 the agent coach (`docs/features/agent-coach.md`, board #1120) also proposes edits to the global and per-workbench session and procedure texts and the chat text, weekly, from the same owner lines; the owner's Accept writes them through the same fields (budget `MaxRunes`). The daily miner above stays as it is until the coach absorbs it (Plan 2).
+
 ## Limits
 
 - No per-target texts, variables, structured rule list or phone sync. Remember applies to chats only; facts and decisions about the world are a separate design.

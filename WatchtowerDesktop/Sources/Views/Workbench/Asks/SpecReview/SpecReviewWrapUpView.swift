@@ -76,6 +76,8 @@ struct SpecReviewWrapUpView: View {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success).accessibilityLabel("Fine as is")
         case .comment:
             Image(systemName: "text.bubble.fill").foregroundStyle(Color.accentColor).accessibilityLabel("Comment")
+        case .notUseful:
+            Image(systemName: "hand.thumbsdown.fill").foregroundStyle(Color.secondary).accessibilityLabel("Not useful")
         case .viewed, nil:
             Image(systemName: "exclamationmark.circle").foregroundStyle(Tone.warning).accessibilityLabel("Not marked")
         }

@@ -176,6 +176,16 @@ private struct SpecReviewDisputeCard: View {
                     Spacer()
                     Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                 }
+            case .notUseful:
+                // Marked on the findings screen; never sent to the author
+                // (SpecReviewAnswer sends comment marks only).
+                HStack(spacing: Spacing.regular) {
+                    Label("Not useful", systemImage: "hand.thumbsdown.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.secondary)
+                    Spacer()
+                    Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
+                }
             case .viewed, nil:
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     CommentTextEditor(

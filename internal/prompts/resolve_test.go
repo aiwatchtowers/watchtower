@@ -2,7 +2,9 @@ package prompts
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -123,4 +125,95 @@ func TestMovedToBuiltin_CThreeIDs(t *testing.T) {
 	_, err := NewTuner(nil, nil, nil).Suggest(context.Background(), IdeasConsolidate)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "idea-finder")
+}
+
+func TestResolve_AppendsAdditions(t *testing.T) {
+	database := openTestDB(t)
+	store := New(database, nil)
+	require.NoError(t, store.Seed())
+	_, err := database.AddPromptAddition(CatchupCompose, "Do not flag naming choices.", 0, time.Now())
+	require.NoError(t, err)
+
+	tmpl, _, err := Resolve(store, CatchupCompose, "")
+	require.NoError(t, err)
+	assert.Equal(t, Defaults[CatchupCompose]+"\n\n=== OWNER PREFERENCES (approved by the owner) ===\n- Do not flag naming choices.\n", tmpl)
+
+	// Unseeded store: the built-in default gets the block too.
+	bare := New(openTestDB(t), nil)
+	_, err = bare.DB().AddPromptAddition(MeetingRecap, "Be brief.", 0, time.Now())
+	require.NoError(t, err)
+	tmpl, _, err = Resolve(bare, MeetingRecap, "")
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(tmpl, "- Be brief.\n"))
+}
+
+func TestResolve_AdditionsOnRoleVariant(t *testing.T) {
+	database := openTestDB(t)
+	require.NoError(t, database.UpsertPrompt(db.Prompt{ID: DigestChannel + "_top_management", Template: "variant", Version: 3}))
+	_, err := database.AddPromptAddition(DigestChannel, "Keep it short.", 0, time.Now())
+	require.NoError(t, err)
+
+	tmpl, _, err := Resolve(New(database, nil), DigestChannel, "top_management")
+	require.NoError(t, err)
+	assert.Equal(t, WithAdditions("variant", []string{"Keep it short."}), tmpl)
+}
+
+func TestResolve_NoAdditionsUnchanged(t *testing.T) {
+	store := New(openTestDB(t), nil)
+	require.NoError(t, store.Seed())
+	tmpl, _, err := Resolve(store, CatchupCompose, "")
+	require.NoError(t, err)
+	assert.Equal(t, Defaults[CatchupCompose], tmpl)
+}
+
+func TestResolve_AdditionsDoNotSetCustomized(t *testing.T) {
+	database := openTestDB(t)
+	store := New(database, nil)
+	require.NoError(t, store.Seed())
+	_, err := database.AddPromptAddition(DigestChannel, "Do not flag naming choices.", 0, time.Now())
+	require.NoError(t, err)
+	_, _, err = Resolve(store, DigestChannel, "")
+	require.NoError(t, err)
+
+	row, err := database.GetPrompt(DigestChannel)
+	require.NoError(t, err)
+	assert.False(t, row.Customized)
+
+	// A shipped default bump still upgrades the row, and the addition stays.
+	original := DefaultVersions[DigestChannel]
+	DefaultVersions[DigestChannel] = row.Version + 5
+	t.Cleanup(func() { DefaultVersions[DigestChannel] = original })
+	require.NoError(t, New(database, nil).Seed())
+
+	tmpl, version, err := Resolve(New(database, nil), DigestChannel, "")
+	require.NoError(t, err)
+	assert.Equal(t, row.Version+5, version)
+	assert.True(t, strings.HasSuffix(tmpl, "- Do not flag naming choices.\n"))
+}
+
+func TestValidateAddition(t *testing.T) {
+	for _, bad := range []string{"", "  ", "uses %d", "x {{.X}}", "a }} b", "two\nlines", strings.Repeat("я", 301)} {
+		assert.Error(t, ValidateAddition(bad), "%q", bad)
+	}
+	assert.NoError(t, ValidateAddition("Do not flag naming choices."))
+	assert.NoError(t, ValidateAddition(strings.Repeat("я", 300)))
+}
+
+func TestWithAdditions_Format(t *testing.T) {
+	tmpl := "base"
+	assert.Equal(t, tmpl, WithAdditions(tmpl, nil))
+	want := tmpl + "\n\n=== OWNER PREFERENCES (approved by the owner) ===\n- Do not flag naming choices.\n"
+	assert.Equal(t, want, WithAdditions(tmpl, []string{"Do not flag naming choices."}))
+}
+
+func TestResolve_NoAdditionsForBuiltinOwnedPrompt(t *testing.T) {
+	database := openTestDB(t)
+	store := New(database, nil)
+	require.NoError(t, store.Seed())
+	_, err := database.AddPromptAddition(BriefingDaily, "Keep it short.", 0, time.Now())
+	require.NoError(t, err)
+
+	tmpl, _, err := Resolve(store, BriefingDaily, "")
+	require.NoError(t, err)
+	assert.Equal(t, Defaults[BriefingDaily], tmpl)
 }

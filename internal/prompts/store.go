@@ -61,6 +61,7 @@ const (
 	ReviewLessons              = "review.lessons"
 	SpecReview                 = "review.spec"
 	InstructionSuggestions     = "instructions.suggest"
+	CoachPropose               = "coach.propose"
 	MediaDescribe              = "media.describe"
 	MediaSummarizeLink         = "media.summarize_link"
 )

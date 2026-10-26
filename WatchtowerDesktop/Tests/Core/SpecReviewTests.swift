@@ -108,6 +108,29 @@ final class SpecReviewTests: XCTestCase {
         XCTAssertEqual(a.note, "n")
     }
 
+    func testAnswerSkipsNotUseful() throws {
+        let r = try golden()
+        let marks = [
+            "ag:0123456789ab": SpecReviewMark(key: "ag:0123456789ab", state: .notUseful),
+            "da:0123456789ab": SpecReviewMark(key: "da:0123456789ab", state: .comment, body: "ask first")
+        ]
+        let a = SpecReviewAnswer.build(result: r, marks: marks, base: OwnerAskAnswer(note: "n"), verdict: .changes, snapshot: snapshot)
+        XCTAssertEqual(a.comments.count, 1)
+        XCTAssertEqual(a.comments[0].body, "State is kept in the local database — ask first")
+        XCTAssertTrue(SpecReviewAnswer.orphanMarks(result: r, marks: ["gone": SpecReviewMark(key: "gone", state: .notUseful)]).isEmpty)
+    }
+
+    func testQueriesReadNotUseful() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try db.execute(sql: "INSERT INTO projects (id, name, folder_path) VALUES (1, 'wb', '/tmp/wb')")
+            try db.execute(sql: "INSERT INTO owner_asks (id, project_id, kind, title, doc_path) VALUES (1, 1, 'review', 't', 'spec.md')")
+            try SpecReviewQueries.setMark(db, askID: 1, mark: .init(key: "ag:1", state: .notUseful), now: Date(timeIntervalSince1970: 1_790_000_000))
+        }
+        let marks = try db.read { try SpecReviewQueries.marks($0, askID: 1) }
+        XCTAssertEqual(marks["ag:1"], SpecReviewMark(key: "ag:1", state: .notUseful))
+    }
+
     func testAnswerAnchorsUnanchoredToChapter() throws {
         var r = chapterized(try golden())
         r.checks = []

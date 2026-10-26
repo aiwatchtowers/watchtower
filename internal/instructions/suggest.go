@@ -86,15 +86,10 @@ func (m *Miner) logf(format string, args ...any) {
 // nothing and is returned. written counts new or refreshed open suggestions.
 func (m *Miner) Run(ctx context.Context) (written int, usage *digest.Usage, err error) {
 	now := m.Now()
-	sessions, err := m.DB.ListWorkbenchTerminalSessionsSince(now.Add(-suggestWindow))
+	lines, err := collectOwnerLines(m.DB, m.Read, now.Add(-suggestWindow), m.logf)
 	if err != nil {
 		return 0, nil, err
 	}
-	chatTurns, err := m.DB.ListOwnerChatTurnsSince(now.Add(-suggestWindow))
-	if err != nil {
-		return 0, nil, err
-	}
-	lines := m.ownerLines(sessions, chatTurns)
 	bySession := map[int64]int64{} // session -> workbench, sessions with lines only
 	byChat := map[int64]bool{}     // chat conversations with lines only
 	for _, l := range lines {
@@ -139,16 +134,32 @@ func (m *Miner) Run(ctx context.Context) (written int, usage *digest.Usage, err 
 	return written, usage, nil
 }
 
-// ownerLines collects the owner's messages of every session and AI chat,
-// cleaned, and keeps the newest within maxOwnerTextRunes (sessions and chats
-// together). A chat turn that is a "remember:" message is dropped: it already
-// wrote its line. An unreadable session is logged and left out.
-func (m *Miner) ownerLines(sessions []db.RecentWorkbenchSession, chatTurns []db.ChatOwnerTurn) []OwnerLine {
+// At is when the owner typed the line.
+func (l OwnerLine) At() time.Time { return l.at }
+
+// CollectOwnerLines collects the owner's messages of every session and AI chat
+// active since the given time, cleaned, and keeps the newest within
+// maxOwnerTextRunes (sessions and chats together). A chat turn that is a
+// "remember:" message is dropped: it already wrote its line. An unreadable
+// session is logged (its id and error, never text) and left out.
+func CollectOwnerLines(d *db.DB, read FeedReader, since time.Time) ([]OwnerLine, error) {
+	return collectOwnerLines(d, read, since, log.Default().Printf)
+}
+
+func collectOwnerLines(d *db.DB, read FeedReader, since time.Time, logf func(string, ...any)) ([]OwnerLine, error) {
+	sessions, err := d.ListWorkbenchTerminalSessionsSince(since)
+	if err != nil {
+		return nil, err
+	}
+	chatTurns, err := d.ListOwnerChatTurnsSince(since)
+	if err != nil {
+		return nil, err
+	}
 	var lines []OwnerLine
 	for _, s := range sessions {
-		entries, err := m.Read(s)
+		entries, err := read(s)
 		if err != nil {
-			m.logf("instruction suggestions: skipping session %d: %v", s.ID, err)
+			logf("instruction suggestions: skipping session %d: %v", s.ID, err)
 			continue
 		}
 		for _, e := range entries {
@@ -186,7 +197,7 @@ func (m *Miner) ownerLines(sessions []db.RecentWorkbenchSession, chatTurns []db.
 		}
 		return lines[i].at.Before(lines[j].at)
 	})
-	return lines
+	return lines, nil
 }
 
 // App-typed start prompts (Desktop TerminalLaunch.workOnTargetPrompt /

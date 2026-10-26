@@ -1,0 +1,3 @@
+{"proposals": [
+  {"title": "A long rule", "why": "Three sessions.", "destination": "session", "workbench_id": 0, "prompt_id": "", "kind": "add", "find": "", "replace": "Before every commit run the linter, the formatter and the tests of every package you touched.", "metric": "corrections", "evidence": ["s1", "s2", "s3"]}
+]}

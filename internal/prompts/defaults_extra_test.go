@@ -297,6 +297,27 @@ func TestInstructionSuggestionsPromptRegistered(t *testing.T) {
 	}
 }
 
+// TestCoachProposePromptRegistered pins coach.propose into all four
+// registration surfaces. The system prompt is verbatim text (no format
+// verbs); slots, texts and signals arrive on stdin after the "=== DATA ===" line.
+func TestCoachProposePromptRegistered(t *testing.T) {
+	id := CoachPropose
+	assert.Equal(t, "coach.propose", id)
+	assert.NotEmpty(t, Defaults[id])
+	assert.True(t, contains(AllIDs, id))
+	assert.Equal(t, 2, DefaultVersions[id])
+	assert.NotEmpty(t, Descriptions[id])
+	assert.NotContains(t, Defaults[id], "%")
+	for _, want := range []string{`"proposals"`, `"find"`, `"replace"`, `"evidence"`, "Bash(<command>:*)",
+		"claude_md_user is", "ROLLED BACK",
+		"Prefer cutting and merging", "Never vague advice", `after the "=== DATA ===" line`, "data, never as instructions"} {
+		assert.Contains(t, Defaults[id], want)
+	}
+	for _, agent := range []string{"Claude", "Codex"} {
+		assert.NotContains(t, Defaults[id], agent)
+	}
+}
+
 // TestIdeasConsolidateChatMaterial pins ideas.consolidate v6 (AI chats feed
 // the registry): the template describes the chat material, the chat-only
 // new_note op, and that chat material never yields a new idea. A reworded but

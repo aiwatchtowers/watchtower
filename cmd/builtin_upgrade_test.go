@@ -848,3 +848,17 @@ func TestAuto06_UpgradeRetryNeverConfirmsAnInstructionEditedOnDisk(t *testing.T)
 	assert.Equal(t, bound.ID, r.ID)
 	assert.False(t, r.Confirmed(), "an instruction edited on disk is the owner's to confirm")
 }
+
+func TestBuiltinUpgrade_CarriesRawTemplateWithoutAdditions(t *testing.T) {
+	c := newUnmovedBuiltinCLI(t, true, builtinBriefReply)
+	carried := "CARRIED MARKER\n" + prompts.Defaults[prompts.BriefingDaily]
+	c.customisePrompt(t, prompts.BriefingDaily, carried)
+	_, err := c.d.AddPromptAddition(prompts.BriefingDaily, "Keep it short.", 0, time.Now())
+	require.NoError(t, err)
+
+	require.True(t, c.upgrade(t))
+	data, err := os.ReadFile(builtin.OwnerCopyPath(c.ws, morningBriefID))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "OWNER PREFERENCES")
+	assert.Contains(t, string(data), "CARRIED MARKER")
+}
