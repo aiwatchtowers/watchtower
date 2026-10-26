@@ -66,7 +66,7 @@ func scanSpecReview(row interface{ Scan(...any) error }) (*SpecReview, error) {
 	var r SpecReview
 	if err := row.Scan(&r.AskID, &r.Status, &r.Reason, &r.Result, &r.Provider, &r.Model, &r.DocSHA,
 		&r.Dropped, &r.PID, &r.Attempt, &r.QueuedAt, &r.StartedAt, &r.FinishedAt,
-			&r.Loop, &r.Round, &r.Replies, &r.OpenItems, &r.Ledger, &r.LoopEnd); err != nil {
+		&r.Loop, &r.Round, &r.Replies, &r.OpenItems, &r.Ledger, &r.LoopEnd); err != nil {
 		return nil, fmt.Errorf("scanning spec review: %w", err)
 	}
 	return &r, nil
