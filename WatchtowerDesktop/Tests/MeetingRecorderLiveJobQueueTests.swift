@@ -215,6 +215,74 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.jobs.isEmpty)
     }
 
+    /// The drained tail hands its engine to the recording parked on it only
+    /// while Settings still name the model it was loaded for. Switched in
+    /// between, the stale engine goes to meeting 1's job instead — which
+    /// never parks it under the new Settings — and meeting 2's live pass
+    /// loads the model now selected.
+    func testDrainedTailNeverHandsAStaleEngineToTheParkedRecording() async throws {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        var engineLoads = 0
+        var key = "whisperkit|model-a"
+        let currentKey: () -> String = { key }
+        let gate = GateEngine(texts: ["live one", "stale two"])
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in
+                engineLoads += 1
+                return engineLoads == 1
+                    ? TestTranscriber(gate)
+                    : TestTranscriber(ScriptedEngine(texts: ["fresh two"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(), // the warm slot is where a stale engine could linger
+            recordingsDirectory: recordingsDir,
+            engineKey: currentKey
+        )
+        var handedToJob: [String?] = []
+        center.onLiveEngineHandedOnForTesting = { [weak center] in
+            handedToJob.append(center?.jobs.first?.engine?.key)
+        }
+        let config = threeWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
+        recorder1.emitLive([Float](repeating: 0, count: 1600))
+        let stopFirst = Task { await center.stopAndProcess(config: config) }
+        var entered = gate.enteredStream.makeAsyncIterator()
+        _ = await entered.next() // meeting 1's tail is parked in the engine
+        guard await waitUntil("the first stop to enqueue its job", { center.jobs.count == 1 }) else {
+            bailOut(center, gate: gate)
+            return
+        }
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        XCTAssertEqual(center.liveEngineState, .waiting, "meeting 2 is parked on the draining tail")
+        key = "whisperkit|model-b" // Settings switch before the tail drains
+
+        gate.release()
+        let releaser = autoRelease(gate) // a stale pass would block here; let it through to fail the asserts
+        defer { releaser.cancel() }
+        await stopFirst.value
+        XCTAssertEqual(handedToJob, ["whisperkit|model-a"], "the stale engine went to the job, not to meeting 2")
+        let running = await waitUntil("meeting 2's live pass to run") { center.liveEngineState == .running }
+        guard running else { bailOut(center, gate: gate, recorder: recorder2); return }
+        XCTAssertEqual(engineLoads, 2, "meeting 2's live pass loads the model Settings now select")
+        XCTAssertTrue(center.jobs.allSatisfy { $0.engine == nil }, "no job is left holding the stale engine")
+        XCTAssertFalse(center.isEngineWarm, "the stale engine is dropped, never parked")
+
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        recorder2.emitLive([Float](repeating: 0, count: 1600))
+        await center.stopAndProcess(config: config)
+        XCTAssertEqual(runner.savedTranscripts, ["live one", "fresh two"], "meeting 2 ran on the fresh engine")
+        XCTAssertEqual(engineLoads, 2)
+    }
+
     /// Meeting 2 capturing (capture only) with meeting 1's batch job queued
     /// behind it — what `makeWaitingBatchJob` leaves running.
     private struct WaitingBatchJob {

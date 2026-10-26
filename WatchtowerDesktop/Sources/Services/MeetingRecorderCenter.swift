@@ -469,7 +469,7 @@ final class MeetingRecorderCenter {
     /// `activeJobID`. Lets a test tick the warm policy exactly
     /// there instead of racing the scheduler to observe the gap. Nil in
     /// production.
-    @ObservationIgnored var onLiveEngineHandedToJobForTesting: (() -> Void)?
+    @ObservationIgnored var onLiveEngineHandedOnForTesting: (() -> Void)?
 
     /// Test seam into the queue: fires in the same main-actor step in which a
     /// job starts its turn (`awaitTurn` — claiming the engine slot too when
@@ -1206,7 +1206,7 @@ final class MeetingRecorderCenter {
             if !releaseLiveEngineSlot(handing: current) {
                 updateJob(job.id) { $0.engine = liveEngine }
             }
-            onLiveEngineHandedToJobForTesting?()
+            onLiveEngineHandedOnForTesting?()
         } else {
             // Capture ended, but the previous recording's tail still holds the
             // engine; wake the queue anyway so it re-checks.
