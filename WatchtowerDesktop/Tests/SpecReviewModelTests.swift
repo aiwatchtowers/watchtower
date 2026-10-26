@@ -522,15 +522,32 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertTrue(answer.comments.isEmpty, "an unpicked dispute sends nothing")
     }
 
-    /// The classic footer (or the phone) on a finished loop: still approved.
-    func testLoopAnswerAlwaysApproved() async throws {
+    /// The classic footer (or the phone) on a finished loop: the owner's
+    /// Request changes stays `changes`, with the loop's comments.
+    func testLoopClassicAnswerKeepsTheOwnersVerdict() async throws {
         try setLoopRow(end: "settled")
         try writeMark("bs:2", "comment", body: "")
         let (asks, ask) = try await makeAsks()
         _ = await asks.answer(ask, verdict: .changes)
         let answer = try OwnerAskAnswer.decode(try await storedAnswer())
-        XCTAssertEqual(answer.verdict, .approved)
+        XCTAssertEqual(answer.verdict, .changes)
         XCTAssertEqual(answer.comments.map(\.body), ["Reviewer is right: No undo — still needed"])
+    }
+
+    /// Round 1's reviewer failed: an empty ledger, the owner gets today's
+    /// classic ask, and their Request changes is not flipped to approved.
+    func testEmptyLoopLedgerKeepsRequestChanges() async throws {
+        try setRow(status: "failed")
+        let id = askID
+        try await pool.write { d in
+            try d.execute(sql: """
+                UPDATE spec_reviews SET loop = 'owner', round = 1, ledger = '[]', loop_end = 'reviewer_failed' WHERE ask_id = ?
+                """, arguments: [id])
+        }
+        let (asks, ask) = try await makeAsks()
+        _ = await asks.answer(ask, verdict: .changes)
+        let stored = try await storedAnswer()
+        XCTAssertEqual(try OwnerAskAnswer.decode(stored).verdict, .changes)
     }
 
     private func storedAnswer() async throws -> String {

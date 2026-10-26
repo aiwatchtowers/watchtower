@@ -87,6 +87,22 @@ final class SpecReviewViewTests: XCTestCase {
         XCTAssertEqual(Pres.drawerMode(row: try loopRow(status: "failed", loop: "author"), showClassic: false), .classic(.status))
     }
 
+    func testGoToMeaningOnlyWhenMeaningHasAResult() throws {
+        typealias Pres = SpecReviewPresentation
+        func loopRow(status: String, result: String) throws -> SpecReviewRow {
+            try SpecReviewRow(row: Row([
+                "ask_id": 1, "status": status, "reason": "", "provider": "", "model": "",
+                "dropped": 0, "attempt": 1, "result": result, "loop": "owner", "loop_end": "reviewer_failed"
+            ]))
+        }
+        let done = try loopRow(status: "done", result: "{}")
+        XCTAssertTrue(Pres.showsGoToMeaning(row: done, hasQuestions: true))
+        XCTAssertFalse(Pres.showsGoToMeaning(row: done, hasQuestions: false))
+        XCTAssertFalse(Pres.showsGoToMeaning(row: try loopRow(status: "failed", result: ""), hasQuestions: true),
+                       "a loop whose reviewer failed has no Meaning to go to")
+        XCTAssertFalse(Pres.showsGoToMeaning(row: nil, hasQuestions: true))
+    }
+
     func testLoopDisputeAndFixLines() throws {
         typealias Pres = SpecReviewPresentation
         let entries = try JSONDecoder().decode([SpecReviewLedgerEntry].self, from: Data("""

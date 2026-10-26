@@ -283,6 +283,8 @@ final class OwnerAskQueriesTests: XCTestCase {
             XCTAssertEqual(try OwnerAskQueries.openAsks(d, projectID: p).asks.map(\.id), [plain])
             XCTAssertEqual(try OwnerAskQueries.openAsksAllWorkbenches(d).rows.map(\.ask.id), [plain])
             XCTAssertEqual(try OwnerAskQueries.ask(d, id: hidden, projectID: p)?.id, hidden, "ask(_:id:) stays unfiltered")
+            XCTAssertNil(try OwnerAskQueries.visibleAsk(d, id: hidden, projectID: p), "no owner surface opens a hidden ask")
+            XCTAssertEqual(try OwnerAskQueries.visibleAsk(d, id: plain, projectID: p)?.id, plain)
         }
     }
 

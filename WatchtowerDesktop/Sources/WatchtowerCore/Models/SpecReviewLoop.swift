@@ -74,8 +74,12 @@ package enum SpecReviewLoop {
         row.ledger.filter { $0.verdict == "disputed" || $0.verdict == "unsettled" }
     }
 
+    /// Findings the author fixed and the reviewer confirmed: `resolved`
+    /// after a `fixed` reply (spec §6). One resolved after the author's
+    /// `disagree` (the reviewer accepted the reason) fixed nothing and is
+    /// settled, so it is in neither list.
     package static func fixed(_ row: SpecReviewRow) -> [SpecReviewLedgerEntry] {
-        row.ledger.filter { $0.verdict == "resolved" }
+        row.ledger.filter { $0.verdict == "resolved" && $0.item.reply?.reply != "disagree" }
     }
 
     package static func endedEarly(_ row: SpecReviewRow) -> Bool {

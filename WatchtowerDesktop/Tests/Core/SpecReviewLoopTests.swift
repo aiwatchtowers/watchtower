@@ -40,6 +40,18 @@ final class SpecReviewLoopTests: XCTestCase {
         XCTAssertEqual(SpecReviewLoop.fixed(r).map(\.item.key), ["ag:1"])
     }
 
+    func testResolvedAfterDisagreeIsNotAFix() throws {
+        let ledger = """
+        [{"key":"ag:1","text":"a","reply":{"key":"ag:1","reply":"fixed","note":""},"verdict":"resolved","settled":1},
+         {"key":"bs:2","text":"b","reply":{"key":"bs:2","reply":"disagree","note":"out of scope"},"verdict":"resolved","settled":2},
+         {"key":"ck:3","text":"c","verdict":"resolved","settled":1}]
+        """
+        let r = try row(ledger: ledger)
+        XCTAssertEqual(SpecReviewLoop.fixed(r).map(\.item.key), ["ag:1", "ck:3"],
+                       "the reviewer accepted the author's reason: nothing was fixed")
+        XCTAssertTrue(SpecReviewLoop.disputed(r).isEmpty, "and it is settled, not disputed")
+    }
+
     func testEndedEarlyAndEndLine() throws {
         XCTAssertFalse(SpecReviewLoop.endedEarly(try row(end: "")))
         XCTAssertFalse(SpecReviewLoop.endedEarly(try row(end: "settled")))

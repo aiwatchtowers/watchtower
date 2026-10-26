@@ -333,10 +333,12 @@ final class OwnerAsksViewModel {
     /// The ask an `ask #N` in a session's terminal names (board #500), any
     /// status, only when it is one of `projectID`'s: from the open list,
     /// else read. nil — no link — for a number of another workbench or one
-    /// that names no ask; a failed read throws. Writes no state.
+    /// that names no ask, or an ask hidden in the spec review author loop
+    /// (the reviewer's findings line names it); a failed read throws.
+    /// Writes no state.
     func linkedAsk(askID: Int64, projectID: Int64) async throws -> OwnerAsk? {
         if let ask = openAsks[projectID]?.first(where: { $0.id == askID }) { return ask }
-        return try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID) }
+        return try await dbPool.read { try OwnerAskQueries.visibleAsk($0, id: askID, projectID: projectID) }
     }
 
     /// "⚙ <automation> · run #N" for an ask an automation run filed, as the
@@ -349,12 +351,13 @@ final class OwnerAsksViewModel {
     /// The ask a stack row, a closed list or a notice names: from the open
     /// list, else read (a closed one is kept for the drawer, an open one not
     /// listed yet reloads the list). nil, with the reason in `loadErrors`,
-    /// when it is gone or the read failed.
+    /// when it is gone, hidden in the spec review author loop, or the read
+    /// failed.
     func lookUp(askID: Int64, projectID: Int64) async -> OwnerAsk? {
         if let ask = openAsks[projectID]?.first(where: { $0.id == askID }) { return ask }
         let found: OwnerAsk?
         do {
-            found = try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID) }
+            found = try await dbPool.read { try OwnerAskQueries.visibleAsk($0, id: askID, projectID: projectID) }
         } catch {
             loadErrors[projectID] = "Could not load the ask: \(error.localizedDescription)"
             return nil
@@ -735,7 +738,8 @@ final class OwnerAsksViewModel {
     /// result as stored now — no result (queued, running, failed) sends
     /// every comment mark as "From the previous run". Placed off the main
     /// actor on the drawer's rendered snapshot when it has one. A finished
-    /// author loop sends the loop's comments, always `approved`. Any other
+    /// author loop sends the loop's comments with the owner's own verdict
+    /// (the loop screen's Approve is `approved`). Any other
     /// ask, a dismissal, or an ask without comment marks is unchanged.
     private func specReviewAnswer(_ ask: OwnerAsk, _ answer: OwnerAskAnswer) async throws -> OwnerAskAnswer {
         guard ask.kind == .review, !answer.dismissed else { return answer }
@@ -743,8 +747,8 @@ final class OwnerAsksViewModel {
         let (row, marks) = try await dbPool.read { db in
             (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID))
         }
-        // A finished author loop's answer is always `approved` (spec
-        // 2026-10-26 §7), with or without comment marks.
+        // A finished author loop's answer carries the loop's comments
+        // (spec 2026-10-26 §7), with or without comment marks.
         let loop = row?.loop == .owner ? row?.ledger : nil
         guard loop != nil || marks.values.contains(where: { $0.state == .comment }) else { return answer }
         let result = row?.result

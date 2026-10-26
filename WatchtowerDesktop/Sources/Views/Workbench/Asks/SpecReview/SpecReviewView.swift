@@ -198,6 +198,14 @@ enum SpecReviewPresentation {
         return row.result
     }
 
+    /// The loop screen's **Go to Meaning** button: only when the ask has
+    /// questions and Meaning exists — a reviewed result to show it from
+    /// (a loop whose reviewer failed has none, and the button would do
+    /// nothing).
+    static func showsGoToMeaning(row: SpecReviewRow?, hasQuestions: Bool) -> Bool {
+        hasQuestions && reviewedResult(row) != nil
+    }
+
     static func title(docName: String) -> String {
         docName.isEmpty ? "Spec review" : "Spec review · \(docName)"
     }

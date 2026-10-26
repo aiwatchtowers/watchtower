@@ -92,7 +92,7 @@ struct SpecReviewLoopView: View {
             if let blocker {
                 HStack(spacing: Spacing.compact) {
                     Text(blocker).font(.caption).foregroundStyle(Tone.warning)
-                    if model.hasQuestions {
+                    if SpecReviewPresentation.showsGoToMeaning(row: model.row, hasQuestions: model.hasQuestions) {
                         Button("Go to Meaning") { model.phase = .meaning }.buttonStyle(.kitQuiet)
                     }
                 }

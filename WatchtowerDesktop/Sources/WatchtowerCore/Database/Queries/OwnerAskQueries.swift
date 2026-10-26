@@ -138,6 +138,17 @@ package enum OwnerAskQueries {
         )
     }
 
+    /// `ask(_:id:projectID:)` for an owner surface (a terminal's `ask #N`
+    /// link, a stack row, a notice): nil for an ask hidden in the spec
+    /// review author loop, which is never the owner's to open.
+    package static func visibleAsk(_ db: Database, id: Int64, projectID: Int64) throws -> OwnerAsk? {
+        try OwnerAsk.fetchOne(
+            db,
+            sql: "SELECT * FROM owner_asks WHERE id = ? AND project_id = ? AND \(Self.notInSpecLoop("owner_asks"))",
+            arguments: [id, projectID]
+        )
+    }
+
     /// How many answered, delivered and withdrawn asks each session of the
     /// workbench has; the nil key counts the asks filed from outside the app.
     /// The session-less asks an automation run filed are counted by

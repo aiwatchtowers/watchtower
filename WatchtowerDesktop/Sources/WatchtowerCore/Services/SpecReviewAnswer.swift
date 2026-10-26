@@ -18,8 +18,10 @@ package enum SpecReviewAnswer {
     /// rendered (a caller's cache); nil renders it here.
     ///
     /// `loop` is the ledger of a review whose author loop ended (spec
-    /// 2026-10-26 §7): the comments are then the loop's (`loopComments`)
-    /// and the verdict is always `approved`.
+    /// 2026-10-26 §7): the comments are then the loop's (`loopComments`).
+    /// The verdict stays the one the owner gave: the loop screen's
+    /// **Approve** passes `approved`, while a classic footer, Quick or phone
+    /// answer of "Request changes" stays `changes`.
     package static func build(
         result: SpecReviewResult?,
         marks: [String: SpecReviewMark],
@@ -32,7 +34,6 @@ package enum SpecReviewAnswer {
         var answer = base
         if let verdict { answer.verdict = verdict }
         if let loop {
-            answer.verdict = .approved
             answer.comments += loopComments(
                 ledger: loop, result: result, marks: marks, snapshot: snapshot, rendered: rendered
             )
@@ -69,14 +70,20 @@ package enum SpecReviewAnswer {
 
     /// "Reviewer is right: <text> — <verdict note>" for a dispute,
     /// "Reopened: <text>" for a fix the owner reopened; the owner's words
-    /// after a blank line when given.
+    /// after a blank line when given. A verdict note that is the author's
+    /// reason (an early end copies it there) is not the reviewer's: the
+    /// finding's own note stands in, as on the screen (`reviewerPosition`).
     package static func loopBody(_ entry: SpecReviewLedgerEntry, owner body: String) -> String {
         let text = entry.item.text
         let head: String
         if entry.verdict == "resolved" {
             head = "Reopened: \(text)"
         } else {
-            let note = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reason = entry.item.reply?.note.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            var note = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
+            if entry.verdict == "unsettled", !note.isEmpty, note == reason {
+                note = entry.item.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             head = note.isEmpty ? "Reviewer is right: \(text)" : "Reviewer is right: \(text) — \(note)"
         }
         let owner = body.trimmingCharacters(in: .whitespacesAndNewlines)

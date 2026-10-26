@@ -1803,6 +1803,31 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertTrue(OwnerAskDrawerLayout.fitsBeside(total: 520))
     }
 
+    /// The reviewer's findings line names a hidden ask ("ask #N"): neither
+    /// the terminal link nor a look-up opens it while the loop runs.
+    func testHiddenSpecLoopAskIsNotLinkable() async throws {
+        let (p, s, _) = try await seed()
+        let hidden = try await pool.write { d in
+            let id = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, kind: "review", docPath: "docs/spec.md")
+            try d.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES (?, 'done', '2026-10-26T10:00:00Z', 'author')
+                """, arguments: [id])
+            return id
+        }
+        let vm = makeVM()
+        await vm.asks.load(projectID: p)
+        let linked = try await vm.asks.linkedAsk(askID: hidden, projectID: p)
+        XCTAssertNil(linked)
+        let looked = await vm.asks.lookUp(askID: hidden, projectID: p)
+        XCTAssertNil(looked)
+
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE spec_reviews SET loop = 'owner' WHERE ask_id = ?", arguments: [hidden])
+        }
+        let shown = try await vm.asks.linkedAsk(askID: hidden, projectID: p)
+        XCTAssertEqual(shown?.id, hidden, "a revealed ask links again")
+    }
+
     /// Closing a closed ask looked at from a closed list dismisses nothing.
     func testClosingAClosedAskLeavesTheOpenOnesNew() async throws {
         let (p, s, askID) = try await seed()
