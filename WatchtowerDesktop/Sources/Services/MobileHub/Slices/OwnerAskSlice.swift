@@ -110,7 +110,7 @@ struct OwnerAskSlice: SliceSource {
                     ORDER BY a.created_at DESC, a.id DESC
                 ) AS rank
                 FROM owner_asks a
-                WHERE a.status = 'open' OR julianday(a.created_at) >= julianday(?)
+                WHERE (a.status = 'open' OR julianday(a.created_at) >= julianday(?)) AND \(OwnerAskQueries.notInSpecLoop("a"))
             )
             WHERE status = 'open' OR rank <= ?
             ORDER BY id

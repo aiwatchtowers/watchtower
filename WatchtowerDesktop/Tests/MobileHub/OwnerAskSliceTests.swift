@@ -388,4 +388,19 @@ final class OwnerAskSliceTests: XCTestCase {
     func testNoWorkbenchesPublishNoAsks() throws {
         XCTAssertTrue(try payloads().isEmpty)
     }
+
+    func testOwnerAskSliceSkipsAuthorLoop() throws {
+        let project = try dbPool.write { try TestDatabase.insertWorkbench($0) }
+        let hidden = try insertAsk(kind: "review", project: project)
+        let owner = try insertAsk(kind: "review", project: project)
+        try dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES
+                (?, 'running', '2026-10-26T10:00:00Z', 'author'), (?, 'done', '2026-10-26T10:00:00Z', 'owner')
+                """, arguments: [hidden, owner])
+        }
+        let published = try payloads()
+        XCTAssertNil(published[hidden], "a hidden author-loop ask is never published")
+        XCTAssertNotNil(published[owner])
+    }
 }
