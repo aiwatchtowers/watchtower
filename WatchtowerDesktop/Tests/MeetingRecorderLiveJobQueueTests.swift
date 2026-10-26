@@ -192,19 +192,36 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.jobs.isEmpty)
     }
 
-    /// A job that has to transcribe (the live pass produced nothing) still
-    /// waits for the running capture to stop — exactly as before — and says
-    /// so: it is listed in `jobsWaitingForCapture` for the indicator's label.
-    func testBatchJobStillWaitsForTheCaptureAndIsLabelledWaiting() async throws {
+    /// Meeting 2 capturing (capture only) with meeting 1's batch job queued
+    /// behind it — what `makeWaitingBatchJob` leaves running.
+    private struct WaitingBatchJob {
+        let center: MeetingRecorderCenter
+        let jobID: MeetingRecorderCenter.ProcessingJob.ID
+        let stopFirst: Task<Void, Never>
+        let releaser: Task<Void, Never>
+        let captureOnly: TranscriptionConfig
+
+        /// Stops meeting 2 and awaits both recordings' jobs.
+        func finish() async {
+            await center.stopAndProcess(config: captureOnly)
+            await stopFirst.value
+            releaser.cancel()
+        }
+    }
+
+    /// Meeting 1 stops into a batch job (its live window is silence) while
+    /// capture-only meeting 2 starts on its tail. Returns once the job waits
+    /// for meeting 2, labelled so; nil (with everything let go) when it never
+    /// gets there. The batch passes save "batch one", then "batch two".
+    private func makeWaitingBatchJob(runner: CLIRunnerProtocol,
+                                     store: PendingTranscriptStore? = nil) async throws -> WaitingBatchJob? {
         let recorder1 = FakeRecorder()
         let recorder2 = FakeRecorder()
         var recorderCalls = 0
         var engineLoads = 0
-        // Meeting 1's live window comes back empty (silence) → batch fallback.
         let gate = GateEngine(texts: ["", "batch one"])
-        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
-            pendingStore: pendingStore,
+            pendingStore: store ?? pendingStore,
             recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
             engineFactory: { _ in
                 engineLoads += 1
@@ -216,8 +233,6 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
             defaults: try isolatedDefaults(),
             recordingsDirectory: recordingsDir
         )
-        var claimedWhileCapturing: [Bool] = []
-        center.onEngineSlotClaimedForTesting = { claimedWhileCapturing.append(center.isCapturing) }
         let config = threeWindowConfig()
         var captureOnly = config
         captureOnly.liveTranscription = false
@@ -229,30 +244,56 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         var entered = gate.enteredStream.makeAsyncIterator()
         _ = await entered.next()
         let queued = await waitUntil("the first stop to enqueue its job") { center.jobs.count == 1 }
-        guard queued else { gate.release(); return }
-        let firstJob = try XCTUnwrap(center.jobs.first)
+        guard queued, let jobID = center.jobs.first?.id else { gate.release(); return nil }
 
         await center.startRecording(eventID: nil, title: "Second", config: captureOnly)
-        gate.release() // meeting 1's tail; the batch pass's window is answered below
-        let releaser = autoRelease(gate)
-        defer { releaser.cancel() }
+        XCTAssertTrue(center.jobsWaitingForCapture.isEmpty, "a job still awaiting its live tail is never labelled")
+        gate.release() // meeting 1's tail; the batch pass's window is answered by the releaser
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        let waiting = WaitingBatchJob(center: center, jobID: jobID, stopFirst: stopFirst,
+                                      releaser: autoRelease(gate), captureOnly: captureOnly)
         let labelled = await waitUntil("the batch job to be listed as waiting for the capture") {
-            center.jobsWaitingForCapture.contains(firstJob.id)
+            center.jobsWaitingForCapture.contains(jobID)
         }
-        guard labelled else { return }
+        guard labelled else { Task { await waiting.finish() }; return nil }
+        return waiting
+    }
+
+    /// A job that has to transcribe (the live pass produced nothing) still
+    /// waits for the running capture to stop — exactly as before — and says
+    /// so: it is listed in `jobsWaitingForCapture` for the indicator's label.
+    func testBatchJobStillWaitsForTheCaptureAndIsLabelledWaiting() async throws {
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        guard let waiting = try await makeWaitingBatchJob(runner: runner) else { return }
+        let center = waiting.center
+        var claimedWhileCapturing: [Bool] = []
+        center.onEngineSlotClaimedForTesting = { claimedWhileCapturing.append(center.isCapturing) }
         await runEnqueuedMainActorWork()
         XCTAssertEqual(center.jobs.first?.phase, .queued)
         XCTAssertNil(center.activeJobID, "a batch job never starts while a recording captures")
-        XCTAssertTrue(claimedWhileCapturing.isEmpty)
         XCTAssertTrue(runner.savedTranscripts.isEmpty)
 
-        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
-        await center.stopAndProcess(config: captureOnly)
-        await stopFirst.value
+        await waiting.finish()
         XCTAssertEqual(runner.savedTranscripts, ["batch one", "batch two"], "FIFO among batch jobs")
         XCTAssertEqual(claimedWhileCapturing, [false, false])
         XCTAssertTrue(center.jobsWaitingForCapture.isEmpty, "nothing waits once the capture stopped")
         XCTAssertTrue(center.jobs.isEmpty)
+    }
+
+    /// A queued job's input (it reads the job's pending row) is worked out
+    /// once, not again on every wake of the queue and every label refresh.
+    func testAQueuedJobsInputIsWorkedOutOnceNotOnEveryWake() async throws {
+        let store = CountingPendingStore(pendingStore)
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        guard let waiting = try await makeWaitingBatchJob(runner: runner, store: store) else { return }
+        let name = try XCTUnwrap(waiting.center.jobs.first?.audioURL.lastPathComponent)
+        let readsWhenLabelled = store.transcriptReads(name)
+        XCTAssertGreaterThan(readsWhenLabelled, 0, "the label is decided from the job's input")
+
+        await waiting.finish() // the stop wakes the queue, the job starts and runs
+        XCTAssertEqual(store.transcriptReads(name), readsWhenLabelled,
+                       "the start decision reuses the input worked out for the label")
+        XCTAssertEqual(runner.savedTranscripts, ["batch one", "batch two"])
     }
 
     /// A batch job parked on a capture does not starve the live-text job queued
@@ -483,4 +524,36 @@ final class FailAfterGateEngine: WhisperWindowEngine, @unchecked Sendable {
         _ = try await gate.transcribeWindow(samples, language: language, prompt: prompt)
         throw EngineError()
     }
+}
+
+/// The real store underneath, counting `transcript(recording:)` reads per
+/// recording.
+final class CountingPendingStore: PendingTranscriptStore, @unchecked Sendable {
+    private let base: PendingTranscriptStore
+    private let lock = NSLock()
+    private var reads: [String: Int] = [:]
+
+    init(_ base: PendingTranscriptStore) { self.base = base }
+
+    func transcriptReads(_ recording: String) -> Int { lock.withLock { reads[recording, default: 0] } }
+
+    func transcript(recording: String) throws -> PendingTranscript? {
+        lock.withLock { reads[recording, default: 0] += 1 }
+        return try base.transcript(recording: recording)
+    }
+
+    func begin(recording: String, eventID: String?, title: String?, at: Date) async throws {
+        try await base.begin(recording: recording, eventID: eventID, title: title, at: at)
+    }
+    func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool {
+        try await base.reserve(recording: recording, eventID: eventID, title: title, at: at)
+    }
+    func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws {
+        try await base.saveTranscript(recording: recording, text: text, metaJSON: metaJSON, at: at)
+    }
+    func clearTranscript(recording: String) async throws { try await base.clearTranscript(recording: recording) }
+    func dismiss(recording: String, at: Date) async throws { try await base.dismiss(recording: recording, at: at) }
+    func pending() throws -> [PendingTranscript] { try base.pending() }
+    func remove(recording: String) async throws { try await base.remove(recording: recording) }
+    func savedAudioPaths() throws -> Set<String> { try base.savedAudioPaths() }
 }

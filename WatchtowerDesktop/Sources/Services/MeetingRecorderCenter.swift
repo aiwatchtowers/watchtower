@@ -414,6 +414,12 @@ final class MeetingRecorderCenter {
     /// `stopAndProcess`: their input (live text or batch) is not known yet,
     /// so they cannot start, whatever the slot says.
     private var jobsAwaitingLiveTail: Set<ProcessingJob.ID> = []
+    /// Each queued job's input (`plannedInput`), worked out once — it reads
+    /// the job's pending row on the main actor — and reused by every start
+    /// decision and label refresh until what decides it changes: the live
+    /// tail's handover, or a retry re-queueing the job. Dropped when the job
+    /// starts.
+    @ObservationIgnored private var plannedInputs: [ProcessingJob.ID: JobInput] = [:]
     /// Job tasks parked in `awaitTurn`, resumed whenever something that
     /// decides which job may start changes: the queue's active job finished,
     /// a capture started or ended, a live pass let go of the engine.
@@ -1244,6 +1250,7 @@ final class MeetingRecorderCenter {
             // just below.
             updateJob(job.id) { $0.engine = loadedEngine }
             jobsAwaitingLiveTail.remove(job.id)
+            plannedInputs[job.id] = nil // the live text (if any) decides it now
             releaseLiveEngineSlot()
             onLiveEngineHandedToJobForTesting?()
         } else {
@@ -1447,6 +1454,7 @@ final class MeetingRecorderCenter {
     /// every later batch job once the meeting stops.
     private func startJobTask(jobID: ProcessingJob.ID, config: TranscriptionConfig) -> Task<Void, Never> {
         queuedJobIDs.append(jobID)
+        plannedInputs[jobID] = nil // a retry's earlier run may have kept a transcript
         refreshJobsWaitingForCapture()
         return Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1464,6 +1472,7 @@ final class MeetingRecorderCenter {
         while true {
             if activeJobID == nil, let next = nextStartableJob(), next.id == jobID {
                 queuedJobIDs.removeAll { $0 == jobID }
+                plannedInputs[jobID] = nil
                 activeJobID = jobID
                 if next.input?.needsEngine == true { engineJobID = jobID }
                 refreshJobsWaitingForCapture()
@@ -1488,17 +1497,21 @@ final class MeetingRecorderCenter {
         return nil
     }
 
-    /// The input a job would run on if it started now. A kept transcript wins
-    /// over live text, as it always has: it carries the roles of a run that
-    /// already diarized.
+    /// The input a job would run on if it started now, cached in
+    /// `plannedInputs`. A kept transcript wins over live text, as it always
+    /// has: it carries the roles of a run that already diarized.
     private func plannedInput(for job: ProcessingJob) -> JobInput {
+        if let cached = plannedInputs[job.id] { return cached }
+        let input: JobInput
         if let persisted = loadPersistedTranscript(audioURL: job.audioURL) {
-            return .persisted(persisted)
+            input = .persisted(persisted)
+        } else if let liveOutput = job.liveOutput {
+            input = .live(liveOutput, durationSec: job.liveDurationSec)
+        } else {
+            input = .batch
         }
-        if let liveOutput = job.liveOutput {
-            return .live(liveOutput, durationSec: job.liveDurationSec)
-        }
-        return .batch
+        plannedInputs[job.id] = input
+        return input
     }
 
     /// Recomputes `jobsWaitingForCapture`: queued batch jobs while a recording
@@ -2013,8 +2026,15 @@ final class MeetingRecorderCenter {
         }
         guard let row = found,
               let text = row.transcript, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let json = row.metaJSON,
-              let meta = try? JSONDecoder().decode(PersistedTranscriptMeta.self, from: Data(json.utf8)) else {
+              let json = row.metaJSON else {
+            return nil
+        }
+        let meta: PersistedTranscriptMeta
+        do {
+            meta = try JSONDecoder().decode(PersistedTranscriptMeta.self, from: Data(json.utf8))
+        } catch {
+            print("[MeetingRecorder] the kept transcript of \(audioURL.lastPathComponent) has unreadable "
+                  + "metadata, re-transcribing: \(error.localizedDescription)")
             return nil
         }
         return PersistedTranscript(text: text, utterances: meta.utterances, speakers: meta.speakers,
