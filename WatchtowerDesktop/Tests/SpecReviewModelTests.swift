@@ -424,6 +424,115 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertFalse(plan.showsDecisions)
     }
 
+    // MARK: - Author loop (spec 2026-10-26 §6–§7)
+
+    /// ag:1 fixed in round 2; bs:2 disputed with a reason; ck:1 not settled.
+    private let loopLedger = """
+    [{"key":"ag:1","kind":"agreement","text":"Mute lasts a day","note":"","round":1,
+      "reply":{"key":"ag:1","reply":"fixed","note":"now a day"},"verdict":"resolved","verdict_note":"ok","settled":2},
+     {"key":"bs:2","kind":"blind_spot","text":"No undo","note":"","where":{"heading":"Behaviour","quote":"Muting lasts twenty-four hours"},
+      "round":1,"reply":{"key":"bs:2","reply":"disagree","note":"out of scope"},"verdict":"disputed","verdict_note":"still needed","settled":2},
+     {"key":"ck:1","kind":"check","text":"q","note":"","round":2,"verdict":"unsettled","verdict_note":"Not settled in 3 rounds","settled":3}]
+    """
+
+    private func setLoopRow(end: String) throws {
+        try setRow(status: "done", result: resultJSON())
+        let id = askID
+        let ledger = loopLedger
+        try pool.write { d in
+            try d.execute(sql: """
+                UPDATE spec_reviews SET loop = 'owner', round = 3, ledger = ?, loop_end = ? WHERE ask_id = ?
+                """, arguments: [ledger, end, id])
+        }
+    }
+
+    func testAnswerReviewerRightBecomesComment() async throws {
+        try setLoopRow(end: "settled")
+        let model = try await makeModel()
+        await model.load()
+        XCTAssertTrue(model.isLoop)
+        XCTAssertEqual(model.phase, .wrapup, "a finished loop opens on Decide")
+        XCTAssertEqual(model.disputes.map(\.item.key), ["bs:2", "ck:1"])
+        XCTAssertEqual(model.fixes.map(\.item.key), ["ag:1"])
+        await model.pick("bs:2", reviewerRight: true, body: " please add it ")
+        XCTAssertEqual(model.marks["bs:2"]?.state, .comment)
+        XCTAssertEqual(model.marks["bs:2"]?.about, "No undo")
+        let sent = await model.approve()
+        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, .approved)
+        XCTAssertEqual(answer.comments.map(\.body), ["Reviewer is right: No undo — still needed\n\nplease add it"])
+        XCTAssertEqual(answer.comments.first?.heading, "Behaviour")
+    }
+
+    func testAnswerAuthorRightSendsNothing() async throws {
+        try setLoopRow(end: "settled")
+        let model = try await makeModel()
+        await model.load()
+        await model.pick("bs:2", reviewerRight: false)
+        XCTAssertEqual(model.marks["bs:2"]?.state, .ok)
+        _ = await model.approve()
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, .approved)
+        XCTAssertTrue(answer.comments.isEmpty)
+    }
+
+    func testReopenNeedsBody() async throws {
+        try setLoopRow(end: "settled")
+        let model = try await makeModel()
+        await model.load()
+        let blank = await model.reopen("ag:1", body: "  \n")
+        XCTAssertFalse(blank)
+        XCTAssertNil(model.marks["ag:1"])
+        XCTAssertNotNil(model.lastError)
+        let saved = await model.reopen("ag:1", body: "still says a week")
+        XCTAssertTrue(saved)
+        XCTAssertEqual(model.marks["ag:1"]?.state, .comment)
+        _ = await model.approve()
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.comments.map(\.body), ["Reopened: Mute lasts a day\n\nstill says a week"])
+        XCTAssertEqual(answer.comments.first?.heading, "Behaviour", "no where: the finding's chapter heading")
+    }
+
+    func testApproveConfirmsOnlyAfterEarlyEnd() async throws {
+        try setLoopRow(end: "settled")
+        let settled = try await makeModel()
+        await settled.load()
+        XCTAssertEqual(settled.unpickedDisputeCount, 2)
+        XCTAssertFalse(settled.needsApproveConfirm, "a normal end approves in one press")
+
+        try setLoopRow(end: "timeout")
+        let early = try await makeModel()
+        await early.load()
+        XCTAssertTrue(early.needsApproveConfirm)
+        XCTAssertEqual(early.approveConfirmMessage, "2 disputed findings were never answered — approve anyway?")
+        await early.pick("bs:2", reviewerRight: false)
+        XCTAssertEqual(early.approveConfirmMessage, "1 disputed finding was never answered — approve anyway?")
+        await early.pick("ck:1", reviewerRight: true)
+        XCTAssertFalse(early.needsApproveConfirm)
+    }
+
+    func testUnpickedDisputeIsAuthorRight() async throws {
+        try setLoopRow(end: "cap")
+        let model = try await makeModel()
+        await model.load()
+        _ = await model.approve()
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, .approved)
+        XCTAssertTrue(answer.comments.isEmpty, "an unpicked dispute sends nothing")
+    }
+
+    /// The classic footer (or the phone) on a finished loop: still approved.
+    func testLoopAnswerAlwaysApproved() async throws {
+        try setLoopRow(end: "settled")
+        try writeMark("bs:2", "comment", body: "")
+        let (asks, ask) = try await makeAsks()
+        _ = await asks.answer(ask, verdict: .changes)
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, .approved)
+        XCTAssertEqual(answer.comments.map(\.body), ["Reviewer is right: No undo — still needed"])
+    }
+
     private func storedAnswer() async throws -> String {
         let id = askID
         return try await pool.read { d in

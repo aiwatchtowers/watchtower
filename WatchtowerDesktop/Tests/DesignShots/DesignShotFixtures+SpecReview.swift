@@ -116,8 +116,47 @@ enum SpecReviewShotFixtures {
         return String(bytes: data, encoding: .utf8) ?? "{}"
     }
 
+    /// A finished author loop that ran out of time (spec 2026-10-26 §6):
+    /// two disputes — one the reviewer kept, one the author never answered —
+    /// and three fixes the reviewer confirmed.
+    private static func loopLedgerJSON() throws -> String {
+        func entry(
+            _ key: String,
+            _ text: String,
+            round: Int,
+            settled: Int,
+            verdict: String,
+            note: String,
+            reply: (String, String)?,
+            anchor: (String, String)?
+        ) -> [String: Any] {
+            var out: [String: Any] = ["key": key, "kind": "agreement", "text": text, "note": "", "round": round,
+                                      "verdict": verdict, "verdict_note": note, "settled": settled]
+            if let reply { out["reply"] = ["key": key, "reply": reply.0, "note": reply.1] }
+            if let anchor { out["where"] = ["heading": anchor.0, "quote": anchor.1] }
+            return out
+        }
+        let ledger: [[String: Any]] = [
+            entry("ag:4", "Mentions still notify while muted", round: 1, settled: 2, verdict: "resolved",
+                  note: "Behaviour now says it.", reply: ("fixed", "Added a line to Behaviour."), anchor: nil),
+            entry("ag:3", "Muted channels look different in the sidebar", round: 1, settled: 2, verdict: "disputed",
+                  note: "You asked for grey; a bell with a slash is a different design.",
+                  reply: ("disagree", "A bell is what every other app does; grey reads as disabled."),
+                  anchor: ("Behaviour", "A muted channel shows a bell with a slash in the sidebar.")),
+            entry("bs:1", "Threads of a muted channel", round: 1, settled: 2, verdict: "resolved",
+                  note: "", reply: ("fixed", ""), anchor: nil),
+            entry("ck:1", "Does every promise have a task?", round: 2, settled: 3, verdict: "resolved",
+                  note: "", reply: ("fixed", "Tests now cover mentions while muted."), anchor: nil),
+            entry("da:1", "The sidebar refreshes once a minute", round: 2, settled: 3, verdict: "unsettled",
+                  note: "The author did not answer", reply: nil,
+                  anchor: ("Decisions", "The sidebar refreshes once a minute."))
+        ]
+        let data = try JSONSerialization.data(withJSONObject: ledger, options: [.sortedKeys])
+        return String(bytes: data, encoding: .utf8) ?? "[]"
+    }
+
     /// One model per state, built on its own test database.
-    private static func model(_ key: String, status: String, withResult: Bool) throws -> SpecReviewModel {
+    private static func model(_ key: String, status: String, withResult: Bool, loop: Bool = false) throws -> SpecReviewModel {
         if let entry = built[key] { return entry.model }
         let (pool, path) = try TestDatabase.createPool()
         let snapshot = snapshot
@@ -134,7 +173,11 @@ enum SpecReviewShotFixtures {
                 INSERT INTO spec_reviews (ask_id, status, reason, model, result, queued_at)
                 VALUES (?, ?, ?, 'opus', ?, '2026-10-25T10:00:00Z')
                 """, arguments: [id, status, status == "failed" ? "the reviewer ran out of time after 10 minutes" : "", result])
-            if withResult {
+            if loop {
+                try db.execute(sql: """
+                    UPDATE spec_reviews SET loop = 'owner', round = 3, loop_end = 'timeout', ledger = ? WHERE ask_id = ?
+                    """, arguments: [try loopLedgerJSON(), id])
+            } else if withResult {
                 // A comment from the previous run, whose finding the re-run dropped.
                 try db.execute(sql: """
                     INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at)
@@ -153,7 +196,10 @@ enum SpecReviewShotFixtures {
             let model = SpecReviewModel(ask: ask, dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()),
                                         asks: asks)
             await model.load()
-            if withResult {
+            if loop {
+                await model.pick("ag:3", reviewerRight: true, body: "Grey, as we agreed.")
+                await model.reopen("bs:1", body: "Say what a followed thread does while muted.")
+            } else if withResult {
                 await model.mark("ag:1", .ok)
                 await model.mark("ag:2", .ok)
                 await model.mark("ag:3", .comment, body: "Grey it out as agreed; the bell is too loud.")
@@ -189,6 +235,14 @@ enum SpecReviewShotFixtures {
             let ask = model.ask
             return AnyView(SpecReviewView(model: model, onReadSpec: {}, askContext: { OwnerAskHeaderCard(ask: ask) })
                 .background(Color(nsColor: .textBackgroundColor)))
+        }
+    }
+
+    /// A finished author loop: Decide with its disputes and the fixes.
+    static func loop() -> AnyView {
+        view {
+            let model = try model("loop", status: "done", withResult: true, loop: true)
+            return AnyView(SpecReviewView(model: model) {}.background(Color(nsColor: .textBackgroundColor)))
         }
     }
 

@@ -734,20 +734,25 @@ final class OwnerAsksViewModel {
     /// (`SpecReviewAnswer`, F5): `spec_review_marks` and the reviewer's
     /// result as stored now — no result (queued, running, failed) sends
     /// every comment mark as "From the previous run". Placed off the main
-    /// actor on the drawer's rendered snapshot when it has one. Any other
+    /// actor on the drawer's rendered snapshot when it has one. A finished
+    /// author loop sends the loop's comments, always `approved`. Any other
     /// ask, a dismissal, or an ask without comment marks is unchanged.
     private func specReviewAnswer(_ ask: OwnerAsk, _ answer: OwnerAskAnswer) async throws -> OwnerAskAnswer {
         guard ask.kind == .review, !answer.dismissed else { return answer }
         let askID = ask.id
-        let (result, marks) = try await dbPool.read { db in
-            (try SpecReviewQueries.row(db, askID: askID)?.result, try SpecReviewQueries.marks(db, askID: askID))
+        let (row, marks) = try await dbPool.read { db in
+            (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID))
         }
-        guard marks.values.contains(where: { $0.state == .comment }) else { return answer }
+        // A finished author loop's answer is always `approved` (spec
+        // 2026-10-26 §7), with or without comment marks.
+        let loop = row?.loop == .owner ? row?.ledger : nil
+        guard loop != nil || marks.values.contains(where: { $0.state == .comment }) else { return answer }
+        let result = row?.result
         let snapshot = ask.docSnapshot
         let cached = reviewDocuments.rendered[askID]
         return await Task.detached(priority: .userInitiated) {
             SpecReviewAnswer.build(
-                result: result, marks: marks, base: answer, snapshot: snapshot,
+                result: result, marks: marks, loop: loop, base: answer, snapshot: snapshot,
                 rendered: cached.map { doc in { doc } }
             )
         }.value

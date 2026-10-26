@@ -73,6 +73,41 @@ final class SpecReviewViewTests: XCTestCase {
                        "Reviewer state is not known to this version of the app")
     }
 
+    func testDrawerModeLoopOwnerIsReview() throws {
+        typealias Pres = SpecReviewPresentation
+        func loopRow(status: String, loop: String) throws -> SpecReviewRow {
+            try SpecReviewRow(row: Row([
+                "ask_id": 1, "status": status, "reason": "", "provider": "", "model": "",
+                "dropped": 0, "attempt": 1, "result": "", "loop": loop, "loop_end": "reviewer_failed"
+            ]))
+        }
+        XCTAssertEqual(Pres.drawerMode(row: try loopRow(status: "failed", loop: "owner"), showClassic: false), .review,
+                       "a finished loop has its screen whatever the reviewer's last status")
+        XCTAssertEqual(Pres.drawerMode(row: try loopRow(status: "done", loop: "owner"), showClassic: true), .classic(.banner))
+        XCTAssertEqual(Pres.drawerMode(row: try loopRow(status: "failed", loop: "author"), showClassic: false), .classic(.status))
+    }
+
+    func testLoopDisputeAndFixLines() throws {
+        typealias Pres = SpecReviewPresentation
+        let entries = try JSONDecoder().decode([SpecReviewLedgerEntry].self, from: Data("""
+        [{"key":"a","text":"t","note":"own","reply":{"reply":"disagree","note":"no"},"verdict":"disputed","verdict_note":"still","settled":2},
+         {"key":"b","text":"t","note":"own","reply":{"reply":"disagree","note":"no"},"verdict":"unsettled","verdict_note":"no","settled":3},
+         {"key":"c","text":"t","note":"","round":1,"verdict":"unsettled","verdict_note":"The author did not answer"},
+         {"key":"d","text":"t","round":1,"reply":{"reply":"fixed","note":""},"verdict":"resolved","settled":2}]
+        """.utf8))
+        XCTAssertEqual(Pres.reviewerPosition(entries[0]), "still")
+        XCTAssertEqual(Pres.authorReason(entries[0]), "no")
+        XCTAssertEqual(Pres.reviewerPosition(entries[1]), "own", "an early end copied the author's reason")
+        XCTAssertEqual(Pres.reviewerPosition(entries[2]), "The author did not answer")
+        XCTAssertNil(Pres.authorReason(entries[2]))
+        XCTAssertEqual(Pres.disputeBadge(entries[0]).title, "Disputed")
+        XCTAssertEqual(Pres.disputeBadge(entries[2]).title, "Not settled")
+        XCTAssertEqual(Pres.fixRound(entries[3]), "Round 2")
+        XCTAssertEqual(Pres.fixNote(entries[3]), "no note")
+        XCTAssertEqual(Pres.nextStep(.chapters, loop: true)?.phase, .wrapup)
+        XCTAssertNil(Pres.nextStep(.wrapup, loop: true))
+    }
+
     /// Review focus: a review that finishes while the classic view is open
     /// offers a banner and never replaces the view; a failed or skipped one
     /// keeps the classic view under its reason.
