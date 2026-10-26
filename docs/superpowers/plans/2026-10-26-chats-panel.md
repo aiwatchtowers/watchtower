@@ -66,7 +66,7 @@ Every implementer reads the spec section its task names, `docs/review/review-rul
 - `ChatHistoryViewModel`: `level: ChatPanelLevel` (`.all` / `.project(id)`), persisted per workspace in UserDefaults with fallback to `.all` when the project is gone; `rows` observed through `panelRows(projectID:)`; `sections` = the three groups; `olderExpanded` per level (UserDefaults); `pinnedOlderRow` (the on-screen chat inside a folded group).
 - Read marks: `markRead(id)` when a conversation is selected and when `ChatViewModel.onTurnFinished` fires for the shown conversation (wire in `AppState+Chat.swift` / `ChatView`).
 - Answering: rows read `ChatSessionPool.runningTurnID(conversationID:)` at render time.
-- Cross-process writes: re-read the panel rows on `ChatViewModel.onActionAwaited` and `onTurnFinished` (the session's MCP subprocess writes the pending `agent_actions` row, which `ValueObservation` does not see). Test: a pending action written outside the observation shows after `onActionAwaited`.
+- Cross-process writes (spec §5.2): add `chatHistoryViewModel.reloadRows()` **inside the existing closures** in `AppState+Chat.swift` (`cvm.onTurnFinished`/`cvm.onActionAwaited`, beside the action-strip refresh). Never assign `pool.onActionAwaited`/`onTurnFinished` or `ChatViewModel.on…` anywhere else — they are single closures. Tests: a pending action written outside the observation shows after the callback, and the action strip still refreshes.
 - `ChatViewModel`: `landingProjectID` — the landing (and `+` in a project) creates the conversation with that project; `selectAdjacent` follows the new row order.
 - Tests (Desktop): level persistence and fallback, read mark on select and turn finish, landing in a project creates the chat in it.
 - Checks: `make test-swift FILTER='ChatHistoryViewModel|ChatViewModelLanding'`, `make lint-swift`.
@@ -98,7 +98,7 @@ Every implementer reads the spec section its task names, `docs/review/review-rul
 - ✕ on hover/cursor only when the row is neither answering nor waiting; the context menu's Delete… keeps the alert.
 - Undo bar under the list (`SessionDeleteToast` shape, generalised or a chat twin).
 - Keyboard: a `SessionsPanelKeyView`-style key handler — ↑/↓ cursor, Return, ⌘⌫, ⌘Z. `KeyboardShortcutCatalog` "Chats" entries.
-- ⌘1…⌘9 (spec §5.4): turn `WorkbenchCommands`' "Sessions" menu into one shared set of items that dispatch to the screen on screen — the key workbench's sessions (`openSession(atShortcut:)`) or the Chats rows — disabled elsewhere; rename it to fit both. The dispatch decision is a pure function in Core with tests (Workbench → sessions, Chats → chats, other tabs → disabled).
+- ⌘1…⌘9 (spec §5.4): `ChatView` publishes `.focusedSceneValue(\.chatsMenu, ChatsMenuContext(…))`; move the "Sessions" items out of `WorkbenchCommands` into one shared View → "Go to Item" menu, enabled by `workbenchMenu?.canUseSessionKeys` or `chatsMenu?.canUseRowKeys`, still gated by `WorkbenchCommands.pageTakesKeys` at fire time; the choice is `ItemShortcutTarget.resolve(workbench:chats:)` in Core with tests (Workbench page → sessions, Chats → chats, palette open / other tab → disabled). Existing Workbench ⌘1…⌘9 tests must pass unchanged.
 - Tests: pending-delete timing (injected clock), undo, commit on quit, keyboard policy.
 - Checks: `make test-swift FILTER='PendingChatDeletes|ChatPanelKeys|ChatSidebarRender'`, `make lint-swift`.
 

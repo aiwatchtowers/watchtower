@@ -77,7 +77,9 @@ Precedence top to bottom. The dot has an accessibility label naming the state; t
 
 The rows read their line 2 and the unread/approval state through one query (`ChatHistoryQueries.panelRows`) — one pass over `chat_conversations` with correlated subqueries for the last assistant message and the pending-action count — observed with `ValueObservation` like today's list. "Answering" comes from the pool, not the database.
 
-A pending `agent_actions` row is written by the session's MCP subprocess (Go), which a `ValueObservation` in this process does not see. The panel therefore also re-reads its rows on the pool's `onActionAwaited` (a proposal was just written) and `onTurnFinished` callbacks — the same signals `ChatViewModel` already uses to refresh its action feed — and an Approve/Reject in the app is a Swift write the observation sees.
+A pending `agent_actions` row is written by the session's MCP subprocess (Go), which a `ValueObservation` in this process does not see. The panel therefore also re-reads its rows when a proposal was just written and when a turn finished — and an Approve/Reject in the app is a Swift write the observation sees.
+
+These signals are single closures, each with one owner: `ChatSessionPool.onActionAwaited`/`onTurnFinished` are assigned by `ChatViewModel` (its init), and `ChatViewModel.onActionAwaited`/`onTurnFinished` are assigned once in `AppState+Chat.swift` (they refresh the action strip). Nothing new assigns any of them — that would silently replace the existing handler. The panel's refresh is added **inside the existing `AppState+Chat.swift` closures**, next to the action-strip refresh (`chatHistoryViewModel.reloadRows()`), and a test pins that both still run.
 
 ### 5.3 Delete with Undo
 
@@ -89,7 +91,11 @@ A pending `agent_actions` row is written by the session's MCP subprocess (Go), w
 
 As in the sessions panel, once a click on the panel's empty space, a label or the group header gives it the keyboard: ↑/↓ move a cursor (focus ring), Return opens, ⌘⌫ deletes the highlighted chat (with Undo), ⌘Z undoes, ⌘1…⌘9 open the first nine rows of the list (while the Chats tab is on screen).
 
-⌘1…⌘9 are already the Workbench sessions' menu items (`WorkbenchCommands`, "Sessions" menu). Two menu items with the same key equivalent would race, so there stays **one** set of ⌘1…⌘9 items: they dispatch to the screen on screen — the key workbench's sessions panel, or the Chats panel's rows — and are disabled elsewhere. The menu is renamed to fit both ("Go to Item 1…9" under the View or Window menu), and a test pins that each screen gets the keys and the other does not. A row click opens the chat and sends focus to the composer, as today. The shortcut catalog's "Chats" area lists them.
+⌘1…⌘9 are already the Workbench sessions' menu items (`WorkbenchCommands`, "Sessions" menu). Today they are enabled by the Workbench tab's focused scene value (`@FocusedValue(\.workbenchMenu)`, published by `WorkbenchesView`) through `WorkbenchMenuContext.canUseSessionKeys` (no Go to… palette open and a workbench page shown), and `pageTakesKeys(keyWindow)` checks at fire time that the page's window itself is key. Two menu items with the same key equivalent would race, so there stays **one** set of ⌘1…⌘9 items:
+
+- `ChatView` publishes its own focused scene value (`\.chatsMenu`, a `ChatsMenuContext` with the history view model) while the Chats tab is in the key window — the same mechanism, so at most one of the two contexts is set for a window.
+- Each item is enabled when `workbenchMenu?.canUseSessionKeys == true` **or** `chatsMenu?.canUseRowKeys == true` (no sheet/alert/rename field taking the keys), and on fire still passes `pageTakesKeys`. It acts on whichever context is set: the workbench → `openSession(atShortcut:)` (unchanged), Chats → open the n-th row of the panel.
+- The menu moves out of the Workbench menu into a neutral place (View → "Go to Item" ▸ 1…9) since it now serves two tabs; the Workbench menu keeps everything else. The choice is a pure function in Core (`ItemShortcutTarget.resolve(workbench:chats:)`) with tests: Workbench page → sessions, Chats → chats, palette open / other tab → disabled. A row click opens the chat and sends focus to the composer, as today. The shortcut catalog's "Chats" area lists them.
 
 ## 6. Groups
 
@@ -134,4 +140,5 @@ CHAT-01..05 untouched: nothing here sends, stores owner text differently or chan
 - The switcher is **the Workbench switcher's shape** (‹, Find field, RECENT with state segments, New Project…, All Chats); no "Project Settings…" item — conversation (owner's screenshot of the workbench switcher).
 - Mockups on the canvas accepted ("ну норм. Делаем") — conversation.
 - **No project description field** — conversation (proposed by the agent, consistent with "prefer simple designs").
+- Review round 2 (ask #635): the panel refresh goes into the existing `AppState+Chat.swift` closures (no new assignment of the single-closure callbacks); ⌘1…⌘9 enable through a second focused scene value beside `workbenchMenu`/`canUseSessionKeys`.
 - Review round 1 (ask #626): regenerate the system-prompt golden; ⌘1…⌘9 shared with Workbench through one dispatching set; the waiting-for-approval state refreshes on the pool's callbacks; the guide describes the new panel.
