@@ -11,7 +11,8 @@ struct SessionRoute: Hashable {
 /// the dialog without tools, then the phone's own lines on their way, the
 /// permission card and the session's open asks at the foot of the feed,
 /// and the composer pinned under it. A Claude session takes a line while
-/// it works (PROJ-16 amended); a Codex one when it stops. Opening the
+/// it works (PROJ-16 amended); a Codex one takes none from the phone (the
+/// bar says to write on the Mac). Opening the
 /// screen asks the Mac for the chat (FEED-05) until it goes away. The
 /// actions menu stops, finishes or interrupts the session and opens its
 /// report and board target.

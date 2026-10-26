@@ -136,13 +136,22 @@ final class WorkchatWiringTests: XCTestCase {
         XCTAssertEqual(SessionInputModel.heldText(.agentBusy), "Queued · sends when the agent stops")
     }
 
-    func testCodexKeepsTheIdleFootnote() throws {
+    /// The Mac takes phone lines and Finish for Claude sessions only (PROJ-16): a Codex session gets no composer,
+    /// and the bar says where to write instead.
+    func testCodexSessionHasNoComposer() throws {
         let replica = try snapshot()
         let claude = model(try session(10, ["state_kind": "working"]), replica)
-        let codex = model(try session(10, ["state_kind": "working", "agent": "codex_cli"]), replica)
+        let codexSession = try session(10, ["state_kind": "working", "agent": "codex_cli"])
+        let codex = model(codexSession, replica)
 
-        XCTAssertEqual(claude.composer, .ready(footnote: nil), "a Claude session takes a line while it works")
-        XCTAssertEqual(codex.composer, .ready(footnote: "Delivered when the agent stops"))
+        XCTAssertEqual(claude.composer, .ready, "a Claude session takes a line while it works")
+        XCTAssertEqual(codex.composer, .hidden(.macOnly(.codexCLI)))
+        XCTAssertEqual(SessionInputModel.TypingHint.macOnly(.codexCLI).text, "Write to Codex sessions on the Mac.")
+        let input = SessionInputModel(
+            session: codexSession, snapshot: replica, grant: grant(typing: true), typingRequested: true, delivered: nil, now: now
+        )
+        XCTAssertFalse(input.showsBar)
+        XCTAssertFalse(input.showsFinish, "no Finish either: the Mac refuses it for a Codex session")
         XCTAssertEqual(ComposerBarModel(text: "", mode: .message).placeholder, "Message the session…")
         XCTAssertEqual(model(try session(10), replica, typing: false).composer, .hidden(.waitingForMac))
         XCTAssertEqual(model(try session(15, ["live": false, "state_kind": "stopped"]), replica).composer, .hidden(nil))

@@ -5,11 +5,11 @@ import WatchtowerSync
 /// What the workchat's composer may do now (spec §5.4).
 enum ComposerState: Equatable {
     /// No composer: the session does not run (nil), or this phone may not
-    /// type to it and the hint says why (board #515).
+    /// type to it and the hint says why (board #515, a non-Claude session).
     case hidden(SessionInputModel.TypingHint?)
-    /// The owner can write; `footnote` says when a line reaches a busy
-    /// agent (none for Claude, which takes it at its next step).
-    case ready(footnote: String?)
+    /// The owner can write (a Claude session, which takes a line at its
+    /// next step while it works).
+    case ready
     /// A permission prompt: no send ("Answer the request above" when the
     /// card takes this phone's answer, else "Needs approval on the Mac").
     case approval(String)
@@ -20,7 +20,7 @@ enum ComposerState: Equatable {
     var bar: (mode: ComposerMode, note: String?)? {
         switch self {
         case .hidden: nil
-        case let .ready(footnote): (.message, footnote)
+        case .ready: (.message, nil)
         case let .approval(text): (text == SessionInputModel.answerAbove ? .answerAbove : .unavailable(text), nil)
         case let .macAway(note): (.message, note)
         }
@@ -127,7 +127,7 @@ struct WorkchatModel: Equatable {
         } else if !mac.isOnline {
             .macAway(BoardWriteText.waitingForMac)
         } else {
-            .ready(footnote: SessionInputModel.footnote(session.agent))
+            .ready
         }
     }
 

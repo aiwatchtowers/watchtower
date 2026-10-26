@@ -10,7 +10,7 @@ You leave your desk while an agent works through a target. On the phone you foll
 
 The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text, subagents and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the Mac** above them.
 
-A Claude Code session takes your line while it works and reads it at its next step. A Codex session gets it only once the agent stops. Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
+A Claude Code session takes your line while it works and reads it at its next step. A Codex session takes no lines or **Finish** from the phone: write to it on the Mac. Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
 
 ## Using it
 
@@ -38,7 +38,7 @@ Type into **Message the session…** and send. Your line shows under it:
 
 - **Queued · the agent reads it at its next step**: a Claude Code session took it while working.
 - **Sent**: the agent was idle and got it at once.
-- **Queued · sends when the agent stops**: a Codex session holds it until the agent stops, with **Cancel**. The field says **Delivered when the agent stops** for these sessions.
+- **Queued · sends when the agent stops**: the Mac holds it until the session can take it, with **Cancel**.
 - **Typed into the session — press Return on the Mac**: text was already typed in the session on the Mac.
 
 ### Stop, finish or see the report
@@ -51,7 +51,7 @@ The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interru
 - **Unlock this iPhone to see the chat.**: the chat is sealed until the phone is unlocked.
 - **Your Mac is asleep · last seen 40 min ago. New lines go when it wakes.** above the chat, **Waiting for your Mac** under the field and your line, and a state line that reads **as of 40 min ago**: the Mac has not checked in for over 35 minutes. The line goes when it is back.
 - **Answer the request above** or **Needs approval on the Mac** instead of the field: the agent waits on a permission prompt, and nothing else goes to it until that is answered.
-- No field at all: typing is off for this phone; the bar says why, with **Turn On**.
+- No field at all: typing is off for this phone; the bar says why, with **Turn On**. On a Codex session the bar says **Write to Codex sessions on the Mac.**
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 

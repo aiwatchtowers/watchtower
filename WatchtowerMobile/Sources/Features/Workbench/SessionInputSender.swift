@@ -185,7 +185,7 @@ final class SessionInputSender {
 
 /// The workchat's input (spec §5.4, §6.6, PROJ-16): the composer and Finish
 /// show only on a phone whose typing the Mac allowed and whose own toggle
-/// is on, for a live session. A session at a permission prompt takes
+/// is on, for a live Claude session (the Mac refuses any other agent's). A session at a permission prompt takes
 /// nothing from the phone: "Needs approval on the Mac" (or "Answer the
 /// request above" when the screen's permission card takes this phone's
 /// answer, #517), no send. Each line on its way shows how far the Mac got,
@@ -194,12 +194,6 @@ final class SessionInputSender {
 struct SessionInputModel: Equatable {
     static let needsApproval = "Needs approval on the Mac"
     static let answerAbove = "Answer the request above"
-    /// The composer's note: a Claude session takes a line while it works
-    /// (PROJ-16 amended), every other agent only once it stops.
-    static func footnote(_ agent: TerminalSessionState.Agent) -> String? {
-        agent == .claudeCode ? nil : "Delivered when the agent stops"
-    }
-
     /// Why a live session takes no line from this phone (board #515): the
     /// composer's place says what to do instead of staying empty.
     enum TypingHint: Equatable {
@@ -207,11 +201,14 @@ struct SessionInputModel: Equatable {
         case turnOn
         /// Asked; the Mac has not allowed it yet.
         case waitingForMac
+        /// Not a Claude session: the Mac takes phone lines and Finish for Claude sessions only (PROJ-16).
+        case macOnly(TerminalSessionState.Agent)
 
         var text: String {
             switch self {
             case .turnOn: "Turn on typing to tell this session something from your phone."
             case .waitingForMac: "Waiting for your Mac to allow typing: Watchtower → Settings → Mobile → Allow…"
+            case let .macOnly(agent): agent == .codexCLI ? "Write to Codex sessions on the Mac." : "Write to this session on the Mac."
             }
         }
     }
@@ -256,9 +253,16 @@ struct SessionInputModel: Equatable {
         answersPermission: Bool = false
     ) {
         let allowed = typingRequested && grant?.typingAllowed == true
-        showsBar = allowed && session.live
+        let takesLines = session.agent == .claudeCode
+        showsBar = allowed && session.live && takesLines
         showsFinish = showsBar
-        typingHint = !session.live || allowed ? nil : (typingRequested ? .waitingForMac : .turnOn)
+        typingHint = if !session.live {
+            nil
+        } else if !takesLines {
+            .macOnly(session.agent)
+        } else {
+            allowed ? nil : (typingRequested ? .waitingForMac : .turnOn)
+        }
         approvalText = session.stateKind == .needsApproval ? (answersPermission ? Self.answerAbove : Self.needsApproval) : nil
         notice = delivered?.text
         let entity = SessionStarter.sessionRecordName(session.id)
