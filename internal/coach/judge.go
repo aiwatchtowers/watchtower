@@ -91,7 +91,7 @@ func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (
 		return "", nil, err
 	}
 	v := m.Of(p.Metric)
-	if m.Sessions < judgeMinSessions || p.Baseline == nil || !v.Known {
+	if m.Sessions < judgeMinSessions || p.Baseline == nil || *p.Baseline <= 0 || !v.Known {
 		return "too_little_data", nil, nil
 	}
 	if v.V <= *p.Baseline*(1-judgeImprovement) {
@@ -105,6 +105,12 @@ func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (
 // written when no slot is free, another open proposal edits the same text, the
 // added part is no longer in the text, or the destination cannot be read.
 func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now time.Time) (bool, error) {
+	// No cut for the allow list: an Accept may only grow it, so a cut could
+	// never be accepted and would hold a slot. The owner removes such a rule
+	// with Rollback of the original proposal; its no_effect verdict stands.
+	if p.Destination == DestSettingsAllow {
+		return false, nil
+	}
 	open, err := d.ListCoachProposals("open")
 	if err != nil {
 		return false, err
@@ -141,18 +147,23 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 	return id != 0, err
 }
 
-// withoutEdit is cur minus what p's edit added: for an owner text the added
-// part (once, where it still appears exactly once), for a prompt's additions
-// or the allow list the added lines. ok is false when none of it is left.
+// withoutEdit is cur with p's edit undone: for an owner text the added part
+// (where it still appears exactly once) is replaced by what the edit removed,
+// or dropped for a pure addition; for a prompt's additions the added lines are
+// dropped and the removed ones come back in place. ok is false when none of the
+// added part is left.
 func withoutEdit(p db.CoachProposal, cur string) (string, bool) {
-	switch p.Destination {
-	case DestPromptAdd, DestSettingsAllow:
+	if p.Destination == DestPromptAdd {
 		drop := countLines(linesAdded(p.BeforeText, p.AfterText))
+		back := linesAdded(p.AfterText, p.BeforeText) // lines a replacing edit removed
 		var keep []string
 		removed := false
 		for _, l := range nonEmptyLines(cur) {
 			if drop[l] > 0 {
 				drop[l]--
+				if !removed {
+					keep = append(keep, back...)
+				}
 				removed = true
 				continue
 			}
@@ -160,14 +171,17 @@ func withoutEdit(p db.CoachProposal, cur string) (string, bool) {
 		}
 		return strings.Join(keep, "\n"), removed
 	}
-	_, added := changedPart(p.BeforeText, p.AfterText)
+	gone, added := changedPart(p.BeforeText, p.AfterText)
 	if strings.TrimSpace(added) == "" || strings.Count(cur, added) != 1 {
 		return "", false
 	}
 	i := strings.Index(cur, added)
 	end := i + len(added)
-	// Take one line break with a part that is a whole line, so no blank line
-	// is left behind.
+	if gone != "" { // a replacing edit: the old part comes back
+		return cur[:i] + gone + cur[end:], true
+	}
+	// A pure addition: take one line break with a part that is a whole line,
+	// so no blank line is left behind.
 	switch {
 	case i > 0 && cur[i-1] == '\n' && (end == len(cur) || cur[end] == '\n'):
 		if end < len(cur) {

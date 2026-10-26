@@ -184,8 +184,8 @@ func TestWithoutEdit(t *testing.T) {
 	cases := []struct{ name, dest, before, after, cur, want string }{
 		{"appended line", DestChat, "A", "A\nB", "A\nB", "A"},
 		{"line in the middle", DestChat, "A\nC", "A\nB\nC", "A\nB\nC", "A\nC"},
-		{"replaced word", DestChat, "Be long.", "Be short.", "Be short.", "Be ."},
-		{"allow rules", DestSettingsAllow, "Bash(ls:*)", "Bash(ls:*)\nBash(cat:*)", "Bash(ls:*)\nBash(cat:*)\nBash(head:*)", "Bash(ls:*)\nBash(head:*)"},
+		{"replaced word", DestChat, "Be long.", "Be short.", "Be short.", "Be long."},
+		{"replaced line", DestPromptAdd, "A\nOld", "A\nNew", "A\nNew\nZ", "A\nOld\nZ"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -196,4 +196,25 @@ func TestWithoutEdit(t *testing.T) {
 	}
 	_, ok := withoutEdit(db.CoachProposal{Destination: DestChat, BeforeText: "A", AfterText: "A\nB"}, "A\nC")
 	assert.False(t, ok, "added part gone")
+}
+
+func TestJudge_AllowRuleGetsVerdictButNoCut(t *testing.T) {
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	for i := range 5 {
+		d.session(t, wb, fmt.Sprintf("s%d", i), ids, 1, 1.0)
+	}
+	id := propose(t, d, db.CoachProposal{Destination: DestSettingsAllow, BeforeText: "", AfterText: "Bash(ls:*)"})
+	require.NoError(t, d.MarkCoachAccepted(id, "Bash(ls:*)", fl(5), 3, judgeDecided))
+	j, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	assert.Equal(t, 1, j)
+	assert.Zero(t, c)
+	assert.Equal(t, "no_effect", proposal(t, d, id).Verdict)
+}
+
+func TestJudge_ZeroBaselineIsTooLittleData(t *testing.T) {
+	d, _, id := judgeFixture(t, 5, fl(0))
+	j, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	assert.Zero(t, j+c)
+	assert.Equal(t, "too_little_data", proposal(t, d, id).Verdict)
 }
