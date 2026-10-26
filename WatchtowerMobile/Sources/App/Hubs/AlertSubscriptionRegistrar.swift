@@ -54,7 +54,26 @@ final class AlertSubscriptionRegistrar {
         self.saver = saver
     }
 
+    /// The newest requested state.
+    private var desired = false
+    /// The last queued run: runs go one at a time, so a save and a delete never overlap at CloudKit.
+    private var lastRun: Task<Void, Never>?
+
+    /// Queues the change and returns when it (or a newer one that overtook it) has run. The newest request wins:
+    /// each run applies `desired`, not the value it was asked with.
     func apply(enabled: Bool) async {
+        desired = enabled
+        let prior = lastRun
+        let run = Task { [weak self] in
+            await prior?.value
+            await self?.applyDesired()
+        }
+        lastRun = run
+        await run.value
+    }
+
+    private func applyDesired() async {
+        let enabled = desired
         let wanted = enabled ? Applied.registered : .removed
         guard applied != wanted else { return }
         do {

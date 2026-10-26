@@ -132,6 +132,10 @@ final class AppEnvironment {
     /// still on screen while the root turns to onboarding read it through
     /// the forwarders instead of trapping.
     func remove(_ hubID: String) {
+        // A hub that is gone gets no more alerts: drop its push subscription (best effort).
+        if let registrar = sessions[hubID]?.alertRegistrar {
+            Task { await registrar.apply(enabled: false) }
+        }
         if activeHubID == hubID {
             retained = sessions[hubID]
             activeHubID = nil

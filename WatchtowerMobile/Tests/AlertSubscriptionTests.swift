@@ -92,4 +92,40 @@ final class AlertSubscriptionTests: XCTestCase {
         let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: try makeDefaults(), hubID: TestHub.acme)
         XCTAssertTrue(settings.workAlerts)
     }
+
+    /// Calls finish in reverse order of their start; the last request still decides the end state.
+    private actor SlowSaver: SubscriptionSaving {
+        private(set) var live = false
+        private var calls = 0
+        func save(_ subscription: CKSubscription) async throws {
+            calls += 1
+            try? await Task.sleep(for: .milliseconds(calls.isMultiple(of: 2) ? 5 : 40))
+            live = true
+        }
+        func delete(id: CKSubscription.ID) async throws {
+            calls += 1
+            try? await Task.sleep(for: .milliseconds(calls.isMultiple(of: 2) ? 5 : 40))
+            live = false
+        }
+    }
+
+    func testRapidTogglesEndInTheLastRequestedState() async {
+        let saver = SlowSaver()
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .private, saver: saver)
+        async let one: Void = registrar.apply(enabled: true)
+        async let two: Void = registrar.apply(enabled: false)
+        async let three: Void = registrar.apply(enabled: true)
+        async let four: Void = registrar.apply(enabled: false)
+        _ = await (one, two, three, four)
+        let live = await saver.live
+        XCTAssertFalse(live)
+    }
+
+    func testForgettingAHubDeletesItsSubscription() async {
+        let saver = FakeSaver()
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .private, saver: saver)
+        await registrar.apply(enabled: false)
+        let deleted = await saver.deleted
+        XCTAssertEqual(deleted, [AskAlertSubscription.subscriptionID(hubID: hubID)], "even before this launch saved it")
+    }
 }
