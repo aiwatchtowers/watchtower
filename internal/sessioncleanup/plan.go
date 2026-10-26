@@ -21,6 +21,11 @@ const sizeBudget = 20 * time.Second
 // at a time made a sweep over dozens of large worktrees take minutes.
 const sizeWorkers = 4
 
+// checkWorkers is how many worktrees are checked at the same time: each
+// check runs `git status`, and one at a time a sweep over dozens of
+// worktrees spent most of its time waiting for them.
+const checkWorkers = 4
+
 // detailGone is the detail of a prunable worktree: its directory is gone,
 // so removing it only drops git's metadata.
 const detailGone = "directory is gone"
@@ -64,6 +69,7 @@ type builder struct {
 	// so a worktree is walked once there and once more right before
 	// `git worktree remove`.
 	walked map[string]string
+	walkMu sync.Mutex // guards walked: worktrees are checked concurrently
 	report *reporter
 	// extras are each worktree to remove's orphans and bundles, found
 	// right after its catches.
@@ -290,17 +296,24 @@ func (b *builder) worktreeItems(ctx context.Context) []Item {
 	b.checkedOutIn, b.checkedOutStaying = map[string]string{}, map[string]string{}
 	b.extras = map[string][]Item{}
 	known := map[string]bool{}
+	var toCheck []worktree
 	for _, w := range b.repo.worktrees {
 		known[w.Root] = true
-		listed := !w.Bare && b.listsWorktree(w)
 		if w.Branch != "" {
 			b.checkedOutIn[w.Branch] = w.Root
 		}
-		if !listed {
+		if !w.Bare && b.listsWorktree(w) {
+			toCheck = append(toCheck, w)
+		} else {
 			b.markStaying(w)
-			continue
 		}
-		it := b.evaluateWorktree(ctx, w)
+	}
+	// The catches of different worktrees are independent reads: run them
+	// checkWorkers at a time, then take the results in listing order on this
+	// goroutine, so the maps, the events and the items keep today's order.
+	results := b.evaluateWorktrees(ctx, toCheck)
+	for i, w := range toCheck {
+		it := <-results[i]
 		if it.Action == ActionKeep {
 			b.markStaying(w)
 		}
@@ -314,6 +327,32 @@ func (b *builder) worktreeItems(ctx context.Context) []Item {
 	undeclared := b.undeclaredWorktrees(known)
 	b.report.checked(undeclared...)
 	return append(items, undeclared...)
+}
+
+// evaluateWorktrees evaluates the worktrees checkWorkers at a time, in
+// listing order; result i arrives on results[i].
+func (b *builder) evaluateWorktrees(ctx context.Context, list []worktree) []chan Item {
+	results := make([]chan Item, len(list))
+	for i := range results {
+		results[i] = make(chan Item, 1)
+	}
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for range min(checkWorkers, len(list)) {
+		wg.Go(func() {
+			for i := range next {
+				results[i] <- b.evaluateWorktree(ctx, list[i])
+			}
+		})
+	}
+	go func() {
+		for i := range list {
+			next <- i
+		}
+		close(next)
+		wg.Wait()
+	}()
+	return results
 }
 
 // worktreeExtras are root's orphans (session mode only — the sweep never

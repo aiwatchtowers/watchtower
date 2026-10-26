@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -58,6 +59,8 @@ type branchRef struct{ Name, Sha string }
 
 // repoState is the workbench repository as one evaluation sees it.
 type repoState struct {
+	// mu guards the three caches below: worktrees are checked concurrently.
+	mu            sync.Mutex
 	git           gitCmd
 	folder        string // the workbench folder, symlink-resolved
 	commonDir     string
@@ -206,7 +209,10 @@ func (r *repoState) readDisplayFacts(ctx context.Context) {
 // tips are answered by the listing; any other commit (a detached HEAD) by
 // `merge-base --is-ancestor`. Display only: a failure reads as false.
 func (r *repoState) isMerged(ctx context.Context, sha string) bool {
-	if v, ok := r.merged[sha]; ok {
+	r.mu.Lock()
+	v, ok := r.merged[sha]
+	r.mu.Unlock()
+	if ok {
 		return v
 	}
 	if sha == "" {
@@ -219,14 +225,19 @@ func (r *repoState) isMerged(ctx context.Context, sha string) bool {
 			break
 		}
 	}
+	r.mu.Lock()
 	r.merged[sha] = in
+	r.mu.Unlock()
 	return in
 }
 
 // commitDate is the committer date of sha: a branch tip's from the single
 // listing, any other commit (a detached HEAD) by one `git log`; "" = unknown.
 func (r *repoState) commitDate(ctx context.Context, sha string) string {
-	if d, ok := r.tipDates[sha]; ok {
+	r.mu.Lock()
+	d, ok := r.tipDates[sha]
+	r.mu.Unlock()
+	if ok {
 		return d
 	}
 	if sha == "" {
@@ -240,8 +251,10 @@ func (r *repoState) commitDate(ctx context.Context, sha string) string {
 	if err != nil {
 		return ""
 	}
-	d := t.UTC().Format(time.RFC3339)
+	d = t.UTC().Format(time.RFC3339)
+	r.mu.Lock()
 	r.tipDates[sha] = d
+	r.mu.Unlock()
 	return d
 }
 
@@ -316,7 +329,10 @@ func readAdminDirs(commonDir string) (map[string]string, error) {
 // isContained reports whether sha is an ancestor of the default branch or
 // contained in any refs/remotes/* ref. No fetch: what the remote refs say now.
 func (r *repoState) isContained(ctx context.Context, sha string) (bool, error) {
-	if v, ok := r.contained[sha]; ok {
+	r.mu.Lock()
+	v, ok := r.contained[sha]
+	r.mu.Unlock()
+	if ok {
 		return v, nil
 	}
 	in, err := r.inDefault(ctx, sha)
@@ -326,7 +342,9 @@ func (r *repoState) isContained(ctx context.Context, sha string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	r.mu.Lock()
 	r.contained[sha] = in
+	r.mu.Unlock()
 	return in, nil
 }
 

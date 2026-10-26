@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -723,5 +724,85 @@ func TestSessionModeWorktreeCarriesOrigin(t *testing.T) {
 	it := findItem(t, f.plan(Request{}), "worktree:"+root)
 	if it.Origin != "subagent" {
 		t.Fatalf("origin = %q, want subagent", it.Origin)
+	}
+}
+
+// slowStatusGit delays `git status` by a per-directory time, so worktrees
+// finish their checks in another order than they are listed.
+type slowStatusGit struct {
+	SystemGit
+	delay         map[string]time.Duration
+	mu            *sync.Mutex
+	running, peak *int
+}
+
+func (g slowStatusGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	if len(args) > 0 && args[0] == "status" {
+		g.mu.Lock()
+		*g.running++
+		*g.peak = max(*g.peak, *g.running)
+		g.mu.Unlock()
+		time.Sleep(g.delay[dir])
+		g.mu.Lock()
+		*g.running--
+		g.mu.Unlock()
+	}
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+func TestWorktreeChecksKeepOrderInParallel(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	const n = 8
+	roots := make([]string, n)
+	delay := map[string]time.Duration{}
+	for i := range n {
+		roots[i] = f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
+		// The first listed finishes last.
+		delay[roots[i]] = time.Duration(n-i) * 30 * time.Millisecond
+		if i%2 == 1 {
+			writeFile(t, filepath.Join(roots[i], "notes.txt"), "new\n")
+		}
+	}
+	var mu sync.Mutex
+	var running, peak int
+	f.git = slowStatusGit{delay: delay, mu: &mu, running: &running, peak: &peak}
+	rec := &recorder{}
+	p := f.planWith(Request{Sweep: true, Observer: rec}, nil)
+	if peak != checkWorkers {
+		t.Fatalf("%d git status ran at once, want %d", peak, checkWorkers)
+	}
+
+	var got []string
+	for _, it := range p.Plan.Items {
+		if it.Kind == KindWorktree {
+			got = append(got, it.Key)
+		}
+	}
+	listed := rec.of("listed")[0].items
+	var want []string
+	for _, it := range listed {
+		if it.Kind == KindWorktree {
+			want = append(want, it.Key)
+		}
+	}
+	if len(want) != n || !slices.Equal(got, want) {
+		t.Fatalf("items %v, want the listing order %v", got, want)
+	}
+	for i, root := range roots {
+		action, reason := ActionRemove, ""
+		if i%2 == 1 {
+			action, reason = ActionKeep, ReasonUncommittedChanges
+		}
+		wantItem(t, p.Plan, "worktree:"+root, action, reason)
+	}
+	var checked []string
+	for _, e := range rec.of("checked") {
+		if strings.HasPrefix(e.key, "worktree:") {
+			checked = append(checked, e.key)
+		}
+	}
+	if !slices.Equal(checked, want) {
+		t.Fatalf("Checked events %v, want the listing order %v", checked, want)
 	}
 }
