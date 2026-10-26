@@ -1,8 +1,8 @@
 import SwiftUI
 import WatchtowerCore
 
-/// History on the left (spec §3.1): Pinned / Today / Yesterday / 7 / 30 /
-/// Older, with rename, pin, archive, delete. Projects (Phase 4) sit above.
+/// History on the left (spec 2026-10-26 §6): Pinned / Recent / the folded
+/// "▸ N older", with rename, pin, archive, delete. Projects (Phase 4) sit above.
 /// Shaped like the Workbench sessions panel: section labels in the app
 /// sidebar's style, rows as tabs, and the chat (or project page) on screen
 /// is a tab that runs on into the conversation beside it (`panelTab`, with
@@ -23,7 +23,7 @@ struct ChatSidebarView: View {
     @State private var scroll = PanelSelectionScrollPolicy<Int64>()
 
     var body: some View {
-        let conversationIDs = historyVM.sections.flatMap { $0.items.map(\.id) }
+        let conversationIDs = historyVM.visibleRowIDs
         VStack(spacing: 0) {
             HStack {
                 Text("Chats").font(.headline)
@@ -43,15 +43,14 @@ struct ChatSidebarView: View {
                     newChatRow
                     projectsSection
                     ForEach(historyVM.sections) { section in
-                        sectionLabel(Text(section.kind.title.uppercased()))
-                        ForEach(section.items) { conv in
-                            Text(conv.displayTitle)
-                                .lineLimit(1)
-                                .panelTab(isSelected: historyVM.selectedConversationID == conv.id)
-                                .onTapGesture { select(conv.id) }
-                                .accessibilityAddTraits(.isButton)
-                                .accessibilityAction { select(conv.id) }
-                                .contextMenu { menu(conv) }
+                        if section.kind == .older {
+                            olderLabel(count: section.items.count)
+                            ForEach(historyVM.olderExpanded ? section.items : historyVM.pinnedOlderRow.map { [$0] } ?? []) {
+                                chatRow($0.conversation)
+                            }
+                        } else {
+                            sectionLabel(Text(section.kind.title.uppercased()))
+                            ForEach(section.items) { chatRow($0.conversation) }
                         }
                     }
                 }
@@ -138,7 +137,29 @@ struct ChatSidebarView: View {
         }
     }
 
-    /// A section's label row (PROJECTS, PINNED, TODAY…) in the app sidebar's
+    private func chatRow(_ conv: ChatConversation) -> some View {
+        Text(conv.displayTitle)
+            .lineLimit(1)
+            .panelTab(isSelected: historyVM.selectedConversationID == conv.id)
+            .onTapGesture { select(conv.id) }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { select(conv.id) }
+            .contextMenu { menu(conv) }
+    }
+
+    /// The folded older group's header, "▸ N older" (spec §6); a click
+    /// opens or folds it.
+    private func olderLabel(count: Int) -> some View {
+        sectionLabel(Text("\(historyVM.olderExpanded ? "▾" : "▸") \(count) OLDER"))
+            .contentShape(Rectangle())
+            .onTapGesture { historyVM.olderExpanded.toggle() }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("\(count) older chats")
+            .accessibilityValue(historyVM.olderExpanded ? "Expanded" : "Collapsed")
+            .accessibilityAction { historyVM.olderExpanded.toggle() }
+    }
+
+    /// A section's label row (PROJECTS, PINNED, RECENT…) in the app sidebar's
     /// style, aligned with the tabs' text, with an optional trailing control.
     private func sectionLabel(
         _ title: Text, @ViewBuilder trailing: () -> some View = { EmptyView() }

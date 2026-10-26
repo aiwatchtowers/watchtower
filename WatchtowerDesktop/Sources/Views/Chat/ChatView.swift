@@ -216,8 +216,9 @@ struct ChatSplitView: View {
         showLanding()
     }
 
+    /// In the panel's project, when one is its level (spec §4).
     private func showLanding() {
-        chatVM.showLanding()
+        chatVM.showLanding(inProject: historyVM.level.projectID)
         historyVM.selectedConversationID = nil
     }
 
@@ -231,6 +232,9 @@ struct ChatSplitView: View {
         // A project page stays open, with no history selection.
         guard chatVM.openProjectID == nil else { return }
         historyVM.selectedConversationID = chatVM.isOnLanding ? nil : chatVM.conversationID
+        // Back on the tab, the chat on screen is read (spec §5.2): a turn
+        // that ended while the tab was away left it unread.
+        if let shown = historyVM.selectedConversationID { historyVM.markRead(shown) }
     }
 
     private func rememberShownConversation() {

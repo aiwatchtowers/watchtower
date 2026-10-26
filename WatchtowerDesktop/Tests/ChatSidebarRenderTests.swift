@@ -51,7 +51,7 @@ final class ChatSidebarRenderTests: XCTestCase {
     private func loadedHistory() async -> ChatHistoryViewModel {
         let history = ChatHistoryViewModel(dbManager: dbManager, attachmentsRoot: nil)
         let done = expectation(description: "load")
-        history.load { done.fulfill() }
+        history.reloadRows { done.fulfill() }
         await fulfillment(of: [done], timeout: 5)
         return history
     }

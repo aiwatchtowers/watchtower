@@ -213,14 +213,15 @@ package enum ChatConversationQueries {
         try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
     }
 
-    /// An "untouched" main chat: standalone, outside any project, not
-    /// archived, never pinned or renamed by the owner, with no message and no
-    /// attachment — what the Chat landing makes on its first keystroke and
-    /// discards when it is left unused. Callers only ever pass the landing's
-    /// own draft id: an empty chat of any other origin (moved out of a
-    /// project, or left by a deleted one) is never theirs to delete.
+    /// An "untouched" main chat: standalone, in the landing's project (or
+    /// outside any, `project_id IS ?`), not archived, never pinned or renamed
+    /// by the owner, with no message and no attachment — what the Chat
+    /// landing makes on its first keystroke and discards when it is left
+    /// unused. Callers only ever pass the landing's own draft id and project:
+    /// an empty chat of any other origin (moved out of a project, or left by
+    /// a deleted one) is never theirs to delete.
     private static let untouchedPredicate = """
-        c.context_type IS NULL AND c.project_id IS NULL AND c.archived_at IS NULL
+        c.context_type IS NULL AND c.project_id IS ? AND c.archived_at IS NULL
         AND c.pinned = 0 AND c.title_source <> 'user'
         AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
         AND NOT EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id)
@@ -229,20 +230,24 @@ package enum ChatConversationQueries {
     /// The landing's draft while it is still untouched, for reuse. `createdAt`
     /// must match too: the draft is persisted across launches, and a reset
     /// database at the same path can reissue the id to an unrelated chat.
-    package static func fetchUntouched(_ db: Database, id: Int64, createdAt: Double) throws -> ChatConversation? {
+    package static func fetchUntouched(
+        _ db: Database, id: Int64, createdAt: Double, projectID: Int64? = nil
+    ) throws -> ChatConversation? {
         try ChatConversation.fetchOne(db, sql: """
             SELECT c.* FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate)
-            """, arguments: [id, createdAt])
+            """, arguments: [id, createdAt, projectID])
     }
 
     /// Deletes the landing's draft only while it is still untouched (and is
     /// still the same row: `createdAt` matches); true when it was deleted.
     @discardableResult
-    package static func deleteIfUntouched(_ db: Database, id: Int64, createdAt: Double) throws -> Bool {
+    package static func deleteIfUntouched(
+        _ db: Database, id: Int64, createdAt: Double, projectID: Int64? = nil
+    ) throws -> Bool {
         try db.execute(sql: """
             DELETE FROM chat_conversations WHERE id IN (
                 SELECT c.id FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate))
-            """, arguments: [id, createdAt])
+            """, arguments: [id, createdAt, projectID])
         return db.changesCount > 0
     }
 
