@@ -34,7 +34,7 @@ func TestFlowSkillShipsWithMarkerAndName(t *testing.T) {
 	content := string(body)
 	assert.Equal(t, "watchtower-flow", name)
 	assert.True(t, HasMarker(content), "the preset carries %s (DEV-04)", MarkerKey)
-	assert.Contains(t, content, "\n"+MarkerKey+": v11\n")
+	assert.Contains(t, content, "\n"+MarkerKey+": v12\n")
 	assert.Contains(t, content, "\nname: watchtower-flow\n")
 	assert.Contains(t, content, "\ndescription: Use in a folder bound to a Watchtower workbench")
 	s := flowSkill()
@@ -60,10 +60,13 @@ func TestFlowSkill_SectionsMovedVerbatimFromV8(t *testing.T) {
 	features = strings.Replace(features, `as "Asking the owner" below says`, "as the `watchtower-workbench` skill's \"Asking the owner\" says", 1)
 	// v11 (spec review) adds the Decisions/mockups/Spec bullet after the review bullet.
 	got := skillSection(t, flow, "Features, specs and plans")
-	start := strings.Index(got, "- **Every spec carries")
-	require.GreaterOrEqual(t, start, 0)
-	end := start + strings.Index(got[start:], "\n") + 1
-	got = got[:start] + got[end:]
+	// v12 (author loop) adds the loop bullet before it.
+	for _, bullet := range []string{"- **The review may be a loop**", "- **Every spec carries"} {
+		start := strings.Index(got, bullet)
+		require.GreaterOrEqual(t, start, 0, bullet)
+		end := start + strings.Index(got[start:], "\n") + 1
+		got = got[:start] + got[end:]
+	}
 	assert.Equal(t, features, got)
 	assert.Contains(t, skillSection(t, flow, "What `in_review` means"),
 		"`in_review` means agents are reviewing the work — a code review, a document review by reviewer agents. It never means waiting for the owner")
