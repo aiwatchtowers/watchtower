@@ -277,7 +277,7 @@ func cutRunes(s string, n int) string {
 
 // currentTexts lists every owner text field (global session, procedure and
 // chat; each workbench's session and procedure), each prompt's additions as
-// one text per id, and the allow list of ~/.claude/settings.json.
+// one text per id, and the allow list of ~/.claude/settings.json and ~/.claude/CLAUDE.md.
 func currentTexts(d *db.DB) ([]CurrentText, error) {
 	var out []CurrentText
 	g, err := d.GetOwnerInstructions()
@@ -316,6 +316,9 @@ func currentTexts(d *db.DB) ([]CurrentText, error) {
 			Text: joinAdditions(adds), Budget: prompts.MaxAdditionRunes})
 	}
 	out = append(out, CurrentText{Destination: DestSettingsAllow, Text: strings.Join(readAllowList(), "\n")})
+	if t, ok := readClaudeMDText(); ok {
+		out = append(out, t)
+	}
 	return out, nil
 }
 
@@ -341,6 +344,18 @@ func readAllowList() []string {
 		return nil
 	}
 	return rules
+}
+
+// readClaudeMDText reads ~/.claude/CLAUDE.md, read-only. A missing file is an
+// empty text the coach may append to; a symlink, special file, file over
+// 256 KB or unreadable one gives no text at all, so no proposal can target it.
+func readClaudeMDText() (CurrentText, bool) {
+	home, err := userHomeDir()
+	if err != nil || home == "" {
+		return CurrentText{}, false
+	}
+	t, err := readClaudeMD(claudeMDPath(home))
+	return t, err == nil
 }
 
 func loadProposals(d *db.DB, in *Inputs) error {

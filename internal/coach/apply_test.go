@@ -282,13 +282,6 @@ func TestAccept_EmptyBeforeRollsBackToEmpty(t *testing.T) {
 	assert.Empty(t, rules)
 }
 
-func TestAccept_ClaudeMDNotSupportedYet(t *testing.T) {
-	d := openDBs(t)
-	id := propose(t, d, db.CoachProposal{Destination: DestClaudeMDUser, AfterText: "x"})
-	require.ErrorIs(t, newApplier(t, d).Accept(id, ""), errNotSupported)
-	assert.Equal(t, "open", proposal(t, d, id).Status)
-}
-
 func TestAccept_StatusFailureRestoresBefore(t *testing.T) {
 	d := openDBs(t)
 	a := newApplier(t, d)

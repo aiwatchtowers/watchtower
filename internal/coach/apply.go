@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -65,9 +66,6 @@ func (a *Applier) Accept(id int64, edited string) error {
 	}
 	if p.Status != "open" {
 		return fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
-	}
-	if p.Destination == DestClaudeMDUser {
-		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, errNotSupported)
 	}
 	now := a.now()
 	// The slow measure runs first so the read and the write stay adjacent.
@@ -251,6 +249,13 @@ func (a *Applier) settingsPath() (string, error) {
 	return claudeSettingsPath(a.Home), nil
 }
 
+func (a *Applier) claudeMDPath() (string, error) {
+	if a.Home == "" {
+		return "", errors.New("no home folder")
+	}
+	return claudeMDPath(a.Home), nil
+}
+
 // readCurrent reads p's destination as the proposer saw it (currentTexts):
 // the owner text, the prompt's additions one per line, or the allow list one
 // rule per line — except that a settings file the coach cannot write safely
@@ -299,7 +304,14 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 		}
 		t.Text = strings.Join(rules, "\n")
 	case DestClaudeMDUser:
-		return CurrentText{}, errNotSupported
+		path, err := a.claudeMDPath()
+		if err != nil {
+			return CurrentText{}, err
+		}
+		if t, err = readClaudeMD(path); err != nil {
+			return CurrentText{}, err
+		}
+		t.WorkbenchID, t.PromptID = p.WorkbenchID, p.PromptID
 	default:
 		return CurrentText{}, errors.New("unknown destination")
 	}
@@ -345,6 +357,8 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 		return a.writeAdditions(p, after, now)
 	case DestSettingsAllow:
 		return a.writeAllow(p, cur, after)
+	case DestClaudeMDUser:
+		return a.writeClaudeMD(cur, after)
 	}
 	return written{}, errNotSupported
 }
@@ -433,6 +447,37 @@ func (a *Applier) writeAllow(p db.CoachProposal, cur CurrentText, after string) 
 	return w, nil
 }
 
+// writeClaudeMD replaces the file's text cur.Text by after, refused with
+// ErrStale when the file is no longer cur.Text. The undo puts cur.Text back
+// (removing a file this write created) only while the file still holds after.
+func (a *Applier) writeClaudeMD(cur CurrentText, after string) (written, error) {
+	path, err := a.claudeMDPath()
+	if err != nil {
+		return written{}, err
+	}
+	existed, err := replaceClaudeMD(path, cur.Text, after)
+	if errors.Is(err, errClaudeMDChanged) {
+		return written{}, ErrStale
+	}
+	if err != nil {
+		return written{}, err
+	}
+	return written{result: after, undo: func() error {
+		if !existed {
+			raw, _, ok, err := readClaudeMDFile(path)
+			if err != nil || !ok {
+				return err
+			}
+			if string(raw) != after {
+				return errClaudeMDChanged
+			}
+			return os.Remove(path)
+		}
+		_, err := replaceClaudeMD(path, after, cur.Text)
+		return err
+	}}, nil
+}
+
 // restoreDestination puts p's before-state back (see Rollback).
 func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now time.Time) error {
 	switch p.Destination {
@@ -483,6 +528,20 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 		}
 		_, _, err = removeAllowRules(path, linesAdded(p.BeforeText, p.AfterText))
 		return err
+	case DestClaudeMDUser:
+		// The file must still be what Rollback read (and showed the owner as a
+		// diff), whether or not the owner forced it.
+		path, err := a.claudeMDPath()
+		if err != nil {
+			return err
+		}
+		if _, err := replaceClaudeMD(path, cur.Text, p.BeforeText); err != nil {
+			if errors.Is(err, errClaudeMDChanged) {
+				return ErrChangedSince
+			}
+			return err
+		}
+		return nil
 	}
 	return errNotSupported
 }

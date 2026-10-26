@@ -211,15 +211,34 @@ func RestoreFile(path string, before []byte) error {
 	return writeFileAtomic(path, before, mode, cur, exists)
 }
 
-// writeFileAtomic writes data to path through a temp file in the same folder
+// atomicKind names a file the coach writes atomically: its label for error
+// text, its temp-file pattern, how it is read and the error for a file that
+// changed under the writer.
+type atomicKind struct {
+	label   string
+	tmp     string
+	read    func(path string) ([]byte, fs.FileMode, bool, error)
+	changed error
+}
+
+var settingsKind = atomicKind{label: "settings.json", tmp: ".settings.json.coach-*",
+	read: readSettingsFile, changed: errSettingsChanged}
+
+// writeFileAtomic writes data to the settings file at path (see writeAtomic).
+func writeFileAtomic(path string, data []byte, mode fs.FileMode, expect []byte, existed bool) error {
+	return writeAtomic(settingsKind, path, data, mode, expect, existed)
+}
+
+// writeAtomic writes data to path through a temp file in the same folder
 // (fsynced, then renamed over path) with the given mode. Just before the
 // rename the file must still be what the caller read (expect, or absent when
-// !existed); otherwise nothing is replaced and errSettingsChanged is returned.
-func writeFileAtomic(path string, data []byte, mode fs.FileMode, expect []byte, existed bool) (err error) {
+// !existed); otherwise nothing is replaced and k.changed is returned.
+func writeAtomic(k atomicKind, path string, data []byte, mode fs.FileMode, expect []byte, existed bool) (err error) {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".settings.json.coach-*")
+	what := "writing " + k.label
+	tmp, err := os.CreateTemp(dir, k.tmp)
 	if err != nil {
-		return settingsErr("writing settings.json", err)
+		return settingsErr(what, err)
 	}
 	defer func() {
 		if err != nil {
@@ -228,28 +247,28 @@ func writeFileAtomic(path string, data []byte, mode fs.FileMode, expect []byte, 
 	}()
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
-		return settingsErr("writing settings.json", err)
+		return settingsErr(what, err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return settingsErr("writing settings.json", err)
+		return settingsErr(what, err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return settingsErr("writing settings.json", err)
+		return settingsErr(what, err)
 	}
 	if err := tmp.Close(); err != nil {
-		return settingsErr("writing settings.json", err)
+		return settingsErr(what, err)
 	}
-	cur, _, exists, err := readSettingsFile(path)
+	cur, _, exists, err := k.read(path)
 	if err != nil {
 		return err
 	}
 	if exists != existed || !bytes.Equal(cur, expect) {
-		return errSettingsChanged
+		return k.changed
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return settingsErr("writing settings.json", err)
+		return settingsErr(what, err)
 	}
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync() // best effort: the rename is durable once the folder is
