@@ -8,7 +8,7 @@ import WatchtowerSync
 /// of a workbench session (`SessionChatPayload`). It publishes only what
 /// `SessionChatRunner` holds for the feeds the phone currently watches, so a
 /// session the phone never opened has no record, and a record leaves the
-/// phone when its watch expires. Not an urgent kind. Wire shape: the Kit
+/// phone when its watch expires. An urgent kind (near-live while a phone watches), published after the ask kinds. Wire shape: the Kit
 /// mirror `WatchtowerKit.SessionChat`.
 struct SessionChatSlice: SliceSource {
     let kind = SliceKind.sessionChat

@@ -101,6 +101,8 @@ extension AppState {
             },
             sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
         )
+        // A changed watched chat goes out within seconds, not on the next tick.
+        chats?.onChange = { [weak publisher] in publisher?.nudge(kinds: [.sessionChat]) }
         let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, chats, inputs]
         let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
         let hub = try assembleMobileHub(
