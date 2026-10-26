@@ -5,7 +5,8 @@ import WatchtowerCore
 /// heading, a badge per kind of finding, ✓ once Viewed — and the current
 /// chapter on the right: its text folded, the finding cards, the
 /// chapter's checklist, then **Viewed**. A chapter without findings is
-/// marked Viewed from its row in one click.
+/// marked Viewed from its row in one click. A finished author loop shows
+/// the chapters to read only: no marks, no Viewed.
 struct SpecReviewChaptersView: View {
     let model: SpecReviewModel
 
@@ -51,7 +52,7 @@ struct SpecReviewChaptersView: View {
                 }
             }
             Spacer(minLength: Spacing.small)
-            if empty, !chapter.viewed {
+            if empty, !chapter.viewed, !model.isLoop {
                 Button("Viewed") { Task { await model.mark(chapter.key, .viewed) } }
                     .buttonStyle(.kitQuiet)
                     .controlSize(.small)
@@ -84,11 +85,13 @@ struct SpecReviewChaptersView: View {
                             .padding(.top, Spacing.small)
                         ForEach(chapter.checks, id: \.key) { checkRow($0) }
                     }
-                    HStack {
-                        viewedButton(chapter)
-                        Spacer()
+                    if !model.isLoop {
+                        HStack {
+                            viewedButton(chapter)
+                            Spacer()
+                        }
+                        .padding(.top, Spacing.small)
                     }
-                    .padding(.top, Spacing.small)
                     SpecReviewNextStepButton(model: model)
                 }
                 .padding(Spacing.large)
@@ -112,7 +115,7 @@ struct SpecReviewChaptersView: View {
             if !check.note.isEmpty {
                 Text(check.note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if check.answer == "concern" {
+            if check.answer == "concern", !model.isLoop {
                 SpecReviewMarkControls(model: model, key: check.key)
             }
         }

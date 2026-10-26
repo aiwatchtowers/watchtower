@@ -12,7 +12,6 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
-	"watchtower/internal/planusage"
 )
 
 // coachInterval is the gap between two coach runs.
@@ -59,8 +58,8 @@ func (d *Daemon) saveLastCoach() {
 // phaseCoach runs the agent coach once a week: judge the accepted proposals
 // that are old enough, collect the signals, ask for new proposals. There is no
 // catch-up: a stamp of any age gives exactly one run. The stamp is written
-// after every run, a failed one included. A near plan limit skips only the
-// model call. Logs carry counts, never text.
+// after every run, a failed one included. No plan-limit gate (ask #655).
+// Logs carry counts, never text.
 func (d *Daemon) phaseCoach(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -68,13 +67,6 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 	now := time.Now()
 	if !d.lastCoach.IsZero() && now.Sub(d.lastCoach) < coachInterval {
 		return
-	}
-	nearLimit := false
-	if st, err := d.db.GetPlanUsageStatus(); err != nil {
-		d.logger.Printf("coach: plan usage status: %v", err) // unreadable: does not block
-	} else if planusage.NearLimit(st) {
-		nearLimit = true
-		d.logger.Printf("coach: Claude plan limit near, proposals skipped")
 	}
 	d.trackedPipelineRun("coach", func() pipelineRunStats {
 		// A cycle cancelled mid-run (sleep/wake) must not cost the week.
@@ -91,9 +83,6 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 			d.logger.Printf("coach: judging: %v", err)
 		} else {
 			d.logger.Printf("coach: %d judged, %d cut", judged, cuts)
-		}
-		if nearLimit {
-			return pipelineRunStats{}
 		}
 		in, err := coach.Collect(ctx, d.db, d.agentLog, instructions.NewFeedReader(ctx, d.db, instructionSuggestionsDirs()), now)
 		if err != nil {

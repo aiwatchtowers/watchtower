@@ -258,7 +258,7 @@ package enum AutomationQueries {
             SELECT q.id, q.automation_run_id AS run_id, COALESCE(NULLIF(a.name, ''), a.slug) AS name
             FROM owner_asks q JOIN automation_runs r ON r.id = q.automation_run_id
             JOIN automations a ON a.id = r.automation_id
-            WHERE q.id IN (\(marks))
+            WHERE q.id IN (\(marks)) AND \(OwnerAskQueries.notInSpecLoop("q"))
             """, arguments: StatementArguments(askIDs)) {
             let id: Int64 = row["id"]
             let runID: Int64 = row["run_id"]

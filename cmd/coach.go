@@ -19,7 +19,6 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
-	"watchtower/internal/planusage"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -427,9 +426,9 @@ func coachSessionDirs() sessionfeed.Dirs {
 }
 
 // runCoachNow is the weekly pass on demand: judge, collect, propose. It
-// ignores the daemon's stamp and does not write it. A near plan limit skips
-// the model call, as in the daemon. --dry-run judges nothing and writes
-// nothing: it prints what the model would have proposed.
+// ignores the daemon's stamp and does not write it. No plan-limit gate (ask
+// #655). --dry-run judges nothing and writes nothing: it prints what the
+// model would have proposed.
 func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -443,10 +442,6 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 			return nil, fmt.Errorf("judging: %w", err)
 		}
 		res.Judged, res.Cuts = judged, cuts
-	}
-	if st, err := e.db.GetPlanUsageStatus(); err == nil && planusage.NearLimit(st) {
-		res.Skipped = "Claude plan limit near: no proposals asked for"
-		return res, nil
 	}
 	in, err := coach.Collect(ctx, e.db, e.al, instructions.NewFeedReader(ctx, e.db, coachSessionDirs()), now)
 	if err != nil {

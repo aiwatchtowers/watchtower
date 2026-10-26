@@ -54,7 +54,7 @@ func TestPhaseInstructionSuggestions_OncePerDay(t *testing.T) {
 	assert.Equal(t, 2, *calls)
 }
 
-func TestPhaseInstructionSuggestions_SkipsNearLimit(t *testing.T) {
+func TestPhaseInstructionSuggestions_NoPlanGate(t *testing.T) {
 	d, database, buf := newBackfillDaemon(t)
 	calls := stubMiner(t, 0, nil)
 	now := time.Now()
@@ -64,9 +64,8 @@ func TestPhaseInstructionSuggestions_SkipsNearLimit(t *testing.T) {
 	}))
 
 	d.phaseInstructionSuggestions(context.Background())
-	assert.Zero(t, *calls)
-	assert.Contains(t, buf.String(), "plan limit near")
-	assert.NoFileExists(t, d.lastInstructionSuggestionsPath())
+	assert.Equal(t, 1, *calls, "a projected plan limit does not skip the run")
+	assert.NotContains(t, buf.String(), "plan limit")
 }
 
 func TestPhaseInstructionSuggestions_ErrorWaitsForNextDay(t *testing.T) {

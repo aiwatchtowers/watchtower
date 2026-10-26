@@ -53,7 +53,9 @@ var errAskWithdrawn = errors.New("ask withdrawn")
 // Run reviews ask askID: it claims the queued row (a lost claim does nothing),
 // fails it at once when the ask is already withdrawn, builds the inputs, calls the agent under RunTimeout, validates the reply
 // and stores it. Any failure after the claim marks the row failed with a
-// one-line reason. Run writes nothing but the ask's spec_reviews row.
+// one-line reason. On an author-loop row the result also advances the loop
+// (NextRound), and a failure reveals the ask (Reveal, reviewer_failed). Run
+// writes nothing but the ask's spec_reviews row.
 func Run(ctx context.Context, d Deps, askID int64) error {
 	claimed, err := d.DB.ClaimSpecReview(askID, d.PID, d.Now())
 	if err != nil {
@@ -67,6 +69,14 @@ func Run(ctx context.Context, d Deps, askID int64) error {
 		if ferr := d.DB.FailSpecReview(askID, d.PID, oneLine(err), d.Now()); ferr != nil {
 			return errors.Join(err, ferr)
 		}
+		// A failed author-loop round shows the ask to the owner at once. A
+		// withdrawn ask was superseded: the loop goes on in the next round,
+		// which reads this row.
+		if !errors.Is(err, errAskWithdrawn) {
+			if rerr := Reveal(d.DB, askID, EndReviewerFailed, d.Now()); rerr != nil {
+				return errors.Join(err, rerr)
+			}
+		}
 		return err
 	}
 	return d.DB.FinishSpecReview(askID, d.PID, review, d.Now())
@@ -74,6 +84,10 @@ func Run(ctx context.Context, d Deps, askID int64) error {
 
 func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	ask, err := d.DB.GetOwnerAskByID(askID)
+	if err != nil {
+		return db.SpecReview{}, err
+	}
+	row, err := d.DB.GetSpecReview(askID)
 	if err != nil {
 		return db.SpecReview{}, err
 	}
@@ -117,11 +131,53 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 		return db.SpecReview{}, fmt.Errorf("encoding the result: %w", err)
 	}
 	sum := sha256.Sum256([]byte(ask.DocSnapshot))
-	return db.SpecReview{
+	out := db.SpecReview{
 		Result: string(js), Provider: d.Provider, Model: d.Model,
 		DocSHA: hex.EncodeToString(sum[:]), Dropped: res.Dropped,
 		Findings: len(res.DecidedAlone) + len(res.BlindSpots) + len(res.Checks),
-	}, nil
+	}
+	if row.Loop == "author" {
+		if err := advanceLoop(d.DB, ask, row, res, &out); err != nil {
+			return db.SpecReview{}, err
+		}
+	}
+	return out, nil
+}
+
+// advanceLoop sets out's loop columns from NextRound: the previous round's
+// open items and ledger (read from the previous ask's row) and this row's
+// replies. The loop stays with the author ("author") until the round ends
+// it ("owner").
+func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out *db.SpecReview) error {
+	var prevLedger []LedgerEntry
+	var prevOpen []AuthorItem
+	if row.Round >= 2 && ask.PreviousAskID.Valid {
+		prev, err := d.GetSpecReview(ask.PreviousAskID.Int64)
+		if err != nil && !errors.Is(err, db.ErrSpecReviewNotFound) {
+			return err
+		}
+		if prev != nil {
+			if prevLedger, prevOpen, err = decodeLoop(prev); err != nil {
+				return err
+			}
+		}
+	}
+	replies, err := decodeReplies(row.Replies)
+	if err != nil {
+		return err
+	}
+	o := NextRound(row.Round, prevOpen, prevLedger, replies, res)
+	if out.OpenItems, err = encodeList(o.Open); err != nil {
+		return err
+	}
+	if out.Ledger, err = encodeList(o.Ledger); err != nil {
+		return err
+	}
+	out.Loop, out.LoopEnd = "author", o.End
+	if o.End != "" {
+		out.Loop = "owner"
+	}
+	return nil
 }
 
 // readFolder is where the reviewer reads: the session's working directory (its

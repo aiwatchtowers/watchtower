@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Agent coach storage (00160): proposals to edit the owner's setup, the
+// Agent coach storage (00161): proposals to edit the owner's setup, the
 // owner-accepted additions to Watchtower prompts, and the first-round counts
 // the review_findings metric reads. See
 // docs/superpowers/specs/2026-10-26-agent-coach-design.md.

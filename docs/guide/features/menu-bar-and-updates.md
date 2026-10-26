@@ -18,7 +18,7 @@ The first line of the menu reports the daemon's real state:
 
 Other lines appear only when they apply:
 
-- **Loading history: N of M days** while a new source's first month loads, or "Loading history paused" with the reason (a Claude plan limit, or an account to reconnect).
+- **Loading history: N of M days** while a new source's first month loads, or "Loading history paused" when an account needs reconnecting.
 - A model download with its progress, or why it failed, plus **Retry <model> Download**.
 - Your Claude plan limits (session and weekly). Clicking one opens Usage → Claude plan. The **Show in the menu bar** switch there also puts the percentages next to the icon.
 - A daemon or CLI install error, if one happened.

@@ -253,4 +253,17 @@ func TestFinishSpecReview_StoresFindings(t *testing.T) {
 	got, err = d.GetSpecReview(askID)
 	require.NoError(t, err)
 	assert.Equal(t, 5, got.Findings)
+
+	// A --force re-run (or a sweep relaunch) replaces result but keeps the
+	// count of the review as it first finished: the coach's first-round number.
+	later := now.Add(time.Hour)
+	require.NoError(t, d.RequeueSpecReview(askID, true, later))
+	ok, err := d.ClaimSpecReview(askID, 8, later)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, d.FinishSpecReview(askID, 8, SpecReview{Result: `{"x":1}`, Findings: 1}, later))
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"x":1}`, got.Result, "the re-run's result is stored")
+	assert.Equal(t, 5, got.Findings, "findings are written once")
 }

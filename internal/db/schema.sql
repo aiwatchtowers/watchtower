@@ -2759,21 +2759,27 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     queued_at   TEXT NOT NULL,
     started_at  TEXT NOT NULL DEFAULT '',
     finished_at TEXT NOT NULL DEFAULT '',
-    findings    INTEGER NOT NULL DEFAULT -1  -- findings counted in result (00160); -1 = not counted
+    loop        TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), -- author loop (00160): '' none, author = fixing, owner = ended
+    round       INTEGER NOT NULL DEFAULT 0,
+    replies     TEXT NOT NULL DEFAULT '',   -- JSON the author sent with this round
+    open_items  TEXT NOT NULL DEFAULT '',   -- JSON this round hands the author
+    ledger      TEXT NOT NULL DEFAULT '',   -- JSON of the loop's settled items so far
+    loop_end    TEXT NOT NULL DEFAULT '',
+    findings    INTEGER NOT NULL DEFAULT -1  -- findings counted in result at the first finish (00161); -1 = not counted
 );
 
 -- The owner's per-item marks on a spec review (00158); the Desktop writes them.
 CREATE TABLE IF NOT EXISTS spec_review_marks (
     ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
     item_key   TEXT NOT NULL,
-    state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed','not_useful')), -- not_useful: 00160
+    state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed','not_useful')), -- not_useful: 00161
     body       TEXT NOT NULL DEFAULT '',
     about      TEXT NOT NULL DEFAULT '',   -- a comment's finding text, kept when a re-run drops the finding
     updated_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );
 
--- Agent coach (00160): one proposed edit to the owner's setup and its outcome.
+-- Agent coach (00161): one proposed edit to the owner's setup and its outcome.
 CREATE TABLE IF NOT EXISTS coach_proposals (
     id            INTEGER PRIMARY KEY,
     fingerprint   TEXT NOT NULL UNIQUE,
@@ -2799,7 +2805,7 @@ CREATE TABLE IF NOT EXISTS coach_proposals (
     verdict_at    TEXT NOT NULL DEFAULT ''
 );
 
--- Owner-accepted additions to a Watchtower prompt (00160).
+-- Owner-accepted additions to a Watchtower prompt (00161).
 CREATE TABLE IF NOT EXISTS prompt_additions (
     id          INTEGER PRIMARY KEY,
     prompt_id   TEXT NOT NULL,

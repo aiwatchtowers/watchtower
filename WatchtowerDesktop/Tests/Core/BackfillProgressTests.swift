@@ -36,12 +36,6 @@ final class BackfillProgressTests: XCTestCase {
         XCTAssertEqual(BackfillProgress.line(rows), "Loading history paused — reconnect the account")
     }
 
-    /// R22: rows all paused, one of them still waiting on the plan limit.
-    func testAllPausedWithPlanLimitShowsThePlanCopy() {
-        let rows = [row("paused", loaded: 4, of: 23, waiting: "plan_limit"), row("paused", loaded: 1, of: 30)]
-        XCTAssertEqual(BackfillProgress.line(rows), "Loading history paused — Claude plan limit")
-    }
-
     /// Partial days round to the nearest whole day.
     func testDaysRound() {
         let partial = BackfillRow(status: "running", waiting: "", floorTS: upper - 29.6 * day,
@@ -49,9 +43,10 @@ final class BackfillProgressTests: XCTestCase {
         XCTAssertEqual(BackfillProgress.line([partial]), "Loading history: 0 of 30 days")
     }
 
-    func testAnyPlanLimitShowsThePausedCopy() {
+    /// Ask #655: a stale plan_limit wait on an old row changes nothing.
+    func testStalePlanLimitWaitIsIgnored() {
         let rows = [row("running", loaded: 10, of: 28), row("paused", loaded: 4, of: 23, waiting: "plan_limit")]
-        XCTAssertEqual(BackfillProgress.line(rows), "Loading history paused — Claude plan limit")
+        XCTAssertEqual(BackfillProgress.line(rows), "Loading history: 10 of 28 days")
     }
 
     /// #580: every running row held by a transient failure says it retries;
@@ -63,11 +58,5 @@ final class BackfillProgressTests: XCTestCase {
         XCTAssertEqual(BackfillProgress.line(one), "Loading history: 6 of 40 days, 1 source waiting")
         let two = one + [row("running", loaded: 0, of: 5, waiting: "held")]
         XCTAssertEqual(BackfillProgress.line(two), "Loading history: 6 of 45 days, 2 sources waiting")
-    }
-
-    /// A finished row's stale wait never counts.
-    func testPlanLimitOnADoneRowIsIgnored() {
-        let rows = [row("running", loaded: 1, of: 30), row("done", loaded: 30, of: 30, waiting: "plan_limit")]
-        XCTAssertEqual(BackfillProgress.line(rows), "Loading history: 1 of 30 days")
     }
 }

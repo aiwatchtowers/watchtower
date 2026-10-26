@@ -107,7 +107,7 @@ Owner text stays on stdin, never argv, and follows FILES-01 (logs carry ids and 
 
 ### 6.2 Cadence and gates — my calls
 
-- One pass a week, in the daemon (a phase like `phaseInstructionSuggestions`, stamp file, a failed run retried next time, `planusage.NearLimit` skips it, the model call outside any write transaction).
+- One pass a week, in the daemon (a phase like `phaseInstructionSuggestions`, stamp file, a failed run retried next time, the model call outside any write transaction).
 - A pattern becomes a proposal only with **at least 3 occurrences in distinct sessions / specs / review rounds**.
 - **At most 3 open proposals at any time**; the weekly pass adds only up to that cap, best first (ranked by the expected effect on the four metrics).
 - **A declined proposal never comes back** (fingerprint, plus the prompt sees declined ones, as the instruction miner does).

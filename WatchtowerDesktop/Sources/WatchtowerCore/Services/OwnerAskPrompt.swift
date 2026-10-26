@@ -11,6 +11,17 @@ package enum OwnerAskPrompt {
         )
     }
 
+    /// The line typed into the ask's session when a spec review has findings
+    /// to address. Dual path of Go's `asks.SpecReviewLine`, pinned by
+    /// `internal/asks/testdata/spec_review_lines`.
+    package static func specReviewLine(askID: Int64, round: Int, items: Int) -> String {
+        let noun = items == 1 ? "finding" : "findings"
+        return WorkbenchCommentPrompt.oneLine(
+            "Spec review of ask #\(askID), round \(round): \(items) \(noun) to address — "
+                + "read them with get_spec_review \(askID) using the watchtower-workbench skill."
+        )
+    }
+
     private static func short(_ kind: OwnerAskKind, _ answer: OwnerAskAnswer) -> String {
         if answer.dismissed { return "dismissed" }
         switch (kind, answer.verdict) {

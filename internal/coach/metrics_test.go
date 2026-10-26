@@ -102,7 +102,7 @@ func (d dbs) specReview(t *testing.T, wb int64, findings int, at time.Time, prev
 		if err != nil {
 			return err
 		}
-		return d.QueueSpecReview(tx, id, at)
+		return d.QueueSpecReview(tx, id, at, nil)
 	}))
 	ok, err := d.ClaimSpecReview(id, 1, at)
 	require.NoError(t, err)

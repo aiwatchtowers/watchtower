@@ -148,7 +148,7 @@ struct SessionTimelineSlice: SliceSource {
         let rows = try Row.fetchAll(db, sql: """
             SELECT a.id, a.title, a.status, a.withdrawn_reason, a.created_at, a.answered_at,
                    (SELECT MIN(n.created_at) FROM owner_asks n WHERE n.previous_ask_id = a.id) AS superseded_at
-            FROM owner_asks a WHERE a.session_id = ? ORDER BY a.id
+            FROM owner_asks a WHERE a.session_id = ? AND \(OwnerAskQueries.notInSpecLoop("a")) ORDER BY a.id
             """, arguments: [sessionID])
         var out: [Raw] = []
         for row in rows {

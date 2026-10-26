@@ -41,9 +41,8 @@ kind: feature
 since: 0.24.0
 -->
 
-The menu bar and the status bar show "Loading history: N of M days". Two other lines mean it is waiting:
+The menu bar and the status bar show "Loading history: N of M days". Another line means it is waiting:
 
-- "Loading history paused — Claude plan limit": a Claude 5-hour or weekly limit is projected to be hit, so backfill waits. This gate only works with the Claude provider; see [AI providers, models and cost](ai-providers-and-cost.md).
 - "Loading history paused — reconnect the account": the account's sign-in was revoked. Reconnect it to load the rest; Memory does not wait for it meanwhile, so it has no older history from that account.
 
 `watchtower backfill status` prints the same per source.

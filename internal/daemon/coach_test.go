@@ -59,20 +59,6 @@ func TestPhaseCoach_WeeklyStamp(t *testing.T) {
 	assert.Equal(t, coachCalls{2, 2}, *c)
 }
 
-func TestPhaseCoach_NearLimitJudgesOnly(t *testing.T) {
-	d, database := coachDaemon(t)
-	c := stubCoach(t, nil)
-	now := time.Now()
-	require.NoError(t, database.UpsertPlanUsageStatus(db.PlanUsageStatus{
-		State: "ok", Plan: "max", FetchedAt: &now, UpdatedAt: now, BreakdownJSON: "[]",
-		LimitsJSON: `[{"key":"session","projection":{"state":"will_hit"}}]`,
-	}))
-
-	d.phaseCoach(context.Background())
-	assert.Equal(t, coachCalls{1, 0}, *c)
-	assert.FileExists(t, d.lastCoachPath())
-}
-
 func TestPhaseCoach_FailureStillStamps(t *testing.T) {
 	d, _ := coachDaemon(t)
 	c := stubCoach(t, errors.New("boom"))

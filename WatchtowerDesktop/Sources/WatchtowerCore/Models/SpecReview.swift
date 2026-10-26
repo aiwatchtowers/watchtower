@@ -293,6 +293,20 @@ package struct SpecReviewRow: FetchableRecord, Equatable, Sendable {
     package var attempt: Int
     package var result: SpecReviewResult?
     package var resultUnreadable: Bool
+    /// The author loop (migration 00160): who drives it, the round, the open
+    /// items, the ledger and why it ended. Malformed JSON reads as `[]` with
+    /// `loopUnreadable` set.
+    package var loop: Loop
+    package var round: Int
+    package var loopEnd: String
+    package var openItems: [SpecReviewLoopItem]
+    package var ledger: [SpecReviewLedgerEntry]
+    package var loopUnreadable: Bool
+
+    package enum Loop: String, Sendable {
+        case none = ""
+        case author, owner
+    }
 
     package init(row: Row) throws {
         askID = row["ask_id"]
@@ -314,6 +328,20 @@ package struct SpecReviewRow: FetchableRecord, Equatable, Sendable {
             result = nil
             resultUnreadable = true
         }
+        loop = Loop(rawValue: row["loop"] ?? "") ?? .none
+        round = row["round"] ?? 0
+        loopEnd = row["loop_end"] ?? ""
+        var unreadable = false
+        func list<T: Decodable>(_ column: String, _ type: T.Type) -> [T] {
+            let text: String = row[column] ?? ""
+            if text.isEmpty { return [] }
+            if let decoded = try? JSONDecoder().decode([T].self, from: Data(text.utf8)) { return decoded }
+            unreadable = true
+            return []
+        }
+        openItems = list("open_items", SpecReviewLoopItem.self)
+        ledger = list("ledger", SpecReviewLedgerEntry.self)
+        loopUnreadable = unreadable
     }
 }
 

@@ -18,6 +18,7 @@ var unmarkedReadTools = map[string]string{
 	"get_ask":              "the owner's own asks",
 	"list_asks":            "the owner's own asks",
 	"get_review":           "the owner's own code review",
+	"get_spec_review":      "the owner's own review loop",
 	"load_skill":           "a skill file",
 	"workbench_skills":     "skill files of the workbench folder",
 	"list_jira_projects":   "project names only, no issue content",

@@ -31,7 +31,10 @@ struct SpecReviewFindingCard: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
-            SpecReviewMarkControls(model: model, key: finding.key)
+            // A finished author loop is decided on its own screen: no marks here.
+            if !model.isLoop {
+                SpecReviewMarkControls(model: model, key: finding.key)
+            }
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)

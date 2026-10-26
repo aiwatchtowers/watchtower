@@ -90,6 +90,13 @@
       "note": "Now stated."
     }
   ],
+  "verdicts": [
+    {
+      "key": "bs:0123456789ab",
+      "verdict": "disputed",
+      "note": "The threads are still not named."
+    }
+  ],
   "chapters": [
     {
       "key": "ch:0",

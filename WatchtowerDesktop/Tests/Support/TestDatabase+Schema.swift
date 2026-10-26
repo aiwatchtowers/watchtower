@@ -2280,7 +2280,7 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     queued_at   TEXT NOT NULL,
     started_at  TEXT NOT NULL DEFAULT '',
     finished_at TEXT NOT NULL DEFAULT ''
-, findings INTEGER NOT NULL DEFAULT -1);
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1);
 CREATE TABLE IF NOT EXISTS learn_seen (
     item_id TEXT PRIMARY KEY,
     how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),

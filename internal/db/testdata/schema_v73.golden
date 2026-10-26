@@ -2909,7 +2909,7 @@ attempt INTEGER NOT NULL DEFAULT 0,
 queued_at TEXT NOT NULL,
 started_at TEXT NOT NULL DEFAULT '',
 finished_at TEXT NOT NULL DEFAULT ''
-, findings INTEGER NOT NULL DEFAULT -1)
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1)
 
 table	stream_digests
 CREATE TABLE "stream_digests" (
@@ -5945,7 +5945,13 @@ GROUP BY up.ancestor
 10	queued_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	started_at	TEXT	notnull=1	dflt=''	pk=0
 12	finished_at	TEXT	notnull=1	dflt=''	pk=0
-13	findings	INTEGER	notnull=1	dflt=-1	pk=0
+13	loop	TEXT	notnull=1	dflt=''	pk=0
+14	round	INTEGER	notnull=1	dflt=0	pk=0
+15	replies	TEXT	notnull=1	dflt=''	pk=0
+16	open_items	TEXT	notnull=1	dflt=''	pk=0
+17	ledger	TEXT	notnull=1	dflt=''	pk=0
+18	loop_end	TEXT	notnull=1	dflt=''	pk=0
+19	findings	INTEGER	notnull=1	dflt=-1	pk=0
 
 ## stream_digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

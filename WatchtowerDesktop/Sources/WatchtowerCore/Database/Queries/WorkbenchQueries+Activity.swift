@@ -34,6 +34,7 @@ extension WorkbenchQueries {
         var asks: [Int64: WorkbenchNotificationPolicy.OpenAsk] = [:]
         for row in try Row.fetchAll(db, sql: """
             SELECT id, title, session_id, kind FROM owner_asks WHERE project_id = ? AND status = 'open'
+              AND \(OwnerAskQueries.notInSpecLoop("owner_asks"))
             """, arguments: [project.id]) {
             // An unknown kind reads as nil: the notice says "Agent asks".
             let kind = (row["kind"] as String?).flatMap(OwnerAskKind.init(rawValue:))
