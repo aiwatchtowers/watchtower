@@ -44,10 +44,14 @@ var specReviewBeforeRelaunch func(askID int64)
 // longer ago than the reviewer's timeout plus a grace, is failed — an overdue
 // reviewer that still runs is stopped first (SIGTERM to its process group).
 func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
-	if d.db == nil || d.specReviewLaunch == nil || ctx.Err() != nil {
+	if d.db == nil || ctx.Err() != nil {
 		return
 	}
 	now := time.Now()
+	d.sweepSpecLoops(now)
+	if d.specReviewLaunch == nil {
+		return
+	}
 	queued, running, err := d.db.SpecReviewsToSweep(now)
 	if err != nil {
 		d.logger.Printf("spec review sweep: %v", err)
@@ -66,6 +70,7 @@ func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 		if err := d.db.FailSpecReview(r.AskID, r.PID, specReviewDeadReason, now); err != nil {
 			d.logger.Printf("spec review sweep: failing ask %d: %v", r.AskID, err)
 		}
+		d.revealSpecLoop(r.AskID, specreview.EndReviewerFailed, now)
 	}
 	launched := 0
 	for _, id := range queued {
@@ -103,6 +108,36 @@ func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 		if err := d.db.FailSpecReview(id, 0, "could not start", now); err != nil {
 			d.logger.Printf("spec review sweep: failing ask %d: %v", id, err)
 		}
+		d.revealSpecLoop(id, specreview.EndReviewerFailed, now)
+	}
+}
+
+// sweepSpecLoops ends the author loops that cannot go on: the asking session
+// is gone, or the author left a delivered round unanswered for AuthorTimeout.
+// It needs no launcher.
+func (d *Daemon) sweepSpecLoops(now time.Time) {
+	rows, err := d.db.SpecLoopsToSweep()
+	if err != nil {
+		d.logger.Printf("spec review sweep: %v", err)
+		return
+	}
+	for _, r := range rows {
+		switch {
+		case !r.SessionBound:
+			d.revealSpecLoop(r.AskID, specreview.EndSessionGone, now)
+		case r.Status == "done":
+			fin, perr := db.ParseSpecReviewTime(r.FinishedAt)
+			if perr == nil && fin.Add(specreview.AuthorTimeout).Before(now) {
+				d.revealSpecLoop(r.AskID, specreview.EndTimeout, now)
+			}
+		}
+	}
+}
+
+// revealSpecLoop reveals ask id's loop (a no-op on a row not in the loop).
+func (d *Daemon) revealSpecLoop(id int64, end string, now time.Time) {
+	if err := specreview.Reveal(d.db, id, end, now); err != nil {
+		d.logger.Printf("spec review sweep: revealing ask %d: %v", id, err)
 	}
 }
 

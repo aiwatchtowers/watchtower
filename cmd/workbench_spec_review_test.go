@@ -82,8 +82,8 @@ func TestSpecReviewShow_JSONKeysPinned(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	assert.Equal(t, []string{"ask_id", "attempt", "dropped", "finished_at", "marks", "model", "provider",
-		"queued_at", "reason", "result", "started_at", "status"}, keys)
+	assert.Equal(t, []string{"ask_id", "attempt", "dropped", "finished_at", "ledger", "loop", "loop_end", "marks", "model", "open_items", "provider",
+		"queued_at", "reason", "result", "round", "started_at", "status"}, keys)
 	assert.Equal(t, "null", string(m["result"]), "no result yet")
 	assert.JSONEq(t, `{"ag:0123456789ab":{"state":"comment","body":"why?","updated_at":"2026-10-25T10:00:00Z"},`+
 		`"ag:ba9876543210":{"state":"comment","body":"keep","about":"Threads stay unmuted","updated_at":"2026-10-25T10:00:00Z"}}`, string(m["marks"]))
@@ -214,4 +214,34 @@ func TestSpecReviewCLIAgent_EmptyFolderRefused(t *testing.T) {
 		require.Error(t, err, p)
 		assert.False(t, codeRead, p)
 	}
+}
+
+func TestSpecReviewReveal_CLI(t *testing.T) {
+	database, id, _ := specReviewAsk(t)
+	_, err := database.Exec(`UPDATE spec_reviews SET loop = 'author', round = 1 WHERE ask_id = ?`, id)
+	require.NoError(t, err)
+
+	_, err = runSpecReview(t, "reveal", "--ask", itoa(id), "--reason", "timeout")
+	require.Error(t, err, "only session_gone is accepted")
+	row, err := database.GetSpecReview(id)
+	require.NoError(t, err)
+	assert.Equal(t, "author", row.Loop)
+
+	_, err = runSpecReview(t, "reveal", "--ask", itoa(id), "--reason", "session_gone")
+	require.NoError(t, err)
+	row, err = database.GetSpecReview(id)
+	require.NoError(t, err)
+	assert.Equal(t, "owner", row.Loop)
+	assert.Equal(t, "session_gone", row.LoopEnd)
+
+	_, err = runSpecReview(t, "reveal", "--ask", itoa(id), "--reason", "session_gone")
+	require.NoError(t, err, "an already revealed row is fine")
+
+	out, err := runSpecReview(t, "show", "--ask", itoa(id), "--json")
+	require.NoError(t, err)
+	var m map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	assert.Equal(t, `"owner"`, string(m["loop"]))
+	assert.Equal(t, `"session_gone"`, string(m["loop_end"]))
+	assert.JSONEq(t, `[]`, string(m["open_items"]))
 }
