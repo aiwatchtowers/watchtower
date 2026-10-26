@@ -25,6 +25,7 @@
 - `loop_end` values: `settled`, `cap`, `reviewer_failed`, `session_gone`, `timeout`.
 - A loop starts only for a `spec`/`plan` ask that is session-bound (`terminalSessionOf` found a session) on a surface with a launcher. Anything else is today's visible ask.
 - Rows and asks that exist before the migration keep today's flow (`loop=''`). No backfill.
+- *Plan's call:* spec §1's "the Stop ask guard counts it" and "the brief's open-asks line" need no code. The guard is text-based and never counts asks; the brief lists only answered asks. A hidden ask stays `status='open'`, so `get_ask`/`list_asks`, the open-ask cap and `previous_ask_id` treat it as today.
 - Answer JSON (`internal/asks/answer.go`) is unchanged. The final answer is `verdict: approved`, with comments for **Reviewer is right** picks.
 - Findings sent to the author:
   - agreements with status `differs`/`missing`;
