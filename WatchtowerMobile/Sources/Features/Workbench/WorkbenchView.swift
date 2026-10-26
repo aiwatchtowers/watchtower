@@ -143,10 +143,7 @@ struct WorkbenchView: View {
                 if let empty = menu.sessionsEmptyText {
                     Text(empty).foregroundStyle(.secondary).padding(.horizontal, Spacing.large)
                 } else {
-                    ForEach(Array(menu.sessions.enumerated()), id: \.element.id) { index, row in
-                        if index > 0 {
-                            RowDivider()
-                        }
+                    ForEach(menu.sessions) { row in
                         NavigationLink(value: SessionRoute(id: row.id)) { SessionRowView(row: row) }
                             .buttonStyle(.plain)
                     }

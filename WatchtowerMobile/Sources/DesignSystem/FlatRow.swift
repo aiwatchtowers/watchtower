@@ -56,30 +56,43 @@ struct MetaLine: View {
     }
 }
 
-/// A flat row's icon: an SF Symbol in a tone, or a session dot.
+/// A flat row's icon: an SF Symbol in a tone, a session dot, or a state
+/// mark (a white glyph on a disc in the tone, mockups 1–2).
 enum FlatRowIcon: Equatable {
     case symbol(String, tone: PhoneTone)
     case session(tone: PhoneTone, isRing: Bool)
+    case state(glyph: String, tone: PhoneTone)
+}
+
+/// A row's plate, the Desktop's `.kitRow` on the phone: clear at rest,
+/// `Fill.selected` when selected. Rows are separated by space, never by
+/// dividers.
+enum RowPlate {
+    static func fill(isSelected: Bool) -> Color {
+        isSelected ? Fill.selected : .clear
+    }
 }
 
 /// The Mac's target row (`TargetsListView.swift:395-430`) at phone size
 /// (design pass spec §2.7): a 20 pt icon column, the title (up to two
 /// lines; struck through and secondary when dimmed), one meta line in
-/// `.caption` secondary, and a trailing view. In a `ScrollView` it pads
-/// itself with `RowInsets.flat`; in a `List` pass `insets: EdgeInsets()` and
-/// let the list's row insets pad it.
+/// `.caption` secondary, and a trailing view, on a `RowPlate` (selected:
+/// `Fill.selected`). In a `ScrollView` it pads itself with `RowInsets.flat`;
+/// in a `List` pass `insets: EdgeInsets()` and let the list's row insets pad
+/// it.
 struct FlatRow<Meta: View, Trailing: View>: View {
     let icon: FlatRowIcon
     let title: String
     var titleLineLimit = 2
     var isDimmed = false
+    var isSelected = false
     var insets = RowInsets.flat
     @ViewBuilder var meta: Meta
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            iconView.frame(width: 20)
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.cozy) {
+            iconView.frame(width: PhoneMetrics.iconColumn)
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text(title)
                     .font(TypeScale.rowTitle)
@@ -91,11 +104,12 @@ struct FlatRow<Meta: View, Trailing: View>: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: Spacing.regular)
             trailing
         }
         .padding(insets)
-        .frame(minHeight: 44)
+        .frame(minHeight: PhoneMetrics.minTouch)
+        .background(RowPlate.fill(isSelected: isSelected), in: RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         .contentShape(Rectangle())
     }
 
@@ -104,7 +118,9 @@ struct FlatRow<Meta: View, Trailing: View>: View {
         case let .symbol(name, tone):
             Image(systemName: name).font(.body).foregroundStyle(tone.color)
         case let .session(tone, isRing):
-            SessionDot(tone: tone, isRing: isRing, size: 10)
+            SessionDot(tone: tone, isRing: isRing)
+        case let .state(glyph, tone):
+            StateMark(glyph: glyph, tone: tone)
         }
     }
 }
@@ -115,41 +131,59 @@ extension FlatRow where Trailing == EmptyView {
         title: String,
         titleLineLimit: Int = 2,
         isDimmed: Bool = false,
+        isSelected: Bool = false,
         insets: EdgeInsets = RowInsets.flat,
         @ViewBuilder meta: () -> Meta
     ) {
-        self.init(icon: icon, title: title, titleLineLimit: titleLineLimit, isDimmed: isDimmed, insets: insets, meta: meta) {
+        self.init(
+            icon: icon, title: title, titleLineLimit: titleLineLimit, isDimmed: isDimmed, isSelected: isSelected,
+            insets: insets, meta: meta
+        ) {
             EmptyView()
         }
     }
 }
 
-/// A divider between flat rows in a `ScrollView` or a card, starting at the
-/// title column (16 + 20 + 10).
-struct RowDivider: View {
-    var body: some View {
-        Divider().padding(.leading, 46)
-    }
-}
-
-/// A section label in a `ScrollView`: `TypeScale.sectionHeader`, never
-/// uppercase. In an `insetGrouped` or `plain` `List`, keep the system header
-/// and give it `.font(TypeScale.sectionHeader)` and `.textCase(nil)`.
+/// A section header of a scroll view (mockups' `.sec`, the Desktop Home's
+/// zone titles): the title in caps with `Tracking.caps`, in the tone, and an
+/// optional count trailing in secondary. It pads itself 20 on the sides (the
+/// mockups' 16 content inset plus 4), 16 above and 8 below. In a system
+/// `List`, keep the system header with `TypeScale.sectionHeader` and
+/// `.textCase(nil)`.
+///
+///     SectionHeader("Waiting for you", count: 3, tone: .waitingForYou)
 struct SectionHeader: View {
     let text: String
+    let count: Int?
     let tone: PhoneTone
 
-    init(_ text: String, tone: PhoneTone = .secondary) {
+    init(_ text: String, count: Int? = nil, tone: PhoneTone = .secondary) {
         self.text = text
+        self.count = count
         self.tone = tone
     }
 
+    /// What VoiceOver reads: the title, then the count.
+    static func spokenLabel(_ text: String, count: Int?) -> String {
+        count.map { "\(text), \($0)" } ?? text
+    }
+
     var body: some View {
-        Text(text)
-            .font(TypeScale.sectionHeader)
-            .foregroundStyle(tone.color)
-            .padding(EdgeInsets(top: 16, leading: 16, bottom: 6, trailing: 16))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityAddTraits(.isHeader)
+        HStack(alignment: .firstTextBaseline) {
+            Text(text)
+                .textCase(.uppercase)
+                .tracking(Tracking.caps)
+                .foregroundStyle(tone.color)
+            Spacer(minLength: Spacing.regular)
+            if let count {
+                Text("\(count)").monospacedDigit().foregroundStyle(.secondary)
+            }
+        }
+        .font(TypeScale.capsHeader)
+        .padding(EdgeInsets(top: Spacing.large, leading: Spacing.page, bottom: Spacing.regular, trailing: Spacing.page))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.spokenLabel(text, count: count))
+        .accessibilityAddTraits(.isHeader)
     }
 }

@@ -12,3 +12,29 @@ enum RowInsets {
     static let flat = EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
     static let card = EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16)
 }
+
+/// The phone's own sizes, beside the shared tokens: the touch target and
+/// the few fixed marks the mockups (`docs/design/mobile/mockups.html`) draw.
+/// Parts read these instead of numbers.
+enum PhoneMetrics {
+    /// The smallest touch target (HIG).
+    static let minTouch: CGFloat = 44
+    /// A row's icon column and its state mark (mockup `.dot`).
+    static let iconColumn: CGFloat = 20
+    /// A progress step's icon column.
+    static let stepColumn: CGFloat = 22
+    /// A session's live dot (mockup `.dot.sm`).
+    static let sessionDot: CGFloat = 10
+    /// The state mark beside a state line (mockup 4).
+    static let stateMark: CGFloat = 16
+    /// The Mac chip's dot (mockup `.macchip i`).
+    static let macDot: CGFloat = 7
+    /// The priority dot of a meta line or chip.
+    static let priorityDot: CGFloat = 6
+    /// A bar's primary button (mockup `.primarybar .btn`).
+    static let barButton: CGFloat = 46
+    /// The small settings switch (mockup `.sw`).
+    static let switchSize = CGSize(width: 42, height: 25)
+    /// A thin progress bar.
+    static let progressBar: CGFloat = 4
+}

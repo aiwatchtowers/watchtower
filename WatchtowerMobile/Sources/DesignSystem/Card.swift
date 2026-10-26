@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// A card's look (design pass spec §2.5): `plain` for detail blocks,
-/// `waiting` for "Waiting for you" and asks, `highlighted` for the current
-/// or next meeting. A card never contains another card; rows inside one are
-/// flat.
+/// A card's look, the Desktop's `.card()` at phone size (mockups 1–5):
+/// `plain` for blocks and row groups, `waiting` for an approval or another
+/// waiting-for-you element that is a card of its own, `highlighted` for the
+/// selected board card or the meeting in focus. A card never contains
+/// another card; rows inside one are flat.
 enum CardStyle: Equatable {
     case plain, waiting, highlighted
 }
@@ -12,7 +13,7 @@ enum Card {
     /// The Desktop's container radius (continuous).
     static let radius = Radius.container
     /// The default inner padding: 12 horizontal, 10 vertical.
-    static let padding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+    static let padding = EdgeInsets(top: Spacing.cozy, leading: Spacing.medium, bottom: Spacing.cozy, trailing: Spacing.medium)
 
     struct Paint: Equatable {
         let fill: Color
@@ -20,21 +21,22 @@ enum Card {
         let lineWidth: CGFloat
     }
 
-    /// The fill and stroke of `style` in `scheme`. The waiting card gets its
-    /// colour from `PhoneTone.waitingForYou`; the design layer never names
-    /// orange.
-    static func paint(_ style: CardStyle, scheme: ColorScheme) -> Paint {
+    /// The fill and stroke of `style`. Plain is the soft `Fill.card` under
+    /// a hairline, never an opaque system fill; waiting is the same recipe
+    /// in the waiting tone (from `PhoneTone.waitingForYou`; the design layer
+    /// never names orange); highlighted is the Desktop's selected card.
+    static func paint(_ style: CardStyle) -> Paint {
         switch style {
         case .plain:
-            Paint(fill: Color(.secondarySystemBackground), stroke: Color(.separator), lineWidth: 0.5)
+            Paint(fill: Fill.card, stroke: Stroke.hairlineColor, lineWidth: Stroke.hairline)
         case .waiting:
             Paint(
-                fill: PhoneTone.waitingForYou.color.opacity(scheme == .dark ? 0.06 : 0.10),
-                stroke: PhoneTone.waitingForYou.color.opacity(scheme == .dark ? 0.30 : 0.45),
-                lineWidth: 1
+                fill: PhoneTone.waitingForYou.color.opacity(Fill.cardOpacity),
+                stroke: PhoneTone.waitingForYou.color,
+                lineWidth: Stroke.hairline
             )
         case .highlighted:
-            Paint(fill: Color.accentColor.opacity(scheme == .dark ? 0.14 : 0.10), stroke: .accentColor, lineWidth: 1.5)
+            Paint(fill: Fill.selected, stroke: .accentColor, lineWidth: Stroke.selection)
         }
     }
 }
@@ -42,10 +44,9 @@ enum Card {
 private struct CardModifier: ViewModifier {
     let style: CardStyle
     let padding: EdgeInsets
-    @Environment(\.colorScheme) private var scheme
 
     func body(content: Content) -> some View {
-        let paint = Card.paint(style, scheme: scheme)
+        let paint = Card.paint(style)
         let shape = RoundedRectangle(cornerRadius: Card.radius, style: .continuous)
         content
             .padding(padding)
