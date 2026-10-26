@@ -71,6 +71,8 @@ struct AgendaView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Spacing.regular) {
+                    // The Mac's status, as on Now (mockup 7).
+                    MacStatusChip(model: env.macChip(now: now))
                     WeekStripView(strip: strip, select: { selectedDay = $0 }, shiftWeek: shiftWeek)
                     if let empty = agenda.emptyText {
                         Text(empty).foregroundStyle(.secondary).padding(.horizontal, Spacing.small)

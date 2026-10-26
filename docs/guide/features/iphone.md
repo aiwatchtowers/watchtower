@@ -38,8 +38,8 @@ If the phone uses the same Apple ID as the Mac, it syncs through your private iC
 
 ### Use the three tabs
 
-- **Now** shows whether your Mac is online ("Mac online · 12s"), everything **Waiting for you** across workbenches, and session counts. The gear opens Settings.
-- **Workbench** lists your workbenches as cards. Open one for **Sessions** (asks, reports, a stop button) or **Board** (targets with status, priority and comments). Its badge counts open asks.
+- **Now** shows your Mac's status, then **Waiting for you**, **Working** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
+- **Workbench** lists your workbenches as cards. Open one for **Sessions** (in the Mac's sessions panel order) or **Board** (targets with status, priority and comments). Its badge counts open asks.
 - **Calendar** shows the events your Mac publishes, with prep, the **Record** button and the **Recordings** list.
 
 Asks come in three kinds: a question, a review (select text, **Comment on the selection**, then **Approve** or **Request changes**) and a check (mark each step **OK**, **Broken** or **Skipped**).

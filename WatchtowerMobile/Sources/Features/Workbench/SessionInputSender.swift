@@ -18,11 +18,18 @@ enum SessionInputDelivery: String, Equatable {
         }
     }
 
+    /// What the delivery means for `agent`'s session: send while busy is
+    /// Claude's alone (PROJ-16 amended), so another agent's `queued` reads
+    /// as `submitted` even if a hub said `while_busy`.
+    func resolved(for agent: TerminalSessionState.Agent) -> Self {
+        self == .queued && agent != .claudeCode ? .submitted : self
+    }
+
     /// The line under the owner's bubble in the workchat (spec §5.4).
-    var caption: String {
-        switch self {
+    func caption(for agent: TerminalSessionState.Agent) -> String {
+        switch resolved(for: agent) {
         case .submitted: "Sent"
-        case .typed, .queued: text
+        case .typed, .queued: resolved(for: agent).text
         }
     }
 
@@ -49,6 +56,9 @@ final class SessionInputSender {
     /// Action id → where that applied line went this run: the caption of
     /// its bubble until the feed shows the line.
     private(set) var lineDeliveries: [String: SessionInputDelivery] = [:]
+    /// Session id → where the phone's Finish went this run, until the next
+    /// line to the session.
+    private(set) var finishDeliveries: [Int64: SessionInputDelivery] = [:]
     /// Session id → the permission request whose answer the Mac applied
     /// this run.
     private(set) var answered: [Int64: Int64] = [:]
@@ -158,11 +168,14 @@ final class SessionInputSender {
         delivered[sessionID] = delivery
         if action.kind == .sessionInput {
             lineDeliveries[action.id] = delivery
+        } else {
+            finishDeliveries[sessionID] = delivery
         }
     }
 
     private func run(_ kind: ActionKind, sessionID: Int64, params: [String: JSONValue]) async throws -> Bool {
         delivered[sessionID] = nil
+        finishDeliveries[sessionID] = nil
         let entity = SessionStarter.sessionRecordName(sessionID)
         return try await sendGuard.run(Self.sendKey(sessionID)) {
             _ = try await enqueue(kind, entity, params)

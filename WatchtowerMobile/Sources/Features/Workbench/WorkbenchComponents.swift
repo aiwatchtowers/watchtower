@@ -1,19 +1,5 @@
 import SwiftUI
 
-/// A session-state count with its dot: "● 2 working".
-struct SessionCountLabel: View {
-    let count: SessionStateCount
-
-    var body: some View {
-        HStack(spacing: 4) {
-            SessionDot(tone: count.tone, isRing: count.isRing, size: 7)
-            Text(count.text)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-    }
-}
-
 /// One SESSIONS row (design pass S3): the session dot, the title on one
 /// line, one meta line, and the open-ask count as a badge. In a `List`, pass
 /// `insets: EdgeInsets()`.

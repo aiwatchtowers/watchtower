@@ -62,3 +62,75 @@ enum LastSyncText {
         return shifted.formatted(Date.RelativeFormatStyle(presentation: .named, unitsStyle: .abbreviated, locale: locale))
     }
 }
+
+/// Where the Mac is, for the screens that act on it (spec §5.6): online
+/// while its heartbeat is under 2100 s old (`MacStatus.isOnline`, the rule
+/// Settings' row reads; one stamped ahead of the phone's clock is online),
+/// asleep with an older heartbeat from a still-linked Mac, offline with no
+/// heartbeat or no link.
+enum MacReachability: Equatable {
+    case online
+    case asleep(lastSeen: Date)
+    case offline
+
+    static func of(heartbeat: Date?, linked: Bool, now: Date) -> Self {
+        guard linked, let heartbeat else { return .offline }
+        return MacStatus.isOnline(lastHeartbeat: heartbeat, now: now) ? .online : .asleep(lastSeen: heartbeat)
+    }
+
+    var isOnline: Bool { self == .online }
+
+    /// The last contact a live state is "as of" while the Mac is asleep.
+    var asOf: Date? {
+        if case let .asleep(lastSeen) = self { return lastSeen }
+        return nil
+    }
+
+    /// The Mac status chip's state; an unlinked phone has no Mac to name.
+    func chipState(linked: Bool) -> MacChipState {
+        switch self {
+        case .online: .online
+        case let .asleep(lastSeen): .asleep(lastSeen: lastSeen)
+        case .offline: linked ? .offline(lastSeen: nil) : .notLinked
+        }
+    }
+}
+
+/// The workchat's banner while the Mac is not online (mockup 8): "**Your
+/// Mac is asleep** · last seen 12 min ago. New lines go when it wakes."
+struct MacAwayBanner: Equatable {
+    let title: String
+    let detail: String
+
+    init?(_ mac: MacReachability, now: Date) {
+        switch mac {
+        case .online:
+            return nil
+        case let .asleep(lastSeen):
+            title = "Your Mac is asleep"
+            detail = " · last seen \(LastSeen.phrase(lastSeen, now: now)). New lines go when it wakes."
+        case .offline:
+            title = "Your Mac is offline"
+            detail = ". New lines go when it is back."
+        }
+    }
+
+    var text: String { title + detail }
+}
+
+extension AppEnvironment {
+    /// The active Mac's reachability at `now`, from its heartbeat and link.
+    func macReachability(now: Date) -> MacReachability {
+        .of(heartbeat: workbenchReplica.snapshot.heartbeat?.updatedAt, linked: linkedDevice != nil, now: now)
+    }
+
+    /// The Mac status chip of Now and the Calendar (mockups 1, 7).
+    func macChip(now: Date) -> MacStatusChipModel {
+        let linked = linkedDevice != nil
+        return MacStatusChipModel(
+            macName: workbenchReplica.snapshot.heartbeat?.macName ?? "",
+            state: macReachability(now: now).chipState(linked: linked),
+            now: now
+        )
+    }
+}

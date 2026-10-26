@@ -1,77 +1,47 @@
 [
   {
-    "text": "            HStack(spacing: 5) {",
-    "violation": {
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleDescription": "",
-      "ruleIdentifier": "kit_no_raw_metrics",
-      "location": {
-        "file": "Sources/Features/Now/NowView.swift",
-        "line": 88,
-        "character": 20
-      },
-      "severity": "error",
-      "ruleName": "kit_no_raw_metrics"
-    }
-  },
-  {
-    "text": "        HStack(spacing: 4) {",
-    "violation": {
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleDescription": "",
-      "ruleIdentifier": "kit_no_raw_metrics",
-      "location": {
-        "file": "Sources/Features/Workbench/WorkbenchComponents.swift",
-        "line": 8,
-        "character": 16
-      },
-      "severity": "error",
-      "ruleName": "kit_no_raw_metrics"
-    }
-  },
-  {
     "text": "            HStack(spacing: 4) {",
     "violation": {
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleDescription": "",
-      "ruleIdentifier": "kit_no_raw_metrics",
+      "ruleName": "kit_no_raw_metrics",
       "location": {
-        "file": "Sources/Features/Workbench/WorkbenchView.swift",
-        "line": 80,
-        "character": 20
+        "line": 88,
+        "character": 20,
+        "file": "Sources/Features/Workbench/WorkbenchView.swift"
       },
       "severity": "error",
-      "ruleName": "kit_no_raw_metrics"
+      "ruleIdentifier": "kit_no_raw_metrics",
+      "reason": "Use Spacing / Radius / IconSize tokens.",
+      "ruleDescription": ""
     }
   },
   {
     "text": "        VStack(spacing: 8) {",
     "violation": {
-      "reason": "Use Spacing / Radius / IconSize tokens.",
       "ruleDescription": "",
+      "reason": "Use Spacing / Radius / IconSize tokens.",
+      "ruleName": "kit_no_raw_metrics",
+      "severity": "error",
       "ruleIdentifier": "kit_no_raw_metrics",
       "location": {
         "file": "Sources/Features/Workbench/WorkbenchView.swift",
-        "line": 93,
-        "character": 16
-      },
-      "severity": "error",
-      "ruleName": "kit_no_raw_metrics"
+        "character": 16,
+        "line": 101
+      }
     }
   },
   {
     "text": "            .padding(.horizontal, 16)",
     "violation": {
-      "reason": "Use Spacing / Radius / IconSize tokens.",
-      "ruleDescription": "",
       "ruleIdentifier": "kit_no_raw_metrics",
+      "ruleDescription": "",
       "location": {
         "file": "Sources/Features/Workbench/WorkbenchView.swift",
-        "line": 106,
+        "line": 114,
         "character": 13
       },
+      "ruleName": "kit_no_raw_metrics",
       "severity": "error",
-      "ruleName": "kit_no_raw_metrics"
+      "reason": "Use Spacing / Radius / IconSize tokens."
     }
   }
 ]
