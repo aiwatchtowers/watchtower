@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 	"watchtower/internal/instructions"
 	"watchtower/internal/prompts"
@@ -77,7 +78,7 @@ func (d dbs) reviewComment(t *testing.T, wb int64, round int64, at time.Time, bo
 		require.NoError(t, err)
 		carriedFrom, _ = c.LastInsertId()
 	}
-	r, err := d.Exec(`INSERT INTO review_comments (round_id, body, carried_from, created_at) VALUES (?, ?, ?, ?)`,
+	r, err := d.Exec(`INSERT INTO review_comments (round_id, body, carried_from, status, created_at) VALUES (?, ?, ?, 'sent', ?)`,
 		round, body, carriedFrom, at.Format(tsLayout))
 	require.NoError(t, err)
 	id, err := r.LastInsertId()
@@ -289,4 +290,80 @@ func TestCollect_ProposalBuckets(t *testing.T) {
 	assert.Equal(t, []string{"declined1"}, titles(in.Declined))
 	assert.Equal(t, []string{"works1"}, titles(in.Accepted))
 	assert.ElementsMatch(t, []string{"noeff1", "noeff2"}, titles(in.NoEffect))
+}
+
+func TestCollect_DraftAndOutdatedCommentsAreNotEvidence(t *testing.T) {
+	fakeHome(t)
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "acme", 0)
+	sent := d.reviewComment(t, wb, 0, sigNow.Add(-time.Hour), "sent one", false, false)
+	var round int64
+	require.NoError(t, d.QueryRow(`SELECT round_id FROM review_comments WHERE id = ?`, sent).Scan(&round))
+	for _, st := range []string{"draft", "outdated"} {
+		_, err := d.Exec(`INSERT INTO review_comments (round_id, body, status, created_at) VALUES (?, ?, ?, ?)`,
+			round, st+" one", st, sigNow.Add(-time.Hour).Format(tsLayout))
+		require.NoError(t, err)
+	}
+	in, err := Collect(context.Background(), d.DB, d.al, noFeed, sigNow)
+	require.NoError(t, err)
+	require.Len(t, in.Signals, 1)
+	assert.Equal(t, "sent one", in.Signals[0].Text)
+}
+
+func TestCollect_MalformedSpecReviewIsSkipped(t *testing.T) {
+	fakeHome(t)
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "acme", 0)
+	good := d.doneReview(t, wb, sigNow.Add(-2*time.Hour), specreview.Result{
+		BlindSpots: []specreview.BlindSpot{{Key: "bs:111111111111", Text: "no rollback"}}})
+	d.mark(t, good, "bs:111111111111", "comment", "")
+	bad := d.doneReview(t, wb, sigNow.Add(-time.Hour), specreview.Result{})
+	_, err := d.Exec(`UPDATE spec_reviews SET result = 'not json {secret text' WHERE ask_id = ?`, bad)
+	require.NoError(t, err)
+	d.mark(t, bad, "bs:222222222222", "comment", "")
+
+	in, err := Collect(context.Background(), d.DB, d.al, noFeed, sigNow)
+	require.NoError(t, err)
+	require.Len(t, in.Signals, 1)
+	assert.Equal(t, fmt.Sprintf("ask:%d#bs:111111111111", good), in.Signals[0].Ref)
+}
+
+func TestCollect_HintBecomesSignal(t *testing.T) {
+	fakeHome(t)
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "acme", 0)
+	// Three failing "go test" calls in a row in one session: hint H5.
+	uuid, path := "s1", "/tmp/x/s1.jsonl"
+	at := func(s int) string { return sigNow.Add(-time.Hour).Add(time.Duration(s) * time.Second).Format(tsLayout) }
+	evs := []agentlogdb.AgentLogEvent{{Kind: "owner_turn", Trigger: "owner", TS: at(0)}}
+	for i := range 3 {
+		evs = append(evs, agentlogdb.AgentLogEvent{Kind: "tool", Name: "Bash", Target: "go test", Outcome: "error", TS: at(10 + i)})
+	}
+	for i := range evs {
+		evs[i].SessionUUID, evs[i].SrcPath, evs[i].SrcOffset, evs[i].Key = uuid, path, int64(i), fmt.Sprintf("%s:%d", uuid, i)
+	}
+	_, err := d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: uuid, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+			SourcePath: path, StartedAt: at(0), EndedAt: at(60), Model: "claude-opus-5-5"}},
+		Events: evs,
+	})
+	require.NoError(t, err)
+	_, err = d.al.Exec(`UPDATE agent_log_events SET duration_ms = 4000 WHERE kind = 'tool'`)
+	require.NoError(t, err)
+
+	in, err := Collect(context.Background(), d.DB, d.al, noFeed, sigNow)
+	require.NoError(t, err)
+	var hints []Signal
+	for _, s := range in.Signals {
+		if s.Kind == KindHint {
+			hints = append(hints, s)
+		}
+	}
+	require.NotEmpty(t, hints)
+	h := sigByRef(hints)[fmt.Sprintf("hint:H5@wb%d", wb)]
+	assert.Equal(t, KindHint, h.Kind)
+	assert.Equal(t, wb, h.WorkbenchID)
+	assert.Contains(t, h.Text, " Action: ")
+	assert.NotContains(t, h.Text, "Action: \n")
 }

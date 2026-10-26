@@ -49,13 +49,16 @@ type CoachReviewComment struct {
 }
 
 // ListFirstRoundReviewCommentsBetween returns the non-empty comments of
-// first-round reviews (no previous round, not carried) created in
+// first-round reviews (no previous round, not carried) that the owner sent
+// to the agent (status sent, or resolved after it; never a draft or an
+// outdated comment) created in
 // [since, until), newest first. The table records no author: every comment is
 // the owner's (the agent answers in agent_reply).
 func (db *DB) ListFirstRoundReviewCommentsBetween(since, until time.Time) ([]CoachReviewComment, error) {
 	rows, err := db.Query(`SELECT c.round_id, c.id, r.project_id, c.body, c.created_at
 		FROM review_comments c JOIN review_rounds r ON r.id = c.round_id
 		WHERE c.carried_from IS NULL AND r.prev_round_id IS NULL AND c.body != ''
+		  AND c.status IN ('sent','resolved')
 		  AND r.created_at >= ? AND r.created_at < ?
 		ORDER BY c.created_at DESC, c.id DESC`, coachStamp(since), coachStamp(until))
 	if err != nil {

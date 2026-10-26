@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -159,8 +160,10 @@ func specSignals(d *db.DB, since, until time.Time) ([]Signal, error) {
 		}
 		var res specreview.Result
 		if err := json.Unmarshal([]byte(r.Result), &res); err != nil {
-			// The row is malformed: say which one, never what it held.
-			return nil, fmt.Errorf("decoding spec review of ask %d: %w", r.AskID, err)
+			// One malformed row must not stop the weekly pass. Log the ask id
+			// only: a decode error can echo the content (FILES-01).
+			log.Printf("coach: skipping spec review of ask %d: result is not valid", r.AskID)
+			continue
 		}
 		items := findingTexts(res)
 		for key, m := range marks {
