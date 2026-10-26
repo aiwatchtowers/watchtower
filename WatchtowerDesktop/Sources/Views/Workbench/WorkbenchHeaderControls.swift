@@ -17,7 +17,8 @@ struct WorkbenchHeaderControls: View {
     var automations: WorkbenchAutomationsMenu?
     /// The ⋯ menu's Delete…: the page reads the counts and confirms.
     let onDelete: () -> Void
-    /// The ⋯ menu's Clean Up Old Worktrees…: the page shows the sweep sheet.
+    /// The ⋯ menu's Clean Up Old Worktrees…: the page opens the Clean Up
+    /// screen on the whole workbench.
     let onCleanUpOldWorktrees: () -> Void
     /// The tab under the pointer.
     @State private var hoveredTab: String?

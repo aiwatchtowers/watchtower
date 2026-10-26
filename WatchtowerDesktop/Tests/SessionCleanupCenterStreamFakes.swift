@@ -197,3 +197,81 @@ func waitUntil(
         try? await Task.sleep(for: .milliseconds(5))
     }
 }
+
+/// A `SessionCleanupStreaming` double shaped like `FakeSessionCleanupRunner`:
+/// each streamed run answers from `replies` in order (the last one repeats)
+/// with one `done` line of the reply's plan, or exits 1 with the error's
+/// text; it can hold its answer until `release()`. A run the center stopped
+/// (a cancelled plan) counts in `cancelledCount` and still answers once
+/// released — the center drops what a stopped run says.
+final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable {
+    /// When true, each run waits for `release()` before it answers.
+    var holdsCalls = false
+
+    private let scripted = ScriptedCleanupStreamer()
+    private let lock = NSLock()
+    private var replies: [Result<Data, Error>]
+    private var held: [CheckedContinuation<Void, Never>] = []
+    private var tornDown = false
+
+    init(replies: [Result<Data, Error>]) {
+        self.replies = replies
+    }
+
+    var runs: [ScriptedCleanupStreamer.Run] { scripted.runs }
+    /// The runs as `FakeSessionCleanupRunner.calls` reads: `args`, `environment`.
+    var calls: [ScriptedCleanupStreamer.Run] { runs }
+    var heldCount: Int { lock.withLock { held.count } }
+    /// The runs the center stopped.
+    var cancelledCount: Int { runs.filter { $0.stopCount > 0 }.count }
+
+    func release() {
+        let waiting: [CheckedContinuation<Void, Never>] = lock.withLock {
+            defer { held = [] }
+            return held
+        }
+        waiting.forEach { $0.resume() }
+    }
+
+    func streamCleanup(args: [String], environment: [String: String]) throws -> SessionCleanupStream {
+        let stream = try scripted.streamCleanup(args: args, environment: environment)
+        guard let run = scripted.runs.last else { return stream }
+        let (reply, holds) = lock.withLock { () -> (Result<Data, Error>, Bool) in
+            let next = replies.count > 1 ? replies.removeFirst() : replies.first ?? .success(Data("{}".utf8))
+            return (next, holdsCalls)
+        }
+        Task.detached { [self] in
+            if holds {
+                await withCheckedContinuation { continuation in
+                    let resume: Bool = lock.withLock {
+                        if tornDown { return true }
+                        held.append(continuation)
+                        return false
+                    }
+                    if resume { continuation.resume() }
+                }
+            }
+            switch reply {
+            case let .success(data):
+                run.send(Self.doneLine(data))
+                run.finish()
+            case let .failure(error):
+                run.finish(status: 1, message: error.localizedDescription)
+            }
+        }
+        return stream
+    }
+
+    /// Ends every run and every held answer (tearDown).
+    func finishAll() {
+        lock.withLock { tornDown = true }
+        release()
+        scripted.finishAll()
+    }
+
+    private static func doneLine(_ plan: Data) -> String {
+        let object = (try? JSONSerialization.jsonObject(with: plan)) ?? [:]
+        let compact = (try? JSONSerialization.data(withJSONObject: object)) ?? Data("{}".utf8)
+        return #"{"event":"done","plan":"# + (String(bytes: compact, encoding: .utf8) ?? "{}") + "}"
+    }
+}

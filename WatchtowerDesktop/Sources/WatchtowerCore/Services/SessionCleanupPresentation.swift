@@ -162,7 +162,7 @@ package enum SessionCleanupPresentation {
 
     // MARK: Sweep owner
 
-    /// The sweep sheet's owner column: "Fix the login form · active 2d ago",
+    /// The Clean Up screen's owner column: "Fix the login form · active 2d ago",
     /// "Session 12" without a title or a readable stamp, "Owner unknown"
     /// for a pre-feature or deleted session.
     package static func ownerText(_ owner: SessionCleanupOwner, now: Date = Date()) -> String {

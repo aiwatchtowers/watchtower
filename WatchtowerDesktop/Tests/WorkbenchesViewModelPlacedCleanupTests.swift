@@ -156,6 +156,26 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         XCTAssertNil(vm.placedCleanupRuns[row.id])
     }
 
+    /// The Clean Up screen showing the session's scope owns it: the
+    /// natural-exit cleanup steps aside, and runs again once it closed.
+    func testOpenScreenOnASessionSkipsItsAutomaticCleanup() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(fullPlan)])
+        let vm = makeVM(runner)
+        let row = try await runningRow(finished: true)
+        let p = try XCTUnwrap(row.projectID)
+        vm.cleanupScreens[p] = CleanupScreenState(scope: .session(row.id))
+
+        try await exitAgent(vm, row)
+        XCTAssertTrue(runner.calls.isEmpty, "no automatic cleanup while the screen shows the session")
+
+        // Positive control: the screen closed, the row resumed and exited again.
+        vm.cleanupScreens[p] = nil
+        terminals.start(row, fresh: false)
+        processes[row.id] = lastProcess
+        try await exitAgent(vm, row)
+        XCTAssertEqual(applyCalls(runner).count, 1, "with the screen closed the exit cleans up")
+    }
+
     func testUnfinishedExitDoesNothing() async throws {
         let runner = FakeSessionCleanupRunner(replies: [.success(fullPlan)])
         let vm = makeVM(runner)

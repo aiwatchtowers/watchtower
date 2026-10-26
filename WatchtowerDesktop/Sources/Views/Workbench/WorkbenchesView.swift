@@ -29,7 +29,6 @@ struct WorkbenchesView: View {
     @State private var sensitiveLocation: String?
     @State private var renamingSession: TerminalSession?
     @State private var deletingSession: TerminalSession?
-    @State private var cleaningSession: TerminalSession?
     /// The ⌘K palette (board #252). View state: it closes with the tab.
     @State private var goToOpen = false
 
@@ -103,7 +102,7 @@ struct WorkbenchesView: View {
                 GoToPaletteOverlay(vm: vm) { goToOpen = false }
             }
         }
-        .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession, cleaning: $cleaningSession)
+        .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
         // The Workbench menu (issue #288): on while this tab is in the key window.
         .focusedSceneValue(\.workbenchMenu, WorkbenchMenuContext(vm: vm, paletteOpen: goToOpen) { goToOpen = true })
         .onAppear {
@@ -155,7 +154,10 @@ struct WorkbenchesView: View {
             },
             rename: { renamingSession = $0 },
             delete: { deletingSession = $0 },
-            cleanUp: { cleaningSession = $0 },
+            cleanUp: { session in
+                guard let projectID = session.projectID else { return }
+                vm.openCleanupScreen(projectID: projectID, sessionID: session.id)
+            },
             reviewChanges: { session in
                 guard let projectID = session.projectID else { return }
                 vm.showChanges(sessionID: session.id, projectID: projectID)

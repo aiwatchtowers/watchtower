@@ -15,7 +15,9 @@ import WatchtowerCore
 /// The quick ✕ / ⌘⌫ delete never cleans up (it is Delete Only).
 ///
 /// Plans run in tasks the center owns and applies in tasks this view model
-/// owns (`cleanupRuns`), so leaving the page cancels neither.
+/// owns (`cleanupRuns`), so leaving the page cancels neither. A session's
+/// **Clean Up…** opens the Clean Up screen on its scope
+/// (`openCleanupScreen`, `WorkbenchesViewModel+CleanupSweep.swift`).
 extension WorkbenchesViewModel {
     /// The Delete dialog opened on a workbench session: plans its cleanup,
     /// as the delete will run it — after its terminal is closed. A
@@ -24,14 +26,6 @@ extension WorkbenchesViewModel {
     func planCleanupBeforeDelete(_ session: TerminalSession) async {
         guard let workbenchID = session.projectID, let center = sessionCleanup else { return }
         await center.startPlan(sessionID: session.id, workbenchID: workbenchID, closingSession: true).value
-    }
-
-    /// The Clean Up… sheet opened: plans with every live terminal passed,
-    /// this session's included (its worktree is kept while it runs).
-    /// Cancelling the caller leaves the plan running.
-    func planCleanupForSheet(_ session: TerminalSession) async {
-        guard let workbenchID = session.projectID, let center = sessionCleanup else { return }
-        await center.startPlan(sessionID: session.id, workbenchID: workbenchID).value
     }
 
     /// The Delete dialog's phase for `session`; idle without a center.
@@ -65,7 +59,8 @@ extension WorkbenchesViewModel {
     /// through the deferred delete (PROJ-17) and tells the page about any
     /// shown item Go kept. A failed cleanup keeps the row and puts the
     /// failure on the page (PROJ-18); the run's value is false then. With
-    /// nothing shown it is a plain delete; on a row already busy, nothing.
+    /// nothing shown it is a plain delete; on a row already busy, or while
+    /// another cleanup apply of the workbench runs, nothing.
     @discardableResult
     func startDeleteAndCleanUp(_ session: TerminalSession, choice: SessionDeleteCleanupChoice?) -> Task<Bool, Never> {
         guard !cleaningUpSessions.contains(session.id) else { return Task { false } }
@@ -75,6 +70,9 @@ extension WorkbenchesViewModel {
                 return true
             }
         }
+        // One cleanup apply per workbench at a time (spec 2026-10-26 §3.2):
+        // the dialog says "Another cleanup is running"; Delete Only works.
+        guard !deleteAndCleanUpBlocked(projectID: workbenchID) else { return Task { false } }
         cleaningUpSessions.insert(session.id)
         closedForCleanup.insert(session.id)
         let run = Task {
@@ -137,81 +135,11 @@ extension WorkbenchesViewModel {
         cleanupRuns[sessionID] = nil
     }
 
-    // MARK: Clean Up… sheet
-
-    /// The sheet's ticked items it would remove: pending removals of a
-    /// known kind in the ready plan among `ticked` (an unknown kind is
-    /// listed but never ticked, as the Delete dialog never offers it);
-    /// empty in any other phase.
-    func sheetCleanupChoice(_ session: TerminalSession, ticked: Set<String>) -> [SessionCleanupItem] {
-        guard case let .ready(plan) = deleteCleanupPhase(session) else { return [] }
-        return plan.removableItems(among: ticked)
-    }
-
     /// The Undo bar's line for the sessions waiting in it whose Delete and
     /// Clean Up kept shown items; nil when there is none.
     var pendingCleanupNotice: String? {
         let lines = pendingDeletes.batch.compactMap { cleanupKeptNotices[$0.sessionID] }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
-    }
-
-    /// The sheet's **Clean Up**: applies exactly the ticked pending
-    /// removals in a run this view model owns, then reloads the report's
-    /// Cleanup line. The row is busy meanwhile — no delete, no start fresh —
-    /// but a live session's terminal stays reachable. A failure the sheet did not show (it was closed when the apply
-    /// ended) goes on the page; once the sheet is gone the phase is
-    /// forgotten. True when nothing failed.
-    @discardableResult
-    func applySheetCleanup(_ session: TerminalSession, ticked: Set<String>) async -> Bool {
-        let keys = sheetCleanupChoice(session, ticked: ticked).map(\.key)
-        guard let workbenchID = session.projectID, let center = sessionCleanup, !keys.isEmpty,
-              cleanupRuns[session.id] == nil, !cleaningUpSessions.contains(session.id) else { return false }
-        cleaningUpSessions.insert(session.id)
-        let run = Task {
-            let ok = await center.applyCleanup(sessionID: session.id, workbenchID: workbenchID, items: keys)
-            await self.finishSheetCleanup(session, workbenchID: workbenchID, center: center, ok: ok)
-            return ok
-        }
-        cleanupRuns[session.id] = run
-        return await run.value
-    }
-
-    private func finishSheetCleanup(
-        _ session: TerminalSession, workbenchID: Int64, center: SessionCleanupCenter, ok: Bool
-    ) async {
-        let scope = SessionCleanupScope.session(session.id)
-        // Read before the await: a Done click meanwhile forgets nothing (the
-        // run is still listed), and a failure the open sheet showed is not
-        // reported twice.
-        let unseenFailure = ok || openCleanupSheets.contains(session.id)
-            ? nil : center.failureText(for: scope) ?? "unknown error"
-        await loadCleanupRecord(sessionID: session.id)
-        endCleanupRun(session.id)
-        guard !openCleanupSheets.contains(session.id) else { return }
-        if let unseenFailure {
-            setSessionError("Cleanup of “\(session.title)” failed: \(unseenFailure)", projectID: workbenchID)
-        }
-        center.forgetCleanup(scope)
-    }
-
-    /// The sheet came on screen.
-    func cleanupSheetAppeared(_ session: TerminalSession) {
-        openCleanupSheets.insert(session.id)
-    }
-
-    /// The sheet left the screen (closed, or torn down with the page). An
-    /// apply still running reports and forgets when it ends.
-    func cleanupSheetDisappeared(_ session: TerminalSession) {
-        openCleanupSheets.remove(session.id)
-    }
-
-    /// The sheet's Cancel, Done or Close: forgets its plan or result. An
-    /// apply still running is kept (it forgets when it ends, the sheet then
-    /// being gone).
-    func closeCleanupSheet(_ session: TerminalSession) {
-        openCleanupSheets.remove(session.id)
-        guard cleanupRuns[session.id] == nil else { return }
-        sessionCleanup?.forgetCleanup(.session(session.id))
     }
 
     // MARK: Report line

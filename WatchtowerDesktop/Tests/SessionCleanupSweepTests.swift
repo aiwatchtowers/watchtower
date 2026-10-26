@@ -45,6 +45,34 @@ private enum SweepFixture {
     ]}
     """.utf8)
 
+    static let bundle = "lsreg:/tmp/example/.claude/worktrees/old/build/Old.app"
+
+    /// `plan` with the old worktree named by its path, as Go names it, and
+    /// a LaunchServices entry of a bundle built inside it.
+    static let planWithBundle = Data("""
+    {"workbench_id":2,"mode":"plan","sweep":true,"default_branch":"main","items":[
+      {"key":"\(oldWorktree)","kind":"worktree","name":"/tmp/example/.claude/worktrees/old","branch":"feat/old",
+       "bytes":2000000000,"bytes_known":true,"action":"remove",
+       "owner":{"session_id":4,"title":"Old work","last_active":"2026-09-01T10:00:00Z"}},
+      {"key":"\(recentWorktree)","kind":"worktree","name":"/tmp/example/.claude/worktrees/recent","branch":"feat/recent",
+       "bytes":5000000000,"bytes_known":true,"action":"keep","reason":"session_recent",
+       "owner":{"session_id":7,"title":"Recent work"}},
+      {"key":"\(oldBranch)","kind":"branch","name":"feat/old","action":"remove","owner":{"unknown":true}},
+      {"key":"\(bundle)","kind":"lsreg","name":"/tmp/example/.claude/worktrees/old/build/Old.app",
+       "worktree":"/tmp/example/.claude/worktrees/old","action":"remove"},
+      {"key":"gizmo:1","kind":"gizmo","name":"g","action":"remove","owner":{"unknown":true}}
+    ]}
+    """.utf8)
+
+    /// A branch with no worktree beside an item of a kind this build does
+    /// not know.
+    static let branchOnlyPlan = Data("""
+    {"workbench_id":2,"mode":"plan","sweep":true,"items":[
+      {"key":"\(oldBranch)","kind":"branch","name":"feat/old","action":"remove","owner":{"unknown":true}},
+      {"key":"gizmo:1","kind":"gizmo","name":"g","action":"remove","owner":{"unknown":true}}
+    ]}
+    """.utf8)
+
     static let applied = Data("""
     {"workbench_id":2,"mode":"apply","sweep":true,"items":[
       {"key":"\(oldWorktree)","kind":"worktree","name":"old","action":"remove","done":true}
@@ -52,16 +80,19 @@ private enum SweepFixture {
     """.utf8)
 }
 
-/// **Clean Up Old Worktrees…** (board #535, spec 2026-10-12-session-cleanup
-/// §9/§12) and its one-time hint (open question 2, owner approved): the
-/// sweep's argv, nothing ticked, only ticked known keys applied, runs that
-/// outlive the page. No subprocess is spawned: the runner is a double.
+/// The Clean Up screen (board #1107, spec 2026-10-26-worktree-cleanup-screen
+/// §3/§5/§8) — opened on the whole workbench (**Clean Up Old Worktrees…**,
+/// board #535) or on one session — and the one-time hint (open question 2 of
+/// the 2026-10-12 cleanup spec, owner approved): the argv, nothing ticked,
+/// only ticked known keys applied, runs that outlive the page, one apply per
+/// workbench. No subprocess is spawned: the streamer is a double.
 @MainActor
 final class SessionCleanupSweepTests: XCTestCase {
     private let workbenchID: Int64 = 2
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
+    private var streamers: [RepliedCleanupStreamer] = []
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
@@ -69,13 +100,16 @@ final class SessionCleanupSweepTests: XCTestCase {
     }
 
     override func tearDown() {
+        streamers.forEach { $0.finishAll() }
+        streamers = []
         TestDatabase.cleanup(path: path)
         super.tearDown()
     }
 
-    private func makeVM(_ runner: FakeSessionCleanupRunner, live: Set<Int64> = []) -> (WorkbenchesViewModel, SessionCleanupCenter) {
+    private func makeVM(_ runner: RepliedCleanupStreamer, live: Set<Int64> = []) -> (WorkbenchesViewModel, SessionCleanupCenter) {
+        streamers.append(runner)
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults)
-        let cleanup = SessionCleanupCenter(runner: runner)
+        let cleanup = SessionCleanupCenter(runner: nil, streamer: runner)
         cleanup.liveSessionIDs = { live }
         vm.sessionCleanup = cleanup
         // The page has been on screen long enough unless a test holds it.
@@ -83,118 +117,274 @@ final class SessionCleanupSweepTests: XCTestCase {
         return (vm, cleanup)
     }
 
-    private func applyCalls(_ runner: FakeSessionCleanupRunner) -> [[String]] {
+    private func applyCalls(_ runner: RepliedCleanupStreamer) -> [[String]] {
         runner.calls.map(\.args).filter { $0.contains("--apply") }
     }
 
-    private func readyPlan(_ center: SessionCleanupCenter) throws -> SessionCleanupPlan {
-        let phase = center.cleanupPhase(for: .workbench(workbenchID))
+    private func readyPlan(_ center: SessionCleanupCenter, _ scope: SessionCleanupScope? = nil) throws -> SessionCleanupPlan {
+        let phase = center.cleanupPhase(for: scope ?? .workbench(workbenchID))
         guard case let .ready(plan) = phase else {
-            XCTFail("expected a ready sweep plan, got \(phase)")
+            XCTFail("expected a ready plan, got \(phase)")
             throw CancellationError()
         }
         return plan
     }
 
+    /// The owner ticks `ticks` on the open screen.
+    private func tick(_ vm: WorkbenchesViewModel, _ ticks: Set<String>) {
+        vm.cleanupScreens[workbenchID]?.ticks = ticks
+    }
+
     // MARK: - Plan and apply
 
     func testSweepPlanPassesAllLiveSessions() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         let (vm, _) = makeVM(runner, live: [11, 3, 7])
 
-        await vm.planSweepForSheet(projectID: workbenchID)
+        await vm.openCleanupScreen(projectID: workbenchID).value
 
         XCTAssertEqual(runner.calls.map(\.args), [[
             "workbench", "cleanup", "--workbench=2", "--sweep",
-            "--live-session=3", "--live-session=7", "--live-session=11", "--json"
+            "--live-session=3", "--live-session=7", "--live-session=11", "--json", "--stream"
         ]], "a sweep names no session and passes every live terminal")
         XCTAssertNil(runner.calls.first?.environment[SessionCleanupCenter.terminalSessionVariable])
     }
 
     func testSweepTicksNothingByDefault() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         let (vm, cleanup) = makeVM(runner)
-        await vm.planSweepForSheet(projectID: workbenchID)
+        await vm.openCleanupScreen(projectID: workbenchID).value
         let plan = try readyPlan(cleanup)
         XCTAssertFalse(plan.knownRemovableKeys.isEmpty, "the fixture has removable items")
 
-        // The sweep sheet's rule, whatever the JSON's flag says.
-        var flagless = plan
-        flagless.sweep = false
-        let ticks = flagless.initialTicks(sweep: true)
+        let ticks = try XCTUnwrap(vm.cleanupScreens[workbenchID]).ticks
         XCTAssertEqual(ticks, [], "a sweep arrives with nothing ticked")
-        XCTAssertEqual(vm.sweepCleanupChoice(projectID: workbenchID, ticked: ticks), [])
-        let ok = await vm.applySweepCleanup(projectID: workbenchID, ticked: ticks)
+        XCTAssertEqual(vm.cleanupScreenModel(projectID: workbenchID)?.applyKeys(for: ticks), [])
+        let ok = await vm.applyCleanupScreen(projectID: workbenchID)
         XCTAssertFalse(ok)
         XCTAssertEqual(applyCalls(runner), [], "with nothing ticked nothing runs")
-
-        // The session sheet still ticks every removable item of a known kind.
-        let sessionPlan = try JSONDecoder().decode(SessionCleanupPlan.self, from: CleanupFixture.plan)
-        XCTAssertEqual(sessionPlan.initialTicks(sweep: false), Set(CleanupFixture.plannedKeys))
     }
 
-    func testSweepAppliesOnlyTickedKeys() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan), .success(SweepFixture.applied)])
-        let (vm, cleanup) = makeVM(runner, live: [7, 3])
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        await vm.planSweepForSheet(projectID: workbenchID)
+    func testSessionScopeTicksNothing() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(CleanupFixture.plan)])
+        let (vm, cleanup) = makeVM(runner, live: [9])
 
-        // The removable branch is left unticked; a kept item and a stray key
-        // cannot be applied whatever the ticks say.
-        let ticked: Set = [SweepFixture.oldWorktree, SweepFixture.recentWorktree, "bogus"]
-        let ok = await vm.applySweepCleanup(projectID: workbenchID, ticked: ticked)
+        await vm.openCleanupScreen(projectID: workbenchID, sessionID: 9).value
+
+        XCTAssertEqual(runner.calls.map(\.args), [[
+            "workbench", "cleanup", "--session=9", "--workbench=2", "--live-session=9", "--json", "--stream"
+        ]], "the session's own plan, every live terminal passed")
+        XCTAssertFalse(try readyPlan(cleanup, .session(9)).knownRemovableKeys.isEmpty, "the fixture has removable items")
+        XCTAssertEqual(vm.cleanupScreens[workbenchID]?.scope, .session(9))
+        XCTAssertEqual(vm.cleanupScreens[workbenchID]?.ticks, [], "nothing is ticked in a session's scope either")
+        XCTAssertTrue(vm.cleanupScreenShows(sessionID: 9))
+        XCTAssertFalse(vm.cleanupScreenShows(sessionID: 4))
+        let ok = await vm.applyCleanupScreen(projectID: workbenchID)
+        XCTAssertFalse(ok)
+        XCTAssertEqual(applyCalls(runner), [])
+    }
+
+    /// PROJ-18, 2026-10-26 amendment (owner approved, ask #633): a worktree
+    /// row is the worktree, its branch when that branch item is `remove`,
+    /// and its bundles' LaunchServices entries; a kept item, a stray key
+    /// and an unknown kind are never sent, whatever the ticks say.
+    func testSweepAppliesOnlyTickedKeys() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.planWithBundle), .success(SweepFixture.applied)])
+        let (vm, cleanup) = makeVM(runner, live: [7, 3])
+        await vm.openCleanupScreen(projectID: workbenchID).value
+
+        tick(vm, [SweepFixture.oldWorktree, SweepFixture.recentWorktree, "bogus", "gizmo:1"])
+        let ok = await vm.applyCleanupScreen(projectID: workbenchID)
 
         XCTAssertTrue(ok)
         XCTAssertEqual(applyCalls(runner), [[
             "workbench", "cleanup", "--workbench=2", "--sweep", "--live-session=3", "--live-session=7",
-            "--apply", "--item=\(SweepFixture.oldWorktree)", "--json"
+            "--apply", "--item=\(SweepFixture.oldWorktree)", "--item=\(SweepFixture.oldBranch)",
+            "--item=\(SweepFixture.bundle)", "--json", "--stream"
         ]])
+        XCTAssertEqual(vm.cleanupScreens[workbenchID]?.sentKeys,
+                       [SweepFixture.oldWorktree, SweepFixture.oldBranch, SweepFixture.bundle])
         guard case let .done(result) = cleanup.cleanupPhase(for: .workbench(workbenchID)) else {
-            return XCTFail("the open sheet shows the result")
+            return XCTFail("the open screen shows the result")
         }
         XCTAssertEqual(result.summary, "1 worktree removed (~2.0 GB)")
-        vm.closeSweepSheet(projectID: workbenchID)
-        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle, "closing the sheet forgets it")
+        vm.closeCleanupScreen(projectID: workbenchID)
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle, "closing the screen forgets it")
     }
 
     func testSweepNeverAppliesUnknownKinds() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan), .success(SweepFixture.applied)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.branchOnlyPlan), .success(SweepFixture.applied)])
         let (vm, cleanup) = makeVM(runner)
-        await vm.planSweepForSheet(projectID: workbenchID)
+        await vm.openCleanupScreen(projectID: workbenchID).value
         XCTAssertFalse(try readyPlan(cleanup).knownRemovableKeys.contains("gizmo:1"))
 
-        let onlyUnknown = await vm.applySweepCleanup(projectID: workbenchID, ticked: ["gizmo:1"])
+        tick(vm, ["gizmo:1"])
+        let onlyUnknown = await vm.applyCleanupScreen(projectID: workbenchID)
         XCTAssertFalse(onlyUnknown)
         XCTAssertEqual(applyCalls(runner), [], "an unknown kind alone runs nothing")
 
-        await vm.applySweepCleanup(projectID: workbenchID, ticked: ["gizmo:1", SweepFixture.oldBranch])
+        tick(vm, ["gizmo:1", SweepFixture.oldBranch])
+        await vm.applyCleanupScreen(projectID: workbenchID)
         XCTAssertEqual(applyCalls(runner).first?.filter { $0.hasPrefix("--item") }, ["--item=\(SweepFixture.oldBranch)"])
+    }
+
+    /// The screen's state is page state: nothing of it reaches the saved
+    /// workspace layout.
+    func testScreenStateIsNeverSaved() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
+        let (vm, _) = makeVM(runner)
+        let before = vm.layout(projectID: workbenchID)
+
+        await vm.openCleanupScreen(projectID: workbenchID).value
+        tick(vm, [SweepFixture.oldWorktree])
+
+        XCTAssertEqual(vm.layout(projectID: workbenchID), before)
+        let encoded = try XCTUnwrap(String(bytes: JSONEncoder().encode(vm.layout(projectID: workbenchID)), encoding: .utf8))
+        XCTAssertFalse(encoded.lowercased().contains("clean"), encoded)
+        XCTAssertNil(vm.layouts[workbenchID], "opening the screen writes no layout")
+        XCTAssertNil(defaults.data(forKey: WorkspaceLayout.key(workbenchID: workbenchID)))
+    }
+
+    // MARK: - Scope
+
+    func testWideningTheScopePlansTheWorkbench() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(CleanupFixture.plan), .success(SweepFixture.plan)])
+        runner.holdsCalls = true
+        let (vm, cleanup) = makeVM(runner)
+        vm.openCleanupScreen(projectID: workbenchID, sessionID: 9)
+        await waitUntil("the session plan") { runner.heldCount == 1 }
+
+        let widened = vm.widenCleanupScope(projectID: workbenchID)
+        await waitUntil("the workbench plan") { runner.calls.count == 2 }
+        runner.holdsCalls = false
+        runner.release()
+        await widened.value
+
+        XCTAssertEqual(runner.calls.last?.args, [
+            "workbench", "cleanup", "--workbench=2", "--sweep", "--json", "--stream"
+        ])
+        XCTAssertGreaterThan(runner.runs[0].stopCount, 0, "the session plan was stopped")
+        XCTAssertEqual(cleanup.cleanupPhase(for: .session(9)), .idle)
+        XCTAssertEqual(vm.cleanupScreens[workbenchID]?.scope, .workbench(workbenchID))
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
+    }
+
+    // MARK: - One apply at a time
+
+    func testRefreshAndCleanUpDisabledWhileApplying() async throws {
+        for sessionID in [nil, 9] as [Int64?] {
+            let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan), .success(SweepFixture.applied)])
+            let (vm, _) = makeVM(runner)
+            await vm.openCleanupScreen(projectID: workbenchID, sessionID: sessionID).value
+            XCTAssertTrue(vm.canRefreshCleanup(projectID: workbenchID))
+            tick(vm, [SweepFixture.oldWorktree])
+
+            runner.holdsCalls = true
+            let apply = Task { await vm.applyCleanupScreen(projectID: workbenchID) }
+            await waitUntil("the apply") { runner.heldCount == 1 }
+            XCTAssertFalse(vm.canRefreshCleanup(projectID: workbenchID), "scope \(String(describing: sessionID))")
+            let second = await vm.applyCleanupScreen(projectID: workbenchID)
+            XCTAssertFalse(second, "a second Clean Up… launches nothing")
+            XCTAssertEqual(applyCalls(runner).count, 1)
+
+            runner.release()
+            let ok = await apply.value
+            XCTAssertTrue(ok)
+            XCTAssertTrue(vm.canRefreshCleanup(projectID: workbenchID), "free again once it ended")
+        }
+    }
+
+    func testApplyIsNeverStoppedByRefreshOrScopeChange() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(CleanupFixture.plan), .success(CleanupFixture.applied)])
+        let (vm, cleanup) = makeVM(runner)
+        await vm.openCleanupScreen(projectID: workbenchID, sessionID: 9).value
+        tick(vm, ["worktree:/tmp/example/.claude/worktrees/x"])
+
+        runner.holdsCalls = true
+        let apply = Task { await vm.applyCleanupScreen(projectID: workbenchID) }
+        await waitUntil("the apply") { runner.heldCount == 1 }
+        vm.refreshCleanup(projectID: workbenchID)
+        vm.widenCleanupScope(projectID: workbenchID)
+        XCTAssertEqual(runner.calls.count, 2, "neither started a run")
+        XCTAssertEqual(vm.cleanupScreens[workbenchID]?.scope, .session(9))
+
+        runner.release()
+        let ok = await apply.value
+        XCTAssertTrue(ok)
+        XCTAssertEqual(runner.runs[1].stopCount, 0, "the apply's stream was never stopped")
+        guard case .done = cleanup.cleanupPhase(for: .session(9)) else {
+            return XCTFail("its done lands, got \(cleanup.cleanupPhase(for: .session(9)))")
+        }
+    }
+
+    // MARK: - Retry
+
+    func testRetryAfterAFailedApplyReappliesTheTicks() async throws {
+        let runner = RepliedCleanupStreamer(replies: [
+            .success(SweepFixture.plan), .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "git missing")),
+            .success(SweepFixture.applied)
+        ])
+        let (vm, cleanup) = makeVM(runner)
+        await vm.openCleanupScreen(projectID: workbenchID).value
+        tick(vm, [SweepFixture.oldWorktree])
+        let failed = await vm.applyCleanupScreen(projectID: workbenchID)
+        XCTAssertFalse(failed)
+        guard case .failed = cleanup.cleanupPhase(for: .workbench(workbenchID)) else { return XCTFail("expected a failure") }
+
+        vm.retryCleanup(projectID: workbenchID)
+        await waitUntil("the second apply") {
+            if case .done = cleanup.cleanupPhase(for: .workbench(self.workbenchID)) { return true }
+            return false
+        }
+
+        XCTAssertEqual(applyCalls(runner).count, 2)
+        XCTAssertEqual(applyCalls(runner)[1], applyCalls(runner)[0], "the same ticks applied again")
+        XCTAssertNil(vm.sessionErrors[workbenchID], "the open screen showed the failure")
+    }
+
+    func testRetryAfterAFailedPlanPlansAgain() async throws {
+        let runner = RepliedCleanupStreamer(replies: [
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "git missing")), .success(SweepFixture.plan)
+        ])
+        let (vm, cleanup) = makeVM(runner)
+        await vm.openCleanupScreen(projectID: workbenchID).value
+        guard case .failed = cleanup.cleanupPhase(for: .workbench(workbenchID)) else { return XCTFail("expected a failure") }
+
+        vm.retryCleanup(projectID: workbenchID)
+        await waitUntil("the second plan") {
+            if case .ready = cleanup.cleanupPhase(for: .workbench(self.workbenchID)) { return true }
+            return false
+        }
+
+        XCTAssertEqual(runner.calls.count, 2)
+        XCTAssertEqual(applyCalls(runner), [], "a failed plan is planned again, never applied")
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
     }
 
     // MARK: - Leaving the page
 
-    /// The sheet's task starts the plan, the page goes away: the plan runs
-    /// on; then an apply goes on after the sheet closed and is forgotten
-    /// once it ended.
+    /// The screen starts the plan, the page goes away: the plan runs on;
+    /// then an apply goes on after the screen closed and is forgotten once
+    /// it ended.
     func testSweepSurvivesLeavingThePage() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan), .success(SweepFixture.applied)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan), .success(SweepFixture.applied)])
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
-        vm.sweepSheetAppeared(projectID: workbenchID)
 
-        let sheetTask = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        let screenTask = Task { await vm.openCleanupScreen(projectID: workbenchID).value }
         while runner.heldCount == 0 { await Task.yield() }
-        sheetTask.cancel()
+        screenTask.cancel()
         runner.release()
-        await sheetTask.value
+        await screenTask.value
+        await cleanup.runningPlan(for: .workbench(workbenchID))?.value
         XCTAssertEqual(runner.cancelledCount, 0, "the plan's CLI was not stopped")
         XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
 
-        let apply = Task { await vm.applySweepCleanup(projectID: workbenchID, ticked: [SweepFixture.oldWorktree]) }
+        tick(vm, [SweepFixture.oldWorktree])
+        let apply = Task { await vm.applyCleanupScreen(projectID: workbenchID) }
         while runner.heldCount == 0 { await Task.yield() }
         apply.cancel()
-        vm.closeSweepSheet(projectID: workbenchID)
-        vm.sweepSheetDisappeared(projectID: workbenchID)
+        vm.closeCleanupScreen(projectID: workbenchID)
         XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .applying, "the apply goes on")
         runner.release()
         let ok = await apply.value
@@ -206,32 +396,10 @@ final class SessionCleanupSweepTests: XCTestCase {
         XCTAssertNil(vm.sessionErrors[workbenchID])
     }
 
-    func testSweepFailureAfterTheSheetClosedShowsOnThePage() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [
-            .success(SweepFixture.plan), .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "git missing"))
-        ])
-        let (vm, cleanup) = makeVM(runner)
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        await vm.planSweepForSheet(projectID: workbenchID)
-
-        runner.holdsCalls = true
-        let apply = Task { await vm.applySweepCleanup(projectID: workbenchID, ticked: [SweepFixture.oldWorktree]) }
-        while runner.heldCount == 0 { await Task.yield() }
-        vm.closeSweepSheet(projectID: workbenchID)
-        vm.sweepSheetDisappeared(projectID: workbenchID)
-        runner.release()
-        let ok = await apply.value
-
-        XCTAssertFalse(ok)
-        let error = try XCTUnwrap(vm.sessionErrors[workbenchID])
-        XCTAssertTrue(error.contains("Cleanup of old worktrees failed") && error.contains("git missing"), error)
-        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle)
-    }
-
     // MARK: - One-time hint
 
     func testSweepHintShownOnceAboveOneGigabyte() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         let (vm, cleanup) = makeVM(runner, live: [3])
 
         await vm.watchCleanupHint(projectID: workbenchID)
@@ -240,8 +408,8 @@ final class SessionCleanupSweepTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: "projects.cleanupHintShown.\(workbenchID)"),
                       "the key is written as the hint goes up on the page")
         XCTAssertEqual(runner.calls.first?.args,
-                       ["workbench", "cleanup", "--workbench=2", "--sweep", "--live-session=3", "--json"])
-        XCTAssertEqual(try? readyPlan(cleanup).items.count, 4, "the hint's plan is kept for the sheet")
+                       ["workbench", "cleanup", "--workbench=2", "--sweep", "--live-session=3", "--json", "--stream"])
+        XCTAssertEqual(try? readyPlan(cleanup).items.count, 4, "the hint's plan is kept for the screen")
 
         await vm.watchCleanupHint(projectID: workbenchID)
         XCTAssertEqual(runner.calls.count, 1, "never planned again")
@@ -257,7 +425,7 @@ final class SessionCleanupSweepTests: XCTestCase {
     }
 
     func testSweepHintStaysAwayAtOrBelowOneGigabyte() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.smallPlan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.smallPlan)])
         let (vm, _) = makeVM(runner)
 
         await vm.watchCleanupHint(projectID: workbenchID)
@@ -273,7 +441,7 @@ final class SessionCleanupSweepTests: XCTestCase {
     /// At or below the line the check time is stored: no hint plan for 7
     /// days, across launches; then one again.
     func testBelowTheLineRechecksAfterSevenDays() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.smallPlan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.smallPlan)])
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let (vm, _) = makeVM(runner)
         vm.cleanupHintNow = { start }
@@ -295,7 +463,7 @@ final class SessionCleanupSweepTests: XCTestCase {
     /// An unmeasured removable worktree leaves the answer open: no hint,
     /// and no 7-day snooze either.
     func testUnmeasuredWorktreeIsNotSnoozed() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.unmeasuredPlan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.unmeasuredPlan)])
         let (vm, _) = makeVM(runner)
 
         await vm.watchCleanupHint(projectID: workbenchID)
@@ -307,7 +475,7 @@ final class SessionCleanupSweepTests: XCTestCase {
 
     /// A check stamp in the future (the clock was set back since) is due.
     func testFutureCheckStampIsDue() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.smallPlan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.smallPlan)])
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         defaults.set(now.timeIntervalSince1970 + 86400, forKey: WorkbenchesViewModel.cleanupHintCheckedAtKey(workbenchID))
         let (vm, _) = makeVM(runner)
@@ -323,9 +491,9 @@ final class SessionCleanupSweepTests: XCTestCase {
     /// The page went away just after the plan landed: the plan is not kept,
     /// so the next visit can hint.
     func testPageLeftAfterThePlanLandedLetsTheNextVisitHint() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         let (vm, cleanup) = makeVM(runner)
-        await cleanup.planSweep(workbenchID: workbenchID)
+        await cleanup.startStreamedPlan(.workbench(workbenchID), workbenchID: workbenchID).value
         guard case .ready = cleanup.cleanupPhase(for: .workbench(workbenchID)) else { return XCTFail("no plan") }
 
         vm.finishCleanupHint(projectID: workbenchID, center: cleanup, pageLeft: true)
@@ -338,7 +506,7 @@ final class SessionCleanupSweepTests: XCTestCase {
 
     /// A stalled hint plan is stopped at its time limit and frees the slot.
     func testHintPlanStopsAtItsTimeLimit() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
         vm.cleanupHintTimeLimit = .milliseconds(20)
@@ -358,7 +526,7 @@ final class SessionCleanupSweepTests: XCTestCase {
     /// The plan starts only once the page stayed on screen 30 s; leaving it
     /// before cancels the start.
     func testHintWaitsForThePageToStayOnScreen() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         let (vm, _) = makeVM(runner)
         let gate = HintGate()
         vm.cleanupHintSleep = { try await gate.wait($0) }
@@ -378,7 +546,7 @@ final class SessionCleanupSweepTests: XCTestCase {
     /// Leaving the page stops a running hint plan; nothing is stored, so a
     /// later visit plans again.
     func testLeavingThePageStopsARunningHintPlan() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
 
@@ -401,7 +569,7 @@ final class SessionCleanupSweepTests: XCTestCase {
 
     /// One hint plan at a time, app-wide.
     func testOneHintPlanAtATime() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         runner.holdsCalls = true
         let (vm, _) = makeVM(runner)
 
@@ -417,104 +585,94 @@ final class SessionCleanupSweepTests: XCTestCase {
         XCTAssertEqual(runner.calls.last?.args.contains("--workbench=3"), true, "free again once it ended")
     }
 
-    /// The sweep sheet opened while the hint plan runs: the sheet's plan
+    /// The screen opened while the hint plan runs: the screen's plan
     /// stays, and no hint goes up behind it.
-    func testSheetOpenedMidHintKeepsTheSheetsPlan() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+    func testScreenOpenedMidHintKeepsTheScreensPlan() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
 
         let page = Task { await vm.watchCleanupHint(projectID: workbenchID) }
         while runner.heldCount == 0 { await Task.yield() }
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        let sheet = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        let screen = vm.openCleanupScreen(projectID: workbenchID)
         while runner.heldCount < 2 { await Task.yield() }
         runner.release()
         await page.value
-        await sheet.value
+        await screen.value
 
-        XCTAssertEqual(try readyPlan(cleanup).items.count, 4, "the sheet's plan is kept")
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4, "the screen's plan is kept")
         XCTAssertNil(vm.cleanupHints[workbenchID])
     }
 
     /// Opening the sweep answers the hint: it goes and never comes back.
     func testOpeningTheSweepAnswersTheHint() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         let (vm, _) = makeVM(runner)
         await vm.watchCleanupHint(projectID: workbenchID)
         XCTAssertNotNil(vm.cleanupHints[workbenchID])
 
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        await vm.planSweepForSheet(projectID: workbenchID)
+        await vm.openCleanupScreen(projectID: workbenchID).value
 
         XCTAssertNil(vm.cleanupHints[workbenchID])
         XCTAssertTrue(defaults.bool(forKey: WorkbenchesViewModel.cleanupHintShownKey(workbenchID)))
     }
 
-    /// The hint's **Review**: the sheet shows the plan the hint already
+    /// The hint's **Clean Up…**: the screen shows the plan the hint already
     /// made instead of walking every worktree again (board #704).
-    func testSheetOpenedFromTheHintReusesItsPlan() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+    func testScreenOpenedFromTheHintReusesItsPlan() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         let (vm, cleanup) = makeVM(runner)
         await vm.watchCleanupHint(projectID: workbenchID)
 
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        await vm.planSweepForSheet(projectID: workbenchID)
+        await vm.openCleanupScreen(projectID: workbenchID).value
 
         XCTAssertEqual(runner.calls.count, 1, "no second plan")
         XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
     }
 
-    /// Closing the sheet while it plans leaves the plan running; reopening
+    /// Closing the screen while it plans leaves the plan running; reopening
     /// waits for that plan instead of starting over (board #704).
-    func testClosingTheSheetMidPlanKeepsThePlanForTheNextOpen() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+    func testClosingTheScreenMidPlanKeepsThePlanForTheNextOpen() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        let first = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        let first = Task { await vm.openCleanupScreen(projectID: workbenchID).value }
         while runner.heldCount == 0 { await Task.yield() }
         first.cancel()
-        vm.closeSweepSheet(projectID: workbenchID)
-        vm.sweepSheetDisappeared(projectID: workbenchID)
+        vm.closeCleanupScreen(projectID: workbenchID)
         XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .planning, "the plan goes on")
 
-        vm.sweepSheetAppeared(projectID: workbenchID)
         var secondEnded = false
         let second = Task {
-            await vm.planSweepForSheet(projectID: workbenchID)
+            await vm.openCleanupScreen(projectID: workbenchID).value
             secondEnded = true
         }
         for _ in 0..<20 { await Task.yield() }
-        XCTAssertFalse(secondEnded, "the reopened sheet waits for the running plan")
+        XCTAssertFalse(secondEnded, "the reopened screen waits for the running plan")
         runner.release()
         await second.value
 
-        XCTAssertEqual(runner.calls.count, 1, "the reopened sheet waits for the running plan")
+        XCTAssertEqual(runner.calls.count, 1, "the reopened screen waits for the running plan")
         XCTAssertEqual(runner.cancelledCount, 0)
         XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
 
         // A ready plan is forgotten on close: the next open plans afresh.
-        vm.closeSweepSheet(projectID: workbenchID)
+        vm.closeCleanupScreen(projectID: workbenchID)
         XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle)
     }
 
-    /// A sheet's plan stalled on a read is stopped at its time limit and
+    /// A screen's plan stalled on a read is stopped at its time limit and
     /// shows a failure, closed and reopened or not (board #704).
-    func testStalledSheetPlanFailsAtItsTimeLimit() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+    func testStalledScreenPlanFailsAtItsTimeLimit() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
         vm.cleanupHintTimeLimit = .milliseconds(50)
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        let first = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        let first = Task { await vm.openCleanupScreen(projectID: workbenchID).value }
         while runner.heldCount == 0 { await Task.yield() }
         first.cancel()
-        vm.closeSweepSheet(projectID: workbenchID)
-        vm.sweepSheetDisappeared(projectID: workbenchID)
-
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        let reopened = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        vm.closeCleanupScreen(projectID: workbenchID)
+        let reopened = Task { await vm.openCleanupScreen(projectID: workbenchID).value }
         try await Task.sleep(for: .milliseconds(150))
         runner.release() // the real runner ends the child on cancel
         await reopened.value
@@ -524,39 +682,67 @@ final class SessionCleanupSweepTests: XCTestCase {
         }
         XCTAssertTrue(message.contains("was stopped"), message)
         XCTAssertEqual(runner.cancelledCount, 1)
-        XCTAssertEqual(runner.calls.count, 1, "the reopened sheet waited for the same plan")
+        XCTAssertEqual(runner.calls.count, 1, "the reopened screen waited for the same plan")
     }
 
     /// A ready plan older than the reuse window is planned again.
     func testOldReadyPlanIsPlannedAgain() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan), .success(SweepFixture.plan)])
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan), .success(SweepFixture.plan)])
         let (vm, cleanup) = makeVM(runner)
         var clock = Date(timeIntervalSince1970: 1_000_000)
         cleanup.now = { clock }
         await vm.watchCleanupHint(projectID: workbenchID)
         clock += WorkbenchesViewModel.sweepPlanReuseWindow + 1
 
-        vm.sweepSheetAppeared(projectID: workbenchID)
-        await vm.planSweepForSheet(projectID: workbenchID)
+        await vm.openCleanupScreen(projectID: workbenchID).value
 
         XCTAssertEqual(runner.calls.count, 2, "a stale hint plan is not shown")
         XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
     }
 
     /// Opening the sweep before the hint plan ever ran answers it too.
-    func testNoHintSweepOnceTheSheetWasOpened() async {
-        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+    func testNoHintSweepOnceTheScreenWasOpened() async {
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         let (vm, _) = makeVM(runner)
-        vm.sweepSheetAppeared(projectID: workbenchID)
+        vm.cleanupScreens[workbenchID] = CleanupScreenState(scope: .workbench(workbenchID))
 
         await vm.watchCleanupHint(projectID: workbenchID)
-        XCTAssertEqual(runner.calls.count, 0, "not while the sheet is open")
+        XCTAssertEqual(runner.calls.count, 0, "not while the screen is open")
 
-        await vm.planSweepForSheet(projectID: workbenchID)
-        vm.closeSweepSheet(projectID: workbenchID)
+        await vm.openCleanupScreen(projectID: workbenchID).value
+        vm.closeCleanupScreen(projectID: workbenchID)
         await vm.watchCleanupHint(projectID: workbenchID)
-        XCTAssertEqual(runner.calls.count, 1, "only the sheet's plan ran")
+        XCTAssertEqual(runner.calls.count, 1, "only the screen's plan ran")
         XCTAssertNil(vm.cleanupHints[workbenchID])
+    }
+
+    /// No hint plan and no hint while the screen is open on the workbench,
+    /// in either scope; the hint's ✕ leaves the screen's plan alone.
+    func testOpenScreenBlocksTheHint() async throws {
+        let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
+        let (vm, cleanup) = makeVM(runner)
+        for scope in [SessionCleanupScope.workbench(workbenchID), .session(9)] {
+            vm.cleanupScreens[workbenchID] = CleanupScreenState(scope: scope)
+            await vm.watchCleanupHint(projectID: workbenchID)
+            XCTAssertEqual(runner.calls.count, 0, "no hint plan while the screen is open on \(scope)")
+        }
+
+        // A hint plan that lands while a session's screen is open puts up
+        // nothing and is dropped unchecked: a later visit tries again.
+        await cleanup.startStreamedPlan(.workbench(workbenchID), workbenchID: workbenchID).value
+        vm.finishCleanupHint(projectID: workbenchID, center: cleanup, pageLeft: false)
+        XCTAssertNil(vm.cleanupHints[workbenchID])
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle)
+        XCTAssertFalse(vm.cleanupHintChecked.contains(workbenchID))
+
+        // On the workbench scope the plan is the screen's: kept, no hint.
+        vm.cleanupScreens[workbenchID] = CleanupScreenState(scope: .workbench(workbenchID))
+        await cleanup.startStreamedPlan(.workbench(workbenchID), workbenchID: workbenchID).value
+        vm.finishCleanupHint(projectID: workbenchID, center: cleanup, pageLeft: false)
+        XCTAssertNil(vm.cleanupHints[workbenchID])
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4, "the screen's plan is kept")
+        vm.dismissCleanupHint(projectID: workbenchID)
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4, "the ✕ leaves the screen's plan alone")
     }
 }
 

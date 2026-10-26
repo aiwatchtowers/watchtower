@@ -157,7 +157,7 @@ struct SessionCleanupProgress: Equatable {
 }
 
 /// What a cleanup state is kept for: one session (the Delete dialog, the
-/// Clean Up… sheet) or one workbench (the sweep).
+/// Clean Up screen in a session's scope) or one workbench (the sweep).
 enum SessionCleanupScope: Hashable {
     case session(Int64)
     case workbench(Int64)
