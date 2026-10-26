@@ -284,7 +284,8 @@ final class ChatHistoryViewModelTurnSignalTests: XCTestCase {
         XCTAssertTrue(unread, "the Chats tab was not on screen")
         await history.writesSettled()
         XCTAssertEqual(history.rows.first { $0.id == id }?.isUnread, true)
-        XCTAssertGreaterThanOrEqual(stripRefreshes, 1)
+        let stripped = await waitForCondition { self.stripRefreshes >= 1 }
+        XCTAssertTrue(stripped, "the action strip still re-reads")
     }
 
     func testATurnEndingOnAnotherChatLeavesItUnread() async throws {
