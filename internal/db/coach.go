@@ -371,12 +371,13 @@ func (db *DB) FirstRoundSpecFindings(workbenchID int64, since, until time.Time) 
 // FirstRoundReviewComments counts the comments of first-round diff reviews
 // (no previous round) created in [since, until), and those rounds. The comment
 // table records no author — every comment is the owner's (the agent answers in
-// agent_reply) — so every comment not carried from an earlier round counts.
+// agent_reply) — so every sent or resolved comment not carried from an earlier
+// round counts (drafts and outdated ones do not, as in the coach's signals).
 // workbenchID 0 = every workbench.
 func (db *DB) FirstRoundReviewComments(workbenchID int64, since, until time.Time) (sum, rounds int, err error) {
 	err = db.QueryRow(`SELECT
 		(SELECT COUNT(*) FROM review_comments c JOIN review_rounds r ON r.id = c.round_id
-		  WHERE c.carried_from IS NULL AND r.prev_round_id IS NULL
+		  WHERE c.carried_from IS NULL AND r.prev_round_id IS NULL AND c.status IN ('sent','resolved')
 		    AND r.created_at >= ?1 AND r.created_at < ?2 AND (?3 = 0 OR r.project_id = ?3)),
 		(SELECT COUNT(*) FROM review_rounds r
 		  WHERE r.prev_round_id IS NULL

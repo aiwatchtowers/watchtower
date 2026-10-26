@@ -217,18 +217,21 @@ func TestFirstRoundReviewComments_SkipsFollowUpsAndCarried(t *testing.T) {
 		require.NoError(t, err)
 		return id
 	}
-	comment := func(roundID int64, carried any) {
-		_, err := d.Exec(`INSERT INTO review_comments (round_id, body, carried_from) VALUES (?, 'c', ?)`, roundID, carried)
+	comment := func(roundID int64, carried any, status string) {
+		_, err := d.Exec(`INSERT INTO review_comments (round_id, body, carried_from, status) VALUES (?, 'c', ?, ?)`,
+			roundID, carried, status)
 		require.NoError(t, err)
 	}
 	r1 := round(nil)
-	comment(r1, nil)
-	comment(r1, nil)
+	comment(r1, nil, "sent")
+	comment(r1, nil, "resolved")
+	comment(r1, nil, "draft")    // never sent: not counted
+	comment(r1, nil, "outdated") // not counted, as in the signals
 	r2 := round(r1)
 	var c1 int64
 	require.NoError(t, d.QueryRow(`SELECT MIN(id) FROM review_comments`).Scan(&c1))
-	comment(r2, c1)
-	comment(r2, nil)
+	comment(r2, c1, "sent")
+	comment(r2, nil, "sent")
 
 	sum, rounds, err := d.FirstRoundReviewComments(pid, now.Add(-time.Hour), now.Add(time.Hour))
 	require.NoError(t, err)
