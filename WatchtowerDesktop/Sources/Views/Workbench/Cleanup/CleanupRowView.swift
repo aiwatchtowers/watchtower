@@ -5,13 +5,13 @@ import WatchtowerCore
 /// The Clean Up list's column widths (mockup grid): checkbox · Name (the
 /// rest) · Owner · Size · Last commit · State.
 enum CleanupColumns {
-    static let check: CGFloat = 26
-    static let owner: CGFloat = 190
-    static let size: CGFloat = 84
+    static let check = ListLayout.markColumn
+    static let owner = ListLayout.textColumn
+    static let size = ListLayout.numberColumn
     /// The sizes stop short of Last commit (mockup `.num`).
     static let sizeInset: CGFloat = Spacing.medium
-    static let lastCommit: CGFloat = 104
-    static let state: CGFloat = 190
+    static let lastCommit = ListLayout.dateColumn
+    static let state = ListLayout.textColumn
 }
 
 /// The column-header row: Name, Size and Last commit sort the list (click
@@ -97,7 +97,7 @@ struct CleanupRowView: View {
                 .frame(width: CleanupColumns.lastCommit, alignment: .leading)
             stateCell.frame(width: CleanupColumns.state, alignment: .leading)
         }
-        .frame(minHeight: 28)
+        .frame(minHeight: ListLayout.rowMinHeight)
         .opacity(row.state == .checking ? 0.55 : 1)
         .kitRow(isSelected: ticked && row.canChoose)
         .onTapGesture { click() }
@@ -127,7 +127,7 @@ struct CleanupRowView: View {
         } else if row.state == .checking {
             RoundedRectangle(cornerRadius: Radius.mark, style: .continuous)
                 .strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
-                .frame(width: 14, height: 14)
+                .frame(width: IconSize.header, height: IconSize.header)
                 .help("Still being checked")
         }
     }
@@ -169,6 +169,8 @@ struct CleanupRowView: View {
             Chip(text: "Merged", color: Tone.success)
         case .pushed:
             Chip(text: "Pushed", color: Tone.status("blue"))
+        case .staleEntry:
+            Chip(text: "Stale entry", color: Tone.status("gray"))
         case let .kept(reason):
             Chip(text: reason, color: Tone.status("gray"))
         case let .changedSinceCheck(reason):

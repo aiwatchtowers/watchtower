@@ -47,18 +47,19 @@ private enum SweepFixture {
 
     static let bundle = "lsreg:/tmp/example/.claude/worktrees/old/build/Old.app"
 
-    /// `plan` with the old worktree named by its path, as Go names it, and
-    /// a LaunchServices entry of a bundle built inside it.
+    /// `plan` with the old worktree named by its folder's base name, as Go
+    /// names it (its root is the key's), and a LaunchServices entry of a
+    /// bundle built inside it, which names that root.
     static let planWithBundle = Data("""
     {"workbench_id":2,"mode":"plan","sweep":true,"default_branch":"main","items":[
-      {"key":"\(oldWorktree)","kind":"worktree","name":"/tmp/example/.claude/worktrees/old","branch":"feat/old",
+      {"key":"\(oldWorktree)","kind":"worktree","name":"old","branch":"feat/old",
        "bytes":2000000000,"bytes_known":true,"action":"remove",
        "owner":{"session_id":4,"title":"Old work","last_active":"2026-09-01T10:00:00Z"}},
-      {"key":"\(recentWorktree)","kind":"worktree","name":"/tmp/example/.claude/worktrees/recent","branch":"feat/recent",
+      {"key":"\(recentWorktree)","kind":"worktree","name":"recent","branch":"feat/recent",
        "bytes":5000000000,"bytes_known":true,"action":"keep","reason":"session_recent",
        "owner":{"session_id":7,"title":"Recent work"}},
       {"key":"\(oldBranch)","kind":"branch","name":"feat/old","action":"remove","owner":{"unknown":true}},
-      {"key":"\(bundle)","kind":"lsreg","name":"/tmp/example/.claude/worktrees/old/build/Old.app",
+      {"key":"\(bundle)","kind":"lsreg","name":"Old.app","detail":"/tmp/example/.claude/worktrees/old/build/Old.app",
        "worktree":"/tmp/example/.claude/worktrees/old","action":"remove"},
       {"key":"gizmo:1","kind":"gizmo","name":"g","action":"remove","owner":{"unknown":true}}
     ]}

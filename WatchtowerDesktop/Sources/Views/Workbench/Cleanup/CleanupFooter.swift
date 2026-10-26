@@ -5,7 +5,8 @@ import WatchtowerCore
 /// (⌘A) and **Clear** (Esc) on the left; the ticks' total and **Clean Up…**
 /// — the screen's one prominent action — on the right. While another
 /// cleanup of the workbench runs the total reads "Another cleanup is
-/// running" and Clean Up… waits; ticking stays possible.
+/// running" and Clean Up… waits; ticking stays possible. Clean Up… also
+/// waits while a row is still being checked (sizes may still come in).
 struct CleanupFooter: View {
     let vm: WorkbenchesViewModel
     let projectID: Int64
@@ -33,7 +34,7 @@ struct CleanupFooter: View {
 
     var body: some View {
         let live = model.liveTicks(ticks)
-        let free = vm.canRefreshCleanup(projectID: projectID)
+        let free = vm.canRefreshCleanup(projectID: projectID) && !vm.cleanupStillChecking(projectID: projectID)
         let otherRuns = vm.cleanupBlockedByAnotherRun(projectID: projectID)
         let keys = Self.shortcuts(searchFocused: searchFocused)
         HStack(spacing: Spacing.regular) {
@@ -112,6 +113,6 @@ struct CleanupConfirmSheet: View {
             .padding(.top, Spacing.compact)
         }
         .padding(Spacing.page)
-        .frame(width: 420)
+        .frame(width: PaneWidth.narrowPage)
     }
 }

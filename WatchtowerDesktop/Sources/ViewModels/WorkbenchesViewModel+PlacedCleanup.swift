@@ -43,30 +43,57 @@ extension WorkbenchesViewModel {
     /// row without `worktreeBranch` or a workbench, one not finished, one
     /// live again, or one another cleanup, the Clean Up screen, a Delete dialog or a delete
     /// owns — checked again right before the apply, with no suspension
-    /// between that check and the apply's start.
+    /// between that check and the apply's start. While another cleanup apply
+    /// of the workbench runs (one per workbench, spec 2026-10-26 §3.2) it
+    /// waits for that apply to end and then tries once more, planning
+    /// afresh.
     func cleanUpPlacedWorktree(_ row: TerminalSession) async {
-        guard let branch = row.worktreeBranch, let workbenchID = row.projectID, let center = sessionCleanup else { return }
+        guard await cleanUpPlacedWorktreeOnce(row) == .blockedByApply, let workbenchID = row.projectID else { return }
+        guard await awaitCleanupApplies(projectID: workbenchID, except: row.id) else {
+            NSLog("WorkbenchesViewModel: session %lld's worktree cleanup waits for a later cleanup: "
+                + "another cleanup of its workbench still runs", row.id)
+            return
+        }
+        if await cleanUpPlacedWorktreeOnce(row) == .blockedByApply {
+            NSLog("WorkbenchesViewModel: session %lld's worktree cleanup waits for a later cleanup: "
+                + "another cleanup of its workbench started first", row.id)
+        }
+    }
+
+    enum PlacedCleanupOutcome { case ended, blockedByApply }
+
+    private func cleanUpPlacedWorktreeOnce(_ row: TerminalSession) async -> PlacedCleanupOutcome {
+        guard let branch = row.worktreeBranch, let workbenchID = row.projectID, let center = sessionCleanup else {
+            return .ended
+        }
         let scope = SessionCleanupScope.session(row.id)
-        guard await isStillFinished(row.id), mayCleanUpPlaced(row, center: center, phase: .idle) else { return }
+        guard await isStillFinished(row.id), mayCleanUpPlaced(row, center: center, phase: .idle) else { return .ended }
+        guard !cleanupApplyRuns(projectID: workbenchID) else { return .blockedByApply }
         // Nil: the plan was ignored or another run (a Delete dialog's) took
         // the scope over — its phase is not this run's to touch.
         guard let serial = await center.planCleanup(sessionID: row.id, workbenchID: workbenchID, closingSession: true)
-        else { return }
+        else { return .ended }
         let planned = center.cleanupPhase(for: scope)
         guard case let .ready(plan) = planned else {
             if case let .failed(message) = planned {
                 NSLog("WorkbenchesViewModel: planning session %lld's worktree cleanup failed: %@", row.id, message)
                 if center.latestRun(for: scope) == serial { center.forgetCleanup(scope) }
             }
-            return
+            return .ended
         }
         let items = Self.placedCleanupItems(in: plan, folderPath: row.folderPath, branch: branch)
         let finished = !items.isEmpty ? await isStillFinished(row.id) : false
         // No await from here to the apply's start: every guard holds then.
-        guard center.latestRun(for: scope) == serial else { return }
+        guard center.latestRun(for: scope) == serial else { return .ended }
         guard finished, mayCleanUpPlaced(row, center: center, phase: planned) else {
             center.forgetCleanup(scope)
-            return
+            return .ended
+        }
+        // Another apply of the workbench started while this one planned:
+        // the center would refuse this apply, so wait for that one instead.
+        guard !cleanupApplyRuns(projectID: workbenchID) else {
+            center.forgetCleanup(scope)
+            return .blockedByApply
         }
         cleaningUpSessions.insert(row.id)
         let ok = await center.applyCleanup(sessionID: row.id, workbenchID: workbenchID, items: items.map(\.key))
@@ -84,6 +111,29 @@ extension WorkbenchesViewModel {
         }
         if center.cleanupPhase(for: scope) == applied { center.forgetCleanup(scope) }
         await loadCleanupRecord(sessionID: row.id)
+        return .ended
+    }
+
+    /// Waits for the cleanup applies of workbench `projectID` this view
+    /// model runs — the Clean Up screen's, a Delete and Clean Up, another
+    /// row's automatic cleanup while it applies (`except` is this row's
+    /// own) — to end. True
+    /// once none runs; false when one still runs that no task here owns.
+    private func awaitCleanupApplies(projectID: Int64, except id: Int64) async -> Bool {
+        while cleanupApplyRuns(projectID: projectID) {
+            var runs: [Task<Void, Never>] = []
+            if let screen = sweepRuns[projectID] { runs.append(Task { _ = await screen.value }) }
+            for (session, workbench) in cleanupRunWorkbenches where workbench == projectID {
+                if let delete = cleanupRuns[session] { runs.append(Task { _ = await delete.value }) }
+            }
+            // Only another row's run that applies now (its row is busy): one
+            // waiting like this one is never waited for, so two never wait
+            // on each other.
+            runs += placedCleanupRuns.filter { $0.key != id && cleaningUpSessions.contains($0.key) }.map(\.value)
+            guard !runs.isEmpty else { return false }
+            for run in runs { await run.value }
+        }
+        return true
     }
 
     private static let worktreeKeyPrefix = "worktree:"

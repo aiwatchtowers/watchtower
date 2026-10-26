@@ -29,8 +29,8 @@ struct CleanupScreenState: Equatable {
 /// `SessionCleanupCenter`'s streamed runs.
 ///
 /// Nothing is ticked by itself, and an apply names exactly the ticked rows'
-/// keys of a known kind (a worktree row: the worktree, its removable branch
-/// and its bundles' entries, PROJ-18 2026-10-26 amendment). Plans run in
+/// keys of a known kind (a worktree row: the worktree, its removable branch,
+/// its bundles' entries and its orphans, PROJ-18 2026-10-26 amendment). Plans run in
 /// tasks the center owns and applies in tasks this view model owns
 /// (`sweepRuns`), so closing the screen or leaving the page cancels neither.
 extension WorkbenchesViewModel {
@@ -158,9 +158,16 @@ extension WorkbenchesViewModel {
     /// Whether a cleanup apply of workbench `projectID` runs: the center's,
     /// the screen's, or a Delete and Clean Up still closing its terminal or
     /// re-planning before its apply starts.
-    private func cleanupApplyRuns(projectID: Int64) -> Bool {
+    func cleanupApplyRuns(projectID: Int64) -> Bool {
         sessionCleanup?.isApplying(workbenchID: projectID) == true || sweepRuns[projectID] != nil
             || cleanupRunWorkbenches.values.contains(projectID)
+    }
+
+    /// True while a row of the screen's plan still waits for its check:
+    /// Clean Up… waits (an apply would stop the plan and leave those rows
+    /// unknown); sizes still coming in do not hold it.
+    func cleanupStillChecking(projectID: Int64) -> Bool {
+        cleanupScreenProgress(projectID: projectID).map { !$0.checking.isEmpty } ?? false
     }
 
     /// The screen's streamed run so far: its rows, checks and stage.
@@ -184,12 +191,12 @@ extension WorkbenchesViewModel {
     /// after. A failure the screen did not show (it was closed, or shows
     /// another scope, when the apply ended) goes on the page; then the
     /// phase is forgotten. True when nothing failed; false, with nothing
-    /// launched, when nothing is ticked or a cleanup apply of the
-    /// workbench already runs.
+    /// launched, when nothing is ticked, a row is still being checked or a
+    /// cleanup apply of the workbench already runs.
     @discardableResult
     func applyCleanupScreen(projectID: Int64) async -> Bool {
         guard let state = cleanupScreens[projectID], let center = sessionCleanup,
-              canRefreshCleanup(projectID: projectID),
+              canRefreshCleanup(projectID: projectID), !cleanupStillChecking(projectID: projectID),
               let model = cleanupScreenModel(projectID: projectID) else { return false }
         let keys = model.applyKeys(for: model.liveTicks(state.ticks))
         guard !keys.isEmpty else { return false }

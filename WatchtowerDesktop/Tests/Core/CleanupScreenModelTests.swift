@@ -21,8 +21,9 @@ final class CleanupScreenModelTests: XCTestCase {
         keep reason: SessionCleanupReason.Code? = nil,
         owner: SessionCleanupOwner? = nil
     ) -> Item {
+        // Go names a worktree by its folder's base name; its root is the key's.
         Item(
-            key: "worktree:\(root)\(name)", kind: .worktree, name: root + name, branch: branch,
+            key: "worktree:\(root)\(name)", kind: .worktree, name: name, branch: branch,
             bytes: gb.map { Int64($0 * 1_000_000_000) } ?? 0, bytesKnown: gb != nil,
             action: reason == nil ? .remove : .keep, reason: reason.map(SessionCleanupReason.known),
             owner: owner, origin: origin,
@@ -42,6 +43,11 @@ final class CleanupScreenModelTests: XCTestCase {
 
     private func bundle(_ path: String, of worktree: String = "") -> Item {
         Item(key: "lsreg:\(path)", kind: .lsreg, name: path, action: .remove, worktree: worktree)
+    }
+
+    private func orphan(_ pid: Int, of worktree: String) -> Item {
+        Item(key: "process:\(pid):Mon Oct 12 10:00:00 2026", kind: .process, name: "stub",
+             bytesKnown: true, action: .remove, detail: worktree + "/.build/stub", worktree: worktree)
     }
 
     private func model(_ items: [Item], checking: Set<String> = [], sizing: Set<String> = []) -> Model {
@@ -77,6 +83,49 @@ final class CleanupScreenModelTests: XCTestCase {
         ])
     }
 
+    /// A session's orphan process folds into its worktree's row: no row of
+    /// its own (a `process:` key alone is never acted on), sent with the
+    /// worktree, and not counted in the footer.
+    func testOrphanProcessFoldsIntoItsWorktree() {
+        let wt = worktree("billing", branch: "wt/billing")
+        let proc = orphan(501, of: root + "billing")
+        let m = model([wt, branch("wt/billing"), proc])
+        XCTAssertEqual(all(m).map(\.id), [wt.key])
+        XCTAssertEqual(row(wt.key, in: m)?.applyKeys, [wt.key, "branch:wt/billing", proc.key])
+        XCTAssertEqual(m.totalText(for: [wt.key]), "1 worktree, 1 branch · ~1.0 GB")
+    }
+
+    /// The real `workbench cleanup --json --stream` lines (written by Go's
+    /// `TestCleanupCmd_StreamGoldenForTheDesktop`) build one worktree row that
+    /// sends its worktree, branch, bundle and orphan — mid-stream and done.
+    func testGoStreamFixtureBuildsOneRow() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/session-cleanup-stream.jsonl")
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
+        var checked: [Item] = []
+        var plan: SessionCleanupPlan?
+        for line in lines {
+            switch SessionCleanupEvent.decode(line: line) {
+            case let .checked(item): checked.append(item)
+            case let .done(done): plan = done
+            default: break
+            }
+        }
+        let wtKey = "worktree:/work/acme/wt-golden"
+        let want: Set = [
+            wtKey, "branch:feat/golden", "lsreg:/work/acme/wt-golden/Build/App.app",
+            "process:501:Mon Oct 12 10:00:00 2026"
+        ]
+        for items in [checked, try XCTUnwrap(plan).items] {
+            let rows = all(model(items))
+            XCTAssertEqual(rows.map(\.id), [wtKey])
+            XCTAssertEqual(rows.first?.title, "wt-golden")
+            XCTAssertEqual(Set(rows.first?.applyKeys ?? []), want)
+            XCTAssertEqual(rows.first?.applyKeys.count, 4)
+        }
+    }
+
     func testKeptBranchIsNotSentWithItsWorktree() {
         let wt = worktree("legacy", branch: "feature/legacy-sync", origin: .manual)
         let lsreg = bundle(root + "legacy/Acme.app", of: root + "legacy")
@@ -101,6 +150,9 @@ final class CleanupScreenModelTests: XCTestCase {
         XCTAssertEqual(staleRow?.title, "LaunchServices entry")
         XCTAssertEqual(staleRow?.subtitle, "/work/acme/build/Old.app")
         XCTAssertEqual(staleRow?.applyKeys, [stale.key])
+        // Merged and Pushed speak of commits: a stale entry has none.
+        XCTAssertEqual(staleRow?.state, .staleEntry)
+        XCTAssertEqual(staleRow?.canChoose, true)
     }
 
     // MARK: States

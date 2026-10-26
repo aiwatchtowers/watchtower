@@ -154,10 +154,23 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
     package var lastCommitAt: Date?
     /// Merged into the default branch.
     package var merged: Bool
-    /// A bundle's own worktree path; "" when it has none.
+    /// The root of the worktree a bundle's LaunchServices entry or an
+    /// orphan process belongs to; "" when it has none (a stale entry).
     package var worktree: String
 
     package var id: String { key }
+
+    /// A worktree item's root, from its key (`name` is only the folder's
+    /// base name); "" for any other kind. What `worktree` names.
+    package var worktreeRoot: String {
+        guard kind == .worktree, key.hasPrefix(Self.worktreeKeyPrefix) else { return "" }
+        return String(key.dropFirst(Self.worktreeKeyPrefix.count))
+    }
+
+    private static let worktreeKeyPrefix = "worktree:"
+
+    /// Parses `last_commit_at`; one shared formatter, not one per item.
+    private static let stampFormatter = ISO8601DateFormatter()
 
     /// Still to remove: planned for removal, neither done nor failed, and
     /// with a key an apply can name (an item without one fails closed).
@@ -223,7 +236,7 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         owner = try c.decodeIfPresent(SessionCleanupOwner.self, forKey: .owner)
         origin = SessionCleanupOrigin(rawValue: try c.decodeIfPresent(String.self, forKey: .origin) ?? "") ?? .none
         let stamp = try c.decodeIfPresent(String.self, forKey: .lastCommitAt) ?? ""
-        lastCommitAt = stamp.isEmpty ? nil : ISO8601DateFormatter().date(from: stamp)
+        lastCommitAt = stamp.isEmpty ? nil : Self.stampFormatter.date(from: stamp)
         merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false
         worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
     }

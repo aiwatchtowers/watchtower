@@ -218,6 +218,52 @@ final class CleanupScreenViewTests: XCTestCase {
         vm.cleanupRunWorkbenches[99] = nil
     }
 
+    /// Clean Up… waits while a row of the plan is still being checked (an
+    /// apply would stop the plan and leave those rows unknown), and the
+    /// view model refuses the apply then; sizes still coming in do not hold
+    /// it.
+    func testCleanUpWaitsWhileRowsAreStillChecked() async throws {
+        let vm = try XCTUnwrap(appState.workbenchesViewModel)
+        let projectID = projectID
+        let scripted = ScriptedCleanupStreamer()
+        defer { scripted.finishAll() }
+        let center = SessionCleanupCenter(runner: FakeSessionCleanupRunner(replies: []), streamer: scripted)
+        center.eventBatchInterval = .zero
+        center.baseEnvironment = { ["PATH": "/usr/bin"] }
+        vm.sessionCleanup = center
+        _ = vm.openCleanupScreen(projectID: projectID)
+        await waitUntil("the plan's run") { scripted.runs.count == 1 }
+        let run = try XCTUnwrap(scripted.runs.first)
+        run.send(CleanupStreamFixture.listed)
+        run.send(CleanupStreamFixture.checked(CleanupStreamFixture.wtA))
+        await waitUntil("wtA checked") {
+            guard let progress = vm.cleanupScreenProgress(projectID: projectID) else { return false }
+            return progress.items.count == 3 && !progress.checking.contains(CleanupStreamFixture.wtA)
+        }
+        vm.cleanupScreens[projectID]?.ticks = [CleanupStreamFixture.wtA]
+
+        func cleanUpDisabled() throws -> Bool {
+            let state = try XCTUnwrap(vm.cleanupScreens[projectID])
+            return try CleanupFooter(
+                vm: vm, projectID: projectID, model: try XCTUnwrap(vm.cleanupScreenModel(projectID: projectID)),
+                state: state, ticks: .constant(state.ticks), confirming: .constant(false)
+            ).inspect().find(button: "Clean Up…").isDisabled()
+        }
+
+        XCTAssertTrue(vm.cleanupStillChecking(projectID: projectID))
+        XCTAssertTrue(try cleanUpDisabled(), "wtB and the branch are still being checked")
+        let refused = await vm.applyCleanupScreen(projectID: projectID)
+        XCTAssertFalse(refused)
+        XCTAssertEqual(scripted.runs.count, 1, "no apply launched, the plan not stopped")
+        XCTAssertEqual(run.stopCount, 0)
+
+        run.send(CleanupStreamFixture.checked(CleanupStreamFixture.wtB))
+        run.send(CleanupStreamFixture.checked(CleanupStreamFixture.branchA, kind: "branch"))
+        await waitUntil("every row checked") { vm.cleanupStillChecking(projectID: projectID) == false }
+        XCTAssertFalse(vm.cleanupScreenProgress(projectID: projectID)?.sizing.isEmpty ?? true, "sizes still come in")
+        XCTAssertFalse(try cleanUpDisabled(), "sizing does not hold Clean Up…")
+    }
+
     /// The footer never mistakes the screen's own apply for another cleanup
     /// (the line is the total while it runs), and names an apply of the
     /// other scope as one: the screen widened while a session's ran.

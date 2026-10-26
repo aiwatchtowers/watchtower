@@ -293,7 +293,8 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         // Resumed before the hook's task got to run.
         try XCTUnwrap(processes[row.id]).exit(0)
         terminals.start(row, fresh: false)
-        await vm.placedCleanupRuns[row.id]?.value
+        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
+        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run did not end within 5 s")
 
         XCTAssertTrue(runner.calls.isEmpty, "a live row is never cleaned up")
         XCTAssertTrue(terminals.liveIDs.contains(row.id))
@@ -315,7 +316,8 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         XCTAssertEqual(runner.heldCount, 1, "the exit started a plan")
         terminals.start(row, fresh: false)
         runner.release()
-        await vm.placedCleanupRuns[row.id]?.value
+        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
+        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run did not end within 5 s")
 
         XCTAssertEqual(runner.calls.count, 1, "the plan ran")
         XCTAssertTrue(applyCalls(runner).isEmpty, "liveness is checked again right before the apply")
@@ -438,6 +440,41 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         let deadline = Date().addingTimeInterval(5)
         while runner.heldCount < count, Date() < deadline { await Task.yield() }
         XCTAssertEqual(runner.heldCount, count)
+    }
+
+    /// Another cleanup apply of the workbench runs (one per workbench): the
+    /// exit's cleanup neither applies beside it nor gives up — it waits for
+    /// that apply to end, then plans afresh and applies.
+    func testAnApplyOfTheWorkbenchRunningDefersTheCleanupUntilItEnds() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(fullPlan),
+            .success(plan([item("worktree:\(worktree)", "worktree", done: true),
+                           item("branch:wt/x", "branch", done: true)], mode: "apply"))
+        ])
+        let vm = makeVM(runner)
+        let row = try await runningRow(finished: true)
+        let workbenchID = try XCTUnwrap(row.projectID)
+        // A Delete and Clean Up of another session of the workbench, held.
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        vm.cleanupRunWorkbenches[99] = workbenchID
+        vm.cleanupRuns[99] = Task {
+            for await _ in gate {}
+            return true
+        }
+
+        try XCTUnwrap(processes[row.id]).exit(0)
+        await waitUntil(timeout: 0.3) { !self.applyCalls(runner).isEmpty }
+        XCTAssertTrue(applyCalls(runner).isEmpty, "no apply beside another cleanup of the workbench")
+        XCTAssertNotNil(vm.placedCleanupRuns[row.id], "the run waits instead of giving up")
+
+        vm.cleanupRunWorkbenches[99] = nil
+        vm.cleanupRuns[99] = nil
+        open.finish()
+        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
+        XCTAssertNil(vm.placedCleanupRuns[row.id], "the run did not end within 5 s")
+        XCTAssertEqual(applyCalls(runner).map { $0.filter { $0.hasPrefix("--item") } },
+                       [["--item=worktree:\(worktree)", "--item=branch:wt/x"]], "applied once the other ended")
+        XCTAssertEqual(vm.sessionCleanup?.cleanupPhase(for: .session(row.id)), .idle)
     }
 
     func testAnExitDuringDeleteAndCleanUpStartsNoSecondCleanup() async throws {

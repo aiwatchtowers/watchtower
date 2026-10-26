@@ -226,6 +226,10 @@ final class SessionCleanupCenter {
     /// How often streamed events reach the view at most (spec §7). A seam
     /// for tests.
     @ObservationIgnored var eventBatchInterval: Duration = .milliseconds(100)
+    /// How long a child that said `done` gets to exit before its group is
+    /// stopped: a child that never exits cannot hold the run. A seam for
+    /// tests.
+    @ObservationIgnored var exitAfterDoneLimit: Duration = .seconds(10)
 
     init(runner: (any SessionCleanupRunning)?, streamer: (any SessionCleanupStreaming)? = nil) {
         self.runner = runner
@@ -260,18 +264,7 @@ final class SessionCleanupCenter {
         }
     }
 
-    /// Starts the sweep plan of workbench `workbenchID` (spec §9) in a task
-    /// the center owns, as `startPlan` does for a session. With `timeLimit`
-    /// a plan still running after it is stopped and fails (a read stalled
-    /// on a dead mount never keeps the sheet waiting, board #704).
-    @discardableResult
-    func startSweepPlan(workbenchID: Int64, timeLimit: Duration? = nil) -> Task<Void, Never> {
-        startOwnedPlan(.workbench(workbenchID), timeLimit: timeLimit) { center in
-            await center.planSweep(workbenchID: workbenchID)
-        }
-    }
-
-    /// The plan `startPlan`/`startSweepPlan` still runs for the scope.
+    /// The plan `startPlan`/`startStreamedPlan` still runs for the scope.
     func runningPlan(for scope: SessionCleanupScope) -> Task<Void, Never>? {
         planRuns[scope]?.task
     }
@@ -329,14 +322,6 @@ final class SessionCleanupCenter {
         runSerials[scope, default: 0]
     }
 
-    /// Plans the sweep of workbench `workbenchID` (writes nothing): every
-    /// worktree and branch of its repository with an owner hint, every live
-    /// terminal passed (Go keeps what a live session works in). Ignored
-    /// while the sweep applies.
-    func planSweep(workbenchID: Int64) async {
-        await runPlan(.workbench(workbenchID), args: Self.sweepArguments(workbenchID: workbenchID, live: liveSessionIDs()))
-    }
-
     /// The run's serial once its outcome is the scope's phase; nil otherwise.
     @discardableResult
     private func runPlan(_ scope: SessionCleanupScope, args: [String]) async -> Int? {
@@ -376,15 +361,6 @@ final class SessionCleanupCenter {
             sessionID: sessionID, workbenchID: workbenchID, live: liveSessionIDs(), applying: items
         )
         return await runApply(.session(sessionID), workbenchID: workbenchID, args: args)
-    }
-
-    /// Applies exactly `items` — the sweep keys the owner ticked — to
-    /// workbench `workbenchID`, as `applyCleanup` does for a session. With
-    /// no item nothing runs (Go refuses a sweep apply without `--item`).
-    func applySweep(workbenchID: Int64, items: [String]) async -> Bool {
-        guard !items.isEmpty else { return true }
-        let args = Self.sweepArguments(workbenchID: workbenchID, live: liveSessionIDs(), applying: items)
-        return await runApply(.workbench(workbenchID), workbenchID: workbenchID, args: args)
     }
 
     /// Refused (false, nothing launched, no phase change) while another
@@ -542,7 +518,8 @@ final class SessionCleanupCenter {
     /// the calling task stops a `stoppable` child (a plan); an apply's is
     /// never stopped — a superseded apply's lines are read and dropped. A
     /// stream without `done` is a failure with the CLI's words; after
-    /// `done` the child's exit is awaited (reaped) and `done` stands.
+    /// `done` the child's exit is awaited (reaped) for at most
+    /// `exitAfterDoneLimit` — then its group is stopped — and `done` stands.
     /// Superseded or cancelled: the outcome is meaningless and callers drop
     /// it.
     private func stream(
@@ -588,9 +565,29 @@ final class SessionCleanupCenter {
             if stoppable { child.stop() }
         }
         guard isCurrent(), !Task.isCancelled else { return .failure("superseded") }
+        if let done {
+            await Self.awaitExit(of: child, within: exitAfterDoneLimit)
+            return .success(done)
+        }
         let exit = await child.exit()
-        if let done { return .success(done) }
         return .failure(exit.status == 0 ? Self.endedWithoutResultText : exit.message)
+    }
+
+    /// Waits for `child` to exit, at most `limit`; past it the child's group
+    /// is stopped and the wait ends without its exit.
+    private static func awaitExit(of child: SessionCleanupStream, within limit: Duration) async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let once = ResumeOnce(waiter)
+            let timer = Task {
+                try? await Task.sleep(for: limit)
+                guard !Task.isCancelled, once.resume() else { return }
+                child.stop()
+            }
+            Task {
+                _ = await child.exit()
+                if once.resume() { timer.cancel() }
+            }
+        }
     }
 
     /// A stream that ended cleanly but never said `done`.
@@ -603,7 +600,7 @@ final class SessionCleanupCenter {
                 sessionID: sessionID, workbenchID: workbenchID, live: liveSessionIDs(), applying: items, stream: true
             )
         case let .workbench(id):
-            Self.sweepArguments(workbenchID: id, live: liveSessionIDs(), applying: items, stream: true)
+            Self.sweepArguments(workbenchID: id, live: liveSessionIDs(), applying: items)
         }
     }
 
@@ -659,15 +656,15 @@ final class SessionCleanupCenter {
     }
 
     /// `workbench cleanup --workbench W --sweep [--live-session L]…
-    /// [--apply --item K…] --json [--stream]` (spec §4: a sweep names no
-    /// session).
+    /// [--apply --item K…] --json --stream` (spec §4: a sweep names no
+    /// session). Only the Clean Up screen sweeps, and it always streams.
     nonisolated static func sweepArguments(
-        workbenchID: Int64, live: Set<Int64>, applying items: [String]? = nil, stream: Bool = false
+        workbenchID: Int64, live: Set<Int64>, applying items: [String]? = nil
     ) -> [String] {
         var args = ["workbench", "cleanup", "--workbench=\(workbenchID)", "--sweep"]
         args += live.sorted().map { "--live-session=\($0)" }
         if let items { args += ["--apply"] + items.map { "--item=\($0)" } }
-        return args + ["--json"] + (stream ? ["--stream"] : [])
+        return args + ["--json", "--stream"]
     }
 
     /// "x: git refused …; feat/x: …" over the items whose removal failed;
@@ -676,6 +673,26 @@ final class SessionCleanupCenter {
         let failed = result.items.filter { !$0.error.isEmpty }
         guard !failed.isEmpty else { return nil }
         return failed.map { "\($0.name.isEmpty ? $0.key : $0.name): \($0.error)" }.joined(separator: "; ")
+    }
+}
+
+/// Resumes a continuation once, whichever caller comes first.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    init(_ waiter: CheckedContinuation<Void, Never>) {
+        self.waiter = waiter
+    }
+
+    /// True for the caller that resumed it.
+    func resume() -> Bool {
+        let taken: CheckedContinuation<Void, Never>? = lock.withLock {
+            defer { waiter = nil }
+            return waiter
+        }
+        taken?.resume()
+        return taken != nil
     }
 }
 

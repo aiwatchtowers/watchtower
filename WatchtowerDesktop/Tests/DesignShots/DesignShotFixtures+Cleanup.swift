@@ -390,7 +390,7 @@ enum CleanupShotFixtures {
         owner: [String: Any]? = nil
     ) -> [String: Any] {
         var item: [String: Any] = [
-            "key": key(name), "kind": "worktree", "name": root + name, "branch": branch, "origin": origin,
+            "key": key(name), "kind": "worktree", "name": name, "branch": branch, "origin": origin,
             "action": action, "reason": reason, "merged": merged
         ]
         if let bytes {

@@ -3,7 +3,9 @@ import Foundation
 /// A Clean Up screen row's state chip (spec 2026-10-26-worktree-cleanup-screen
 /// §4.1). `kept` and `changedSinceCheck` carry the chip's words.
 package enum CleanupRowState: Equatable, Sendable {
-    case checking, merged, pushed
+    /// `merged`/`pushed` speak of a worktree's or branch's commits; a stale
+    /// LaunchServices entry that can go is `staleEntry`.
+    case checking, merged, pushed, staleEntry
     case kept(String)
     /// An apply-time keep: moved since the check, git refused, …
     case changedSinceCheck(String)
@@ -13,15 +15,15 @@ package enum CleanupRowState: Equatable, Sendable {
     /// Rows in the **Can go** group; the rest are **Kept**.
     var canGo: Bool {
         switch self {
-        case .checking, .merged, .pushed, .removing: true
+        case .checking, .merged, .pushed, .staleEntry, .removing: true
         case .kept, .changedSinceCheck, .failed: false
         }
     }
 }
 
-/// One row of the Clean Up screen: a worktree with its branch and its
-/// bundles' LaunchServices entries, a branch with no worktree, or a stale
-/// LaunchServices entry (§4.2).
+/// One row of the Clean Up screen: a worktree with its branch, its bundles'
+/// LaunchServices entries and (session scope) its orphan processes, a
+/// branch with no worktree, or a stale LaunchServices entry (§4.2).
 package struct CleanupRow: Identifiable, Equatable, Sendable {
     /// The lead item's key (the worktree's, or the branch's).
     package var id: String
@@ -97,8 +99,8 @@ package struct CleanupScreenModel {
 
     private struct Entry {
         var row: CleanupRow
-        /// The items ticking the row removes, minus a worktree's bundles:
-        /// what the footer counts.
+        /// The items ticking the row removes, minus a worktree's bundles and
+        /// orphans: what the footer counts.
         var counted: [Item]
         var keptReason: SessionCleanupReason?
     }
@@ -116,23 +118,31 @@ package struct CleanupScreenModel {
         self.now = now
         let live = items.filter { !$0.done }
         var claimed: Set<String> = []
-        var pairs: [String: (branch: Item?, bundles: [Item])] = [:]
+        var pairs: [String: (branch: Item?, extras: [Item])] = [:]
         for wt in live where wt.kind == .worktree {
             let branch = wt.branch.isEmpty ? nil : live.first {
                 $0.kind == .branch && $0.name == wt.branch && !claimed.contains($0.key)
             }
-            let bundles = live.filter { $0.kind == .lsreg && !$0.worktree.isEmpty && $0.worktree == wt.name }
+            // Go names the worktree by its base name; the bundles and the
+            // orphans name its root, which is the worktree key's.
+            let root = wt.worktreeRoot
+            let extras = live.filter {
+                ($0.kind == .lsreg || $0.kind == .process) && !$0.worktree.isEmpty && $0.worktree == root
+            }
             branch.map { claimed.insert($0.key) }
-            bundles.forEach { claimed.insert($0.key) }
-            pairs[wt.key] = (branch, bundles)
+            extras.forEach { claimed.insert($0.key) }
+            pairs[wt.key] = (branch, extras)
         }
         let context = BuildContext(checking: checking, sizing: sizing, removing: removing, now: now)
         entries = live.compactMap { item in
             if item.kind == .worktree {
                 let pair = pairs[item.key]
-                return context.entry(item, branch: pair?.branch, bundles: pair?.bundles ?? [])
+                return context.entry(item, branch: pair?.branch, extras: pair?.extras ?? [])
             }
-            return claimed.contains(item.key) ? nil : context.entry(item, branch: nil, bundles: [])
+            // A process goes only with its worktree (Go never acts on a
+            // `process:` key alone): it is never a row of its own.
+            if item.kind == .process || claimed.contains(item.key) { return nil }
+            return context.entry(item, branch: nil, extras: [])
         }
     }
 
@@ -468,11 +478,13 @@ package struct CleanupScreenModel {
 
         private static func sendable(_ item: Item) -> Bool { item.isPendingRemoval && item.kind.isKnown }
 
-        func entry(_ lead: Item, branch: Item?, bundles: [Item]) -> Entry {
+        /// `extras` are a worktree's bundles' entries and its orphans: sent
+        /// with it, never counted.
+        func entry(_ lead: Item, branch: Item?, extras: [Item]) -> Entry {
             let state = state(lead)
-            let canChoose = (state == .merged || state == .pushed) && Self.sendable(lead)
+            let canChoose = (state == .merged || state == .pushed || state == .staleEntry) && Self.sendable(lead)
             let sentBranch = branch.flatMap { Self.sendable($0) ? $0 : nil }
-            let keys = [lead.key] + (sentBranch.map { [$0.key] } ?? []) + bundles.filter(Self.sendable).map(\.key)
+            let keys = [lead.key] + (sentBranch.map { [$0.key] } ?? []) + extras.filter(Self.sendable).map(\.key)
             let lastCommitAt = lead.lastCommitAt ?? branch?.lastCommitAt
             let row = CleanupRow(
                 id: lead.key,
@@ -505,6 +517,7 @@ package struct CleanupScreenModel {
             guard item.kind.isKnown else { return .kept("Unknown item") }
             switch item.action {
             case .remove:
+                if item.kind == .lsreg { return .staleEntry }
                 return item.merged ? .merged : .pushed
             case .keep:
                 let chip = Self.capitalized(CleanupScreenModel.words(item.reason))

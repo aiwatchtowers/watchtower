@@ -316,10 +316,10 @@ struct CleanupStatusLine: View {
             ProgressView(value: fraction)
                 .progressViewStyle(.linear)
                 .controlSize(.mini)
-                .frame(width: 160)
+                .frame(width: ListLayout.progressBar)
             Text(text).font(.caption).foregroundStyle(.secondary)
         }
-        .frame(minHeight: 22, alignment: .leading)
+        .frame(minHeight: ListLayout.lineMinHeight, alignment: .leading)
     }
 
     /// Mockup C: "✓ Freed ~15 GB · removed …" and the apply-time keeps.

@@ -27,6 +27,7 @@ Use the token, never the number. The scale is closed: a screen that needs a new 
 | `Surface` | `detail`, `window`, `text`, `control` |
 | `Tone` | `status(_:)` and `priority(_:)` colour map |
 | `PaneWidth` | split side list `sideListMin` 170, `sideListIdeal` 220, `sideListMax` 360 beside `detailMin` 260; `narrowPage` 420 (a centred status page). A readable text column is `ReadableColumn.maxLineWidth` (760) |
+| `ListLayout` | a column list: `rowMinHeight` 28, `lineMinHeight` 22 (a progress line above it), `markColumn` 26, `numberColumn` 84, `dateColumn` 104, `textColumn` 190, `progressBar` 160 |
 | `IconSize` | `chevron` 8, `header` 14, `composer` 16, `composerLarge` 24, `tile` 26 |
 | `Tracking` | `caps` 0.6 (small uppercase labels) |
 | `Motion` | `toggle` (`.snappy` 0.15 s), `panel` (`.easeInOut` 0.2 s) |
