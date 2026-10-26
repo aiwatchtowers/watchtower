@@ -306,3 +306,90 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertTrue(vm.draftsLoaded)
     }
 }
+
+// MARK: - The page's Instructions and Knowledge cards (spec 2026-10-26 §7)
+
+extension ProjectDetailViewModelTests {
+    func testInstructionsSaveWritesTheEditorText() async throws {
+        let vm = makeVM(debounce: .seconds(60))
+        vm.load()
+        vm.beginInstructionsEdit()
+        XCTAssertEqual(vm.instructionsEditor, "")
+        vm.instructionsEditor = "Answer in tables."
+        XCTAssertEqual(try storedInstructions(), "", "nothing is written while the editor is open")
+        let saved = await vm.commitInstructionsEdit()
+        XCTAssertTrue(saved)
+        XCTAssertNil(vm.instructionsEditor, "Save closes the editor")
+        XCTAssertEqual(vm.instructionsDraft, "Answer in tables.")
+        XCTAssertEqual(try storedInstructions(), "Answer in tables.")
+        XCTAssertEqual(promptChanges, [projectID])
+    }
+
+    func testInstructionsCancelWritesNothing() async throws {
+        let pid = projectID
+        try await pool.write { try ChatProjectQueries.updateInstructions($0, id: pid, instructions: "Be brief.") }
+        let vm = makeVM()
+        vm.load()
+        vm.beginInstructionsEdit()
+        XCTAssertEqual(vm.instructionsEditor, "Be brief.", "the editor opens on the stored text")
+        vm.instructionsEditor = "Something else"
+        vm.cancelInstructionsEdit()
+        XCTAssertNil(vm.instructionsEditor)
+        await vm.flush()
+        XCTAssertEqual(vm.instructionsDraft, "Be brief.")
+        XCTAssertEqual(try storedInstructions(), "Be brief.")
+        XCTAssertTrue(promptChanges.isEmpty)
+    }
+
+    /// A failed Save keeps the editor and its text; Cancel then drops the
+    /// unsaved draft, so the page's closing flush writes nothing.
+    func testAFailedSaveKeepsTheEditorAndCancelDropsTheDraft() async throws {
+        let vm = makeVM(debounce: .seconds(60))
+        vm.load()
+        try await pool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_project_update BEFORE UPDATE ON chat_projects
+                BEGIN SELECT RAISE(ABORT, 'locked'); END
+                """)
+        }
+        vm.beginInstructionsEdit()
+        vm.instructionsEditor = "New text"
+        let saved = await vm.commitInstructionsEdit()
+        XCTAssertFalse(saved)
+        XCTAssertEqual(vm.instructionsEditor, "New text", "the typed text stays in the editor")
+        XCTAssertNotNil(vm.errorMessage)
+
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER fail_project_update") }
+        vm.cancelInstructionsEdit()
+        let flushed = await vm.flush()
+        XCTAssertTrue(flushed)
+        XCTAssertEqual(try storedInstructions(), "")
+        XCTAssertTrue(promptChanges.isEmpty)
+    }
+
+    func testEditingNeedsALoad() {
+        let vm = makeVM()
+        vm.beginInstructionsEdit()
+        XCTAssertNil(vm.instructionsEditor, "no editor over blank placeholders")
+    }
+
+    func testKnowledgeListsFilesThenSourcesAndRemovesEither() async throws {
+        let file = URL(fileURLWithPath: NSTemporaryDirectory() + "proj_\(UUID().uuidString).pdf")
+        try Data("x".utf8).write(to: file)
+        let vm = makeVM()
+        vm.load()
+        await vm.addSource(ChatEntityHit(kind: .channel, ref: "1:C1", label: "#acme", detail: ""))
+        await vm.addFiles([file])
+        XCTAssertEqual(vm.knowledge.map(\.title), [file.lastPathComponent, "#acme"])
+        XCTAssertEqual(vm.knowledge.map(\.kind), [.pdf, .slack])
+
+        promptChanges = []
+        await vm.removeKnowledge(vm.knowledge[1].id)
+        XCTAssertTrue(vm.sources.isEmpty)
+        await vm.removeKnowledge(vm.knowledge[0].id)
+        XCTAssertTrue(vm.files.isEmpty)
+        XCTAssertTrue(vm.knowledge.isEmpty)
+        XCTAssertEqual(promptChanges, [projectID, projectID])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+}
