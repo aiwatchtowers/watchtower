@@ -319,3 +319,17 @@ func TestRun_AskWithdrawnBeforeClaimDoesNotRun(t *testing.T) {
 	assert.Equal(t, "failed", row.Status)
 	assert.Equal(t, "ask withdrawn", row.Reason)
 }
+
+func TestRun_CountsFindings(t *testing.T) {
+	f, askID := runFixture(t)
+	reply := strings.Replace(runReply, `"decided_alone": [], "blind_spots": [], "checks": []`,
+		`"decided_alone": [{"text": "d1", "where": null, "note": "n"}, {"text": "d2", "where": null, "note": "n"}],
+  "blind_spots": [{"text": "b1", "note": "n"}], "checks": [{"lens": "l", "chapter": "c", "answer": "ok", "note": "n"}]`, 1)
+	require.NoError(t, Run(context.Background(), f.deps(&fakeAgent{out: reply}), askID))
+	row, err := f.d.GetSpecReview(askID)
+	require.NoError(t, err)
+	var res Result
+	require.NoError(t, json.Unmarshal([]byte(row.Result), &res))
+	assert.Equal(t, len(res.DecidedAlone)+len(res.BlindSpots)+len(res.Checks), row.Findings)
+	assert.Positive(t, row.Findings, "the reply carries findings that survive validation")
+}

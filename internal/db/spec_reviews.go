@@ -26,8 +26,12 @@ type SpecReview struct {
 	Status, Reason, Result          string
 	Provider, Model, DocSHA         string
 	Dropped, PID, Attempt           int
+	Findings                        int // findings counted in Result; -1 = not counted (rows from before 00160)
 	QueuedAt, StartedAt, FinishedAt string
 }
+
+// SpecReviewMarkNotUseful is the state of a finding the owner marked Not useful.
+const SpecReviewMarkNotUseful = "not_useful"
 
 // SpecReviewMark is the owner's mark on one item (Desktop-written). About is
 // a comment's finding text, kept so a comment whose finding a re-run drops
@@ -43,12 +47,12 @@ func specReviewTime(t time.Time) string { return t.UTC().Format(automationTimeLa
 func ParseSpecReviewTime(s string) (time.Time, error) { return time.Parse(automationTimeLayout, s) }
 
 const specReviewCols = `ask_id, status, reason, result, provider, model, doc_sha, dropped, pid, attempt,
-	queued_at, started_at, finished_at`
+	findings, queued_at, started_at, finished_at`
 
 func scanSpecReview(row interface{ Scan(...any) error }) (*SpecReview, error) {
 	var r SpecReview
 	if err := row.Scan(&r.AskID, &r.Status, &r.Reason, &r.Result, &r.Provider, &r.Model, &r.DocSHA,
-		&r.Dropped, &r.PID, &r.Attempt, &r.QueuedAt, &r.StartedAt, &r.FinishedAt); err != nil {
+		&r.Dropped, &r.PID, &r.Attempt, &r.Findings, &r.QueuedAt, &r.StartedAt, &r.FinishedAt); err != nil {
 		return nil, fmt.Errorf("scanning spec review: %w", err)
 	}
 	return &r, nil
@@ -153,9 +157,9 @@ func (db *DB) ClaimSpecReview(askID int64, pid int, now time.Time) (bool, error)
 // under pid; any other state is a no-op.
 func (db *DB) FinishSpecReview(askID int64, pid int, r SpecReview, now time.Time) error {
 	_, err := db.Exec(`UPDATE spec_reviews SET status = 'done', result = ?, provider = ?, model = ?,
-		doc_sha = ?, dropped = ?, reason = '', finished_at = ?
+		doc_sha = ?, dropped = ?, findings = ?, reason = '', finished_at = ?
 		WHERE ask_id = ? AND status = 'running' AND pid = ?`,
-		r.Result, r.Provider, r.Model, r.DocSHA, r.Dropped, specReviewTime(now), askID, pid)
+		r.Result, r.Provider, r.Model, r.DocSHA, r.Dropped, r.Findings, specReviewTime(now), askID, pid)
 	if err != nil {
 		return fmt.Errorf("finishing spec review: %w", err)
 	}

@@ -120,6 +120,7 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	return db.SpecReview{
 		Result: string(js), Provider: d.Provider, Model: d.Model,
 		DocSHA: hex.EncodeToString(sum[:]), Dropped: res.Dropped,
+		Findings: len(res.DecidedAlone) + len(res.BlindSpots) + len(res.Checks),
 	}, nil
 }
 
