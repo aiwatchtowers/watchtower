@@ -184,6 +184,16 @@ final class AlertOpenerTests: XCTestCase {
         XCTAssertEqual(WorkAlertKey.stop(session: 7, stateAt: Date(timeIntervalSince1970: 1_700_000_000.123)), "stop-7-1700000000123")
     }
 
+    /// The stop key is exact integer milliseconds: a stamp whose `* 1000` lands just under the whole millisecond in
+    /// floating point still keys at that millisecond, so every pass names one stop the same way.
+    func testTheStopKeyIsExactMilliseconds() {
+        // 1_089_010_964.738 * 1000 is 1089010964737.9998… as a Double.
+        XCTAssertEqual(WorkAlertKey.stop(session: 7, stateAt: Date(timeIntervalSince1970: 1_089_010_964.738)), "stop-7-1089010964738")
+        XCTAssertEqual(
+            WorkAlertKey.stop(session: 7, stateAt: Date(timeIntervalSince1970: Double(1_080_484_254_215) / 1000)), "stop-7-1080484254215"
+        )
+    }
+
     /// The extension reads the material from the alert group without a full phone key store.
     func testTheExtensionReadsTheMaterialFromTheAlertGroupDirectly() throws {
         let backend = FakeKeychainBackend()

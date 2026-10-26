@@ -67,9 +67,11 @@ public enum WorkAlertKey {
 
     public static func permission(_ id: Int64) -> String { "perm-\(id)" }
 
-    /// One stop of work, one key: the session and the moment its state was entered (unix milliseconds).
+    /// One stop of work, one key: the session and the moment its state was entered, in whole unix milliseconds
+    /// rounded to the nearest (a millisecond stamp whose `* 1000` lands a hair under it in floating point keys at
+    /// that millisecond, not the one before).
     public static func stop(session: Int64, stateAt: Date) -> String {
-        "stop-\(session)-\(Int64((stateAt.timeIntervalSince1970 * 1000).rounded(.down)))"
+        "stop-\(session)-\(Int64((stateAt.timeIntervalSince1970 * 1000).rounded()))"
     }
 }
 
