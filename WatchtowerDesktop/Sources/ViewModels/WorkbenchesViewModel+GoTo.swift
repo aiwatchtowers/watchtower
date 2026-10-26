@@ -81,7 +81,11 @@ extension WorkbenchesViewModel {
     private func focusTerminal(projectID: Int64) {
         guard selectedWorkbenchID == projectID, let id = terminalCenter?.focusOrder.last,
               layout(projectID: projectID).visiblePanes.contains(.session(id)) else { return }
-        if isObscured(sessionID: id, projectID: projectID) { asks.drawerExpanded = false }
+        // Only the ask drawer is collapsed for it; under the Clean Up screen
+        // the drawer stays as it is (and the terminal does not take the keys).
+        if !cleanupScreenOpen(projectID: projectID), isObscured(sessionID: id, projectID: projectID) {
+            asks.drawerExpanded = false
+        }
         terminalCenter?.requestKeyboardFocus(id)
     }
 }

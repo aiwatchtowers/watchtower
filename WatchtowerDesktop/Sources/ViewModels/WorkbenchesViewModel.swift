@@ -136,7 +136,7 @@ final class WorkbenchesViewModel {
     /// workbench; none = the overview.
     var analyticsSession: [Int64: String] = [:]
     /// Session cleanup (board #535): the Delete dialog's plan and apply, the
-    /// Clean Up… sheet. Held here, on the AppState-owned view model, so a
+    /// Clean Up screen. Held here, on the AppState-owned view model, so a
     /// run survives navigating away. AppState wires its own; nil = Delete
     /// Only.
     @ObservationIgnored var sessionCleanup: SessionCleanupCenter?
@@ -144,7 +144,7 @@ final class WorkbenchesViewModel {
     /// report's Cleanup line; a session without one has no entry.
     var cleanupRecords: [Int64: SessionCleanupRecord] = [:]
     /// The sessions a cleanup runs on (board #535) — Delete and Clean Up,
-    /// or a Clean Up… apply: the row is busy, it does not delete (✕, ⌘⌫,
+    /// or the Clean Up screen's apply in a session's scope: the row is busy, it does not delete (✕, ⌘⌫,
     /// Delete, Delete and Clean Up) or start fresh, and shows "Cleaning
     /// up…".
     var cleaningUpSessions: Set<Int64> = []
@@ -152,24 +152,31 @@ final class WorkbenchesViewModel {
     /// not resume either, until it is deleted or kept. A Clean Up… apply
     /// leaves a live session's terminal reachable.
     var closedForCleanup: Set<Int64> = []
-    /// The cleanup runs this view model owns (Delete and Clean Up, a Clean
-    /// Up… apply), per session: a view going away never cancels one.
+    /// The Delete and Clean Up runs this view model owns, per session: a
+    /// view going away never cancels one.
     @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]
+    /// Each Delete and Clean Up run's workbench, per session: the run
+    /// counts as that workbench's cleanup apply from its start, before the
+    /// terminal closed and any re-plan (one apply per workbench, spec
+    /// 2026-10-26 §3.2).
+    var cleanupRunWorkbenches: [Int64: Int64] = [:]
     /// The automatic cleanups of finished placed sessions whose agent
     /// exited (session worktrees spec §9), per session; gone when done.
     @ObservationIgnored var placedCleanupRuns: [Int64: Task<Void, Never>] = [:]
-    /// The sessions whose Clean Up… sheet is on screen: an apply ending
-    /// while it is not shows its failure on the page instead.
-    @ObservationIgnored var openCleanupSheets: Set<Int64> = []
     /// Per deleted session, what its Delete and Clean Up kept of the items
     /// the dialog showed: told on the Undo bar while the row waits there,
     /// dropped once it leaves the batch (Undo or the commit).
     var cleanupKeptNotices: [Int64: String] = [:]
-    /// The sweep applies this view model owns (Clean Up Old Worktrees…),
-    /// per workbench: closing the sheet or leaving the page cancels none.
-    @ObservationIgnored var sweepRuns: [Int64: Task<Bool, Never>] = [:]
-    /// The workbenches whose sweep sheet is on screen.
-    @ObservationIgnored var openSweepSheets: Set<Int64> = []
+    /// The Clean Up screen's applies this view model owns, per workbench
+    /// (either scope): closing the screen or leaving the page cancels none.
+    var sweepRuns: [Int64: Task<Bool, Never>] = [:]
+    /// The scope each `sweepRuns` apply runs for: the screen says "Another
+    /// cleanup is running" when it shows another scope.
+    var sweepRunScopes: [Int64: SessionCleanupScope] = [:]
+    /// The Clean Up screen per workbench while it is open (board #1107,
+    /// spec 2026-10-26-worktree-cleanup-screen §3.1): page state in memory
+    /// only, never a `WorkspacePane` or a `WorkspaceLayout` value.
+    var cleanupScreens: [Int64: CleanupScreenState] = [:]
     /// Per workbench, the one-time "old worktrees use ~N GB" hint while it
     /// is up (open question 2 of the cleanup spec, owner approved).
     var cleanupHints: [Int64: String] = [:]

@@ -98,14 +98,6 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
         let removable = Set(knownRemovableKeys)
         return items.filter { ticked.contains($0.key) && removable.contains($0.key) }
     }
-
-    /// What a cleanup sheet ticks when this plan arrives: nothing in the
-    /// sweep sheet — the owner picks by hand (spec §9) — else every pending
-    /// removal of a known kind. `sweep` is the sheet's own mode, never the
-    /// JSON's flag: a destructive default does not key off a wire field.
-    package func initialTicks(sweep: Bool) -> Set<String> {
-        sweep ? [] : Set(knownRemovableKeys)
-    }
 }
 
 /// One thing a plan would remove or keeps, with why (Go's
@@ -156,8 +148,29 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
     package var error: String
     /// Sweep only: whose the item probably is.
     package var owner: SessionCleanupOwner?
+    /// Who made the worktree (a branch has none).
+    package var origin: SessionCleanupOrigin
+    /// The newest commit's time; nil when unknown.
+    package var lastCommitAt: Date?
+    /// Merged into the default branch.
+    package var merged: Bool
+    /// The root of the worktree a bundle's LaunchServices entry or an
+    /// orphan process belongs to; "" when it has none (a stale entry).
+    package var worktree: String
 
     package var id: String { key }
+
+    /// A worktree item's root, from its key (`name` is only the folder's
+    /// base name); "" for any other kind. What `worktree` names.
+    package var worktreeRoot: String {
+        guard kind == .worktree, key.hasPrefix(Self.worktreeKeyPrefix) else { return "" }
+        return String(key.dropFirst(Self.worktreeKeyPrefix.count))
+    }
+
+    private static let worktreeKeyPrefix = "worktree:"
+
+    /// Parses `last_commit_at`; one shared formatter, not one per item.
+    private static let stampFormatter = ISO8601DateFormatter()
 
     /// Still to remove: planned for removal, neither done nor failed, and
     /// with a key an apply can name (an item without one fails closed).
@@ -175,7 +188,11 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         detail: String = "",
         done: Bool = false,
         error: String = "",
-        owner: SessionCleanupOwner? = nil
+        owner: SessionCleanupOwner? = nil,
+        origin: SessionCleanupOrigin = .none,
+        lastCommitAt: Date? = nil,
+        merged: Bool = false,
+        worktree: String = ""
     ) {
         self.key = key
         self.kind = kind
@@ -189,10 +206,16 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         self.done = done
         self.error = error
         self.owner = owner
+        self.origin = origin
+        self.lastCommitAt = lastCommitAt
+        self.merged = merged
+        self.worktree = worktree
     }
 
     package enum CodingKeys: String, CodingKey {
         case key, kind, name, branch, bytes, action, reason, detail, done, error, owner
+        case origin, merged, worktree
+        case lastCommitAt = "last_commit_at"
         case bytesKnown = "bytes_known"
     }
 
@@ -211,7 +234,19 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
         error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
         owner = try c.decodeIfPresent(SessionCleanupOwner.self, forKey: .owner)
+        origin = SessionCleanupOrigin(rawValue: try c.decodeIfPresent(String.self, forKey: .origin) ?? "") ?? .none
+        let stamp = try c.decodeIfPresent(String.self, forKey: .lastCommitAt) ?? ""
+        lastCommitAt = stamp.isEmpty ? nil : Self.stampFormatter.date(from: stamp)
+        merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false
+        worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
     }
+}
+
+/// Who made a worktree, as Go's origin classifier names it. An absent or
+/// unknown value is `.none`.
+package enum SessionCleanupOrigin: String, Equatable, Hashable, Sendable {
+    case session, subagent, placed, manual
+    case none = ""
 }
 
 /// Why an item is kept (or what an apply did instead), as Go's

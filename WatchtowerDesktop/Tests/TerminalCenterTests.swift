@@ -7,7 +7,7 @@ import WatchtowerTestSupport
 
 @MainActor
 final class FakeTerminalSession: TerminalSessionProcess {
-    let view = NSView()
+    let view: NSView
     var pid: pid_t
     var onExit: ((Int32?) -> Void)?
     var onOwnerInput: (([UInt8]) -> Void)?
@@ -17,8 +17,11 @@ final class FakeTerminalSession: TerminalSessionProcess {
     private(set) var inputs: [[UInt8]] = []
     var bracketedPasteMode = true
 
-    init(pid: pid_t = 4242) {
+    /// `view`: a test that needs the terminal to take the keyboard passes
+    /// one that accepts first responder.
+    init(pid: pid_t = 4242, view: NSView = NSView()) {
         self.pid = pid
+        self.view = view
     }
 
     func start(_ launch: TerminalLaunch) { launches.append(launch) }

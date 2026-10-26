@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/gitbin"
+	"watchtower/internal/workbenchgit"
 )
 
 // sizeBudget bounds the size walk of one worktree (spec §8).
@@ -19,6 +20,11 @@ const sizeBudget = 20 * time.Second
 // sizeWorkers is how many worktrees are measured at the same time: one walk
 // at a time made a sweep over dozens of large worktrees take minutes.
 const sizeWorkers = 4
+
+// checkWorkers is how many worktrees are checked at the same time: each
+// check runs `git status`, and one at a time a sweep over dozens of
+// worktrees spent most of its time waiting for them.
+const checkWorkers = 4
 
 // detailGone is the detail of a prunable worktree: its directory is gone,
 // so removing it only drops git's metadata.
@@ -37,6 +43,12 @@ type Request struct {
 	DeclaredWorktrees, DeclaredBranches []string
 	NoSize                              bool
 	Now                                 time.Time
+	// Observer hears the evaluation (and an apply) as it goes; nil = no
+	// events. Apply's re-checks never report.
+	Observer Observer
+	// recheck marks an apply's re-check: it never reports, so it reads no
+	// display facts (dates, merged).
+	recheck bool
 }
 
 // builder carries one evaluation's facts.
@@ -60,6 +72,11 @@ type builder struct {
 	// so a worktree is walked once there and once more right before
 	// `git worktree remove`.
 	walked map[string]string
+	walkMu sync.Mutex // guards walked: worktrees are checked concurrently
+	report *reporter
+	// extras are each worktree to remove's orphans and bundles, found
+	// right after its catches.
+	extras map[string][]Item
 
 	// After the worktree pass: where each branch is checked out, and the
 	// subset of worktrees that stay.
@@ -88,6 +105,9 @@ func PlanResult(ctx context.Context, d Deps, r Request) (Result, error) {
 
 // evaluate lists and evaluates every candidate of the builder's facts.
 func (b *builder) evaluate(ctx context.Context) Plan {
+	if b.report.obs != nil {
+		b.report.listed(b.listing())
+	}
 	items := b.worktreeItems(ctx)
 	items = append(items, b.branchItems(ctx, items)...)
 	items = append(items, b.extraItems(ctx, items)...)
@@ -105,7 +125,8 @@ func newBuilder(ctx context.Context, d Deps, r Request) (*builder, error) {
 	if !ok {
 		return nil, ErrNoGit
 	}
-	b := &builder{deps: d, req: r, now: r.Now, self: os.Getpid(), live: map[int64]bool{}}
+	b := &builder{deps: d, req: r, now: r.Now, self: os.Getpid(), live: map[int64]bool{},
+		report: &reporter{obs: r.Observer}}
 	if b.now.IsZero() {
 		b.now = clockNow(d)
 	}
@@ -162,7 +183,7 @@ func (b *builder) loadRepo(ctx context.Context, g gitCmd) error {
 	if !gitbin.InsideRepository(folder) {
 		return fmt.Errorf("the workbench folder %s is not in a git repository", folder)
 	}
-	b.repo, err = readRepo(ctx, g, folder)
+	b.repo, err = readRepo(ctx, g, folder, !b.req.recheck)
 	return err
 }
 
@@ -276,24 +297,121 @@ func (b *builder) observePlacement() {
 func (b *builder) worktreeItems(ctx context.Context) []Item {
 	items := []Item{}
 	b.checkedOutIn, b.checkedOutStaying = map[string]string{}, map[string]string{}
+	b.extras = map[string][]Item{}
 	known := map[string]bool{}
+	var toCheck []worktree
 	for _, w := range b.repo.worktrees {
 		known[w.Root] = true
-		listed := !w.Bare && b.listsWorktree(w)
 		if w.Branch != "" {
 			b.checkedOutIn[w.Branch] = w.Root
 		}
-		if !listed {
+		if !w.Bare && b.listsWorktree(w) {
+			toCheck = append(toCheck, w)
+		} else {
 			b.markStaying(w)
-			continue
 		}
-		it := b.evaluateWorktree(ctx, w)
+	}
+	// The catches of different worktrees are independent reads: run them
+	// checkWorkers at a time, then take the results in listing order on this
+	// goroutine, so the maps, the events and the items keep today's order.
+	results := b.evaluateWorktrees(ctx, toCheck)
+	for i, w := range toCheck {
+		it := <-results[i]
 		if it.Action == ActionKeep {
 			b.markStaying(w)
 		}
+		b.report.checked(it)
+		if it.Action == ActionRemove && it.Detail != detailGone {
+			b.extras[w.Root] = b.worktreeExtras(w.Root)
+			b.report.checked(b.extras[w.Root]...)
+		}
 		items = append(items, it)
 	}
-	return append(items, b.undeclaredWorktrees(known)...)
+	undeclared := b.undeclaredWorktrees(known)
+	b.report.checked(undeclared...)
+	return append(items, undeclared...)
+}
+
+// evaluateWorktrees evaluates the worktrees checkWorkers at a time, in
+// listing order; result i arrives on results[i].
+func (b *builder) evaluateWorktrees(ctx context.Context, list []worktree) []chan Item {
+	results := make([]chan Item, len(list))
+	for i := range results {
+		results[i] = make(chan Item, 1)
+	}
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for range min(checkWorkers, len(list)) {
+		wg.Go(func() {
+			for i := range next {
+				results[i] <- b.evaluateWorktree(ctx, list[i])
+			}
+		})
+	}
+	go func() {
+		for i := range list {
+			next <- i
+		}
+		close(next)
+		wg.Wait()
+	}()
+	return results
+}
+
+// worktreeExtras are root's orphans (session mode only — the sweep never
+// signals) and its .app bundles.
+func (b *builder) worktreeExtras(root string) []Item {
+	var extra []Item
+	if !b.req.Sweep {
+		extra = append(extra, b.orphanItems(root)...)
+	}
+	return append(extra, b.bundleItems(root)...)
+}
+
+// listing is the Observer's Listed: the listed worktrees, then the branch
+// candidates not checked out in one of them (sweep: in any worktree), with
+// no action yet. It runs no catch but the structural one.
+func (b *builder) listing() []Item {
+	items := []Item{}
+	known, ofListed, ofAny := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	var listedTrees []Item
+	for _, w := range b.repo.worktrees {
+		known[w.Root] = true
+		if w.Branch != "" {
+			ofAny[w.Branch] = true
+		}
+		if w.Bare || !b.listsWorktree(w) {
+			continue
+		}
+		if w.Branch != "" {
+			ofListed[w.Branch] = true
+		}
+		listedTrees = append(listedTrees, Item{Key: "worktree:" + w.Root, Kind: KindWorktree,
+			Name: filepath.Base(w.Root), Branch: w.Branch})
+	}
+	items = append(items, listedTrees...)
+	for _, it := range b.undeclaredWorktrees(known) {
+		it.Action, it.Reason = "", ""
+		items = append(items, it)
+	}
+	var names []string
+	if b.req.Sweep {
+		set := map[string]bool{}
+		for _, br := range b.repo.branches {
+			if br.Name != b.repo.defaultBranch && !ofAny[br.Name] {
+				set[br.Name] = true
+			}
+		}
+		names = sortedKeys(set)
+	} else {
+		names = b.branchCandidates(listedTrees)
+	}
+	for _, name := range names {
+		if !ofListed[name] {
+			items = append(items, Item{Key: "branch:" + name, Kind: KindBranch, Name: name, Branch: name})
+		}
+	}
+	return items
 }
 
 func (b *builder) markStaying(w worktree) {
@@ -355,6 +473,17 @@ func (b *builder) evaluateWorktree(ctx context.Context, w worktree) Item {
 	if w.Prunable && it.Action == ActionRemove {
 		it.Detail, it.BytesKnown = detailGone, true
 	}
+	it.Origin = string(workbenchgit.WorktreeOrigin(b.repo.mainRoot(), w.Root, w.Branch))
+	if it.Owner != nil && !it.Owner.Unknown {
+		it.Origin = string(workbenchgit.OriginSession)
+	}
+	if b.req.recheck {
+		return it
+	}
+	if head, err := b.repo.recordedHead(w); err == nil {
+		it.LastCommitAt = b.repo.commitDate(ctx, head)
+		it.Merged = b.repo.isMerged(ctx, head)
+	}
 	return it
 }
 
@@ -386,9 +515,10 @@ func (b *builder) branchItems(ctx context.Context, worktreeItems []Item) []Item 
 		if !ok {
 			items = append(items, Item{Key: "branch:" + name, Kind: KindBranch, Name: name, Branch: name,
 				Action: ActionKeep, Reason: ReasonNotABranch})
-			continue
+		} else {
+			items = append(items, b.evaluateBranch(ctx, branchRef{Name: name, Sha: sha}))
 		}
-		items = append(items, b.evaluateBranch(ctx, branchRef{Name: name, Sha: sha}))
+		b.report.checked(items[len(items)-1])
 	}
 	return items
 }
@@ -436,6 +566,9 @@ func sortedKeys(set map[string]bool) []string {
 func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
 	it := Item{Key: "branch:" + br.Name, Kind: KindBranch, Name: br.Name, Branch: br.Name, Action: ActionRemove,
 		BytesKnown: true}
+	if !b.req.recheck {
+		it.LastCommitAt, it.Merged = b.repo.commitDate(ctx, br.Sha), b.repo.isMerged(ctx, br.Sha)
+	}
 	for _, c := range b.branchCatches() {
 		reason, detail, err := c(ctx, b, br)
 		if err != nil {
@@ -455,9 +588,9 @@ func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
 	return it
 }
 
-// extraItems are, per worktree to remove, its size, its orphans (session
-// mode only — the sweep never signals) and its .app bundles; and in the
-// sweep the stale LaunchServices entries under the workbench folder.
+// extraItems are, per worktree to remove, its size and its extras (found
+// with its catches); and in the sweep the stale LaunchServices entries
+// under the workbench folder.
 func (b *builder) extraItems(ctx context.Context, items []Item) []Item {
 	var removed []int
 	for i, it := range items {
@@ -465,16 +598,16 @@ func (b *builder) extraItems(ctx context.Context, items []Item) []Item {
 			removed = append(removed, i)
 		}
 	}
-	b.measureAll(ctx, items, removed)
+	// Bundles and orphans were found before the slow size walks, so a
+	// listing can show them while the sizes are still coming in.
 	var extra []Item
 	for _, i := range removed {
-		root := items[i].Key[len("worktree:"):]
-		if !b.req.Sweep {
-			extra = append(extra, b.orphanItems(root)...)
-		}
-		extra = append(extra, b.bundleItems(root)...)
+		extra = append(extra, b.extras[items[i].Key[len("worktree:"):]]...)
 	}
-	return append(extra, b.staleItems(ctx)...)
+	b.measureAll(ctx, items, removed)
+	stale := b.staleItems(ctx)
+	b.report.checked(stale...)
+	return append(extra, stale...)
 }
 
 // measureAll sizes items[i] for each i in idx, up to sizeWorkers walks at
@@ -491,6 +624,7 @@ func (b *builder) measureAll(ctx context.Context, items []Item, idx []int) {
 			defer func() { <-slots }()
 			it := &items[i]
 			it.Bytes, it.BytesKnown = b.deps.Sizer.Size(ctx, it.Key[len("worktree:"):], sizeBudget)
+			b.report.sized(it.Key, it.Bytes, it.BytesKnown)
 		})
 	}
 	wg.Wait()
@@ -501,7 +635,7 @@ func (b *builder) orphanItems(root string) []Item {
 	items := make([]Item, 0, len(orphans))
 	for _, p := range orphans {
 		items = append(items, Item{Key: procKey(p), Kind: KindProcess,
-			Name: filepath.Base(p.Exe), Detail: p.Exe, Action: ActionRemove, BytesKnown: true})
+			Name: filepath.Base(p.Exe), Detail: p.Exe, Action: ActionRemove, BytesKnown: true, Worktree: root})
 	}
 	return items
 }
@@ -513,7 +647,7 @@ func (b *builder) bundleItems(root string) []Item {
 	var items []Item
 	for _, bundle := range b.deps.LS.Bundles(root) {
 		items = append(items, Item{Key: "lsreg:" + bundle, Kind: KindLsreg, Name: filepath.Base(bundle),
-			Detail: bundle, Action: ActionRemove, BytesKnown: true})
+			Detail: bundle, Action: ActionRemove, BytesKnown: true, Worktree: root})
 	}
 	return items
 }

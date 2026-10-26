@@ -15,8 +15,6 @@ struct WorkbenchPageView: View {
     @Environment(AppState.self) private var appState
     @State private var deleteSummary: WorkbenchDeleteSummary?
     @State private var deleteSummaryError: String?
-    /// Clean Up Old Worktrees… is on screen (board #535).
-    @State private var sweeping = false
 
     /// The folder the code viewer works in: the worktree of the session on
     /// screen, else the workbench folder.
@@ -44,12 +42,8 @@ struct WorkbenchPageView: View {
                 cleanupHint(hint)
                 Divider()
             }
-            // An ask filed outside the app has no terminal to sit beside:
-            // its drawer takes the page's trailing edge.
-            OwnerAskDrawerHost(vm: vm, ask: vm.asks.drawerAsk(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil }) {
-                WorkspaceAreaView(vm: vm, project: project)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // The workspace, with the Clean Up screen over it while open.
+            CleanupCoveredWorkspace(vm: vm, project: project)
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
         .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project, root: activeRoot))
@@ -64,7 +58,6 @@ struct WorkbenchPageView: View {
         .sheet(item: handoffRequest) { request in
             HandToSessionSheet(handoff: appState.codeHandoffCenter, request: request)
         }
-        .sheet(isPresented: $sweeping) { WorkbenchSweepSheet(vm: vm, project: project) }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         // The one-time "old worktrees use ~N GB" hint (board #535).
         .task(id: project.id) { await vm.watchCleanupHint(projectID: project.id) }
@@ -127,7 +120,7 @@ struct WorkbenchPageView: View {
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
                 // The trailing closure is the ⋯ menu's Clean Up Old Worktrees….
                 WorkbenchHeaderControls(vm: vm, project: project, automations: automationsMenu(project),
-                                        onDelete: confirmDelete) { sweeping = true }
+                                        onDelete: confirmDelete) { vm.openCleanupScreen(projectID: project.id) }
             }
             if let installError = vm.installErrors[project.id] {
                 errorCaption(installError)
@@ -182,7 +175,7 @@ struct WorkbenchPageView: View {
         HStack(spacing: 8) {
             Image(systemName: "externaldrive.badge.minus").foregroundStyle(.secondary)
             Text(hint).font(.caption)
-            Button("Clean Up…") { sweeping = true }
+            Button("Clean Up…") { vm.openCleanupScreen(projectID: project.id) }
                 .controlSize(.small)
             Spacer()
             Button {

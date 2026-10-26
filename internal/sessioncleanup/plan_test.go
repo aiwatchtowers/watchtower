@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -569,5 +570,337 @@ func TestPlan_SweepMeasuresAtMostSizeWorkersAtOnce(t *testing.T) {
 	}
 	if sizer.peak > sizeWorkers {
 		t.Fatalf("%d walks ran at once, want at most %d", sizer.peak, sizeWorkers)
+	}
+}
+
+// rootedWorktree adds a worktree at an explicit path under the repository.
+func (f *fixture) rootedWorktree(rel, branch string) string {
+	f.t.Helper()
+	root := filepath.Join(f.repo, filepath.FromSlash(rel))
+	gitIn(f.t, f.repo, "worktree", "add", "-q", "-b", branch, root, "main")
+	return root
+}
+
+func TestSweepItemsCarryOrigin(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	sub := f.rootedWorktree(".claude/worktrees/agent-ab12", "worktree-agent-ab12")
+	placed := f.rootedWorktree(".claude/worktrees/fix-it", "wt/fix-it")
+	manual := f.worktree("hand-made", "feat/hand")
+	owned := f.worktree("owned", "feat/owned")
+	f.store.rootOwners = map[string][]int64{owned: {11}}
+	f.store.activity = []SessionActivity{{ID: 11, Title: "t", LastActive: time.Now().Add(-48 * time.Hour)}}
+
+	p := f.plan(Request{Sweep: true})
+	for root, want := range map[string]string{sub: "subagent", placed: "placed", manual: "manual", owned: "session"} {
+		if got := findItem(t, p, "worktree:"+root).Origin; got != want {
+			t.Fatalf("%s origin = %q, want %q", root, got, want)
+		}
+	}
+	if got := findItem(t, p, "branch:feat/hand").Origin; got != "" {
+		t.Fatalf("branch origin = %q, want empty", got)
+	}
+}
+
+func TestItemsCarryLastCommitAndMerged(t *testing.T) {
+	t.Setenv("GIT_COMMITTER_DATE", "2026-09-01T10:00:00Z")
+	t.Setenv("GIT_AUTHOR_DATE", "2026-09-01T10:00:00Z")
+	f := newFixture(t)
+	// merged only into origin/main: local main stays behind.
+	root := f.worktree("wt-merged", "feat/merged")
+	// An earlier commit on the branch, dated differently, that no branch
+	// will point to: a detached HEAD there is merged only by ancestry.
+	t.Setenv("GIT_COMMITTER_DATE", "2026-08-15T09:00:00Z")
+	f.commit(root, "m0.txt", "m0\n")
+	earlier := gitIn(t, root, "rev-parse", "HEAD")
+	t.Setenv("GIT_COMMITTER_DATE", "2026-09-01T10:00:00Z")
+	f.commit(root, "m.txt", "m\n")
+	gitIn(t, root, "push", "-q", "origin", "feat/merged:main")
+	gitIn(t, f.repo, "fetch", "-q", "origin")
+	f.pushedWork("wt-open", "feat/open")
+	detached := filepath.Join(f.base, "wt-detached")
+	gitIn(t, f.repo, "worktree", "add", "-q", "--detach", detached, earlier)
+
+	p := f.plan(Request{Sweep: true})
+	if d := findItem(t, p, "worktree:"+detached); d.LastCommitAt != "2026-08-15T09:00:00Z" || !d.Merged {
+		t.Fatalf("detached worktree = %+v", d)
+	}
+	merged := findItem(t, p, "branch:feat/merged")
+	if merged.LastCommitAt != "2026-09-01T10:00:00Z" || !merged.Merged {
+		t.Fatalf("merged branch = %+v", merged)
+	}
+	if !findItem(t, p, "worktree:"+root).Merged {
+		t.Fatal("the worktree of a merged branch is not merged")
+	}
+	open := findItem(t, p, "branch:feat/open")
+	if open.LastCommitAt != "2026-09-01T10:00:00Z" || open.Merged {
+		t.Fatalf("open branch = %+v", open)
+	}
+}
+
+// orderSizer / orderLS record the order of Size and Bundles calls.
+type orderLog struct {
+	mu  sync.Mutex
+	ops []string
+}
+
+func (l *orderLog) add(op string) { l.mu.Lock(); l.ops = append(l.ops, op); l.mu.Unlock() }
+
+type orderSizer struct{ log *orderLog }
+
+func (s orderSizer) Size(context.Context, string, time.Duration) (int64, bool) {
+	s.log.add("size")
+	return 1, true
+}
+
+type orderLS struct {
+	log   *orderLog
+	stale []string
+}
+
+func (l orderLS) Bundles(root string) []string {
+	l.log.add("bundles")
+	return []string{filepath.Join(root, "Build", "App.app")}
+}
+func (orderLS) Unregister(context.Context, string) error { return nil }
+func (orderLS) Register(context.Context, string) error   { return nil }
+func (l orderLS) Stale(context.Context, string) ([]string, error) {
+	return l.stale, nil
+}
+
+func TestBundleItemsNameTheirWorktree(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt-app", "feat/app")
+	d := f.deps()
+	stale := filepath.Join(f.base, "gone", "Old.app")
+	d.LS = orderLS{log: &orderLog{}, stale: []string{stale}}
+	res, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findItem(t, res.Plan, "lsreg:"+filepath.Join(root, "Build", "App.app")).Worktree; got != root {
+		t.Fatalf("bundle worktree = %q, want %q", got, root)
+	}
+	if got := findItem(t, res.Plan, "lsreg:"+stale).Worktree; got != "" {
+		t.Fatalf("stale entry worktree = %q, want empty", got)
+	}
+}
+
+func TestBundlesAreFoundBeforeSizes(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.pushedWork("wt-a", "feat/a")
+	f.pushedWork("wt-b", "feat/b")
+	log := &orderLog{}
+	d := f.deps()
+	d.Sizer, d.LS = orderSizer{log}, orderLS{log: log}
+	if _, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench}); err != nil {
+		t.Fatal(err)
+	}
+	seenSize := false
+	nb := 0
+	for _, op := range log.ops {
+		switch op {
+		case "size":
+			seenSize = true
+		case "bundles":
+			nb++
+			if seenSize {
+				t.Fatalf("Bundles called after a Size: %v", log.ops)
+			}
+		}
+	}
+	if nb != 2 {
+		t.Fatalf("Bundles calls = %d, want 2 (%v)", nb, log.ops)
+	}
+}
+
+func TestSessionModeWorktreeCarriesOrigin(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.rootedWorktree(".claude/worktrees/agent-cd34", "worktree-agent-cd34")
+	f.record(root, "worktree-agent-cd34")
+	it := findItem(t, f.plan(Request{}), "worktree:"+root)
+	if it.Origin != "subagent" {
+		t.Fatalf("origin = %q, want subagent", it.Origin)
+	}
+}
+
+// slowStatusGit delays `git status` by a per-directory time, so worktrees
+// finish their checks in another order than they are listed.
+type slowStatusGit struct {
+	SystemGit
+	delay         map[string]time.Duration
+	mu            *sync.Mutex
+	running, peak *int
+}
+
+func (g slowStatusGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	if len(args) > 0 && args[0] == "status" {
+		g.mu.Lock()
+		*g.running++
+		*g.peak = max(*g.peak, *g.running)
+		g.mu.Unlock()
+		time.Sleep(g.delay[dir])
+		g.mu.Lock()
+		*g.running--
+		g.mu.Unlock()
+	}
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+func TestWorktreeChecksKeepOrderInParallel(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	const n = 8
+	roots := make([]string, n)
+	delay := map[string]time.Duration{}
+	for i := range n {
+		roots[i] = f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
+		// The first listed finishes last.
+		delay[roots[i]] = time.Duration(n-i) * 30 * time.Millisecond
+		if i%2 == 1 {
+			writeFile(t, filepath.Join(roots[i], "notes.txt"), "new\n")
+		}
+	}
+	var mu sync.Mutex
+	var running, peak int
+	f.git = slowStatusGit{delay: delay, mu: &mu, running: &running, peak: &peak}
+	rec := &recorder{}
+	p := f.planWith(Request{Sweep: true, Observer: rec}, nil)
+	if peak != checkWorkers {
+		t.Fatalf("%d git status ran at once, want %d", peak, checkWorkers)
+	}
+
+	var got []string
+	for _, it := range p.Plan.Items {
+		if it.Kind == KindWorktree {
+			got = append(got, it.Key)
+		}
+	}
+	listed := rec.of("listed")[0].items
+	var want []string
+	for _, it := range listed {
+		if it.Kind == KindWorktree {
+			want = append(want, it.Key)
+		}
+	}
+	if len(want) != n || !slices.Equal(got, want) {
+		t.Fatalf("items %v, want the listing order %v", got, want)
+	}
+	for i, root := range roots {
+		action, reason := ActionRemove, ""
+		if i%2 == 1 {
+			action, reason = ActionKeep, ReasonUncommittedChanges
+		}
+		wantItem(t, p.Plan, "worktree:"+root, action, reason)
+	}
+	var checked []string
+	for _, e := range rec.of("checked") {
+		if strings.HasPrefix(e.key, "worktree:") {
+			checked = append(checked, e.key)
+		}
+	}
+	if !slices.Equal(checked, want) {
+		t.Fatalf("Checked events %v, want the listing order %v", checked, want)
+	}
+}
+
+// TestOrphanItemsNameTheirWorktree: a session-mode orphan carries its
+// worktree's root, as a bundle does, so the screen folds it into that
+// worktree's row.
+func TestOrphanItemsNameTheirWorktree(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.procs.list = []Proc{{PID: 501, PPID: 1, UID: os.Getuid(), Start: "Mon Oct 12 10:00:00 2026",
+		Exe: filepath.Join(root, ".build", "stub"), Cwd: root}}
+	it := wantItem(t, f.plan(Request{}), "process:501:Mon Oct 12 10:00:00 2026", ActionRemove, "")
+	if it.Worktree != root {
+		t.Fatalf("orphan worktree = %q, want %q", it.Worktree, root)
+	}
+}
+
+// gitCounter counts the git runs whose arguments start with each prefix.
+type gitCounter struct {
+	SystemGit
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (g *gitCounter) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	joined := strings.Join(args, " ")
+	g.mu.Lock()
+	for prefix := range g.counts {
+		if strings.HasPrefix(joined, prefix) {
+			g.counts[prefix]++
+		}
+	}
+	// The catches ask only about the local default branch; the display's
+	// merged flag also asks about origin's copy.
+	if strings.HasPrefix(joined, gitAncestor) && strings.HasSuffix(joined, " refs/remotes/origin/main") {
+		g.counts[gitOriginAncestor]++
+	}
+	g.mu.Unlock()
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+const (
+	gitTipDates  = "for-each-ref --format=%(objectname)%00%(committerdate:iso-strict)"
+	gitMergedSet = "for-each-ref --merged="
+	gitAncestor  = "merge-base --is-ancestor"
+	gitLogDate   = "log -1 --format=%cI"
+	// gitOriginAncestor counts the display's merge-base runs only.
+	gitOriginAncestor = "display merge-base"
+)
+
+func newGitCounter() *gitCounter {
+	return &gitCounter{counts: map[string]int{gitTipDates: 0, gitMergedSet: 0, gitAncestor: 0, gitLogDate: 0}}
+}
+
+// TestListedUnmergedTipAsksNoMergeBase: a worktree on an unmerged branch
+// tip is answered by the up-front listing, not by `merge-base`.
+func TestListedUnmergedTipAsksNoMergeBase(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt-open", "feat/open")
+	g := newGitCounter()
+	f.git = g
+	p := f.plan(Request{Sweep: true})
+	if findItem(t, p, "worktree:"+root).Merged || findItem(t, p, "branch:feat/open").Merged {
+		t.Fatal("an unmerged tip reads as merged")
+	}
+	if g.counts[gitOriginAncestor] != 0 {
+		t.Fatalf("the display's merge-base ran %d times for listed tips", g.counts[gitOriginAncestor])
+	}
+}
+
+// TestApplyRechecksReadNoDisplayFacts: the dates and the merged set are
+// read once, by the apply's own evaluation; its re-checks never report, so
+// they read neither.
+func TestApplyRechecksReadNoDisplayFacts(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	detached := filepath.Join(f.base, "wt-detached")
+	gitIn(t, f.repo, "worktree", "add", "-q", "--detach", detached, "main~0")
+	f.record(detached, "")
+	gitIn(t, detached, "commit", "-q", "--allow-empty", "-m", "detached work")
+	gitIn(t, detached, "push", "-q", "origin", "HEAD:refs/heads/side")
+	g := newGitCounter()
+	f.git = g
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	if it := findItem(t, res.Plan, "worktree:"+root); it.LastCommitAt == "" {
+		t.Fatalf("the apply's evaluation lost the display facts: %+v", it)
+	}
+	if g.counts[gitTipDates] != 1 || g.counts[gitMergedSet] > 2 {
+		t.Fatalf("display listings ran %d / %d times, want once per evaluation", g.counts[gitTipDates], g.counts[gitMergedSet])
+	}
+	if g.counts[gitLogDate] != 1 || g.counts[gitOriginAncestor] != 1 {
+		t.Fatalf("display facts of the detached head read %d / %d times, want once", g.counts[gitLogDate], g.counts[gitOriginAncestor])
 	}
 }

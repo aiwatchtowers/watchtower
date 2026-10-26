@@ -136,6 +136,9 @@ extension WorkbenchesViewModel {
     /// app. A covered terminal never takes the keyboard (typing into an
     /// agent the owner cannot see, then Return, would submit).
     func isObscured(sessionID: Int64, projectID: Int64) -> Bool {
+        // The Clean Up screen covers the whole workspace (board #1107): no
+        // terminal behind it takes the keyboard.
+        if cleanupScreenOpen(projectID: projectID) { return true }
         guard asks.drawerExpanded, let ask = asks.drawerAsk(projectID: projectID) else { return false }
         return ask.sessionID == nil || ask.sessionID == sessionID
     }

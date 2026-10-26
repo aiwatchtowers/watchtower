@@ -83,6 +83,24 @@ public enum PaneWidth {
     public static let gridCardMin: CGFloat = 240
 }
 
+/// A column list's layout (the Clean Up screen's): its rows' and inline
+/// lines' least height, its fixed columns' widths and an inline progress
+/// bar's width.
+public enum ListLayout {
+    public static let rowMinHeight: CGFloat = 28
+    /// A one-line strip above a list: a progress or status line.
+    public static let lineMinHeight: CGFloat = 22
+    /// A checkbox or mark column.
+    public static let markColumn: CGFloat = 26
+    /// A right-aligned number: a size.
+    public static let numberColumn: CGFloat = 84
+    /// A short date or age: "3 days ago".
+    public static let dateColumn: CGFloat = 104
+    /// A short text: an owner, a state chip.
+    public static let textColumn: CGFloat = 190
+    public static let progressBar: CGFloat = 160
+}
+
 /// Glyph sizes for state dots, chevrons, headers, composer buttons and icon tiles.
 public enum IconSize {
     /// A panel row's state dot (the sessions panel, the Chats panel).

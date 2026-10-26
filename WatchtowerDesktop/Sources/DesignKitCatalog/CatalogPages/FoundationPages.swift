@@ -143,6 +143,16 @@ struct SpacingPage: View {
         Step(name: "narrowPage", value: PaneWidth.narrowPage), Step(name: "gridCardMin", value: PaneWidth.gridCardMin)
     ]
 
+    static let listLayout = [
+        Step(name: "rowMinHeight", value: ListLayout.rowMinHeight),
+        Step(name: "lineMinHeight", value: ListLayout.lineMinHeight),
+        Step(name: "markColumn", value: ListLayout.markColumn),
+        Step(name: "numberColumn", value: ListLayout.numberColumn),
+        Step(name: "dateColumn", value: ListLayout.dateColumn),
+        Step(name: "textColumn", value: ListLayout.textColumn),
+        Step(name: "progressBar", value: ListLayout.progressBar)
+    ]
+
     @State private var chosen = Step(name: "regular", value: Spacing.regular)
 
     var body: some View {
@@ -185,6 +195,23 @@ struct SpacingPage: View {
                        usage: ".frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal, maxWidth: PaneWidth.sideListMax)") {
                     VStack(alignment: .leading, spacing: Spacing.compact) {
                         ForEach(Self.paneWidths, id: \.name) { item in
+                            HStack(spacing: Spacing.regular) {
+                                Text(item.name).font(.caption).frame(width: 110, alignment: .leading)
+                                Text("\(Int(item.value))")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 30, alignment: .trailing)
+                                Rectangle().fill(Color.accentColor).frame(width: item.value, height: Spacing.regular)
+                            }
+                        }
+                    }
+                }
+            }
+            PageSection("List layout") {
+                Sample("A column list's row and line heights, column widths and progress bar; each bar is the true size",
+                       usage: ".frame(width: ListLayout.textColumn, alignment: .leading)") {
+                    VStack(alignment: .leading, spacing: Spacing.compact) {
+                        ForEach(Self.listLayout, id: \.name) { item in
                             HStack(spacing: Spacing.regular) {
                                 Text(item.name).font(.caption).frame(width: 110, alignment: .leading)
                                 Text("\(Int(item.value))")

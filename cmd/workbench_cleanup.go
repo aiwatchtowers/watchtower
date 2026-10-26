@@ -35,10 +35,10 @@ var workbenchCleanupCmd = &cobra.Command{
 
 // cleanupFlags are the command's flags (spec §4).
 type cleanupFlags struct {
-	session, workbench         int64
-	sweep, apply, noSize, json bool
-	items, worktrees, branches []string
-	liveSessions               []int64
+	session, workbench                 int64
+	sweep, apply, noSize, json, stream bool
+	items, worktrees, branches         []string
+	liveSessions                       []int64
 }
 
 var workbenchCleanupFlags cleanupFlags
@@ -57,6 +57,7 @@ func init() {
 	fs.Int64SliceVar(&f.liveSessions, "live-session", nil, "a terminal session that is live in the Desktop (repeatable)")
 	fs.BoolVar(&f.noSize, "no-size", false, "do not measure worktree sizes")
 	fs.BoolVar(&f.json, "json", false, "output JSON")
+	fs.BoolVar(&f.stream, "stream", false, "with --json: one JSON line per event, then a done line with the result")
 	workbenchCmd.AddCommand(c)
 }
 
@@ -88,9 +89,17 @@ func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var stream *streamObserver
+	if f.stream {
+		stream = newStreamObserver(cmd.OutOrStdout())
+		req.Observer = stream
+	}
 	res, err := runCleanup(ctx, cleanupDeps(database), req, f)
 	if err != nil {
 		return err
+	}
+	if stream != nil {
+		return stream.done(res)
 	}
 	if f.json {
 		return writeJSON(cmd.OutOrStdout(), res)
@@ -204,6 +213,8 @@ func checkCallerScope(f cleanupFlags, sessionGiven bool, caller int64) error {
 // checkCleanupFlags refuses the flag combinations spec §4 does not have.
 func checkCleanupFlags(f cleanupFlags, sessionGiven bool) error {
 	switch {
+	case f.stream && !f.json:
+		return usageError("--stream needs --json")
 	case f.workbench < 0 || (sessionGiven && f.session <= 0):
 		return usageError("--session and --workbench take a positive id")
 	case len(f.items) > 0 && !f.apply:

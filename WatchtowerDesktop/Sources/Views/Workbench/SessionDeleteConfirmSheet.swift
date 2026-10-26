@@ -57,21 +57,36 @@ struct SessionDeleteConfirmSheet: View {
                     .keyboardShortcut(.cancelAction)
                 deleteButtons(choice: vm.deleteCleanupChoice(session), checking: phase == .planning)
             }
+            if cleanupBlocked, vm.deleteCleanupChoice(session)?.offersCleanup == true {
+                Text(CleanupFooter.anotherRunning)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .padding(20)
         .frame(width: 440)
         .task(id: session.id) { await vm.planCleanupBeforeDelete(session) }
     }
 
+    /// Another cleanup apply of the workbench runs (the Clean Up screen's):
+    /// Delete and Clean Up waits, Delete Only does not.
+    private var cleanupBlocked: Bool {
+        session.projectID.map { vm.deleteAndCleanUpBlocked(projectID: $0) } ?? false
+    }
+
     @ViewBuilder
     private func deleteButtons(choice: SessionDeleteCleanupChoice?, checking: Bool) -> some View {
         if let choice, choice.offersCleanup {
+            // One cleanup apply per workbench (spec 2026-10-26 §3.2): while
+            // another runs, Delete and Clean Up waits; Delete Only does not.
             Button("Delete Only", role: .destructive) { deleteOnly() }
             Button("Delete and Clean Up", role: .destructive) {
                 vm.startDeleteAndCleanUp(session, choice: choice)
                 finish(cleanupDropped: false)
             }
             .keyboardShortcut(.defaultAction)
+            .disabled(cleanupBlocked)
         } else {
             // While the plan is checked, Return deletes nothing: the
             // default may yet become Delete and Clean Up.

@@ -251,12 +251,17 @@ func catchNested(ctx context.Context, b *builder, w worktree) (string, string, e
 // nestedIn is W9's walk of root, served from b.walked when it has root; a
 // failed walk is not cached.
 func (b *builder) nestedIn(ctx context.Context, root string) (string, error) {
-	if nested, ok := b.walked[root]; ok {
+	b.walkMu.Lock()
+	nested, ok := b.walked[root]
+	b.walkMu.Unlock()
+	if ok {
 		return nested, nil
 	}
 	nested, err := findNestedRepository(ctx, root, nestedScanBudget)
 	if err == nil && b.walked != nil {
+		b.walkMu.Lock()
 		b.walked[root] = nested
+		b.walkMu.Unlock()
 	}
 	return nested, err
 }

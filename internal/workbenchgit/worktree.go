@@ -246,3 +246,37 @@ func EnsureWorktree(ctx context.Context, o Options, path, branch string) (res Wo
 	res.Included, res.IncludeWarnings = includeInto(ctx, r, p, path)
 	return res
 }
+
+// Origin says who made a session worktree.
+type Origin string
+
+const (
+	// OriginSubagent is a Claude Code subagent worktree (agent-<hex>).
+	OriginSubagent Origin = "subagent"
+	// OriginPlaced is a worktree Watchtower placed for a session (wt/ branch).
+	OriginPlaced Origin = "placed"
+	// OriginManual is anything else.
+	OriginManual Origin = "manual"
+	// OriginSession is never returned by WorktreeOrigin: the cleanup sweep
+	// sets it on a worktree whose recording session it knows.
+	OriginSession Origin = "session"
+)
+
+var subagentNamePattern = regexp.MustCompile(`^agent-[0-9a-f]+$`)
+
+// WorktreeOrigin classifies the worktree at root with the given branch. Only
+// a direct child of <topLevel>/.claude/worktrees can be subagent or placed;
+// paths are compared as given (callers pass resolved paths).
+func WorktreeOrigin(topLevel, root, branch string) Origin {
+	parent := filepath.Join(topLevel, filepath.FromSlash(worktreesDir))
+	if filepath.Dir(filepath.Clean(root)) != parent {
+		return OriginManual
+	}
+	if subagentNamePattern.MatchString(filepath.Base(root)) {
+		return OriginSubagent
+	}
+	if strings.HasPrefix(branch, worktreeBranchRoot) {
+		return OriginPlaced
+	}
+	return OriginManual
+}

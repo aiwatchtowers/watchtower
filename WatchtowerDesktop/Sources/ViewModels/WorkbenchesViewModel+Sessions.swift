@@ -1038,6 +1038,9 @@ extension WorkbenchesViewModel {
         // stop at a trust or login prompt the Workchat cannot show.
         if fresh { updated.setMode(false, sessionID: row.id) }
         if isLatest { updated = placing(row.id, placement, in: updated) }
+        // A session put on screen closes the Clean Up screen over it: no
+        // session is on screen while it is open (spec 2026-10-26 §3.1).
+        if isLatest, placement != .background { closeCleanupScreen(projectID: projectID) }
         if isLatest || updated != layout(projectID: projectID) { setLayout(updated, projectID: projectID) }
     }
 

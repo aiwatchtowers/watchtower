@@ -303,7 +303,12 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-chapter-risks", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.chapterRisks()
             }
-        ] + CatalogPage.allCases.map { page in
+        ] + CleanupShotFixtures.Frame.allCases.map { frame in
+            // The Clean Up screen (#1107), mockup frames A–G.
+            DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
+                CleanupShotFixtures.screen(frame)
+            }
+        } + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
                 // A fixed moment, so the Typography page's live counter is the same every run.
                 AnyView(CatalogPageBody(page: page)
@@ -344,13 +349,14 @@ enum DesignShotFixtures {
         OneInboxShotFixtures.cleanUp()
         AutomationShotFixtures.cleanUp()
         BuiltinShotFixtures.cleanUp()
+        CleanupShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
     }
 
-    private static func failure(_ error: Error) -> AnyView {
+    static func failure(_ error: Error) -> AnyView {
         XCTFail("design shot fixture failed: \(error)")
         return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
     }

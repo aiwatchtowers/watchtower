@@ -35,6 +35,16 @@ type Item struct {
 	Done       bool       `json:"done"`
 	Error      string     `json:"error"`
 	Owner      *OwnerHint `json:"owner,omitempty"` // sweep only
+	// Origin is "session" when Owner names a session, else the worktree's
+	// workbenchgit.Origin; "" for branches, lsreg entries and processes.
+	Origin string `json:"origin"`
+	// LastCommitAt is the tip's committer date, RFC 3339 UTC; "" = unknown.
+	LastCommitAt string `json:"last_commit_at"`
+	// Merged: the tip is in the default branch or origin's copy of it.
+	Merged bool `json:"merged"`
+	// Worktree is the root a bundle's lsreg item or an orphan's process
+	// item belongs to; "" for a stale LaunchServices entry.
+	Worktree string `json:"worktree,omitempty"`
 }
 
 // OwnerHint is the sweep's guess at whose an item is: the session that
