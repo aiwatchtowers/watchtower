@@ -101,7 +101,7 @@ struct ChatSidebarView: View {
     private var headerActions: ChatPanelHeaderActions {
         ChatPanelHeaderActions(
             newChat: onNewChat,
-            selectProject: { historyVM.selectLevel(.project($0)) },
+            selectProject: selectProject,
             newProject: {
                 historyVM.selectedConversationID = nil
                 Task {
@@ -166,6 +166,16 @@ struct ChatSidebarView: View {
     private func select(_ conversationID: Int64) {
         historyFocused = true
         historyVM.selectedConversationID = conversationID
+    }
+
+    /// A project picked in the switcher: its level. The chat on screen stays
+    /// when the project lists it; otherwise (another project's chat, the
+    /// landing, another page) the project's overview opens, so the detail
+    /// is always a listed tab.
+    private func selectProject(_ projectID: Int64) {
+        historyVM.selectLevel(.project(projectID))
+        let shown = historyVM.selectedConversationID
+        if shown == nil || !historyVM.rows.contains(where: { $0.id == shown }) { open(projectID) }
     }
 
     private func open(_ projectID: Int64) {

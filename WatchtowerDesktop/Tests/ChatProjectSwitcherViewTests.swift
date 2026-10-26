@@ -143,6 +143,33 @@ final class ChatProjectSwitcherViewTests: XCTestCase {
         XCTAssertEqual(history.level, .all)
     }
 
+    /// Picking a project whose list does not hold the chat on screen opens
+    /// its overview page (no selection left off the list); a chat the
+    /// project lists stays on screen.
+    func testPickingAProjectKeepsAListedChatElseOpensItsOverview() async throws {
+        let (acme, acmeChat) = try await project("acme")
+        let (beta, _) = try await project("beta")
+        let chatVM = ChatViewModel(dbManager: dbManager, pool: pool, defaults: defaults)
+        chatVM.reloadProjects()
+        let history = await history()
+        let sidebar = ChatSidebarView(historyVM: history, chatVM: chatVM, onNewChat: {}, onArchive: { _ in }, onDelete: { _ in })
+        history.selectedConversationID = acmeChat
+        chatVM.select(conversationID: acmeChat)
+        let pick = { (id: Int64) in
+            try sidebar.inspect().find(ChatPanelHeader.self).actualView().actions.selectProject(id)
+        }
+
+        try pick(acme)
+        XCTAssertEqual(history.level, .project(acme))
+        XCTAssertEqual(history.selectedConversationID, acmeChat, "a listed chat stays on screen")
+        XCTAssertNil(chatVM.openProjectID)
+
+        try pick(beta)
+        XCTAssertEqual(history.level, .project(beta))
+        XCTAssertNil(history.selectedConversationID, "nothing selected off the list")
+        XCTAssertEqual(chatVM.openProjectID, beta, "the project's overview opens")
+    }
+
     // MARK: - Popover
 
     /// RECENT lists the projects, latest activity first, the current one
