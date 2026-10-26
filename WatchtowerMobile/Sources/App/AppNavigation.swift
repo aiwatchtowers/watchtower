@@ -17,7 +17,13 @@ final class AppNavigation {
     var tab: RootTabView.Tab = .now
     var calendarPath: [CalendarRoute] = []
     /// The Workbench tab's stack: a tapped alert pushes its screen here.
-    var workbenchPath = NavigationPath()
+    /// Once it is shallower than the alert's screen, that screen is gone for good: a different screen later at the
+    /// same depth must not stand in for it.
+    var workbenchPath = NavigationPath() {
+        didSet {
+            if let openedAlert, workbenchPath.count < openedAlert.depth { self.openedAlert = nil }
+        }
+    }
     /// The screen the last alert tap pushed and the stack depth right after, so an alert for the screen still on
     /// top is not shown again (`AlertDestination.foregroundOptions`).
     private(set) var openedAlert: (destination: AlertDestination, depth: Int)?

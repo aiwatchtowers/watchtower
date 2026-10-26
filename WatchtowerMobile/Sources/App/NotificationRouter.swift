@@ -32,23 +32,44 @@ enum AlertDestination: Equatable {
     }
 }
 
+/// A delivered work alert as the sweep sees it: its notification identifier, `wt_key` and delivery time.
+struct DeliveredAlert: Equatable {
+    let id: String
+    let key: String
+    let deliveredAt: Date
+}
+
 /// Which delivered work alerts are settled and should leave Notification Center.
 enum ResolvedAlerts {
-    /// `delivered` is notification identifier -> `wt_key` of the hub's alerts. An unknown key stays, and so does
-    /// everything while the replica has not loaded (no workbench yet): absence there proves nothing.
-    static func keysToRemove(delivered: [String: String], snapshot: WorkbenchReplicaSnapshot) -> [String] {
+    /// A push-delivered alert usually arrives before the fetch that brings its new state into the replica, so an
+    /// alert younger than this is never swept: whatever the replica shows then may predate it.
+    static let graceAge: TimeInterval = 120
+
+    /// The identifiers to remove. Nothing younger than `graceAge` goes. A rule that rests on absence (the ask is not
+    /// open, the request is not pending) also needs `fetchedAt`, the hub's last successful fetch, to be later than
+    /// the delivery; `fetchedAt` is when the fetch ended, so a replica read still in flight can lag it, which the
+    /// grace age covers. An unknown key stays, and so does everything while the replica has not loaded.
+    static func keysToRemove(
+        delivered: [DeliveredAlert], snapshot: WorkbenchReplicaSnapshot, fetchedAt: Date?, now: Date
+    ) -> [String] {
         guard !snapshot.workbenches.isEmpty else { return [] }
-        return delivered.filter { isResolved(key: $0.value, snapshot: snapshot) }.map(\.key).sorted()
+        return delivered
+            .filter { now.timeIntervalSince($0.deliveredAt) >= graceAge }
+            .filter { alert in
+                isResolved(alert.key, snapshot: snapshot, fetchedAfterDelivery: fetchedAt.map { $0 > alert.deliveredAt } ?? false)
+            }
+            .map(\.id)
+            .sorted()
     }
 
-    private static func isResolved(key: String, snapshot: WorkbenchReplicaSnapshot) -> Bool {
+    private static func isResolved(_ key: String, snapshot: WorkbenchReplicaSnapshot, fetchedAfterDelivery: Bool) -> Bool {
         let parts = key.split(separator: "-")
         switch (parts.first, parts.count) {
         case ("ask", 2):
-            guard let id = Int64(parts[1]) else { return false }
+            guard fetchedAfterDelivery, let id = Int64(parts[1]) else { return false }
             return !snapshot.openAsks().contains { $0.id == id }
         case ("perm", 2):
-            guard let id = Int64(parts[1]) else { return false }
+            guard fetchedAfterDelivery, let id = Int64(parts[1]) else { return false }
             return !snapshot.pendingPermissions.contains { $0.id == id }
         case ("stop", 3):
             guard let id = Int64(parts[1]), let ms = Int64(parts[2]), let session = snapshot.session(id) else { return false }
@@ -64,8 +85,8 @@ enum ResolvedAlerts {
 /// Removes the delivered alerts of one hub that its replica now shows settled. The notification center is a seam.
 @MainActor
 struct DeliveredAlertCleaner {
-    /// (identifier, userInfo) of every delivered notification.
-    var delivered: () async -> [(id: String, userInfo: [String: String])]
+    /// (identifier, delivery date, userInfo) of every delivered notification.
+    var delivered: () async -> [(id: String, date: Date, userInfo: [String: String])]
     var remove: ([String]) -> Void
 
     static let live = Self(
@@ -75,20 +96,20 @@ struct DeliveredAlertCleaner {
                 for (key, value) in note.request.content.userInfo {
                     if let key = key as? String, let value = value as? String { info[key] = value }
                 }
-                return (id: note.request.identifier, userInfo: info)
+                return (id: note.request.identifier, date: note.date, userInfo: info)
             }
         },
         remove: { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: $0) }
     )
 
-    func clear(hubID: String, snapshot: WorkbenchReplicaSnapshot) async {
+    func clear(hubID: String, snapshot: WorkbenchReplicaSnapshot, fetchedAt: Date?, now: Date) async {
         guard !snapshot.workbenches.isEmpty else { return }
-        var keys: [String: String] = [:]
+        var alerts: [DeliveredAlert] = []
         for note in await delivered() where note.userInfo["wt_hub"] == hubID {
-            if let key = note.userInfo["wt_key"] { keys[note.id] = key }
+            if let key = note.userInfo["wt_key"] { alerts.append(DeliveredAlert(id: note.id, key: key, deliveredAt: note.date)) }
         }
-        guard !keys.isEmpty else { return }
-        let gone = ResolvedAlerts.keysToRemove(delivered: keys, snapshot: snapshot)
+        guard !alerts.isEmpty else { return }
+        let gone = ResolvedAlerts.keysToRemove(delivered: alerts, snapshot: snapshot, fetchedAt: fetchedAt, now: now)
         if !gone.isEmpty { remove(gone) }
     }
 }

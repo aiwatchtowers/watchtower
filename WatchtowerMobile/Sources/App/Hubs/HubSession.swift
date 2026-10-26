@@ -166,7 +166,7 @@ final class HubSession {
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
-    /// Takes settled work alerts out of Notification Center after each replica read; 
+    /// Takes settled work alerts out of Notification Center after each replica read.
     private let alertCleaner = DeliveredAlertCleaner.live
     /// The calendar slices as the Calendar and Now tabs draw them.
     let calendarReplica = CalendarReplicaModel()
@@ -491,8 +491,10 @@ final class HubSession {
     private func startWorkbenchReplica(store: ReplicaStore) {
         let hubID = hubID
         let cleaner = alertCleaner
-        workbenchReplica.onSnapshot = { snapshot in
-            Task { @MainActor in await cleaner.clear(hubID: hubID, snapshot: snapshot) }
+        workbenchReplica.onSnapshot = { [weak self] snapshot in
+            Task { @MainActor in
+                await cleaner.clear(hubID: hubID, snapshot: snapshot, fetchedAt: self?.lastSyncAt, now: Date())
+            }
         }
         workbenchReplica.start(store: store)
     }

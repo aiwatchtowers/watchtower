@@ -61,6 +61,8 @@ final class NotificationRouterTests: XCTestCase {
         XCTAssertNil(navigation.alertOnScreen, "covered")
         navigation.workbenchPath.removeLast(2)
         XCTAssertNil(navigation.alertOnScreen, "popped")
+        navigation.workbenchPath.append(SessionRoute(id: 11))
+        XCTAssertNil(navigation.alertOnScreen, "a different screen at the same depth is not the alert's")
         navigation.show(.session(hubID: "hub-a", sessionID: 11))
         navigation.tab = .now
         XCTAssertNil(navigation.alertOnScreen, "another tab")
@@ -96,33 +98,66 @@ final class NotificationRouterTests: XCTestCase {
         return snapshot
     }
 
+    private let old = Date(timeIntervalSince1970: 1_800_000_000 - 600)
+    private func alert(_ key: String, id: String = "n", at: Date? = nil) -> DeliveredAlert {
+        DeliveredAlert(id: id, key: key, deliveredAt: at ?? old)
+    }
+
+    private func sweep(_ alerts: [DeliveredAlert], _ snapshot: WorkbenchReplicaSnapshot, fetched: Date? = nil) -> [String] {
+        ResolvedAlerts.keysToRemove(delivered: alerts, snapshot: snapshot, fetchedAt: fetched ?? now.addingTimeInterval(-60), now: now)
+    }
+
     func testAnAskAlertStaysWhileTheAskIsOpenAndGoesWhenItIsNot() throws {
         let snapshot = try snapshot()
         let open = try XCTUnwrap(snapshot.openAsks().first).id
-        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: ["n1": "ask-\(open)"], snapshot: snapshot), [])
-        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: ["n1": "ask-99999"], snapshot: snapshot), ["n1"])
+        XCTAssertEqual(sweep([alert("ask-\(open)")], snapshot), [])
+        XCTAssertEqual(sweep([alert("ask-99999")], snapshot), ["n"])
+    }
+
+    func testAFreshAlertWhoseEntityIsMissingFromTheReplicaIsKept() throws {
+        let snapshot = try snapshot()
+        let fresh = alert("ask-99999", at: now.addingTimeInterval(-10))
+        XCTAssertEqual(sweep([fresh], snapshot, fetched: now), [], "inside the grace age")
+        let justOver = alert("ask-99999", at: now.addingTimeInterval(-ResolvedAlerts.graceAge))
+        XCTAssertEqual(sweep([justOver], snapshot, fetched: now), ["n"], "past the grace age, fetched after delivery")
+    }
+
+    func testAnAbsenceRuleNeedsAFetchAfterTheDelivery() throws {
+        let snapshot = try snapshot(permissions: [5])
+        let delivered = alert("perm-6", at: now.addingTimeInterval(-300))
+        XCTAssertEqual(sweep([delivered], snapshot, fetched: now.addingTimeInterval(-400)), [], "replica older than the alert")
+        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: [delivered], snapshot: snapshot, fetchedAt: nil, now: now), [])
+        XCTAssertEqual(sweep([delivered], snapshot, fetched: now.addingTimeInterval(-100)), ["n"])
     }
 
     func testAPermissionAlertGoesWhenTheRequestIsNoLongerPending() throws {
         let snapshot = try snapshot(permissions: [5])
-        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: ["a": "perm-5", "b": "perm-6"], snapshot: snapshot), ["b"])
+        XCTAssertEqual(sweep([alert("perm-5", id: "a"), alert("perm-6", id: "b")], snapshot), ["b"])
     }
 
     func testAStopAlertGoesWhenTheSessionWorksAgainOrMovedOn() throws {
         let stopMs = Int64(now.timeIntervalSince1970 * 1000)
-        let stopKey = "stop-77-\(stopMs)"
+        let stop = alert("stop-77-\(stopMs)")
         let stopped = try snapshot(sessionOverrides: ["state_kind": "finished", "state_at": Int(now.timeIntervalSince1970)])
-        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: ["n": stopKey], snapshot: stopped), [], "still the same stop")
+        XCTAssertEqual(sweep([stop], stopped), [], "still the same stop")
         let later = try snapshot(sessionOverrides: ["state_kind": "finished", "state_at": Int(now.timeIntervalSince1970) + 60])
-        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: ["n": stopKey], snapshot: later), ["n"], "a newer state")
+        XCTAssertEqual(sweep([stop], later), ["n"], "a newer state")
         let working = try snapshot(sessionOverrides: ["state_kind": "working", "state_at": Int(now.timeIntervalSince1970)])
-        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: ["n": stopKey], snapshot: working), ["n"], "works again")
+        XCTAssertEqual(sweep([stop], working), ["n"], "works again")
+        let fresh = alert("stop-77-\(stopMs)", at: now.addingTimeInterval(-5))
+        XCTAssertEqual(sweep([fresh], working), [], "a stale working state inside the grace age")
+    }
+
+    func testAFailedSessionAlertUsesTheSameStopKey() throws {
+        let key = WorkAlertKey.stop(session: 77, stateAt: now)
+        let working = try snapshot(sessionOverrides: ["state_kind": "working"])
+        XCTAssertEqual(sweep([alert(key)], working), ["n"])
     }
 
     func testUnknownKeysMissingSessionsAndAnUnloadedReplicaKeepTheirAlerts() throws {
         let snapshot = try snapshot()
-        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: ["a": "other-1", "b": "stop-4040-1", "c": "ask-x"], snapshot: snapshot), [])
-        XCTAssertEqual(ResolvedAlerts.keysToRemove(delivered: ["a": "ask-99999"], snapshot: WorkbenchReplicaSnapshot()), [])
+        XCTAssertEqual(sweep([alert("other-1", id: "a"), alert("stop-4040-1", id: "b"), alert("ask-x", id: "c")], snapshot), [])
+        XCTAssertEqual(sweep([alert("ask-99999")], WorkbenchReplicaSnapshot()), [])
     }
 
     func testTheCleanerRemovesOnlyThisHubsSettledAlerts() async throws {
@@ -130,14 +165,15 @@ final class NotificationRouterTests: XCTestCase {
         let cleaner = DeliveredAlertCleaner(
             delivered: {
                 [
-                    (id: "mine", userInfo: ["wt_hub": "hub-a", "wt_key": "ask-99999"]),
-                    (id: "other-hub", userInfo: ["wt_hub": "hub-b", "wt_key": "ask-99999"]),
-                    (id: "generic", userInfo: [:])
+                    (id: "mine", date: self.old, userInfo: ["wt_hub": "hub-a", "wt_key": "ask-99999"]),
+                    (id: "other-hub", date: self.old, userInfo: ["wt_hub": "hub-b", "wt_key": "ask-99999"]),
+                    (id: "fresh", date: self.now, userInfo: ["wt_hub": "hub-a", "wt_key": "ask-99998"]),
+                    (id: "generic", date: self.old, userInfo: [:])
                 ]
             },
             remove: { removed.append($0) }
         )
-        await cleaner.clear(hubID: "hub-a", snapshot: try snapshot())
+        await cleaner.clear(hubID: "hub-a", snapshot: try snapshot(), fetchedAt: now, now: now)
         XCTAssertEqual(removed, [["mine"]])
     }
 }
