@@ -16,13 +16,14 @@ enum AlertDestination: Equatable {
     /// Reads the keys the notification extension set (`WorkAlertContent.userInfo`): an ask event opens its ask;
     /// every other event opens its session. Nil for a notification without them (the generic one).
     static func destination(userInfo: [AnyHashable: Any]) -> Self? {
-        guard let hubID = userInfo["wt_hub"] as? String, !hubID.isEmpty,
-              let event = (userInfo["wt_event"] as? String).flatMap(WorkAlertPayload.Event.init(rawValue:))
+        typealias Key = WorkAlertContent.Key
+        guard let hubID = userInfo[Key.hub] as? String, !hubID.isEmpty,
+              let event = (userInfo[Key.event] as? String).flatMap(WorkAlertPayload.Event.init(rawValue:))
         else { return nil }
         if event == .ask {
-            return (userInfo["wt_ask"] as? String).flatMap { Int64($0) }.map { .ask(hubID: hubID, askID: $0) }
+            return (userInfo[Key.ask] as? String).flatMap { Int64($0) }.map { .ask(hubID: hubID, askID: $0) }
         }
-        return (userInfo["wt_session"] as? String).flatMap { Int64($0) }.map { .session(hubID: hubID, sessionID: $0) }
+        return (userInfo[Key.session] as? String).flatMap { Int64($0) }.map { .session(hubID: hubID, sessionID: $0) }
     }
 
     /// A banner and sound while the app is open, nothing when the alert's own screen is the one on top.
@@ -47,8 +48,9 @@ enum ResolvedAlerts {
 
     /// The identifiers to remove. Nothing younger than `graceAge` goes. A rule that rests on absence (the ask is not
     /// open, the request is not pending) also needs `fetchedAt`, the hub's last successful fetch, to be later than
-    /// the delivery; `fetchedAt` is when the fetch ended, so a replica read still in flight can lag it, which the
-    /// grace age covers. An unknown key stays, and so does everything while the replica has not loaded.
+    /// the delivery; so does a stop alert's session that works again, unless its state is newer than the stop.
+    /// `fetchedAt` is when the fetch ended, so a replica read still in flight can lag it, which the grace age covers.
+    /// An unknown key stays, and so does everything while the replica has not loaded.
     static func keysToRemove(
         delivered: [DeliveredAlert], snapshot: WorkbenchReplicaSnapshot, fetchedAt: Date?, now: Date
     ) -> [String] {
@@ -73,9 +75,11 @@ enum ResolvedAlerts {
             return !snapshot.pendingPermissions.contains { $0.id == id }
         case ("stop", 3):
             guard let id = Int64(parts[1]), let ms = Int64(parts[2]), let session = snapshot.session(id) else { return false }
-            if session.stateKind == .working { return true }
-            guard let stateAt = session.stateAt else { return false }
-            return Int64((stateAt.timeIntervalSince1970 * 1000).rounded()) > ms
+            let movedOn = session.stateAt.map { Int64(($0.timeIntervalSince1970 * 1000).rounded()) > ms } ?? false
+            // A working state the replica held before the stop arrived may be the one the stop ended: it counts
+            // only when it is newer than the stop or a fetch came after the delivery.
+            if session.stateKind == .working { return movedOn || fetchedAfterDelivery }
+            return movedOn
         default:
             return false
         }
@@ -105,8 +109,8 @@ struct DeliveredAlertCleaner {
     func clear(hubID: String, snapshot: WorkbenchReplicaSnapshot, fetchedAt: Date?, now: Date) async {
         guard !snapshot.workbenches.isEmpty else { return }
         var alerts: [DeliveredAlert] = []
-        for note in await delivered() where note.userInfo["wt_hub"] == hubID {
-            if let key = note.userInfo["wt_key"] { alerts.append(DeliveredAlert(id: note.id, key: key, deliveredAt: note.date)) }
+        for note in await delivered() where note.userInfo[WorkAlertContent.Key.hub] == hubID {
+            if let key = note.userInfo[WorkAlertContent.Key.key] { alerts.append(DeliveredAlert(id: note.id, key: key, deliveredAt: note.date)) }
         }
         guard !alerts.isEmpty else { return }
         let gone = ResolvedAlerts.keysToRemove(delivered: alerts, snapshot: snapshot, fetchedAt: fetchedAt, now: now)

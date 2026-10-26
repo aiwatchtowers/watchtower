@@ -27,11 +27,25 @@ final class AppNavigation {
     /// The screen the last alert tap pushed and the stack depth right after, so an alert for the screen still on
     /// top is not shown again (`AlertDestination.foregroundOptions`).
     private(set) var openedAlert: (destination: AlertDestination, depth: Int)?
+    /// The workchat or ask form on screen, however it was opened: the screen sets it when it appears and clears it
+    /// when it goes (covered, popped or another tab).
+    private(set) var visibleAlertScreen: AlertDestination?
 
-    /// The destination's screen when it is the top of the Workbench tab.
+    /// The alert screen on top: the visible workchat or ask form, else the screen the last alert tap pushed while it
+    /// is still the top of the Workbench tab.
     var alertOnScreen: AlertDestination? {
+        if let visibleAlertScreen { return visibleAlertScreen }
         guard tab == .workbench, let openedAlert, workbenchPath.count == openedAlert.depth else { return nil }
         return openedAlert.destination
+    }
+
+    func screenAppeared(_ screen: AlertDestination) {
+        visibleAlertScreen = screen
+    }
+
+    /// Clears only its own screen: the next screen's appear can land before the covered one's disappear.
+    func screenDisappeared(_ screen: AlertDestination) {
+        if visibleAlertScreen == screen { visibleAlertScreen = nil }
     }
 
     /// Selects the Workbench tab and pushes the destination on its stack, from the root.
@@ -59,5 +73,6 @@ final class AppNavigation {
         calendarPath = []
         workbenchPath = NavigationPath()
         openedAlert = nil
+        visibleAlertScreen = nil
     }
 }

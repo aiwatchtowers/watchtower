@@ -42,11 +42,12 @@ import WatchtowerSync
 /// and stops it with the hub.
 @MainActor
 final class FastLane: HubCompanion {
-    /// Each observed table and the urgent kinds its writes nudge. Other
-    /// tables' writes publish on the full tick, which needs no trigger.
+    /// Each observed table and the urgent kinds its writes nudge (an ask or
+    /// a permission request is also a work alert). Other tables' writes
+    /// publish on the full tick, which needs no trigger.
     nonisolated static let observedTables: [(table: String, kinds: Set<SliceKind>)] = [
         ("owner_asks", [.ownerAsk, .askAlert]),
-        ("permission_requests", [.permissionRequest])
+        ("permission_requests", [.permissionRequest, .askAlert])
     ]
     /// What a session state change nudges: the ask kinds and the permission
     /// requests, since Go's writes are invisible to the observation above

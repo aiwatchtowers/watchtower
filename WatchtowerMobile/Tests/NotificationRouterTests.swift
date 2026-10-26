@@ -41,6 +41,26 @@ final class NotificationRouterTests: XCTestCase {
         XCTAssertNil(AlertDestination.destination(userInfo: info("ask", hub: "", ask: "1")))
     }
 
+    /// Producer → consumer: the userInfo the notification extension builds (`WorkAlertContent`) routes every event.
+    func testEveryWorkAlertEventRoutesFromTheKitsUserInfo() {
+        let cases: [(WorkAlertPayload.Event, AlertDestination)] = [
+            (.ask, .ask(hubID: "hub-a", askID: 109)),
+            (.permission, .session(hubID: "hub-a", sessionID: 11)),
+            (.sessionStopped, .session(hubID: "hub-a", sessionID: 11)),
+            (.sessionFailed, .session(hubID: "hub-a", sessionID: 11))
+        ]
+        for (event, expected) in cases {
+            let payload = WorkAlertPayload(
+                event: event, key: "k", workbenchID: 1, workbenchName: "acme", sessionID: 11,
+                askID: event == .ask ? 109 : nil, requestID: event == .permission ? 5 : nil,
+                title: "acme", body: "body", quick: false
+            )
+            let content = WorkAlertContent(payload: payload, hubID: "hub-a")
+            XCTAssertEqual(content.userInfo[WorkAlertContent.Key.hub], "hub-a")
+            XCTAssertEqual(AlertDestination.destination(userInfo: content.userInfo), expected, event.rawValue)
+        }
+    }
+
     // MARK: - Navigation and foreground presentation
 
     func testShowingADestinationSelectsTheWorkbenchTabAndPushesItsRoute() {
@@ -66,6 +86,23 @@ final class NotificationRouterTests: XCTestCase {
         navigation.show(.session(hubID: "hub-a", sessionID: 11))
         navigation.tab = .now
         XCTAssertNil(navigation.alertOnScreen, "another tab")
+    }
+
+    /// A workchat or ask form opened any way (not only from an alert) keeps its own alerts quiet while it is on top.
+    func testAnyOpenAlertScreenSuppressesItsBanner() {
+        let navigation = AppNavigation()
+        let session = AlertDestination.session(hubID: "hub-a", sessionID: 11)
+        let ask = AlertDestination.ask(hubID: "hub-a", askID: 109)
+        navigation.tab = .now
+        navigation.screenAppeared(session)
+        XCTAssertEqual(navigation.alertOnScreen, session, "opened from the Now tab, not from an alert")
+        navigation.screenAppeared(ask)
+        navigation.screenDisappeared(session)
+        XCTAssertEqual(navigation.alertOnScreen, ask, "the covered screen's late disappear leaves the new one")
+        navigation.screenDisappeared(ask)
+        XCTAssertNil(navigation.alertOnScreen)
+        navigation.show(session)
+        XCTAssertEqual(navigation.alertOnScreen, session, "falls back to the opened alert")
     }
 
     func testAHubSwitchResetsTheWorkbenchStack() {
@@ -138,20 +175,38 @@ final class NotificationRouterTests: XCTestCase {
     func testAStopAlertGoesWhenTheSessionWorksAgainOrMovedOn() throws {
         let stopMs = Int64(now.timeIntervalSince1970 * 1000)
         let stop = alert("stop-77-\(stopMs)")
+        let beforeDelivery = old.addingTimeInterval(-60)
         let stopped = try snapshot(sessionOverrides: ["state_kind": "finished", "state_at": Int(now.timeIntervalSince1970)])
         XCTAssertEqual(sweep([stop], stopped), [], "still the same stop")
         let later = try snapshot(sessionOverrides: ["state_kind": "finished", "state_at": Int(now.timeIntervalSince1970) + 60])
         XCTAssertEqual(sweep([stop], later), ["n"], "a newer state")
-        let working = try snapshot(sessionOverrides: ["state_kind": "working", "state_at": Int(now.timeIntervalSince1970)])
-        XCTAssertEqual(sweep([stop], working), ["n"], "works again")
+        let staleWorking = try snapshot(sessionOverrides: ["state_kind": "working", "state_at": Int(now.timeIntervalSince1970)])
+        XCTAssertEqual(
+            sweep([stop], staleWorking, fetched: beforeDelivery), [],
+            "a working state no later than the stop, with no fetch since the delivery, may predate the stop"
+        )
+        let laterWorking = try snapshot(sessionOverrides: ["state_kind": "working", "state_at": Int(now.timeIntervalSince1970) + 60])
+        XCTAssertEqual(sweep([stop], laterWorking, fetched: beforeDelivery), ["n"], "works again after the stop")
+        XCTAssertEqual(sweep([stop], staleWorking, fetched: now.addingTimeInterval(-60)), ["n"], "working, fetched after the delivery")
         let fresh = alert("stop-77-\(stopMs)", at: now.addingTimeInterval(-5))
-        XCTAssertEqual(sweep([fresh], working), [], "a stale working state inside the grace age")
+        XCTAssertEqual(sweep([fresh], laterWorking), [], "inside the grace age")
     }
 
     func testAFailedSessionAlertUsesTheSameStopKey() throws {
         let key = WorkAlertKey.stop(session: 77, stateAt: now)
-        let working = try snapshot(sessionOverrides: ["state_kind": "working"])
-        XCTAssertEqual(sweep([alert(key)], working), ["n"])
+        let working = try snapshot(sessionOverrides: ["state_kind": "working", "state_at": Int(now.timeIntervalSince1970)])
+        XCTAssertEqual(sweep([alert(key)], working, fetched: old.addingTimeInterval(-60)), [], "no fetch since the delivery")
+        XCTAssertEqual(sweep([alert(key)], working), ["n"], "fetched after the delivery")
+    }
+
+    /// The key the hub builds (`WorkAlertKey.stop`) from a fractional stamp is the one the sweep compares against.
+    func testAStopKeyFromAFractionalStampMatchesTheReplicasState() throws {
+        let stateAt = now.addingTimeInterval(0.4567)
+        let key = WorkAlertKey.stop(session: 77, stateAt: stateAt)
+        let same = try snapshot(sessionOverrides: ["state_kind": "finished", "state_at": stateAt.timeIntervalSince1970])
+        XCTAssertEqual(sweep([alert(key)], same), [], "the same stop, to the millisecond")
+        let next = try snapshot(sessionOverrides: ["state_kind": "finished", "state_at": stateAt.timeIntervalSince1970 + 0.002])
+        XCTAssertEqual(sweep([alert(key)], next), ["n"], "a state two milliseconds later is a new one")
     }
 
     func testUnknownKeysMissingSessionsAndAnUnloadedReplicaKeepTheirAlerts() throws {
@@ -165,7 +220,7 @@ final class NotificationRouterTests: XCTestCase {
         let cleaner = DeliveredAlertCleaner(
             delivered: {
                 [
-                    (id: "mine", date: self.old, userInfo: ["wt_hub": "hub-a", "wt_key": "ask-99999"]),
+                    (id: "mine", date: self.old, userInfo: [WorkAlertContent.Key.hub: "hub-a", WorkAlertContent.Key.key: "ask-99999"]),
                     (id: "other-hub", date: self.old, userInfo: ["wt_hub": "hub-b", "wt_key": "ask-99999"]),
                     (id: "fresh", date: self.now, userInfo: ["wt_hub": "hub-a", "wt_key": "ask-99998"]),
                     (id: "generic", date: self.old, userInfo: [:])
@@ -175,5 +230,37 @@ final class NotificationRouterTests: XCTestCase {
         )
         await cleaner.clear(hubID: "hub-a", snapshot: try snapshot(), fetchedAt: now, now: now)
         XCTAssertEqual(removed, [["mine"]])
+    }
+
+    // MARK: - HubSession wiring
+
+    /// Every successful fetch sweeps, even one whose snapshot did not change (no replica observation fires then):
+    /// the fetch itself is what makes an absence or a working state trustworthy.
+    func testAFetchThatChangesNothingStillSweeps() async throws {
+        var sweeps = 0
+        let cleaner = DeliveredAlertCleaner(delivered: { sweeps += 1; return [] }, remove: { _ in })
+        let sleeper = TickSleeper()
+        let clock = MutableClock()
+        let env = try HubSession(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try makeReplicaPath(),
+            transportKind: .inMemoryDemo,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            alertCleaner: cleaner,
+            now: { clock.now },
+            remoteFetch: { _ in },
+            sleep: { try await sleeper.sleep($0) }
+        )
+        addTeardownBlock { @MainActor in env.stop() }
+        try await poll({ env.isLooping && sleeper.waitingCount == 1 && env.lastSyncAt != nil && sweeps > 0 }, "booted")
+        for _ in 0..<20 { await Task.yield() }
+        let before = sweeps
+        clock.advance(30)
+
+        let outcome = await env.handlePush(inForeground: true)
+
+        XCTAssertEqual(outcome, .noData, "nothing new arrived")
+        try await poll({ sweeps > before }, "the fetch swept the delivered alerts")
     }
 }

@@ -166,8 +166,8 @@ final class HubSession {
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
-    /// Takes settled work alerts out of Notification Center after each replica read.
-    private let alertCleaner = DeliveredAlertCleaner.live
+    /// Takes settled work alerts out of Notification Center after each replica read and each successful fetch.
+    private let alertCleaner: DeliveredAlertCleaner
     /// The calendar slices as the Calendar and Now tabs draw them.
     let calendarReplica = CalendarReplicaModel()
     /// The phone recorder (record a meeting or a voice note), owned for the
@@ -382,6 +382,7 @@ final class HubSession {
         databaseScope: CloudDatabaseScope? = nil,
         notifications: NotificationCenter = .default,
         subscriptionSaver: (any SubscriptionSaving)? = nil,
+        alertCleaner: DeliveredAlertCleaner? = nil,
         startsActive: Bool = true,
         uploadRetriesAllowed: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         replicaObservesSuspension: Bool = false,
@@ -401,6 +402,7 @@ final class HubSession {
         self.sleep = sleep
         self.now = now
         self.energy = energy
+        self.alertCleaner = alertCleaner ?? .live
         isActive = startsActive
         self.transport = transport
         self.transportStore = transportStore
@@ -497,6 +499,14 @@ final class HubSession {
             }
         }
         workbenchReplica.start(store: store)
+    }
+
+    /// A successful fetch makes absences and working states in the replica trustworthy, so it sweeps settled alerts
+    /// even when the snapshot did not change (no observation fires then). The snapshot is the replica as the screens
+    /// see it; one the fetch changed is swept again when its observation lands.
+    private func sweepDeliveredAlerts() {
+        let (cleaner, hubID, snapshot, fetchedAt) = (alertCleaner, hubID, workbenchReplica.snapshot, lastSyncAt)
+        Task { @MainActor in await cleaner.clear(hubID: hubID, snapshot: snapshot, fetchedAt: fetchedAt, now: Date()) }
     }
 
     /// The `device` settings (sealed like every other write: the hub drops a plaintext `device` record) and the
@@ -936,6 +946,7 @@ final class HubSession {
         }
         lastSyncAt = now()
         lastFetchError = nil
+        sweepDeliveredAlerts()
         var routed = 0
         do {
             routed = try await feed.pollOnce()
@@ -974,6 +985,7 @@ final class HubSession {
             return
         }
         lastSyncAt = now()
+        sweepDeliveredAlerts()
         do {
             _ = try await feed.pollOnce()
         } catch {
@@ -1014,6 +1026,10 @@ final class HubSession {
         // while the app was suspended), before the return's fetch.
         indexStoredRows()
         Task { [deviceSettings] in await deviceSettings.touchIfStale() }
+        // A subscription save or delete that failed earlier is retried; one already applied costs no CloudKit call.
+        if isBootstrapped, let alertRegistrar {
+            Task { [deviceSettings] in await alertRegistrar.apply(enabled: deviceSettings.workAlerts) }
+        }
         let recent = !fullFetchOwed && (lastSyncAt.map { now().timeIntervalSince($0) < SessionCadence.foregroundRefetchAfter(role: role) } ?? false)
         restartLoop(firstCycle: recent ? nil : .foreground)
         if recent, isBootstrapped {

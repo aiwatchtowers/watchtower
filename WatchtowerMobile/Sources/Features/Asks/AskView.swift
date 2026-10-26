@@ -13,6 +13,7 @@ struct AskRoute: Hashable {
 /// ask shows its stored answer read-only; one whose payload did not fit
 /// says to open it on the Mac.
 struct AskView: View {
+    @Environment(AppEnvironment.self) private var env
     let replica: WorkbenchReplicaModel
     @State private var model: AskViewModel
 
@@ -33,6 +34,13 @@ struct AskView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { if let alertScreen { env.navigation.screenAppeared(alertScreen) } }
+        .onDisappear { if let alertScreen { env.navigation.screenDisappeared(alertScreen) } }
+    }
+
+    /// This form as a work alert names it: its own alerts stay quiet while it is on top.
+    private var alertScreen: AlertDestination? {
+        env.activeHubID.map { .ask(hubID: $0, askID: model.askID) }
     }
 
     private func content(_ form: AskFormModel, ask: OwnerAsk) -> some View {

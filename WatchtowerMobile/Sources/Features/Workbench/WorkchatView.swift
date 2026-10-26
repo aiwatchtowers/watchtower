@@ -43,6 +43,11 @@ struct WorkchatView: View {
 
     private var sessionID: Int64 { chat.sessionID }
 
+    /// This screen as a work alert names it: its own alerts stay quiet while it is on top.
+    private var alertScreen: AlertDestination? {
+        env.activeHubID.map { .session(hubID: $0, sessionID: sessionID) }
+    }
+
     var body: some View {
         let session = replica.snapshot.session(sessionID)
         let model = session.map { workchat($0, now: .now) }
@@ -96,8 +101,14 @@ struct WorkchatView: View {
             Text(sendError ?? "")
         }
         .onChange(of: lines, initial: true) { _, rows in chat.noteOutgoing(rows.compactMap(SessionChatViewModel.Outgoing.init)) }
-        .onAppear { chat.appeared() }
-        .onDisappear { chat.disappeared() }
+        .onAppear {
+            chat.appeared()
+            if let alertScreen { env.navigation.screenAppeared(alertScreen) }
+        }
+        .onDisappear {
+            chat.disappeared()
+            if let alertScreen { env.navigation.screenDisappeared(alertScreen) }
+        }
     }
 
     // MARK: - Models

@@ -542,9 +542,10 @@ final class FastLaneTests: XCTestCase {
 
     // MARK: - Table observation
 
-    /// Only the asks and the permission requests (#517) are observed:
-    /// every other table's writes publish on the full tick, which a nudge
-    /// could not bring forward.
+    /// Only the asks and the permission requests (#517) are observed, each
+    /// with the alert kind (a new request is a permission alert): every
+    /// other table's writes publish on the full tick, which a nudge could
+    /// not bring forward.
     func testTheDesktopsOwnAskWritesNudgeTheAskKinds() async throws {
         XCTAssertEqual(FastLane.observedTables.map(\.table), ["owner_asks", "permission_requests"])
         XCTAssertTrue(
@@ -571,7 +572,7 @@ final class FastLaneTests: XCTestCase {
                 """, arguments: [row.id, bench.project])
         }
         await awaitHubCondition("a permission request write nudges") {
-            log.nudges.contains { $0 == [.permissionRequest] }
+            log.nudges.contains { $0 == [.permissionRequest, .askAlert] }
         }
 
         lane.stop()
