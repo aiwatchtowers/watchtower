@@ -61,7 +61,11 @@ struct CleanupScreenView: View {
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            // Back on a page whose apply ended meanwhile: its keeps show too.
+            if isDone { keptFolded = false }
+        }
         .onChange(of: isDone) { _, done in
             // A row kept at apply time moves to Kept: show it.
             if done { keptFolded = false }
@@ -164,7 +168,7 @@ struct CleanupScreenView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, Spacing.hero)
+        .padding(.vertical, Spacing.wide)
     }
 
     /// The `EmptyStateCopyTable` key of mockup G.
@@ -181,7 +185,10 @@ struct CleanupScreenView: View {
                     if !canGoFolded {
                         ForEach(rows.canGo) { row in rowView(row, model: model, shown: shown) }
                     }
-                    groupHeader("Kept", count: rows.kept.count, summary: model.keptSummary(), folded: $keptFolded)
+                    // Nothing kept: no Kept group (mockup E); Can go always shows.
+                    if !rows.kept.isEmpty {
+                        groupHeader("Kept", count: rows.kept.count, summary: model.keptSummary(), folded: $keptFolded)
+                    }
                     if !keptFolded {
                         ForEach(rows.kept) { row in rowView(row, model: model, shown: shown) }
                     }
@@ -208,8 +215,8 @@ struct CleanupScreenView: View {
             }
         }
         .buttonStyle(KitQuietButtonStyle(label: .secondary))
-        .padding(.top, Spacing.cozy)
-        .padding(.bottom, Spacing.small)
+        .controlSize(.small)
+        .padding(.top, Spacing.compact)
     }
 
     private func rowView(_ row: CleanupRow, model: CleanupScreenModel, shown: [CleanupRow]) -> some View {

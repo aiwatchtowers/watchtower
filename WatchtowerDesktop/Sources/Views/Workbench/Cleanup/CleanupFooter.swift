@@ -36,7 +36,8 @@ struct CleanupFooter: View {
             }
             .keyboardShortcut(keys.selectAll)
             .buttonStyle(.kitQuiet)
-            if !ticks.isEmpty {
+            // Ticks on rows removed or kept since (after an apply) leave no Clear.
+            if !live.isEmpty {
                 Button("Clear") { ticks = [] }
                     .keyboardShortcut(keys.clear)
                     .buttonStyle(.kitQuiet)

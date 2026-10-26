@@ -284,7 +284,12 @@ enum DesignShotCatalog {
             DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {
                 AnyView(SearchShotFixtures.rebuildPending().shotFrame().detailBackground())
             }
-        ] + CatalogPage.allCases.map { page in
+        ] + CleanupShotFixtures.Frame.allCases.map { frame in
+            // The Clean Up screen (#1107), mockup frames A–G.
+            DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
+                CleanupShotFixtures.screen(frame)
+            }
+        } + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
                 // A fixed moment, so the Typography page's live counter is the same every run.
                 AnyView(CatalogPageBody(page: page)
@@ -325,6 +330,7 @@ enum DesignShotFixtures {
         OneInboxShotFixtures.cleanUp()
         AutomationShotFixtures.cleanUp()
         BuiltinShotFixtures.cleanUp()
+        CleanupShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

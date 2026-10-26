@@ -28,6 +28,8 @@ struct CleanupToolbar: View {
             ownerMenu
             toggle("Merged only", isOn: $filters.mergedOnly,
                    help: "Only what is already in the default branch")
+                // Off, it still reads as a control (mockup `.toggle`).
+                .segmentCapsule()
             Spacer(minLength: 0)
         }
         .controlSize(.small)

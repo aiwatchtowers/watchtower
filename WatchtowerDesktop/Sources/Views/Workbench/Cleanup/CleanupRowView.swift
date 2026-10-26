@@ -8,6 +8,8 @@ enum CleanupColumns {
     static let check: CGFloat = 26
     static let owner: CGFloat = 190
     static let size: CGFloat = 84
+    /// The sizes stop short of Last commit (mockup `.num`).
+    static let sizeInset: CGFloat = Spacing.medium
     static let lastCommit: CGFloat = 104
     static let state: CGFloat = 190
 }
@@ -29,7 +31,7 @@ struct CleanupColumnHeader: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             title("Owner").frame(width: CleanupColumns.owner, alignment: .leading)
             sortButton("Size", .size)
-                .padding(.trailing, -Spacing.regular)
+                .padding(.trailing, CleanupColumns.sizeInset - Spacing.regular)
                 .frame(width: CleanupColumns.size, alignment: .trailing)
             sortButton("Last commit", .lastCommit)
                 .padding(.leading, -Spacing.regular)
@@ -38,8 +40,8 @@ struct CleanupColumnHeader: View {
         }
         .font(.caption)
         .controlSize(.small)
+        // The sort buttons' own height is the row's.
         .padding(.horizontal, Spacing.regular)
-        .padding(.vertical, Spacing.small)
     }
 
     private func title(_ text: String) -> some View {
@@ -77,7 +79,8 @@ struct CleanupRowView: View {
 
     var body: some View {
         HStack(spacing: Spacing.regular) {
-            checkbox.frame(width: CleanupColumns.check)
+            // The column stays on rows with no box, so the names line up.
+            ZStack { checkbox }.frame(width: CleanupColumns.check)
             name.frame(maxWidth: .infinity, alignment: .leading)
             Text(row.ownerText)
                 .font(.caption)
@@ -85,7 +88,7 @@ struct CleanupRowView: View {
                 .lineLimit(1)
                 .help(row.ownerText)
                 .frame(width: CleanupColumns.owner, alignment: .leading)
-            size.frame(width: CleanupColumns.size, alignment: .trailing)
+            size.padding(.trailing, CleanupColumns.sizeInset).frame(width: CleanupColumns.size, alignment: .trailing)
             Text(row.state == .checking ? "—" : row.lastCommitText)
                 .font(.caption)
                 .foregroundStyle(row.state == .checking ? .tertiary : .secondary)
