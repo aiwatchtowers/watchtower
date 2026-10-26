@@ -5,11 +5,27 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class ChatHistoryViewModel {
-    /// Every listed chat of the workspace (standalone, not archived), each
-    /// with its panel line (`ChatHistoryQueries.panelRows`), newest first.
-    /// The level's `rows` are filtered from it; the project switcher counts
-    /// over it.
-    private(set) var allRows: [ChatPanelRow] = []
+    /// Every listed chat of the workspace as last read (standalone, not
+    /// archived), each with its panel line (`ChatHistoryQueries.panelRows`),
+    /// newest first — the chats waiting for their delete included.
+    private var loadedRows: [ChatPanelRow] = []
+    /// The quick delete's Undo window (spec 2026-10-26 §5.3); its chat is
+    /// hidden from every read the owner sees (`hiddenChatIDs`).
+    var pendingDeletes = PendingChatDeletes()
+    /// Chats whose DELETE is being written: hidden until it lands, so a
+    /// commit never shows the row again for a moment.
+    var committingDeletes: Set<Int64> = []
+    /// The panel's keyboard cursor (spec §5.4): the highlighted row while
+    /// the panel has the keyboard.
+    var panelCursor: Int64?
+    /// Changing it hands the keyboard to the panel (`requestPanelKeyboard`).
+    var panelKeyboardSerial = 0
+    /// Retires the chat's session (`ChatViewModel.forget`) when its delete
+    /// commits; `AppState.wireChat` points it at the chat view model.
+    @ObservationIgnored var forgetConversation: (Int64) -> Void = { _ in }
+    /// The Undo window's wait; a seam for tests.
+    @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    @ObservationIgnored var deleteCommitTask: Task<Void, Never>?
     /// The chat on screen (or nil: the landing, a project page). Selecting
     /// one marks it read (spec §5.2).
     var selectedConversationID: Int64? {
@@ -93,7 +109,10 @@ final class ChatHistoryViewModel {
     /// Re-reads the switcher's projects (the popover asks on open).
     func loadSwitcherSummaries() async {
         do {
-            switcherSummaries = try await dbManager.dbPool.read { try ChatProjectQueries.switcherSummaries($0) }
+            let hidden = hiddenChatIDs
+            switcherSummaries = try await dbManager.dbPool.read {
+                try ChatProjectQueries.switcherSummaries($0, hiding: hidden)
+            }
             switcherError = nil
         } catch {
             switcherError = "Could not load projects: \(error.localizedDescription)"
@@ -112,6 +131,18 @@ final class ChatHistoryViewModel {
     }
 
     // MARK: - Rows
+
+    /// Every listed chat of the workspace but the ones waiting for their
+    /// delete. The level's `rows` are filtered from it; the project
+    /// switcher counts over it.
+    var allRows: [ChatPanelRow] {
+        let hidden = hiddenChatIDs
+        return hidden.isEmpty ? loadedRows : loadedRows.filter { !hidden.contains($0.id) }
+    }
+
+    /// The chats the quick delete hides: pending in the Undo window, or
+    /// being deleted.
+    var hiddenChatIDs: Set<Int64> { pendingDeletes.ids.union(committingDeletes) }
 
     /// The level's chats, newest first.
     var rows: [ChatPanelRow] {
@@ -226,10 +257,13 @@ final class ChatHistoryViewModel {
         return true
     }
 
-    /// ⌘K. A read failure is reported, not shown as "no results".
+    /// ⌘K. A read failure is reported, not shown as "no results". A chat
+    /// waiting for its delete is not found.
     func search(_ query: String) -> [ChatSearchHit] {
         do {
+            let hidden = hiddenChatIDs
             return try dbManager.dbPool.read { db in try ChatSearchQueries.search(db, query: query) }
+                .filter { !hidden.contains($0.conversationID) }
         } catch {
             lastError = "Search failed: \(error.localizedDescription)"
             return []
@@ -307,7 +341,7 @@ final class ChatHistoryViewModel {
     /// level: a project gone since (deleted or archived) falls back to All
     /// chats. A read older than the last level change does not.
     private func apply(_ snapshot: PanelSnapshot, readAtGeneration: Int?) {
-        allRows = snapshot.rows
+        loadedRows = snapshot.rows
         guard readAtGeneration == levelGeneration else { return }
         let resolved = level.resolved(activeProjectIDs: snapshot.activeProjectIDs)
         if resolved != level { selectLevel(resolved) }
@@ -335,7 +369,7 @@ final class ChatHistoryViewModel {
             if let attachmentsRoot {
                 ChatAttachmentStore.removeFiles(for: .conversation(id), rootDir: attachmentsRoot)
             }
-            allRows.removeAll { $0.id == id }
+            loadedRows.removeAll { $0.id == id }
             if selectedConversationID == id {
                 selectedConversationID = rows.first?.id
             }

@@ -88,11 +88,20 @@ action: hotkey:search-chats
 | **Esc** | Stop the answer |
 | **↑** | Edit your last message (in an empty field) |
 | **⌘Return** | Save & Send an edited message |
-| **↑ / ↓** | Previous / next chat (in the Chats panel, after a click on it) |
-| **Return** | Open the highlighted chat (in the Chats panel) |
-| **⌘⌫** | Delete the highlighted chat; **⌘Z** undoes it for 5 seconds |
-| **⌘1–⌘9** | Open chat 1–9 of the list (**View** → **Go to Item**, shared with the Workbench) |
+| **⌘1–⌘9** | Open chat 1–9 of the chat list (**View** → **Go to Item**, shared with the Workbench) |
 | **⌘[** | Back to All chats from a project (**View** → **Back**, shared with the Workbench) |
+
+### Chats Panel
+
+After a click on the panel's empty space, a section label or the older header.
+
+| Keys | Action |
+|---|---|
+| **↑ / ↓** | Move the highlight |
+| **Return** | Open the highlighted chat |
+| **⌘⌫** | Delete the highlighted chat |
+| **⌘Z** | Undo the delete (for 5 seconds) |
+| **Esc** | Leave the chat list |
 
 ### Targets
 

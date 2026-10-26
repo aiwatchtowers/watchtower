@@ -48,7 +48,8 @@ struct ChatSplitView: View {
                 if showSidebar {
                     ChatSidebarView(
                         historyVM: historyVM, chatVM: chatVM,
-                        onNewChat: createNewChat, onArchive: archive, onDelete: delete
+                        onNewChat: createNewChat, onArchive: archive, onDelete: delete,
+                        onQuickDelete: quickDeleted
                     )
                         .frame(width: Self.historyWidth)
                         // Its edge line lies under the tabs, so the chat on
@@ -81,7 +82,8 @@ struct ChatSplitView: View {
                             onOpenChat: { historyVM.selectedConversationID = $0 },
                             onRenamed: { chatVM.reloadProjects() },
                             onDeleted: { chatVM.projectDeleted($0) },
-                            onPromptChanged: { chatVM.projectPromptChanged($0) }
+                            onPromptChanged: { chatVM.projectPromptChanged($0) },
+                            hiddenChatIDs: historyVM.hiddenChatIDs
                         )
                         .id(projectID)
                     } else if chatVM.isOnLanding {
@@ -108,6 +110,11 @@ struct ChatSplitView: View {
             // also paints it), so the selected history tab meets one colour.
             .detailBackground()
         }
+        // View → Go to Item (⌘1…⌘9) and Back (⌘[) act on the panel while
+        // this tab is in the key window (spec §5.4, `ItemShortcutCommands`).
+        .focusedSceneValue(\.chatsMenu, ChatsMenuContext(
+            historyVM: historyVM, keysTaken: showSearch || showRename, openChat: openChat
+        ))
         .onChange(of: historyVM.selectedConversationID) { _, newID in
             if let newID { chatVM.select(conversationID: newID) }
         }
@@ -246,11 +253,28 @@ struct ChatSplitView: View {
         lastWorkspace = workspaceKey
     }
 
+    /// Delete… confirmed: at once, no Undo. The chat waiting in the Undo
+    /// bar commits first — another delete replaces it (spec §5.3).
     private func delete(_ id: Int64) {
         let wasShown = id == chatVM.conversationID
         chatVM.forget(conversationID: id)
-        Task { await historyVM.deleteConversation(id) }
+        Task {
+            await historyVM.commitPendingDelete()
+            await historyVM.deleteConversation(id)
+        }
         if wasShown { showLanding() }
+    }
+
+    /// A ✕ / ⌘⌫ hid the chat (its DELETE waits for the Undo window):
+    /// the chat on screen gives way to the landing, as a delete does.
+    private func quickDeleted(_ id: Int64) {
+        if id == chatVM.conversationID, !chatVM.isOnLanding { showLanding() }
+    }
+
+    /// ⌘1…⌘9: as a click on the row.
+    private func openChat(_ id: Int64) {
+        historyVM.selectedConversationID = id
+        chatVM.requestComposerFocus()
     }
 
     /// Archiving the chat on screen lands, like deleting it — once the

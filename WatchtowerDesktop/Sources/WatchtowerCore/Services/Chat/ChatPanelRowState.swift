@@ -20,6 +20,13 @@ package enum ChatPanelRowState: Equatable, Sendable, CaseIterable {
         }
     }
 
+    /// The row's ✕ and ⌘⌫ delete at once, with Undo (spec §5.3): not while
+    /// it answers or waits for approval — its context menu's Delete… then
+    /// still asks first.
+    package var allowsQuickDelete: Bool {
+        self == .unread || self == .read
+    }
+
     /// The dot's VoiceOver label.
     package var accessibilityLabel: String {
         switch self {

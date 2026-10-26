@@ -76,6 +76,12 @@ final class ProjectDetailViewModel {
         errorMessage = nil
     }
 
+    /// Re-reads the row and lists, drafts untouched (a chat deleted from
+    /// the panel's Undo bar left the project).
+    func reloadLists() {
+        if refresh() { errorMessage = nil }
+    }
+
     func instructionsEdited(_ text: String) {
         guard draftsLoaded else { return }
         instructionsDraft = text

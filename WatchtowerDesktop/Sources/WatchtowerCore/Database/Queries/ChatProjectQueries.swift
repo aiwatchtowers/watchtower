@@ -28,9 +28,16 @@ package enum ChatProjectQueries {
     /// an unread answer and the pending approvals — the same definitions as
     /// `ChatHistoryQueries.panelRows` (`ChatPanelRow.isUnread`). Answering
     /// counts come from the pool at render time. Unsorted.
-    package static func switcherSummaries(_ db: Database) throws -> [ChatProjectSwitcherPresentation.Summary] {
+    package static func switcherSummaries(
+        _ db: Database,
+        hiding hidden: Set<Int64> = []
+    ) throws -> [ChatProjectSwitcherPresentation.Summary] {
+        // The chats waiting in the panel's Undo window count for nothing
+        // (spec 2026-10-26 §5.3); ids are integers, so inlined.
+        let hiding = hidden.isEmpty ? "" : " AND id NOT IN (\(hidden.sorted().map(String.init).joined(separator: ",")))"
+        let listed = "context_type IS NULL AND archived_at IS NULL AND project_id IS NOT NULL" + hiding
         let rows = try Row.fetchAll(db, sql: """
-            \(ChatHistoryQueries.lastAnswerCTE(listed: "context_type IS NULL AND archived_at IS NULL AND project_id IS NOT NULL"))
+            \(ChatHistoryQueries.lastAnswerCTE(listed: listed))
             SELECT p.id, p.name,
                 COALESCE((SELECT MAX(c.updated_at) FROM listed c WHERE c.project_id = p.id), p.updated_at) AS last_activity,
                 (SELECT COUNT(*) FROM listed c
