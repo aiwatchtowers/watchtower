@@ -38,3 +38,14 @@ enum PhoneMetrics {
     /// A thin progress bar.
     static let progressBar: CGFloat = 4
 }
+
+/// The phone's view opacities: a closed card, a line not yet taken, a
+/// pressed button. View dimming only; colour fills take `Fill`/`ChipTint`.
+enum PhoneOpacity {
+    /// A closed board card (the Desktop's 0.6).
+    static let dimmed = 0.6
+    /// An owner line still queued or waiting for the Mac (mockup `.queued`).
+    static let pending = 0.75
+    /// A button under the finger.
+    static let pressed = 0.8
+}

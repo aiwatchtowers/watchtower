@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// A titled group of settings, the Desktop's `SettingsSection` at phone
-/// size (mockup 16): the caps header, the rows on one soft `Fill.card`
-/// card (`Radius.container`) with a `CardRowDivider` between each two, and
+/// size (mockup 16): the caps header, the rows on one plain `.card()`
+/// (`Fill.card` under the hairline) with a `CardRowDivider` between each two, and
 /// an optional footer note under it. For a `ScrollView` page padded 16 on
 /// the sides.
 ///
@@ -16,15 +16,14 @@ struct SettingsCard<Content: View>: View {
     var footer: String?
     @ViewBuilder let content: Content
 
+    /// The card under the rows: the plain card recipe.
+    static var paint: Card.Paint { Card.paint(.plain) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionHeader(title)
-                .padding(.horizontal, -Spacing.large)
             VStack(alignment: .leading, spacing: 0) { content }
-                .padding(.horizontal, Spacing.medium)
-                .padding(.vertical, Spacing.tight)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
+                .card(.plain, padding: EdgeInsets(top: Spacing.tight, leading: Spacing.medium, bottom: Spacing.tight, trailing: Spacing.medium))
             if let footer {
                 Text(footer)
                     .font(TypeScale.meta)

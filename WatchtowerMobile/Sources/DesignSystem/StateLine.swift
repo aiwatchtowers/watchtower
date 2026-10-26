@@ -74,25 +74,30 @@ struct StateLine: View {
     let model: StateLineModel
 
     var body: some View {
-        HStack(spacing: Spacing.compact) {
-            if let glyph = model.glyph {
-                StateMark(glyph: glyph, tone: model.tone, size: PhoneMetrics.stateMark)
-            } else {
-                SessionDot(tone: model.tone, isRing: model.isRing)
+        // One Text, so a large text size wraps the line instead of cutting
+        // the caption before the time.
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            Group {
+                if let glyph = model.glyph {
+                    StateMark(glyph: glyph, tone: model.tone, size: PhoneMetrics.stateMark)
+                } else {
+                    SessionDot(tone: model.tone, isRing: model.isRing)
+                }
             }
-            Text(model.caption)
-                .fontWeight(model.isWaiting ? .semibold : .regular)
-                .foregroundStyle(model.isWaiting ? model.tone.color : Color.primary)
-            if let time = model.time {
-                Text("· \(time)")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
+            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + $0.height / 4 }
+            line
         }
         .font(.footnote)
-        .lineLimit(1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(model.visibleText)
+    }
+
+    private var line: Text {
+        let caption = Text(model.caption)
+            .fontWeight(model.isWaiting ? .semibold : .regular)
+            .foregroundStyle(model.isWaiting ? model.tone.color : Color.primary)
+        guard let time = model.time else { return caption }
+        return caption + Text(" · \(time)").monospacedDigit().foregroundStyle(.secondary)
     }
 }
 

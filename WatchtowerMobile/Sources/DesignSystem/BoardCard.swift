@@ -69,6 +69,12 @@ struct BoardCard: View {
     var isSelected = false
     var isDimmed = false
 
+    /// The chips' identities: their places, so a column titled like a
+    /// priority word ("High") never collides with the priority chip.
+    static func chipIDs(_ model: BoardCardModel) -> [Int] {
+        Array(model.chips.indices)
+    }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
             Image(systemName: model.glyph)
@@ -81,7 +87,7 @@ struct BoardCard: View {
                     .foregroundStyle(model.isDone ? Color.secondary : Color.primary)
                 FlowRow {
                     Text(model.numberText).font(TypeScale.time).foregroundStyle(.secondary)
-                    ForEach(model.chips, id: \.text) { Pill(item: $0) }
+                    ForEach(Self.chipIDs(model), id: \.self) { Pill(item: model.chips[$0]) }
                     if let counter = model.counter {
                         Text(counter).font(TypeScale.time).foregroundStyle(.secondary)
                     }
@@ -101,7 +107,7 @@ struct BoardCard: View {
             }
         }
         .card(isSelected ? .highlighted : .plain)
-        .opacity(isDimmed && !isSelected ? 0.6 : 1)
+        .opacity(isDimmed && !isSelected ? PhoneOpacity.dimmed : 1)
         .accessibilityElement(children: .combine)
     }
 }

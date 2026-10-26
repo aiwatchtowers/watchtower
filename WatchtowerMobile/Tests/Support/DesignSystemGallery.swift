@@ -35,7 +35,7 @@ enum DesignSystemGallery {
                 MacStatusChip(model: MacStatusChipModel(macName: "MacBook Pro", state: .online, now: now))
                 MacStatusChip(model: MacStatusChipModel(macName: "MacBook Pro", state: .asleep(lastSeen: now - 720), now: now))
             }
-            SectionHeader("Waiting for you", count: 3).padding(.horizontal, -Spacing.large)
+            SectionHeader("Waiting for you", count: 3)
             VStack(spacing: 0) {
                 FlatRow(icon: .state(glyph: "questionmark", tone: .waitingForYou), title: "Which export format do we keep for finance?",
                         insets: EdgeInsets()) {
@@ -59,7 +59,7 @@ enum DesignSystemGallery {
                 }
             }
             .card()
-            SectionHeader("Working", count: 2).padding(.horizontal, -Spacing.large)
+            SectionHeader("Working", count: 2)
             VStack(spacing: 0) {
                 FlatRow(icon: .session(tone: .green, isRing: false), title: "Session report", insets: EdgeInsets()) {
                     Text("acme")
@@ -74,7 +74,7 @@ enum DesignSystemGallery {
                 }
             }
             .card(padding: EdgeInsets(top: Spacing.small, leading: Spacing.medium, bottom: Spacing.small, trailing: Spacing.medium))
-            SectionHeader("Next meeting").padding(.horizontal, -Spacing.large)
+            SectionHeader("Next meeting")
             CalendarRow(model: CalendarRowModel(
                 start: now + 1_500, end: now + 3_300, title: "Design critique", location: "meet.example.com",
                 attendees: 4, isNext: true, now: now
@@ -159,7 +159,7 @@ enum DesignSystemGallery {
     /// Mockup 5: board cards in lanes, one selected.
     static var boardPage: some View {
         Page(title: "Board") {
-            SectionHeader("In progress", count: 2).padding(.horizontal, -Spacing.large)
+            SectionHeader("In progress", count: 2, style: .lane)
             BoardCard(model: BoardCardModel(
                 number: 1, title: "Billing export for acme", status: .inProgress, statusText: "In Progress",
                 priority: .high, counter: "1/2", progress: 0.55
@@ -167,9 +167,9 @@ enum DesignSystemGallery {
             BoardCard(model: BoardCardModel(
                 number: 343, title: "Session report", status: .inProgress, statusText: "In Progress", priority: .medium, liveSessions: 1
             ))
-            SectionHeader("Blocked", count: 1).padding(.horizontal, -Spacing.large)
+            SectionHeader("Blocked", count: 1, style: .lane)
             BoardCard(model: BoardCardModel(number: 5, title: "Invoice PDF layout", status: .blocked, statusText: "Blocked", priority: .medium))
-            SectionHeader("To Do", count: 3).padding(.horizontal, -Spacing.large)
+            SectionHeader("To do", count: 3, style: .lane)
             BoardCard(
                 model: BoardCardModel(number: 4, title: "Fix the login redirect", status: .todo, statusText: "To Do", priority: .low),
                 isSelected: true
@@ -231,7 +231,7 @@ enum DesignSystemGallery {
     /// Mockups 9–12: pills, state marks and the two bars.
     static var actionsPage: some View {
         Page(title: "Parts") {
-            SectionHeader("Pills").padding(.horizontal, -Spacing.large)
+            SectionHeader("Pills")
             FlowRow {
                 Pill(item: PillItem(text: "High", tone: .red, dot: true))
                 Pill(item: PillItem(text: "Low", tone: .blue, dot: true))
@@ -240,7 +240,7 @@ enum DesignSystemGallery {
                 Pill(text: "feature/session-report", style: .neutral, monospaced: true)
                 CountBadge(count: 3, tone: .waitingForYou)
             }
-            SectionHeader("Marks").padding(.horizontal, -Spacing.large)
+            SectionHeader("Marks")
             HStack(spacing: Spacing.medium) {
                 StateMark(glyph: "questionmark", tone: .waitingForYou)
                 StateMark(glyph: "hand.raised.fill", tone: .waitingForYou)
@@ -249,7 +249,7 @@ enum DesignSystemGallery {
                 SessionDot(tone: .green, isRing: false)
                 SessionDot(tone: .secondary, isRing: true)
             }
-            SectionHeader("Steps").padding(.horizontal, -Spacing.large)
+            SectionHeader("Steps")
             StepRow(state: .done, text: "Lock the Mac and wait for the ask push")
             StepRow(state: .failed, text: "Answer it from the lock screen")
             Text("Target detail: one prominent action").font(TypeScale.meta).foregroundStyle(.secondary)

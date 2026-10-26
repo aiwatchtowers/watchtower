@@ -67,9 +67,9 @@ struct NowView: View {
                         .padding(.horizontal, Spacing.large)
                         .padding(.top, Spacing.medium)
                 }
-                SectionHeader("Waiting for you", tone: model.waitingHeaderTone)
+                SectionHeader("Waiting for you", tone: model.waitingHeaderTone).padding(.horizontal, Spacing.large)
                 waiting(model)
-                SectionHeader("Sessions")
+                SectionHeader("Sessions").padding(.horizontal, Spacing.large)
                 sessions(model)
             }
             .padding(.bottom, Spacing.large)

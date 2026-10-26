@@ -165,23 +165,35 @@ struct CardRowDivider: View {
     }
 }
 
-/// A section header of a scroll view (mockups' `.sec`, the Desktop Home's
-/// zone titles): the title in caps with `Tracking.caps`, in the tone, and an
-/// optional count trailing in secondary. It pads itself 20 on the sides (the
-/// mockups' 16 content inset plus 4), 16 above and 8 below. In a system
-/// `List`, keep the system header with `TypeScale.sectionHeader` and
-/// `.textCase(nil)`.
+/// A section header of a scroll view. Two styles:
+/// - `caps` (mockups' `.sec`, the Desktop Home's zone titles): the title
+///   uppercased with `Tracking.caps` in the tone, the count trailing.
+/// - `lane` (mockup 5's board lanes): bold sentence case in primary, the
+///   count right after it in secondary ("In progress  2").
+///
+/// The page pads its content 16; the header adds the mockups' 4 on the
+/// sides (`insets`), 16 above and 8 below. In a system `List`, keep the
+/// system header with `TypeScale.sectionHeader` and `.textCase(nil)`.
 ///
 ///     SectionHeader("Waiting for you", count: 3, tone: .waitingForYou)
+///     SectionHeader("In progress", count: 2, style: .lane)
 struct SectionHeader: View {
+    enum Style {
+        case caps, lane
+    }
+
+    static let insets = EdgeInsets(top: Spacing.large, leading: Spacing.small, bottom: Spacing.regular, trailing: Spacing.small)
+
     let text: String
     let count: Int?
     let tone: PhoneTone
+    let style: Style
 
-    init(_ text: String, count: Int? = nil, tone: PhoneTone = .secondary) {
+    init(_ text: String, count: Int? = nil, tone: PhoneTone = .secondary, style: Style = .caps) {
         self.text = text
         self.count = count
         self.tone = tone
+        self.style = style
     }
 
     /// What VoiceOver reads: the title, then the count.
@@ -189,19 +201,28 @@ struct SectionHeader: View {
         count.map { "\(text), \($0)" } ?? text
     }
 
+    /// The title as drawn.
+    static func displayText(_ text: String, style: Style) -> String {
+        style == .caps ? text.uppercased() : text
+    }
+
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(text)
-                .textCase(.uppercase)
-                .tracking(Tracking.caps)
-                .foregroundStyle(tone.color)
-            Spacer(minLength: Spacing.regular)
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+            Text(Self.displayText(text, style: style))
+                .tracking(style == .caps ? Tracking.caps : 0)
+                .foregroundStyle(style == .caps ? tone.color : Color.primary)
+            if style == .caps {
+                Spacer(minLength: Spacing.regular)
+            }
             if let count {
-                Text("\(count)").monospacedDigit().foregroundStyle(.secondary)
+                Text("\(count)").monospacedDigit().fontWeight(.medium).foregroundStyle(.secondary)
+            }
+            if style == .lane {
+                Spacer(minLength: 0)
             }
         }
-        .font(TypeScale.capsHeader)
-        .padding(EdgeInsets(top: Spacing.large, leading: Spacing.page, bottom: Spacing.regular, trailing: Spacing.page))
+        .font(style == .caps ? TypeScale.capsHeader : TypeScale.laneHeader)
+        .padding(Self.insets)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Self.spokenLabel(text, count: count))

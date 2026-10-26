@@ -50,19 +50,20 @@ struct MacStatusChip: View {
     let model: MacStatusChipModel
 
     var body: some View {
-        HStack(spacing: Spacing.compact) {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
             Circle()
                 .fill(model.tone.color)
                 .frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.bottom] }
+            // Wraps at large text sizes instead of cutting "last seen …".
             Text(model.text)
                 .font(TypeScale.meta)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
         }
         .padding(.vertical, Spacing.small)
         .padding(.leading, Spacing.regular)
         .padding(.trailing, Spacing.cozy)
-        .background(Fill.rest, in: Capsule())
+        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
         .frame(minHeight: PhoneMetrics.minTouch)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)

@@ -15,6 +15,8 @@ enum TypeScale {
     /// The caps section header of a scroll view (mockups' `.sec`, the
     /// Desktop Home's zone titles): uppercased with `Tracking.caps`.
     static let capsHeader = Font.caption2.weight(.semibold)
+    /// A board lane's title (mockup 5's `.lane`), sentence case.
+    static let laneHeader = Font.footnote.weight(.semibold)
     /// A flat row's title, a card's body text.
     static let rowTitle = Font.callout
     /// Workbench name, next-meeting title.

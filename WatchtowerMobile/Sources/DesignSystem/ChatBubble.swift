@@ -57,27 +57,28 @@ struct ChatBubble: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: Alignment(horizontal: Self.alignment(role), vertical: .center))
-        .opacity(isPending ? 0.75 : 1)
+        .opacity(isPending ? PhoneOpacity.pending : 1)
     }
 
     @ViewBuilder private var line: some View {
         switch role {
         case .owner:
-            Text(Self.markdown(text))
+            Text(Self.markdown(text, role: .owner))
                 .font(TypeScale.rowTitle)
                 .foregroundStyle(Self.textColor(.owner))
+                .tint(Self.textColor(.owner))
                 .textSelection(.enabled)
                 .padding(.horizontal, Spacing.medium)
                 .padding(.vertical, Spacing.regular)
                 .background(Color.accentColor, in: RoundedRectangle(cornerRadius: Radius.bubble, style: .continuous))
                 .padding(.leading, Spacing.hero)
         case .agent:
-            Text(Self.markdown(text))
+            Text(Self.markdown(text, role: role))
                 .font(TypeScale.rowTitle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .watchtower:
-            Text(Self.markdown(text))
+            Text(Self.markdown(text, role: role))
                 .font(TypeScale.meta)
                 .foregroundStyle(Self.textColor(.watchtower))
                 .multilineTextAlignment(.center)
@@ -107,13 +108,20 @@ struct ChatBubble: View {
 
     /// Inline markdown only, line breaks kept; text that does not parse
     /// shows as written. A `code` span is the smaller mono on the card fill
-    /// (mockup 3's `code`).
-    static func markdown(_ text: String) -> AttributedString {
+    /// (mockup 3's `code`); on the owner's accent bubble a link is white and
+    /// underlined instead of the accent tint.
+    static func markdown(_ text: String, role: Role) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         guard var parsed = try? AttributedString(markdown: text, options: options) else { return AttributedString(text) }
-        for run in parsed.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            parsed[run.range].font = .footnote.monospaced()
-            parsed[run.range].backgroundColor = Fill.card
+        for run in parsed.runs {
+            if run.inlinePresentationIntent?.contains(.code) == true {
+                parsed[run.range].font = .footnote.monospaced()
+                parsed[run.range].backgroundColor = Fill.card
+            }
+            if role == .owner, run.link != nil {
+                parsed[run.range].foregroundColor = textColor(.owner)
+                parsed[run.range].underlineStyle = .single
+            }
         }
         return parsed
     }

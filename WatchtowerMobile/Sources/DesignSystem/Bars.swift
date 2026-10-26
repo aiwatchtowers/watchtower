@@ -43,17 +43,24 @@ struct PrimaryActionBar: View {
         [secondary?.title, primary.title].compactMap { $0 }
     }
 
+    @ViewBuilder private var buttons: some View {
+        if let secondary {
+            Button(secondary.title, action: secondary.action)
+                .buttonStyle(SecondaryActionStyle())
+                .disabled(!secondary.isEnabled)
+        }
+        Button(primary.title, action: primary.action)
+            .buttonStyle(ProminentActionStyle())
+            .disabled(!primary.isEnabled)
+    }
+
     var body: some View {
         BottomActionBar {
-            HStack(spacing: Spacing.regular) {
-                if let secondary {
-                    Button(secondary.title, action: secondary.action)
-                        .buttonStyle(SecondaryActionStyle())
-                        .disabled(!secondary.isEnabled)
-                }
-                Button(primary.title, action: primary.action)
-                    .buttonStyle(ProminentActionStyle())
-                    .disabled(!primary.isEnabled)
+            // Side by side; stacked when a large text size would not fit
+            // the pair on one line.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Spacing.regular) { buttons }
+                VStack(spacing: Spacing.regular) { buttons }
             }
         }
     }
@@ -88,7 +95,8 @@ private struct ActionLabel: View {
         let tinted = isProminent && isEnabled
         configuration.label
             .font(.body.weight(.semibold))
-            .lineLimit(1)
+            .multilineTextAlignment(.center)
+            .padding(.vertical, Spacing.small)
             .foregroundStyle(tinted ? Color.white : isEnabled ? Color.primary : Color.secondary)
             .padding(.horizontal, Spacing.medium)
             .frame(maxWidth: .infinity, minHeight: PhoneMetrics.barButton)
@@ -98,7 +106,7 @@ private struct ActionLabel: View {
                     shape.strokeBorder(Stroke.hairlineColor, lineWidth: Stroke.hairline)
                 }
             }
-            .opacity(configuration.isPressed ? 0.8 : 1)
+            .opacity(configuration.isPressed ? PhoneOpacity.pressed : 1)
             .contentShape(shape)
     }
 }

@@ -211,6 +211,51 @@ extension DesignSystemTests {
         XCTAssertEqual(CardRowDivider().inset, 0)
     }
 
+    // MARK: - Fix round 1
+
+    /// The settings card is the one card recipe: `Fill.card` under the
+    /// hairline (mockup 16), not a fill of its own.
+    func testTheSettingsCardIsTheCardRecipe() {
+        XCTAssertEqual(SettingsCard<EmptyView>.paint, Card.paint(.plain))
+        XCTAssertEqual(SettingsCard<EmptyView>.paint.lineWidth, Stroke.hairline)
+    }
+
+    /// Caps for scroll-view sections, bold sentence case for board lanes
+    /// (mockup 5); the header no longer pads itself to the page edge.
+    func testTheSectionHeaderStyles() {
+        XCTAssertEqual(SectionHeader.displayText("Waiting for you", style: .caps), "WAITING FOR YOU")
+        XCTAssertEqual(SectionHeader.displayText("In progress", style: .lane), "In progress")
+        XCTAssertEqual(SectionHeader.insets.leading, Spacing.small, "the page pads 16; the header adds the mockup's 4")
+        XCTAssertEqual(SectionHeader.spokenLabel("In progress", count: 2), "In progress, 2")
+    }
+
+    /// Dimming, pending and pressed are named phone values.
+    func testTheOpacityTokens() {
+        XCTAssertEqual(PhoneOpacity.dimmed, 0.6)
+        XCTAssertEqual(PhoneOpacity.pending, 0.75)
+        XCTAssertEqual(PhoneOpacity.pressed, 0.8)
+    }
+
+    /// A link on the owner's accent bubble is white and underlined, not
+    /// the accent tint; elsewhere a link keeps the system look.
+    func testOwnerBubbleLinksAreWhiteAndUnderlined() throws {
+        let owner = ChatBubble.markdown("See [the PR](https://example.com/pr/1) now", role: .owner)
+        let link = try XCTUnwrap(owner.runs.first { $0.link != nil })
+        XCTAssertEqual(link.foregroundColor, .white)
+        XCTAssertEqual(link.underlineStyle, .single)
+        let agent = ChatBubble.markdown("See [the PR](https://example.com/pr/1) now", role: .agent)
+        let agentLink = try XCTUnwrap(agent.runs.first { $0.link != nil })
+        XCTAssertNil(agentLink.foregroundColor)
+    }
+
+    /// A column titled like a priority word draws two chips with the same
+    /// text; each keeps its own identity.
+    func testBoardChipIdentitiesAreUnique() {
+        let card = BoardCardModel(number: 3, title: "x", status: .inProgress, statusText: "High", priority: .high)
+        XCTAssertEqual(card.chips.map(\.text), ["High", "High"])
+        XCTAssertEqual(Set(BoardCard.chipIDs(card)).count, card.chips.count)
+    }
+
     // MARK: - Bars and Settings (mockups 9–12, 16)
 
     /// The pair reads secondary then primary, like the mockup's Request
