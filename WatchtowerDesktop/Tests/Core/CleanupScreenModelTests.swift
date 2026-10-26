@@ -133,6 +133,8 @@ final class CleanupScreenModelTests: XCTestCase {
         XCTAssertEqual(row(failed.key, in: m)?.state, .failed("git exited 128"))
         XCTAssertEqual(row(failed.key, in: m)?.canChoose, false)
         XCTAssertEqual(row(merged.key, in: m)?.lastCommitText, "9 days ago")
+        let recent = worktree("recent", daysAgo: 1.0 / 24)
+        XCTAssertEqual(row(recent.key, in: model([recent]))?.lastCommitText, "1 hour ago")
     }
 
     func testRemovingAndRemovedRows() {
@@ -261,7 +263,7 @@ final class CleanupScreenModelTests: XCTestCase {
         let placed = worktree("search-filters", origin: .placed)
         let manual = worktree("legacy", origin: .manual)
         let m = model([session, untitled, sub, placed, manual, branch("old")])
-        XCTAssertEqual(row(session.key, in: m)?.ownerText, "“Billing retry” · finished 9 days ago")
+        XCTAssertEqual(row(session.key, in: m)?.ownerText, "“Billing retry” · active 9 days ago")
         XCTAssertEqual(row(untitled.key, in: m)?.ownerText, "Session 7")
         XCTAssertEqual(row(sub.key, in: m)?.ownerText, "Subagent")
         XCTAssertEqual(row(placed.key, in: m)?.ownerText, "Session deleted")
@@ -303,30 +305,51 @@ final class CleanupScreenModelTests: XCTestCase {
             worktree("d", keep: .notSelected)
         ]
         var plan = SessionCleanupPlan(mode: "apply", items: items, removedBytes: 15_000_000_000, removedBytesKnown: true)
-        XCTAssertEqual(Model.resultText(plan).freed, "Freed ~15 GB · removed 2 worktrees, 2 branches")
-        XCTAssertEqual(Model.resultText(plan).kept, "kept 1 — changed since the check")
+        let sent = Set(items.prefix(5).map(\.key))
+        XCTAssertEqual(Model.resultText(plan, sent: sent).freed, "Freed ~15 GB · removed 2 worktrees, 2 branches")
+        XCTAssertEqual(Model.resultText(plan, sent: sent).kept, "kept 1 — changed since the check")
         plan.removedBytesKnown = false
-        XCTAssertEqual(Model.resultText(plan).freed, "Freed at least ~15 GB · removed 2 worktrees, 2 branches")
+        XCTAssertEqual(Model.resultText(plan, sent: sent).freed,
+                       "Freed at least ~15 GB · removed 2 worktrees, 2 branches")
 
         let none = SessionCleanupPlan(mode: "apply", items: [
             worktree("x", keep: .unpushedCommits), branch("y", keep: .unpushedCommits)
         ], removedBytesKnown: true)
-        XCTAssertEqual(Model.resultText(none).freed, "Nothing removed")
-        XCTAssertEqual(Model.resultText(none).kept, "kept 2 — unpushed commits")
+        let noneSent = Set(none.items.map(\.key))
+        XCTAssertEqual(Model.resultText(none, sent: noneSent).freed, "Nothing removed")
+        XCTAssertEqual(Model.resultText(none, sent: noneSent).kept, "kept 2 — unpushed commits")
 
         let mixed = SessionCleanupPlan(mode: "apply", items: [
             done(branch("z")),
             worktree("x", keep: .unpushedCommits), branch("y", keep: .unpushedCommits), worktree("m", keep: .moved)
         ], removedBytesKnown: true)
-        XCTAssertEqual(Model.resultText(mixed).freed, "Removed 1 branch")
-        XCTAssertEqual(Model.resultText(mixed).kept, "kept 3 — 2 unpushed commits, 1 changed since the check")
-        XCTAssertEqual(Model.resultText(mixed, sent: ["worktree:\(root)m"]).kept, "kept 1 — changed since the check")
-        XCTAssertNil(Model.resultText(SessionCleanupPlan(items: [done(branch("z"))])).kept)
+        let mixedSent = Set(mixed.items.map(\.key))
+        XCTAssertEqual(Model.resultText(mixed, sent: mixedSent).freed, "Removed 1 branch")
+        XCTAssertEqual(Model.resultText(mixed, sent: mixedSent).kept,
+                       "kept 3 — 2 unpushed commits, 1 changed since the check")
+        XCTAssertNil(Model.resultText(SessionCleanupPlan(items: [done(branch("z"))]), sent: ["branch:z"]).kept)
+    }
+
+    /// Mockup C: two rows were kept at plan time (unpushed commits) and never
+    /// ticked; the one ticked row whose tip moved is the only "kept".
+    func testPlanTimeKeepsThatWereNotSentAreNotCounted() {
+        var removed = worktree("import-wizard", branch: "wt/import-wizard")
+        removed.done = true
+        var removedBranch = branch("wt/import-wizard")
+        removedBranch.done = true
+        let moved = worktree("agent-77ab01c3e9d2f450", keep: .moved)
+        let plan = SessionCleanupPlan(mode: "apply", items: [
+            removed, removedBranch, moved,
+            worktree("payments-spike", keep: .unpushedCommits), branch("draft-thing", keep: .unpushedCommits)
+        ], removedBytes: 15_000_000_000, removedBytesKnown: true)
+        let result = Model.resultText(plan, sent: [removed.key, removedBranch.key, moved.key])
+        XCTAssertEqual(result.freed, "Freed ~15 GB · removed 1 worktree, 1 branch")
+        XCTAssertEqual(result.kept, "kept 1 — changed since the check")
     }
 
     func testProgressLineCopy() {
         func text(_ stage: CleanupStage, _ worktrees: Int = 69, _ branches: Int = 130) -> String {
-            Model.progressText(stage, worktrees: worktrees, branches: branches, now: now)
+            Model.progressText(stage, worktrees: worktrees, branches: branches, sessionScope: false, now: now)
         }
         XCTAssertEqual(text(.listing), "Listing worktrees…")
         XCTAssertEqual(text(.checking(done: 23, of: 69)), "Checking 23 of 69 worktrees…")
@@ -339,7 +362,11 @@ final class CleanupScreenModelTests: XCTestCase {
         XCTAssertEqual(text(.applying), "Removing…")
         XCTAssertEqual(text(.failed("git is not reachable (exit 1).")), "Clean up failed: git is not reachable (exit 1).")
         let plan = SessionCleanupPlan(mode: "apply", items: [], removedBytesKnown: true)
-        XCTAssertEqual(text(.done(plan)), "Nothing removed")
+        XCTAssertEqual(text(.done(plan)), "Checked just now · 69 worktrees, 130 branches")
+        XCTAssertEqual(
+            Model.progressText(.ready(at: now), worktrees: 2, branches: 2, sessionScope: true, now: now),
+            "Checked just now · this session left 2 worktrees, 2 branches"
+        )
     }
 
     func testAgeText() {
@@ -347,6 +374,11 @@ final class CleanupScreenModelTests: XCTestCase {
         XCTAssertEqual(age(59), "just now")
         XCTAssertEqual(age(20 * 60), "20 min ago")
         XCTAssertEqual(age(3600), "1 h ago")
+        XCTAssertEqual(age(3 * 3600), "3 h ago")
+        XCTAssertEqual(Model.lastCommitText(now.addingTimeInterval(-3600), now: now), "1 hour ago")
+        XCTAssertEqual(Model.lastCommitText(now.addingTimeInterval(-3 * 3600), now: now), "3 hours ago")
+        XCTAssertEqual(Model.lastCommitText(now.addingTimeInterval(-20 * 60), now: now), "20 min ago")
+        XCTAssertEqual(Model.lastCommitText(now.addingTimeInterval(-9 * day), now: now), "9 days ago")
         XCTAssertEqual(age(day), "1 day ago")
         XCTAssertEqual(age(9 * day), "9 days ago")
         XCTAssertEqual(age(35 * day), "5 weeks ago")

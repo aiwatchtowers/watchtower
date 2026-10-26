@@ -205,11 +205,11 @@ package struct CleanupScreenModel {
     // MARK: Result and progress
 
     /// The result bar after an apply: ("Freed ~15 GB · removed 2 worktrees,
-    /// 2 branches", "kept 1 — changed since the check"). `sent`, when
-    /// given, limits the kept part to the keys the apply named (a row kept
-    /// at plan time and never ticked is not news); not-selected items never
-    /// count.
-    package static func resultText(_ plan: SessionCleanupPlan, sent: Set<String>? = nil) -> (freed: String, kept: String?) {
+    /// 2 branches", "kept 1 — changed since the check"). Only the keys the
+    /// apply named (`sent`) that ended kept count as kept: Go returns the
+    /// plan-time keeps (unpushed commits, …) with their own reason too, and
+    /// those were never the owner's choice.
+    package static func resultText(_ plan: SessionCleanupPlan, sent: Set<String>) -> (freed: String, kept: String?) {
         let counted = plan.items.filter { $0.kind == .worktree || $0.kind == .branch }
         let removed = countParts(counted.filter(\.done)).joined(separator: ", ")
         let freed: String
@@ -222,7 +222,7 @@ package struct CleanupScreenModel {
             freed = "Removed \(removed)"
         }
         let kept = counted.filter {
-            $0.action == .keep && $0.reason != .known(.notSelected) && (sent?.contains($0.key) ?? true)
+            $0.action == .keep && sent.contains($0.key)
         }
         guard !kept.isEmpty else { return (freed, nil) }
         let groups = grouped(kept.map { words($0.reason) })
@@ -232,8 +232,22 @@ package struct CleanupScreenModel {
         return (freed, "kept \(kept.count) — \(reasons)")
     }
 
-    /// The progress line under the title.
-    package static func progressText(_ stage: CleanupStage, worktrees: Int, branches: Int, now: Date) -> String {
+    /// The progress line under the title. `sessionScope` words the ready
+    /// line for one session's scope ("this session left …"). A finished
+    /// apply (`.done`) reads as a fresh check: its result is the result
+    /// bar's (`resultText`, which needs the keys the apply sent).
+    package static func progressText(
+        _ stage: CleanupStage,
+        worktrees: Int,
+        branches: Int,
+        sessionScope: Bool,
+        now: Date
+    ) -> String {
+        let counts = [count(worktrees, "worktree", "worktrees"), count(branches, "branch", "branches")]
+            .joined(separator: ", ")
+        let checked = { (at: Date) in
+            "Checked \(ageText(at, now: now)) · " + (sessionScope ? "this session left " : "") + counts
+        }
         switch stage {
         case .listing:
             return "Listing worktrees…"
@@ -242,25 +256,33 @@ package struct CleanupScreenModel {
         case let .sizing(done, total):
             return "Measuring sizes \(done) of \(total)…"
         case let .ready(at):
-            let counts = [count(worktrees, "worktree", "worktrees"), count(branches, "branch", "branches")]
-            return "Checked \(ageText(at, now: now)) · " + counts.joined(separator: ", ")
+            return checked(at)
         case .applying:
             return "Removing…"
-        case let .done(plan):
-            let result = resultText(plan)
-            return result.freed + (result.kept.map { " · " + $0 } ?? "")
+        case .done:
+            return checked(now)
         case let .failed(message):
             return "Clean up failed: \(message)"
         }
     }
 
     /// "just now", "20 min ago", "2 h ago", "9 days ago", "5 weeks ago",
-    /// "2 months ago", "1 year ago".
+    /// "2 months ago", "1 year ago": the owner and "Checked …" wording.
     package static func ageText(_ date: Date, now: Date) -> String {
+        age(date, now: now) { "\($0) h ago" }
+    }
+
+    /// The Last commit column: as `ageText`, but hours in full ("1 hour
+    /// ago", "3 hours ago").
+    package static func lastCommitText(_ date: Date, now: Date) -> String {
+        age(date, now: now) { count($0, "hour", "hours") + " ago" }
+    }
+
+    private static func age(_ date: Date, now: Date, hours: (Int) -> String) -> String {
         let seconds = max(0, now.timeIntervalSince(date))
         if seconds < 60 { return "just now" }
         if seconds < 3600 { return "\(Int(seconds / 60)) min ago" }
-        if seconds < 86400 { return "\(Int(seconds / 3600)) h ago" }
+        if seconds < 86400 { return hours(Int(seconds / 3600)) }
         let days = Int(seconds / 86400)
         if days < 14 { return count(days, "day", "days") + " ago" }
         if days < 60 { return "\(days / 7) weeks ago" }
@@ -426,7 +448,7 @@ package struct CleanupScreenModel {
                 bytes: lead.kind == .worktree && lead.bytesKnown && !checking.contains(lead.key)
                     && !sizing.contains(lead.key) ? lead.bytes : nil,
                 lastCommitAt: lastCommitAt,
-                lastCommitText: lastCommitAt.map { CleanupScreenModel.ageText($0, now: now) } ?? "—",
+                lastCommitText: lastCommitAt.map { CleanupScreenModel.lastCommitText($0, now: now) } ?? "—",
                 merged: lead.merged,
                 state: state,
                 branchNote: branchNote(lead, branch),
@@ -484,7 +506,7 @@ package struct CleanupScreenModel {
                 guard !owner.title.isEmpty else { return "Session \(id)" }
                 let name = "“\(owner.title)”"
                 guard let at = TimeFormatting.parseISO(owner.lastActive) else { return name }
-                return name + " · finished " + CleanupScreenModel.ageText(at, now: now)
+                return name + " · active " + CleanupScreenModel.ageText(at, now: now)
             }
             switch item.origin {
             case .subagent: return "Subagent"
