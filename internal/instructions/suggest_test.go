@@ -510,3 +510,35 @@ func TestMinerRun_SkipsRememberTurns(t *testing.T) {
 		t.Errorf("remember turns reached the model:\n%s", gen.stdin)
 	}
 }
+
+// TestCollectOwnerLines_SameAsMiner: the exported collector returns what the
+// miner mines (cleaned, pastes skipped, grouped by session), and the miner
+// puts exactly those lines on stdin.
+func TestCollectOwnerLines_SameAsMiner(t *testing.T) {
+	f := newMinerFixture(t)
+	wb := f.workbench("acme")
+	recent := minerNow.Add(-time.Hour)
+	s1 := f.session(wb, recent, owner("keep answers short"), owner("look:\n```\npanic: boom\n```"))
+	s2 := f.session(wb, recent, owner("second\nline"))
+	f.session(wb, recent, owner("third")) // the miner needs three sessions to call the model
+
+	lines, err := CollectOwnerLines(f.d, f.miner(&fakeGen{}).Read, minerNow.Add(-suggestWindow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 3 || lines[0].SessionID != s1 || lines[0].Text != "keep answers short" ||
+		lines[1].SessionID != s2 || lines[1].Text != "second / line" || lines[0].WorkbenchID != wb ||
+		!lines[0].At().Equal(recent) {
+		t.Fatalf("unexpected lines: %+v", lines)
+	}
+
+	gen := &fakeGen{out: reply()}
+	if _, _, err := f.miner(gen).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lines {
+		if !strings.Contains(gen.stdin, fmt.Sprintf("s%d: %s", l.SessionID, l.Text)) {
+			t.Errorf("miner stdin lacks %q", l.Text)
+		}
+	}
+}
