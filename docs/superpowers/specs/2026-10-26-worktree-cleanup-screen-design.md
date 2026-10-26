@@ -1,8 +1,13 @@
-# Clean Up Old Worktrees — a screen instead of a sheet (board #1107) — design
+# Clean Up — one screen for worktrees and branches instead of sheets (board #1107) — design
 
-**Status:** draft for the owner's review
+**Status:** draft for the owner's review, round 2 (round 1: ask #629)
 **Builds on:** `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` (board #535) §8, §9, §12; PROJ-18 in
 `docs/inventory/workbench.md`.
+**Mockup:** `docs/design/mockups/worktree-cleanup/screen.html` (open with `#dark` for the dark appearance), rendered
+as `screen-light.png` / `screen-dark.png` beside it — three states: A opened and filling in, B filtered + selected +
+the confirmation, C the result.
+
+![mockup, light](../../design/mockups/worktree-cleanup/screen-light.png)
 
 ## 1. Why
 
@@ -13,196 +18,277 @@ On the owner's own repository the **Clean Up Old Worktrees…** sheet (`Workbenc
   all, no filter, no sort.
 - **Modal and slow.** The sheet shows nothing until the whole plan is ready: 18 s without sizes, 42 s with them on
   that repository (`internal/sessioncleanup`: per-worktree `git status`, the W9 nested walk, then a `du`-like walk of
-  every removable worktree, 4 at a time, 20 s budget each). While it plans, the owner is locked out of the app's
-  window.
-- **Noise.** Kept rows ("Kept — unpushed commits") are mixed into the list; every row says "Owner unknown" (5 of 199
-  items had a known owner), so the column tells nothing.
+  every removable worktree, 4 at a time, 20 s budget each). While it plans, the owner is locked out of the window.
+- **Noise.** Kept rows are mixed into the list; every row says "Owner unknown" (5 of 199 items had a known owner,
+  §4.3 says why), so the column tells nothing.
+- **Two places.** The session row's **Clean Up…** sheet and the workbench's **Clean Up Old Worktrees…** sheet pick
+  from overlapping data in two different UIs, and both can run an apply at the same time.
 
 Done means: the owner opens the screen, sees the list within a second or two, sorts by size, selects everything
-that can go (or everything merged / older than a month) in one or two clicks, confirms once, and keeps using the app
-while it is removed.
+that can go (or everything merged and older than a month) in one or two clicks, confirms once, and keeps using the
+app while it is removed.
 
 ## 2. Goals, non-goals, anti-goals
 
 **Goals**
-- A non-modal screen in the workbench window; the owner can leave it and come back while it plans or removes.
-- Rows appear as soon as git has listed them; checks and sizes fill in as they finish.
-- Bulk selection: everything shown that can go, a shift/⌘ range, ⌘A.
-- Sort by size, age, name; filter by kind, age and "merged into the default branch"; search by name.
+- One non-modal screen in the workbench window for choosing what to clean up — the whole workbench or one session;
+  the owner can leave it and come back while it checks or removes.
+- Rows appear as soon as git has listed them; checks and sizes fill in as they finish (§6 says how).
+- Bulk selection: everything shown that can go, a ⇧-click range, ⌘A.
+- Sort by size, age, name; filter by kind, age, owner and "merged"; search by name.
 - A worktree and its branch are one row and go together.
 - Kept items out of the way, grouped by why they are kept.
-- Removal in the background with per-row progress and a one-line result ("Freed ~140 GB; kept 2 — git refused").
+- Removal in the background with per-row progress and a one-line result.
+- What ships looks like the mockup (§9).
 
 **Non-goals**
 - No change to any safety catch (PROJ-18, design §5). The screen only changes how the owner picks among items the
   CLI already marks `remove`; the apply still re-plans and re-checks every item.
-- The session row's **Clean Up…** sheet and **Delete and Clean Up** stay as they are (one session, few items).
-- No size cache on disk; no background sweep the owner did not start (the one-time hint stays as it is).
+- **Delete and Clean Up** in the delete dialog stays: it is part of deleting a session, not a place to pick (§3.2).
+- No size cache on disk; no check the owner did not start (the one-time hint stays as it is).
 
 **Anti-goals** — a failure even if it works:
 - Anything removed the owner did not see selected. Selecting is the owner's act; the screen never pre-selects.
 - A screen that again shows nothing until everything is checked.
 - More settings or a wizard. One screen, one confirmation.
+- A screen that looks different from its mockup.
 
 ## 3. Where it lives
 
-**Builder's call, recorded here:** a workspace pane kind like Analytics (`WorkspacePaneView`), titled **Clean Up**,
-opened by the ⋯ menu's **Clean Up Old Worktrees…** and by the one-time hint's button. It sits in the workspace area
-(can be split beside a terminal), shows in the title-row crumbs, and closes like any pane. Leaving the pane or
-switching workbench does not stop a plan or an apply: the plan already lives in `SessionCleanupCenter` (scope
-`.workbench(id)`) and the apply in `WorkbenchesViewModel.sweepRuns`; the screen re-reads them when shown. The sheet
-`WorkbenchSweepSheet` is removed.
+### 3.1 The screen
 
-**Builder's call:** the Clean Up pane kind is not saved in `WorkspaceLayout` — after a relaunch or a layout restore
-it is gone, so no sweep ever starts without the owner opening the screen. Opening it plans, unless a ready plan
-younger than `sweepPlanReuseWindow` (10 min) or a running one exists. Closing the pane keeps the plan and its rows in
-the center (reused within the window, as the sheet's are today); the existing `cleanupHintTimeLimit` watchdog stays
-as the plan's stop.
+The workbench page shows the Clean Up screen **in place of its workspace area** (the pane or split), like a page of
+its own, while it is open. It is in-memory page state (`WorkbenchesViewModel`, per workbench: open or not and its
+scope), not a `WorkspacePane` kind and not in `WorkspaceLayout`: nothing about it is saved, a relaunch never brings it
+back, and closing it shows the workspace exactly as it was. The screen covers the workspace area rather than
+replacing it in the view tree, so the terminal views behind it stay alive and are not re-created (the builder checks
+this against `WorkspaceAreaView` in `WorkspacePaneView.swift` and proves it with a test).
+
+- **Opening:** the ⋯ menu's **Clean Up Old Worktrees…** (whole workbench), the one-time hint's button (whole
+  workbench), a session row's **Clean Up…** (that session, §3.2).
+- **On screen:** the title row's `Session | Board | Files` control shows no segment on and a **Clean Up ✕** crumb
+  beside it (mockup, title row). Clicking a segment or ✕ closes the screen and shows that view. The session strip is
+  not shown (no session is on screen).
+- **Leaving** the screen or switching workbench stops nothing: the plan lives in `SessionCleanupCenter`, the apply in
+  `WorkbenchesViewModel.sweepRuns`; opening the screen again shows them as they are. Opening plans, unless a ready
+  plan younger than `sweepPlanReuseWindow` (10 min) or a running one exists for that scope; the existing
+  `cleanupHintTimeLimit` watchdog stays as a plan's stop.
+
+### 3.2 One place to pick
+
+The screen replaces **both** sheets: `WorkbenchSweepSheet` and the session row's `SessionCleanupSheet` are removed.
+
+- **Scope.** The screen has a scope: the whole workbench (the CLI's `--sweep`, as today) or one session (the CLI's
+  `--session N`, as the session sheet today — the session's own items with the session-mode ownership and orphan
+  rules, unchanged). In session scope a chip **Session: “<title>” ✕** stands left of the filters; ✕ widens to the
+  whole workbench (a new plan). Scope is not an owner filter: the two plans differ (session mode cleans a live
+  session's own worktrees and may stop its orphans; the sweep keeps a live session's items `session_recent` and never
+  signals a process), so each scope runs its own CLI mode.
+- **Delete and Clean Up** stays in the session delete dialog (one button, the session's planned `remove` items, then
+  the row is deleted — PROJ-17/18 as today). It does not pick, so it is not a second place to choose.
+- **One apply at a time per workbench.** The view model already refuses a second sweep apply (`sweepRuns`); this
+  widens to every cleanup apply of the workbench: while one runs (screen, or Delete and Clean Up), the screen's
+  **Clean Up…** is disabled with "Another cleanup is running" and **Delete and Clean Up** is disabled with the same
+  line (Delete Only stays). Every apply re-checks every item anyway (design §7); the rule is for a clear screen, not
+  for safety.
 
 ## 4. Screen
 
-```
-┌ Clean Up — watchtower ─────────────────────────────────────────────────────────────────┐
-│ Checking 23 of 69 worktrees…  ▓▓▓▓▓░░░░░            [Refresh]                         │
-│ [🔍 Search      ] [All ▾ Worktrees | Branches]  [Any age ▾]  [☐ Merged only]           │
-├────┬──────────────────────────────────────┬─────────┬─────────────┬──────────────────────┤
-│    │ Name                                  │ Size ▼  │ Last commit │ State                │
-├────┼──────────────────────────────────────┼─────────┼─────────────┼──────────────────────┤
-│ ✓  │ 595-mac            wt/595-mac         │ ~12 GB  │ 9 days ago  │ Merged               │
-│ ✓  │ agent-a3eb667f…    feature/604-files… │ ~12 GB  │ 2 days ago  │ Pushed               │
-│    │ 712-linear-ai-13…  wt/712-linear-…    │ ~12 GB  │ 6 days ago  │ Merged               │
-│    │ agent-a4e21905…    lane/718-t5-b      │ ~97 MB  │ 1 day ago   │ Merged               │
-│    │ agent-a550cee6…    lane/718-t5-d1     │ measuring│ 1 day ago  │ Merged               │
-│    │ feature/old-thing  (branch only)      │   —     │ 2 months ago│ Merged               │
-│    │ 801-builtins       wt/801-builtins    │ checking…│            │                      │
-│ ▸ Kept (35): 19 unpushed commits · 8 recent sessions · 3 in use · …                    │
-├────┴──────────────────────────────────────┴─────────┴─────────────┴──────────────────────┤
-│ [Select All That Can Go]  [Clear]       2 worktrees, 2 branches · ~24 GB  [Clean Up…] │
-└──────────────────────────────────────────────────────────────────────────────────────────┘
-```
+See the mockup for the look; this section is what it does.
 
-- **Table** (SwiftUI `Table`, native multi-selection). The selection *is* the choice: click, ⇧-click range, ⌘-click,
-  ⌘A (selects every selectable row shown). Only rows that can go are selectable; a row still being checked is shown
-  but not selectable until its check lands.
-- **Columns:** Name (worktree folder name, branch in secondary text; a branch with no worktree shows its name and
-  "branch only"), Size (`~12 GB` / `measuring…` / `checking…` / `size unknown` / `—` for a branch), Last commit
-  (relative, from the tip's committer date), State (`Merged` = tip is an ancestor of the default branch; `Pushed` =
-  contained in a remote ref only). Owner shows only when known: a session title under the name, no "Owner unknown"
-  column. Default sort: Size descending, unmeasured rows last.
-- **Worktree + branch = one row.** A worktree row carries its branch: selecting it removes the worktree and, when
-  that branch's item is `remove`, the branch too (both keys go to `--item`). When the branch is kept (checked out
-  elsewhere, unpushed), the row says so in its State ("branch kept — unpushed commits") and only the worktree goes.
-  Branch-only rows are the branches with no worktree. The same goes for the worktree's `lsreg:` items (LaunchServices
-  entries of `.app` bundles inside it): they are part of the worktree row and go with it — otherwise removing the
-  folder would leave entries pointing at a deleted app. Only the sweep's stale-entry `lsreg` items (registered paths
-  under the workbench folder that no longer exist) are rows of their own.
-- **Filters** (toolbar, none saved): kind (All / Worktrees / Branches only), age (Any / older than 7 / 30 / 90 days,
-  by last commit), Merged only, a name search. **Select All That Can Go** selects every selectable row the filters
-  show — so "older than 30 days" + "Merged only" + one click is the common case.
-- **Kept** rows sit in one folded group at the bottom: the header counts them by reason; unfolded they are plain
-  rows with the reason in words (`SessionCleanupPresentation`), not selectable. Stale-entry `lsreg` items are
-  ordinary selectable rows named "LaunchServices entry".
-- **Progress line** at the top while planning: "Listing worktrees…", "Checking N of M worktrees…", "Measuring sizes
-  N of M…", then "Checked 2 min ago" with **Refresh**. A ready plan younger than 10 minutes is reused when the
-  screen opens (`sweepPlanReuseWindow`, unchanged).
-- **Footer:** the total of the selection (`2 worktrees, 2 branches · ~24 GB`, "some sizes unknown" when so),
-  **Clean Up…** (disabled with nothing selected).
+### 4.1 List
+
+- **Built from the kit, not a stock `Table`.** Rows are `.kitRow(isSelected:)` rows in a `LazyVStack` under a
+  column-header row of `.kitQuiet` sort buttons (the sorted column shows ↑/↓); no row dividers; groups under
+  `SectionHeader` with a count. The checkbox is the system checkbox toggle; a row that cannot be chosen has none (an
+  empty dashed box while it is being checked, nothing when kept). A stock `Table` is not used: it brings its own row
+  separators and selection chrome, and its native selection cannot refuse single rows (round-1 review, ask #629).
+- **Choosing.** Clicking a row or its checkbox ticks/unticks it; ⇧-click ticks or unticks the range from the last
+  clicked row (rows that cannot be chosen in between are skipped); ⌘A = **Select All That Can Go**; Esc = **Clear**.
+  The ticks are the choice. A row still being checked cannot be ticked until its check lands.
+- **Columns:** checkbox · Name (worktree folder name, the branch in secondary text; a branch with no worktree shows
+  its name and "branch only") · Owner (§4.3) · Size (`~12 GB` / `measuring` / `checking` / `size unknown` / `—` for a
+  branch; `.monospacedDigit()`) · Last commit (relative, from the tip's committer date) · State (a `Chip`).
+- **State chips** (`Chip`, colours from `Tone`, never a colour picked by hand): `Merged` (`Tone.success`) = the tip
+  is in the default branch; `Pushed` (`Tone.status("blue")`) = only on a remote; a kept reason (`Tone.status("gray")`,
+  the words from `SessionCleanupPresentation`); "Changed since the check" and other apply-time keeps
+  (`Tone.warning`); an apply error (`Tone.error`).
+- **Default sort:** Size descending, unmeasured rows last. Sort by Name, Size, Last commit by clicking the column
+  title.
+- **Groups:** **Can go (N)** first, unfolded; **Kept (N)** last, folded, its header listing the counts by reason
+  ("5 unpushed commits · 3 recent sessions · 1 in use"); unfolded, kept rows show their reason chip and no checkbox.
+
+### 4.2 Worktree + branch = one row
+
+A worktree row carries its branch: ticking it removes the worktree and, when that branch's item is `remove`, the
+branch too. When the branch is kept (checked out elsewhere, unpushed), the row's secondary line says so in
+`Tone.warning` ("branch kept — checked out elsewhere", mockup B) and only the worktree goes. The worktree's `lsreg:`
+items (LaunchServices entries of `.app` bundles inside it) are part of the row as well and go with it — otherwise
+removing the folder would leave entries pointing at a deleted app. Branch-only rows are the branches with no
+worktree; the sweep's stale-entry `lsreg` items (registered paths under the workbench folder that no longer exist) are
+rows of their own named "LaunchServices entry". This needs the owner's approval (§8).
+
+### 4.3 Owner
+
+Why "Owner unknown" today: the ledger that says which session made a worktree (`terminal_session_worktrees`) is
+deleted with its session row, and the owner deletes finished sessions — on the measured repository 6 sessions are
+left and 4 of the 53 removable worktrees still match one. So the column shows what can be known, in this order:
+
+1. **The session** — its title and last activity — when a session row still owns it (ledger, placement record or
+   `folder_path`, as the sweep's `owner` does today).
+2. Otherwise **where it came from**, from its path and branch alone: **Subagent** (a Claude Code subagent worktree,
+   `.claude/worktrees/agent-<hex>`), **Session deleted** (a worktree Watchtower placed for a session,
+   `.claude/worktrees/<name>` on a `wt/` branch, its session gone), **Made by hand** (any other linked worktree).
+   Branch-only rows show `—`.
+
+The **Owner** filter offers: Any owner · A session (1) · Subagent · Session deleted · Made by hand. The origin is a
+Desktop-side derivation in WatchtowerCore from the item's `name`/`key`/`branch` (no CLI change); the path rules are
+pinned by tests.
+
+### 4.4 Filters and bulk selection
+
+Toolbar, nothing saved: search by name · kind (`KitSegmentedPicker`: All / Worktrees / Branches) · age (a menu:
+Any age / Older than 7 / 30 / 90 days, by last commit) · owner (a menu, §4.3) · **Merged only** (a toggle chip).
+**Select All That Can Go** ticks every row that can be chosen among those the filters show — "Older than 30 days" +
+"Merged only" + one click is the common case (mockup B). Ticks outside the current filters stay ticked and count in
+the footer total.
+
+### 4.5 Progress, footer
+
+- **Progress line** under the title while planning: a thin bar plus "Listing worktrees…", "Checking N of M
+  worktrees…", "Measuring sizes N of M…"; when ready "Checked 1 min ago · 69 worktrees, 130 branches" with
+  **Refresh** (`.kitQuiet`).
+- **Footer:** **Select All That Can Go** and **Clear** (`.kitQuiet`) on the left; the total of the ticks
+  ("3 worktrees, 3 branches · ~25 GB", "some sizes unknown" when so, "Nothing selected") and **Clean Up…**
+  (`.kitDestructive`, the screen's one prominent action, disabled with nothing ticked) on the right.
 
 ## 5. Confirming and removing
 
-- **Clean Up…** asks once: "Remove 12 worktrees and 15 branches (~140 GB)? Uncommitted or unpushed work is never
-  removed; anything that changed since the check is kept." Buttons **Remove** (destructive) / Cancel.
-- The apply runs in the background (`sweepRuns`, as today). Each row shows a spinner while its turn comes, then
-  leaves the list when removed; a row kept at apply time (re-check, git refused) stays with its new reason and an
-  orange mark. Plan rows not selected are untouched and stay.
-- When it ends, a result line replaces the progress line: "Freed ~140 GB · kept 2 — git refused, changed since the
-  check" (from the CLI's `summary` / `removed_bytes`), dismissible. A failure of the whole run shows the same way, in
-  red, with **Retry** for the rows still selected.
-- While an apply runs, **Refresh** and **Clean Up…** are disabled; selection of other rows stays possible but not
-  applicable.
+- **Clean Up…** asks once, in a sheet (a confirmation is the sheet's job per the style guide): "Remove 3 worktrees
+  and 3 branches (~25 GB)?" / "Each one is checked again right before it goes: anything with unsaved or unpushed
+  work, or that changed since the check, is kept." **Cancel** (`.kitSecondary`) · **Remove** (`.kitDestructive`).
+- The apply runs in the background (`sweepRuns`, and the session scope's run, as today). Each ticked row shows a
+  spinner in its State cell when its turn comes, then leaves the list once removed; a row kept at apply time (the
+  re-check, git refused) moves to **Kept** with its new reason (`Tone.warning`). Rows not ticked are untouched.
+- When it ends, a result bar replaces the progress line (mockup C): "✓ Freed ~15 GB · removed 2 worktrees, 2 branches
+  · kept 1 — changed since the check" (from the CLI's `summary` / `removed_bytes`), **Dismiss**. A failure of the
+  whole run shows in the same bar in `Tone.error` with **Retry** (re-applies the rows still ticked).
+- While an apply runs, **Refresh** and **Clean Up…** are disabled; ticking other rows stays possible.
 
-## 6. CLI: a streamed plan and apply
+## 6. Showing rows before the plan is done — why the CLI streams
 
-The sweep stays `watchtower workbench cleanup --workbench N --sweep [--apply --item KEY…]`. New flag **`--stream`**
-(only with `--json`): JSON lines on stdout, one event each, so the Desktop can show rows before the plan is done.
-Without `--stream` the output is unchanged (agents, tests, the session sheet).
+**How we got here.** The Desktop never runs git itself (design §12); it runs `watchtower workbench cleanup … --json`
+and today gets one JSON object when the process exits — after every check and every size, 18–42 s later. The goal
+"rows first, checks and sizes as they finish" (ask #628, point 2) therefore needs the CLI to say something before it
+exits. Two ways were weighed:
+
+- **Two calls** — a fast listing call (`--list-only`, under a second) and then today's full plan. Rows appear at
+  once, but every row stays "checking" until the second call ends; nothing fills in progressively, and two processes
+  read git twice.
+- **One streamed call** (chosen) — the same command with `--stream` writes one JSON line per event as it goes: the
+  listing first, then each item when its checks finish, then each size, then the full plan. Rows appear at once and
+  fill in one by one; one process; the existing JSON stays the last line for anyone who wants only that.
+
+The sweep and session commands stay as they are; new flag **`--stream`** (only with `--json`). Without it the output
+is unchanged (agents, tests).
 
 ```
-{"event":"listed","items":[ …items as in §4.1, with "state":"checking" … ]}      // after git worktree list + for-each-ref
-{"event":"checked","item":{ …the item with its action/reason… }}                  // one per item, as its catches finish
-{"event":"sized","key":"worktree:/…","bytes":11811160064,"bytes_known":true}      // one per measured worktree
-{"event":"removing","key":"…"}  {"event":"removed","item":{…done:true…}}         // --apply only, in removal order
-{"event":"done","plan":{ …the full §4.1 object, unchanged… }}                      // always last on success
+{"event":"listed","items":[ …items as in design §4.1, without "action" … ]}   // after git worktree list + for-each-ref
+{"event":"checked","item":{ …the item with its action/reason… }}              // one per item, as its catches finish
+{"event":"sized","key":"worktree:/…","bytes":11811160064,"bytes_known":true}  // one per measured worktree
+{"event":"removing","key":"…"}  {"event":"removed","item":{…done:true…}}     // --apply only, in removal order
+{"event":"done","plan":{ …the full design §4.1 object, unchanged… }}          // always last on success
 ```
 
-- `listed` comes from the cheap git listing only (worktree list, branch list, default branch); its items carry the
-  new keys below and `action` absent. A failure before `listed` is the old exit-1 path; the Desktop treats a stream
-  that ends without `done` as a failed plan (rows stay as they were, with the error line).
+- `listed` comes from the cheap git listing only (worktree list, branch list, default branch). A failure before
+  `listed` is the old exit-1 path; a stream that ends without `done` is a failed plan for the Desktop (rows stay, with
+  the error in the progress line).
 - A worktree's bundle items (`lsreg:` found under it) carry `"worktree":"<root>"` and are emitted with that
-  worktree's `checked` event, before sizing (the bundle scan moves ahead of `measureAll` in the sweep), so a worktree
-  row is complete — and selectable — once checked. Stale-entry `lsreg` items carry no `worktree`.
-- Item gains two keys, in streamed and non-streamed output alike (additive, pinned in the JSON key test):
-  `last_commit_at` (RFC 3339 UTC of the tip's committer date; `""` when unknown) and `merged` (bool: tip is an
-  ancestor of the local default branch or of its remote counterpart — `refs/remotes/origin/<default>` when it exists
-  — so a branch merged on GitHub while the local `main` lags still reads as merged; false when unknown; builder's
-  call). Both come from one `git for-each-ref` over `refs/heads` plus
-  one per detached worktree HEAD.
+  worktree's `checked` event, before sizing (the bundle scan moves ahead of `measureAll`), so a worktree row is
+  complete — and can be ticked — once checked. Stale-entry `lsreg` items carry no `worktree`.
+- Items gain two keys, streamed or not (additive, pinned in the JSON key test): `last_commit_at` (RFC 3339 UTC of the
+  tip's committer date; `""` when unknown) and `merged` (bool: the tip is an ancestor of the local default branch or
+  of `refs/remotes/origin/<default>` when it exists, so a branch merged on GitHub while the local `main` lags still
+  reads as merged; false when unknown). Both come from one `git for-each-ref` over `refs/heads` plus one per detached
+  worktree HEAD.
 - Checks may finish in any order; the Desktop applies events by `key`. `done.plan` is the authority: the Desktop
   replaces its rows with it.
-- Apply events are new only in that the CLI reports per item as it goes; the apply's logic, order and re-checks
-  (design §7) are unchanged.
-
-**Builder's call:** the order of work inside the plan does not change except that the listing is emitted first and
-each item's `checked` event is written as soon as its catches are done; sizes still run after the checks, only for
-`remove` worktrees. Where the 18 s goes (git status vs the W9 walk vs lsof) is measured in plan Task 0; a cheap
-speed-up found there (e.g. running the per-worktree checks in parallel, as sizes already are) is in scope, a deeper
-one is not.
+- Apply events only report per item as the apply goes; its logic, order and re-checks (design §7) are unchanged.
+- **Speed.** The work inside the plan keeps its order, except that the listing is emitted first and each item's
+  `checked` event as soon as its catches are done; sizes still run after the checks, only for `remove` worktrees.
+  Where the 18 s goes (git status vs the W9 walk vs lsof) is measured in plan Task 0; a cheap speed-up found there
+  (e.g. the per-worktree checks in parallel, as sizes already are) is in scope, a deeper one is not.
 
 ## 7. Desktop internals
 
-- `SessionCleanupCenter` gains a streamed sweep plan: it keeps, per workbench, the rows received so far plus the
-  stage (listing / checking N of M / sizing N of M / ready / failed) and the plan's time. The existing
-  `SessionCleanupPhase` stays for the session scope; the sweep phase gets the partial rows. The center still never
-  runs git itself.
-- Row model and the worktree+branch pairing, filters, sort, "selectable", the selection total and the confirmation
-  text are pure WatchtowerCore code (`SweepScreenModel` or similar), tested in `Tests/Core`.
-- The apply passes exactly the keys of the selected rows — for a worktree row its own key, its branch's key when
-  that branch item is `remove`, and its bundles' `lsreg:` keys — of known kinds only — the existing `removableItems(among:)` rule.
-- The one-time hint's button opens the pane instead of the sheet.
+- `SessionCleanupCenter` runs both scopes streamed: per scope it keeps the rows received so far, the stage (listing /
+  checking N of M / sizing N of M / ready / failed) and the plan's time. It still never runs git itself.
+- The row model (pairing, origin, filters, sort, "can be chosen", ⇧-range, the totals, the confirmation and result
+  texts) is pure WatchtowerCore code (e.g. `CleanupScreenModel`), tested in `Tests/Core`.
+- The apply passes exactly the keys of the ticked rows — for a worktree row its own key, its branch's key when that
+  branch item is `remove`, and its bundles' `lsreg:` keys — of known kinds only (the existing
+  `removableItems(among:)` rule).
+- The view coalesces `checked`/`sized` events (no more than a few redraws per second).
+- The `Session | Board | Files` control gains a "none on" state while the screen is open.
 
 ## 8. Contracts
 
-No contract is weakened. PROJ-18 says "the sweep ticks nothing by itself" and "apply exactly the ticked keys of a
-known kind" — both hold: selection is the owner's click or ⌘A, and the apply sends exactly the selected rows' keys,
-with a worktree's own branch (when that branch item is `remove`) and its own bundles' entries.
+No safety contract is weakened. PROJ-18's "the sweep ticks nothing by itself" holds (ticks are the owner's click, ⌘A
+or Select All). PROJ-17's Delete and Clean Up is unchanged apart from being disabled while another cleanup of the
+workbench runs.
 
-**Needs the owner's approval — a guard test changes.** The pairing is new behaviour, and the PROJ-18 guard
-`testSweepAppliesOnlyTickedKeys` (`WatchtowerDesktop/Tests/SessionCleanupSweepTests.swift`) asserts the opposite:
-ticking a worktree whose branch is also removable sends only the worktree's key. With approval, PROJ-18 gets an
-amendment ("in the sweep screen a worktree row is the worktree, its branch when removable and its bundles' entries;
-the apply sends exactly the selected rows' keys so expanded") and that test is rewritten for it — keeping its
-assertions on unknown kinds, kept items and stray keys, adding one for the pairing. Without approval, the row shows
-the branch as its own checkbox inside the row, unticked. The other sweep guards (`testSweepTicksNothingByDefault`,
-`testSweepNeverAppliesUnknownKinds`, `testSweepSurvivesLeavingThePage`, …) move to the screen with their assertions
-unchanged. The `--json` output gains two
-keys (additive); `--stream` is new.
+**Needs the owner's approval — a guard test changes.** The worktree + branch pairing (§4.2) is new behaviour, and the
+PROJ-18 guard `testSweepAppliesOnlyTickedKeys` (`WatchtowerDesktop/Tests/SessionCleanupSweepTests.swift`) asserts
+the opposite: ticking a worktree whose branch is also removable sends only the worktree's key. With approval,
+PROJ-18 gets an amendment ("on the Clean Up screen a worktree row is the worktree, its branch when that branch item
+is `remove`, and its bundles' entries; the apply sends exactly the ticked rows' keys so expanded, of known kinds
+only") and the test is rewritten for it — keeping its assertions on unknown kinds, kept items and stray keys, adding
+one for the pairing. Without approval, the branch is a second checkbox inside the row, unticked. The other sweep and
+session-sheet guards (`testSweepTicksNothingByDefault`, `testSweepNeverAppliesUnknownKinds`,
+`testSweepSurvivesLeavingThePage`, `testSheetApplyMarksTheRowBusy`, …) move to the screen with their assertions
+unchanged. The session sheet's "`remove` items ticked" (design §12) becomes "nothing ticked" in session scope too —
+one rule for the one screen (stricter, not weaker).
 
-## 9. Guide
+The `--json` output gains two keys (additive); `--stream` is new.
 
-`docs/guide/` page on cleaning up worktrees is updated for the screen (where it opens, select all, filters).
+## 9. Looks like the mockup — checked twice
 
-## 10. Left to the builder
+- **Before code:** the mockup in `docs/design/mockups/worktree-cleanup/` is the agreed look (this review).
+- **After code, before merge:** the screen is registered in `DesignShotCatalog` on fixture data (`acme`,
+  `example.com`) in the mockup's three states (A filling in, B selected with the confirmation, C result);
+  `make desktop-shots` renders light and dark; the implementer puts each shot beside the matching mockup PNG, lists
+  every difference and fixes it or names why not; the shots and that list go to the owner as a check ask before
+  merge (style guide "See your screen", step 4).
 
-- Exact SwiftUI `Table` column widths, icons, the colour of the progress bar — the design kit and
-  `docs/design/desktop-style-guide.md` decide.
-- Whether rows that leave after removal fade or vanish.
-- Event decoding details and how the center coalesces many `checked` events into view updates (no more than a few
-  redraws per second).
+## 10. Guide
+
+The `docs/guide/` page on cleaning up worktrees is updated for the screen (where it opens, select all, filters, the
+session scope).
+
+## 11. Left to the builder
+
+- Column widths and the exact empty state of a scope with nothing to clean (from `FeatureEmptyState` /
+  `TabEmptyState`).
+- Whether rows that leave after removal fade or vanish (`Motion.panel` if they fade).
+- Event decoding details.
 
 ## Decisions
 
 - Make it a screen, not a popup; it must not block the owner while it plans — conversation (owner, 2026-10-26).
 - The points proposed in the conversation (non-modal screen; list first, sizes later; bulk selection; sortable
   table; kept items folded; background removal with progress) are accepted as they are — ask #628.
-- Nothing pre-selected stays; a single "select all that can go" click is the bulk path — conversation proposal,
-  accepted in ask #628.
+- Nothing is pre-selected; one "Select All That Can Go" click is the bulk path — conversation proposal, accepted in
+  ask #628.
+- Owner column and an owner filter are needed — ask #629. What can be known is shown: the session, else the
+  worktree's origin (Subagent / Session deleted / Made by hand) — my call, §4.3.
+- A mockup is a must, and the shipped screen is compared against it before merge — ask #629 (§9).
+- Kit components and `Tone` colours, no stock `Table`; stock `Table` selection cannot refuse rows — ask #629.
+- In memory only: the screen is page state, not a saved pane; a relaunch does not bring it back — ask #629.
+- One place to pick: the screen replaces both the sweep sheet and the session's Clean Up… sheet; Delete and Clean Up
+  stays in the delete dialog; one cleanup apply per workbench at a time — ask #629 (owner asked for one place; this
+  shape is my proposal, §3.2).
+- `--stream` (one streamed call) over two calls — my call, explained in §6 at the owner's request (ask #629).
+- `merged` counts `origin/<default>` as well as the local default branch — my call (§6).
+- Plan speed-ups only where cheap, after measuring in plan Task 0 — my call (§6).
+- Worktree + branch + its LaunchServices entries in one row, with the PROJ-18 guard test rewritten — **open, needs
+  the owner's approval** (§8).

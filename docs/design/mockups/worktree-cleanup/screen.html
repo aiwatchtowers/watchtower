@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worktree Cleanup Mockup</title>
+<!-- Mockup for docs/superpowers/specs/2026-10-26-worktree-cleanup-screen-design.md (board #1107).
+     Neutral sample data only. Values follow docs/design/desktop-style-guide.md tokens:
+     Spacing 2/4/6/8/10/12/16/20, Radius row 8 / control 6 / container 10, Fill card .06 hover .07 selected .12 (accent),
+     ChipTint .14 fill + .5pt stroke at .3, hairline .5pt between panes only, no row dividers.
+     Open with #dark for the dark appearance. -->
+<style>
+:root {
+  --bg: #ffffff; --window: #ececec; --text: rgba(0,0,0,.85); --secondary: rgba(0,0,0,.5); --tertiary: rgba(0,0,0,.26);
+  --primary-rgb: 0,0,0; --accent: #007aff; --accent-rgb: 0,122,255; --hair: rgba(0,0,0,.12);
+  --green-rgb: 52,199,89; --blue-rgb: 0,122,255; --orange-rgb: 255,149,0; --red-rgb: 255,59,48; --gray-rgb: 142,142,147;
+  --green-text: #1f8a3a; --orange-text: #b26200; --red-text: #d70015;
+}
+:root.dark {
+  --bg: #1e1e1e; --window: #2a2a2a; --text: rgba(255,255,255,.85); --secondary: rgba(255,255,255,.55); --tertiary: rgba(255,255,255,.25);
+  --primary-rgb: 255,255,255; --accent: #0a84ff; --accent-rgb: 10,132,255; --hair: rgba(255,255,255,.14);
+  --green-rgb: 48,209,88; --blue-rgb: 10,132,255; --orange-rgb: 255,159,10; --red-rgb: 255,69,58; --gray-rgb: 152,152,157;
+  --green-text: #30d158; --orange-text: #ff9f0a; --red-text: #ff453a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: var(--window); color: var(--text);
+  font: 13px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+h1.frame { font-size: 15px; font-weight: 600; margin: 24px 0 8px; color: var(--secondary); }
+h1.frame:first-child { margin-top: 0; }
+.win { width: 1040px; background: var(--bg); border-radius: 10px; overflow: hidden; position: relative;
+  box-shadow: 0 0 0 .5px var(--hair), 0 8px 30px rgba(0,0,0,.18); }
+/* title row */
+.titlebar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: .5px solid var(--hair); }
+.lights { display: flex; gap: 8px; margin-right: 12px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: rgba(var(--gray-rgb),.5); display: block; }
+.wbname { font-weight: 600; margin-right: 8px; }
+.seg { display: flex; gap: 2px; padding: 2px; border-radius: 18px; background: rgba(var(--primary-rgb),.04); }
+.seg span { padding: 3px 10px; border-radius: 16px; color: var(--secondary); font-size: 12px; }
+.seg span.on { background: rgba(var(--accent-rgb),.20); color: var(--accent); font-weight: 500; }
+.crumb { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; border-radius: 16px;
+  background: rgba(var(--accent-rgb),.20); color: var(--accent); font-size: 12px; font-weight: 500; }
+.crumb b { font-weight: 400; opacity: .7; padding: 0 4px; }
+.spacer { flex: 1; }
+.icon { color: var(--secondary); padding: 2px 6px; font-size: 13px; }
+/* page */
+.page { padding: 16px 20px 0; }
+.head { display: flex; align-items: baseline; gap: 12px; }
+.head h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.head .sub { color: var(--secondary); font-size: 11px; }
+.progress { display: flex; align-items: center; gap: 8px; margin: 10px 0 12px; color: var(--secondary); font-size: 11px; }
+.bar { width: 160px; height: 4px; border-radius: 2px; background: rgba(var(--primary-rgb),.07); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.btn { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 6px; font-size: 12px; }
+.btn.secondary { background: rgba(var(--primary-rgb),.06); color: var(--text); }
+.btn.quiet { color: var(--accent); }
+.btn.destructive { background: rgb(var(--red-rgb)); color: #fff; font-weight: 500; }
+.btn.primary { background: var(--accent); color: #fff; font-weight: 500; }
+.btn.disabled { opacity: .45; }
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.search { width: 200px; padding: 4px 8px; border-radius: 6px; background: rgba(var(--primary-rgb),.06); color: var(--tertiary); font-size: 12px; }
+.menu { padding: 3px 8px; border-radius: 6px; background: rgba(var(--primary-rgb),.04); font-size: 12px; color: var(--text); }
+.menu::after { content: " ⌄"; color: var(--secondary); }
+.toggle { padding: 3px 10px; border-radius: 16px; background: rgba(var(--primary-rgb),.04); font-size: 12px; color: var(--secondary); }
+.toggle.on { background: rgba(var(--accent-rgb),.20); color: var(--accent); }
+/* list */
+.cols, .row { display: grid; grid-template-columns: 26px 1fr 190px 84px 104px 190px; align-items: center; column-gap: 8px; }
+.cols { padding: 4px 8px; color: var(--secondary); font-size: 11px; }
+.cols .sorted { color: var(--text); font-weight: 500; }
+.section { display: flex; align-items: center; gap: 6px; padding: 10px 8px 4px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .6px; color: var(--secondary); }
+.section .count { font-weight: 500; padding: 0 6px; border-radius: 8px; background: rgba(var(--primary-rgb),.06); letter-spacing: 0; }
+.section .why { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.chev { font-size: 9px; width: 10px; display: inline-block; }
+.row { padding: 5px 8px; border-radius: 8px; min-height: 40px; }
+.row.hover { background: rgba(var(--primary-rgb),.07); }
+.row.sel { background: rgba(var(--accent-rgb),.12); }
+.row.dim { opacity: .55; }
+.box { width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(var(--primary-rgb),.28); background: var(--bg); display: grid; place-items: center; font-size: 10px; color: #fff; }
+.box.on { background: var(--accent); border-color: var(--accent); }
+.box.off { border-style: dashed; opacity: .5; }
+.name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.branch { color: var(--secondary); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cap { color: var(--secondary); font-size: 11px; }
+.num { font-variant-numeric: tabular-nums; text-align: right; padding-right: 12px; }
+.num.muted, .muted { color: var(--tertiary); font-size: 11px; }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+.chip.green { background: rgba(var(--green-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--green-rgb),.3); color: var(--green-text); }
+.chip.blue { background: rgba(var(--blue-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--blue-rgb),.3); color: var(--accent); }
+.chip.orange { background: rgba(var(--orange-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--orange-rgb),.3); color: var(--orange-text); }
+.chip.red { background: rgba(var(--red-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--red-rgb),.3); color: var(--red-text); }
+.chip.gray { background: rgba(var(--gray-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--gray-rgb),.3); color: var(--secondary); }
+.also { color: var(--secondary); font-size: 11px; margin-top: 2px; }
+.spin { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid rgba(var(--primary-rgb),.15); border-top-color: var(--secondary); vertical-align: -1px; margin-right: 4px; }
+.footer { display: flex; align-items: center; gap: 8px; padding: 10px 20px; border-top: .5px solid var(--hair); margin-top: 8px; }
+.footer .total { color: var(--secondary); font-size: 12px; }
+.footer .total b { color: var(--text); font-weight: 500; }
+.result { display: flex; align-items: center; gap: 8px; margin: 10px 0 12px; padding: 6px 10px; border-radius: 8px; background: rgba(var(--primary-rgb),.06); font-size: 12px; }
+.result .ok { color: var(--green-text); }
+.result .warn { color: var(--orange-text); }
+/* confirmation sheet */
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,.18); display: flex; justify-content: center; align-items: flex-start; padding-top: 90px; }
+.sheet { width: 420px; background: var(--bg); border-radius: 10px; padding: 20px; box-shadow: 0 0 0 .5px var(--hair), 0 12px 40px rgba(0,0,0,.3); }
+.sheet h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.sheet p { margin: 0 0 6px; color: var(--secondary); font-size: 12px; }
+.sheet .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.note { width: 1040px; color: var(--secondary); font-size: 12px; margin: 8px 0 0; }
+</style>
+<script>if (location.hash === '#dark') document.documentElement.classList.add('dark');</script>
+</head>
+<body>
+
+<h1 class="frame">A · Opened: rows are listed at once, checks and sizes fill in</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span>Session</span><span>Board</span><span>Files</span></div>
+    <div class="crumb">Clean Up <b>✕</b></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="page">
+    <div class="head"><h2>Clean up worktrees and branches</h2><span class="sub">Nothing goes until you select it and confirm. Unsaved or unpushed work is never removed.</span></div>
+    <div class="progress"><div class="bar"><i style="width:34%"></i></div>Checking 23 of 69 worktrees…</div>
+    <div class="toolbar">
+      <div class="search">Search</div>
+      <div class="seg"><span class="on">All</span><span>Worktrees</span><span>Branches</span></div>
+      <div class="menu">Any age</div>
+      <div class="menu">Any owner</div>
+      <div class="toggle">Merged only</div>
+    </div>
+    <div class="cols"><span></span><span>Name</span><span>Owner</span><span class="num sorted">Size ↓</span><span>Last commit</span><span>State</span></div>
+    <div class="section"><span class="chev">▾</span>Can go <span class="count">18</span></div>
+    <div class="row"><span class="box"></span><div><div class="name">search-filters</div><div class="branch">wt/search-filters</div></div><span class="cap">Session deleted</span><span class="num">~12 GB</span><span class="cap">9 days ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row hover"><span class="box"></span><div><div class="name">agent-3f9c0a17d2e4b6c1</div><div class="branch">feature/export-csv</div></div><span class="cap">Subagent</span><span class="num">~12 GB</span><span class="cap">2 days ago</span><span><span class="chip blue">Pushed</span></span></div>
+    <div class="row"><span class="box"></span><div><div class="name">billing-retry</div><div class="branch">wt/billing-retry</div></div><span class="cap">“Billing retry” · 3 h ago</span><span class="num">~11 GB</span><span class="cap">3 hours ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row"><span class="box"></span><div><div class="name">agent-a4e21905ca8593e8</div><div class="branch">lane/login-t2</div></div><span class="cap">Subagent</span><span class="num muted"><span class="spin"></span>measuring</span><span class="cap">1 day ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row"><span class="box"></span><div><div class="name">old-experiment</div><div class="branch">branch only</div></div><span class="cap">—</span><span class="num muted">—</span><span class="cap">2 months ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row dim"><span class="box off"></span><div><div class="name">onboarding-copy</div><div class="branch">wt/onboarding-copy</div></div><span class="cap">Session deleted</span><span class="num muted"><span class="spin"></span>checking</span><span class="muted">—</span><span class="muted">—</span></div>
+    <div class="row dim"><span class="box off"></span><div><div class="name">agent-c1d27e90b44f0a3d</div><div class="branch">lane/login-t3</div></div><span class="cap">Subagent</span><span class="num muted"><span class="spin"></span>checking</span><span class="muted">—</span><span class="muted">—</span></div>
+    <div class="section"><span class="chev">▸</span>Kept <span class="count">9</span><span class="why">· 5 unpushed commits · 3 recent sessions · 1 in use</span></div>
+  </div>
+  <div class="footer">
+    <span class="btn quiet">Select All That Can Go</span>
+    <div class="spacer"></div>
+    <span class="total">Nothing selected</span>
+    <span class="btn destructive disabled">Clean Up…</span>
+  </div>
+</div>
+
+<h1 class="frame">B · Filtered (older than 30 days, merged), Select All, then Clean Up…</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span>Session</span><span>Board</span><span>Files</span></div>
+    <div class="crumb">Clean Up <b>✕</b></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="page">
+    <div class="head"><h2>Clean up worktrees and branches</h2><span class="sub">Nothing goes until you select it and confirm. Unsaved or unpushed work is never removed.</span></div>
+    <div class="progress">Checked 1 min ago · 69 worktrees, 130 branches <span class="btn quiet">Refresh</span></div>
+    <div class="toolbar">
+      <div class="search">Search</div>
+      <div class="seg"><span class="on">All</span><span>Worktrees</span><span>Branches</span></div>
+      <div class="menu">Older than 30 days</div>
+      <div class="menu">Any owner</div>
+      <div class="toggle on">Merged only</div>
+    </div>
+    <div class="cols"><span></span><span>Name</span><span>Owner</span><span class="num sorted">Size ↓</span><span>Last commit</span><span>State</span></div>
+    <div class="section"><span class="chev">▾</span>Can go <span class="count">4</span></div>
+    <div class="row sel"><span class="box on">✓</span><div><div class="name">import-wizard</div><div class="branch">wt/import-wizard</div></div><span class="cap">Session deleted</span><span class="num">~12 GB</span><span class="cap">5 weeks ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row sel"><span class="box on">✓</span><div><div class="name">agent-77ab01c3e9d2f450</div><div class="branch">lane/import-t4</div></div><span class="cap">Subagent</span><span class="num">~9.8 GB</span><span class="cap">5 weeks ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row sel"><span class="box on">✓</span><div><div class="name">acme-app-legacy</div><div class="branch">feature/legacy-sync · <span style="color:var(--orange-text)">branch kept — checked out elsewhere</span></div></div><span class="cap">Made by hand</span><span class="num">~3.1 GB</span><span class="cap">2 months ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="row sel"><span class="box on">✓</span><div><div class="name">old-experiment</div><div class="branch">branch only</div></div><span class="cap">—</span><span class="num muted">—</span><span class="cap">2 months ago</span><span><span class="chip green">Merged</span></span></div>
+    <div class="section"><span class="chev">▸</span>Kept <span class="count">2</span><span class="why">· 2 unpushed commits</span></div>
+  </div>
+  <div class="footer">
+    <span class="btn quiet">Select All That Can Go</span><span class="btn quiet">Clear</span>
+    <div class="spacer"></div>
+    <span class="total"><b>3 worktrees, 3 branches</b> · ~25 GB</span>
+    <span class="btn destructive">Clean Up…</span>
+  </div>
+  <div class="scrim"><div class="sheet">
+    <h3>Remove 3 worktrees and 3 branches (~25 GB)?</h3>
+    <p>Each one is checked again right before it goes: anything with unsaved or unpushed work, or that changed since the check, is kept.</p>
+    <div class="actions"><span class="btn secondary">Cancel</span><span class="btn destructive">Remove</span></div>
+  </div></div>
+</div>
+
+<h1 class="frame">C · Removing in the background, then the result</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span>Session</span><span>Board</span><span>Files</span></div>
+    <div class="crumb">Clean Up <b>✕</b></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="page">
+    <div class="head"><h2>Clean up worktrees and branches</h2><span class="sub">Nothing goes until you select it and confirm. Unsaved or unpushed work is never removed.</span></div>
+    <div class="result"><span class="ok">✓</span> Freed ~15 GB · removed 2 worktrees, 2 branches <span class="warn">· kept 1 — changed since the check</span><div class="spacer"></div><span class="btn quiet">Dismiss</span></div>
+    <div class="toolbar">
+      <div class="search">Search</div>
+      <div class="seg"><span class="on">All</span><span>Worktrees</span><span>Branches</span></div>
+      <div class="menu">Older than 30 days</div>
+      <div class="menu">Any owner</div>
+      <div class="toggle on">Merged only</div>
+    </div>
+    <div class="cols"><span></span><span>Name</span><span>Owner</span><span class="num sorted">Size ↓</span><span>Last commit</span><span>State</span></div>
+    <div class="section"><span class="chev">▾</span>Can go <span class="count">0</span></div>
+    <div class="section"><span class="chev">▾</span>Kept <span class="count">3</span><span class="why">· 2 unpushed commits · 1 changed since the check</span></div>
+    <div class="row"><span class="box off"></span><div><div class="name">agent-77ab01c3e9d2f450</div><div class="branch">lane/import-t4</div></div><span class="cap">Subagent</span><span class="num">~9.8 GB</span><span class="cap">5 weeks ago</span><span><span class="chip orange">Changed since the check</span></span></div>
+    <div class="row"><span class="box off"></span><div><div class="name">payments-spike</div><div class="branch">wt/payments-spike</div></div><span class="cap">Session deleted</span><span class="num">~12 GB</span><span class="cap">6 weeks ago</span><span><span class="chip gray">Unpushed commits</span></span></div>
+    <div class="row"><span class="box off"></span><div><div class="name">draft-thing</div><div class="branch">branch only</div></div><span class="cap">—</span><span class="num muted">—</span><span class="cap">3 months ago</span><span><span class="chip gray">Unpushed commits</span></span></div>
+  </div>
+  <div class="footer">
+    <span class="btn quiet">Select All That Can Go</span>
+    <div class="spacer"></div>
+    <span class="total">Nothing selected</span>
+    <span class="btn destructive disabled">Clean Up…</span>
+  </div>
+</div>
+<p class="note">While removing (between B and C) each selected row shows a spinner in its State cell and leaves the list once removed; Refresh and Clean Up… are disabled; the owner can leave the screen.</p>
+
+</body>
+</html>
