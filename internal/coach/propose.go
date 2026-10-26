@@ -11,7 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"watchtower/internal/agentreport"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
@@ -26,7 +25,10 @@ const (
 	// review rounds or hints a proposal must rest on.
 	minDistinctSources = 3
 	// maxEvidence caps the refs a proposal stores; Sources counts them all.
-	maxEvidence     = 12
+	maxEvidence = 12
+	// The prompt asks for a title of at most 80 and a reason of at most 400
+	// characters; Go accepts up to these limits so a slightly long but valid
+	// proposal is not lost.
 	maxTitleRunes   = 120
 	maxWhyRunes     = 600
 	defaultLanguage = "English"
@@ -208,7 +210,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 		if !ok || after == t.Text || !kindFits(m.Kind, t.Text, after) || ValidateAfter(t, after) != nil {
 			continue
 		}
-		fp := instructions.Fingerprint(fmt.Sprintf("%s|%d|%s|%s => %s", key.dest, key.wb, key.prompt, m.Find, m.Replace))
+		fp := fingerprint(key, t.Text, after)
 		if known[fp] {
 			continue
 		}
@@ -219,6 +221,14 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 			BeforeText: t.Text, AfterText: after, Evidence: evidence, Sources: sources})
 	}
 	return out, nil
+}
+
+// fingerprint identifies an edit by its text and what it changes: the part of
+// before it removes and the part of after it adds (changedPart), so the same
+// edit named with a wider or narrower find gets the same fingerprint.
+func fingerprint(key textKey, before, after string) string {
+	removed, added := changedPart(before, after)
+	return instructions.Fingerprint(fmt.Sprintf("%s|%d|%s|%s => %s", key.dest, key.wb, key.prompt, removed, added))
 }
 
 // citedEvidence keeps the cited refs found in the input (deduplicated, in
@@ -391,24 +401,31 @@ func ValidateAfter(t CurrentText, after string) error {
 	return fmt.Errorf("unknown destination %q", t.Destination)
 }
 
-// SafeAllowRule is whether rule has the shape Bash(<verb>:*) for a verb
-// agentreport would suggest allowing (a read & search or build & test
-// command). A bare Bash, any other tool and any other shape are refused.
+// safeAllowVerbs is the coach's own allowlist for ~/.claude/settings.json
+// rules, matched exactly: a proposal may add Bash(<verb>:*) only for a verb
+// here, with nothing after it (no arguments, paths or flags). It is narrower
+// than agentreport's tool classes on purpose: the model writes the verb, and a
+// first-word class would let "sed -i", "find . -delete" or any make target
+// through.
+var safeAllowVerbs = map[string]bool{
+	// Read and search: agentreport's read/search programs minus sed and find,
+	// which can write (sed -i) or delete and run commands (find -delete/-exec).
+	"cat": true, "ls": true, "grep": true, "rg": true, "head": true, "tail": true,
+	// Build and test: exact toolchain commands only — not make (any target)
+	// and not npm run (any script).
+	"go test": true, "go build": true, "go vet": true, "swift test": true, "swift build": true,
+	"cargo test": true, "npm test": true, "pytest": true,
+}
+
+// SafeAllowRule is whether rule is exactly Bash(<verb>:*) for a verb in
+// safeAllowVerbs. A bare Bash, any other tool and any other shape are refused.
 func SafeAllowRule(rule string) bool {
 	verb, ok := strings.CutPrefix(rule, "Bash(")
 	if !ok {
 		return false
 	}
 	verb, ok = strings.CutSuffix(verb, ":*)")
-	if !ok || verb == "" || verb != strings.Join(strings.Fields(verb), " ") {
-		return false
-	}
-	for _, r := range verb {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(" ._-/", r)) {
-			return false
-		}
-	}
-	return agentreport.SafeToAllow("Bash", verb)
+	return ok && safeAllowVerbs[verb]
 }
 
 func nonEmptyLines(s string) []string {

@@ -144,6 +144,23 @@ func TestValidate_DeclinedFingerprintDropped(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestValidate_WiderFindSameFingerprint(t *testing.T) {
+	in := proposeInputs()
+	narrow, err := Validate(fixture(t, "propose_find_once.json"), in)
+	require.NoError(t, err)
+	wide, err := Validate(fixture(t, "propose_wider_find.json"), in)
+	require.NoError(t, err)
+	require.Len(t, narrow, 1)
+	require.Len(t, wide, 1)
+	assert.Equal(t, narrow[0].AfterText, wide[0].AfterText)
+	assert.Equal(t, narrow[0].Fingerprint, wide[0].Fingerprint, "the same edit with a wider find is the same edit")
+
+	in.Declined = []db.CoachProposal{{ID: 4, Fingerprint: narrow[0].Fingerprint, Destination: DestSession, Status: "declined"}}
+	got, err := Validate(fixture(t, "propose_wider_find.json"), in)
+	require.NoError(t, err)
+	assert.Empty(t, got, "a declined edit does not come back under a wider find")
+}
+
 func TestValidate_KeepsAtMostSlots(t *testing.T) {
 	in := proposeInputs()
 	in.Open = []db.CoachProposal{{ID: 1, Fingerprint: "other", Destination: DestProcedure, WorkbenchID: 1, Status: "open"}}
@@ -166,19 +183,27 @@ func TestValidate_MalformedReply(t *testing.T) {
 
 func TestSafeAllowRule(t *testing.T) {
 	for rule, want := range map[string]bool{
-		"Bash(go test:*)":     true,
-		"Bash(rg:*)":          true,
-		"Bash(make:*)":        true,
-		"Bash":                false,
-		"Bash(*)":             false,
-		"Bash(:*)":            false,
-		"Bash(rm:*)":          false,
-		"Bash(git push:*)":    false,
-		"Bash(go test; rm:*)": false,
-		"Bash(go  test:*)":    false,
-		"Read":                false,
-		"Write":               false,
-		"mcp__x__send":        false,
+		"Bash(go test:*)":             true,
+		"Bash(rg:*)":                  true,
+		"Bash(cat:*)":                 true,
+		"Bash":                        false,
+		"Bash(*)":                     false,
+		"Bash(:*)":                    false,
+		"Bash(rm:*)":                  false,
+		"Bash(git push:*)":            false,
+		"Bash(sed:*)":                 false,
+		"Bash(sed -i:*)":              false,
+		"Bash(find:*)":                false,
+		"Bash(find . -delete:*)":      false,
+		"Bash(find . -exec rm -rf:*)": false,
+		"Bash(make:*)":                false,
+		"Bash(npm run:*)":             false,
+		"Bash(rg foo:*)":              false,
+		"Bash(go test; rm:*)":         false,
+		"Bash(go  test:*)":            false,
+		"Read":                        false,
+		"Write":                       false,
+		"mcp__x__send":                false,
 	} {
 		assert.Equal(t, want, SafeAllowRule(rule), rule)
 	}

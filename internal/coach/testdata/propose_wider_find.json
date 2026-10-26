@@ -1,0 +1,3 @@
+{"proposals": [
+  {"title": "Smaller commits, again", "why": "Three sessions.", "destination": "session", "workbench_id": 0, "prompt_id": "", "kind": "replace", "find": "Run lint.\nKeep commits small.", "replace": "Run lint.\nKeep commits small and focused.", "metric": "corrections", "evidence": ["s1", "s2", "s3"]}
+]}
