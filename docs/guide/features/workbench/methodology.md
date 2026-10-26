@@ -50,10 +50,10 @@ since: 0.24.0
 action: nav:projects
 -->
 
-1. Open the **…** menu in the workbench's title row and choose **Agent Settings…**.
+1. Open the **…** menu in the workbench's title row and choose **Agent Settings…**. The settings open in place of the workspace, with **Agent Settings ✕** beside **Session | Board | Files**.
 2. Pick a value for **Methodology**, **Ask guard** and **Finish check**. **From folder file** (for **Methodology**) and **Default** (for the checks) mean "do not override", and show the current value and where it comes from.
 3. **Create workflow.md** writes a template with every key commented out. Edit it, and commit it. The button reads **Open workflow.md** once the file exists.
-4. Press **Done**.
+4. Each change is saved at once. Press **✕** on **Agent Settings ✕**, press Esc or pick **Session**, **Board** or **Files** to go back; the workspace is as you left it.
 
 A methodology change reinstalls the folder's skills. A session worktree takes the change when it is next set up.
 

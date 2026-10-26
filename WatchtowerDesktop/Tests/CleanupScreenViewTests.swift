@@ -79,7 +79,7 @@ final class CleanupScreenViewTests: XCTestCase {
         let project = try XCTUnwrap(vm.selectedWorkbench)
         let process = try XCTUnwrap(appState.terminalCenter.process(for: session.id) as? FakeTerminalSession)
 
-        let host = NSHostingView(rootView: CleanupCoveredWorkspace(vm: vm, project: project).environment(appState))
+        let host = NSHostingView(rootView: WorkbenchCoveredWorkspace(vm: vm, project: project).environment(appState))
         host.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -133,6 +133,36 @@ final class CleanupScreenViewTests: XCTestCase {
 
         XCTAssertFalse(vm.cleanupScreenOpen(projectID: projectID))
         XCTAssertEqual(vm.layout(projectID: projectID).visiblePanes.first, .session(second.id))
+    }
+
+    /// Agent Settings is a page screen like Clean Up (board #1150): it
+    /// covers the terminal, one page screen at a time replaces the other,
+    /// and a session put on screen closes it.
+    func testAgentSettingsIsAPageScreen() async throws {
+        let first = try await insertSession("first")
+        let second = try await insertSession("second")
+        let vm = try await page(showing: first)
+        let layout = vm.layout(projectID: projectID)
+        XCTAssertNil(vm.pageScreen(projectID: projectID))
+
+        vm.openAgentSettingsScreen(projectID: projectID)
+        XCTAssertEqual(vm.pageScreen(projectID: projectID), .agentSettings)
+        XCTAssertTrue(vm.isObscured(sessionID: first.id, projectID: projectID))
+        XCTAssertEqual(vm.layout(projectID: projectID), layout, "the screen is not a layout value")
+
+        await vm.openCleanupScreen(projectID: projectID).value
+        XCTAssertEqual(vm.pageScreen(projectID: projectID), .cleanUp, "Clean Up takes its place")
+        vm.openAgentSettingsScreen(projectID: projectID)
+        XCTAssertEqual(vm.pageScreen(projectID: projectID), .agentSettings, "and gives it back")
+        XCTAssertFalse(vm.cleanupScreenOpen(projectID: projectID))
+
+        await vm.showSession(id: second.id)
+        XCTAssertNil(vm.pageScreen(projectID: projectID))
+        XCTAssertFalse(vm.isObscured(sessionID: second.id, projectID: projectID))
+
+        vm.openAgentSettingsScreen(projectID: projectID)
+        vm.closePageScreen(projectID: projectID)
+        XCTAssertNil(vm.pageScreen(projectID: projectID))
     }
 
     /// Leaving for another workbench and coming back is not an owner pick:

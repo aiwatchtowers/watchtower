@@ -283,6 +283,10 @@ enum DesignShotCatalog {
             // Search while the messages index is rebuilt (#892).
             DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {
                 AnyView(SearchShotFixtures.rebuildPending().shotFrame().detailBackground())
+            },
+            // Agent Settings as a page screen (#1150).
+            DesignShot(name: "workbench-agent-settings", size: NSSize(width: 1040, height: 900)) {
+                AgentSettingsShotFixtures.screen()
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
@@ -331,6 +335,7 @@ enum DesignShotFixtures {
         AutomationShotFixtures.cleanUp()
         BuiltinShotFixtures.cleanUp()
         CleanupShotFixtures.cleanUp()
+        AgentSettingsShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
