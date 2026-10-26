@@ -48,7 +48,8 @@ struct ChatSplitView: View {
                 if showSidebar {
                     ChatSidebarView(
                         historyVM: historyVM, chatVM: chatVM,
-                        onNewChat: createNewChat, onArchive: archive, onDelete: delete
+                        onNewChat: createNewChat, onArchive: archive, onDelete: delete,
+                        onQuickDelete: quickDeleted
                     )
                         .frame(width: Self.historyWidth)
                         // Its edge line lies under the tabs, so the chat on
@@ -73,13 +74,17 @@ struct ChatSplitView: View {
                     } else if let projectID = chatVM.openProjectID, let dbPool = appState.databaseManager?.dbPool {
                         ProjectDetailView(
                             projectID: projectID,
+                            chatVM: chatVM,
                             dbPool: dbPool,
                             attachmentsRoot: ChatAttachmentStore.defaultRootDir(),
-                            onNewChat: createNewChat(inProject:),
+                            modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
+                            maxComposerHeight: max(120, geo.size.height * 0.4),
                             onOpenChat: { historyVM.selectedConversationID = $0 },
                             onRenamed: { chatVM.reloadProjects() },
                             onDeleted: { chatVM.projectDeleted($0) },
-                            onPromptChanged: { chatVM.projectPromptChanged($0) }
+                            onPromptChanged: { chatVM.projectPromptChanged($0) },
+                            hiddenChatIDs: historyVM.hiddenChatIDs,
+                            panelChats: historyVM.conversations
                         )
                         .id(projectID)
                     } else if chatVM.isOnLanding {
@@ -106,6 +111,11 @@ struct ChatSplitView: View {
             // also paints it), so the selected history tab meets one colour.
             .detailBackground()
         }
+        // View → Go to Item (⌘1…⌘9) and Back (⌘[) act on the panel while
+        // this tab is in the key window (spec §5.4, `ItemShortcutCommands`).
+        .focusedSceneValue(\.chatsMenu, ChatsMenuContext(
+            historyVM: historyVM, keysTaken: showSearch || showRename, panelVisible: showSidebar, openChat: openChat
+        ))
         .onChange(of: historyVM.selectedConversationID) { _, newID in
             if let newID { chatVM.select(conversationID: newID) }
         }
@@ -210,14 +220,16 @@ struct ChatSplitView: View {
         return chatVM.currentConversation?.displayTitle ?? "New Chat"
     }
 
-    /// ⌘N / New Chat: the landing — its composer makes the conversation on
-    /// the first keystroke, so no empty row is written up front.
+    /// ⌘N / New Chat / the panel's `+`: the landing — its composer makes
+    /// the conversation on the first keystroke, so no empty row is written
+    /// up front. In the panel's project only while the panel shows it.
     private func createNewChat() {
-        showLanding()
+        showLanding(inProject: ChatLandingPolicy.newChatProject(level: historyVM.level, panelVisible: showSidebar))
     }
 
-    private func showLanding() {
-        chatVM.showLanding()
+    /// The landing; outside any project unless `+`/⌘N asked for one.
+    private func showLanding(inProject projectID: Int64? = nil) {
+        chatVM.showLanding(inProject: projectID)
         historyVM.selectedConversationID = nil
     }
 
@@ -230,7 +242,12 @@ struct ChatSplitView: View {
         chatVM.enterTab(rememberedConversationID: remembered, lastViewedAt: viewedAt, now: Date())
         // A project page stays open, with no history selection.
         guard chatVM.openProjectID == nil else { return }
-        historyVM.selectedConversationID = chatVM.isOnLanding ? nil : chatVM.conversationID
+        let shown = chatVM.isOnLanding ? nil : chatVM.conversationID
+        // Back on the tab, the chat on screen is read (spec §5.2): a turn
+        // that ended while the tab was away left it unread. A changed
+        // selection marks it itself; an unchanged one is marked here — once.
+        if let shown, shown == historyVM.selectedConversationID { historyVM.markRead(shown) }
+        historyVM.selectedConversationID = shown
     }
 
     private func rememberShownConversation() {
@@ -240,17 +257,28 @@ struct ChatSplitView: View {
         lastWorkspace = workspaceKey
     }
 
-    private func createNewChat(inProject projectID: Int64) {
-        Task {
-            if let id = await chatVM.newConversation(projectID: projectID) { historyVM.selectedConversationID = id }
-        }
-    }
-
+    /// Delete… confirmed: at once, no Undo. The chat waiting in the Undo
+    /// bar commits first — another delete replaces it (spec §5.3).
     private func delete(_ id: Int64) {
         let wasShown = id == chatVM.conversationID
         chatVM.forget(conversationID: id)
-        Task { await historyVM.deleteConversation(id) }
+        Task {
+            await historyVM.commitPendingDelete()
+            await historyVM.deleteConversation(id)
+        }
         if wasShown { showLanding() }
+    }
+
+    /// A ✕ / ⌘⌫ hid the chat (its DELETE waits for the Undo window):
+    /// the chat on screen gives way to the landing, as a delete does.
+    private func quickDeleted(_ id: Int64) {
+        if id == chatVM.conversationID, !chatVM.isOnLanding { showLanding() }
+    }
+
+    /// ⌘1…⌘9: as a click on the row.
+    private func openChat(_ id: Int64) {
+        historyVM.selectedConversationID = id
+        chatVM.requestComposerFocus()
     }
 
     /// Archiving the chat on screen lands, like deleting it — once the

@@ -86,32 +86,3 @@ struct SessionsPanelSessionRow: View {
         }
     }
 }
-
-/// The "▸ N finished" / "▾ N finished" header at the bottom of SESSIONS
-/// (board #480, spec 2026-10-12-sessions-panel-design §4.5): a click opens
-/// or folds the group, remembered per workbench.
-struct SessionsPanelFinishedHeader: View {
-    let count: Int
-    let expanded: Bool
-    let onFold: () -> Void
-
-    var body: some View {
-        Button(action: onFold) {
-            HStack(spacing: 4) {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.caption2.weight(.semibold))
-                    .frame(width: 10)
-                Text("\(count) finished")
-                    .font(.caption)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .listRowSeparator(.hidden)
-        .help(expanded ? "Hide finished sessions" : "Show finished sessions")
-        .accessibilityLabel("\(count) finished session\(count == 1 ? "" : "s"), \(expanded ? "expanded" : "collapsed")")
-        .accessibilityAddTraits(.isHeader)
-    }
-}

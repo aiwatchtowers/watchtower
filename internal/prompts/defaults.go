@@ -212,7 +212,7 @@ var Descriptions = map[string]string{
 	CatchupLearn:               "Catch-Up: turn a reviewed topic's rating and comment into targeted learned-rules for the source pipelines (light tier; code validates scope keys)",
 	TargetsNextStep:            "Target next step: pick the single next action for one target, with urgency and up to three action buttons",
 	InboxStyleSample:           "Style profile: distill the owner's Slack writing style from a sample of their own messages (strong tier)",
-	ChatTitle:                  "AI Chat: name a conversation from its first exchange (light tier, at most 60 characters)",
+	ChatTitle:                  "Chats: name a conversation from its first exchange (light tier, at most 60 characters)",
 	TerminalTitle:              "Terminal: name an embedded coding-agent session from the owner's first messages (light tier, 3-6 words)",
 	ReviewOverview:             "Diff reviewer: brief the reviewer before they read an agent's changes — intent coverage, risk per file, chapters (strong tier; code validates paths and lenses)",
 	ReviewLessons:              "Diff reviewer: find the points the owner repeats in review comments and phrase each as a checklist question (strong tier; code validates ids and lenses)",

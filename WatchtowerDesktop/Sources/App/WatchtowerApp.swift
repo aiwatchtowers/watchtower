@@ -485,6 +485,9 @@ struct WatchtowerApp: App {
             WorkbenchCommands(appState: appState)
             // #711: ⌃` Show Terminal / Show Workchat, in the View menu.
             WorkchatCommands()
+            // View → Back (⌘[) and Go to Item (⌘1…⌘9): the Workbench page's
+            // and the Chats tab's, one set (spec 2026-10-26 §4, §5.4).
+            ItemShortcutCommands()
             // Only while a workbench window is key (spec §10, ruling R36):
             // `keyWorkbench` is the workbench on screen while its window (or
             // its Open Quickly panel) is key. Inside Monaco these chords reach

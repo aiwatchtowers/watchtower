@@ -241,9 +241,10 @@ Workbench
 - Agent analytics (features/agent-analytics.md)
 
 Automations & AI
-- AI Chat (features/ai-chat.md)
-- Artifacts in the AI Chat (features/ai-chat-artifacts.md)
-- Writing and changing things from the AI Chat (features/ai-chat-actions.md)
+- Chats (features/ai-chat.md)
+- Chat projects (features/ai-chat-projects.md)
+- Artifacts in Chats (features/ai-chat-artifacts.md)
+- Writing and changing things from Chats (features/ai-chat-actions.md)
 - Quick Connections (features/quick-connections.md)
 - Memory (features/memory.md)
 - Automations (features/automations.md)

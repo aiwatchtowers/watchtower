@@ -194,18 +194,34 @@ package enum ChatConversationQueries {
         """, arguments: [now, id])
     }
 
+    /// The owner saw this chat (Chats panel spec §5.2): `read_at` becomes
+    /// "read through" the `created_at` of its last complete answer on the
+    /// active branch (`ChatHistoryQueries.lastAnswerAt`), not the clock — an
+    /// answer still streaming (a `partial` row, created when its turn began)
+    /// is not covered, so its completion off screen leaves the chat unread.
+    /// No complete answer yet = nothing changes. Never moves the mark back,
+    /// and leaves `updated_at` alone: reading is not activity. Unchecked — a
+    /// chat deleted meanwhile needs no mark.
+    package static func markRead(_ db: Database, id: Int64) throws {
+        guard let through = try ChatHistoryQueries.lastAnswerAt(db, conversationID: id) else { return }
+        try db.execute(sql: """
+            UPDATE chat_conversations SET read_at = MAX(COALESCE(read_at, 0), ?) WHERE id = ?
+            """, arguments: [through, id])
+    }
+
     package static func delete(_ db: Database, id: Int64) throws {
         try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
     }
 
-    /// An "untouched" main chat: standalone, outside any project, not
-    /// archived, never pinned or renamed by the owner, with no message and no
-    /// attachment — what the Chat landing makes on its first keystroke and
-    /// discards when it is left unused. Callers only ever pass the landing's
-    /// own draft id: an empty chat of any other origin (moved out of a
-    /// project, or left by a deleted one) is never theirs to delete.
+    /// An "untouched" main chat: standalone, in the landing's project (or
+    /// outside any, `project_id IS ?`), not archived, never pinned or renamed
+    /// by the owner, with no message and no attachment — what the Chat
+    /// landing makes on its first keystroke and discards when it is left
+    /// unused. Callers only ever pass the landing's own draft id and project:
+    /// an empty chat of any other origin (moved out of a project, or left by
+    /// a deleted one) is never theirs to delete.
     private static let untouchedPredicate = """
-        c.context_type IS NULL AND c.project_id IS NULL AND c.archived_at IS NULL
+        c.context_type IS NULL AND c.project_id IS ? AND c.archived_at IS NULL
         AND c.pinned = 0 AND c.title_source <> 'user'
         AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
         AND NOT EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id)
@@ -214,20 +230,24 @@ package enum ChatConversationQueries {
     /// The landing's draft while it is still untouched, for reuse. `createdAt`
     /// must match too: the draft is persisted across launches, and a reset
     /// database at the same path can reissue the id to an unrelated chat.
-    package static func fetchUntouched(_ db: Database, id: Int64, createdAt: Double) throws -> ChatConversation? {
+    package static func fetchUntouched(
+        _ db: Database, id: Int64, createdAt: Double, projectID: Int64? = nil
+    ) throws -> ChatConversation? {
         try ChatConversation.fetchOne(db, sql: """
             SELECT c.* FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate)
-            """, arguments: [id, createdAt])
+            """, arguments: [id, createdAt, projectID])
     }
 
     /// Deletes the landing's draft only while it is still untouched (and is
     /// still the same row: `createdAt` matches); true when it was deleted.
     @discardableResult
-    package static func deleteIfUntouched(_ db: Database, id: Int64, createdAt: Double) throws -> Bool {
+    package static func deleteIfUntouched(
+        _ db: Database, id: Int64, createdAt: Double, projectID: Int64? = nil
+    ) throws -> Bool {
         try db.execute(sql: """
             DELETE FROM chat_conversations WHERE id IN (
                 SELECT c.id FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate))
-            """, arguments: [id, createdAt])
+            """, arguments: [id, createdAt, projectID])
         return db.changesCount > 0
     }
 

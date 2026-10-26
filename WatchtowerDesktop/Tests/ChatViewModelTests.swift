@@ -1208,13 +1208,14 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.openProjectID, id)
         XCTAssertEqual(vm.projects.map(\.name), ["Payments"])
 
-        await vm.newConversation(projectID: id)
+        let chat = await vm.newConversation(projectID: id)
         XCTAssertNil(vm.openProjectID, "starting a chat leaves the project page")
         XCTAssertEqual(vm.currentConversation?.projectID, id)
 
         vm.openProject(id)
         XCTAssertEqual(vm.openProjectID, id)
-        vm.select(conversationID: try XCTUnwrap(vm.currentConversation?.id))
+        XCTAssertNil(vm.conversationID, "the page's composer never writes into the chat left behind")
+        vm.select(conversationID: try XCTUnwrap(chat))
         XCTAssertNil(vm.openProjectID)
     }
 
@@ -1258,8 +1259,9 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(done)
         XCTAssertFalse(first.arguments.contains("--project-id"))
 
-        let projectResult = await vm.createProject(name: "P")
-        let projectID = try XCTUnwrap(projectResult)
+        // Made without opening its page: the move is the panel's action on
+        // the chat on screen.
+        let projectID = try await dbManager.dbPool.write { try ChatProjectQueries.create($0, name: "P").id }
         await vm.moveConversation(convID, toProject: projectID)
         XCTAssertEqual(vm.currentConversation?.projectID, projectID)
         XCTAssertNil(vm.currentConversation?.sessionID, "the old session never saw the project prompt")
@@ -1287,8 +1289,9 @@ final class ChatViewModelTests: XCTestCase {
         first.emit(.textDelta(turnID: "turn-1", text: "a1"))
         _ = await waitForCondition { vm.liveTurn?.fullText == "a1" }
 
-        let projectResult = await vm.createProject(name: "P")
-        let projectID = try XCTUnwrap(projectResult)
+        // Made without opening its page: the move is the panel's action on
+        // the chat on screen.
+        let projectID = try await dbManager.dbPool.write { try ChatProjectQueries.create($0, name: "P").id }
         await vm.moveConversation(convID, toProject: projectID)
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-late"))
         let done = await waitForCondition { !vm.isBusy && vm.thread.last?.message.status == "complete" }

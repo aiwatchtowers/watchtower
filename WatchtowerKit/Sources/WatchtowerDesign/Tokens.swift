@@ -83,8 +83,10 @@ public enum PaneWidth {
     public static let gridCardMin: CGFloat = 240
 }
 
-/// Glyph sizes for chevrons, headers, composer buttons and icon tiles.
+/// Glyph sizes for state dots, chevrons, headers, composer buttons and icon tiles.
 public enum IconSize {
+    /// A panel row's state dot (the sessions panel, the Chats panel).
+    public static let stateDot: CGFloat = 7
     public static let chevron: CGFloat = 8
     public static let header: CGFloat = 14
     public static let composer: CGFloat = 16

@@ -2405,7 +2405,8 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     provider               TEXT,
     model                  TEXT,
     project_id             INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL,
-    active_leaf_message_id INTEGER
+    active_leaf_message_id INTEGER,
+    read_at                REAL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_project ON chat_conversations(project_id);
 
