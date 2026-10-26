@@ -4,8 +4,8 @@ import Foundation
 /// The work-alert push trigger per database scope (D14); it carries every work alert (ask, permission, session
 /// stopped, session failed), and the subscription ID is unchanged. The hub writes a payload-free `WatchtowerSignal` record
 /// `sig-<wire name of the alert>` next to each sealed `ask_alert` (`AskAlertSignal` on the Mac); the notification
-/// extension fetches the alert it names and opens it with `AlertOpener`. Registering the subscription, and the
-/// shared-scope local notification, are A13's.
+/// extension fetches the alert it names and opens it with `AlertOpener`. A shared-scope phone opens the stored
+/// `ask_alert` records itself after a fetch (`ReplicaStore.alertEnvelopes`) and posts a local notification.
 public enum AskAlertSubscription {
     /// The content-free text shown when the alert cannot be fetched or opened.
     public static let alertBody = "A session is waiting"
@@ -23,7 +23,7 @@ public enum AskAlertSubscription {
     ///
     /// `.shared`: nil (D14). Apple supports query subscriptions only in the public and private databases, so a
     /// shared-scope phone gets none: the sync engine's own database subscription already sends a silent push that
-    /// triggers a fetch, and the app filters `sig-…` records locally after it. Those pushes are best-effort, so a
+    /// triggers a fetch, and the app opens the new `ask_alert` records after it. Those pushes are best-effort, so a
     /// shared-scope alert can be late.
     public static func subscription(for scope: CloudDatabaseScope, hubID: String) -> CKQuerySubscription? {
         guard scope == .private else { return nil }
