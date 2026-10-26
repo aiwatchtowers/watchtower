@@ -64,12 +64,21 @@ struct CleanupScreenView: View {
         .onAppear {
             focused = true
             // Back on a page whose apply ended meanwhile: its keeps show too.
-            if isDone { keptFolded = false }
+            unfoldKeptAfterApply()
         }
         .onChange(of: isDone) { _, done in
             // A row kept at apply time moves to Kept: show it.
-            if done { keptFolded = false }
+            if done { unfoldKeptAfterApply() }
         }
+    }
+
+    /// Unfolds Kept once per ended apply, so a fold the owner makes after
+    /// it holds when the screen shows again.
+    private func unfoldKeptAfterApply() {
+        guard isDone, let run = vm.cleanupScreenProgress(projectID: projectID)?.runID,
+              state.keptUnfoldedRun != run else { return }
+        keptFolded = false
+        vm.cleanupScreens[projectID]?.keptUnfoldedRun = run
     }
 
     private var projectID: Int64 { project.id }

@@ -345,7 +345,8 @@ package struct CleanupScreenModel {
     }
 
     /// The sorted column first (rows without a value last whatever the
-    /// direction), then the name, then the key.
+    /// direction, and among those the rows still being checked last), then
+    /// the name, then the key.
     private static func ordered(_ lhs: CleanupRow, _ rhs: CleanupRow, sort: CleanupSort, ascending: Bool) -> Bool {
         let first: ComparisonResult = switch sort {
         case .size: compare(lhs.bytes, rhs.bytes, ascending: ascending)
@@ -353,6 +354,8 @@ package struct CleanupScreenModel {
         case .name: directed(lhs.title.localizedStandardCompare(rhs.title), ascending: ascending)
         }
         if first != .orderedSame { return first == .orderedAscending }
+        let lhsChecking = lhs.state == .checking, rhsChecking = rhs.state == .checking
+        if sort != .name, lhsChecking != rhsChecking { return rhsChecking }
         let name = lhs.title.localizedStandardCompare(rhs.title)
         return name == .orderedSame ? lhs.id < rhs.id : name == .orderedAscending
     }

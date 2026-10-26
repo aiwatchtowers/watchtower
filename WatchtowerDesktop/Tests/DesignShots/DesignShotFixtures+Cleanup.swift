@@ -21,7 +21,7 @@ enum CleanupShotFixtures {
             switch self {
             case .a: 580
             case .b: 460
-            case .c: 440
+            case .c: 480
             case .d: 400
             case .e: 380
             case .f: 360
@@ -61,8 +61,7 @@ enum CleanupShotFixtures {
             }
             return AnyView(page(state))
         } catch {
-            XCTFail("cleanup shot fixture failed: \(error)")
-            return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
+            return DesignShotFixtures.failure(error)
         }
     }
 
@@ -242,7 +241,9 @@ enum CleanupShotFixtures {
         let setup = try Setup(checkedAgo: 120)
         try setup.plan([
             wt("search-filters", branch: "wt/search-filters", origin: "placed", bytes: 12_400_000_000, days: 9, merged: true),
-            wt("agent-3f9c0a17d2e4b6c1", branch: "feature/export-csv", origin: "subagent", bytes: 12_000_000_000, days: 2)
+            branch("wt/search-filters", days: 9, merged: true),
+            wt("agent-3f9c0a17d2e4b6c1", branch: "feature/export-csv", origin: "subagent", bytes: 12_000_000_000, days: 2),
+            branch("feature/export-csv", days: 2)
         ])
         setup.vm.cleanupScreens[setup.projectID]?.ticks = [key("search-filters")]
         let other = try setup.insertSession("Billing export")

@@ -25,6 +25,12 @@ struct CleanupFooter: View {
         return (KeyboardShortcut("a", modifiers: .command), KeyboardShortcut(.escape, modifiers: []))
     }
 
+    /// **Clear** shows while a tick is live: ticks left on rows removed or
+    /// kept since (after an apply) leave none.
+    static func showsClear(live: Set<String>) -> Bool {
+        !live.isEmpty
+    }
+
     var body: some View {
         let live = model.liveTicks(ticks)
         let free = vm.canRefreshCleanup(projectID: projectID)
@@ -36,8 +42,7 @@ struct CleanupFooter: View {
             }
             .keyboardShortcut(keys.selectAll)
             .buttonStyle(.kitQuiet)
-            // Ticks on rows removed or kept since (after an apply) leave no Clear.
-            if !live.isEmpty {
+            if Self.showsClear(live: live) {
                 Button("Clear") { ticks = [] }
                     .keyboardShortcut(keys.clear)
                     .buttonStyle(.kitQuiet)

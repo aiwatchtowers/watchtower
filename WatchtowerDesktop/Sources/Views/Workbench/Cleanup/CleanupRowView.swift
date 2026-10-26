@@ -88,7 +88,9 @@ struct CleanupRowView: View {
                 .lineLimit(1)
                 .help(row.ownerText)
                 .frame(width: CleanupColumns.owner, alignment: .leading)
-            size.padding(.trailing, CleanupColumns.sizeInset).frame(width: CleanupColumns.size, alignment: .trailing)
+            size
+                .padding(.trailing, CleanupColumns.sizeInset)
+                .frame(width: CleanupColumns.size, alignment: .trailing)
             Text(row.state == .checking ? "—" : row.lastCommitText)
                 .font(.caption)
                 .foregroundStyle(row.state == .checking ? .tertiary : .secondary)

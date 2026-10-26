@@ -336,7 +336,7 @@ enum DesignShotFixtures {
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
     }
 
-    private static func failure(_ error: Error) -> AnyView {
+    static func failure(_ error: Error) -> AnyView {
         XCTFail("design shot fixture failed: \(error)")
         return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
     }

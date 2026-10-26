@@ -171,6 +171,18 @@ final class CleanupScreenViewTests: XCTestCase {
         XCTAssertNil(typing.clear)
     }
 
+    /// After an apply the ticks can be left on rows that are gone or now
+    /// kept: they are not live, and **Clear** does not show for them.
+    func testClearHiddenOnStaleOnlyTicks() {
+        let gone = "worktree:/tmp/example/.claude/worktrees/gone"
+        let kept = SessionCleanupItem(key: "worktree:/tmp/example/.claude/worktrees/moved", kind: .worktree,
+                                      action: .keep, reason: .known(.moved))
+        let open = SessionCleanupItem(key: "branch:feat/open", kind: .branch, action: .remove)
+        let model = CleanupScreenModel(items: [kept, open], checking: [], sizing: [], now: Date())
+        XCTAssertFalse(CleanupFooter.showsClear(live: model.liveTicks([gone, kept.key])), "stale ticks only")
+        XCTAssertTrue(CleanupFooter.showsClear(live: model.liveTicks([gone, open.key])))
+    }
+
     /// The footer (mockups A, B, F): Clean Up… waits with nothing ticked;
     /// with a tick it can go; while another cleanup of the workbench runs
     /// (a Delete and Clean Up) the total reads "Another cleanup is running"

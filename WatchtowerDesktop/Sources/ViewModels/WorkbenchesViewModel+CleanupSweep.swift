@@ -18,6 +18,8 @@ struct CleanupScreenState: Equatable {
     /// The keys the screen's last apply sent: only those count as kept in
     /// the result bar (`CleanupScreenModel.resultText`). Empty after a plan.
     var sentKeys: Set<String> = []
+    /// The ended apply run whose kept rows were last unfolded for the owner.
+    var keptUnfoldedRun: Int?
 }
 
 /// The Clean Up screen (board #1107, spec 2026-10-26-worktree-cleanup-screen

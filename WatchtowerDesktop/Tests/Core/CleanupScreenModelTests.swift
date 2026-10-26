@@ -252,6 +252,24 @@ final class CleanupScreenModelTests: XCTestCase {
         )
     }
 
+    /// Mockup A: sized rows, then the measuring one and the branch with no
+    /// size, then the rows still being checked — in either direction.
+    func testRowsStillCheckingSortAfterTheOtherUnmeasured() {
+        let sized = worktree("search-filters", gb: 12)
+        let measuring = worktree("agent-a4e2", gb: nil)
+        let branchOnly = branch("old-experiment")
+        let checkingA = worktree("agent-c1d2", gb: nil)
+        let checkingB = worktree("onboarding-copy", gb: nil)
+        let m = model([checkingB, branchOnly, checkingA, measuring, sized],
+                      checking: [checkingA.key, checkingB.key], sizing: [measuring.key])
+        let expected = [sized.key, measuring.key, branchOnly.key, checkingA.key, checkingB.key]
+        for ascending in [false, true] {
+            XCTAssertEqual(m.rows(filters: CleanupFilters(), sort: .size, ascending: ascending).canGo.map(\.id), expected)
+        }
+        let byCommit = m.rows(filters: CleanupFilters(), sort: .lastCommit, ascending: false).canGo.map(\.id)
+        XCTAssertEqual(byCommit.suffix(2), [checkingA.key, checkingB.key], "checking rows last among the ties")
+    }
+
     // MARK: Copy
 
     func testOwnerText() {
