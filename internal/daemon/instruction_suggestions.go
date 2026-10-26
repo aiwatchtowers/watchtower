@@ -14,7 +14,6 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
 	"watchtower/internal/ollama"
-	"watchtower/internal/planusage"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessionfeed"
 )
@@ -94,13 +93,6 @@ func (d *Daemon) phaseInstructionSuggestions(ctx context.Context) {
 	}
 	now := time.Now()
 	if sameCalendarDay(d.lastInstructionSuggestions, now) {
-		return
-	}
-	st, err := d.db.GetPlanUsageStatus()
-	if err != nil {
-		d.logger.Printf("instruction suggestions: plan usage status: %v", err) // unreadable: does not block
-	} else if planusage.NearLimit(st) {
-		d.logger.Printf("instruction suggestions: Claude plan limit near, skipped")
 		return
 	}
 	miner := &instructions.Miner{

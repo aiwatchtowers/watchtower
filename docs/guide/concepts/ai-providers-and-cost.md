@@ -105,7 +105,7 @@ It never refreshes that sign-in, so if Claude Code's token has expired the tab s
 - The menu bar shows `5h N% · 7d M%`; a `⚠︎` prefix marks a warning. **Show in the menu bar** on this tab hides it.
 - Notifications fire once per limit per window, when the 5-hour or weekly limit is projected to be hit before it resets, and when any limit reaches 90%. The switch is **Claude plan limits** in **Settings → Features → Notifications**.
 - **Refresh** polls once now.
-- When a limit is projected to be hit, history backfill pauses ("Loading history paused — Claude plan limit"). Nothing else is held back.
+- The limits are information only: Watchtower never pauses or skips its own work because of them.
 - The feature is **Claude plan limits** in Settings → Features; off stops the polling.
 
 ## Related

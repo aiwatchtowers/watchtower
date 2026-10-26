@@ -79,7 +79,7 @@ Once a day Watchtower reads what you typed in your recent sessions, from both ag
 - **A new session ignores a change.** The session began before you saved. Start a new one.
 - **Add says "adding this line would go over the 1000-character limit — shorten the text first".** The field plus the new line would pass 1,000 characters. Shorten the field's text, press **Save**, then press **Add** again.
 - **A suggestion's destination.** Chats only: **Only in chats**. Chats and sessions together: **For chats and agents**.
-- **No suggestions.** The direction has to appear in three sessions within 14 days, and the daemon must be running. The check is skipped when your Claude plan limit is close.
+- **No suggestions.** The direction has to appear in three sessions within 14 days, and the daemon must be running.
 - **A suggestion for one workbench.** When all its sessions were in one workbench, **Add** writes that workbench's text.
 
 ## Related

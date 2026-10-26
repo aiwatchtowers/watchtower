@@ -66,7 +66,6 @@ The spec screen opens only for open asks. A closed ask shows the classic read-on
 
 - **No findings yet.** While the reviewer works, the drawer shows its progress with **Read the spec**, and the findings open there when it is done. If you opened the ask before the reviewer started, you stay in the classic view and a banner offers the findings when they are ready.
 - **Only the classic view, with a reason above it.** The reviewer failed or was skipped. Press **Run reviewer** to start it.
-- **It was skipped with "plan near limit".** The automatic run is skipped when your Claude plan is close to its limit. **Run reviewer** still works.
 - **Nothing about the code.** With Ollama the reviewer cannot read files, so it judges from the document and the conversation alone, and says so.
 - **On the iPhone** you see a one-line reviewer summary above the classic review. The findings screen is on the Mac.
 

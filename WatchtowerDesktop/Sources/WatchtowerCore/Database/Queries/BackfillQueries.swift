@@ -4,7 +4,7 @@ import GRDB
 /// One daemon-written `history_backfill` row, as the progress line needs it.
 package struct BackfillRow: Equatable {
     package let status: String      // running | paused | done | off
-    package let waiting: String     // "" | plan_limit | held (held_since set, #580)
+    package let waiting: String     // "" | held (held_since set, #580); old rows may still say plan_limit (ask #655)
     package let floorTS: Double
     package let upperTS: Double
     package let reachedTS: Double

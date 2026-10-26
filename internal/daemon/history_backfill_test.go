@@ -523,34 +523,18 @@ func TestPhaseHistoryBackfill_OnlyOffSlackRowsNotDue(t *testing.T) {
 	assert.Empty(t, pipelineRunNames(t, database))
 }
 
-// setNearLimit writes a plan status whose 5-hour limit is projected to hit.
-func setNearLimit(t *testing.T, database *db.DB, near bool) {
-	t.Helper()
-	state := "ok"
-	if near {
-		state = "will_hit"
-	}
-	require.NoError(t, database.UpsertPlanUsageStatus(db.PlanUsageStatus{State: "ok", UpdatedAt: time.Now(),
-		LimitsJSON: fmt.Sprintf(`[{"key":"session","group":"x","percent":90,"projection":{"state":%q}}]`, state)}))
-}
-
-// R21: the one-time hooks wait while the plan limit is near — no people
-// run, no stamp — and run once the gate opens.
-func TestOnSlackBackfillDone_HeldByPlanGate(t *testing.T) {
+// Ask #655: the one-time hooks never wait on the Claude plan; a projected
+// limit changes nothing.
+func TestOnSlackBackfillDone_NoPlanGate(t *testing.T) {
 	d, database, _ := newBackfillDaemon(t)
 	wirePeopleBackfill(t, d, database)
 	floor := time.Now().AddDate(0, 0, -30)
 
-	setNearLimit(t, database, true)
-	require.NoError(t, d.onSlackBackfillDone(context.Background(), floor), "held, not failed")
-	assert.Empty(t, pipelineRunNames(t, database), "no people run near the limit")
-	_, err := os.Stat(d.historyBackfillHooksStampPath())
-	assert.True(t, os.IsNotExist(err), "held: no stamp")
-
-	setNearLimit(t, database, false)
+	require.NoError(t, database.UpsertPlanUsageStatus(db.PlanUsageStatus{State: "ok", UpdatedAt: time.Now(),
+		LimitsJSON: `[{"key":"session","group":"x","percent":90,"projection":{"state":"will_hit"}}]`}))
 	require.NoError(t, d.onSlackBackfillDone(context.Background(), floor))
 	assert.Equal(t, []string{"people-backfill"}, pipelineRunNames(t, database))
-	_, err = os.Stat(d.historyBackfillHooksStampPath())
+	_, err := os.Stat(d.historyBackfillHooksStampPath())
 	require.NoError(t, err)
 }
 

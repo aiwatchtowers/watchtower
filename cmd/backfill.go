@@ -40,8 +40,8 @@ type backfillRowJSON struct {
 	DoneAt    *string `json:"done_at"`
 }
 
-// backfillWaiting is what holds the row: the stored waiting (plan_limit), or
-// "held" while a transient failure holds its chunk (#580; held_since set,
+// backfillWaiting is what holds the row: the stored waiting (empty;
+// old rows may still say plan_limit), or "held" while a transient failure holds its chunk (#580; held_since set,
 // the reason in last_error). The Desktop's BackfillQueries reads it the same
 // way.
 func backfillWaiting(waiting string, held bool) string {

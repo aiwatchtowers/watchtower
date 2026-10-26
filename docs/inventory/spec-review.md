@@ -40,10 +40,10 @@ folder; a write outside its row would let a spec steer the owner's data.
 **Status:** Enforced (Go).
 
 **Observable:** A review ask is filed and returned even when the reviewer cannot be
-launched, is refused (plan near limit), the surface has no launcher, or the
+launched, the surface has no launcher, or the
 `spec_reviews` queue write fails (it runs after the ask's own transaction has
 committed). The review row is then `skipped` with the reason ("launch failed: …",
-"plan near limit", "no reviewer on this surface", "could not queue: …"; a queue
+"no reviewer on this surface", "could not queue: …"; a queue
 failure may leave no row, and the reason is then only in `spec_review`); the ask
 itself is never failed or delayed by it.
 
@@ -132,3 +132,4 @@ all of them unreliable.
 - 2026-10-25 (PR #473 review fixes): wording only, no guard changed — SPECREVIEW-03's Observable names the chosen option labels among the owner's answer texts (as `ownerAnswerWords` always did). A plan's review header carries no `decisions_section`; a spec's Decisions section is a `## ` heading starting with "Decisions" (`isDecisionsHeading`, Swift `SpecReviewDecisions`); an empty idea is left out of the result (`idea` omitted).
 - 2026-10-26 (spec review author loop, board #1121, **owner approved in asks #653 and #658**): **SPECREVIEW-04** and **-05** added; SPECREVIEW-01..03 unchanged (delivery of findings is the Desktop's, not the reviewer's). Migration 00160 (`spec_reviews` `loop`, `round`, `replies`, `open_items`, `ledger`, `loop_end`), `get_spec_review` (DEV-06 nineteen tools), `review_replies` on `ask_owner`, prompt `review.spec` v2, pack v18. The old "the owner is the filter" rule of the 2026-10-25 spec is replaced for spec and plan asks in a loop (owner decision D2, ask #649).
 - 2026-10-26 (author loop final review fixes): SPECREVIEW-04 gains the guard `TestSpecReviewSweep_FailedOrSkippedLoopReveals` — the sweep reveals a loop row left `failed`/`skipped` when the immediate reveal did not land. No guard weakened.
+- 2026-10-26 (owner): wording only, no guard changed — the automatic start no longer skips on the Claude plan's limits, so SPECREVIEW-02's Observable drops "plan near limit" from its examples.

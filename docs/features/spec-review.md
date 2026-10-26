@@ -17,7 +17,7 @@ Migration `00158_spec_reviews.sql` (mirrored in `schema.sql`); access in `intern
 ## Starting a review
 
 - `ask_owner` (`internal/tools/workbench_asks.go`) takes `doc_type` (`spec`, `plan`, `other`; default from the path by `specreview.ClassifyDoc`). A spec or plan queues a review row right after the ask's transaction has committed, then calls the surface's launcher.
-- Neither a failed queue write nor a launcher failure fails the ask: a refusal or failure records `skipped` with the reason (`could not queue: …`, `launch failed: …`, `plan near limit`, or `no reviewer on this surface` when the surface has no launcher); the reason is always in the `spec_review` result key, also when the skip itself cannot be written. The cmd launcher (`specReviewLauncher`) skips on a Claude plan near its limit (`planusage.NearLimit`).
+- Neither a failed queue write nor a launcher failure fails the ask: a refusal or failure records `skipped` with the reason (`could not queue: …`, `launch failed: …`, or `no reviewer on this surface` when the surface has no launcher); the reason is always in the `spec_review` result key, also when the skip itself cannot be written. The cmd launcher (`specReviewLauncher`) does not look at the Claude plan's limits (owner, 2026-10-26: the automatic start used to skip on `planusage.NearLimit`, whose weekly projection fired right after a reset; rows stored before keep the reason `plan near limit`).
 - Skill pack v17, v18 since the author loop (`internal/devpack`): the core skill tells the agent to pass `doc_type` on a review ask; the `watchtower-flow` preset makes every spec carry a `## Decisions` section (one line per owner decision with its source, `ask #N` or `conversation`) and commits mockups agreed in a brainstorm under `docs/design/mockups/<feature>/`, linked from the spec.
 - `LaunchSpecReview` (`cmd/workbench_spec_review_launch.go`) starts `workbench spec-review run --ask N` detached in its own session, output appended to `<workspace>/logs/spec-review.log`, agent-session env markers dropped, the child reaped in the background. The binary comes from the package var `specReviewExe` (`/usr/bin/false` in cmd tests).
 
@@ -39,7 +39,7 @@ The agent (`specReviewCLIAgent`, cmd) runs the configured provider in read-folde
 ## CLI — `watchtower workbench spec-review`
 
 - `run --ask N` (hidden) — the detached child; the exit status is the run's.
-- `start --ask N [--force]` — `RequeueSpecReview` (attempt back to 1: the sweep's 3-launch cap counts automatic relaunches only) and launch. No plan-limit gate: the owner pressed Run. A queued review is launched again; a running one is refused (exit 3); a done, failed or skipped one needs `--force` (exit 3 without). A failed launch leaves the row queued for the sweep.
+- `start --ask N [--force]` — `RequeueSpecReview` (attempt back to 1: the sweep's 3-launch cap counts automatic relaunches only) and launch. A queued review is launched again; a running one is refused (exit 3); a done, failed or skipped one needs `--force` (exit 3 without). A failed launch leaves the row queued for the sweep.
 - `show --ask N [--json]` — pinned `--json` keys: `ask_id`, `status`, `reason`, `provider`, `model`, `dropped`, `attempt`, `queued_at`, `started_at`, `finished_at`, `result` (the validated result or `null`), `marks` (item key to `{state, body, about, updated_at}`; `about`, a comment's finding text, is left out when not known). The database is opened read-only.
 
 ## Desktop — the findings screen
@@ -66,7 +66,7 @@ For a spec or plan ask bound to a terminal session on a surface with a launcher,
 - An invalid `doc_type` is refused by `ask_owner` instead of being guessed.
 - A surface without a launcher (not the workbench MCP server) records `skipped: no reviewer on this surface`.
 - The reviewer gets no MCP servers, not even the watchtower ones, and reads one folder (the session's worktree when recorded, else the workbench folder).
-- `start` has no near-limit gate; only the automatic start from `ask_owner` has.
+- Neither start has a plan-limit gate (the automatic one lost it on 2026-10-26).
 
 ## v1 limits
 
