@@ -10,7 +10,7 @@ You step away from your desk while a Workbench session waits on a question. The 
 
 The Mac is the **hub**. With **Sync with iPhone** on, it publishes a slice of your data (asks, Workbench boards and sessions, calendar, recaps) into your iCloud. The phone reads that slice and sends its changes back as requests, which the Mac applies when it is awake.
 
-Everything is sealed with keys exchanged at linking, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; the one exception is a session's **Chat** (below).
+Everything is sealed with keys exchanged at linking, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; the one exception is a session's chat (below).
 
 An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps, and applies on wake. The Mac checks for phone requests every 30 seconds (every 3 for five minutes after the last one) and writes a heartbeat every 15 minutes.
 
@@ -46,7 +46,7 @@ Asks come in three kinds: a question, a review (select text, **Comment on the se
 
 ### Read a session's chat
 
-Tap **Chat** on a session to read its conversation, with subagent markers that open the subagent's own chat. Tool output is never shown. The Mac sends it only while the screen is open, plus five minutes. It shows the newest 300 lines. The **Tell the session…** bar appears on the main chat only.
+A session opens as its chat, with a field to write to it and its report behind **⋯**. Tool output is never shown. See [iPhone: the workchat](iphone-workbench.md).
 
 ### Let the phone do more
 

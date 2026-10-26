@@ -12,10 +12,39 @@ extension DemoSeed {
         }
     }
 
-    /// A `session_chat` record for the working demo session (placeholder
-    /// text), so the simulator shows the chat screen.
+    /// `session_chat` records for the waiting and the working demo
+    /// sessions (placeholder text), so the simulator shows the workchat.
     static func sessionChatRecords(now: Date) throws -> [CloudRecord] {
-        [try record(kind: .sessionChat, id: 11, json: sessionChatPayload(now: now), modifiedAt: now)]
+        [
+            try record(kind: .sessionChat, id: 11, json: sessionChatPayload(now: now), modifiedAt: now),
+            try record(kind: .sessionChat, id: 10, json: workingChatPayload(now: now), modifiedAt: now)
+        ]
+    }
+
+    /// The working session's chat (mockup 3): the brief, a line, the
+    /// agent's text and a finished subagent.
+    static func workingChatPayload(now: Date) -> [String: Any] {
+        let ago: (TimeInterval) -> Int = { JSON.stamp(now.addingTimeInterval(-$0)) }
+        let entries: [[String: Any]] = [
+            [
+                "id": "w1", "kind": "brief", "at": ago(1_500), "title": "target #430 Session report",
+                "text": "Work on target #430 Session report. Add the PR link to the report header."
+            ],
+            ["id": "w2", "kind": "owner", "at": ago(1_200), "text": "Add the PR link to the report header, then run the report tests."],
+            [
+                "id": "w3", "kind": "agent", "at": ago(900),
+                "text": "Added `pr_url` to the header model and the renderer. Running `go test ./internal/sessionreport` now."
+            ],
+            ["id": "w4", "kind": "subagent", "at": ago(600), "text": "", "subagent": [
+                "agent_id": "demo-2", "tool_use_id": "toolu_demo2", "type": "Explore",
+                "description": "Find every caller of renderHeader", "status": "finished"
+            ]],
+            [
+                "id": "w5", "kind": "agent", "at": ago(60),
+                "text": "All 42 tests pass. Next I'll update the Desktop card so the link opens in the browser."
+            ]
+        ]
+        return ["session_id": 10, "live": true, "entries_more": 0, "entries": entries]
     }
 
     static func sessionChatPayload(now: Date) -> [String: Any] {

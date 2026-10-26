@@ -1,10 +1,13 @@
 import Foundation
 import WatchtowerKit
 
-/// Everything the session detail draws (spec §4.8, §4.9, §13 B3): the
-/// header, the session's open asks, the report and the timeline. Built from
-/// the published records only; the session's transcript and terminal text
-/// never reach the phone (I-4), so nothing here can hold them.
+/// Everything the session's report screen draws (spec §4.8, §4.9, §13 B3),
+/// reached from the workchat's "Report and timeline": the header, the
+/// report and the timeline. The prompt and ask fields are no longer drawn
+/// here (the workchat shows them) and go when the report screen is rebuilt
+/// to mockup 13. Built from the published records only; the session's
+/// transcript and terminal text never reach the phone (I-4), so nothing
+/// here can hold them.
 struct SessionDetailModel {
     let id: Int64
     let title: String
@@ -70,8 +73,7 @@ struct SessionDetailModel {
         let permission = request.map { PermissionCardModel(request: $0, session: session, rows: rows, access: permissions) }
         self.permission = permission
         approvalNotice = session.stateKind == .needsApproval && permission == nil ? SessionInputModel.needsApproval : nil
-        let sentShown = permissions.sentRequestID != nil && (permission == nil || permission?.requestID == permissions.sentRequestID)
-        answerNotice = sentShown && rows.isEmpty ? SessionInputDelivery.submitted.text : nil
+        answerNotice = PermissionAnswerRow.notice(rows: rows, permission: permission, sentRequestID: permissions.sentRequestID)
 
         let openAsks = snapshot.asks
             .filter { $0.status == .open && $0.sessionID == sessionID }
