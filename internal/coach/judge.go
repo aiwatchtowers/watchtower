@@ -135,12 +135,20 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 	if !ok {
 		return false, nil
 	}
+	// Accept runs the same check: a restored replaced part may not fit.
+	if verr := ValidateAfter(cur, after); verr != nil {
+		return false, nil //nolint:nilerr // an edit Accept would refuse is not filed
+	}
 	fp, changed := fingerprint(key, cur.Text, after)
 	if !changed {
 		return false, nil
 	}
+	kind := "cut"
+	if !kindFits("cut", cur.Text, after) { // a replaced part came back: not shorter
+		kind = "replace"
+	}
 	id, err := d.InsertCoachProposal(db.CoachProposal{
-		Fingerprint: fp, Kind: "cut", Destination: key.dest, WorkbenchID: key.wb, PromptID: key.prompt,
+		Fingerprint: fp, Kind: kind, Destination: key.dest, WorkbenchID: key.wb, PromptID: key.prompt,
 		Title: cutTitle(p.Title), Why: cutWhy(p), Metric: p.Metric,
 		BeforeText: cur.Text, AfterText: after, Evidence: p.Evidence, Sources: p.Sources, RevertsID: p.ID,
 	}, now)

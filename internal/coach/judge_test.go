@@ -2,6 +2,7 @@ package coach
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/instructions"
+	"watchtower/internal/prompts"
 )
 
 var judgeDecided = t0.Add(-2 * time.Hour)
@@ -88,11 +91,11 @@ func TestJudge_NoEffectCutPromptAddition(t *testing.T) {
 		d.session(t, wb, fmt.Sprintf("s%d", i), ids, 1, 1.0)
 	}
 	require.NoError(t, d.SetWorkbenchInstruction(wb, db.InstructionProcedure, "x"))
-	_, err := d.AddPromptAddition("chat.system", "Keep it short.", 0, t0)
+	_, err := d.AddPromptAddition(prompts.SpecReview, "Keep it short.", 0, t0)
 	require.NoError(t, err)
-	_, err = d.AddPromptAddition("chat.system", "Other rule.", 0, t0)
+	_, err = d.AddPromptAddition(prompts.SpecReview, "Other rule.", 0, t0)
 	require.NoError(t, err)
-	id := propose(t, d, db.CoachProposal{Destination: DestPromptAdd, PromptID: "chat.system",
+	id := propose(t, d, db.CoachProposal{Destination: DestPromptAdd, PromptID: prompts.SpecReview,
 		BeforeText: "Other rule.", AfterText: "Other rule.\nKeep it short."})
 	require.NoError(t, d.MarkCoachAccepted(id, "Other rule.\nKeep it short.", fl(5), 3, judgeDecided))
 	// The workbench scope of a global destination is ignored; measure is global.
@@ -217,4 +220,46 @@ func TestJudge_ZeroBaselineIsTooLittleData(t *testing.T) {
 	j, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
 	assert.Zero(t, j+c)
 	assert.Equal(t, "too_little_data", proposal(t, d, id).Verdict)
+}
+
+func TestJudge_ReverseOfReplaceIsAcceptedEndToEnd(t *testing.T) {
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	for i := range 5 {
+		d.session(t, wb, fmt.Sprintf("s%d", i), ids, 1, 1.0)
+	}
+	require.NoError(t, d.SetWorkbenchInstruction(wb, db.InstructionProcedure, "Be concise and quick."))
+	id := propose(t, d, db.CoachProposal{Destination: DestProcedure, WorkbenchID: wb, Kind: "replace",
+		BeforeText: "Be long.", AfterText: "Be concise and quick."})
+	require.NoError(t, d.MarkCoachAccepted(id, "Be concise and quick.", fl(5), 3, judgeDecided))
+	now := judgeDecided.Add(15 * 24 * time.Hour)
+	_, c := runJudge(t, d, now)
+	require.Equal(t, 1, c)
+	open, err := d.ListCoachProposals("open")
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, "Be long.", open[0].AfterText)
+
+	ap := newApplier(t, d)
+	require.NoError(t, ap.Accept(open[0].ID, ""))
+	got, err := d.GetWorkbenchInstructions(wb)
+	require.NoError(t, err)
+	assert.Equal(t, "Be long.", got.Procedure)
+}
+
+func TestJudge_RestoredTextOverBudgetNoCut(t *testing.T) {
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	for i := range 5 {
+		d.session(t, wb, fmt.Sprintf("s%d", i), ids, 1, 1.0)
+	}
+	long := strings.Repeat("x", instructions.MaxRunes)
+	require.NoError(t, d.SetWorkbenchInstruction(wb, db.InstructionProcedure, "Short."))
+	id := propose(t, d, db.CoachProposal{Destination: DestProcedure, WorkbenchID: wb, Kind: "replace",
+		BeforeText: long, AfterText: "Short."})
+	require.NoError(t, d.MarkCoachAccepted(id, "Short.", fl(5), 3, judgeDecided))
+	// Restoring would fit exactly; a longer current text pushes it over.
+	require.NoError(t, d.SetWorkbenchInstruction(wb, db.InstructionProcedure, "Short. And more text after it."))
+	_, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	assert.Zero(t, c)
 }
