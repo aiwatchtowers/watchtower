@@ -302,3 +302,21 @@ func TestProposer_PreviewWritesNothing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, open, "a preview stores nothing")
 }
+
+func TestChangedLines(t *testing.T) {
+	removed, added := ChangedLines("Keep it short.\nUse tests.", "Keep it short.\nUse table tests.\nRun them.")
+	assert.Equal(t, []string{"Use tests."}, removed)
+	assert.Equal(t, []string{"Use table tests.", "Run them."}, added)
+
+	removed, added = ChangedLines("", "Be brief.")
+	assert.Empty(t, removed)
+	assert.Equal(t, []string{"Be brief."}, added)
+
+	removed, added = ChangedLines("A\nB\nC", "A\nC")
+	assert.Equal(t, []string{"B"}, removed)
+	assert.Empty(t, added)
+
+	removed, added = ChangedLines("same", "same")
+	assert.Empty(t, removed)
+	assert.Empty(t, added)
+}

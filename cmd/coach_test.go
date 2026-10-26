@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -79,6 +81,35 @@ func TestCoachAccept_RefusedUnderAgent(t *testing.T) {
 	p, err := d.GetCoachProposal(id)
 	require.NoError(t, err)
 	assert.Equal(t, "open", p.Status)
+}
+
+func TestCoachAccept_RefusedUnderAgentJSON(t *testing.T) {
+	d := coachSetup(t)
+	id := insertCoachProposal(t, d, "fp1", "Be brief.")
+	t.Setenv(agentEnvMarkers[0], "1")
+
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	top := coachJSONObject(t, out)
+	assert.JSONEq(t, "false", string(top["ok"]))
+	assert.Contains(t, string(top["error"]), "the owner decides in Watchtower Desktop")
+}
+
+func TestCoachAccept_EmptyStdinRefused(t *testing.T) {
+	d := coachSetup(t)
+	id := insertCoachProposal(t, d, "fp1", "Be brief.")
+
+	for _, in := range []string{"", " \n"} {
+		_, err := runCoach(t, in, "accept", strconv.FormatInt(id, 10), "--stdin")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--stdin read no text")
+	}
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "open", p.Status, "the proposed text was not applied")
+	o, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.Empty(t, o.Session)
 }
 
 func TestCoachProposals_JSONKeysPinned(t *testing.T) {
@@ -163,6 +194,20 @@ func TestCoachRollback_ChangedSincePrintsDiff(t *testing.T) {
 	assert.JSONEq(t, fmt.Sprintf(`{"ok":true,"id":%d,"status":"rolled_back"}`, id), out)
 }
 
+func TestCoachProposals_HumanOutputShowsTheEdit(t *testing.T) {
+	d := coachSetup(t)
+	_, err := d.InsertCoachProposal(db.CoachProposal{Fingerprint: "fp-r", Kind: "replace", Destination: "session",
+		Title: "Name the tests", Why: "Three sessions asked for it.", Metric: "corrections",
+		BeforeText: "Keep it short.\nUse tests.", AfterText: "Keep it short.\nUse table tests.",
+		Evidence: []db.CoachEvidence{{Kind: "session", Ref: "s1"}}, Sources: 3}, time.Now())
+	require.NoError(t, err)
+
+	out, err := runCoach(t, "", "proposals")
+	require.NoError(t, err)
+	assert.Contains(t, out, "  change:\n    - Use tests.\n    + Use table tests.\n")
+	assert.NotContains(t, out, "Keep it short.", "unchanged lines are left out")
+}
+
 func TestCoachAccept_StdinEditedText(t *testing.T) {
 	d := coachSetup(t)
 	id := insertCoachProposal(t, d, "fp1", "Be brief.")
@@ -223,14 +268,26 @@ func TestCoachRun_DryRunWritesNothing(t *testing.T) {
 	require.Len(t, res.Proposals, 1)
 	assert.Equal(t, "Rollback paths", res.Proposals[0].Title)
 
+	out, err = runCoach(t, "", "run", "--dry-run")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "Rollback paths")
+	assert.Contains(t, out, "  change:\n    + Always state a rollback path.\n", "the human output shows the edit")
+
 	all, err := d.ListCoachProposals()
 	require.NoError(t, err)
 	assert.Empty(t, all, "a dry run stores nothing")
 	_, statErr := os.Stat(coachStampPathForTest(t))
 	assert.True(t, os.IsNotExist(statErr), "and does not touch the weekly stamp")
 
+	// A failed judge step does not stop the proposals (as in the daemon); the
+	// output says why judging failed.
+	prevJudge := coachJudge
+	coachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) { return 0, 0, errors.New("judge boom") }
+	t.Cleanup(func() { coachJudge = prevJudge })
 	out, err = runCoach(t, "", "run", "--json")
 	require.NoError(t, err, out)
+	top := coachJSONObject(t, out)
+	assert.JSONEq(t, `"judge boom"`, string(top["judge_error"]))
 	all, err = d.ListCoachProposals()
 	require.NoError(t, err)
 	assert.Len(t, all, 1, "a real run writes it")

@@ -511,6 +511,28 @@ func buildUser(in Inputs, slots int, lang string) string {
 	return b.String()
 }
 
+// ChangedLines is the lines an edit removed from before and added in after:
+// the two texts' lines without their common leading and trailing lines. An
+// edit is whole lines (Validate), so this is the edit the owner reviews.
+func ChangedLines(before, after string) (removed, added []string) {
+	split := func(s string) []string {
+		if s == "" {
+			return nil
+		}
+		return strings.Split(s, "\n")
+	}
+	b, a := split(before), split(after)
+	pre := 0
+	for pre < len(b) && pre < len(a) && b[pre] == a[pre] {
+		pre++
+	}
+	suf := 0
+	for suf < len(b)-pre && suf < len(a)-pre && b[len(b)-1-suf] == a[len(a)-1-suf] {
+		suf++
+	}
+	return b[pre : len(b)-suf], a[pre : len(a)-suf]
+}
+
 // changedPart is what an edit removed from before and added in after: the
 // two texts without their common prefix and suffix.
 func changedPart(before, after string) (removed, added string) {

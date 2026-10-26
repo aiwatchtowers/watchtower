@@ -56,6 +56,9 @@ var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	return digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
 }
 
+// coachJudge is the verdict step of `coach run` (a seam for tests).
+var coachJudge = coach.Judge
+
 // coachHome is the home folder ~/.claude lives in (a seam for tests).
 var coachHome = os.UserHomeDir
 
@@ -68,7 +71,7 @@ func init() {
 	proposalsCmd.Flags().StringVar(&coachFlagStatus, "status", "open", "open, accepted, declined or all")
 	acceptCmd := &cobra.Command{Use: "accept <id> [--stdin]", Short: "Apply an open proposal (the owner's edited text on stdin)",
 		Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, a []string) error {
-			if err := refuseUnderAgent("accept a coach proposal"); err != nil {
+			if err := coachRefuseUnderAgent(c, "accept a coach proposal"); err != nil {
 				return err
 			}
 			return coachRun(c, func(c *cobra.Command, e *coachEnv) (any, error) { return runCoachAccept(c, e, a[0]) })
@@ -76,14 +79,14 @@ func init() {
 	acceptCmd.Flags().BoolVar(&coachFlagStdin, "stdin", false, "read the owner's edited whole text from stdin")
 	declineCmd := &cobra.Command{Use: "decline <id>", Short: "Decline an open proposal for good",
 		Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, a []string) error {
-			if err := refuseUnderAgent("decline a coach proposal"); err != nil {
+			if err := coachRefuseUnderAgent(c, "decline a coach proposal"); err != nil {
 				return err
 			}
 			return coachRun(c, func(c *cobra.Command, e *coachEnv) (any, error) { return runCoachDecline(e, a[0]) })
 		}}
 	rollbackCmd := &cobra.Command{Use: "rollback <id> [--force]", Short: "Undo an accepted proposal",
 		Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, a []string) error {
-			if err := refuseUnderAgent("roll back a coach proposal"); err != nil {
+			if err := coachRefuseUnderAgent(c, "roll back a coach proposal"); err != nil {
 				return err
 			}
 			return coachRun(c, func(c *cobra.Command, e *coachEnv) (any, error) { return runCoachRollback(e, a[0]) })
@@ -92,7 +95,7 @@ func init() {
 	runCmd := &cobra.Command{Use: "run [--dry-run]", Short: "Judge, collect and propose now (ignores the weekly stamp)",
 		Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
 			// run writes proposals (and verdicts): the owner's call, like the weekly phase it replaces.
-			if err := refuseUnderAgent("run the coach"); err != nil {
+			if err := coachRefuseUnderAgent(c, "run the coach"); err != nil {
 				return err
 			}
 			return coachRun(c, runCoachNow)
@@ -103,6 +106,16 @@ func init() {
 	}
 	coachCmd.AddCommand(statusCmd, proposalsCmd, acceptCmd, declineCmd, rollbackCmd, runCmd)
 	rootCmd.AddCommand(coachCmd)
+}
+
+// coachRefuseUnderAgent is AGENT-07's refusal of an owner verb; with --json
+// it prints the failure object like every other coach error.
+func coachRefuseUnderAgent(cmd *cobra.Command, action string) error {
+	err := refuseUnderAgent(action)
+	if err != nil && coachFlagJSON {
+		_ = writeJSON(cmd.OutOrStdout(), map[string]any{"ok": false, "error": err.Error()})
+	}
+	return err
 }
 
 // coachEnv is what a coach verb works on.
@@ -364,6 +377,11 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 			return nil, fmt.Errorf("reading the edited text: %w", err)
 		}
 		edited = string(b)
+		if strings.TrimSpace(edited) == "" {
+			// An empty Accept text means "the proposed text": never apply that
+			// when the owner meant to pass an edit.
+			return nil, errors.New("--stdin read no text: pipe the edited whole text, or accept without --stdin")
+		}
 	}
 	if err := e.applier().Accept(id, edited); err != nil {
 		return nil, codedCoachErr(err)
@@ -419,6 +437,9 @@ type coachRunJSON struct {
 	Written   int                 `json:"written"`
 	Skipped   string              `json:"skipped"`
 	Proposals []coachProposalJSON `json:"proposals"`
+	// JudgeError is why judging failed ("" when it did not); proposing goes
+	// on, as in the daemon.
+	JudgeError string `json:"judge_error"`
 }
 
 func coachSessionDirs() sessionfeed.Dirs {
@@ -437,9 +458,9 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 	now := time.Now()
 	res := coachRunJSON{OK: true, DryRun: coachFlagDryRun, Proposals: []coachProposalJSON{}}
 	if !coachFlagDryRun {
-		judged, cuts, err := coach.Judge(e.db, e.al, now)
+		judged, cuts, err := coachJudge(e.db, e.al, now)
 		if err != nil {
-			return nil, fmt.Errorf("judging: %w", err)
+			res.JudgeError = err.Error()
 		}
 		res.Judged, res.Cuts = judged, cuts
 	}
@@ -497,6 +518,9 @@ func printCoach(w io.Writer, v any) {
 		if r.Skipped != "" {
 			fmt.Fprintln(w, r.Skipped)
 		}
+		if r.JudgeError != "" {
+			fmt.Fprintf(w, "Judging failed: %s\n", r.JudgeError)
+		}
 		if r.DryRun {
 			fmt.Fprintf(w, "Dry run: %d proposal(s) would be written.\n", len(r.Proposals))
 		} else {
@@ -527,5 +551,23 @@ func printCoachProposals(w io.Writer, ps []coachProposalJSON) {
 			dest += " [" + p.PromptID + "]"
 		}
 		fmt.Fprintf(w, "#%d [%s] %s\n  where: %s\n  why: %s\n", p.ID, p.Status, p.Title, dest, p.Why)
+		printCoachChange(w, p.Before, p.After)
+	}
+}
+
+// printCoachChange prints what the proposal changes: the removed lines with
+// "-", the added ones with "+" (the lines both texts share are left out).
+func printCoachChange(w io.Writer, before, after string) {
+	removed, added := coach.ChangedLines(before, after)
+	if len(removed)+len(added) == 0 {
+		fmt.Fprintln(w, "  change: none")
+		return
+	}
+	fmt.Fprintln(w, "  change:")
+	for _, l := range removed {
+		fmt.Fprintf(w, "    - %s\n", l)
+	}
+	for _, l := range added {
+		fmt.Fprintf(w, "    + %s\n", l)
 	}
 }
