@@ -595,6 +595,9 @@ CREATE INDEX idx_voice_samples_transcript ON voice_samples(transcript_id)
 index	idx_workbench_board_columns_project
 CREATE INDEX idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position)
 
+index	prompt_additions_prompt
+CREATE INDEX prompt_additions_prompt ON prompt_additions(prompt_id, id)
+
 index	review_comments_round
 CREATE INDEX review_comments_round ON review_comments(round_id, id)
 
@@ -1153,6 +1156,32 @@ sources_json TEXT NOT NULL DEFAULT '[]',
 started_at REAL NOT NULL,
 ended_at REAL,
 UNIQUE(message_id, tool_id)
+)
+
+table	coach_proposals
+CREATE TABLE coach_proposals (
+id INTEGER PRIMARY KEY,
+fingerprint TEXT NOT NULL UNIQUE,
+kind TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
+destination TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user')),
+workbench_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
+prompt_id TEXT NOT NULL DEFAULT '',
+title TEXT NOT NULL,
+why TEXT NOT NULL,
+metric TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings')),
+before_text TEXT NOT NULL DEFAULT '', -- the whole destination text before
+after_text TEXT NOT NULL DEFAULT '', -- the whole destination text after
+evidence TEXT NOT NULL DEFAULT '[]', -- JSON [{kind,ref}]
+sources INTEGER NOT NULL, -- distinct sources, recomputed in Go
+status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','declined','superseded','rolled_back')),
+reverts_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL, -- a cut of an earlier no-effect edit
+created_at TEXT NOT NULL,
+decided_at TEXT NOT NULL DEFAULT '',
+baseline REAL,
+baseline_n INTEGER NOT NULL DEFAULT 0,
+verdict TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
+verdict_value REAL,
+verdict_at TEXT NOT NULL DEFAULT ''
 )
 
 table	custom_emojis
@@ -2603,6 +2632,15 @@ CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
 CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
 CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL, methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), ask_guard_carried_at TEXT NULL, finish_check_carried_at TEXT NULL, session_instructions TEXT NULL, target_procedure TEXT NULL)
 
+table	prompt_additions
+CREATE TABLE prompt_additions (
+id INTEGER PRIMARY KEY,
+prompt_id TEXT NOT NULL,
+text TEXT NOT NULL,
+proposal_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
+created_at TEXT NOT NULL
+)
+
 table	prompt_history
 CREATE TABLE prompt_history (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2846,10 +2884,10 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
 
 table	spec_review_marks
-CREATE TABLE spec_review_marks (
+CREATE TABLE "spec_review_marks" (
 ask_id INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
 item_key TEXT NOT NULL,
-state TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
+state TEXT NOT NULL CHECK (state IN ('ok','comment','viewed','not_useful')),
 body TEXT NOT NULL DEFAULT '',
 about TEXT NOT NULL DEFAULT '',
 updated_at TEXT NOT NULL,
@@ -2871,7 +2909,7 @@ attempt INTEGER NOT NULL DEFAULT 0,
 queued_at TEXT NOT NULL,
 started_at TEXT NOT NULL DEFAULT '',
 finished_at TEXT NOT NULL DEFAULT ''
-)
+, findings INTEGER NOT NULL DEFAULT -1)
 
 table	stream_digests
 CREATE TABLE "stream_digests" (
@@ -4392,6 +4430,30 @@ GROUP BY up.ancestor
 9	started_at	REAL	notnull=1	dflt=NULL	pk=0
 10	ended_at	REAL	notnull=0	dflt=NULL	pk=0
 
+## coach_proposals
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	fingerprint	TEXT	notnull=1	dflt=NULL	pk=0
+2	kind	TEXT	notnull=1	dflt=NULL	pk=0
+3	destination	TEXT	notnull=1	dflt=NULL	pk=0
+4	workbench_id	INTEGER	notnull=0	dflt=NULL	pk=0
+5	prompt_id	TEXT	notnull=1	dflt=''	pk=0
+6	title	TEXT	notnull=1	dflt=NULL	pk=0
+7	why	TEXT	notnull=1	dflt=NULL	pk=0
+8	metric	TEXT	notnull=1	dflt=NULL	pk=0
+9	before_text	TEXT	notnull=1	dflt=''	pk=0
+10	after_text	TEXT	notnull=1	dflt=''	pk=0
+11	evidence	TEXT	notnull=1	dflt='[]'	pk=0
+12	sources	INTEGER	notnull=1	dflt=NULL	pk=0
+13	status	TEXT	notnull=1	dflt='open'	pk=0
+14	reverts_id	INTEGER	notnull=0	dflt=NULL	pk=0
+15	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+16	decided_at	TEXT	notnull=1	dflt=''	pk=0
+17	baseline	REAL	notnull=0	dflt=NULL	pk=0
+18	baseline_n	INTEGER	notnull=1	dflt=0	pk=0
+19	verdict	TEXT	notnull=1	dflt=''	pk=0
+20	verdict_value	REAL	notnull=0	dflt=NULL	pk=0
+21	verdict_at	TEXT	notnull=1	dflt=''	pk=0
+
 ## custom_emojis
 0	name	TEXT	notnull=0	dflt=NULL	pk=1
 1	url	TEXT	notnull=1	dflt=NULL	pk=0
@@ -5650,6 +5712,13 @@ GROUP BY up.ancestor
 18	session_instructions	TEXT	notnull=0	dflt=NULL	pk=0
 19	target_procedure	TEXT	notnull=0	dflt=NULL	pk=0
 
+## prompt_additions
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	prompt_id	TEXT	notnull=1	dflt=NULL	pk=0
+2	text	TEXT	notnull=1	dflt=NULL	pk=0
+3	proposal_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## prompt_history
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	prompt_id	TEXT	notnull=1	dflt=NULL	pk=0
@@ -5876,6 +5945,7 @@ GROUP BY up.ancestor
 10	queued_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	started_at	TEXT	notnull=1	dflt=''	pk=0
 12	finished_at	TEXT	notnull=1	dflt=''	pk=0
+13	findings	INTEGER	notnull=1	dflt=-1	pk=0
 
 ## stream_digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
