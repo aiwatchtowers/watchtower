@@ -57,9 +57,11 @@ func (d *Daemon) saveLastCoach() {
 
 // phaseCoach runs the agent coach once a week: judge the accepted proposals
 // that are old enough, collect the signals, ask for new proposals. There is no
-// catch-up: a stamp of any age gives exactly one run. The stamp is written
-// after every run, a failed one included. No plan-limit gate (ask #655).
-// Logs carry counts, never text.
+// catch-up: a stamp of any age gives exactly one run. The stamp is written only
+// when the proposing step ran to completion (spec §6.2: a failed run is retried
+// next time): a collect or model error, or a cycle cancelled mid-run, leaves
+// it unwritten and the next cycle runs again; a judging error alone does not
+// hold the week. No plan-limit gate (ask #655). Logs carry counts, never text.
 func (d *Daemon) phaseCoach(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -69,14 +71,6 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		return
 	}
 	d.trackedPipelineRun("coach", func() pipelineRunStats {
-		// A cycle cancelled mid-run (sleep/wake) must not cost the week.
-		defer func() {
-			if ctx.Err() != nil {
-				return
-			}
-			d.lastCoach = now
-			d.saveLastCoach()
-		}()
 		if d.agentLog == nil {
 			d.logger.Printf("coach: agentlog.db is not open, judging skipped")
 		} else if judged, cuts, err := runCoachJudge(d.db, d.agentLog, now); err != nil {
@@ -86,7 +80,7 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		}
 		in, err := coach.Collect(ctx, d.db, d.agentLog, instructions.NewFeedReader(ctx, d.db, instructionSuggestionsDirs()), now)
 		if err != nil {
-			d.logger.Printf("coach: collecting signals: %v (retried next week)", err)
+			d.logger.Printf("coach: collecting signals: %v (retried next cycle)", err)
 			return pipelineRunStats{err: err}
 		}
 		p := &coach.Proposer{DB: d.db, Gen: coachGeneratorFactory(d.config), Now: func() time.Time { return now }, Logger: d.logger, Lang: d.config.Digest.Language}
@@ -96,9 +90,14 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 			stats.inTok, stats.outTok, stats.totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
 		}
 		if err != nil {
-			d.logger.Printf("coach: %v (retried next week)", err)
+			d.logger.Printf("coach: %v (retried next cycle)", err)
 			return stats
 		}
+		if ctx.Err() != nil { // a cycle cancelled mid-run (sleep/wake) must not cost the week
+			return stats
+		}
+		d.lastCoach = now
+		d.saveLastCoach()
 		d.logger.Printf("coach: %d written", n)
 		return stats
 	})

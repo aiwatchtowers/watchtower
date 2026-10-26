@@ -59,15 +59,38 @@ func TestPhaseCoach_WeeklyStamp(t *testing.T) {
 	assert.Equal(t, coachCalls{2, 2}, *c)
 }
 
-func TestPhaseCoach_FailureStillStamps(t *testing.T) {
+func TestPhaseCoach_ModelErrorRetriesNextCycle(t *testing.T) {
 	d, _ := coachDaemon(t)
 	c := stubCoach(t, errors.New("boom"))
 
 	d.phaseCoach(context.Background())
-	assert.False(t, d.lastCoach.IsZero())
+	assert.True(t, d.lastCoach.IsZero(), "a failed propose does not burn the week")
+	assert.NoFileExists(t, d.lastCoachPath())
+	d.phaseCoach(context.Background())
+	assert.Equal(t, 2, c.propose, "the next cycle retries")
+
+	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
+		c.propose++
+		return 0, nil, nil
+	}
+	d.phaseCoach(context.Background())
+	assert.False(t, d.lastCoach.IsZero(), "a completed propose stamps")
 	assert.FileExists(t, d.lastCoachPath())
 	d.phaseCoach(context.Background())
-	assert.Equal(t, 1, c.propose, "a failed run waits for the next week")
+	assert.Equal(t, 3, c.propose)
+}
+
+func TestPhaseCoach_JudgeErrorStillStamps(t *testing.T) {
+	d, _ := coachDaemon(t)
+	c := stubCoach(t, nil)
+	runCoachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) {
+		c.judge++
+		return 0, 0, errors.New("judge boom")
+	}
+
+	d.phaseCoach(context.Background())
+	assert.Equal(t, coachCalls{1, 1}, *c, "proposing goes on after a judging error")
+	assert.FileExists(t, d.lastCoachPath())
 }
 
 func TestPhaseCoach_NoCatchUp(t *testing.T) {
