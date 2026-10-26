@@ -11,7 +11,7 @@ import WatchtowerSync
 /// nothing here nudges it. Two sources:
 /// - GRDB `ValueObservation` over `owner_asks`, nudging `owner_ask` and
 ///   `ask_alert`, and over `permission_requests`, nudging
-///   `permission_request` (#517). It sees only the Desktop's own writes: Go
+///   `permission_request` (#517) and `ask_alert`. It sees only the Desktop's own writes: Go
 ///   writes through another connection, and those reach the phone on the
 ///   10 s urgent tick;
 /// - `SessionAgentStateCenter.onChange` and `onRead`, chained onto the
