@@ -175,6 +175,7 @@ type askOwnerArgs struct {
 	PreviousAskID int64                `json:"previous_ask_id,omitempty" jsonschema:"an earlier ask of this workbench of the same kind this one follows up; if still open it is withdrawn as superseded"`
 	TargetID      int64                `json:"target_id,omitempty" jsonschema:"the workbench target the ask is about"`
 	Level         string               `json:"level,omitempty" jsonschema:"quick (one question, 2-3 short options, answered with one tap) or full (the owner opens the ask); default: from its shape. quick on a shape that is not one is stored full with level_note saying why"`
+	ReviewReplies []reviewReply        `json:"review_replies,omitempty" jsonschema:"with previous_ask_id on a spec review the reviewer is looping with you: one reply per finding of get_spec_review — fixed (optional note) or disagree (reason required)"`
 	Reason        string               `json:"reason" jsonschema:"one sentence: why you need the owner now"`
 }
 
@@ -225,7 +226,7 @@ func NewAskOwner(sessionEnv func() string, launch SpecReviewLauncher) *Tool {
 			if _, err := asks.Validate(a.input(), asks.OriginAgent); err != nil {
 				return &ValidationError{Msg: err.Error()}
 			}
-			return nil
+			return validateReviewReplies(a)
 		},
 		Scope: func(ctx context.Context, d *db.DB, raw json.RawMessage, b Binding) error {
 			var a askOwnerArgs
@@ -271,6 +272,9 @@ func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) err
 		}
 		if prev.Status == "withdrawn" && strings.TrimSpace(a.Changes) == "" {
 			return &ValidationError{Msg: "changes: required when previous_ask_id names a withdrawn ask — say what is new"}
+		}
+		if _, err := specLoopStart(d, a, prev, false); err != nil {
+			return err
 		}
 	} else {
 		w, err := d.LastWithdrawnByTitle(p.ID, a.Kind, asks.NormalizeTitle(a.Title), time.Now().Add(-withdrawnTitleWindow))
@@ -346,6 +350,21 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	if ask.SessionID, err = terminalSessionOf(d, p.ID, sessionEnv); err != nil {
 		return nil, err
 	}
+	// The loop (and review_replies' check, again: the previous loop may have
+	// been revealed since Scope) is decided before the insert supersedes the
+	// previous ask.
+	var loop *db.SpecLoopStart
+	if reviewed || len(a.ReviewReplies) > 0 {
+		var prev *db.OwnerAsk
+		if a.PreviousAskID != 0 {
+			if prev, err = askInWorkbench(d, p.ID, a.PreviousAskID); err != nil {
+				return nil, fieldRefusal("previous_ask_id", err)
+			}
+		}
+		if loop, err = specLoopStart(d, a, prev, reviewed && ask.SessionID.Valid && launch != nil); err != nil {
+			return nil, err
+		}
+	}
 	// Read before the insert, which would otherwise find itself.
 	series, err := openQuestionSeriesAsk(d, ask, a.PreviousAskID)
 	if err != nil {
@@ -375,7 +394,7 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 		out["hint"] = fmt.Sprintf("ask #%d of this session is still open — put related decisions in one ask (up to 4 questions)", series.ID)
 	}
 	if reviewed {
-		out["spec_review"] = launchSpecReview(d, id, launch)
+		out["spec_review"] = launchSpecReview(d, id, launch, loop)
 	}
 	indexAndLinkFiledAsk(ctx, d, p, ask, out)
 	return out, nil
@@ -384,26 +403,37 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 // launchSpecReview queues the review of a just-filed ask, after the ask's own
 // transaction, and starts its reviewer. A queue write that fails, or a
 // launcher that is absent, refuses or fails, never fails the ask: the row is
-// skipped with the reason and the owner opens the document unreviewed.
-func launchSpecReview(d *db.DB, askID int64, launch SpecReviewLauncher) string {
-	if err := d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, time.Now(), nil) }); err != nil {
+// skipped with the reason and the owner opens the document unreviewed. With
+// loop the row is queued in the author loop (the ask hidden from the owner,
+// "author_loop"); a skip then reveals it at once (SPECREVIEW-02).
+func launchSpecReview(d *db.DB, askID int64, launch SpecReviewLauncher, loop *db.SpecLoopStart) string {
+	if err := d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, time.Now(), loop) }); err != nil {
 		return skipSpecReview(d, askID, "could not queue: "+err.Error())
 	}
+	skip := func(reason string) string {
+		out := skipSpecReview(d, askID, reason)
+		if loop != nil {
+			out = revealFailedLoop(d, askID, loop.Round, out)
+		}
+		return out
+	}
 	if launch == nil {
-		return skipSpecReview(d, askID, "no reviewer on this surface")
+		return skip("no reviewer on this surface")
 	}
 	err := launch(askID)
 	var skipped ErrSpecReviewSkipped
 	var skippedPtr *ErrSpecReviewSkipped
 	switch {
+	case err == nil && loop != nil:
+		return "author_loop"
 	case err == nil:
 		return "queued"
 	case errors.As(err, &skipped):
-		return skipSpecReview(d, askID, skipped.Reason)
+		return skip(skipped.Reason)
 	case errors.As(err, &skippedPtr):
-		return skipSpecReview(d, askID, skippedPtr.Reason)
+		return skip(skippedPtr.Reason)
 	default:
-		return skipSpecReview(d, askID, "launch failed: "+err.Error())
+		return skip("launch failed: " + err.Error())
 	}
 }
 
@@ -463,6 +493,7 @@ type askView struct {
 	Level           string       `json:"level"`
 	Origin          string       `json:"origin"`
 	ChatAskedAt     string       `json:"chat_asked_at,omitempty"`
+	SpecLoop        string       `json:"spec_loop,omitempty"` // author | owner: a spec review's author loop
 }
 
 // NewGetAsk reads one ask of this workbench. Reading an answered ask marks
@@ -503,6 +534,9 @@ func readAsk(d *db.DB, workbenchID, id int64) (*askView, error) {
 		TargetID: a.TargetID.Int64, SessionID: a.SessionID.Int64, PreviousAskID: a.PreviousAskID.Int64,
 		CreatedAt: a.CreatedAt, AnsweredAt: a.AnsweredAt,
 		Level: a.Level, Origin: a.Origin, ChatAskedAt: a.ChatAskedAt,
+	}
+	if view.SpecLoop, err = specLoopOf(d, a); err != nil {
+		return nil, err
 	}
 	if a.Status != "answered" && a.Status != "delivered" {
 		return view, nil
@@ -547,7 +581,8 @@ type askRow struct {
 	AnsweredAt  string `json:"answered_at"` // "" until answered
 	Level       string `json:"level"`
 	Origin      string `json:"origin"`
-	ChatAskedAt string `json:"chat_asked_at"` // "" unless origin chat
+	ChatAskedAt string `json:"chat_asked_at"`       // "" unless origin chat
+	SpecLoop    string `json:"spec_loop,omitempty"` // author | owner: a spec review's author loop
 }
 
 // askStatuses maps list_asks' status argument to the statuses it lists.
@@ -605,6 +640,9 @@ func NewListAsks(sessionEnv func() string) *Tool {
 					Level: x.Level, Origin: x.Origin, ChatAskedAt: x.ChatAskedAt}
 				if x.SessionID.Valid {
 					row.SessionID = &x.SessionID.Int64
+				}
+				if row.SpecLoop, err = specLoopOf(d, &x); err != nil {
+					return nil, err
 				}
 				rows = append(rows, row)
 			}
