@@ -49,6 +49,9 @@ final class SessionLineDelivery {
         case review(Int64)
         /// A line from the Workchat composer (#711), by its bubble's id.
         case workchat(UUID)
+        /// A spec review round's findings line for the author (#1121), by
+        /// ask id.
+        case specReview(Int64)
     }
 
     /// What became of a held line when the held lines were tried again.
@@ -325,7 +328,7 @@ extension SessionLineDelivery.LineKey {
     var keepsFormatCharacters: Bool {
         switch self {
         case .input, .workchat: true
-        case .ask, .review: false
+        case .ask, .review, .specReview: false
         }
     }
 
@@ -342,13 +345,14 @@ extension SessionLineDelivery.LineKey {
         case .input: "SessionInput"
         case .review: "review"
         case .workchat: "Workchat"
+        case .specReview: "SpecReviewLoop"
         }
     }
 
     fileprivate var logNoun: String {
         switch self {
         case .ask: "answer"
-        case .input, .review, .workchat: "line"
+        case .input, .review, .workchat, .specReview: "line"
         }
     }
 }

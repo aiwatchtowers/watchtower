@@ -128,6 +128,24 @@ final class SessionLineDeliveryTests: XCTestCase {
         XCTAssertFalse(typedText.contains { $0.contains("\n") }, "no line break typed: \(typedText)")
     }
 
+    /// A spec review round's line (#1121) is one line without format
+    /// characters; a held one is not kept, the loop center tries it again.
+    func testSpecReviewLineIsOneLineAndNotKeptWhenHeld() async throws {
+        let (_, s, _) = try await seed()
+        let vm = makeVM()
+        XCTAssertFalse(SessionLineDelivery.LineKey.specReview(7).keepsLineBreaks)
+        XCTAssertFalse(SessionLineDelivery.LineKey.specReview(7).keepsFormatCharacters)
+
+        let sent = await vm.lineDelivery.deliverSpecReviewLine("round\nline", askID: 7, sessionID: s.id)
+        XCTAssertEqual(sent, .submitted)
+        XCTAssertFalse(typedText.contains { $0.contains("\n") }, "no line break typed: \(typedText)")
+
+        vm.lineDelivery.needsApproval = { _ in true }
+        let held = await vm.lineDelivery.deliverSpecReviewLine("again", askID: 7, sessionID: s.id)
+        XCTAssertEqual(held, .held)
+        XCTAssertTrue(vm.lineDelivery.heldKeys(sessionID: s.id).isEmpty)
+    }
+
     /// One queue per session: an ask's answer written while another line is
     /// in its pause waits, then goes on its own — each line pasted and
     /// submitted in turn, never two in one prompt.
