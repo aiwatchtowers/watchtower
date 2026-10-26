@@ -149,6 +149,11 @@ package enum EmptyStateCopyTable {
         "projectMap": jira("map", "No project map yet", "Jira views: how the projects and their epics fit together."),
         "releases": jira("shippingbox", "No releases yet", "Jira views: upcoming releases and what is in them."),
         "boards": jira("rectangle.on.rectangle.angled", "No boards yet", "Jira views: your Jira boards and their columns."),
+        // The workbench's Clean Up screen with nothing that can go (board #1107).
+        "workbenchCleanup": EmptyStateCopy(
+            icon: "checkmark", title: "Nothing to clean up",
+            landsHere: "The repository has no other worktree or branch that can go.",
+            feature: nil, primaryAction: nil),
         "statistics": EmptyStateCopy(
             icon: "chart.bar.xaxis", title: "No activity yet",
             landsHere: "Activity across channels.",

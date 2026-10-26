@@ -91,10 +91,20 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         }
     }
 
-    /// The agent process of `row` exits; returns once the hook's cleanup ran.
+    /// The agent process of `row` exits; returns once the hook's cleanup ran
+    /// (its run clears itself when done). Bounded: a run that never ends
+    /// fails the test instead of hanging it.
     private func exitAgent(_ vm: WorkbenchesViewModel, _ row: TerminalSession) async throws {
         try XCTUnwrap(processes[row.id]).exit(0)
-        await vm.placedCleanupRuns[row.id]?.value
+        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
+        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run did not end within 5 s")
+    }
+
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
     }
 
     private func item(

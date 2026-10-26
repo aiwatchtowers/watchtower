@@ -157,7 +157,7 @@ final class WorkbenchesViewModel {
     /// counts as that workbench's cleanup apply from its start, before the
     /// terminal closed and any re-plan (one apply per workbench, spec
     /// 2026-10-26 §3.2).
-    @ObservationIgnored var cleanupRunWorkbenches: [Int64: Int64] = [:]
+    var cleanupRunWorkbenches: [Int64: Int64] = [:]
     /// The automatic cleanups of finished placed sessions whose agent
     /// exited (session worktrees spec §9), per session; gone when done.
     @ObservationIgnored var placedCleanupRuns: [Int64: Task<Void, Never>] = [:]
@@ -167,7 +167,7 @@ final class WorkbenchesViewModel {
     var cleanupKeptNotices: [Int64: String] = [:]
     /// The Clean Up screen's applies this view model owns, per workbench
     /// (either scope): closing the screen or leaving the page cancels none.
-    @ObservationIgnored var sweepRuns: [Int64: Task<Bool, Never>] = [:]
+    var sweepRuns: [Int64: Task<Bool, Never>] = [:]
     /// The Clean Up screen per workbench while it is open (board #1107,
     /// spec 2026-10-26-worktree-cleanup-screen §3.1): page state in memory
     /// only, never a `WorkspacePane` or a `WorkspaceLayout` value.

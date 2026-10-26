@@ -42,12 +42,8 @@ struct WorkbenchPageView: View {
                 cleanupHint(hint)
                 Divider()
             }
-            // An ask filed outside the app has no terminal to sit beside:
-            // its drawer takes the page's trailing edge.
-            OwnerAskDrawerHost(vm: vm, ask: vm.asks.drawerAsk(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil }) {
-                WorkspaceAreaView(vm: vm, project: project)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // The workspace, with the Clean Up screen over it while open.
+            CleanupCoveredWorkspace(vm: vm, project: project)
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
         .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project, root: activeRoot))
