@@ -38,6 +38,9 @@ type Request struct {
 	DeclaredWorktrees, DeclaredBranches []string
 	NoSize                              bool
 	Now                                 time.Time
+	// Observer hears the evaluation (and an apply) as it goes; nil = no
+	// events. Apply's re-checks never report.
+	Observer Observer
 }
 
 // builder carries one evaluation's facts.
@@ -61,6 +64,10 @@ type builder struct {
 	// so a worktree is walked once there and once more right before
 	// `git worktree remove`.
 	walked map[string]string
+	report *reporter
+	// extras are each worktree to remove's orphans and bundles, found
+	// right after its catches.
+	extras map[string][]Item
 
 	// After the worktree pass: where each branch is checked out, and the
 	// subset of worktrees that stay.
@@ -89,6 +96,9 @@ func PlanResult(ctx context.Context, d Deps, r Request) (Result, error) {
 
 // evaluate lists and evaluates every candidate of the builder's facts.
 func (b *builder) evaluate(ctx context.Context) Plan {
+	if b.report.obs != nil {
+		b.report.listed(b.listing())
+	}
 	items := b.worktreeItems(ctx)
 	items = append(items, b.branchItems(ctx, items)...)
 	items = append(items, b.extraItems(ctx, items)...)
@@ -106,7 +116,8 @@ func newBuilder(ctx context.Context, d Deps, r Request) (*builder, error) {
 	if !ok {
 		return nil, ErrNoGit
 	}
-	b := &builder{deps: d, req: r, now: r.Now, self: os.Getpid(), live: map[int64]bool{}}
+	b := &builder{deps: d, req: r, now: r.Now, self: os.Getpid(), live: map[int64]bool{},
+		report: &reporter{obs: r.Observer}}
 	if b.now.IsZero() {
 		b.now = clockNow(d)
 	}
@@ -277,6 +288,7 @@ func (b *builder) observePlacement() {
 func (b *builder) worktreeItems(ctx context.Context) []Item {
 	items := []Item{}
 	b.checkedOutIn, b.checkedOutStaying = map[string]string{}, map[string]string{}
+	b.extras = map[string][]Item{}
 	known := map[string]bool{}
 	for _, w := range b.repo.worktrees {
 		known[w.Root] = true
@@ -292,9 +304,72 @@ func (b *builder) worktreeItems(ctx context.Context) []Item {
 		if it.Action == ActionKeep {
 			b.markStaying(w)
 		}
+		b.report.checked(it)
+		if it.Action == ActionRemove && it.Detail != detailGone {
+			b.extras[w.Root] = b.worktreeExtras(w.Root)
+			b.report.checked(b.extras[w.Root]...)
+		}
 		items = append(items, it)
 	}
-	return append(items, b.undeclaredWorktrees(known)...)
+	undeclared := b.undeclaredWorktrees(known)
+	b.report.checked(undeclared...)
+	return append(items, undeclared...)
+}
+
+// worktreeExtras are root's orphans (session mode only — the sweep never
+// signals) and its .app bundles.
+func (b *builder) worktreeExtras(root string) []Item {
+	var extra []Item
+	if !b.req.Sweep {
+		extra = append(extra, b.orphanItems(root)...)
+	}
+	return append(extra, b.bundleItems(root)...)
+}
+
+// listing is the Observer's Listed: the listed worktrees, then the branch
+// candidates not checked out in one of them (sweep: in any worktree), with
+// no action yet. It runs no catch but the structural one.
+func (b *builder) listing() []Item {
+	items := []Item{}
+	known, ofListed, ofAny := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	var listedTrees []Item
+	for _, w := range b.repo.worktrees {
+		known[w.Root] = true
+		if w.Branch != "" {
+			ofAny[w.Branch] = true
+		}
+		if w.Bare || !b.listsWorktree(w) {
+			continue
+		}
+		if w.Branch != "" {
+			ofListed[w.Branch] = true
+		}
+		listedTrees = append(listedTrees, Item{Key: "worktree:" + w.Root, Kind: KindWorktree,
+			Name: filepath.Base(w.Root), Branch: w.Branch})
+	}
+	items = append(items, listedTrees...)
+	for _, it := range b.undeclaredWorktrees(known) {
+		it.Action, it.Reason = "", ""
+		items = append(items, it)
+	}
+	var names []string
+	if b.req.Sweep {
+		set := map[string]bool{}
+		for _, br := range b.repo.branches {
+			if br.Name != b.repo.defaultBranch && !ofAny[br.Name] {
+				set[br.Name] = true
+			}
+		}
+		names = sortedKeys(set)
+	} else {
+		names = b.branchCandidates(listedTrees)
+	}
+	for _, name := range names {
+		if !ofListed[name] {
+			items = append(items, Item{Key: "branch:" + name, Kind: KindBranch, Name: name, Branch: name})
+		}
+	}
+	return items
 }
 
 func (b *builder) markStaying(w worktree) {
@@ -395,9 +470,10 @@ func (b *builder) branchItems(ctx context.Context, worktreeItems []Item) []Item 
 		if !ok {
 			items = append(items, Item{Key: "branch:" + name, Kind: KindBranch, Name: name, Branch: name,
 				Action: ActionKeep, Reason: ReasonNotABranch})
-			continue
+		} else {
+			items = append(items, b.evaluateBranch(ctx, branchRef{Name: name, Sha: sha}))
 		}
-		items = append(items, b.evaluateBranch(ctx, branchRef{Name: name, Sha: sha}))
+		b.report.checked(items[len(items)-1])
 	}
 	return items
 }
@@ -464,9 +540,9 @@ func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
 	return it
 }
 
-// extraItems are, per worktree to remove, its size, its orphans (session
-// mode only — the sweep never signals) and its .app bundles; and in the
-// sweep the stale LaunchServices entries under the workbench folder.
+// extraItems are, per worktree to remove, its size and its extras (found
+// with its catches); and in the sweep the stale LaunchServices entries
+// under the workbench folder.
 func (b *builder) extraItems(ctx context.Context, items []Item) []Item {
 	var removed []int
 	for i, it := range items {
@@ -474,18 +550,16 @@ func (b *builder) extraItems(ctx context.Context, items []Item) []Item {
 			removed = append(removed, i)
 		}
 	}
-	// Bundles and orphans are found before the slow size walks, so a
+	// Bundles and orphans were found before the slow size walks, so a
 	// listing can show them while the sizes are still coming in.
 	var extra []Item
 	for _, i := range removed {
-		root := items[i].Key[len("worktree:"):]
-		if !b.req.Sweep {
-			extra = append(extra, b.orphanItems(root)...)
-		}
-		extra = append(extra, b.bundleItems(root)...)
+		extra = append(extra, b.extras[items[i].Key[len("worktree:"):]]...)
 	}
 	b.measureAll(ctx, items, removed)
-	return append(extra, b.staleItems(ctx)...)
+	stale := b.staleItems(ctx)
+	b.report.checked(stale...)
+	return append(extra, stale...)
 }
 
 // measureAll sizes items[i] for each i in idx, up to sizeWorkers walks at
@@ -502,6 +576,7 @@ func (b *builder) measureAll(ctx context.Context, items []Item, idx []int) {
 			defer func() { <-slots }()
 			it := &items[i]
 			it.Bytes, it.BytesKnown = b.deps.Sizer.Size(ctx, it.Key[len("worktree:"):], sizeBudget)
+			b.report.sized(it.Key, it.Bytes, it.BytesKnown)
 		})
 	}
 	wg.Wait()
