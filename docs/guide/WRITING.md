@@ -47,6 +47,33 @@ The title is the symptom ("Briefings tab is empty"). Then:
 4. How to check it worked.
 5. If it didn't, what to try next.
 
+## Learn cards
+
+Home's **Learn Watchtower** zone shows cards written in these pages. A card is an HTML comment right under the `##`/`###` heading it teaches; GitHub, the in-app guide, search and the 8 KB page limit never see it. A new user-facing capability brings its card in the same PR.
+
+```
+<!-- learn
+id: inbox-snooze
+title: Snooze a card until later
+text: Press **Snooze** on an Inbox card and it comes back when you said.
+area: communication
+level: next
+kind: tip
+since: next
+action: nav:inbox
+-->
+```
+
+- `id`: kebab-case, page-prefixed, unique; never changed or reused once shipped (seen state is keyed by it).
+- `title` ≤ 40 characters; `text` one sentence ≤ 120 characters, what it does for you and how to start.
+- `area` (communication, meetings, tasks, development, assistant, planning, automations, iphone, setup), `level` (basics, next, power), `kind` (feature, tip, shortcut).
+- `since: next` on a new card; the release stamps the version.
+- Optional: `action` (`nav:<screen>`, `connect:<source>`, `turnOn:<featureID>`, `chat:<prompt>`, `hotkey:<name>`; without it the button is **Read more**), `requires` (`feature:<id>` or `source:<name>`), `done_when` (a signal that means "already uses it").
+- A feature that changed gets a new card with `replaces: [old-id]` (list every id it supersedes) and may add `changed:` (one sentence on what changed); delete the old card.
+- Deleting a card that has `replaces: [a, b]` (a newer card replaced it in turn): add one line per id to `internal/learn/retired.txt` (`a <deleted-id>`), so those ids stay retired and the newer card's chain still reaches them.
+- A new `##` section that teaches nothing to try carries `<!-- learn: none -->`.
+- `go test ./internal/learn/` validates every card; `watchtower guide learn` lists them. The full vocabulary is in `internal/learn`.
+
 ## Catalogue
 
 Add every page to `README.md` exactly once, under its group. One line each: the title as a link, then " — " and what it does for you.

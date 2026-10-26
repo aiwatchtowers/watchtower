@@ -6,6 +6,16 @@ An automation runs unattended, so the limits matter more than the script. Knowin
 
 ## How it works
 ### Why you must confirm a recipe
+<!-- learn
+id: safety-confirm
+title: Know what a confirmation covers
+text: Press **Review…** on a card to see what you confirm; any later change to it stops the recipe until you confirm again.
+area: automations
+level: next
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
 
 A recipe never runs until you confirm it. Watchtower fingerprints everything that decides what a recipe can do: schedule, missed-slot policy, permissions, outputs, budget, runs at a time and the script.
 
@@ -18,6 +28,16 @@ A recipe that runs a shell command (`shell:`) is confirmed by the command text o
 If your company's profile forbids shell commands or a recipe's Quick Connection, the recipe cannot be saved or confirmed, its card shows **Blocked by your organization's policy**, and the call throws a **PolicyError**.
 
 ### Budgets
+<!-- learn
+id: safety-read-budget
+title: Read big data in pieces
+text: A run gets 300 reads or 5,000 rows; past that a read throws a **ValidationError** the script can catch.
+area: automations
+level: power
+kind: tip
+since: next
+action: nav:automations
+-->
 
 Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. There is no daily cap across runs. At most two runs execute at the same time.
 
@@ -30,6 +50,16 @@ Reads are free within the recipe's permissions. Writes (a Jira comment, a Slack 
 A run waiting on you pauses and resumes after you decide. After its pause timeout (72 hours by default) it ends as expired.
 
 ### Auto grants
+<!-- learn
+id: safety-auto-grants
+title: Let one write skip approval
+text: Tick a tool under the **Auto** caption in **Form** and that automation applies that write without asking.
+area: automations
+level: power
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
 
 You can let one automation apply one kind of write without asking, with that tool's checkbox under the "Auto" caption in **Form**. A grant is tied to the recipe's fingerprint: edit the recipe and the grant pauses (**Auto paused**).
 

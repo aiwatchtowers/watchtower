@@ -62,7 +62,9 @@ final class KeyboardShortcutCatalogTests: XCTestCase {
             .deletingLastPathComponent() // WatchtowerDesktop
             .deletingLastPathComponent() // the repository
             .appendingPathComponent("docs/guide/reference/keyboard-shortcuts.md")
+        // Learn cards (`<!-- learn` … `-->` blocks) are not guide text.
         let text = try String(contentsOf: guide, encoding: .utf8)
+            .replacingOccurrences(of: #"<!-- learn\n[\s\S]*?\n-->\n"#, with: "", options: .regularExpression)
         XCTAssertTrue(text.contains(KeyboardShortcutCatalog.markdown + "\n"),
                       "the guide's Keyboard Shortcuts section is out of date; expected:\n\(KeyboardShortcutCatalog.markdown)")
     }

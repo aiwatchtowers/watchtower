@@ -7,6 +7,16 @@ Your instructions are standing directions you write once ("answer me in English"
 You type the same directions into every new session. A workbench can hold them for you, and can also give the agent one procedure for taking any target: read it first, ask when it is unclear, say what "done" means.
 
 ## How it works
+<!-- learn
+id: instructions-session
+title: Give every agent standing directions
+text: Write directions once in **Settings → Profile → Instructions** and every new session's brief carries them.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: hotkey:settings
+-->
 
 There are two fields, each with a global text and an addition per workbench, plus a third text for chats only (**Only in chats**, see [In your chats](#in-your-chats)):
 
@@ -18,12 +28,41 @@ Each text holds up to 1,000 characters. A change reaches new sessions only: a ru
 The texts are stored in Watchtower, never in your folder, and are not part of the repository. The folder's `workflow.md` is different: it is the team's committed rules, see [Methodology](methodology.md).
 
 ### In your chats
+<!-- learn
+id: instructions-in-chats
+title: Your instructions reach every chat
+text: The text in **For chats and agents** reaches every AI chat too;**Only in chats** is for chats alone.
+area: assistant
+level: next
+kind: feature
+since: next
+action: nav:chat
+-->
+<!-- learn
+id: instructions-remember
+title: Start a chat message with remember:
+text: Type `remember:` and a direction in a chat, and it is kept for all your chats from the next one on.
+area: assistant
+level: next
+kind: tip
+since: next
+action: nav:chat
+-->
 
 The same standing directions work in the AI chat. The **session instructions** text reaches every chat as well as every workbench session, and a separate **Only in chats** text reaches chats only. Texts you wrote for one workbench, and the target procedure, never go into a chat. The setup assistants don't use them.
 
 To keep a direction while you chat, start a message with `remember:`, `remember this:` or `запомни:`. The rest of the message is added to **Only in chats** word for word, and the chat shows **Remembered for all chats** with **Undo** and **Open in Settings**. If the text is full, nothing is added and the chat says so. In a target's or track's chat with Memory's **Chats source** on, the same message is also saved as a [Memory](../memory.md) fact. A change reaches the next conversation; the current one already has your message.
 
 ### Suggestions
+<!-- learn
+id: instructions-suggestions
+title: Turn what you repeat into instructions
+text: When you give the same direction in three sessions or chats, Watchtower offers it; press **Add** to keep it.
+area: development
+level: power
+kind: tip
+since: next
+-->
 
 Once a day Watchtower reads what you typed in your recent sessions, from both agents, and in your chats. When you gave the same standing direction in at least three sessions of the last 14 days and your texts don't hold it yet, it offers it as a suggestion. Nothing changes until you press **Add**, and once you dismiss a suggestion, that suggestion never comes back.
 

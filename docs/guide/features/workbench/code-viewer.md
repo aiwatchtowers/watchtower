@@ -7,6 +7,16 @@ The code viewer lets you read and edit the files of a workbench folder without l
 When an agent finishes, the first questions are "what did it touch?" and "where is this used?". The viewer answers them next to the terminal, in the same window, with the folder's git marks on every file.
 
 ## How it works
+<!-- learn
+id: code-viewer-files
+title: Read and edit the agent's files
+text: Open a file from **FILES** in the sessions panel to read or fix it, with git marks on every file.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 The **FILES** section at the bottom of the sessions panel lists the folder. A file opens in the **Files** pane in an editor with tabs. A single click opens a preview tab that the next click replaces; a double click, or your first edit, keeps it. Folders such as `.git` and `node_modules` are not listed.
 
@@ -15,12 +25,42 @@ Files carry git marks (modified, added, untracked, deleted, conflicted). When th
 Edits save themselves about a second after you stop typing, and at once when you switch tab. Watchtower never saves over a version it has not seen. If the file changed on disk meanwhile, a banner offers **Reload from disk** or to keep your edit. A file deleted under your edits is only written back when you choose to.
 
 ### Previewing HTML files
+<!-- learn
+id: code-viewer-html-preview
+title: Preview an HTML file the agent wrote
+text: Switch an `.html` file to **Preview** to see it rendered, or **Present** a slide deck full screen.
+area: development
+level: power
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 An `.html` or `.htm` file, such as a slide deck an agent wrote, has a **Source** | **Preview** switch above it. **Preview** renders the file as it is on disk, and reloads it each time the file changes (your edit saves itself in about a second, or the agent writes it again). Its CSS, scripts, fonts and images load from the file's own folder, without hidden files such as `.env` (nor a link to one), or over https from jsDelivr, cdnjs, unpkg or Google Fonts (so a reveal.js deck works). Nothing else reaches the internet, and its links open nothing. While you preview, a line under the switch names what the file asks for and does not get, such as **Blocked 2 external resources: example.com, … · 1 hidden file**. The page shows without them; Watchtower never fetches them for it. Click it and use the arrow keys to page through a deck.
 
 The buttons next to the switch are **Reload** (while previewing), **Present** (full screen, Esc leaves) and **Open in Browser**. The browser gets the file from a private address on your Mac (`http://127.0.0.1:…`) that serves only that file's folder, without hidden files, until you quit Watchtower. There the page runs sandboxed: it can load scripts, styles, fonts and images from the folder and from the same four CDNs, nothing from other sites, but its script cannot read the folder's other files, keeps no cookies, and opens no pop-ups. It can still go to another website, as any page you open can. Video files do not play from this address.
 
 ### Finding things
+<!-- learn
+id: code-viewer-open-quickly
+title: Find any file or symbol with ⇧⌘O
+text: Press ⇧⌘O, or ⇧ twice, and type part of a file, symbol or text to jump to it.
+area: development
+level: next
+kind: shortcut
+since: 0.24.0
+action: hotkey:open-quickly
+-->
+<!-- learn
+id: code-viewer-go-to-definition
+title: Jump to a definition with ⌃⌘J
+text: Press ⌃⌘J, or ⌘-click a name, to open its definition; ⌃⌘← takes you back.
+area: development
+level: power
+kind: shortcut
+since: 0.24.0
+action: hotkey:go-to-definition
+-->
 
 Watchtower indexes the folder's definitions in memory, rebuilt from the folder each time. It indexes the files git lists, or all but hidden folders outside a repository, and skips binary files and files over 2 MB. A language without a grammar falls back to a text search.
 
@@ -36,6 +76,16 @@ Watchtower indexes the folder's definitions in memory, rebuilt from the folder e
 The **Navigate** menu holds all of these. It is enabled only while a workbench window is in front.
 
 ### Asking about code
+<!-- learn
+id: code-viewer-ask-ai
+title: Ask about selected code with ⌘I
+text: Select code and press ⌘I to ask about it; **Apply** puts a suggested change in the editor.
+area: development
+level: next
+kind: shortcut
+since: 0.24.0
+action: hotkey:ask-ai
+-->
 
 Select code and press ⌘I (**Ask AI**), or press ⌘↩ in Open Quickly. A small popover answers about the selection, or the cursor line, using the code around it and the index. If the answer suggests a change, **Apply** puts it in the editor as one undo step. The **Questions** tab of the inspector lists past questions.
 

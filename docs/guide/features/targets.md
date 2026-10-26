@@ -9,6 +9,37 @@ Targets that belong to a Workbench board live on that board, not in this tab.
 Slack and mail make promises easy and tracking them hard. A target keeps the promise next to the context that produced it, and the assistant can break it down, find the Jira tickets and transcripts behind it, and say what to do next. The **Today** section answers "what do I do now?" without a planning session.
 
 ## How it works
+<!-- learn
+id: targets-from-anything
+title: Turn anything into a target
+text: Press **Create Target** on a track, digest, briefing item or meeting note; it keeps a link to its source.
+area: tasks
+level: next
+kind: tip
+since: 0.24.0
+action: nav:targets
+-->
+<!-- learn
+id: targets-reaction
+title: Make a target with a ✅ reaction
+text: React ✅ to a Slack message and it becomes a target linked to that message.
+area: tasks
+level: next
+kind: tip
+since: 0.24.0
+requires: feature:reaction-commands
+-->
+<!-- learn
+id: targets-next-step
+title: Get a suggested next step
+text: Open targets get a **NEXT STEP** card after each sync; its refresh button writes a fresh one.
+area: tasks
+level: next
+kind: feature
+since: 0.24.0
+action: nav:targets
+requires: feature:next-step
+-->
 
 **Every target starts from something you did.** That is the **New Target** composer, a **Create Target** / **Create task** / **Create target** button on a track, a digest, a briefing or a meeting note, **Convert to Target** on an idea, a request to the chat, `watchtower remind`, or a ✅ reaction on a Slack message (Reaction Commands, on by default; depending on trust it may arrive as a proposal to approve). Each keeps a link back to its source.
 
@@ -23,6 +54,56 @@ A change to any other target on its line (sub-targets at any depth, parents) alw
 **Dates are watched.** A snoozed target returns to To Do when its date passes. A target whose due date arrives is surfaced once as an attention item, so it shows in Catch Up's **For you** and the briefing's **Needs Attention**. Both happen in the daemon cycle, so they need the daemon running.
 
 ## Using it
+<!-- learn
+id: targets-new
+title: Write a target in your own words
+text: Press **⌘N** in **Targets**, write it, then **Enter** to brief the assistant or **⌘Enter** to just save it.
+area: tasks
+level: basics
+kind: shortcut
+since: 0.24.0
+action: hotkey:new-target
+-->
+<!-- learn
+id: targets-today
+title: Start your day from Today
+text: **Today** in **Targets** lists what is overdue, due today or high priority: what to do now.
+area: tasks
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:targets
+-->
+<!-- learn
+id: targets-extract
+title: Split notes into several targets
+text: Paste meeting notes or a ticket list into **New Target** and use **Extract with AI** to review the proposals.
+area: tasks
+level: next
+kind: feature
+since: 0.24.0
+action: nav:targets
+-->
+<!-- learn
+id: targets-assistant
+title: Let the assistant break it down
+text: Open a target's **Assistant** and ask it to break the work down; changes to other targets wait for **Approve**.
+area: tasks
+level: next
+kind: feature
+since: 0.24.0
+action: nav:targets
+-->
+<!-- learn
+id: targets-snooze
+title: Snooze a target
+text: Right-click a target and choose **Snooze**: it comes back to To Do tomorrow, in 3 days or in a week.
+area: tasks
+level: next
+kind: tip
+since: 0.24.0
+action: nav:targets
+-->
 
 1. Press **⌘N** in the Targets tab (or the **+** in the toolbar). Write the target in your own words.
 2. Press **Enter** to brief the assistant, or **⌘Enter** to just create. **Shift+Enter** adds a line.

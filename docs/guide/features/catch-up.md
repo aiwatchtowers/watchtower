@@ -8,6 +8,17 @@ You come back after a week away with hundreds of unread messages. Instead of scr
 
 ## How it works
 
+<!-- learn
+id: catchup-window
+title: Recap the week you were away
+text: Pick **Week**, **3 days** or a **Range** in Catch Up instead of **Auto** to recap exactly the stretch you missed.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:catchUp
+-->
+
 A recap is built only when you ask for it. The daemon never builds one for you.
 
 - **Window.** **Auto** runs from the end of the last recap you marked caught up to now. With none, it covers the last 24 hours, and it never reaches back more than 31 days. The other choices are **Today**, **Yesterday**, **3 days**, **Week**, or **Range** with your own from and to (neither can be in the future).
@@ -21,6 +32,17 @@ The tab shows when any of Attention detection, Slack Digests or Stream Digests i
 
 ### Build a recap
 
+<!-- learn
+id: catchup-recap
+title: Catch up with one recap
+text: Click **Build recap** in Catch Up for a TL;DR, topics, decisions, missed meetings and what needs you.
+area: communication
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:catchUp
+-->
+
 1. Pick a window in the left column. Under **Auto** a caption names the start.
 2. Click **Build recap**. The recap reads "Building the recap…" until it is ready.
 3. Click a recap in the history list to read it. Older recaps stay when a new build fails.
@@ -29,6 +51,17 @@ A recap shows a TL;DR, **What happened** (topic cards with **Sources** that expa
 
 ### Rebuild a recap with a correction
 
+<!-- learn
+id: catchup-correction
+title: Fix a recap with a correction
+text: Type what is wrong in **Correction…** at the bottom of a recap and click **Regenerate**.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:catchUp
+-->
+
 Type what is wrong in the **Correction…** field at the bottom and click **Regenerate**. The same window is built again with your note.
 
 ### Teach it which topics matter
@@ -36,6 +69,17 @@ Type what is wrong in the **Correction…** field at the bottom and click **Rege
 Each topic has a thumbs-up and thumbs-down. Type under **What's wrong with this topic?** and click **Send** to add a comment. A comment can also rebuild the whole recap, and it can become a rule in Inbox → Learned, which the digests, tracks, briefings and recaps then apply.
 
 ### Mark it done
+
+<!-- learn
+id: catchup-caught-up
+title: Mark yourself caught up
+text: Click **I'm caught up** to mark the window read; the next **Auto** recap starts from there.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:catchUp
+-->
 
 Click **I'm caught up**. Everything in the window is marked read: digests, stream digests, tracks, attention items and briefings. The next **Auto** recap starts from there, and the badge on the tab and the **SINCE YOU WERE AWAY** card on Home go away.
 

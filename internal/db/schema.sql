@@ -2772,6 +2772,15 @@ CREATE TABLE IF NOT EXISTS spec_review_marks (
     PRIMARY KEY (ask_id, item_key)
 );
 
+-- Home's Learn zone (00159): one row per guide card the owner has seen
+-- (got_it, its button, or the feature in use). Written once by the Desktop
+-- only; Show again deletes the row.
+CREATE TABLE IF NOT EXISTS learn_seen (
+    item_id TEXT PRIMARY KEY,
+    how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
+    seen_at TEXT NOT NULL -- UTC ISO-8601 seconds
+);
+
 -- The one session the owner is looking at (00107): a singleton written by the
 -- Desktop only (enter + 30 s heartbeat; NULL on leave, lock, sleep, quit),
 -- read by Go. A seen_at older than 90 s reads as absent.

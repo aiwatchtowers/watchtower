@@ -22,6 +22,17 @@ A workbench has four parts:
 Nothing here changes your own terminal workflow. A session started in your own terminal app sees the same board.
 
 ## Using it
+<!-- learn
+id: workbench-add-folder
+title: Bind a folder to a workbench
+text: Open **Workbench**, pick a folder, and the agent proposes a first board for you to agree to.
+area: development
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:projects
+done_when: workbench.bound
+-->
 
 1. Open the **Workbench** tab and click the folder button next to **Workbenches** (or **Open Folder…** in the workbench switcher). Pick a folder. A folder that already has a workbench opens it; any other becomes a new one.
 2. The terminal opens with the agent running. It reads the folder's README and docs, fills in the description and proposes a first board. Nothing is created until you agree; the proposal arrives as an ask in **Waiting for you**.
@@ -37,6 +48,16 @@ The window's title row carries the workbench: its name (with the sessions panel 
 Each session pane has a strip on top with the session's state dot and name and a ▾ to pick another session or start a new one, the branch, **Terminal | Workchat**, **Report** and **Review**. **Review** shows only when the session has something to review; see [Branch review](diff-review.md). The ▾ lists sessions in the panel's order, finished ones last. The branch shows once: on the strip of the session whose folder the page follows, or in the title row when no such pane is on screen. In a split, a Board, Files or Analytics pane gets a strip of the same look with a picker, expand and close.
 
 ### Run a workbench automation from the ⚡ menu
+<!-- learn
+id: workbench-automation-menu
+title: Run a workbench automation
+text: Every button-run automation of a workbench is an item in its ⚡ menu; one click starts the run.
+area: development
+level: power
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 Every automation of the workbench that runs **When I press a button** is an item in the ⚡ menu, in the order of their file names. **New Automation…** at its end makes a new one for this workbench. A click starts the run; one set to ask first shows "Run <label>?" with **Run** and **Cancel**. While a run is going, the ⚡ icon spins and its item shows the run in Automations.
 

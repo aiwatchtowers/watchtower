@@ -19,6 +19,17 @@ Every sync cycle (every 15 minutes by default) the daemon pulls new mail for eac
 
 ### Where mail shows up
 
+<!-- learn
+id: mail-attention
+title: See mail that names you
+text: Mail sent to you becomes an attention item in Catch Up, the briefing and the Inbox's **Messages**.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:inbox
+-->
+
 - **Attention items:** a message addressed to you (you are in To) becomes an item, like a Slack mention. A message that only copies you (Cc) becomes a lower-priority item. A message from you mints nothing.
 - **Where you see them:** the Inbox's **Messages** filter lists them with your Slack and tracker items ([Inbox](inbox.md)). They also surface in **Catch Up** (needs you), the briefing and meeting prep. Catch Up also reads the mail stream digests described below.
 - **Ideas:** with **Stream Digests** on (**Settings → Features**), new mail is summarized per account (Gmail by thread, Outlook and IMAP message by message), and ideas and decisions mined from it reach the Ideas registry. Stream Digests is a medium AI cost.
@@ -27,6 +38,28 @@ Every sync cycle (every 15 minutes by default) the daemon pulls new mail for eac
 Your reply does not close a mail item. Slack, Jira and calendar items resolve when you answer; mail items instead archive on their own, after 14 days if you are in To and after 7 days if you are in Cc.
 
 ## Using it
+
+<!-- learn
+id: mail-connect-gmail
+title: Bring your Gmail in
+text: Add a Google account in **Settings → Connections** with **Gmail** on; mail to you joins Slack and Jira.
+area: communication
+level: basics
+kind: feature
+since: 0.24.0
+action: connect:google
+-->
+
+<!-- learn
+id: mail-connect-imap
+title: Connect Outlook or an IMAP mailbox
+text: Under **Email** in **Settings → Connections**, click **Add Account** and pick **Connect Outlook** or **IMAP**.
+area: communication
+level: next
+kind: feature
+since: 0.24.0
+action: connect:imap
+-->
 
 1. Open **Settings → Connections**.
 2. For Gmail with Calendar, use **Google** and click **Add Google Account**. Leave **Gmail** switched on and click **Connect**.

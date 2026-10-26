@@ -27,6 +27,17 @@ A Mac build without iCloud signing shows **Needs a signed build** and cannot tur
 ## Using it
 
 ### Link a phone
+<!-- learn
+id: iphone-link
+title: Link your iPhone
+text: Turn on **Sync with iPhone** in **Settings → Mobile**, press **Use Watchtower on iPhone** and scan the code.
+area: iphone
+level: basics
+kind: feature
+since: 0.24.0
+action: hotkey:settings
+done_when: iphone.paired
+-->
 
 1. On the Mac, open Settings → **Mobile** and turn on **Sync with iPhone**. It applies at once.
 2. Under **Phones**, press **Use Watchtower on iPhone**. A QR code appears for 10 minutes. **New code** makes another.
@@ -37,6 +48,24 @@ A Mac build without iCloud signing shows **Needs a signed build** and cannot tur
 If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares; the phone row says **Same Apple ID** or **Shared**.
 
 ### Use the three tabs
+<!-- learn
+id: iphone-answer-asks
+title: Answer asks from your phone
+text: A session's question shows under **Waiting for you** on the phone's **Now**; answer it and the session goes on.
+area: iphone
+level: basics
+kind: feature
+since: 0.24.0
+-->
+<!-- learn
+id: iphone-record
+title: Record a meeting on your iPhone
+text: Tap **Record** in the phone's **Calendar**; your Mac transcribes the audio and writes the recap.
+area: iphone
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 - **Now** shows whether your Mac is online ("Mac online · 12s"), everything **Waiting for you** across workbenches, and session counts. The gear opens Settings.
 - **Workbench** lists your workbenches as cards. Open one for **Sessions** (asks, reports, a stop button) or **Board** (targets with status, priority and comments). Its badge counts open asks.
@@ -45,10 +74,37 @@ If the phone uses the same Apple ID as the Mac, it syncs through your private iC
 Asks come in three kinds: a question, a review (select text, **Comment on the selection**, then **Approve** or **Request changes**) and a check (mark each step **OK**, **Broken** or **Skipped**).
 
 ### Read a session's chat
+<!-- learn
+id: iphone-session-chat
+title: Read a session's chat on the go
+text: Tap **Chat** on a session in the phone app to read its conversation, subagents included.
+area: iphone
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 Tap **Chat** on a session to read its conversation, with subagent markers that open the subagent's own chat. Tool output is never shown. The Mac sends it only while the screen is open, plus five minutes. It shows the newest 300 lines. The **Tell the session…** bar appears on the main chat only.
 
 ### Let the phone do more
+<!-- learn
+id: iphone-start-sessions
+title: Start sessions from your phone
+text: Turn on **Start sessions from this phone**, then press **Allow…** on the Mac's phone row to grant it.
+area: iphone
+level: power
+kind: feature
+since: 0.24.0
+-->
+<!-- learn
+id: iphone-type-into-sessions
+title: Type into a session from the phone
+text: Turn on **Type into sessions from this phone** and **Allow…** it on the Mac to send a session a line.
+area: iphone
+level: power
+kind: feature
+since: 0.24.0
+-->
 
 Three switches under Settings → **Workbench** on the phone:
 
@@ -65,6 +121,15 @@ A running session's status shows how long it has been in that state, like **Work
 Answering a Claude Code permission prompt and interrupting a working agent from the phone have their own page: [iPhone: permission prompts and interrupts](iphone-agent-prompts.md).
 
 ### Link another Mac, or unlink
+<!-- learn
+id: iphone-more-macs
+title: Link up to four Macs
+text: In the phone's Settings → **Macs**, press **Add Mac** and scan another Mac's code, then switch between them.
+area: iphone
+level: power
+kind: feature
+since: 0.24.0
+-->
 
 Settings → **Macs** lists your Macs. **Add Mac** scans another code (up to four), and rows can be dragged to reorder. **Unlink** (or **Forget**, for a Mac that removed the phone or is long offline) deletes that Mac's data from the phone; changes not yet sent are lost, and the phone says how many ("Not sent: 3 items were still waiting for your Mac").
 

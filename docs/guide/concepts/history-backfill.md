@@ -31,6 +31,15 @@ Muted channels and one-to-one messages are not digested during backfill.
 - A source connected before this feature existed, or one whose first sync was started from the command line, gets no backfill. A source that is removed or turned off ends its backfill for good, and turning it back on does not resume it.
 
 ## Following it, pausing it
+<!-- learn
+id: backfill-follow
+title: Watch a month of history load
+text: A new source loads its last 30 days in the background; the menu bar shows **Loading history: N of M days**.
+area: setup
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 The menu bar and the status bar show "Loading history: N of M days". Two other lines mean it is waiting:
 

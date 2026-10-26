@@ -230,6 +230,7 @@ var cliNoContentCommands = map[string]bool{
 	"gmail logout":                     true,
 	"gmail purge":                      true,
 	"gmail status":                     true,
+	"guide learn":                      true,
 	"gmail sync":                       true,
 	"google accounts":                  true,
 	"google add":                       true,
