@@ -114,9 +114,9 @@ func TestCollect_SpecMarksMapToKinds(t *testing.T) {
 	got := sigByRef(in.Signals)
 	require.Len(t, in.Signals, 2)
 	real := got[fmt.Sprintf("ask:%d#bs:cccccccccccc", ask)]
-	assert.Equal(t, KindSpecReal, real.Kind)
-	assert.Equal(t, wb, real.WorkbenchID)
-	assert.Equal(t, "No rollback path - a failed deploy is stuck | owner: yes, add one", real.Text)
+	assert.Equal(t, KindSpecReal, comment.Kind)
+	assert.Equal(t, wb, comment.WorkbenchID)
+	assert.Equal(t, "No rollback path - a failed deploy is stuck | owner: yes, add one", comment.Text)
 	noise := got[fmt.Sprintf("ask:%d#da:bbbbbbbbbbbb", ask)]
 	assert.Equal(t, KindSpecNoise, noise.Kind)
 	assert.Equal(t, "Naming of the flag", noise.Text)
