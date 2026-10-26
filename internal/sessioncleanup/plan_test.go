@@ -607,15 +607,21 @@ func TestItemsCarryLastCommitAndMerged(t *testing.T) {
 	f := newFixture(t)
 	// merged only into origin/main: local main stays behind.
 	root := f.worktree("wt-merged", "feat/merged")
+	// An earlier commit on the branch, dated differently, that no branch
+	// will point to: a detached HEAD there is merged only by ancestry.
+	t.Setenv("GIT_COMMITTER_DATE", "2026-08-15T09:00:00Z")
+	f.commit(root, "m0.txt", "m0\n")
+	earlier := gitIn(t, root, "rev-parse", "HEAD")
+	t.Setenv("GIT_COMMITTER_DATE", "2026-09-01T10:00:00Z")
 	f.commit(root, "m.txt", "m\n")
 	gitIn(t, root, "push", "-q", "origin", "feat/merged:main")
 	gitIn(t, f.repo, "fetch", "-q", "origin")
 	f.pushedWork("wt-open", "feat/open")
 	detached := filepath.Join(f.base, "wt-detached")
-	gitIn(t, f.repo, "worktree", "add", "-q", "--detach", detached, "origin/main")
+	gitIn(t, f.repo, "worktree", "add", "-q", "--detach", detached, earlier)
 
 	p := f.plan(Request{Sweep: true})
-	if d := findItem(t, p, "worktree:"+detached); d.LastCommitAt != "2026-09-01T10:00:00Z" || !d.Merged {
+	if d := findItem(t, p, "worktree:"+detached); d.LastCommitAt != "2026-08-15T09:00:00Z" || !d.Merged {
 		t.Fatalf("detached worktree = %+v", d)
 	}
 	merged := findItem(t, p, "branch:feat/merged")
