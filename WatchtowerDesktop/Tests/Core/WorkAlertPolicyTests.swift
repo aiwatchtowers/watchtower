@@ -107,6 +107,35 @@ final class WorkAlertPolicyTests: XCTestCase {
         XCTAssertEqual(WorkAlertPolicy.coveredStopKeys(sessions: [session(.stopped), session(.finished, heldFor: nil, openAsks: 1)]), [])
     }
 
+    /// Spec §4 (no push storm): an ask or a request left open pushes on departure whatever its age; a stop only when
+    /// it began within `departureWindow` before the owner went away (a stop while away began after it).
+    func testOnlyARecentStopPushesOnDeparture() {
+        let away = now
+        let stop = { (age: TimeInterval) in
+            WorkAlertPolicy.Candidate(
+                key: "stop", event: .sessionStopped, workbenchID: 1, sessionID: 7, askID: nil, requestID: nil,
+                startedAt: away.addingTimeInterval(-age), title: "", body: "Finished"
+            )
+        }
+        XCTAssertEqual(WorkAlertPolicy.departureWindow, 30 * 60)
+        XCTAssertTrue(WorkAlertPolicy.pushesWhileAway(stop(29 * 60), awaySince: away))
+        XCTAssertTrue(WorkAlertPolicy.pushesWhileAway(stop(30 * 60), awaySince: away))
+        XCTAssertFalse(WorkAlertPolicy.pushesWhileAway(stop(31 * 60), awaySince: away))
+        XCTAssertTrue(WorkAlertPolicy.pushesWhileAway(stop(-60), awaySince: away), "a stop while away")
+        let old = WorkAlertPolicy.candidates(asks: [ask()], requests: [request()], sessions: [], now: now)
+        XCTAssertTrue(old.allSatisfy { WorkAlertPolicy.pushesWhileAway($0, awaySince: now.addingTimeInterval(86_400)) })
+    }
+
+    /// An upgraded hub never alerts on stops and requests from before the work alerts existed; asks keep `enabled_at`.
+    func testStopsAndRequestsCountFromTheWorkAlertsStart() {
+        let start = now.addingTimeInterval(-10)
+        let result = candidates(asks: [ask()], requests: [request()], sessions: [session(.finished, heldFor: 60)])
+        let counted = result.filter {
+            WorkAlertPolicy.counts($0, enabledAt: now.addingTimeInterval(-3600), workAlertsStartedAt: start)
+        }
+        XCTAssertEqual(counted.map(\.event), [.ask, .permission])
+    }
+
     func testAnUndatedStopNeverPushes() {
         XCTAssertEqual(candidates(sessions: [session(.finished, heldFor: nil)]), [])
     }

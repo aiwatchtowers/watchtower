@@ -21,6 +21,9 @@ package enum WorkAlertPolicy {
     /// How long a Stopped/Finished/Failed state must hold before it pushes: the Mac has no session-state notice
     /// debounce to reuse (spec §5.2).
     package static let stopHold: TimeInterval = 20
+    /// How recent a stop seen at the Mac must be to push when the owner leaves (spec §4, no push storm): a stop
+    /// that began more than this before the departure stays on the Mac. Asks and requests have no such limit.
+    package static let departureWindow: TimeInterval = 30 * 60
 
     package enum Event: String, Sendable {
         case ask, permission
@@ -135,6 +138,25 @@ package enum WorkAlertPolicy {
             )
         }
         return forAsks + forRequests + forSessions
+    }
+
+    /// Whether `candidate` is new enough to alert at all: asks from the hub's `enabled_at` (their earlier alerts
+    /// were migrated as pushed), requests and stops also from the work alerts' own start, so an upgraded hub never
+    /// alerts on what was already waiting.
+    package static func counts(_ candidate: Candidate, enabledAt: Date, workAlertsStartedAt: Date) -> Bool {
+        switch candidate.event {
+        case .ask: candidate.startedAt >= enabledAt
+        case .permission, .sessionStopped, .sessionFailed: candidate.startedAt >= max(enabledAt, workAlertsStartedAt)
+        }
+    }
+
+    /// Whether `candidate`, not pushed yet, pushes while the owner is away since `awaySince`: an ask or a request
+    /// always; a stop only when it began within `departureWindow` before the departure (one while away always does).
+    package static func pushesWhileAway(_ candidate: Candidate, awaySince: Date) -> Bool {
+        switch candidate.event {
+        case .ask, .permission: true
+        case .sessionStopped, .sessionFailed: candidate.startedAt >= awaySince.addingTimeInterval(-departureWindow)
+        }
     }
 
     /// The stops an ask or a request stands for now: every dated session with an open ask or a pending request.

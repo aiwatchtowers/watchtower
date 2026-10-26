@@ -13,10 +13,14 @@ import WatchtowerSync
 /// Each pass, in order:
 /// - the candidates that began at or after the hub's `enabled_at` (asks and requests by `created_at`, stops by
 ///   `state_at`), so a first enable never alerts on the work already waiting;
+/// - session stops and permission requests also only from the work alerts' first pass (`work_alerts_started_at` in
+///   `hub_meta`), so an upgraded hub never alerts on the stops already on its board (spec §4, no push storm);
 /// - remembered in the sidecar's `work_alerts`: while the owner is at the Mac (`isAway` false) as seen only; while
-///   away, every one not pushed yet is pushed now, in the same transaction (`noteWorkAlerts(pushing:)`). So a stop
-///   seen at the Mac and still unresolved when the owner leaves pushes then, once; a pushed key never pushes again
-///   (a second away period, a hub restart, a republish, a rotation);
+///   away, every one not pushed yet is pushed now, in the same transaction (`noteWorkAlerts(pushing:)`). So an ask or
+///   a request left open at the Mac pushes when the owner leaves, once; a stop left there does only when it began
+///   within `WorkAlertPolicy.departureWindow` (30 min) before the departure — the first pass that reads the owner
+///   away, stored as `work_alerts_away_since` until a pass reads them back. A pushed key never pushes again (a second
+///   away period, a hub restart, a republish, a rotation);
 /// - a record for each candidate pushed in the current sync generation within 7 days of its push. A resolved stop
 ///   (answered, decided, working again) leaves the candidates, so the publisher deletes its record and signal; an
 ///   account reset publishes nothing it pushed before into the new zone;
@@ -38,6 +42,10 @@ struct WorkAlertSlice: SliceSource {
     static let maxWorkbenchName = 60
     static let maxSessionTitle = 60
     static let maxBody = 120
+    /// `hub_meta`: the first pass of the work alerts (session stops and requests count from it, spec §4).
+    static let startedAtKey = "work_alerts_started_at"
+    /// `hub_meta`: when the owner left the Mac, as the first away pass saw it; absent while at the Mac.
+    static let awaySinceKey = "work_alerts_away_since"
 
     let sidecar: HubSyncState
     let isAway: @Sendable () -> Bool
@@ -84,9 +92,15 @@ struct WorkAlertSlice: SliceSource {
         // A stop an ask or a request stood for stays theirs once they resolve (seen-only `cover-` rows, never pushed).
         let covers = WorkAlertPolicy.coveredStopKeys(sessions: sessions).map(Self.cover)
         let covered = try sidecar.noteWorkAlerts(covers, at: stamp).marks
-        let candidates = all.filter { $0.startedAt >= enabledAt && covered[Self.cover($0.key)] == nil }
+        let startedAt = try metaDate(Self.startedAtKey, ensuring: stamp)
+        let candidates = all.filter {
+            WorkAlertPolicy.counts($0, enabledAt: enabledAt, workAlertsStartedAt: startedAt) && covered[Self.cover($0.key)] == nil
+        }
         let keys = candidates.map(\.key)
-        let (generation, marks) = try sidecar.noteWorkAlerts(keys, pushing: isAway(), at: stamp)
+        let pushing = try awaySince(stamp).map { since in
+            Set(candidates.filter { WorkAlertPolicy.pushesWhileAway($0, awaySince: since) }.map(\.key))
+        } ?? []
+        let (generation, marks) = try sidecar.noteWorkAlerts(keys, pushing: pushing, at: stamp)
         let current = all.map(\.key)
         try sidecar.pruneWorkAlerts(
             olderThan: stamp.addingTimeInterval(-Self.lifetime), keeping: Set(current + current.map(Self.cover) + covers)
@@ -102,6 +116,23 @@ struct WorkAlertSlice: SliceSource {
             )
             return SliceRecord(kind: kind, id: candidate.key, modifiedAt: stamp, payload: try encoder.encode(payload))
         }
+    }
+
+    /// When the owner left the Mac, or nil while they are at it: the first pass that reads them away stores its
+    /// stamp (`awaySinceKey`), the first pass that reads them back removes it.
+    private func awaySince(_ stamp: Date) throws -> Date? {
+        guard isAway() else {
+            if try sidecar.metaValue(forKey: Self.awaySinceKey) != nil { try sidecar.removeMetaValue(forKey: Self.awaySinceKey) }
+            return nil
+        }
+        return try metaDate(Self.awaySinceKey, ensuring: stamp)
+    }
+
+    /// The date stored under `key`, `stamp` stored there when the key is new.
+    private func metaDate(_ key: String, ensuring stamp: Date) throws -> Date {
+        let raw = try sidecar.ensureMetaValue(forKey: key) { String(stamp.timeIntervalSince1970) }
+        guard let seconds = TimeInterval(raw) else { throw HubIdentityError.corruptValue(key) }
+        return Date(timeIntervalSince1970: seconds)
     }
 
     /// The ledger key remembering that `key`'s stop was an ask's or a request's.

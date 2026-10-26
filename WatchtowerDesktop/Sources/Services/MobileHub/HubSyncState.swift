@@ -826,13 +826,13 @@ final class HubSyncState: Sendable {
     }
 
     /// Remembers each of `keys` not known yet as seen at `date` in the current generation (a remembered one
-    /// keeps its first stamp); with `pushing`, also records the push of each of `keys` not pushed yet at `date`,
+    /// keeps its first stamp); also records the push of each of `pushing` (a subset of `keys`) not pushed yet at `date`,
     /// moving it to the current generation (an alert is published in the generation that pushed it). Returns that
     /// generation with every remembered key. One write transaction, so two overlapping cycles read the same pushes
     /// they decide on and never push one key twice, and a reset cannot land between the stamp and the generation it
     /// is compared to.
     func noteWorkAlerts(
-        _ keys: [String], pushing: Bool = false, at date: Date
+        _ keys: [String], pushing: Set<String> = [], at date: Date
     ) throws -> (generation: Int, marks: [String: WorkAlertMark]) {
         try queue.write { db in
             let generation = try Self.generation(db)
@@ -841,7 +841,7 @@ final class HubSyncState: Sendable {
                     sql: "INSERT INTO work_alerts (key, seen_at, generation) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING",
                     arguments: [key, date.timeIntervalSince1970, generation]
                 )
-                if pushing {
+                if pushing.contains(key) {
                     try db.execute(
                         sql: "UPDATE work_alerts SET pushed_at = ?, generation = ? WHERE key = ? AND pushed_at IS NULL",
                         arguments: [date.timeIntervalSince1970, generation, key]

@@ -33,6 +33,8 @@ final class WorkAlertSliceTests: XCTestCase {
         sidecar = try HubSyncState.inMemory()
         enabledAt = try HubIdentity(sidecar: sidecar).ensureEnabledAt(now.addingTimeInterval(-3600))
         started = now.addingTimeInterval(-600)
+        // A hub whose work alerts have run since its enable (an upgraded one is tested on its own).
+        try sidecar.setMetaValue(String(enabledAt.timeIntervalSince1970), forKey: WorkAlertSlice.startedAtKey)
     }
 
     override func tearDownWithError() throws {
@@ -212,6 +214,81 @@ final class WorkAlertSliceTests: XCTestCase {
 
         setAway(true)
         XCTAssertEqual(try alerts(), [])
+    }
+
+    // MARK: - No push storm (spec §4)
+
+    func testAnUpgradedHubDoesNotPushOldStops() throws {
+        try sidecar.removeMetaValue(forKey: WorkAlertSlice.startedAtKey)
+        let project = try workbench()
+        let finished = try session(in: project)
+        try setState(finished, state: nil, at: now.addingTimeInterval(-120), finished: true)
+        let stopped = try session(in: project)
+        setLive([stopped])
+        try setState(stopped, state: "approval", at: now.addingTimeInterval(-60))
+        try request(session: stopped, workbench: project)
+        try dbPool.write { try $0.execute(sql: "UPDATE permission_requests SET created_at = ?", arguments: [dbStamp(now.addingTimeInterval(-60))]) }
+
+        XCTAssertEqual(try alerts(), [], "work from before the first pass never alerts")
+
+        // The positive control: a stop after the start still alerts.
+        advance(30)
+        try setState(finished, state: "waiting", at: now)
+        setLive([stopped, finished])
+        advance(30)
+        XCTAssertEqual(try alerts().map(\.sessionID), [finished])
+    }
+
+    func testAStaleSuppressedStopDoesNotPushOnDeparture() throws {
+        setAway(false)
+        let session = try session(in: try workbench())
+        try setState(session, state: nil, at: now.addingTimeInterval(-60), finished: true)
+        XCTAssertEqual(try alerts(), [])
+
+        advance(31 * 60 - 60)
+        setAway(true)
+
+        XCTAssertEqual(try alerts(), [])
+        advance(3600)
+        XCTAssertEqual(try alerts(), [], "nor later in the same away period")
+    }
+
+    func testARecentSuppressedStopPushesOnDeparture() throws {
+        setAway(false)
+        let session = try session(in: try workbench())
+        try setState(session, state: nil, at: now.addingTimeInterval(-60), finished: true)
+        XCTAssertEqual(try alerts(), [])
+
+        advance(29 * 60 - 60)
+        setAway(true)
+
+        XCTAssertEqual(try alerts().map(\.body), ["Finished"])
+    }
+
+    func testAnOldOpenAskStillPushesOnDeparture() throws {
+        setAway(false)
+        let id = try ask(in: try workbench())
+        XCTAssertEqual(try alerts(), [])
+
+        advance(5 * 3600)
+        setAway(true)
+
+        XCTAssertEqual(try alerts().map(\.askID), [id])
+    }
+
+    func testTheDepartureIsTheFirstAwayPassAndClearsOnReturn() throws {
+        setAway(false)
+        XCTAssertEqual(try alerts(), [])
+        XCTAssertNil(try sidecar.metaValue(forKey: WorkAlertSlice.awaySinceKey))
+        setAway(true)
+        let left = now
+        _ = try alerts()
+        advance(60)
+        _ = try alerts()
+        XCTAssertEqual(try sidecar.metaValue(forKey: WorkAlertSlice.awaySinceKey), String(left.timeIntervalSince1970))
+        setAway(false)
+        _ = try alerts()
+        XCTAssertNil(try sidecar.metaValue(forKey: WorkAlertSlice.awaySinceKey))
     }
 
     // MARK: - One stop, one push
