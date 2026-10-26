@@ -29,6 +29,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
   - One **Notifications** section holds every switch: **Pause notifications**, **Decision notifications**, **Briefing notifications**, **Workbench notifications**, **Claude plan limits**, **Notify about unknown voices** and **Meeting reminders** with **Remind before meeting** (0–60 minutes; 0 is **Off**).
   - **Pause notifications** (off by default) silences every notice, including the "still recording" alert, which no other switch affects. When you turn it off, new decisions and briefings, plan-limit warnings and reminders for meetings still ahead are sent; an update is announced on a later check; the rest are dropped.
   - **Send Test Notification** works even while paused.
+  - Alerts on your iPhone are set on the phone, under Settings → **Notifications** → **When work stops**. See [Watchtower on iPhone](../features/iphone.md).
 
 ## Meetings
 

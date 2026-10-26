@@ -161,6 +161,8 @@ final class HubSession {
     /// The phone's lines to sessions and Finish (PROJ-16).
     let sessionInputs: SessionInputSender
     let deviceSettings: DeviceSettings
+    /// This hub's work-alert push subscription; nil for the demo.
+    let alertRegistrar: AlertSubscriptionRegistrar?
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
@@ -377,6 +379,7 @@ final class HubSession {
         hold: RecordingHold? = nil,
         databaseScope: CloudDatabaseScope? = nil,
         notifications: NotificationCenter = .default,
+        subscriptionSaver: (any SubscriptionSaving)? = nil,
         startsActive: Bool = true,
         uploadRetriesAllowed: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         replicaObservesSuspension: Bool = false,
@@ -472,14 +475,52 @@ final class HubSession {
             onActionApplied: hydrateAfterEcho
         )
         // Sealed like every other write: the hub drops a plaintext `device` record.
-        let settings = DeviceSettings(transport: secure, defaults: defaults, hubID: hubID)
-        settings.linkedDevice = device
-        deviceSettings = settings
+        (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
+            secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
+            scope: databaseScope, transport: transport, saver: subscriptionSaver)
         workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
         startBoot(startWork, notifications: notifications)
+    }
+
+    /// The `device` settings (sealed like every other write: the hub drops a plaintext `device` record) and the
+    /// hub's alert subscription. The alerts switch is the phone's, kept in the app group's defaults the
+    /// notification extension also reads.
+    private static func makeDeviceSettings(
+        secure: SecureTransport,
+        defaults: UserDefaults,
+        kind: TransportKind,
+        hubID: String,
+        device: LinkedDevice?,
+        scope: CloudDatabaseScope?,
+        transport: any CloudSyncTransport,
+        saver: (any SubscriptionSaving)?
+    ) -> (DeviceSettings, AlertSubscriptionRegistrar?) {
+        let settings = DeviceSettings(
+            transport: secure, defaults: defaults,
+            alertDefaults: kind == .cloudKit ? UserDefaults(suiteName: AppEnvironment.appGroupID) : nil,
+            hubID: hubID
+        )
+        settings.linkedDevice = device
+        let registrar = makeAlertRegistrar(hubID: hubID, kind: kind, scope: scope, transport: transport, saver: saver)
+        return (settings, registrar)
+    }
+
+    /// The hub's alert subscription, only over the live engine (or a saver a test injects): a CloudKit container
+    /// needs the app's entitlement.
+    private static func makeAlertRegistrar(
+        hubID: String,
+        kind: TransportKind,
+        scope: CloudDatabaseScope?,
+        transport: any CloudSyncTransport,
+        saver: (any SubscriptionSaving)?
+    ) -> AlertSubscriptionRegistrar? {
+        guard kind == .cloudKit, let scope,
+              let saver = saver ?? (transport is CloudKitTransport ? CloudKitSubscriptionSaver() : nil)
+        else { return nil }
+        return AlertSubscriptionRegistrar(hubID: hubID, scope: scope, saver: saver)
     }
 
     /// The recording uploader: sealed through `secure`, re-sending only
@@ -637,6 +678,7 @@ final class HubSession {
                     Task { @MainActor in await self?.applyBuffered() }
                 }
                 await cloud.start()
+                await alertRegistrar?.apply(enabled: deviceSettings.workAlerts)
             }
         }
     }

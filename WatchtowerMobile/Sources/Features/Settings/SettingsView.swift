@@ -238,9 +238,16 @@ struct SettingsView: View {
     // MARK: - Notifications
 
     private var notificationsSection: some View {
-        @Bindable var settings = env.deviceSettings
-        return Section("Notifications") {
-            Toggle("New asks", isOn: $settings.newAskAlerts)
+        let alerts = Binding(
+            get: { env.deviceSettings.workAlerts },
+            set: { value in Task { await env.setWorkAlerts(value) } }
+        )
+        return Section {
+            Toggle(WorkAlertsCopy.title, isOn: alerts)
+        } header: {
+            Text("Notifications")
+        } footer: {
+            Text(WorkAlertsCopy.footer(anyShared: env.anyHubShared))
         }
     }
 }

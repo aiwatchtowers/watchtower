@@ -7,7 +7,7 @@ import WatchtowerSync
 /// `WatchtowerSignal` query subscription (`AskAlertSubscription`, D14) pushes "A session is waiting" with mutable
 /// content; this extension fetches the sealed `ask_alert` the signal names (20 s bound), opens it with
 /// `AlertOpener` over the shared alert group's material only, and sets the title and body. Any failure delivers the
-/// content-free notification unchanged. Thin glue: fetch → open → set fields; the rest of A13 is not built.
+/// content-free notification unchanged. Thin glue: fetch → open → `WorkAlertContent` → copy its fields; any failure leaves the generic body.
 final class NotificationService: UNNotificationServiceExtension {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "NotifyService")
     private static let fetchTimeout: TimeInterval = 20
@@ -72,8 +72,11 @@ final class NotificationService: UNNotificationServiceExtension {
                   let payload = AlertOpener(material: material).open(wireName: reference.alertID.recordName, envelope: envelope)
             else { return nil }
             let filled = content.mutableCopy() as? UNMutableNotificationContent ?? UNMutableNotificationContent()
-            filled.title = payload.title
-            filled.body = payload.body
+            let fields = WorkAlertContent(payload: payload, hubID: reference.hubID)
+            filled.title = fields.title
+            filled.body = fields.body
+            filled.threadIdentifier = fields.threadID
+            filled.userInfo = content.userInfo.merging(fields.userInfo) { _, new in new }
             return filled
         } catch {
             logger.notice("ask alert not filled: \(errorCode(error), privacy: .public)")

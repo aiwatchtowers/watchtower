@@ -226,13 +226,25 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(rows[1].text, "recordings updates: failed 1×, last 5 min. ago: database is locked (recovered)")
     }
 
+    // MARK: - Notifications
+
+    func testTheAlertsSwitchReadsWhenWorkStopsWithItsFooter() {
+        XCTAssertEqual(WorkAlertsCopy.title, "When work stops")
+        XCTAssertEqual(
+            WorkAlertsCopy.footer(anyShared: false),
+            "Asks, approvals and finished or failed sessions, only while you're away from your Mac.")
+        XCTAssertEqual(
+            WorkAlertsCopy.footer(anyShared: true),
+            "Asks, approvals and finished or failed sessions, only while you're away from your Mac. Alerts may be late on this phone.")
+    }
+
     // MARK: - Workbench toggles
 
-    func testTogglesDefaultToTypingOffStartSessionsOnNewAsksOn() throws {
+    func testTogglesDefaultToTypingOffStartSessionsOnWorkAlertsOn() throws {
         let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: try makeDefaults(), hubID: TestHub.acme)
         XCTAssertFalse(settings.typingRequested)
         XCTAssertTrue(settings.startSessions)
-        XCTAssertTrue(settings.newAskAlerts)
+        XCTAssertTrue(settings.workAlerts)
     }
 
     /// The spy counts every save call: the in-memory transport collapses
@@ -359,12 +371,12 @@ final class SettingsWiringTests: XCTestCase {
 
         await acme.setTypingRequested(true)
         await acme.setStartSessions(false)
-        acme.newAskAlerts = false
+        acme.workAlerts = false
 
         let home = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.home)
         XCTAssertFalse(home.typingRequested, "another hub keeps its own default")
         XCTAssertTrue(home.startSessions)
-        XCTAssertFalse(home.newAskAlerts, "the alerts choice is the phone's")
+        XCTAssertFalse(home.workAlerts, "the alerts choice is the phone's")
         XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested)
     }
 

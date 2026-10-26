@@ -334,6 +334,18 @@ final class AppEnvironment {
     var sessionStarts: SessionStarter { activeSession.sessionStarts }
     var sessionInputs: SessionInputSender { activeSession.sessionInputs }
     var deviceSettings: DeviceSettings { activeSession.deviceSettings }
+
+    /// Whether any linked Mac is shared with this phone (its alerts can be late).
+    var anyHubShared: Bool {
+        sessions.values.contains { if case .shared = $0.databaseScope { true } else { false } }
+    }
+
+    /// The phone-wide "When work stops" switch: every hub's settings follow, and each hub's push subscription is
+    /// registered or removed.
+    func setWorkAlerts(_ enabled: Bool) async {
+        for session in sessions.values { session.deviceSettings.workAlerts = enabled }
+        for session in sessions.values { await session.alertRegistrar?.apply(enabled: enabled) }
+    }
     var workbenchReplica: WorkbenchReplicaModel { activeSession.workbenchReplica }
     var calendarReplica: CalendarReplicaModel { activeSession.calendarReplica }
     var phoneRecordings: PhoneRecordingsModel { activeSession.phoneRecordings }
