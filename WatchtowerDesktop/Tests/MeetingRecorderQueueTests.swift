@@ -135,7 +135,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         // How many transcripts had been saved when each job claimed the engine
         // slot: a job that started alongside job 1 would claim at 0, not 1.
         var savesAtClaim: [Int] = []
-        center.onEngineSlotClaimedForTesting = { savesAtClaim.append(runner.savedTranscripts.count) }
+        center.onJobTurnStartedForTesting = { savesAtClaim.append(runner.savedTranscripts.count) }
         let config = singleWindowConfig()
 
         await center.startRecording(eventID: nil, title: "First", config: config)
@@ -1073,7 +1073,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         // Waiting cannot prove job A stayed parked, so the claim seam records
         // whether it took the slot while the orphan was still inside the engine.
         var claimedWhileOrphanResident = false
-        center.onEngineSlotClaimedForTesting = {
+        center.onJobTurnStartedForTesting = {
             if liveGate.completedCalls == callsBeforeOrphan { claimedWhileOrphanResident = true }
         }
         recorder2.stopError = AudioRecordingError.deviceSetupFailed("device vanished")

@@ -75,6 +75,26 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         }
     }
 
+    /// Lets go of whatever a test bailing out early may leave parked: every
+    /// gate window from now on, every held save, and a capture still running
+    /// (stopped, not awaited — the failure is already recorded).
+    private func bailOut(
+        _ center: MeetingRecorderCenter,
+        gate: GateEngine? = nil,
+        runner: GatedSaveRunner? = nil,
+        recorder: FakeRecorder? = nil
+    ) {
+        if let gate {
+            gate.release()
+            _ = autoRelease(gate)
+        }
+        runner?.releaseAll()
+        guard let recorder, center.isCapturing, let url = recorder.lastStartURL else { return }
+        if recorder.stopResult == nil { recorder.stopResult = RecordingResult(audioURL: url, durationSec: 1) }
+        let config = threeWindowConfig()
+        Task { await center.stopAndProcess(config: config) }
+    }
+
     /// The live-text job saves while the next meeting records, and holds no
     /// engine claim meanwhile: the new meeting's live pass runs instead of
     /// waiting for the save, on the engine the finished recording parked.
@@ -156,7 +176,7 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
         var claimedWhileCapturing: [Bool] = []
-        center.onEngineSlotClaimedForTesting = { claimedWhileCapturing.append(center.isCapturing) }
+        center.onJobTurnStartedForTesting = { claimedWhileCapturing.append(center.isCapturing) }
         let config = threeWindowConfig()
 
         await center.startRecording(eventID: nil, title: "First", config: config)
@@ -166,7 +186,7 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         var entered = gate.enteredStream.makeAsyncIterator()
         _ = await entered.next() // meeting 1's tail is parked in the engine
         let queued = await waitUntil("the first stop to enqueue its job") { center.jobs.count == 1 }
-        guard queued else { gate.release(); return }
+        guard queued else { bailOut(center, gate: gate); return }
 
         await center.startRecording(eventID: "evt-2", title: "Second", config: config)
         XCTAssertEqual(center.liveEngineState, .waiting, "the draining tail still owns the engine")
@@ -178,7 +198,7 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         XCTAssertEqual(claimedWhileCapturing, [true], "it started while meeting 2 was recording")
         XCTAssertTrue(center.isCapturing)
         let running = await waitUntil("meeting 2's live pass to run") { center.liveEngineState == .running }
-        guard running else { return }
+        guard running else { bailOut(center, gate: gate, recorder: recorder2); return }
         XCTAssertEqual(engineLoads, 1, "meeting 2's live pass took the tail's engine — never two loaded")
 
         recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
@@ -244,7 +264,7 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         var entered = gate.enteredStream.makeAsyncIterator()
         _ = await entered.next()
         let queued = await waitUntil("the first stop to enqueue its job") { center.jobs.count == 1 }
-        guard queued, let jobID = center.jobs.first?.id else { gate.release(); return nil }
+        guard queued, let jobID = center.jobs.first?.id else { bailOut(center, gate: gate); return nil }
 
         await center.startRecording(eventID: nil, title: "Second", config: captureOnly)
         XCTAssertTrue(center.jobsWaitingForCapture.isEmpty, "a job still awaiting its live tail is never labelled")
@@ -267,17 +287,43 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         guard let waiting = try await makeWaitingBatchJob(runner: runner) else { return }
         let center = waiting.center
         var claimedWhileCapturing: [Bool] = []
-        center.onEngineSlotClaimedForTesting = { claimedWhileCapturing.append(center.isCapturing) }
+        center.onJobTurnStartedForTesting = { claimedWhileCapturing.append(center.isCapturing) }
         await runEnqueuedMainActorWork()
         XCTAssertEqual(center.jobs.first?.phase, .queued)
         XCTAssertNil(center.activeJobID, "a batch job never starts while a recording captures")
         XCTAssertTrue(runner.savedTranscripts.isEmpty)
+        let pill = RecordingIndicatorView.jobPillItems(center).visible.first { $0.id == waiting.jobID }
+        XCTAssertEqual(pill?.waitingForCapture, true, "the indicator hands the Center's flag to the pill")
 
         await waiting.finish()
         XCTAssertEqual(runner.savedTranscripts, ["batch one", "batch two"], "FIFO among batch jobs")
         XCTAssertEqual(claimedWhileCapturing, [false, false])
         XCTAssertTrue(center.jobsWaitingForCapture.isEmpty, "nothing waits once the capture stopped")
         XCTAssertTrue(center.jobs.isEmpty)
+    }
+
+    /// The "Waiting for the recording to stop" label goes in the same step
+    /// the capture ends — while the job is still there, not once it is gone.
+    func testWaitingLabelClearsTheMomentTheCaptureStops() async throws {
+        let runner = GatedSaveRunner(stdout: recapOKEnvelope)
+        guard let waiting = try await makeWaitingBatchJob(runner: runner) else { return }
+        let center = waiting.center
+        var labelledAtTurn: [Bool] = []
+        center.onJobTurnStartedForTesting = { labelledAtTurn.append(!center.jobsWaitingForCapture.isEmpty) }
+
+        let stop = Task { await center.stopAndProcess(config: waiting.captureOnly) }
+        let stopped = await waitUntil("meeting 2's capture to end") { !center.isCapturing }
+        XCTAssertTrue(stopped)
+        XCTAssertTrue(center.jobsWaitingForCapture.isEmpty, "the label goes with the capture")
+        XCTAssertTrue(center.jobs.contains { $0.id == waiting.jobID }, "while the job is still queued or running")
+        XCTAssertFalse(RecordingIndicatorView.jobPillItems(center).visible.contains { $0.waitingForCapture })
+
+        runner.releaseAll()
+        await stop.value
+        await waiting.stopFirst.value
+        waiting.releaser.cancel()
+        XCTAssertEqual(labelledAtTurn, [false, false])
+        XCTAssertEqual(runner.savedTranscripts, ["batch one", "batch two"])
     }
 
     /// A queued job's input (it reads the job's pending row) is worked out
@@ -333,10 +379,13 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         recorders[0].emitLive([Float](repeating: 0, count: 1600))
         let stopOne = Task { await center.stopAndProcess(config: config) }
         _ = await entered.next()
-        guard await waitUntil("meeting 1's job", { center.jobs.count == 1 }) else { gate.release(); return }
+        guard await waitUntil("meeting 1's job", { center.jobs.count == 1 }) else { bailOut(center, gate: gate); return }
         await center.startRecording(eventID: nil, title: "Two", config: config)
         gate.release()
-        guard await waitUntil("meeting 2's live pass", { center.liveEngineState == .running }) else { return }
+        guard await waitUntil("meeting 2's live pass", { center.liveEngineState == .running }) else {
+            bailOut(center, gate: gate, recorder: recorders[1])
+            return
+        }
         let batchJob = try XCTUnwrap(center.jobs.first)
 
         // Meeting 2 stops with live text while meeting 3 starts on its tail.
@@ -345,7 +394,7 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         recorders[1].emitLive([Float](repeating: 0, count: 1600))
         let stopTwo = Task { await center.stopAndProcess(config: config) }
         _ = await entered.next() // meeting 2's tail is parked in the engine
-        guard await waitUntil("meeting 2's job", { center.jobs.count == 2 }) else { gate.release(); return }
+        guard await waitUntil("meeting 2's job", { center.jobs.count == 2 }) else { bailOut(center, gate: gate); return }
         await center.startRecording(eventID: nil, title: "Three", config: captureOnly)
         gate.release()
 
@@ -510,6 +559,289 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         center.warmPolicyTick(config: config)
         XCTAssertFalse(center.isEngineWarm, "once the queue is idle the policy unloads as before")
         XCTAssertEqual(engineLoads, 1)
+    }
+
+    // MARK: - Serial queue, dictation, handed engines, failures
+
+    /// Two live-text jobs stay serial: the second one's save never starts
+    /// before the first one's has returned.
+    func testTwoLiveTextJobsStaySerial() async throws {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        let runner = GatedSaveRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["live one", "live two"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        var jobsAtTurn: [Int] = []
+        center.onJobTurnStartedForTesting = { jobsAtTurn.append(center.jobs.count) }
+        let config = threeWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
+        recorder1.emitLive([Float](repeating: 0, count: 1600))
+        let stopFirst = Task { await center.stopAndProcess(config: config) }
+        guard await waitUntil("the first job's save", { runner.isHoldingASave }) else {
+            bailOut(center, runner: runner)
+            return
+        }
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        recorder2.emitLive([Float](repeating: 0, count: 1600))
+        let stopSecond = Task { await center.stopAndProcess(config: config) }
+        guard await waitUntil("the second job's live text", {
+            center.jobs.count == 2 && center.jobs.last?.liveOutput != nil
+        }) else {
+            bailOut(center, runner: runner)
+            return
+        }
+        await runEnqueuedMainActorWork()
+        XCTAssertEqual(runner.savedTranscripts, ["live one"], "only one save at a time")
+        XCTAssertEqual(center.jobs.last?.phase, .queued)
+        XCTAssertEqual(center.activeJobID, center.jobs.first?.id)
+
+        runner.releaseAll()
+        await stopFirst.value
+        await stopSecond.value
+        XCTAssertEqual(jobsAtTurn, [1, 1], "job 2 started only once job 1 had saved and left the queue")
+        XCTAssertEqual(runner.savedTranscripts, ["live one", "live two"])
+    }
+
+    /// What `makeLivePassParkedOnDictation` leaves running: meeting 1's
+    /// live-text job held in its save, meeting 2's live pass parked on a
+    /// dictation engine that is still resident.
+    private struct ParkedOnDictation {
+        let center: MeetingRecorderCenter
+        let runner: GatedSaveRunner
+        let recorder2: FakeRecorder
+        let stopFirst: Task<Void, Never>
+        let dictation: FakeDictationSlot
+        let config: TranscriptionConfig
+
+        /// Drives both meetings to their saves.
+        func finish() async {
+            runner.releaseAll()
+            await stopFirst.value
+            recorder2.emitLive([Float](repeating: 0, count: 1600))
+            await center.stopAndProcess(config: config)
+        }
+    }
+
+    /// The dictation side of the shared engine slot, as the Center sees it.
+    final class FakeDictationSlot {
+        var resident = false
+        var engineLoads = 0
+    }
+
+    private func makeLivePassParkedOnDictation() async throws -> ParkedOnDictation? {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        let dictation = FakeDictationSlot()
+        let runner = GatedSaveRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in
+                dictation.engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["live one", "live two"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        center.dictationEngineResident = { dictation.resident }
+        let config = threeWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
+        recorder1.emitLive([Float](repeating: 0, count: 1600))
+        let stopFirst = Task { await center.stopAndProcess(config: config) }
+        guard await waitUntil("the first job's save", { runner.isHoldingASave }) else {
+            bailOut(center, runner: runner)
+            return nil
+        }
+        dictation.resident = true // a dictation still draining when meeting 2 starts
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        XCTAssertEqual(center.liveEngineState, .waiting, "a resident dictation engine parks the live pass")
+        return ParkedOnDictation(center: center, runner: runner, recorder2: recorder2, stopFirst: stopFirst,
+                                 dictation: dictation, config: config)
+    }
+
+    /// The live-text job's end must not start a live pass parked on a
+    /// resident dictation engine (it held no engine), nor load one beside it;
+    /// the dictation's release does.
+    func testLiveTextJobEndingLeavesALivePassParkedOnDictation() async throws {
+        guard let parked = try await makeLivePassParkedOnDictation() else { return }
+        let center = parked.center
+        parked.runner.releaseAll()
+        await parked.stopFirst.value
+        await runEnqueuedMainActorWork()
+        XCTAssertEqual(center.liveEngineState, .waiting, "the job's end must not start the parked pass")
+        XCTAssertEqual(parked.dictation.engineLoads, 1, "nor load an engine beside the dictation's")
+
+        parked.dictation.resident = false
+        center.dictationEngineDidRelease()
+        let running = await waitUntil("the live pass to run") { center.liveEngineState == .running }
+        XCTAssertTrue(running)
+        XCTAssertEqual(parked.dictation.engineLoads, 1, "it takes the engine meeting 1's job parked")
+        await parked.finish()
+        XCTAssertEqual(parked.runner.savedTranscripts, ["live one", "live two"])
+    }
+
+    /// The dictation letting go starts the parked live pass even while the
+    /// live-text job is still working — that job holds no engine.
+    func testDictationReleaseStartsTheParkedPassWhileALiveTextJobRuns() async throws {
+        guard let parked = try await makeLivePassParkedOnDictation() else { return }
+        let center = parked.center
+        parked.dictation.resident = false
+        center.dictationEngineDidRelease()
+        let running = await waitUntil("the live pass to run") { center.liveEngineState == .running }
+        XCTAssertTrue(running)
+        XCTAssertNotNil(center.activeJobID, "meeting 1's job is still saving")
+        XCTAssertEqual(parked.dictation.engineLoads, 1)
+        await parked.finish()
+        XCTAssertEqual(parked.runner.savedTranscripts, ["live one", "live two"])
+    }
+
+    /// Meeting 0's live-text job holds the queue (save held); meeting 1 stops
+    /// behind it, its queued job carrying meeting 1's engine; then meeting 2
+    /// starts, so its live pass finds that engine in `takeWarmOrLoad` (step
+    /// 2). With `settingsChange` the provider/model switched in between.
+    /// Returns the engine loads once meeting 2's pass runs.
+    private func loadsForALivePassBesideAQueuedJobsEngine(settingsChange: Bool) async throws -> Int? {
+        let recorders = [FakeRecorder(), FakeRecorder(), FakeRecorder()]
+        var recorderCalls = 0
+        var engineLoads = 0
+        var key = "whisperkit|model-a"
+        let currentKey: () -> String = { key }
+        let runner = GatedSaveRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorderCalls += 1; return recorders[recorderCalls - 1] },
+            engineFactory: { _ in
+                engineLoads += 1
+                let texts = engineLoads == 1 ? ["live zero", "live one", "live two"] : ["live two"]
+                return TestTranscriber(ScriptedEngine(texts: texts))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir,
+            engineKey: currentKey
+        )
+        let config = threeWindowConfig()
+        var stops: [Task<Void, Never>] = []
+        for index in 0..<2 {
+            await center.startRecording(eventID: nil, title: "Meeting \(index)", config: config)
+            guard await waitUntil("meeting \(index)'s live pass", { center.liveEngineState == .running }) else {
+                bailOut(center, runner: runner, recorder: recorders[index])
+                return nil
+            }
+            recorders[index].stopResult = RecordingResult(audioURL: try XCTUnwrap(recorders[index].lastStartURL),
+                                                          durationSec: 1)
+            recorders[index].emitLive([Float](repeating: 0, count: 1600))
+            stops.append(Task { await center.stopAndProcess(config: config) })
+            guard await waitUntil("meeting \(index)'s job", {
+                runner.isHoldingASave && center.jobs.count == index + 1 && center.jobs.last?.liveOutput != nil
+            }) else {
+                bailOut(center, runner: runner)
+                return nil
+            }
+        }
+        XCTAssertNotNil(center.jobs.last?.engine, "meeting 1's queued job carries its engine")
+        if settingsChange { key = "whisperkit|model-b" }
+
+        await center.startRecording(eventID: nil, title: "Meeting 2", config: config)
+        let running = await waitUntil("meeting 2's live pass") { center.liveEngineState == .running }
+        let loads = engineLoads
+        XCTAssertNil(center.jobs.last?.engine, "the live pass took the queued job's engine over")
+        XCTAssertEqual(center.activeJobID, center.jobs.first?.id, "meeting 1's job never started meanwhile")
+
+        recorders[2].stopResult = RecordingResult(audioURL: try XCTUnwrap(recorders[2].lastStartURL), durationSec: 1)
+        recorders[2].emitLive([Float](repeating: 0, count: 1600))
+        runner.releaseAll()
+        for stop in stops { await stop.value }
+        await center.stopAndProcess(config: config)
+        XCTAssertEqual(runner.savedTranscripts, ["live zero", "live one", "live two"])
+        return running ? loads : nil
+    }
+
+    func testLivePassTakesOverAQueuedJobsEngine() async throws {
+        let loads = try await loadsForALivePassBesideAQueuedJobsEngine(settingsChange: false)
+        XCTAssertEqual(loads, 1, "the handed engine is reused, never a second load beside it")
+    }
+
+    func testLivePassNeverServedAQueuedJobsStaleEngine() async throws {
+        let loads = try await loadsForALivePassBesideAQueuedJobsEngine(settingsChange: true)
+        XCTAssertEqual(loads, 2, "an engine loaded for the old Settings is dropped and loaded fresh")
+    }
+
+    /// A live-text job that fails (its save throws) while the next meeting
+    /// records fails on its own: the capture and its live pass go on, on the
+    /// engine the stopped recording handed over — no extra load.
+    func testLiveTextJobFailingDuringTheNextCaptureLeavesTheCaptureAlone() async throws {
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        var engineLoads = 0
+        let gate = GateEngine(texts: ["live one", "live two"])
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "db locked")
+        let center = MeetingRecorderCenter(
+            pendingStore: pendingStore,
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(gate)
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let config = threeWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
+        recorder1.emitLive([Float](repeating: 0, count: 1600))
+        let stopFirst = Task { await center.stopAndProcess(config: config) }
+        var entered = gate.enteredStream.makeAsyncIterator()
+        _ = await entered.next() // meeting 1's tail is parked in the engine
+        guard await waitUntil("the first stop to enqueue its job", { center.jobs.count == 1 }) else {
+            bailOut(center, gate: gate)
+            return
+        }
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        gate.release()
+        await stopFirst.value
+
+        XCTAssertEqual(center.jobs.first?.phase.isFailed, true, "the save failed, so the job is kept for retry")
+        XCTAssertNil(center.activeJobID)
+        XCTAssertTrue(center.isCapturing, "the failure leaves the running capture alone")
+        let running = await waitUntil("meeting 2's live pass to run") { center.liveEngineState == .running }
+        guard running else { bailOut(center, gate: gate, recorder: recorder2); return }
+        XCTAssertEqual(engineLoads, 1, "no extra engine load")
+
+        runner.shouldThrow = nil
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        recorder2.emitLive([Float](repeating: 0, count: 1600))
+        gate.release()
+        await center.stopAndProcess(config: config)
+        XCTAssertEqual(runner.savedTranscripts, ["live one", "live two"])
+        XCTAssertEqual(center.jobs.count, 1, "only the failed job stays")
     }
 }
 

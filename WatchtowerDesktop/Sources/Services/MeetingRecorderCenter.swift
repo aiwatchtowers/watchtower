@@ -472,11 +472,11 @@ final class MeetingRecorderCenter {
     @ObservationIgnored var onLiveEngineHandedToJobForTesting: (() -> Void)?
 
     /// Test seam into the queue: fires in the same main-actor step in which a
-    /// job is started by the queue (`awaitTurn` — claiming the engine slot too
-    /// when its path needs one), before it runs. Lets a test prove a job did
-    /// NOT start before some event — which no amount of waiting can — by
-    /// recording what had happened at claim time. Nil in production.
-    @ObservationIgnored var onEngineSlotClaimedForTesting: (() -> Void)?
+    /// job starts its turn (`awaitTurn` — claiming the engine slot too when
+    /// its path needs one), before it runs. Lets a test prove a job did NOT
+    /// start before some event — which no amount of waiting can — by
+    /// recording what had happened at that moment. Nil in production.
+    @ObservationIgnored var onJobTurnStartedForTesting: (() -> Void)?
 
     /// Latched synchronously at the top of `startRecording`, before its first
     /// suspension point (`recorder.start`), and cleared when the start attempt
@@ -1041,8 +1041,7 @@ final class MeetingRecorderCenter {
     /// recording's job reuses it instead of loading twice. `handed` is an
     /// engine the previous recording's drained tail passed straight on (its
     /// key already checked against Settings); otherwise `takeWarmOrLoad`.
-    private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig,
-                               handed: LoadedEngine? = nil) {
+    private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig, handed: LoadedEngine? = nil) {
         liveChunks = []
         liveEngineState = .loading
         loadedEngine = nil
@@ -1434,7 +1433,7 @@ final class MeetingRecorderCenter {
                 activeJobID = jobID
                 if next.input?.needsEngine == true { engineJobID = jobID }
                 refreshJobsWaitingForCapture()
-                onEngineSlotClaimedForTesting?()
+                onJobTurnStartedForTesting?()
                 return next.input
             }
             await withCheckedContinuation { queueWaiters.append($0) }
@@ -1448,6 +1447,10 @@ final class MeetingRecorderCenter {
     private func nextStartableJob() -> (id: ProcessingJob.ID, input: JobInput?)? {
         let engineSlotFree = !isCapturing && liveTask == nil
         for id in queuedJobIDs where !jobsAwaitingLiveTail.contains(id) {
+            // A queued job no longer in `jobs` starts at once with no input
+            // and ends (`runJob`). Nothing removes a queued job today; a
+            // future removal must wake the queue (`wakeQueueWaiters`) so its
+            // task gets here instead of waiting for an unrelated wake.
             guard let job = job(id) else { return (id, nil) }
             let input = plannedInput(for: job)
             if engineSlotFree || !input.needsEngine { return (id, input) }

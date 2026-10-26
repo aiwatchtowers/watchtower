@@ -154,14 +154,15 @@ struct RecordingIndicatorView: View {
     /// an enabled button always does something.
     @ViewBuilder
     private func jobQueue(_ center: MeetingRecorderCenter) -> some View {
-        let split = Self.visibleJobs(center.jobs, activeID: center.activeJobID)
+        let split = Self.jobPillItems(center)
         let retriable = center.retriableFailureID
         let dismissable = center.dismissableFailureID
-        ForEach(split.visible) { job in
+        ForEach(split.visible) { item in
+            let job = item.job
             RecordingJobPill(
                 title: job.title ?? "Recording",
                 phase: job.phase,
-                waitingForCapture: center.jobsWaitingForCapture.contains(job.id),
+                waitingForCapture: item.waitingForCapture,
                 canRetry: job.id == retriable,
                 canDismiss: job.id == dismissable,
                 retry: { retry(center) },
@@ -408,7 +409,7 @@ struct RecordingIndicatorView: View {
     static let maxVisibleJobPills = 3
 
     /// The job actually being worked comes first, then the queue fills the
-    /// remaining slots in order. Plain FIFO order would be enough if failures
+    /// remaining slots in order. Plain stop order would be enough if failures
     /// left the queue, but they stay for retry — three stale failures at the
     /// head would push the running job out of sight, which is exactly when the
     /// user wants to see it.
@@ -416,9 +417,13 @@ struct RecordingIndicatorView: View {
     /// Which job that is comes from the Center (`activeJobID`), not from a
     /// phase: the queue claims a job before its first phase update, and with
     /// diarization off it can stay `.queued`-looking throughout. With nothing
-    /// active yet, the job the queue will work next — the first non-failed one —
-    /// leads instead. The promotion is unconditional, so crossing the visible
-    /// cap never reshuffles the pills already on screen.
+    /// active, the oldest non-failed job leads instead — usually the one the
+    /// queue works next, though not always: the queue starts the oldest job
+    /// that CAN start, so while a recording captures a batch job at the head
+    /// waits ("Waiting for the recording to stop") and a later live-text job
+    /// goes first. Between jobs that shows for a moment only — the next job's
+    /// own promotion follows at once. The promotion is unconditional, so
+    /// crossing the visible cap never reshuffles the pills already on screen.
     static func visibleJobs(_ jobs: [MeetingRecorderCenter.ProcessingJob],
                             activeID: MeetingRecorderCenter.ProcessingJob.ID?)
         -> (visible: [MeetingRecorderCenter.ProcessingJob], overflow: Int) {
@@ -428,6 +433,24 @@ struct RecordingIndicatorView: View {
             if job.id != promoted?.id { visible.append(job) }
         }
         return (visible, jobs.count - visible.count)
+    }
+
+    /// One job pill's inputs read off the Center: the job, and whether the
+    /// queue holds it back for the running recording.
+    struct JobPillItem: Identifiable {
+        let job: MeetingRecorderCenter.ProcessingJob
+        let waitingForCapture: Bool
+        var id: MeetingRecorderCenter.ProcessingJob.ID { job.id }
+    }
+
+    /// The job pills the stack shows (`visibleJobs`), each with its
+    /// `jobsWaitingForCapture` flag.
+    static func jobPillItems(_ center: MeetingRecorderCenter) -> (visible: [JobPillItem], overflow: Int) {
+        let split = visibleJobs(center.jobs, activeID: center.activeJobID)
+        let items = split.visible.map {
+            JobPillItem(job: $0, waitingForCapture: center.jobsWaitingForCapture.contains($0.id))
+        }
+        return (items, split.overflow)
     }
 
     /// `waitingForCapture`: a queued job that has to transcribe and waits only
