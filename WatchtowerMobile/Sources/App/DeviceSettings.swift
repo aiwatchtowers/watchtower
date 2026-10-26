@@ -91,8 +91,10 @@ final class DeviceSettings {
         let typingRequested: String
         let startSessions: String
         let permissionsRequested: String
+        let lastDeviceWrite: String
 
         init(hubID: String) {
+            lastDeviceWrite = "hub.\(hubID).device.lastWriteAt"
             typingRequested = "hub.\(hubID).device.typingRequested"
             startSessions = "hub.\(hubID).device.startSessions"
             permissionsRequested = "hub.\(hubID).device.permissionsRequested"
@@ -157,12 +159,32 @@ final class DeviceSettings {
         }
     }
 
+    /// A device record older than this is rewritten on the return to the foreground: its `seen_at` is how the
+    /// Mac knows this phone is in touch (keep-awake, ask #614).
+    nonisolated static let touchAfter: TimeInterval = 3600
+
+    /// Rewrites the `device` record when the last write is older than `touchAfter`. Any write counts (a toggle
+    /// carries `seen_at` too). Not linked, or the Mac not accepting writes: nothing is sent.
+    func touchIfStale() async {
+        guard linkedDevice != nil else { return }
+        let last = defaults.object(forKey: keys.lastDeviceWrite) as? Double
+        if let last, now().timeIntervalSince1970 - last < Self.touchAfter, last <= now().timeIntervalSince1970 { return }
+        let prior = lastWrite
+        let write = Task { [weak self] in
+            await prior?.value
+            _ = await self?.writeDeviceRecord()
+        }
+        lastWrite = write
+        await write.value
+    }
+
     /// Deletes `hubID`'s Workbench choices (its link was removed).
     static func removeChoices(of hubID: String, defaults: UserDefaults) {
         let keys = Keys(hubID: hubID)
         defaults.removeObject(forKey: keys.typingRequested)
         defaults.removeObject(forKey: keys.startSessions)
         defaults.removeObject(forKey: keys.permissionsRequested)
+        defaults.removeObject(forKey: keys.lastDeviceWrite)
     }
 
     func setTypingRequested(_ value: Bool) async {
@@ -228,6 +250,7 @@ final class DeviceSettings {
             typingRequested: typingRequested,
             startSessions: startSessions,
             permissionsRequested: permissionsRequested,
+            seenAt: unlinked ? nil : now,
             updatedAt: now
         )
     }
@@ -272,6 +295,7 @@ final class DeviceSettings {
         guard let payload = devicePayload() else { return nil }
         do {
             try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
+            defaults.set(payload.updatedAt.timeIntervalSince1970, forKey: keys.lastDeviceWrite)
             return nil
         } catch {
             Self.logger.error("device record write failed: \(error.localizedDescription, privacy: .public)")

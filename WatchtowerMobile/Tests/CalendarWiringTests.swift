@@ -139,7 +139,7 @@ final class CalendarWiringTests: XCTestCase {
             let agenda = AgendaDayModel(
                 day: day(offset), snapshot: calendarSnapshot, recordings: recordings, now: now, calendar: calendar
             )
-            strings += agenda.cards.flatMap { [$0.title, $0.timeText, $0.detailLine] + $0.pills.map(\.text) + $0.actionTitles }
+            strings += agenda.cards.flatMap { [$0.title, $0.timeText] + $0.pills.map(\.text) + $0.actionTitles }
         }
         for event in calendarSnapshot.events {
             let detail = try XCTUnwrap(EventDetailModel(

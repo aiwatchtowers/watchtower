@@ -311,10 +311,10 @@ final class SettingsWiringTests: XCTestCase {
         var snapshot = try demoSnapshot(now: now)
         snapshot.permissionRequests = [try mirror(PermissionRequest.self, permissionRequestJSON(7, session: 12))]
         func card(_ grant: DeviceGrant?) throws -> PermissionCardModel {
-            try XCTUnwrap(SessionDetailModel(
-                sessionID: 12, snapshot: snapshot, report: nil, timeline: nil, now: now,
-                permissions: PermissionAccess(grant: grant, requested: settings.permissionsRequested)
-            )?.permission)
+            try XCTUnwrap(PermissionCardModel.card(
+                for: try XCTUnwrap(snapshot.session(12)), in: snapshot,
+                access: PermissionAccess(grant: grant, requested: settings.permissionsRequested), now: now
+            ))
         }
         XCTAssertEqual(try card(nil).hint, .turnOn)
 

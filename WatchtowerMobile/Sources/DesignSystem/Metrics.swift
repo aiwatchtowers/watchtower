@@ -41,6 +41,13 @@ enum PhoneMetrics {
     static let outcomeSymbol: CGFloat = 48
     /// A thin progress bar.
     static let progressBar: CGFloat = 4
+    /// The report's segmented bar (mockup 13 `.seg3`).
+    static let segmentBar: CGFloat = 6
+    /// A timeline row's time column and its dot (mockup 13 `.tl`).
+    static let timeColumn: CGFloat = 48
+    static let timelineDot: CGFloat = 8
+    /// A review ask's document view scrolls inside its card between these.
+    static let documentHeight: ClosedRange<CGFloat> = 320...480
 }
 
 /// The phone's view opacities: a closed card, a line not yet taken, a
@@ -50,6 +57,8 @@ enum PhoneOpacity {
     static let dimmed = 0.6
     /// An owner line still queued or waiting for the Mac (mockup `.queued`).
     static let pending = 0.75
+    /// A live bar of the recorder's waveform.
+    static let waveform = 0.85
     /// A button under the finger.
     static let pressed = 0.8
 }

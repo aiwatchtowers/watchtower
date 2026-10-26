@@ -61,7 +61,7 @@ struct RecapView: View {
         )
         return ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: Spacing.medium) {
                     header(model)
                     Picker("View", selection: $tab) {
                         ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
@@ -75,8 +75,8 @@ struct RecapView: View {
                     case .transcript: transcriptLines(model, loading: loaded == nil)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 24)
+                .padding(.horizontal, Spacing.large)
+                .padding(.bottom, Spacing.wide)
             }
             .onChange(of: jumpTarget) {
                 guard let target = jumpTarget else { return }
@@ -91,17 +91,17 @@ struct RecapView: View {
     }
 
     private func header(_ model: RecapModel) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(model.title).font(.title2.weight(.bold))
-            Text(model.subtitle).font(.subheadline).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(model.title).font(TypeScale.pageTitle)
+            Text(model.subtitle).font(TypeScale.meta).foregroundStyle(.secondary)
         }
-        .padding(.top, 4)
+        .padding(.top, Spacing.small)
     }
 
     /// The phone's marks: tap one to jump into the transcript.
     private func marks(_ points: [JumpPoint]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.regular) {
                 ForEach(points) { point in
                     Button {
                         guard let line = point.lineID else { return }
@@ -109,12 +109,13 @@ struct RecapView: View {
                         jumpTarget = line
                     } label: {
                         Label(point.label, systemImage: "flag")
-                            .font(.footnote.monospacedDigit())
-                            .padding(.horizontal, 12)
-                            .frame(minHeight: 44)
+                            .font(TypeScale.time)
+                            .padding(.horizontal, Spacing.medium)
+                            .frame(minHeight: PhoneMetrics.minTouch)
+                            .background(Fill.card, in: Capsule().inset(by: Spacing.regular))
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
                     .disabled(point.lineID == nil)
                     .accessibilityLabel(point.accessibilityLabel)
                 }
@@ -127,30 +128,31 @@ struct RecapView: View {
     @ViewBuilder
     private func recap(_ model: RecapModel) -> some View {
         if let summary = model.summary {
-            Text(summary).font(.body).foregroundStyle(.primary.opacity(0.85))
+            SectionHeader("Summary")
+            Text(summary)
+                .font(TypeScale.rowTitle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Spacing.small)
         }
         if let empty = model.recapEmptyText {
             Text(empty).foregroundStyle(.secondary)
         }
         ForEach(model.sections) { section in
+            // C6: a headline as written; the count of items beside it.
+            SectionHeader(section.title, count: section.items.count)
             VStack(alignment: .leading, spacing: 0) {
-                // C6: a headline as written, not an uppercase caption.
-                Text(section.title)
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                    .padding(.bottom, Spacing.small)
-                ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
+                ForEach(Array(section.items.enumerated()), id: \.offset) { index, item in
+                    if index > 0 { CardRowDivider() }
                     Text(item)
-                        .font(.subheadline)
+                        .font(TypeScale.rowTitle)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 10)
-                    Divider()
-                }
-                if let more = section.moreText {
-                    Text(more).font(.footnote).foregroundStyle(.secondary).padding(.top, Spacing.regular)
+                        .padding(.vertical, Spacing.cozy)
                 }
             }
-            .padding(.top, Spacing.large)
+            .card()
+            if let more = section.moreText {
+                Text(more).font(TypeScale.meta).foregroundStyle(.secondary).padding(.horizontal, Spacing.small)
+            }
         }
     }
 
@@ -161,7 +163,7 @@ struct RecapView: View {
         } else {
             if let notice = model.clippedNotice {
                 Label(notice, systemImage: "scissors")
-                    .font(.footnote)
+                    .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
             }
             if let empty = model.emptyTranscriptText {
@@ -169,24 +171,24 @@ struct RecapView: View {
             }
             if let error = model.transcriptError {
                 Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.footnote)
+                    .font(TypeScale.meta)
                     .foregroundStyle(PhoneTone.red.color)
             }
             ForEach(model.lines) { line in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    HStack(spacing: Spacing.regular) {
                         if let speaker = line.speaker {
                             Text(speaker).font(.subheadline.weight(.semibold)).foregroundStyle(line.speakerTone.color)
                         }
-                        Text(line.time).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Text(line.time).font(TypeScale.time).foregroundStyle(.secondary)
                     }
-                    Text(line.text).font(.subheadline)
+                    Text(line.text).font(TypeScale.rowTitle)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
+                .padding(Spacing.regular)
                 .background(
-                    highlighted == line.id ? PhoneTone.accent.color.opacity(0.12) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: Radius.row)
+                    highlighted == line.id ? Fill.selected : Color.clear,
+                    in: RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
                 )
                 .id(line.id)
                 .accessibilityElement(children: .combine)

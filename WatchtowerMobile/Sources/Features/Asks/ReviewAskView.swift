@@ -17,13 +17,37 @@ struct ReviewAskView: View {
     @State private var commentText = ""
 
     var body: some View {
-        Section {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            documentCard
+            if !review.comments.isEmpty {
+                SectionHeader("Your comments", count: review.comments.count)
+                ForEach(review.comments) { comment in
+                    commentCard(comment)
+                }
+            }
+            if let verdict = review.verdict {
+                Text(verdict == .approved ? "Your verdict: approve" : "Your verdict: changes requested")
+                    .font(TypeScale.rowTitle)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(item: Binding(get: { composing.map(SelectionBox.init) }, set: { composing = $0?.range })) { box in
+            commentSheet(box.range)
+        }
+        // A new document (a newer round) never keeps the old selection.
+        .onChange(of: review.document?.text) { selection = NSRange(location: 0, length: 0) }
+    }
+
+    /// The document reads full width on a card (mockup 10); the path above.
+    private var documentCard: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            Text(review.docPath).font(TypeScale.code).foregroundStyle(.secondary)
             if let document = review.document {
                 SnapshotTextView(document: document, category: UIContentSizeCategory(dynamicTypeSize), selection: $selection)
-                    .frame(minHeight: 320, maxHeight: 480)
+                    .frame(minHeight: PhoneMetrics.documentHeight.lowerBound, maxHeight: PhoneMetrics.documentHeight.upperBound)
                     .accessibilityLabel("Document under review")
                 if let clipped = review.clippedNotice {
-                    Text(clipped).font(.caption).foregroundStyle(.secondary)
+                    Text(clipped).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
                 Button {
                     commentText = ""
@@ -31,42 +55,39 @@ struct ReviewAskView: View {
                 } label: {
                     Label("Comment on the selection", systemImage: "text.bubble")
                 }
-                .frame(minHeight: 44)
+                .buttonStyle(SecondaryActionStyle())
                 .disabled(!isEditable || selection.length == 0)
             }
-        } header: {
-            Text(review.docPath).textCase(nil).font(TypeScale.code)
-        } footer: {
-            Text(review.commentsLine)
+            Text(review.commentsLine).font(TypeScale.meta).foregroundStyle(.secondary)
         }
-        .sheet(item: Binding(get: { composing.map(SelectionBox.init) }, set: { composing = $0?.range })) { box in
-            commentSheet(box.range)
-        }
-        // A new document (a newer round) never keeps the old selection.
-        .onChange(of: review.document?.text) { selection = NSRange(location: 0, length: 0) }
-        if !review.comments.isEmpty {
-            Section("Your comments") {
-                ForEach(review.comments) { comment in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("“\(comment.quote)”").font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                        TextField("Your comment", text: bodyBinding(comment.id), axis: .vertical)
-                            .lineLimit(1...6)
-                            .disabled(!isEditable)
-                    }
-                    .swipeActions {
-                        if isEditable {
-                            Button("Delete", role: .destructive) { model.removeComment(comment.id) }
-                        }
-                    }
+        .card(.plain)
+    }
+
+    private func commentCard(_ comment: AskFormModel.Comment) -> some View {
+        HStack(alignment: .top, spacing: Spacing.regular) {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                Text("“\(comment.quote)”")
+                    .font(TypeScale.meta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                SheetField(label: "Your comment") {
+                    TextField("Your comment", text: bodyBinding(comment.id), axis: .vertical)
+                        .lineLimit(1...6)
+                        .disabled(!isEditable)
                 }
             }
-        }
-        if let verdict = review.verdict {
-            Section {
-                Text(verdict == .approved ? "Your verdict: approve" : "Your verdict: changes requested")
-                    .foregroundStyle(.secondary)
+            if isEditable {
+                Button(role: .destructive) {
+                    model.removeComment(comment.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: PhoneMetrics.minTouch, height: PhoneMetrics.minTouch)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Delete comment")
             }
         }
+        .card(.plain)
     }
 
     private func commentSheet(_ range: NSRange) -> some View {

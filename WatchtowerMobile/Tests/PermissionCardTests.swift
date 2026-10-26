@@ -25,16 +25,27 @@ final class PermissionCardTests: XCTestCase {
         return snapshot
     }
 
+    /// What the workchat draws for the session's prompt: the card and, with
+    /// no card, the composer's "Needs approval on the Mac".
+    private struct Prompt {
+        let permission: PermissionCardModel?
+        let approvalNotice: String?
+    }
+
     private func detail(
         _ snapshot: WorkbenchReplicaSnapshot,
         session sessionID: Int64 = 12,
         grant: DeviceGrant? = nil,
         requested: Bool = true
-    ) throws -> SessionDetailModel {
-        try XCTUnwrap(SessionDetailModel(
-            sessionID: sessionID, snapshot: snapshot, report: nil, timeline: nil, now: now,
-            permissions: PermissionAccess(grant: grant ?? self.grant(), requested: requested)
-        ))
+    ) throws -> Prompt {
+        let session = try XCTUnwrap(snapshot.session(sessionID))
+        let access = PermissionAccess(grant: grant ?? self.grant(), requested: requested)
+        let card = PermissionCardModel.card(for: session, in: snapshot, access: access, now: now)
+        let input = SessionInputModel(
+            session: session, snapshot: snapshot, grant: self.grant(), typingRequested: true, delivered: nil, now: now,
+            answersPermission: PermissionCardModel.answerable(session, in: snapshot, access: access)
+        )
+        return Prompt(permission: card, approvalNotice: card == nil ? input.approvalText : nil)
     }
 
     func testAPendingRequestReplacesTheApprovalNotice() throws {
@@ -72,10 +83,10 @@ final class PermissionCardTests: XCTestCase {
         )
         XCTAssertFalse(typingOnly.canAnswer, "the typing grant never implies answers")
 
-        let noGrant = try XCTUnwrap(SessionDetailModel(
-            sessionID: 12, snapshot: try snapshot(), report: nil, timeline: nil, now: now,
-            permissions: PermissionAccess(grant: nil, requested: true)
-        )?.permission)
+        let replica = try snapshot()
+        let noGrant = try XCTUnwrap(PermissionCardModel.card(
+            for: try XCTUnwrap(replica.session(12)), in: replica, access: PermissionAccess(grant: nil, requested: true), now: now
+        ))
         XCTAssertEqual(noGrant.hint, .waitingForMac)
     }
 

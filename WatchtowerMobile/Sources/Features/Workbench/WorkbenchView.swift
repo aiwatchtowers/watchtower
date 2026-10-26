@@ -65,7 +65,7 @@ struct WorkbenchView: View {
             StartSessionSheet(workbenchID: workbenchID, target: nil, fixed: false) { openSession = SessionRoute(id: $0) }
         }
         .navigationDestination(item: $openSession) { route in
-            SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
+            WorkchatView(replica: replica, sessionID: route.id, store: env.store, requester: env.chatRequests)
         }
     }
 

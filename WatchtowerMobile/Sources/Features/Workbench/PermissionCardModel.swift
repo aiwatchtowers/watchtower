@@ -68,6 +68,22 @@ struct PermissionCardModel: Equatable {
         request(for: session, in: snapshot) != nil && hint(access) == nil
     }
 
+    /// The session's card with this phone's answers so far; nil without a
+    /// pending request.
+    static func card(
+        for session: TerminalSessionState,
+        in snapshot: WorkbenchReplicaSnapshot,
+        access: PermissionAccess,
+        now: Date
+    ) -> Self? {
+        request(for: session, in: snapshot).map {
+            Self(
+                request: $0, session: session,
+                rows: PermissionAnswerRow.rows(sessionID: session.id, snapshot: snapshot, now: now), access: access
+            )
+        }
+    }
+
     static func hint(_ access: PermissionAccess) -> PermissionHint? {
         if !access.requested {
             .turnOn
@@ -115,6 +131,14 @@ struct PermissionAnswerRow: Equatable, Identifiable {
     }
 
     static let failedFallback = "Your Mac could not take the answer"
+
+    /// "Sent to the session" once the Mac applied an answer to the card's
+    /// request (or to one no longer shown) and no row waits: never
+    /// "Allowed" or "Denied", since a Mac answer that came first wins.
+    static func notice(rows: [Self], permission: PermissionCardModel?, sentRequestID: Int64?) -> String? {
+        let shown = sentRequestID != nil && (permission == nil || permission?.requestID == sentRequestID)
+        return shown && rows.isEmpty ? SessionInputDelivery.submitted.text : nil
+    }
 
     /// The session's answer rows, oldest first.
     static func rows(sessionID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date) -> [Self] {

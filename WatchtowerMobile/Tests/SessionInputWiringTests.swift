@@ -3,8 +3,8 @@ import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
-/// Session input from the phone (spec §5.2, §6.6, PROJ-16): the "Tell the
-/// session…" bar and Finish follow the phone's toggle and the Mac's Allow,
+/// Session input from the phone (spec §5.2, §5.4, §6.6, PROJ-16): the
+/// workchat's composer and Finish follow the phone's toggle and the Mac's Allow,
 /// a session at a permission prompt takes nothing, a held line shows why,
 /// and the actions and the Mac's delivery go through a real outbox.
 @MainActor
@@ -161,7 +161,7 @@ final class SessionInputWiringTests: XCTestCase {
 
         try await echo(fixture, .held, reason: .agentBusy)
         var input = model(try session(), try snapshot(fixture.store))
-        XCTAssertEqual(input.lines.map(\.state), [.held("Held — goes when the agent is idle")])
+        XCTAssertEqual(input.lines.map(\.state), [.held("Queued · sends when the agent stops")])
 
         try await echo(fixture, .held, reason: .needsApproval)
         input = model(try session(), try snapshot(fixture.store))

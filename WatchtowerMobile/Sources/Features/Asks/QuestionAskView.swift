@@ -1,22 +1,25 @@
 import SwiftUI
 
-/// One question page: the question, its options (a recommended one
-/// badged), and Other. A single-select question takes one option, a
-/// multi-select one any number.
+/// One question page, the full-screen form of mockup 4's inline ask: the
+/// question, its options as 44 pt rows (a picked one on `Fill.selected`
+/// under an accent line, a recommended one marked "recommended"), and
+/// Other. A single-select question takes one option, a multi-select one any
+/// number.
 struct QuestionAskView: View {
     let page: AskFormModel.QuestionPage
     let model: AskViewModel
     let isEditable: Bool
 
     var body: some View {
-        Section {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            Text(page.question)
+                .font(TypeScale.rowEmphasis)
+                .accessibilityAddTraits(.isHeader)
             ForEach(page.options) { option in
                 Button {
                     model.pick(option.label, in: page)
                 } label: {
-                    OptionLabel(option: option, multi: page.multi)
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
+                    OptionRowLabel(option: option, multi: page.multi)
                 }
                 .buttonStyle(.plain)
                 .disabled(!isEditable)
@@ -24,15 +27,15 @@ struct QuestionAskView: View {
                 .accessibilityHint(option.description)
                 .accessibilityAddTraits(option.isPicked ? .isSelected : [])
             }
-            TextField("Other: your own answer", text: otherBinding, axis: .vertical)
-                .lineLimit(1...4)
-                .frame(minHeight: 44)
-                .disabled(!isEditable)
-                .accessibilityLabel("Other answer")
-        } header: {
-            Text(page.question).textCase(nil).font(.headline).foregroundStyle(.primary)
-        } footer: {
+            SheetField(label: "Other") {
+                TextField("Your own answer", text: otherBinding, axis: .vertical)
+                    .lineLimit(1...4)
+                    .disabled(!isEditable)
+                    .accessibilityLabel("Other answer")
+            }
             Text(page.multi ? "Pick any that apply, or answer in Other." : "Pick one, or answer in Other.")
+                .font(TypeScale.meta)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -41,16 +44,19 @@ struct QuestionAskView: View {
     }
 }
 
-private struct OptionLabel: View {
+/// An option row on the inline ask's recipe: a picked option is the
+/// selected plate under an accent line.
+private struct OptionRowLabel: View {
     let option: AskFormModel.QuestionPage.Option
     let multi: Bool
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        let shape = RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
             Image(systemName: symbol)
                 .foregroundStyle(option.isPicked ? Color.accentColor : Color.secondary)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(option.label).font(.body.weight(.medium))
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                Text(option.label).font(TypeScale.rowTitle.weight(.medium)).foregroundStyle(.primary)
                 // A word on its own line, not an outlined code badge (A2).
                 if option.recommended {
                     Text("Recommended").font(TypeScale.meta).foregroundStyle(PhoneTone.accent.color)
@@ -61,7 +67,15 @@ private struct OptionLabel: View {
             }
             Spacer(minLength: 0)
         }
-        .contentShape(Rectangle())
+        .padding(.horizontal, Spacing.cozy)
+        .padding(.vertical, Spacing.regular)
+        .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)
+        .background(RowPlate.fill(isSelected: option.isPicked), in: shape)
+        .overlay(shape.strokeBorder(
+            option.isPicked ? Color.accentColor : Stroke.hairlineColor,
+            lineWidth: option.isPicked ? Stroke.selection : Stroke.hairline
+        ))
+        .contentShape(shape)
     }
 
     private var symbol: String {

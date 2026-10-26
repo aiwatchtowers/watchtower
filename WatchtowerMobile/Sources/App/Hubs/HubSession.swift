@@ -1006,6 +1006,7 @@ final class HubSession {
         // Review Focus 1: rows a locked background hydrate stored open now (the unlock signal may have passed
         // while the app was suspended), before the return's fetch.
         indexStoredRows()
+        Task { [deviceSettings] in await deviceSettings.touchIfStale() }
         let recent = !fullFetchOwed && (lastSyncAt.map { now().timeIntervalSince($0) < SessionCadence.foregroundRefetchAfter(role: role) } ?? false)
         restartLoop(firstCycle: recent ? nil : .foreground)
         if recent, isBootstrapped {
