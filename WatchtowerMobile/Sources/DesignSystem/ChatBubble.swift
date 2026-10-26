@@ -96,9 +96,15 @@ struct ChatBubble: View {
     }
 
     /// Inline markdown only, line breaks kept; text that does not parse
-    /// shows as written.
+    /// shows as written. A `code` span is the smaller mono on the card fill
+    /// (mockup 3's `code`).
     static func markdown(_ text: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+        guard var parsed = try? AttributedString(markdown: text, options: options) else { return AttributedString(text) }
+        for run in parsed.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            parsed[run.range].font = .footnote.monospaced()
+            parsed[run.range].backgroundColor = Fill.card
+        }
+        return parsed
     }
 }

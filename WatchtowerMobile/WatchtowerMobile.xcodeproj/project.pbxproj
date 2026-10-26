@@ -66,6 +66,7 @@
 		410E27EFD2AA0AAFCF607AA3 /* TypeScale.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E07C17598ED48BD297EF162 /* TypeScale.swift */; };
 		435FFB8059956A11F8DAE21B /* WatchtowerDesign in Frameworks */ = {isa = PBXBuildFile; productRef = FEDE721FD71CDBE4A5991A6F /* WatchtowerDesign */; };
 		445E795F75304FAD8372B7B6 /* ObservationHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA88CC67A10A74097B033DF8 /* ObservationHealth.swift */; };
+		45528F67625D48B250D6DC95 /* DesignSystemGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE39270EDDD7222835BC7B62 /* DesignSystemGallery.swift */; };
 		45583C3714F8D53FB5EE744C /* AskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF496EC3CD5D473675267EB /* AskView.swift */; };
 		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
@@ -398,6 +399,7 @@
 		B8929F28520AC73CF61CD217 /* AskFormTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskFormTests.swift; sourceTree = "<group>"; };
 		BB2B9F86CF3089D68AE6D92D /* StartSessionFormModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartSessionFormModel.swift; sourceTree = "<group>"; };
 		BD20EE9A45C3DA848BF4C3CF /* RecordingsListModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsListModel.swift; sourceTree = "<group>"; };
+		BE39270EDDD7222835BC7B62 /* DesignSystemGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystemGallery.swift; sourceTree = "<group>"; };
 		BEDADC4689182E2C4442544B /* ScreenshotTourTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotTourTests.swift; sourceTree = "<group>"; };
 		BFCBBC92D3DFC415396C183C /* CheckAskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckAskView.swift; sourceTree = "<group>"; };
 		C01947B686F94F5886C734CB /* Bars.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bars.swift; sourceTree = "<group>"; };
@@ -862,6 +864,7 @@
 		EEFE28A121A72623301B09B2 /* Support */ = {
 			isa = PBXGroup;
 			children = (
+				BE39270EDDD7222835BC7B62 /* DesignSystemGallery.swift */,
 				AAA14E305E070B3FD7ECFBC9 /* LinkingFakes.swift */,
 				0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */,
 				ADAA24B2C4477589205240AF /* RecorderFakes.swift */,
@@ -1174,6 +1177,7 @@
 				FCD29A2F591EE6CBFA85E2E2 /* CachingPhoneKeyStoreTests.swift in Sources */,
 				3F6F9974DD5384B247B7FCDD /* CalendarWiringTests.swift in Sources */,
 				E7DE12EAE4EFFFD44D70F46D /* DemoTourTests.swift in Sources */,
+				45528F67625D48B250D6DC95 /* DesignSystemGallery.swift in Sources */,
 				B9B674ED85033FEC7C980E90 /* DesignSystemPartsTests.swift in Sources */,
 				A01ED6EABB46966DF042B60D /* DesignSystemTests.swift in Sources */,
 				F4D349E6D62C941C637E5556 /* FetchCadenceWiringTests.swift in Sources */,
