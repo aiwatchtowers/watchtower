@@ -21,8 +21,9 @@ let package = Package(
         .package(url: "https://github.com/jpsim/Yams", from: "5.0.0"),
         .package(url: "https://github.com/nalexn/ViewInspector", from: "0.10.0"),
         // The shared mobile Kit (mobile POC). Only the app target takes its
-        // model-free WatchtowerSync product; WatchtowerCore stays Kit-free
-        // (pinned by PublicAPISurfaceTests).
+        // model-free WatchtowerSync product and DesignKit its token module
+        // WatchtowerDesign; WatchtowerCore stays Kit-free (pinned by
+        // PublicAPISurfaceTests).
         .package(path: "../WatchtowerKit"),
         // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
         // (including the misspelled `detectLangauge(audioArray:)`).
@@ -64,10 +65,14 @@ let package = Package(
             dependencies: ["OCRKit"],
             path: "Sources/OCRHelper"
         ),
-        // The Desktop design kit (tokens, button styles, rows, panels): SwiftUI
-        // only, so the gallery window can build without the app.
+        // The Desktop design kit (button styles, rows, panels; the tokens come
+        // from the Kit's WatchtowerDesign, re-exported): SwiftUI only, so the
+        // gallery window can build without the app.
         .target(
             name: "DesignKit",
+            dependencies: [
+                .product(name: "WatchtowerDesign", package: "WatchtowerKit"),
+            ],
             path: "Sources/DesignKit"
         ),
         // The gallery's views over the kit; never linked into the app.

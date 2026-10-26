@@ -14,14 +14,20 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertNotEqual(PhoneTone.waitingForYou, .gray)
     }
 
-    /// §2.9: the Mac's spacing steps plus 20 for page margins; one radius
-    /// per role; the flat row's insets.
-    func testTheMetricsNameTheMacsSteps() {
+    /// The phone reads the Desktop's tokens (WatchtowerDesign, one copy):
+    /// its spacing steps and radii; a card takes the container radius; the
+    /// flat row's insets stay the phone's own.
+    func testTheMetricsAreTheDesktopsTokens() {
         XCTAssertEqual(
-            [Spacing.tight, Spacing.small, Spacing.compact, Spacing.regular, Spacing.medium, Spacing.large, Spacing.page],
-            [2, 4, 6, 8, 12, 16, 20]
+            [Spacing.tight, Spacing.small, Spacing.compact, Spacing.regular, Spacing.cozy,
+             Spacing.medium, Spacing.large, Spacing.page, Spacing.wide, Spacing.hero],
+            [2, 4, 6, 8, 10, 12, 16, 20, 24, 40]
         )
-        XCTAssertEqual([Radius.chip, Radius.row, Radius.card], [6, 8, 12])
+        XCTAssertEqual(
+            [Radius.mark, Radius.control, Radius.row, Radius.container, Radius.bubble, Radius.pill],
+            [4, 6, 8, 10, 16, 18]
+        )
+        XCTAssertEqual(Card.radius, Radius.container)
         XCTAssertEqual(RowInsets.flat, EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
         XCTAssertEqual(RowInsets.card, EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
     }

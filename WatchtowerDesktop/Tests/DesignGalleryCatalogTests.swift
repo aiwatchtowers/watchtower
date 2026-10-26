@@ -56,15 +56,21 @@ final class DesignGalleryCatalogTests: XCTestCase {
 
     /// The names of `Sources/DesignKit`'s top-level public declarations, and
     /// of the public members of its extensions (`.card()`, `.kitPrimary`,
-    /// every member of a `public extension`). A type's own members belong to
-    /// the type and are not listed.
+    /// every member of a `public extension`), plus those of the Kit's
+    /// `WatchtowerDesign`, the tokens DesignKit re-exports. A type's own
+    /// members belong to the type and are not listed.
     private static func publicKitNames() throws -> Set<String> {
-        let dir = URL(fileURLWithPath: #filePath)
+        let desktop = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/DesignKit")
-        let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
+        let dirs = [
+            desktop.appendingPathComponent("Sources/DesignKit"),
+            desktop.appendingPathComponent("../WatchtowerKit/Sources/WatchtowerDesign").standardized
+        ]
+        let files = try dirs.flatMap { dir in
+            try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        }
+        .filter { $0.pathExtension == "swift" }
         var names = Set<String>()
         for file in files {
             names.formUnion(try publicNames(in: String(contentsOf: file, encoding: .utf8)))

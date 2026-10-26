@@ -9,6 +9,8 @@ enum CardStyle: Equatable {
 }
 
 enum Card {
+    /// The Desktop's container radius (continuous).
+    static let radius = Radius.container
     /// The default inner padding: 12 horizontal, 10 vertical.
     static let padding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
 
@@ -44,7 +46,7 @@ private struct CardModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         let paint = Card.paint(style, scheme: scheme)
-        let shape = RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Card.radius, style: .continuous)
         content
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -54,7 +56,7 @@ private struct CardModifier: ViewModifier {
 }
 
 extension View {
-    /// The card recipe: radius 12 (continuous), the style's paint, and
+    /// The card recipe: `Card.radius` (continuous), the style's paint, and
     /// `padding` inside. Cards sit on `Color(.systemBackground)`.
     func card(_ style: CardStyle = .plain, padding: EdgeInsets = Card.padding) -> some View {
         modifier(CardModifier(style: style, padding: padding))
