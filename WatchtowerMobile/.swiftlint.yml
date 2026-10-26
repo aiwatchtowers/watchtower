@@ -166,13 +166,15 @@ type_name:
 # waiting-for-you and ask elements only, so under Sources/Features/ and
 # Sources/DesignSystem/ only DesignSystem/PhoneTone.swift may name it;
 # screens and the design layer use `PhoneTone.waitingForYou` or a session
-# record's published tone.
+# record's published tone. The shared `Tone.warning`, `Tone.now` and
+# `Tone.priority(_:)` (WatchtowerDesign, re-exported) are orange too, so the
+# rule refuses them by name.
 custom_rules:
   orange_outside_phone_tone:
     name: "Orange outside PhoneTone"
     included: ".*/Sources/(Features|DesignSystem)/.*\\.swift"
     excluded: ".*/Sources/DesignSystem/PhoneTone\\.swift"
-    regex: "\\.orange\\b|systemOrange"
+    regex: "\\.orange\\b|systemOrange|\\bTone\\.(warning|now|priority)\\b"
     message: "Orange is for waiting-for-you and asks only: use PhoneTone.waitingForYou (PhoneTone.swift)."
     severity: error
   # The Desktop's kit rules (WatchtowerDesktop/.swiftlint.yml), same regexes,
