@@ -44,7 +44,18 @@ package enum SpecReviewSummary {
     /// while queued or running, the reason for failed or skipped. Never
     /// empty; nil for a state this build does not know. The caller clips it.
     package static func phoneLine(_ row: SpecReviewRow) -> (status: String, line: String)? {
-        phoneLine(status: row.status, reason: row.reason) { row.result }
+        if row.status == .done, let line = loopLine(row) { return ("done", line) }
+        return phoneLine(status: row.status, reason: row.reason) { row.result }
+    }
+
+    /// A finished author loop on the phone: "Reviewer and author disagree on
+    /// 2 · 3 fixed by the author", or "3 fixed by the author" when nothing
+    /// is disputed. Nil for a row that is not an owner-turn loop.
+    package static func loopLine(_ row: SpecReviewRow) -> String? {
+        guard row.loop == .owner else { return nil }
+        let disputed = SpecReviewLoop.disputed(row).count
+        let fixed = "\(SpecReviewLoop.fixed(row).count) fixed by the author"
+        return disputed == 0 ? fixed : "Reviewer and author disagree on \(disputed) · \(fixed)"
     }
 
     /// `result` is read only for a done review (a caller that keeps the

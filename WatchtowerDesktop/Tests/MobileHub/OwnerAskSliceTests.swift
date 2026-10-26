@@ -403,4 +403,34 @@ final class OwnerAskSliceTests: XCTestCase {
         XCTAssertNil(published[hidden], "a hidden author-loop ask is never published")
         XCTAssertNotNil(published[owner])
     }
+
+    func testPhoneLineForLoopRow() throws {
+        let ledger = #"""
+            [{"key":"a","kind":"agreement","text":"t","verdict":"resolved"},
+             {"key":"b","kind":"blind_spot","text":"t","verdict":"disputed"},
+             {"key":"c","kind":"agreement","text":"t","verdict":"unsettled"},
+             {"key":"d","kind":"check","text":"t","verdict":"resolved"}]
+            """#
+        let id = try insertAsk(kind: "review")
+        try dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, result, queued_at, finished_at, loop, ledger, loop_end)
+                VALUES (?, 'done', '{}', '2026-10-26T10:00:00Z', '2026-10-26T10:05:00Z', 'owner', ?, 'settled')
+                """, arguments: [id, ledger])
+        }
+        let slice = OwnerAskSlice()
+        func line() throws -> String? {
+            let records = try dbPool.read { try slice.records($0) }
+            let payload = try SliceJSON.objects(records).first { ($0["id"] as? NSNumber)?.int64Value == id }
+            return (payload?["spec_review"] as? [String: Any])?["line"] as? String
+        }
+        XCTAssertEqual(try line(), "Reviewer and author disagree on 2 · 2 fixed by the author")
+        try dbPool.write {
+            try $0.execute(sql: """
+                UPDATE spec_reviews SET ledger = '[{"key":"a","kind":"agreement","text":"t","verdict":"resolved"}]',
+                loop_end = 'cap' WHERE ask_id = ?
+                """, arguments: [id])
+        }
+        XCTAssertEqual(try line(), "1 fixed by the author", "a changed loop_end is read again with the same finished_at")
+    }
 }

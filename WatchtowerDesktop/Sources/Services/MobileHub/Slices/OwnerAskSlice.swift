@@ -278,7 +278,7 @@ final class SpecReviewLines: Sendable {
         let marks = Array(repeating: "?", count: askIDs.count).joined(separator: ",")
         let rows = try Row.fetchAll(
             db,
-            sql: "SELECT ask_id, status, reason, finished_at FROM spec_reviews WHERE ask_id IN (\(marks))",
+            sql: "SELECT ask_id, status, reason, finished_at, loop_end FROM spec_reviews WHERE ask_id IN (\(marks))",
             arguments: StatementArguments(askIDs)
         )
         let known = doneLines.withLock { $0 }
@@ -290,7 +290,8 @@ final class SpecReviewLines: Sendable {
             let raw: String = row["status"]
             let status = SpecReviewRow.Status(rawValue: raw) ?? .unknown
             if status == .done {
-                let finishedAt: String = row["finished_at"] ?? ""
+                // A loop's end changes the line without a new finish.
+                let finishedAt = "\(row["finished_at"] ?? "")|\(row["loop_end"] ?? "")"
                 if let hit = known[id], hit.finishedAt == finishedAt {
                     kept[id] = hit
                     out[id] = Self.line("done", hit.line)
@@ -305,11 +306,16 @@ final class SpecReviewLines: Sendable {
             let ids = Array(misses.keys)
             let results = try Row.fetchAll(
                 db,
-                sql: "SELECT ask_id, result FROM spec_reviews WHERE ask_id IN (\(Array(repeating: "?", count: ids.count).joined(separator: ",")))",
+                sql: "SELECT * FROM spec_reviews WHERE ask_id IN (\(Array(repeating: "?", count: ids.count).joined(separator: ",")))",
                 arguments: StatementArguments(ids)
             )
             for row in results {
                 let id: Int64 = row["ask_id"]
+                if let loopRow = try? SpecReviewRow(row: row), let line = SpecReviewSummary.loopLine(loopRow) {
+                    kept[id] = (misses[id] ?? "", line)
+                    out[id] = Self.line("done", line)
+                    continue
+                }
                 let json: String = row["result"] ?? ""
                 let result = json.isEmpty ? nil : try? JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8))
                 guard let line = SpecReviewSummary.phoneLine(status: .done, reason: "", result: { result }) else { continue }
