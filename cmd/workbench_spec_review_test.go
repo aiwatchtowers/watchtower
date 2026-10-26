@@ -56,7 +56,7 @@ func specReviewAsk(t *testing.T) (*db.DB, int64, string) {
 		if err != nil {
 			return err
 		}
-		return database.QueueSpecReview(tx, id, time.Now())
+		return database.QueueSpecReview(tx, id, time.Now(), nil)
 	}))
 	return database, id, repo
 }

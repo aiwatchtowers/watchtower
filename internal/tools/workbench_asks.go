@@ -386,7 +386,7 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 // launcher that is absent, refuses or fails, never fails the ask: the row is
 // skipped with the reason and the owner opens the document unreviewed.
 func launchSpecReview(d *db.DB, askID int64, launch SpecReviewLauncher) string {
-	if err := d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, time.Now()) }); err != nil {
+	if err := d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, time.Now(), nil) }); err != nil {
 		return skipSpecReview(d, askID, "could not queue: "+err.Error())
 	}
 	if launch == nil {

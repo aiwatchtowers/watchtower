@@ -30,7 +30,7 @@ func specReviewAsk(t *testing.T, database *db.DB, queuedAt time.Time) int64 {
 		if err != nil {
 			return err
 		}
-		return database.QueueSpecReview(tx, id, queuedAt)
+		return database.QueueSpecReview(tx, id, queuedAt, nil)
 	}))
 	return id
 }
@@ -201,7 +201,7 @@ func TestSpecReviewSweep_GivesUpAfterThreeAttempts(t *testing.T) {
 	id := specReviewAsk(t, database, time.Now().Add(-5*time.Minute))
 	for range 2 { // attempt 1 -> 3
 		require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
-			return database.QueueSpecReview(tx, id, time.Now().Add(-5*time.Minute))
+			return database.QueueSpecReview(tx, id, time.Now().Add(-5*time.Minute), nil)
 		}))
 	}
 

@@ -70,7 +70,7 @@ func (f *fixture) ask(t *testing.T, docType, doc string) *db.OwnerAsk {
 		if err != nil {
 			return err
 		}
-		return f.d.QueueSpecReview(tx, id, runNow)
+		return f.d.QueueSpecReview(tx, id, runNow, nil)
 	}))
 	a, err := f.d.GetOwnerAskByID(id)
 	require.NoError(t, err)
