@@ -189,3 +189,18 @@ func TestCollect_ClaudeMDMissingIsEmptyText(t *testing.T) {
 	}
 	assert.True(t, found)
 }
+
+func TestWriteCut_UnreadableClaudeMDFilesNoCut(t *testing.T) {
+	d := openDBs(t)
+	home := t.TempDir()
+	p := db.CoachProposal{ID: 1, Destination: DestClaudeMDUser, BeforeText: "", AfterText: "Rule.", Title: "t", Metric: "corrections"}
+	md := writeMD(t, home, strings.Repeat("a", claudeMDMaxBytes+1))
+	wrote, err := writeCut(d.DB, d.al, home, p, applyNow)
+	require.NoError(t, err)
+	assert.False(t, wrote, "oversize")
+	require.NoError(t, os.Remove(md))
+	require.NoError(t, os.Symlink(filepath.Join(home, "x"), md))
+	wrote, err = writeCut(d.DB, d.al, home, p, applyNow)
+	require.NoError(t, err)
+	assert.False(t, wrote, "symlink")
+}

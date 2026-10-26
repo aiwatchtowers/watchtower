@@ -126,7 +126,9 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 	}
 	cur, err := (&Applier{DB: d, AgentLog: al, Home: home}).readCurrent(p)
 	if err != nil {
-		if errors.Is(err, errNotSupported) {
+		// A destination the coach cannot read safely is not cut.
+		if errors.Is(err, errNotSupported) || errors.Is(err, errClaudeMDNotRegular) ||
+			errors.Is(err, errClaudeMDTooBig) {
 			return false, nil
 		}
 		return false, err
