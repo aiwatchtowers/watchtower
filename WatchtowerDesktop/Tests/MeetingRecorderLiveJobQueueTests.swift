@@ -192,9 +192,12 @@ final class MeetingRecorderLiveJobQueueTests: MeetingRecorderTestCase {
         XCTAssertEqual(center.liveEngineState, .waiting, "the draining tail still owns the engine")
 
         gate.release()
+        let saved = await waitUntil("meeting 1's live text to be saved while meeting 2 records") {
+            runner.savedTranscripts == ["live one"]
+        }
+        XCTAssertTrue(saved, "meeting 1's live text is saved without waiting for meeting 2 to stop")
+        guard saved else { bailOut(center, gate: gate, recorder: recorder2); return }
         await stopFirst.value
-        XCTAssertEqual(runner.savedTranscripts, ["live one"],
-                       "meeting 1's live text is saved without waiting for meeting 2 to stop")
         XCTAssertEqual(claimedWhileCapturing, [true], "it started while meeting 2 was recording")
         XCTAssertTrue(center.isCapturing)
         let running = await waitUntil("meeting 2's live pass to run") { center.liveEngineState == .running }
