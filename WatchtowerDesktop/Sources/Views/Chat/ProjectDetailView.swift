@@ -23,6 +23,9 @@ struct ProjectDetailView: View {
     let onOpenChat: (Int64) -> Void
     let onRenamed: () -> Void
     let onDeleted: (Int64) -> Void
+    /// The chats waiting in the panel's Undo window (or being deleted):
+    /// not listed (spec 2026-10-26 §5.3).
+    let hiddenChatIDs: Set<Int64>
     @State private var showSourcePicker = false
     @State private var confirmDelete = false
     @State private var dropTargeted = false
@@ -38,7 +41,8 @@ struct ProjectDetailView: View {
         onOpenChat: @escaping (Int64) -> Void,
         onRenamed: @escaping () -> Void,
         onDeleted: @escaping (Int64) -> Void,
-        onPromptChanged: @escaping (Int64) -> Void
+        onPromptChanged: @escaping (Int64) -> Void,
+        hiddenChatIDs: Set<Int64> = []
     ) {
         _vm = State(initialValue: ProjectDetailViewModel(
             projectID: projectID,
@@ -54,6 +58,7 @@ struct ProjectDetailView: View {
         self.onOpenChat = onOpenChat
         self.onRenamed = onRenamed
         self.onDeleted = onDeleted
+        self.hiddenChatIDs = hiddenChatIDs
     }
 
     var body: some View {
@@ -76,6 +81,8 @@ struct ProjectDetailView: View {
             .padding(.bottom, Spacing.hero)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // A chat left the Undo bar: deleted (or restored) for good.
+        .onChange(of: hiddenChatIDs) { _, _ in vm.reloadLists() }
         .onAppear {
             vm.load()
             if chatVM.projectNameFocusRequest == vm.projectID {
@@ -159,15 +166,16 @@ struct ProjectDetailView: View {
 
     private var chatList: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
-            HomeZoneTitle(title: "Chats in this project", detail: "\(vm.chats.count)")
-            if vm.chats.isEmpty {
+            let chats = vm.chats.filter { !hiddenChatIDs.contains($0.id) }
+            HomeZoneTitle(title: "Chats in this project", detail: "\(chats.count)")
+            if chats.isEmpty {
                 Text("No chats yet — ask something above.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
                 let now = Date()
                 VStack(spacing: 0) {
-                    ForEach(vm.chats) { chat in
+                    ForEach(chats) { chat in
                         Button { onOpenChat(chat.id) } label: {
                             HStack(spacing: Spacing.medium) {
                                 Text(chat.displayTitle).lineLimit(1)

@@ -86,5 +86,13 @@ final class ChatProjectSwitcherTests: XCTestCase {
         XCTAssertEqual(rows[0].lastActivity, Date(timeIntervalSince1970: 203), "archived chat 4 and project-less 5 ignored")
         XCTAssertEqual(rows[1].lastActivity, Date(timeIntervalSince1970: 70), "falls back to the project")
         XCTAssertEqual(rows[1].unreadCount, 0)
+
+        // A chat waiting in the panel's Undo window counts for nothing (spec §5.3).
+        let hidingFirst = try db.read { try ChatProjectQueries.switcherSummaries($0, hiding: [1]) }.sorted { $0.id < $1.id }
+        XCTAssertEqual(hidingFirst[0].unreadCount, 0)
+        XCTAssertEqual(hidingFirst[0].waitingCount, 0)
+        let hidingNewest = try db.read { try ChatProjectQueries.switcherSummaries($0, hiding: [3, 2]) }.sorted { $0.id < $1.id }
+        XCTAssertEqual(hidingNewest[0].lastActivity, Date(timeIntervalSince1970: 201))
+        XCTAssertEqual(hidingNewest[0].unreadCount, 1)
     }
 }

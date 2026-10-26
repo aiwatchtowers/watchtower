@@ -291,7 +291,11 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                 await app.terminalCenter.detachAll()
             },
             stopDaemon: { await Self.stopDaemonForQuit(app) },
-            finishPendingDeletes: { await Self.finishPendingDeletes(app.workbenchesViewModel) },
+            finishPendingDeletes: {
+                // The Chats panel's Undo bar too (spec 2026-10-26 §5.3): one write.
+                await app.chatHistoryViewModel?.commitPendingDelete()
+                await Self.finishPendingDeletes(app.workbenchesViewModel)
+            },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
     }

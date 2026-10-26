@@ -50,7 +50,15 @@ package enum KeyboardShortcutCatalog {
             Entry("Esc", "Stop the answer"),
             Entry("↑", "Edit your last message (in an empty field)"),
             Entry("⌘Return", "Save & Send an edited message"),
-            Entry("↑ / ↓", "Previous / next chat (in the chat list)")
+            Entry("⌘1–⌘9", "Open chat 1–9 of the chat list"),
+            Entry("⌘[", "Back to All chats")
+        ]),
+        Area("Chats Panel", note: "After a click on the panel's empty space, a section label or the older header.", [
+            Entry("↑ / ↓", "Move the highlight"),
+            Entry("Return", "Open the highlighted chat"),
+            Entry("⌘⌫", "Delete the highlighted chat"),
+            Entry("⌘Z", "Undo the delete"),
+            Entry("Esc", "Leave the chat list")
         ]),
         Area("Targets", [
             Entry("⌘N", "New target"),
@@ -65,7 +73,7 @@ package enum KeyboardShortcutCatalog {
             Entry("Esc", "Close the card"),
             Entry("⌘Return", "Create (new idea)")
         ]),
-        Area("Workbench", note: "The Workbench menu lists most of these.", [
+        Area("Workbench", note: "The Workbench menu lists most of these; ⌘1–⌘9 and ⌘[ are in the View menu.", [
             Entry("⌘T", "New session"),
             Entry("⌘1–⌘9", "Open session 1–9 of the sessions list"),
             Entry("⌘K", "Go to… (the Files editor keeps ⌘K)"),

@@ -1,9 +1,9 @@
 import XCTest
 @testable import WatchtowerDesktop
 
-/// ⌘[ belongs to the Workbench menu's "Back to Workbenches" (#711): the
-/// focused session chat pane with a subagent open publishes a pop action,
-/// which the command runs first.
+/// ⌘[ belongs to View → Back (#711; moved out of the Workbench menu by spec
+/// 2026-10-26 §4): the focused session chat pane with a subagent open
+/// publishes a pop action, which the command runs first.
 @MainActor
 final class WorkbenchCommandsBackTests: XCTestCase {
     func testPopsTheFocusedSubagentFirst() {
@@ -36,6 +36,6 @@ final class WorkbenchCommandsBackTests: XCTestCase {
             let text = try String(contentsOfFile: root + "/" + rel, encoding: .utf8)
             if text.contains(#".keyboardShortcut("[", modifiers: .command)"#) { binders.append(rel) }
         }
-        XCTAssertEqual(binders, ["App/WorkbenchCommands.swift"])
+        XCTAssertEqual(binders, ["App/ItemShortcutCommands.swift"])
     }
 }

@@ -9,6 +9,9 @@ extension AppState {
         cvm.onConversationsChanged = { [weak hvm] in hvm?.reloadRows() }
         cvm.onLandingTurnStarted = { [weak hvm] id in hvm?.selectedConversationID = id }
         hvm.isAnswering = { [weak cvm] id in cvm?.isAnswering(conversationID: id) ?? false }
+        // The panel's quick delete commits through the chat's own path (spec
+        // 2026-10-26 §5.3): the session retired, then the row deleted.
+        hvm.forgetConversation = { [weak cvm] id in cvm?.forget(conversationID: id) }
     }
 
     /// The chat's two signals, each assigned only here (they are single
