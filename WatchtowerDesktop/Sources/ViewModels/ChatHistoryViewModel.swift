@@ -155,13 +155,14 @@ final class ChatHistoryViewModel {
 
     /// Marks the chat read through its newest complete answer (spec §5.2):
     /// on selection, on entering the tab, and when a turn finishes on the
-    /// chat on screen. The row changes only once the mark is written.
+    /// chat on screen. The row changes only once the mark is written: the
+    /// observation (`startObserving`) re-reads it — no read here, since ↑/↓
+    /// held down marks one chat per step.
     func markRead(_ id: Int64) {
         writes.start { [weak self] in
             guard let self else { return }
             do {
                 try await self.dbManager.dbPool.write { db in try ChatConversationQueries.markRead(db, id: id) }
-                self.reloadSynchronously()
             } catch {
                 NSLog("ChatHistoryViewModel: marking chat %lld read failed: %@", id, error.localizedDescription)
             }

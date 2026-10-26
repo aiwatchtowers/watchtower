@@ -33,8 +33,8 @@ extension AppState {
     /// Beside the strip, the Chats panel re-reads its rows on both signals:
     /// the pending proposal and the turn's end were written by the session's
     /// MCP subprocess or by Go, which the panel's observation does not see.
-    /// A turn that ends on the chat on screen marks it read (its own re-read
-    /// follows the mark); one that ends elsewhere leaves it unread.
+    /// A turn that ends on the chat on screen marks it read (the panel's
+    /// observation shows the mark); one that ends elsewhere leaves it unread.
     static func wireChatRefresh(
         _ cvm: ChatViewModel,
         history hvm: ChatHistoryViewModel,
@@ -44,11 +44,8 @@ extension AppState {
         cvm.onTurnFinished = { [weak cvm, weak hvm] id in
             Task { await refreshActionStrip() }
             guard let hvm else { return }
-            if isChatOnScreen(), cvm?.isShowing(conversationID: id) == true {
-                hvm.markRead(id)
-            } else {
-                hvm.reloadRows()
-            }
+            if isChatOnScreen(), cvm?.isShowing(conversationID: id) == true { hvm.markRead(id) }
+            hvm.reloadRows()
         }
         cvm.onActionAwaited = { [weak hvm] _ in
             Task { await refreshActionStrip() }

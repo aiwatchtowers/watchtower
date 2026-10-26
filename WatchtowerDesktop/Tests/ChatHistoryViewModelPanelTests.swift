@@ -172,6 +172,8 @@ final class ChatHistoryViewModelLevelTests: XCTestCase {
         XCTAssertEqual(vm.rows.first.map(vm.state(of:)), .unread)
         vm.selectedConversationID = id
         await vm.writesSettled()
+        XCTAssertEqual(vm.rows.first?.isUnread, true, "the mark itself reads nothing back")
+        await reloaded(vm)
         XCTAssertEqual(vm.rows.first?.isUnread, false)
         XCTAssertEqual(vm.rows.first.map(vm.state(of:)), .read)
     }
@@ -238,6 +240,7 @@ final class ChatHistoryViewModelTurnSignalTests: XCTestCase {
         }
         let history = ChatHistoryViewModel(dbManager: dbManager, attachmentsRoot: nil, defaults: defaults)
         AppState.wireChat(vm, history: history)
+        history.startObserving() // as AppState.ensureChatViewModels does
         AppState.wireChatRefresh(
             vm, history: history,
             isChatOnScreen: { [weak self] in self?.onScreen ?? false },
