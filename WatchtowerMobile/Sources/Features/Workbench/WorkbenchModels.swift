@@ -31,7 +31,9 @@ struct SessionRowModel: Equatable, Identifiable {
     /// open asks): the only sessions whose orange is a waiting element.
     private let isWaiting: Bool
 
-    init(_ session: TerminalSessionState, now: Date) {
+    /// `asOf`: the Mac's last contact while it is asleep; a live session's
+    /// time then reads "as of …" instead of counting on.
+    init(_ session: TerminalSessionState, now: Date, asOf: Date? = nil) {
         let since = session.live ? session.stateAt : session.lastActiveAt
         let caption = since.map { "\(session.stateCaption) · \(CompactAge.string(from: $0, now: now))" }
             ?? session.stateCaption
@@ -61,12 +63,20 @@ struct SessionRowModel: Equatable, Identifiable {
             items.append(MetaItem(text: "\(session.closedAsks) closed", tone: .secondary, role: .info))
         }
         metaItems = items
-        panelMetaItems = [MetaItem(text: session.stateCaption, tone: tone, role: .session(isWaiting: isWaiting))] + items.dropFirst()
-        time = if session.live, [.working, .running].contains(session.stateKind), let stateAt = session.stateAt {
-            StateLineModel.timer(Int(now.timeIntervalSince(stateAt)))
-        } else {
-            CompactAge.string(from: since ?? session.lastActiveAt, now: now)
+        var panel = [MetaItem(text: session.stateCaption, tone: tone, role: .session(isWaiting: isWaiting))]
+        // The open-ask count the badge of `SessionRowView` shows, unless the
+        // Mac's caption already says it ("Finished · 1 ask open").
+        let asksOpen = session.openAsks == 1 ? "1 ask open" : "\(session.openAsks) asks open"
+        if session.openAsks > 0, !session.stateCaption.contains(asksOpen) {
+            panel.append(MetaItem(text: asksOpen, tone: openAsksTone, role: .ask))
         }
+        panelMetaItems = panel + items.dropFirst()
+        let counts = session.live && [.working, .running].contains(session.stateKind) && session.stateAt != nil
+        time = StateLineModel(
+            glyph: nil, tone: tone, caption: session.stateCaption, isWaiting: !counts,
+            stateAt: counts ? session.stateAt : (since ?? session.lastActiveAt), now: now,
+            asOf: session.live ? asOf : nil
+        ).time
     }
 
     /// The sessions list's icon (mockup 2): the Mac's glyph on a disc, else
@@ -271,7 +281,9 @@ struct WorkbenchMenuModel {
     /// "No sessions yet" when the workbench has none.
     let sessionsEmptyText: String?
 
-    init?(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date) {
+    /// `asOf`: the Mac's last contact while it is asleep
+    /// (`MacReachability.asOf`), so live rows stop counting.
+    init?(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, asOf: Date?) {
         guard let workbench = snapshot.workbench(workbenchID) else { return nil }
         id = workbench.id
         title = workbench.name
@@ -283,7 +295,7 @@ struct WorkbenchMenuModel {
             .sorted { $0.lastActiveAt != $1.lastActiveAt ? $0.lastActiveAt > $1.lastActiveAt : $0.id > $1.id }
         var grouped: [Group: [SessionRowModel]] = [:]
         for session in sessions {
-            grouped[Group(session), default: []].append(SessionRowModel(session, now: now))
+            grouped[Group(session), default: []].append(SessionRowModel(session, now: now, asOf: asOf))
         }
         sections = Group.listed.compactMap { group in
             grouped[group].map { SessionSection(title: group.title, tone: group.tone, rows: $0) }

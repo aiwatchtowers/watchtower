@@ -34,7 +34,7 @@ struct WorkbenchView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            if let menu = WorkbenchMenuModel(workbenchID: workbenchID, snapshot: replica.snapshot, now: context.date) {
+            if let menu = menu(at: context.date) {
                 content(menu, now: context.date)
             } else {
                 ContentUnavailableView(
@@ -69,6 +69,12 @@ struct WorkbenchView: View {
         .navigationDestination(item: $openSession) { route in
             WorkchatView(replica: replica, sessionID: route.id, store: env.store, requester: env.chatRequests)
         }
+    }
+
+    private func menu(at date: Date) -> WorkbenchMenuModel? {
+        WorkbenchMenuModel(
+            workbenchID: workbenchID, snapshot: replica.snapshot, now: date, asOf: env.macReachability(now: date).asOf
+        )
     }
 
     private var switcher: some View {
@@ -107,7 +113,12 @@ struct WorkbenchView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
             switch segment {
-            case .sessions: sessions(menu)
+            // The working timers tick each second; the rest follows the
+            // minute timeline.
+            case .sessions:
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    sessions(self.menu(at: context.date) ?? menu)
+                }
             case .board: BoardView(replica: replica, writer: writer, workbenchID: menu.id, now: now)
             }
         }

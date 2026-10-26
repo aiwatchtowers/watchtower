@@ -27,7 +27,7 @@ final class NowWiringTests: XCTestCase {
     func testNothingWaitingShowsNothingIsWaiting() throws {
         var snapshot = try demoSnapshot(now: now)
         snapshot.asks = snapshot.asks.filter { $0.status != .open }
-        snapshot.sessions = snapshot.sessions.filter { ![.stopped, .failed].contains($0.stateKind) }
+        snapshot.sessions = snapshot.sessions.filter { ![.stopped, .finished, .failed].contains($0.stateKind) }
         let model = model(snapshot)
         XCTAssertTrue(model.waitingForYou.isEmpty)
         XCTAssertEqual(model.emptyText, "Nothing is waiting for you")
@@ -37,7 +37,7 @@ final class NowWiringTests: XCTestCase {
         let model = model(try demoSnapshot(now: now))
         XCTAssertNil(model.emptyText)
         XCTAssertEqual(model.waitingForYou.map(\.id), [
-            .ask(111), .ask(109), .ask(110), .session(21), .session(15), .session(16)
+            .ask(111), .ask(109), .ask(110), .session(14), .session(21), .session(13), .session(15), .session(16)
         ])
         let question = try XCTUnwrap(model.waitingForYou.first { $0.id == .ask(109) })
         XCTAssertEqual(question.title, "Which menu wording?")
@@ -57,7 +57,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(model.waitingForYou.first { $0.id == .ask(111) }?.options, [], "a check opens its form")
     }
 
-    func testStoppedAndFailedSessionsAreWaitingForYou() throws {
+    func testStoppedFinishedAndFailedSessionsAreWaitingForYou() throws {
         let model = model(try demoSnapshot(now: now))
         let failed = try XCTUnwrap(model.waitingForYou.first { $0.id == .session(16) })
         XCTAssertEqual(failed.title, "Undo archive — failed")
@@ -68,8 +68,29 @@ final class NowWiringTests: XCTestCase {
         let stopped = try XCTUnwrap(model.waitingForYou.first { $0.id == .session(15) })
         XCTAssertEqual(stopped.title, "Lane totals — stopped")
         XCTAssertEqual(stopped.tone, .secondary)
-        XCTAssertFalse(model.waitingForYou.contains { $0.id == .session(13) }, "a finished session is done, not waiting")
+        let finished = try XCTUnwrap(model.waitingForYou.first { $0.id == .session(13) }, "a finished session waits for a look")
+        XCTAssertEqual(finished.title, "Per-lane fold — finished")
+        XCTAssertEqual(finished.meta, "Acme · “Folded done targets per lane.”")
+        XCTAssertEqual(finished.glyph, "checkmark")
+        XCTAssertEqual(finished.tone, .blue)
         XCTAssertFalse(model.waitingForYou.contains { $0.id == .session(17) }, "a session that never ran is not waiting")
+    }
+
+    func testAnEndedSessionLeavesNowAfterADay() throws {
+        var snapshot = try demoSnapshot(now: now)
+        snapshot.sessions.append(try mirror(TerminalSessionState.self, DemoSeed.JSON.session(40, workbench: DemoSeed.acmeID, [
+            "title": "Old stop", "state_kind": "stopped", "state_caption": "Stopped", "state_tone": "secondary", "live": false,
+            "is_ring": true, "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-25 * 3_600)),
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-25 * 3_600))
+        ])))
+        snapshot.sessions.append(try mirror(TerminalSessionState.self, DemoSeed.JSON.session(41, workbench: DemoSeed.acmeID, [
+            "title": "Recent stop", "state_kind": "stopped", "state_caption": "Stopped", "state_tone": "secondary", "live": false,
+            "is_ring": true, "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-23 * 3_600)),
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-23 * 3_600))
+        ])))
+        let ids = model(snapshot).waitingForYou.map(\.id)
+        XCTAssertFalse(ids.contains(.session(40)), "a stop older than \(NowModel.endedSessionWindow) s is gone")
+        XCTAssertTrue(ids.contains(.session(41)))
     }
 
     func testAPendingRequestIsARowOfItsOwn() throws {

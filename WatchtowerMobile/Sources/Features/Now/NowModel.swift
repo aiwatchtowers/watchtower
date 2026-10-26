@@ -3,11 +3,15 @@ import WatchtowerKit
 
 /// The Now tab (spec §5.5, mockup 1): the Mac status chip, then Waiting for
 /// you across every workbench (open asks with their quick answers, pending
-/// permission requests, stopped and failed sessions; newest first, 20
+/// permission requests, sessions that stopped, finished or failed in the
+/// last 24 h; newest first, 20
 /// shown), then Working (live working sessions with timers). The next
 /// meeting is `NextMeetingCardModel` (Calendar).
 struct NowModel {
     static let waitingLimit = 20
+    /// A stopped, finished or failed session waits on Now this long after
+    /// its state changed.
+    static let endedSessionWindow: TimeInterval = 24 * 3_600
 
     let mac: MacReachability
     let chip: MacStatusChipModel
@@ -22,13 +26,13 @@ struct NowModel {
     init(snapshot: WorkbenchReplicaSnapshot, linked: Bool, now: Date) {
         mac = .of(heartbeat: snapshot.heartbeat?.updatedAt, linked: linked, now: now)
         chip = MacStatusChipModel(macName: snapshot.heartbeat?.macName ?? "", state: mac.chipState(linked: linked), now: now)
-        let all = (
-            snapshot.openAsks().map { NowWaitingRow($0, snapshot: snapshot, now: now) }
-                + snapshot.pendingPermissions.map { NowWaitingRow($0, snapshot: snapshot, now: now) }
-                + snapshot.sessions.filter { [.stopped, .failed].contains($0.stateKind) }
-                .map { NowWaitingRow(stopped: $0, snapshot: snapshot, now: now) }
-        )
-        .sorted { $0.at != $1.at ? $0.at > $1.at : $0.order < $1.order }
+        let asks: [NowWaitingRow] = snapshot.openAsks().map { NowWaitingRow($0, snapshot: snapshot, now: now) }
+        let requests: [NowWaitingRow] = snapshot.pendingPermissions.map { NowWaitingRow($0, snapshot: snapshot, now: now) }
+        let ended: [NowWaitingRow] = snapshot.sessions
+            .filter { [.stopped, .finished, .failed].contains($0.stateKind) }
+            .map { NowWaitingRow(ended: $0, snapshot: snapshot, now: now) }
+            .filter { now.timeIntervalSince($0.at) <= Self.endedSessionWindow }
+        let all = (asks + requests + ended).sorted { $0.at != $1.at ? $0.at > $1.at : $0.order < $1.order }
         waitingForYou = Array(all.prefix(Self.waitingLimit))
         waitingMore = max(0, all.count - Self.waitingLimit)
         emptyText = all.isEmpty ? "Nothing is waiting for you" : nil
@@ -119,22 +123,27 @@ struct NowWaitingRow: Equatable, Identifiable {
         role = .waiting
     }
 
-    /// A stopped or failed session: its turn is over, the next move is the
-    /// owner's.
-    init(stopped session: TerminalSessionState, snapshot: WorkbenchReplicaSnapshot, now: Date) {
+    /// A stopped, finished or failed session: its turn is over, the next
+    /// move is the owner's. `at` is its state's time (`state_at`, else the
+    /// last activity).
+    init(ended session: TerminalSessionState, snapshot: WorkbenchReplicaSnapshot, now: Date) {
         id = .session(session.id)
         destination = .session(session.id)
-        glyph = session.stateGlyph.isEmpty ? "pause.fill" : session.stateGlyph
-        tone = PhoneTone(session.stateTone)
         let failed = session.stateKind == .failed
-        title = "\(session.title) — \(failed ? "failed" : "stopped")"
+        let finished = session.stateKind == .finished
+        let fallbackGlyph = failed ? "exclamationmark" : finished ? "checkmark" : "pause.fill"
+        glyph = session.stateGlyph.isEmpty ? fallbackGlyph : session.stateGlyph
+        tone = PhoneTone(session.stateTone)
+        let word = failed ? "failed" : finished ? "finished" : "stopped"
+        title = "\(session.title) — \(word)"
         code = nil
         let detail = failed ? session.stateCaption : (session.finishSummary.isEmpty ? "" : "“\(session.finishSummary)”")
         meta = [snapshot.workbench(session.workbenchID)?.name ?? "", detail].filter { !$0.isEmpty }.joined(separator: " · ")
-        at = session.lastActiveAt
+        at = session.stateAt ?? session.lastActiveAt
         age = CompactAge.string(from: at, now: now)
         options = []
-        role = .session(isWaiting: false)
+        // A finished session with an open ask is orange: it waits on that ask.
+        role = .session(isWaiting: session.openAsks > 0)
     }
 
     var toneUse: ToneUse {

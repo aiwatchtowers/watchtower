@@ -1,5 +1,4 @@
 import SwiftUI
-import WatchtowerKit
 
 /// A screen pushed on Now's stack: Settings, from the gear (design pass
 /// spec §5).
@@ -71,9 +70,9 @@ struct NowView: View {
                     SectionHeader("Working", count: model.working.count)
                     working(model)
                 }
-                if let event = NextMeetingCardModel.pick(env.calendarReplica.snapshot.events, now: date) {
+                if let next = NextMeetingCardModel(events: env.calendarReplica.snapshot.events, now: date, calendar: .current) {
                     SectionHeader("Next meeting")
-                    NextMeetingRow(event: event, now: date)
+                    NextMeetingRow(card: next)
                 }
             }
             .padding(.horizontal, Spacing.large)
@@ -233,26 +232,18 @@ private struct NowWaitingCard: View {
 /// Record under it.
 private struct NextMeetingRow: View {
     @Environment(AppEnvironment.self) private var env
-    let event: CalendarEvent
-    let now: Date
+    let card: NextMeetingCardModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            NavigationLink(value: event.id) {
-                CalendarRow(model: CalendarRowModel(
-                    start: event.startDate, end: event.endDate, title: event.title, location: event.location,
-                    attendees: event.attendees.count, isNext: true, now: now
-                ))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            NavigationLink(value: card.id) {
+                CalendarRow(model: card.row)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             RecordButton {
-                Task {
-                    await env.recorder.recordMeeting(
-                        MeetingEvent(id: event.id, title: event.title, start: event.startDate, end: event.endDate)
-                    )
-                }
+                Task { await env.recorder.recordMeeting(card.meetingEvent) }
             }
             .disabled(!env.canStartCapture)
         }

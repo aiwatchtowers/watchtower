@@ -16,7 +16,7 @@ final class OrangeToneTests: XCTestCase {
         var uses: [ToneUse] = NowModel(snapshot: snapshot, linked: true, now: now).toneUses
         for workbench in snapshot.workbenches {
             uses += WorkbenchCardModel(workbench).toneUses
-            uses += try XCTUnwrap(WorkbenchMenuModel(workbenchID: workbench.id, snapshot: snapshot, now: now)).toneUses
+            uses += try XCTUnwrap(WorkbenchMenuModel(workbenchID: workbench.id, snapshot: snapshot, now: now, asOf: nil)).toneUses
             for filter in BoardFilter.allCases {
                 uses += BoardModel(workbenchID: workbench.id, snapshot: snapshot, filter: filter).toneUses
             }
