@@ -361,4 +361,6 @@ func TestSwapInstruction_OnlyFromBefore(t *testing.T) {
 	assert.Empty(t, w.Procedure)
 	_, err = d.SwapWorkbenchInstruction(wb, InstructionChat, "", "x")
 	assert.Error(t, err)
+	_, err = d.SwapWorkbenchInstruction(wb+1000, InstructionSession, "", "x")
+	assert.ErrorIs(t, err, ErrWorkbenchNotFound)
 }

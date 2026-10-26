@@ -145,7 +145,8 @@ func (db *DB) SwapOwnerInstruction(f InstructionField, before, body string) (boo
 }
 
 // SwapWorkbenchInstruction sets one text of workbench id to body only while
-// it is still before ("" = NULL), in one statement; false when it was not.
+// it is still before ("" = NULL), in one statement; false when it was not,
+// ErrWorkbenchNotFound when there is no such workbench.
 func (db *DB) SwapWorkbenchInstruction(id int64, f InstructionField, before, body string) (bool, error) {
 	if !f.valid() || f == InstructionChat {
 		return false, fmt.Errorf("unknown instruction field %q", f)
@@ -154,9 +155,21 @@ func (db *DB) SwapWorkbenchInstruction(id int64, f InstructionField, before, bod
 	if f == InstructionSession {
 		col = "session_instructions"
 	}
+	what := fmt.Sprintf("setting workbench %d %s instruction", id, f)
 	res, err := db.Exec(`UPDATE projects SET `+col+` = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ? AND COALESCE(`+col+`, '') = ?`, methodologyValue(body), id, before)
-	return swapped(res, err, fmt.Sprintf("setting workbench %d %s instruction", id, f))
+	ok, err := swapped(res, err, what)
+	if err != nil || ok {
+		return ok, err
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM projects WHERE id = ?)`, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("%s: %w", what, err)
+	}
+	if !exists {
+		return false, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)
+	}
+	return false, nil
 }
 
 func swapped(res sql.Result, err error, what string) (bool, error) {

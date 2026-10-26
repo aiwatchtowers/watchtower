@@ -447,3 +447,23 @@ func TestAccept_AllowListMayOnlyGrow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, orig, raw)
 }
+
+func TestAccept_EditedLiveTextIsNotRecovery(t *testing.T) {
+	d := openDBs(t)
+	a := newApplier(t, d)
+	path := claudeSettingsPath(a.Home)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	// The live list differs from before: a rule Claude Code added, a before rule gone.
+	live := []byte(`{"permissions":{"allow":["Bash(ls:*)"]}}`)
+	require.NoError(t, os.WriteFile(path, live, 0o600))
+	id := propose(t, d, db.CoachProposal{Destination: DestSettingsAllow, BeforeText: "Read", AfterText: "Read\nBash(go test:*)"})
+
+	require.ErrorIs(t, a.Accept(id, "Bash(ls:*)"), ErrStale)
+	p := proposal(t, d, id)
+	assert.Equal(t, "superseded", p.Status)
+	assert.Equal(t, "Read\nBash(go test:*)", p.AfterText, "nothing recorded as ours")
+	assert.Nil(t, p.Baseline)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, live, raw)
+}

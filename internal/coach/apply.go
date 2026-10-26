@@ -54,9 +54,9 @@ func (a *Applier) now() time.Time {
 // rules. The destination must still hold the proposal's before-text, else the
 // proposal is superseded and ErrStale returned; an owner text is written by a
 // compare-and-set on that before-text, so an edit made after the check is
-// never overwritten. When the destination already holds the proposal's
+// never overwritten. When the destination already holds the proposal's own
 // after-text (an earlier Accept wrote it but failed to record it), only the
-// status is written. The destination is written first, then the status; when
+// status is written; an edited text never takes that shortcut. The destination is written first, then the status; when
 // the status write fails the before-state is put back.
 func (a *Applier) Accept(id int64, edited string) error {
 	p, err := a.DB.GetCoachProposal(id)
@@ -84,7 +84,8 @@ func (a *Applier) Accept(id int64, edited string) error {
 		after = edited
 	}
 	if cur.Text != p.BeforeText {
-		if cur.Text == p.AfterText || cur.Text == after {
+		// Recovery only: an edited text always takes the normal path below.
+		if cur.Text == p.AfterText {
 			if err := a.DB.MarkCoachAccepted(id, cur.Text, baseline, n, now); err != nil {
 				return fmt.Errorf("accepting coach proposal %d: %w", id, err)
 			}
