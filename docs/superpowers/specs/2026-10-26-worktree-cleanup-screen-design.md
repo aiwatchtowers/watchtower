@@ -1,6 +1,6 @@
 # Clean Up — one screen for worktrees and branches instead of sheets (board #1107) — design
 
-**Status:** draft for the owner's review, round 3 (round 1: ask #629, round 2: ask #630)
+**Status:** draft for the owner's review, round 4 (rounds 1–3: asks #629, #630, #631)
 **Builds on:** `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` (board #535) §8, §9, §12; PROJ-18 in
 `docs/inventory/workbench.md`.
 **Mockup:** `docs/design/mockups/worktree-cleanup/screen.html` (open with `#dark` for the dark appearance), rendered
@@ -145,10 +145,14 @@ left and 4 of the 53 removable worktrees still match one. So the column shows wh
    Branch-only rows show `—`.
 
 The **Owner** filter offers: Any owner · A session (1) · Subagent · Session deleted · Made by hand. The origin is
-decided **in Go**, next to the placement code that owns those path and branch rules (`.claude/worktrees`, the `wt/`
-prefix), and sent as a new item key `origin` (`session` / `subagent` / `placed` / `manual`; `""` for branches and
-`lsreg` items) — the Desktop never repeats the rules (round-2 review, ask #630). Pinned by Go tests over the
-placement constants.
+decided **in Go** and sent as a new item key `origin` (`session` / `subagent` / `placed` / `manual`; `""` for
+branches and `lsreg` items) — the Desktop never repeats the rules (ask #630). The rules belong to the placement code:
+the constants `worktreesDir` (`.claude/worktrees`) and `worktreeBranchRoot` (`wt/`) are unexported in
+`internal/workbenchgit/worktree.go`, so `workbenchgit` gains one exported classifier — `WorktreeOrigin(topLevel,
+root, branch string) Origin` (subagent = `<top>/.claude/worktrees/agent-<hex>`, placed = another directory under
+`<top>/.claude/worktrees/` on a `wt/` branch, manual = anything else) — and `internal/sessioncleanup` calls it,
+setting `session` itself when an owner session is known (ask #631). The import goes `sessioncleanup → workbenchgit`
+(`workbenchgit` imports only `gitbin`, so no cycle). Pinned by `workbenchgit` tests next to the constants.
 
 ### 4.4 Filters and bulk selection
 
@@ -177,7 +181,10 @@ the footer total.
   re-check, git refused) moves to **Kept** with its new reason (`Tone.warning`). Rows not ticked are untouched.
 - When it ends, a result bar replaces the progress line (mockup C): "✓ Freed ~15 GB · removed 2 worktrees, 2 branches
   · kept 1 — changed since the check" (from the CLI's `summary` / `removed_bytes`), **Dismiss**. A failure of the
-  whole run shows in the same bar in `Tone.error` with **Retry** (re-applies the rows still ticked).
+  whole run shows in the same bar in `Tone.error` with **Retry** and **Dismiss** (mockup E): after a failed apply,
+  Retry starts a new apply of the rows still ticked (the apply re-plans first, as every apply does — design §4); after
+  a failed plan, Retry plans again and the rows already listed stay until the new run's `listed` replaces them
+  (ask #631).
 - While an apply runs, **Refresh** and **Clean Up…** are disabled; ticking other rows stays possible.
 
 ## 6. Showing rows before the plan is done — why the CLI streams
@@ -275,8 +282,12 @@ The `--json` output gains three keys (additive); `--stream` is new.
 
 ## 10. Guide
 
-The `docs/guide/` page on cleaning up worktrees is updated for the screen (where it opens, select all, filters, the
-session scope).
+`docs/guide/features/workbench/worktrees-and-cleanup.md` is updated for the screen (where it opens, select all,
+filters, the session scope), following `docs/guide/WRITING.md`. Feature pages have an 8 KB cap without their learn
+cards (`TestFeaturePagesUnder8KB` in `docs/guide/guide_test.go`); the page is 5.5 KB today, so the screen's text
+replaces the two sheets' paragraphs and adds at most ~2 KB. If it does not fit, the screen gets its own page
+(`features/workbench/cleanup-screen.md`) linked from this one. `go test ./docs/guide` runs with the change
+(ask #631).
 
 ## 11. Left to the builder
 
@@ -297,6 +308,10 @@ session scope).
 - Every state has a mockup: session scope, run failure with Retry, another cleanup running, empty — ask #630.
 - Stream events are bound to their run; a late line of a stopped run is dropped — ask #630 (§6).
 - In the whole-workbench scope a live or recent session's items are never under Can go (mockup A fixed) — ask #630.
+- The origin classifier is exported from `internal/workbenchgit` (where the placement constants are) and called by
+  `internal/sessioncleanup` — ask #631.
+- Retry as in mockup E: a new apply of the ticked rows, or a new plan after a failed plan — ask #631.
+- The guide page stays under the 8 KB cap, else the screen gets its own page — ask #631.
 - A mockup is a must, and the shipped screen is compared against it before merge — ask #629 (§9).
 - Kit components and `Tone` colours, no stock `Table`; stock `Table` selection cannot refuse rows — ask #629.
 - In memory only: the screen is page state, not a saved pane; a relaunch does not bring it back — ask #629.
