@@ -200,4 +200,64 @@ extension MeetingRecorderCenter {
         }
         return VoiceIdentificationOutcome(tasks: tasks, autoSamples: autoSamples)
     }
+
+    /// Share of total diarized speech above which a cluster is read as a
+    /// diarization under-split (several people merged into one cluster) rather
+    /// than a genuinely dominant speaker.
+    private static let megaClusterShareThreshold: Double = 0.4
+    /// How many distinct clusters must be detected before the mega-cluster
+    /// guard may fire. In a 1:1 the counterparty legitimately owns ~half the
+    /// speech, so the guard must not fire there; with 4+ detected clusters a
+    /// 40%+ cluster is far likelier an under-split than a real dominant
+    /// speaker, and a wrong person-name on a merged cluster is worse than an
+    /// anonymous "Speaker N".
+    private static let megaClusterMinClusters = 4
+
+    /// Strips voice-print names from suspiciously dominant clusters, so a
+    /// cluster the diarizer merged several people into is never renamed to one
+    /// of them — it falls back to a plain "Speaker N" label instead. Fires only
+    /// in multi-speaker meetings; see `megaClusterShareThreshold` /
+    /// `megaClusterMinClusters`. Pure (internal, not private, so it is testable
+    /// without driving the whole Center).
+    ///
+    /// A suppressed cluster also loses its owner status (`ownerClusters`) — a
+    /// merged blob must not win the «Я» tie-break as "the owner". Deliberate
+    /// residue: with no name left the blob cannot be vetoed either, so it MAY
+    /// still win «Я» by bare mic share — the legacy under-split behavior,
+    /// kept because a wrong «Я» heuristic beats guessing a person's name for
+    /// a blob of several people.
+    /// (`ownerVoiceAlike` is deliberately NOT filtered here: the veto — the
+    /// only thing it gates — needs a non-empty voice name, and a suppressed
+    /// cluster has none left, so an unfiltered alike entry cannot change any
+    /// outcome.)
+    static func filterMegaClusters(
+        voiceNames: [String: String],
+        speakers: [SpeakerSegment],
+        ownerClusters: Set<String>?
+    ) -> (names: [String: String], owners: Set<String>?) {
+        var speech: [String: Double] = [:]
+        for s in speakers {
+            speech[s.speakerID, default: 0] += max(0, s.endSec - s.startSec)
+        }
+        let total = speech.values.reduce(0, +)
+        guard speech.count >= megaClusterMinClusters, total > 0 else {
+            return (voiceNames, ownerClusters)
+        }
+        var filtered = voiceNames
+        for (cluster, duration) in speech.sorted(by: { $0.key < $1.key }) {
+            let share = duration / total
+            guard share > megaClusterShareThreshold, let name = filtered[cluster] else { continue }
+            // Silent suppression would look like voice matching randomly
+            // stopped working.
+            print("[MeetingRecorder] cluster \(cluster) holds \(Int((share * 100).rounded()))% "
+                  + "of speech across \(speech.count) clusters — suppressing voice match "
+                  + "\"\(name)\" (likely diarization under-split)")
+            filtered[cluster] = nil
+        }
+        // "Still has a name" is a valid suppression proxy ONLY because every
+        // owner cluster is inserted together with its name in identifyVoices
+        // — an owner cluster without a voiceNames entry would silently lose
+        // its status here even though nothing was suppressed.
+        return (filtered, ownerClusters.map { owners in owners.filter { filtered[$0] != nil } })
+    }
 }

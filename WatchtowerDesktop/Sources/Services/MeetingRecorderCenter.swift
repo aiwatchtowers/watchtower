@@ -905,66 +905,6 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// Share of total diarized speech above which a cluster is read as a
-    /// diarization under-split (several people merged into one cluster) rather
-    /// than a genuinely dominant speaker.
-    private static let megaClusterShareThreshold: Double = 0.4
-    /// How many distinct clusters must be detected before the mega-cluster
-    /// guard may fire. In a 1:1 the counterparty legitimately owns ~half the
-    /// speech, so the guard must not fire there; with 4+ detected clusters a
-    /// 40%+ cluster is far likelier an under-split than a real dominant
-    /// speaker, and a wrong person-name on a merged cluster is worse than an
-    /// anonymous "Speaker N".
-    private static let megaClusterMinClusters = 4
-
-    /// Strips voice-print names from suspiciously dominant clusters, so a
-    /// cluster the diarizer merged several people into is never renamed to one
-    /// of them — it falls back to a plain "Speaker N" label instead. Fires only
-    /// in multi-speaker meetings; see `megaClusterShareThreshold` /
-    /// `megaClusterMinClusters`. Pure (internal, not private, so it is testable
-    /// without driving the whole Center).
-    ///
-    /// A suppressed cluster also loses its owner status (`ownerClusters`) — a
-    /// merged blob must not win the «Я» tie-break as "the owner". Deliberate
-    /// residue: with no name left the blob cannot be vetoed either, so it MAY
-    /// still win «Я» by bare mic share — the legacy under-split behavior,
-    /// kept because a wrong «Я» heuristic beats guessing a person's name for
-    /// a blob of several people.
-    /// (`ownerVoiceAlike` is deliberately NOT filtered here: the veto — the
-    /// only thing it gates — needs a non-empty voice name, and a suppressed
-    /// cluster has none left, so an unfiltered alike entry cannot change any
-    /// outcome.)
-    static func filterMegaClusters(
-        voiceNames: [String: String],
-        speakers: [SpeakerSegment],
-        ownerClusters: Set<String>?
-    ) -> (names: [String: String], owners: Set<String>?) {
-        var speech: [String: Double] = [:]
-        for s in speakers {
-            speech[s.speakerID, default: 0] += max(0, s.endSec - s.startSec)
-        }
-        let total = speech.values.reduce(0, +)
-        guard speech.count >= megaClusterMinClusters, total > 0 else {
-            return (voiceNames, ownerClusters)
-        }
-        var filtered = voiceNames
-        for (cluster, duration) in speech.sorted(by: { $0.key < $1.key }) {
-            let share = duration / total
-            guard share > megaClusterShareThreshold, let name = filtered[cluster] else { continue }
-            // Silent suppression would look like voice matching randomly
-            // stopped working.
-            print("[MeetingRecorder] cluster \(cluster) holds \(Int((share * 100).rounded()))% "
-                  + "of speech across \(speech.count) clusters — suppressing voice match "
-                  + "\"\(name)\" (likely diarization under-split)")
-            filtered[cluster] = nil
-        }
-        // "Still has a name" is a valid suppression proxy ONLY because every
-        // owner cluster is inserted together with its name in identifyVoices
-        // — an owner cluster without a voiceNames entry would silently lose
-        // its status here even though nothing was suppressed.
-        return (filtered, ownerClusters.map { owners in owners.filter { filtered[$0] != nil } })
-    }
-
     // MARK: - Capture
 
     /// Starts a recording for `eventID` (nil = ad-hoc). No-op while a recording
@@ -1920,34 +1860,6 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// Whether a recording name with this stem is held by a pending row (a
-    /// reserved phone recording whose audio is not copied yet).
-    nonisolated static func isReserved(_ stem: String, in store: PendingTranscriptStore?) -> Bool {
-        guard let store else { return false }
-        return recordingAudioExtensions.contains { ext in
-            (try? store.transcript(recording: "\(stem).\(ext)")) != nil
-        }
-    }
-
-    /// Audio extensions of the `rec_*` family: `.caf` from this Mac's own
-    /// recorder, `.m4a` from phone recordings relayed by the mobile hub. Both
-    /// are AVFoundation-readable, so the batch decode path is shared.
-    nonisolated static let recordingAudioExtensions: Set<String> = ["caf", "m4a"]
-
-    /// Chronological sort key for a `rec_<timestamp>[-N].<ext>` name: the
-    /// timestamp, then the collision suffix as a number (absent = the first
-    /// recording of that second). Plain lexicographic order gets a same-second
-    /// pair backwards twice over — `-` sorts before `.`, so `rec_X-2.caf` would
-    /// lead `rec_X.caf`, and `-10` would lead `-2` — which matters because the
-    /// recovered pill acts on `recoverable.first`. Internal (not private) so the
-    /// extension-agnostic stripping is testable on its own.
-    static func recoverySortKey(_ name: String) -> (String, Int) {
-        let base = (name as NSString).deletingPathExtension
-        guard let dash = base.lastIndex(of: "-"),
-              let suffix = Int(base[base.index(after: dash)...]) else { return (base, 1) }
-        return (String(base[..<dash]), suffix)
-    }
-
     /// The recordings to recover, oldest first: the rows (not dismissed) whose
     /// audio is still in `directory`, then — merged in name order — every
     /// `rec_*` audio file there with no row and no saved transcript.
@@ -2078,46 +1990,6 @@ final class MeetingRecorderCenter {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         return base.appendingPathComponent("Watchtower/recordings", isDirectory: true)
-    }
-
-    nonisolated private static func timestampComponent(_ date: Date = Date()) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        return formatter.string(from: date)
-    }
-
-    /// `rec_<timestamp>.<fileExtension>`, disambiguated with a `-N` suffix
-    /// while the name is taken: by an audio file of EITHER extension
-    /// (`rec_X.caf` and `rec_X.m4a` would share their pending row), by a
-    /// legacy `.meta` sidecar not imported yet, or when `taken` says so (a
-    /// pending row reserving the stem). The timestamp has one-second
-    /// resolution, so two recordings started inside the same second would
-    /// otherwise share a path — the second overwriting the first's audio.
-    /// The `rec_` prefix and the timestamp stay: the Go orphan sweep matches
-    /// on the family, and the name is what makes a recovered recording
-    /// identifiable. Internal (not private) so the disambiguation is testable
-    /// without racing the wall clock.
-    nonisolated static func uniqueRecordingURL(
-        in directory: URL,
-        date: Date = Date(),
-        fileExtension: String = "caf",
-        taken: (String) -> Bool = { _ in false }
-    ) -> URL {
-        let base = "rec_\(timestampComponent(date))"
-        func isTaken(_ stem: String) -> Bool {
-            let stemURL = directory.appendingPathComponent(stem)
-            let paths = recordingAudioExtensions.union([fileExtension, "meta"])
-                .map { stemURL.appendingPathExtension($0).path }
-            return paths.contains { FileManager.default.fileExists(atPath: $0) } || taken(stem)
-        }
-        var stem = base
-        var suffix = 2
-        while isTaken(stem) {
-            stem = "\(base)-\(suffix)"
-            suffix += 1
-        }
-        return directory.appendingPathComponent("\(stem).\(fileExtension)")
     }
 
     // MARK: - Phone recording ingest (mobile hub)
