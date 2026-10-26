@@ -54,11 +54,19 @@ Only these destinations. A proposal names exactly one.
 
 **Agent settings in v1 (my call, from ask #648's "no repo files"):** only places that are not committed to a repository — user-level Claude Code settings (`~/.claude/settings.json`: allow rules, hooks, disabled skills), the ask level, and the personal methodology overrides in Watchtower's own tables. A project-level `.claude/settings.json` is a repo file and is never touched; a project-local, gitignored `settings.local.json` may be, if the builder confirms it is ignored in that folder.
 
-**Watchtower prompts:** the spec reviewer prompt is already in the store (`SpecReview`, `internal/prompts/defaults.go`); edits are prompt-store overrides, the same rows Settings → Prompts edits.
+**Watchtower prompts:** the spec reviewer prompt is already in the store (`SpecReview`, `internal/prompts/defaults.go`); how a coach edit is stored must keep shipped prompt upgrades flowing (D9) — a plain prompt-store override sets `customized` and `Store.Seed` then never upgrades the row (`internal/prompts/store.go`). The mechanism is section 4.1.
 
 **`~/.claude/CLAUDE.md` (my call):** in scope, but built as the last, separable task of the loop so it can be cut without touching the rest. It is outside the workspace and the owner edits it by hand, so the write is an exact-text edit that is refused when the expected before-text is not found.
 
 If a destination turns out not to be writable safely in v1, leave it out and say so in the feature note, do not substitute a repo file.
+
+### 4.1 Coach edits to Watchtower prompts — an additions layer (owner, ask #654)
+
+- A coach edit never changes a prompt's template and never sets `customized`. It is stored apart as a short list of **additions** for that prompt id (owner-approved lines such as "do not flag naming choices").
+- At render time the prompt is the template the store resolves today (shipped default, or the owner's own manual edit) **plus** the additions, in one fenced block the prompt introduces as the owner's preferences. So shipped prompt upgrades reach the owner through `Store.Seed` as they do today (D9).
+- An addition can only add or override by instruction; it cannot delete shipped text. That is the accepted trade-off.
+- Additions follow the same rules as every coach edit: a budget per prompt (counted against section 6.3), effect verdict, rollback (removing the line), removal when no effect.
+- The builder wires the additions into the resolve path every caller of that prompt already goes through (`prompts.Resolve` / the store's `Get`), so no call site can miss them, and the prompt-store wiring scan (`cmd/prompt_store_scan_test.go`) keeps holding. Settings → Prompts shows a prompt's additions under its text.
 
 ## 5. Signals
 
@@ -72,7 +80,16 @@ If a destination turns out not to be writable safely in v1, leave it out and say
 | Waiting for the owner, asks | `agentreport` H4, `owner_asks` | Less in the loop |
 | Repeated failures, denials, slow repeats, context waste | `agentreport` hints H1–H7, C1–C3, S1, T1–T3 | Faster and cheaper |
 
-**A "not useful" mark on spec review findings (owner, ask #651).** Today `spec_review_marks.state` is only `ok | comment | viewed`, which cannot tell "this finding is noise" from "seen". The owner chose to add one more mark, **Not useful**, a single button on a finding in the findings screen (and the phone's line, if it shows findings). It needs a migration expanding the `state` CHECK (the table-recreation dance), the Desktop writer, an amendment to SPECREVIEW-*, and `SpecReviewAnswer` must not send it to the agent as a comment. Not-useful marks are the signal for spec reviewer prompt edits; a comment mark counts as "a real problem".
+**A "not useful" mark on spec review findings (owner, ask #651).** Today `spec_review_marks.state` is only `ok | comment | viewed`, which cannot tell "this finding is noise" from "seen". The owner chose to add one more mark, **Not useful**, a single button on a finding in the findings screen (and the phone's line, if it shows findings). Not-useful marks are the signal for spec reviewer prompt edits; a comment mark counts as "a real problem". Every place the new state touches (owner, ask #652):
+
+- **Schema:** a migration recreating `spec_review_marks` with `state IN ('ok','comment','viewed','not_useful')` (the table-recreation dance, `add-migration`), `schema.sql`, the golden snapshot and the generated Swift test schema.
+- **Swift model:** `SpecReviewMarkState` (`WatchtowerCore/Models/SpecReview.swift`) gains the case.
+- **Swift reads:** `SpecReviewQueries` (today it skips an unknown raw value, so an older app reading a newer row just ignores the mark — keep it that way).
+- **Desktop writer and UI:** `SpecReviewModel.mark`, the finding's buttons, `SpecReviewWrapUpView.markGlyph`.
+- **Answer builder:** `SpecReviewAnswer` (and its call in `OwnerAsksViewModel.answer(_:with:)`) never sends a not-useful mark to the agent; it is for the coach only.
+- **Phone:** the phone does not write marks in v1 (it shows a line only); `OwnerAskSlice`'s `SpecReviewLines` must count the new state correctly in that line, and the Kit's wire model is checked for any mark enum.
+- **Go reads:** `db.ListSpecReviewMarks` and `watchtower workbench spec-review show --json` (`marks[].state` gains a value — a pinned contract, amended).
+- **Inventory:** SPECREVIEW-* amended.
 
 Owner text stays on stdin, never argv, and follows FILES-01 (logs carry ids and counts, never text), as the instruction miner does today.
 
@@ -148,7 +165,22 @@ The loop is useful through the CLI before the screen lands; the screen without t
 - Behaviour inventory: the touched contracts (PROJ-22 for instructions, AGENTLOG-*, SPECREVIEW-*) get amendments; ask the owner before weakening any guard test.
 - The user guide page (`docs/guide/`) for the new pane.
 
-## 11. The calls I made (not the owner's)
+## 11. Decisions (the owner's, with sources)
+
+| # | Decision | Source |
+|---|---|---|
+| D1 | The point of the feature: a boost in the owner's agentic performance; analytics should tell what to change in the instructions and which mistakes repeat | ask #632 |
+| D2 | Success = all four: the owner corrects less, a task is faster and cheaper, the owner is less in the loop, reviews find less | ask #634 |
+| D3 | Every edit is a proposal the owner approves; nothing is applied on its own | ask #637 |
+| D4 | The screen is the mix: metrics on top, proposals, the accepted-edit log; the statistics stay, redesigned | ask #645 (+ note) |
+| D5 | Anti-goals: instruction bloat and noise | ask #646 |
+| D6 | Edits only to the owner's personal texts, agent settings and Watchtower's own prompts; never repo files | ask #648 |
+| D7 | Add a Not useful mark to spec review findings | ask #651 |
+| D8 | List every place the Not useful mark touches | ask #652 |
+| D9 | A coach edit of a Watchtower prompt must not freeze it: shipped prompt improvements keep reaching the owner | ask #652 |
+| D10 | Coach edits to Watchtower prompts are an additions layer on top of the resolved prompt | ask #654 |
+
+## 12. The calls I made (not the owner's)
 
 - The signal list (section 5); the owner added the Not useful mark (ask #651).
 - Weekly cadence, the 3-occurrence floor, the 3-open cap (section 6.2).
