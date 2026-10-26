@@ -10,7 +10,7 @@ You tell agents the same thing again and again, or you mark the same kind of spe
 <!-- learn
 id: agent-coach-suggestions
 title: Let the coach tune your agents
-text: Each week the coach suggests edits to your instructions from what you keep correcting; run `watchtower coach proposals` to see them.
+text: Each week the coach suggests edits to your instructions; see them with `watchtower coach proposals`.
 area: development
 level: power
 kind: feature
