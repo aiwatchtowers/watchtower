@@ -3,9 +3,8 @@ import WatchtowerKit
 
 /// Everything the session's report screen draws (spec §4.8, §4.9, §13 B3),
 /// reached from the workchat's "Report and timeline": the header, the
-/// report and the timeline. The prompt and ask fields are no longer drawn
-/// here (the workchat shows them) and go when the report screen is rebuilt
-/// to mockup 13. Built from the published records only; the session's
+/// report and the timeline (mockup 13). The workchat owns the prompt and ask
+/// fields. Built from the published records only; the session's
 /// transcript and terminal text never reach the phone (I-4), so nothing
 /// here can hold them.
 struct SessionDetailModel {
@@ -19,22 +18,6 @@ struct SessionDetailModel {
     let branch: String?
     /// "Claude Code · 41m": the agent and the session's age.
     let agentLine: String
-    /// "Needs approval on the Mac": a session at a prompt the phone has no
-    /// request for (Codex, or one the hub has not published yet).
-    let approvalNotice: String?
-    /// A live Claude session's pending permission prompt (#517); nil
-    /// without one.
-    let permission: PermissionCardModel?
-    /// The phone's answers to the session's prompts, until the Mac applied
-    /// them.
-    let answerRows: [PermissionAnswerRow]
-    /// "Sent to the session" once the Mac applied an answer: never
-    /// "Allowed" or "Denied", since a Mac answer that came first wins.
-    let answerNotice: String?
-    /// The session's open asks, newest first.
-    let asks: [WaitingCardModel]
-    /// "since 15m": the oldest open ask's age; nil without asks.
-    let asksSince: String?
     /// nil until the hub has published a report for the session.
     let report: SessionReportSection?
     /// Newest first.
@@ -54,8 +37,7 @@ struct SessionDetailModel {
         report: SessionReport?,
         timeline: SessionTimeline?,
         now: Date,
-        calendar: Calendar = .current,
-        permissions: PermissionAccess = PermissionAccess()
+        calendar: Calendar = .current
     ) {
         guard let session = snapshot.session(sessionID) else { return nil }
         id = session.id
@@ -67,20 +49,6 @@ struct SessionDetailModel {
         }
         branch = Self.branch(target: targetRecord, workbench: snapshot.workbench(session.workbenchID))
         agentLine = "\(Self.agentName(session.agent)) · \(CompactAge.string(from: session.createdAt, now: now))"
-        let rows = PermissionAnswerRow.rows(sessionID: session.id, snapshot: snapshot, now: now)
-        answerRows = rows
-        let request = PermissionCardModel.request(for: session, in: snapshot)
-        let permission = request.map { PermissionCardModel(request: $0, session: session, rows: rows, access: permissions) }
-        self.permission = permission
-        approvalNotice = session.stateKind == .needsApproval && permission == nil ? SessionInputModel.needsApproval : nil
-        answerNotice = PermissionAnswerRow.notice(rows: rows, permission: permission, sentRequestID: permissions.sentRequestID)
-
-        let openAsks = snapshot.asks
-            .filter { $0.status == .open && $0.sessionID == sessionID }
-            .sorted(by: WorkbenchReplicaSnapshot.newestFirst)
-        asks = openAsks.map { WaitingCardModel($0, snapshot: snapshot, now: now) }
-        asksSince = openAsks.last.map { "since \(CompactAge.string(from: $0.createdAt, now: now))" }
-
         self.report = report.map { SessionReportSection($0, finishSummary: session.finishSummary) }
 
         let milestones = (timeline?.milestones ?? []).sorted { $0.at > $1.at }
@@ -115,13 +83,6 @@ struct SessionDetailModel {
 
     var toneUses: [ToneUse] {
         var uses = state.toneUses
-        if approvalNotice != nil {
-            uses.append(ToneUse(element: "session \(id) approval notice", tone: .waitingForYou, role: .waiting))
-        }
-        if permission != nil {
-            uses.append(ToneUse(element: "session \(id) permission card", tone: .waitingForYou, role: .waiting))
-        }
-        uses += asks.map(\.toneUse)
         uses += report?.segments.map { ToneUse(element: "session \(id) report \($0.label)", tone: $0.tone, role: .progress) } ?? []
         uses += timeline.map { ToneUse(element: "session \(id) milestone \($0.id)", tone: $0.tone, role: $0.role) }
         return uses

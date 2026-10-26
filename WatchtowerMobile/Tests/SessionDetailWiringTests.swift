@@ -5,7 +5,7 @@ import XCTest
 @testable import WatchtowerMobile
 
 /// The phone's session detail (spec §4.8, §4.9, §13 B3) over the demo seed:
-/// header, its open asks, the report and the timeline, and the throttled
+/// header, the report and the timeline, and the throttled
 /// `session_report_request` sent on open.
 @MainActor
 final class SessionDetailWiringTests: XCTestCase {
@@ -48,7 +48,6 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertEqual(detail.branch, "feature/archive-now", "the target's branch wins over the workbench's")
         XCTAssertEqual(detail.agentLine, "Claude Code · 1h")
         XCTAssertEqual(detail.state.caption, "Waiting for you · ask #109 · 2 asks")
-        XCTAssertNil(detail.approvalNotice)
     }
 
     /// Codex gets its product name (board #399); an unknown agent keeps its
@@ -58,13 +57,6 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertEqual(SessionDetailModel.agentName(.codexCLI), "Codex")
         XCTAssertEqual(SessionDetailModel.agentName(.init(rawValue: "gemini_cli")), "gemini_cli")
         XCTAssertEqual(SessionDetailModel.agentName(.init(rawValue: "")), "")
-    }
-
-    func testTheSessionsOpenAsksComeFirst() throws {
-        let detail = try model(11)
-        XCTAssertEqual(detail.asks.map(\.id), [.ask(111), .ask(109)], "open asks of this session, newest first")
-        XCTAssertEqual(detail.asks.map(\.kindLabel), ["Check", "Question"])
-        XCTAssertEqual(detail.asksSince, "since 15m", "the oldest open ask")
     }
 
     func testTheReportShowsProgressSegmentsAndSummary() throws {
@@ -110,8 +102,6 @@ final class SessionDetailWiringTests: XCTestCase {
         let detail = try model(16)
         XCTAssertEqual(detail.title, "Undo archive")
         XCTAssertNil(detail.report)
-        XCTAssertTrue(detail.asks.isEmpty)
-        XCTAssertNil(detail.approvalNotice)
         XCTAssertFalse(detail.timeline.isEmpty)
         XCTAssertNil(detail.timelineEmptyText)
     }
@@ -121,13 +111,6 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertNil(detail.report)
         XCTAssertTrue(detail.timeline.isEmpty)
         XCTAssertEqual(detail.timelineEmptyText, "No milestones yet")
-    }
-
-    func testANeedsApprovalSessionPointsToTheMac() throws {
-        let detail = try model(12)
-        XCTAssertEqual(detail.approvalNotice, "Needs approval on the Mac")
-        XCTAssertTrue(detail.toneUses.contains { $0.element.hasSuffix("approval notice") && $0.isWaitingOrAsk })
-        XCTAssertNil(try model(10).approvalNotice)
     }
 
     func testAnUnknownSessionHasNoDetail() throws {
@@ -247,8 +230,8 @@ final class SessionDetailWiringTests: XCTestCase {
             ["sessionID", "report", "timeline", "waitingForKeys", "store", "requester", "cancellable", "decodeCache"]
         )
         XCTAssertEqual(fieldNames(try model(11)), [
-            "id", "title", "state", "target", "branch", "agentLine", "approvalNotice", "permission", "answerRows",
-            "answerNotice", "asks", "asksSince", "report", "timeline", "timelineEmptyText", "timelineMoreText"
+            "id", "title", "state", "target", "branch", "agentLine", "report", "timeline", "timelineEmptyText",
+            "timelineMoreText"
         ])
     }
 

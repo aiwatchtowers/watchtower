@@ -47,14 +47,26 @@ final class PermissionAnswerWiringTests: XCTestCase {
         return snapshot
     }
 
-    private func detail(_ fixture: Fixture, sessionID: Int64 = 12) throws -> SessionDetailModel {
-        try XCTUnwrap(SessionDetailModel(
-            sessionID: sessionID, snapshot: try snapshot(fixture.store), report: nil, timeline: nil, now: now,
-            permissions: PermissionAccess(
-                grant: grant(), requested: true, inFlight: fixture.inputs.inFlight,
-                sentRequestID: fixture.inputs.answered[sessionID]
-            )
-        ))
+    /// What the workchat draws for session `sessionID`'s prompt.
+    private struct Prompt {
+        let permission: PermissionCardModel?
+        let answerRows: [PermissionAnswerRow]
+        let answerNotice: String?
+    }
+
+    private func detail(_ fixture: Fixture, sessionID: Int64 = 12) throws -> Prompt {
+        let snapshot = try snapshot(fixture.store)
+        let session = try XCTUnwrap(snapshot.session(sessionID))
+        let access = PermissionAccess(
+            grant: grant(), requested: true, inFlight: fixture.inputs.inFlight,
+            sentRequestID: fixture.inputs.answered[sessionID]
+        )
+        let card = PermissionCardModel.card(for: session, in: snapshot, access: access, now: now)
+        let rows = PermissionAnswerRow.rows(sessionID: sessionID, snapshot: snapshot, now: now)
+        return Prompt(
+            permission: card, answerRows: rows,
+            answerNotice: PermissionAnswerRow.notice(rows: rows, permission: card, sentRequestID: access.sentRequestID)
+        )
     }
 
     private func echo(
@@ -135,13 +147,16 @@ final class PermissionAnswerWiringTests: XCTestCase {
 
         var replica = try snapshot(fixture.store)
         replica.permissionRequests = []
-        let detail = try XCTUnwrap(SessionDetailModel(
-            sessionID: 12, snapshot: replica, report: nil, timeline: nil, now: now,
-            permissions: PermissionAccess(grant: grant(), requested: true)
-        ))
+        let session = try XCTUnwrap(replica.session(12))
+        let card = PermissionCardModel.card(
+            for: session, in: replica, access: PermissionAccess(grant: grant(), requested: true), now: now
+        )
 
-        XCTAssertNil(detail.permission)
-        XCTAssertEqual(detail.answerRows.map(\.state), [.failed("Answered on the Mac")])
+        XCTAssertNil(card)
+        XCTAssertEqual(
+            PermissionAnswerRow.rows(sessionID: 12, snapshot: replica, now: now).map(\.state),
+            [.failed("Answered on the Mac")]
+        )
     }
 
     func testInterruptQueuesSessionInterrupt() async throws {
