@@ -1,0 +1,5 @@
+{"proposals": [
+  {"title": "One", "why": "Three sessions.", "destination": "session", "workbench_id": 0, "prompt_id": "", "kind": "add", "find": "", "replace": "Answer in short bullet points.", "metric": "corrections", "evidence": ["s1", "s2", "s3"]},
+  {"title": "Two", "why": "Three sessions.", "destination": "chat", "workbench_id": 0, "prompt_id": "", "kind": "add", "find": "", "replace": "Answer in short bullet points.", "metric": "corrections", "evidence": ["s1", "s2", "c7"]},
+  {"title": "Three", "why": "Three specs.", "destination": "prompt_addition", "workbench_id": 0, "prompt_id": "review.spec", "kind": "add", "find": "", "replace": "Do not flag missing test coverage numbers.", "metric": "review_findings", "evidence": ["ask:10#ag:1", "ask:11#bs:2", "ask:12#ck:1"]}
+]}

@@ -45,6 +45,9 @@ const (
 	DestChat          = "chat"
 	DestPromptAdd     = "prompt_addition"
 	DestSettingsAllow = "claude_settings_allow"
+	// DestClaudeMDUser is the owner's ~/.claude/CLAUDE.md; a proposal may
+	// name it only when Inputs carries its text.
+	DestClaudeMDUser = "claude_md_user"
 )
 
 // Signal is one piece of evidence the model may cite. Ref is the citation key

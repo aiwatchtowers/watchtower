@@ -227,7 +227,7 @@ func addDenial(denials map[DenialRow]*denialAgg, sid string, e agentlogdb.AgentR
 	k := DenialRow{Kind: e.ErrorClass, Tool: e.Name, Target: e.Target}
 	d := denials[k]
 	if d == nil {
-		d = &denialAgg{DenialRow: k, verb: cmp.Or(verb(e), e.Name), safe: safeToAllow(e), sessions: map[string]int{}}
+		d = &denialAgg{DenialRow: k, verb: cmp.Or(verb(e), e.Name), safe: SafeToAllow(e.Name, e.Target), sessions: map[string]int{}}
 		denials[k] = d
 	}
 	d.Count++
@@ -238,21 +238,22 @@ func addDenial(denials map[DenialRow]*denialAgg, sid string, e agentlogdb.AgentR
 // fileWriteTools write files; T2 never suggests allowing them.
 var fileWriteTools = map[string]bool{"Write": true, "Edit": true, "MultiEdit": true, "NotebookEdit": true}
 
-// safeToAllow is whether T2 may suggest an allow rule for the call: a tool
-// other than Bash and the file-writing tools (MCP tools included), or a shell
-// verb of the read & search or build & test class; never a bare "Bash",
-// never another shell verb and never a file write.
-func safeToAllow(e agentlogdb.AgentReportEvent) bool {
-	if fileWriteTools[e.Name] {
+// SafeToAllow is whether an allow rule may be suggested for a call of tool
+// with its stored target (the shell verb for Bash): a tool other than Bash and
+// the file-writing tools (MCP tools included), or a shell verb of the read &
+// search or build & test class; never a bare "Bash", never another shell verb
+// and never a file write. T2 and the coach's settings proposals share it.
+func SafeToAllow(tool, target string) bool {
+	if fileWriteTools[tool] {
 		return false
 	}
-	if e.Name != "Bash" {
+	if tool != "Bash" {
 		return true
 	}
-	if e.Target == "" {
+	if target == "" {
 		return false
 	}
-	switch ToolClass(e.Name, e.Target) {
+	switch ToolClass(tool, target) {
 	case ClassReadSearch, ClassBuildTest:
 		return true
 	}
@@ -348,7 +349,7 @@ func failedClasses(in HintInput) []Hint {
 }
 
 // T2: the commands denied DenialMin+ times by auto mode or a permission rule,
-// in one hint whose fix copies the allow rules of the safe ones (safeToAllow);
+// in one hint whose fix copies the allow rules of the safe ones (SafeToAllow);
 // with none safe there is no fix and the action asks to review them. The
 // estimate is the denied calls' lost time.
 func deniedCalls(in HintInput) []Hint {

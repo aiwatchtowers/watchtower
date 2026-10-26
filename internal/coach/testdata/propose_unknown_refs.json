@@ -1,0 +1,4 @@
+{"proposals": [
+  {"title": "Invented sessions", "why": "Seen in four sessions.", "destination": "session", "workbench_id": 0, "prompt_id": "", "kind": "add", "find": "", "replace": "Never touch the vendor folder.", "metric": "corrections", "evidence": ["s1", "s98", "s97", "s96"]},
+  {"title": "Run only the touched package's tests", "why": "The owner asked for it in three sessions.", "destination": "session", "workbench_id": 0, "prompt_id": "", "kind": "add", "find": "", "replace": "Run only the tests of the package you changed.", "metric": "task_cost", "evidence": ["s1", "s2", "s99", "ask:999#ag:1", "s3", "s2"]}
+]}

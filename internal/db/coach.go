@@ -18,7 +18,7 @@ import (
 // no longer the one the caller saw.
 var ErrCoachStateChanged = errors.New("coach proposal state changed")
 
-// CoachEvidence is one source a proposal rests on. Kind is ask|session|review_round|hint.
+// CoachEvidence is one source a proposal rests on. Kind is ask|session|chat|review_round|hint.
 type CoachEvidence struct {
 	Kind string `json:"kind"`
 	Ref  string `json:"ref"`
