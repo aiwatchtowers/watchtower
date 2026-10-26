@@ -19,6 +19,10 @@ struct EventCardModel: Identifiable, Equatable {
     let isHighlighted: Bool
     /// What the Record button records; nil for an all-day event.
     let meetingEvent: MeetingEvent?
+    /// The conference provider or the location, for the row's detail line.
+    let venue: String?
+    /// The people on the invitation, the hub's dropped ones included.
+    let attendeeCount: Int
 
     var showsRecord: Bool { isHighlighted && meetingEvent != nil }
     var showsPrep: Bool { isHighlighted }
@@ -94,7 +98,9 @@ struct AgendaDayModel {
                 isHighlighted: event.id == highlightedID,
                 meetingEvent: event.isAllDay
                     ? nil
-                    : MeetingEvent(id: event.id, title: event.title, start: event.startDate, end: event.endDate)
+                    : MeetingEvent(id: event.id, title: event.title, start: event.startDate, end: event.endDate),
+                venue: CalendarFormat.venue(event),
+                attendeeCount: event.attendees.count + (event.attendeesMore ?? 0)
             )
         }
         emptyText = cards.isEmpty ? "No events" : nil
