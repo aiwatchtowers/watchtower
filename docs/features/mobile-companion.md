@@ -716,3 +716,7 @@ One phone links up to `HubRegistry.limit` = 4 Macs (multi-hub spec §5–§7, pl
 - **No suspected-leak rotation in the UI**: `RotationReason.manual` exists, nothing calls it yet.
 - **One hub process per sidecar.** The damaged-identity recovery treats every second `.corrupt` read as damage, and two signed builds sharing one sidecar would cut each other.
 - **CloudKit environments** must match between the Mac and the phone (see above); a mismatch fails silently.
+
+## Keep the Mac awake (2026-10-26, ask #614)
+
+While at least one terminal session is live (`SessionLivenessBox.liveIDs`), a linked phone exists and its last contact is under 24 h old, `KeepAwakeCompanion` (a `HubCompanion`, 30 s loop, `KeepAwakePolicy.shouldHold`) holds one `PreventUserIdleSystemSleep` assertion through `MacAwakeAssertion` and releases it when the hub stops (the process end drops it on quit). The toggle is `Constants.mobileKeepAwakeKey` (`mobileKeepAwake`, absent = on; Settings → Mobile). Contact is `hub_meta.last_phone_contact` (`HubSyncState+Contact.swift`, raised only): `RelayProcessor` stamps it for every action that passed the device gate and for a phone's own `device` record (`min(seen_at ?? updated_at, now)`, an unlink excluded). The phone rewrites its `device` record on foreground when its last write is over an hour old (`DeviceSettings.touchIfStale`); `DevicePayload.seen_at` is written only when set. A closed lid on battery still sleeps the Mac.

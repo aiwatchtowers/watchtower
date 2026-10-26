@@ -6,6 +6,12 @@ import WatchtowerCore
 extension AppState: MobileSettingsHost {}
 
 extension AppState {
+    /// "Keep this Mac awake for the iPhone": on unless the owner turned it off (ask #614).
+    var isMobileKeepAwakeEnabled: Bool {
+        get { mobileSyncDefaults.object(forKey: Constants.mobileKeepAwakeKey) as? Bool ?? true }
+        set { mobileSyncDefaults.set(newValue, forKey: Constants.mobileKeepAwakeKey) }
+    }
+
     /// A phone start with "Bring the window forward" (mobile POC spec §6.5):
     /// the workbench's page on the main window, the app in front — before
     /// the start, so its Work on it placement lands on that page.
@@ -103,8 +109,16 @@ extension AppState {
         )
         // A changed watched chat goes out within seconds, not on the next tick.
         chats?.onChange = { [weak publisher] in publisher?.nudge(kinds: [.sessionChat]) }
+        // The Mac stays awake while a session runs and the phone has been in touch (ask #614).
+        let defaults = mobileSyncDefaults
+        let keepAwake = KeepAwakeCompanion(
+            assertion: MacAwakeAssertion(),
+            enabled: { defaults.object(forKey: Constants.mobileKeepAwakeKey) as? Bool ?? true },
+            liveBoardSessions: { liveness.current.liveIDs.count },
+            lastPhoneContact: { hasPhone() ? sidecar.lastPhoneContact() : nil }
+        )
         let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, chats, inputs]
-        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
+        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings, keepAwake]
         let hub = try assembleMobileHub(
             storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
             recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }

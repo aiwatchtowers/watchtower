@@ -81,6 +81,52 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertNotNil(processor.lastActivityAt)
     }
 
+    // MARK: - Phone contact (keep-awake, ask #614)
+
+    func testAnAdmittedActionStampsThePhoneContact() async throws {
+        dispatcher.register(.boardCommentAdd) { _ in .applied(["comment_id": .integer(1)]) }
+        try await transport.save([try pendingActionRecord(kind: .boardCommentAdd, entityID: "7")])
+        let at = Date()
+        XCTAssertNil(sidecar.lastPhoneContact())
+
+        let clock: @Sendable () -> Date = { at }
+        _ = try await makeProcessor(now: clock).processOnce()
+
+        XCTAssertEqual(sidecar.lastPhoneContact(), at)
+    }
+
+    func testARefusedActionStampsNoContact() async throws {
+        let other = TestE2E.strangerDeviceID.uuidString
+        try await transport.save([try pendingActionRecord(kind: .boardCommentAdd, entityID: "7", deviceID: other)])
+
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertNil(sidecar.lastPhoneContact())
+    }
+
+    func testADeviceRecordStampsItsSeenAtAndNeverALaterTime() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let seen = now.addingTimeInterval(-600)
+        let payload = DevicePayload(
+            deviceID: testPhoneID, name: "iPhone", model: "iPhone18,1", appVersion: "0.0.0-test", scope: .private,
+            userRecordName: "_owner-acme", typingRequested: false, startSessions: true,
+            seenAt: seen, updatedAt: now.addingTimeInterval(-7200)
+        )
+        try await transport.save([try TestRelayPhone.seal(try CloudRecordFactory.record(for: payload, modifiedAt: seen))])
+        let clock: @Sendable () -> Date = { now }
+        let records = RelayProcessor.DeviceRecords { _ in }
+        let processor = RelayProcessor(
+            transport: testSecureTransport(transport, keys: hubKeys), sidecar: sidecar, dispatcher: dispatcher,
+            hubID: "hub-acme", deviceRecords: records, now: clock
+        )
+
+        _ = try await processor.processOnce()
+
+        XCTAssertEqual(sidecar.lastPhoneContact(), seen)
+        try sidecar.notePhoneContact(at: seen.addingTimeInterval(-60))
+        XCTAssertEqual(sidecar.lastPhoneContact(), seen, "an older time never lowers the stamp")
+    }
+
     // MARK: - Key-authenticated phones (mobile E2E spec §2.2, D4, D9, D10)
 
     /// A plain probe from `deviceID`, `createdAt` = `created`.

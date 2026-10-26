@@ -282,10 +282,13 @@ final class RelayProcessor: Sendable {
                 }, budgeted: false)
             }
         case RelayRecordKind.device.rawValue:
-            guard let deviceRecords, isFromItsOwnPhone(record) else { return nil }
+            guard let deviceRecords, let payload = ownPhonePayload(record) else { return nil }
             return Work(run: {
                 // Phone activity: the grant traffic that follows runs at the active cadence.
                 self.lastActivity.withLock { $0 = self.now() }
+                // The phone says when it was last in touch (`seen_at`); an unlink is no contact, a replayed old
+                // record is not contact now.
+                if payload.unlinked != true { self.noteContact(min(payload.seenAt ?? payload.updatedAt, self.now())) }
                 try await deviceRecords.handle(record)
             }, budgeted: false)
         case RelayRecordKind.hello.rawValue:
@@ -306,19 +309,29 @@ final class RelayProcessor: Sendable {
     /// its payload's `device_id` is the authenticated sender. Otherwise (one
     /// linked phone writing another's unlink or start-sessions choice, or a
     /// payload that does not decode) it is dropped and logged, never echoed.
-    private func isFromItsOwnPhone(_ record: CloudRecord) -> Bool {
+    private func ownPhonePayload(_ record: CloudRecord) -> DevicePayload? {
         let payload: DevicePayload
         do {
             payload = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: record.payload)
         } catch {
             logger.warning("undecodable device record \(record.recordName, privacy: .public): dropped")
-            return false
+            return nil
         }
         guard let sender = record.sealed?.senderID, UUID(uuidString: payload.deviceID) == sender else {
             logger.warning("device record \(record.recordName, privacy: .public) names another phone than its sender: dropped")
-            return false
+            return nil
         }
-        return true
+        return payload
+    }
+
+    /// Records that a linked phone was in touch at `date` (keep-awake, ask #614). Diagnostic: a failed write is
+    /// logged and never blocks the record.
+    private func noteContact(_ date: Date) {
+        do {
+            try sidecar.notePhoneContact(at: date)
+        } catch {
+            logger.error("phone contact not recorded: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private enum PendingAction {
@@ -396,6 +409,7 @@ final class RelayProcessor: Sendable {
             outcome = expired
         } else {
             try noteSeq(origin)
+            noteContact(now())
             guard let applied = try await applyAction(action, origin: origin, transport: transport) else { return }
             outcome = applied
         }
