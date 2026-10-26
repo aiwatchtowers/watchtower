@@ -267,7 +267,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 		for s := range 25 {
 			id := fmt.Sprintf("s-%d-%d", day, s)
 			path := "/tmp/x/" + id + ".jsonl"
-			base := now.AddDate(0, 0, -day).Add(time.Duration(s) * time.Minute)
+			base := now.AddDate(0, 0, -day).Add(time.Duration(s)*time.Minute - time.Hour) // all before now
 			_, err := tx.Exec(`INSERT INTO agent_log_files (path, agent, size, mtime, read_offset, parser_version)
 				VALUES (?, 'claude', 1, '', 1, 4)`, path)
 			require.NoError(t, err)

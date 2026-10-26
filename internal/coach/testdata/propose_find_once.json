@@ -1,0 +1,5 @@
+{"proposals": [
+  {"title": "Ambiguous find", "why": "Three sessions.", "destination": "session", "workbench_id": 0, "prompt_id": "", "kind": "replace", "find": "Run", "replace": "Start", "metric": "corrections", "evidence": ["s1", "s2", "s3"]},
+  {"title": "Missing find", "why": "Three sessions.", "destination": "session", "workbench_id": 0, "prompt_id": "", "kind": "replace", "find": "Write docs.", "replace": "Write short docs.", "metric": "corrections", "evidence": ["s1", "s2", "s3"]},
+  {"title": "Smaller commits", "why": "Three sessions.", "destination": "session", "workbench_id": 0, "prompt_id": "", "kind": "replace", "find": "Keep commits small.", "replace": "Keep commits small and focused.", "metric": "corrections", "evidence": ["s1", "s2", "s3"]}
+]}

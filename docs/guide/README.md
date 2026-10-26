@@ -78,6 +78,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Your instructions](features/workbench/instructions.md) — standing directions for every agent and AI chat (`remember:` adds one from a chat), a target procedure, and suggestions from what you repeat
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench
 - [Agent analytics](features/agent-analytics.md) — tokens, cost and tool use of the agent sessions in a workbench, on the Analytics view or from the command line
+- [Agent coach](features/agent-coach.md) — weekly suggestions to improve your instructions, prompts and agent settings, each applied only when you accept it
 
 ## Automations & AI
 

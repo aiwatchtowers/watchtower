@@ -1,0 +1,7 @@
+{"proposals": [
+  {"title": "Percent", "why": "Three specs.", "destination": "prompt_addition", "workbench_id": 0, "prompt_id": "review.spec", "kind": "add", "find": "", "replace": "Do not ask for 100% test coverage.", "metric": "review_findings", "evidence": ["ask:10#ag:1", "ask:11#bs:2", "ask:12#ck:1"]},
+  {"title": "Braces", "why": "Three specs.", "destination": "prompt_addition", "workbench_id": 0, "prompt_id": "review.spec", "kind": "add", "find": "", "replace": "Skip {{.Style}} findings.", "metric": "review_findings", "evidence": ["ask:10#ag:1", "ask:11#bs:2", "ask:12#ck:1"]},
+  {"title": "Part of a line", "why": "Three specs.", "destination": "prompt_addition", "workbench_id": 0, "prompt_id": "review.spec", "kind": "replace", "find": "naming", "replace": "naming or wording", "metric": "review_findings", "evidence": ["ask:10#ag:1", "ask:11#bs:2", "ask:12#ck:1"]},
+  {"title": "Built-in prompt", "why": "Three specs.", "destination": "prompt_addition", "workbench_id": 0, "prompt_id": "briefing.daily", "kind": "add", "find": "", "replace": "Keep it short.", "metric": "review_findings", "evidence": ["ask:10#ag:1", "ask:11#bs:2", "ask:12#ck:1"]},
+  {"title": "Skip test-coverage findings", "why": "The owner marked them not useful in three specs.", "destination": "prompt_addition", "workbench_id": 0, "prompt_id": "review.spec", "kind": "add", "find": "", "replace": "Do not flag missing test coverage numbers.", "metric": "review_findings", "evidence": ["ask:10#ag:1", "ask:11#bs:2", "ask:12#ck:1"]}
+]}

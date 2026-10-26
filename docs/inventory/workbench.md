@@ -2261,6 +2261,12 @@ owner never saw.
 - `cmd/workbench_brief_instructions_test.go::TestProj22_WorkbenchTextsNeverInChatSlot`
 - supporting: `internal/instructions/remember_test.go` (shared prefix fixture `testdata/remember_cases.json`, also read by `RememberCommandFixtureTests`), `internal/instructions/suggest_test.go`, `internal/db/instructions_test.go`, `cmd/instructions_test.go`, `internal/chat/prompt_test.go`
 
+**Amended 2026-10-26 (agent coach, board #1120, approved in ask #659; spec `docs/superpowers/specs/2026-10-26-agent-coach-design.md`; no guard relaxed):** item (3) gains one more writer of the owner's texts: `watchtower coach accept <id>` writes one coach proposal into the session, procedure or chat text (global or per workbench) — only on the owner's Accept, refused under an agent's markers and confirmed in the Desktop (AGENT-07), by compare-and-set on the text the proposal was made from, within `instructions.MaxRunes`. The weekly coach pass and `coach run` only store proposals and change no text (COACH-01 in `docs/inventory/coach.md`); the agent surface still has no tool to read or change the texts.
+
+**Added guards (2026-10-26):**
+- `internal/coach/coach01_test.go::TestCOACH01_NothingAppliedWithoutAccept`
+- `cmd/coach_test.go::TestCoachOwnerVerbs_NeedTheDesktopsConfirmation`
+
 **Locked since:** 2026-10-17
 
 ## v1 limits and notes (accepted)
@@ -2555,6 +2561,7 @@ owner never saw.
 
 ## Changelog
 
+- 2026-10-26 (agent coach, board #1120, **approved in ask #659**): amendment, no guard weakened. **PROJ-22** item (3): `coach accept` is another writer of the owner's instructions, only on the owner's Accept. See the amendment in PROJ-22.
 - 2026-10-26 (spec review author loop, board #1121, **owner approved in asks #653 and #658**): amendment, no guard weakened. **PROJ-12** — the Desktop's guarded `open → answered` update of an owner ask now also refuses an ask whose `spec_reviews.loop` is `author` (a hidden spec or plan review ask in the author loop, SPECREVIEW-04): such an ask is on no owner surface and never answered by the owner; every existing PROJ-12 delivery guard is unchanged, and the findings line the Desktop types for the loop (`Spec review of ask #N, round R: K findings to address — …`) goes through the same `SessionLineDelivery` rules as an answer line.
 - 2026-10-25 (spec review, PR #473; spec `docs/superpowers/specs/2026-10-25-spec-review-design.md`): strengthening, no guard relaxed. **PROJ-03** — `TestProj03_AskOwnerNeverWritesTheFolder` now also files a `doc_type: spec` review ask with a reviewer launcher installed and checks it was called once while the folder stays byte-identical; the reviewer it launches (`workbench spec-review run`, detached, read-only file tools, no MCP server) writes only its own `spec_reviews` row (SPECREVIEW-01 in `docs/inventory/spec-review.md`). **PROJ-04** — core skill pack v17 (`doc_type` and the independent reviewer; main's v16 kept as a fixture, `v16CoreSHA256`), flow preset v11.
 - 2026-10-25 (images and links become knowledge, board #907, **owner approved in asks #576, #590 and #594**): strengthening, no guard relaxed. **PROJ-01 note** — a target image's description reaches an agent only through `get_target` and is never indexed (guards listed there). **PROJ-02** — deleting a target image (or the workbench, by cascade) deletes its `media_items` row (`internal/db/media_purge_test.go::TestChatAndTargetDeleteTakeMedia`). **PROJ-04** — core skill pack v16: the Tools section lists `search_knowledge` / `get_knowledge_document` with the reader line for AI-described images and fetched pages (`TestWorkbenchSkill_MediaSectionsAreData`); the shipped v15 text joins the adopt-by-digest list (`v15CoreSHA256`) and the DEV-04 fixtures (`testdata/watchtower-workbench-v15.md`).

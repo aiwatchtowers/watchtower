@@ -2280,20 +2280,51 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     queued_at   TEXT NOT NULL,
     started_at  TEXT NOT NULL DEFAULT '',
     finished_at TEXT NOT NULL DEFAULT ''
-, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS spec_review_marks (
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1);
+CREATE TABLE IF NOT EXISTS learn_seen (
+    item_id TEXT PRIMARY KEY,
+    how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
+    seen_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS "spec_review_marks" (
     ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
     item_key   TEXT NOT NULL,
-    state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
+    state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed','not_useful')),
     body       TEXT NOT NULL DEFAULT '',
     about      TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );
-CREATE TABLE IF NOT EXISTS learn_seen (
-    item_id TEXT PRIMARY KEY,
-    how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
-    seen_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS coach_proposals (
+    id            INTEGER PRIMARY KEY,
+    fingerprint   TEXT NOT NULL UNIQUE,
+    kind          TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
+    destination   TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user')),
+    workbench_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
+    prompt_id     TEXT NOT NULL DEFAULT '',
+    title         TEXT NOT NULL,
+    why           TEXT NOT NULL,
+    metric        TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings')),
+    before_text   TEXT NOT NULL DEFAULT '', -- the whole destination text before
+    after_text    TEXT NOT NULL DEFAULT '', -- the whole destination text after
+    evidence      TEXT NOT NULL DEFAULT '[]', -- JSON [{kind,ref}]
+    sources       INTEGER NOT NULL,         -- distinct sources, recomputed in Go
+    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','declined','superseded','rolled_back')),
+    reverts_id    INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL, -- a cut of an earlier no-effect edit
+    created_at    TEXT NOT NULL,
+    decided_at    TEXT NOT NULL DEFAULT '',
+    baseline      REAL,
+    baseline_n    INTEGER NOT NULL DEFAULT 0,
+    verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
+    verdict_value REAL,
+    verdict_at    TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS prompt_additions (
+    id          INTEGER PRIMARY KEY,
+    prompt_id   TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    proposal_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2637,6 +2668,7 @@ CREATE INDEX IF NOT EXISTS idx_media_items_imap ON media_items(imap_account_id, 
 CREATE INDEX IF NOT EXISTS idx_media_items_chat ON media_items(chat_attachment_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_target ON media_items(target_image_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at);
+CREATE INDEX IF NOT EXISTS prompt_additions_prompt ON prompt_additions(prompt_id, id);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

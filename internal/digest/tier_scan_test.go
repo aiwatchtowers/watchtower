@@ -63,6 +63,7 @@ var allowedStrongSources = []allowedStrongSource{
 	{"workbench.review_overview", "diff reviewer: judges an agent's change set against the owner's intent (coverage, risk, chapters); a judgment call, not a mechanical rollup"},
 	{"workbench.review_lessons", "diff reviewer: groups the owner's repeated comments into house rules; a judgment call over free text, not a mechanical rollup"},
 	{"workbench.spec_review", "spec reviewer: judges a spec or plan against what the owner agreed (agreements, decided alone, blind spots); spec 2026-10-25-spec-review-design §3 names the strong tier"},
+	{"coach.propose", "agent coach: turns weeks of signals into exact edits of the owner's instructions, prompt additions and allow rules, preferring cuts and merges; a weekly call whose output the owner applies to every later session (spec 2026-10-26-agent-coach-design §6)"},
 
 	// Newly tagged by fix-wave-4 task 6 (previously untagged, logged
 	// source:"unknown"): tag-only per decision 9 — attribution fixed, tier

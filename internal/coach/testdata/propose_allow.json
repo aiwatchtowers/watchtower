@@ -1,0 +1,6 @@
+{"proposals": [
+  {"title": "Bare Bash", "why": "Denied in three sessions.", "destination": "claude_settings_allow", "workbench_id": 0, "prompt_id": "", "kind": "add", "find": "", "replace": "Bash", "metric": "owner_loop", "evidence": ["s1", "s2", "s3"]},
+  {"title": "Remove files", "why": "Denied in three sessions.", "destination": "claude_settings_allow", "workbench_id": 0, "prompt_id": "", "kind": "add", "find": "", "replace": "Bash(go test:*)\nBash(rm:*)", "metric": "owner_loop", "evidence": ["s1", "s2", "s3"]},
+  {"title": "Drop a rule", "why": "Denied in three sessions.", "destination": "claude_settings_allow", "workbench_id": 0, "prompt_id": "", "kind": "cut", "find": "Bash(ls:*)", "replace": "", "metric": "owner_loop", "evidence": ["s1", "s2", "s3"]},
+  {"title": "Allow the package tests", "why": "Denied in three sessions.", "destination": "claude_settings_allow", "workbench_id": 7, "prompt_id": "", "kind": "add", "find": "", "replace": "Bash(go test:*)", "metric": "owner_loop", "evidence": ["s1", "s2", "s3"]}
+]}

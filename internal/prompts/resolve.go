@@ -9,6 +9,11 @@ import "fmt"
 // the stored template is empty (an empty template can never render: every
 // caller formats it with arguments or appends to it).
 //
+// With a store, the owner's approved additions to id (the coach's additions
+// layer, keyed by the base id so a role variant gets them too) are appended to
+// the stored or built-in template alike; they never touch the row, so shipped
+// default upgrades keep flowing. A failed additions read is logged and skipped.
+//
 // A non-nil err reports why a store was not used: a failed read, an empty
 // stored row, or an id with neither a row nor a built-in default (then tmpl is
 // empty too — every caller passes a registered id, so that is a programming
@@ -20,13 +25,17 @@ func Resolve(store *Store, id, role string) (tmpl string, version int, err error
 	if store != nil {
 		tmpl, version, err = store.GetForRole(id, role)
 		if err == nil && tmpl != "" {
-			return tmpl, version, nil
+			return WithAdditions(tmpl, store.additionsFor(id)), version, nil
 		}
 		if err == nil {
 			err = fmt.Errorf("prompt %q: stored template is empty", id)
 		}
 	}
-	return Defaults[id], 0, err
+	tmpl = Defaults[id]
+	if store != nil && tmpl != "" {
+		tmpl = WithAdditions(tmpl, store.additionsFor(id))
+	}
+	return tmpl, 0, err
 }
 
 // WithRoleInstruction prepends the owner role's instruction block to a

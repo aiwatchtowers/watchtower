@@ -113,6 +113,76 @@ func setWorkbenchInstructionTx(tx *sql.Tx, id int64, f InstructionField, body st
 	return requireAffected(res, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound))
 }
 
+// SwapOwnerInstruction sets the global text of field f to body only while it
+// is still before ("" = no row), in one statement; false when it was not.
+func (db *DB) SwapOwnerInstruction(f InstructionField, before, body string) (bool, error) {
+	if !f.valid() {
+		return false, fmt.Errorf("unknown instruction field %q", f)
+	}
+	var res sql.Result
+	var err error
+	switch {
+	case before == body:
+		var same bool
+		err = db.QueryRow(`SELECT COALESCE((SELECT body FROM owner_instructions WHERE scope = ?), '') = ?`,
+			string(f), before).Scan(&same)
+		if err != nil {
+			return false, fmt.Errorf("reading owner %s instruction: %w", f, err)
+		}
+		return same, nil
+	case before == "":
+		res, err = db.Exec(`INSERT INTO owner_instructions (scope, body, updated_at)
+			VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+			ON CONFLICT(scope) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at
+			WHERE owner_instructions.body = ''`, string(f), body)
+	case body == "":
+		res, err = db.Exec(`DELETE FROM owner_instructions WHERE scope = ? AND body = ?`, string(f), before)
+	default:
+		res, err = db.Exec(`UPDATE owner_instructions SET body = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			WHERE scope = ? AND body = ?`, body, string(f), before)
+	}
+	return swapped(res, err, fmt.Sprintf("setting owner %s instruction", f))
+}
+
+// SwapWorkbenchInstruction sets one text of workbench id to body only while
+// it is still before ("" = NULL), in one statement; false when it was not,
+// ErrWorkbenchNotFound when there is no such workbench.
+func (db *DB) SwapWorkbenchInstruction(id int64, f InstructionField, before, body string) (bool, error) {
+	if !f.valid() || f == InstructionChat {
+		return false, fmt.Errorf("unknown instruction field %q", f)
+	}
+	col := "target_procedure"
+	if f == InstructionSession {
+		col = "session_instructions"
+	}
+	what := fmt.Sprintf("setting workbench %d %s instruction", id, f)
+	res, err := db.Exec(`UPDATE projects SET `+col+` = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ? AND COALESCE(`+col+`, '') = ?`, methodologyValue(body), id, before)
+	ok, err := swapped(res, err, what)
+	if err != nil || ok {
+		return ok, err
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM projects WHERE id = ?)`, id).Scan(&exists); err != nil {
+		return false, fmt.Errorf("%s: %w", what, err)
+	}
+	if !exists {
+		return false, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)
+	}
+	return false, nil
+}
+
+func swapped(res sql.Result, err error, what string) (bool, error) {
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", what, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", what, err)
+	}
+	return n > 0, nil
+}
+
 // InstructionSuggestion is one mined repeat the owner can add to the
 // instructions or dismiss. WorkbenchID is NULL for a global suggestion.
 type InstructionSuggestion struct {

@@ -83,6 +83,7 @@ This keeps an agent that was talked into running such a command from going ahead
 | `watchtower mcp` | Run the MCP server over stdio |
 | `watchtower tools` | Call the read-only data tools from the console |
 | `watchtower agents enable\|disable\|scan\|stats` | [Agent analytics](../features/agent-analytics.md) |
+| `watchtower coach status\|proposals\|accept\|decline\|rollback\|run` | [Agent coach](../features/agent-coach.md) |
 | `watchtower code index\|search` | Symbol index and text search for a workbench folder |
 
 ## AI and usage

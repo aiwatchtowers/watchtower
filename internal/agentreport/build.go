@@ -38,24 +38,28 @@ type SessionRow struct {
 
 // Overview is the report of one workbench over a period (`agents report --json`).
 type Overview struct {
-	WorkbenchID       int64         `json:"workbench_id"`
-	Enabled           bool          `json:"enabled"`
-	Since             string        `json:"since"`
-	Until             string        `json:"until"`
-	Totals            Totals        `json:"totals"`
-	Time              TimeSplit     `json:"time"`
-	Subagents         Subagents     `json:"subagents"`
-	Commands          []CommandRow  `json:"commands"`
-	Models            []ModelRow    `json:"models"`
-	Hints             []Hint        `json:"hints"`
-	Context           ContextReport `json:"context"`
-	Skills            SkillsReport  `json:"skills"`
-	Trouble           TroubleReport `json:"trouble"`
-	Tasks             []TaskRow     `json:"tasks"`
-	TasksMore         int           `json:"tasks_more"`
-	Sessions          []SessionRow  `json:"sessions"`
-	OldFormatSessions int           `json:"old_format_sessions"`
-	Import            ImportState   `json:"import"`
+	WorkbenchID int64         `json:"workbench_id"`
+	Enabled     bool          `json:"enabled"`
+	Since       string        `json:"since"`
+	Until       string        `json:"until"`
+	Totals      Totals        `json:"totals"`
+	Time        TimeSplit     `json:"time"`
+	Subagents   Subagents     `json:"subagents"`
+	Commands    []CommandRow  `json:"commands"`
+	Models      []ModelRow    `json:"models"`
+	Hints       []Hint        `json:"hints"`
+	Context     ContextReport `json:"context"`
+	Skills      SkillsReport  `json:"skills"`
+	Trouble     TroubleReport `json:"trouble"`
+	Tasks       []TaskRow     `json:"tasks"`
+	TasksMore   int           `json:"tasks_more"`
+	// TasksAgentMS and TasksCostUSD total every touched task, the ones past
+	// TasksMax included (the coach divides them by len(Tasks)+TasksMore).
+	TasksAgentMS      int64        `json:"-"`
+	TasksCostUSD      float64      `json:"-"`
+	Sessions          []SessionRow `json:"sessions"`
+	OldFormatSessions int          `json:"old_format_sessions"`
+	Import            ImportState  `json:"import"`
 }
 
 // ImportState is how far the workbench's history import got (spec D6):
@@ -215,6 +219,9 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	if err != nil {
 		return nil, err
 	}
+	// Nothing after now: a session that starts later is not part of this period.
+	nowStr := now.UTC().Format(tsLayout)
+	sessions = slices.DeleteFunc(sessions, func(s agentlogdb.AgentReportSession) bool { return s.StartedAt > nowStr })
 	uuids := make([]string, len(sessions))
 	for i, s := range sessions {
 		uuids[i] = s.SessionUUID
@@ -263,6 +270,10 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	ov.Commands = nonNil(Commands(flatten(b.events)))
 	tasks := touched(Tasks(targets, b.segments, b.events, now))
 	ov.Tasks, ov.TasksMore = capTasks(tasks)
+	for _, r := range tasks {
+		ov.TasksAgentMS += r.AgentMS
+		ov.TasksCostUSD += r.CostUSD
+	}
 	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ov.Context, Skills: ov.Skills, Trouble: ov.Trouble, Sessions: b.views,
 		Tasks:   tasks,
 		Targets: targets, Events: b.events, Now: now}))
