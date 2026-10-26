@@ -1,7 +1,8 @@
 import CloudKit
 import Foundation
 
-/// The ask-alert push trigger per database scope (D14). The hub writes a payload-free `WatchtowerSignal` record
+/// The work-alert push trigger per database scope (D14); it carries every work alert (ask, permission, session
+/// stopped, session failed), and the subscription ID is unchanged. The hub writes a payload-free `WatchtowerSignal` record
 /// `sig-<wire name of the alert>` next to each sealed `ask_alert` (`AskAlertSignal` on the Mac); the notification
 /// extension fetches the alert it names and opens it with `AlertOpener`. Registering the subscription, and the
 /// shared-scope local notification, are A13's.
