@@ -258,7 +258,10 @@ final class FastLaneTests: XCTestCase {
         let wall = self.wall
         let publisher = SlicePublisher(
             dbPool: pool, state: sidecar, transport: transport.sealing(names: sidecar),
-            sources: [terminalSlice(liveness), AskAlertSlice(sidecar: sidecar) { wall.now }]
+            sources: [
+                terminalSlice(liveness),
+                WorkAlertSlice(sidecar: sidecar, isAway: { true }, liveness: { liveness.current }, now: { wall.now })
+            ]
         )
         let log = NudgeLog()
         let lane = makeLane(center, liveness: liveness) { kinds in
@@ -417,6 +420,33 @@ final class FastLaneTests: XCTestCase {
         await center.poll()
         XCTAssertEqual(log.nudges, [[.ownerAsk, .askAlert, .permissionRequest]], "an unchanged read nudges nothing")
         XCTAssertTrue(FastLane.stateChangeKinds.isSubset(of: SlicePublisher.urgentKinds), "the publisher keeps these nudges")
+    }
+
+    /// Spec 2026-10-25-mobile-workbench-remote §5.2: the owner leaving the Mac nudges the work alerts, so a stop
+    /// left unresolved pushes at once; coming back nudges nothing. The away center's own closure keeps firing and is
+    /// restored on stop.
+    func testGoingAwayNudgesTheWorkAlerts() {
+        let away = OwnerAwayCenter(box: OwnerAwayBox())
+        var seen: [Bool] = []
+        away.onChange = { seen.append($0) }
+        let log = NudgeLog()
+        let lane = FastLane(
+            dbPool: pool, agentStates: nil, terminalCenter: terminals, liveness: SessionLivenessBox(), ownerAway: away,
+            nudge: { log.record($0) }, sessionStateChanged: { _ in }
+        )
+        lanes.append(lane)
+        lane.start()
+
+        away.onChange?(true)
+        away.onChange?(false)
+
+        XCTAssertEqual(log.nudges, [[.askAlert]])
+        XCTAssertEqual(seen, [true, false])
+        XCTAssertTrue(FastLane.awayKinds.isSubset(of: SlicePublisher.urgentKinds), "the publisher keeps the nudge")
+        lane.stop()
+        away.onChange?(true)
+        XCTAssertEqual(log.nudges, [[.askAlert]], "a stopped lane is unhooked")
+        XCTAssertEqual(seen, [true, false, true], "the earlier closure is back")
     }
 
     func testStartCopiesTheLivenessAndNudgesNothing() async throws {

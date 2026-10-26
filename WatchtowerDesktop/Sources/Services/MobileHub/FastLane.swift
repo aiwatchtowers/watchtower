@@ -24,7 +24,11 @@ import WatchtowerSync
 ///   (`stateChangeKinds`): an agent asking or waiting on a permission
 ///   prompt flips its session's state, so what Go wrote reaches the phone
 ///   in 1–2 s instead of the 10 s urgent tick. The published
-///   session states themselves follow on the next full tick.
+///   session states themselves follow on the next full tick;
+/// - `OwnerAwayCenter.onChange`, chained the same way: the owner leaving the
+///   Mac nudges `ask_alert`, so the stops left unresolved push at once
+///   (spec 2026-10-25-mobile-workbench-remote §5.2); coming back nudges
+///   nothing (a pushed alert stays until its stop resolves).
 ///
 /// It also copies `TerminalCenter`'s liveness and the center's
 /// `displayOver` into `SessionLivenessBox` for the `terminal_session` slice,
@@ -48,10 +52,13 @@ final class FastLane: HubCompanion {
     /// requests, since Go's writes are invisible to the observation above
     /// (the permission hook records `approval` with each request it opens).
     nonisolated static let stateChangeKinds: Set<SliceKind> = [.ownerAsk, .askAlert, .permissionRequest]
+    /// What the owner leaving the Mac nudges: the work alerts.
+    nonisolated static let awayKinds: Set<SliceKind> = [.askAlert]
 
     private let dbPool: DatabasePool
     private weak var agentStates: SessionAgentStateCenter?
     private weak var terminalCenter: TerminalCenter?
+    private weak var ownerAway: OwnerAwayCenter?
     private let liveness: SessionLivenessBox
     private let nudge: @Sendable (Set<SliceKind>) -> Void
     private let sessionStateChanged: (Int64) -> Void
@@ -60,6 +67,7 @@ final class FastLane: HubCompanion {
 
     private var previousOnChange: (() -> Void)?
     private var previousOnRead: (() -> Void)?
+    private var previousOnAwayChange: ((Bool) -> Void)?
     private var lastStatuses: [Int64: SessionAgentStatus] = [:]
     private var observations: [Task<Void, Never>] = []
     /// Tables whose observation delivered its initial value (a test seam).
@@ -67,6 +75,7 @@ final class FastLane: HubCompanion {
     private(set) var isRunning = false
 
     /// - Parameters:
+    ///   - ownerAway: the app's one away center (the phone alert gate).
     ///   - nudge: the publisher's `nudge(kinds:)`.
     ///   - sessionStateChanged: a session of this workbench changed state
     ///     (the git refresher and the report summary runner).
@@ -77,6 +86,7 @@ final class FastLane: HubCompanion {
         agentStates: SessionAgentStateCenter?,
         terminalCenter: TerminalCenter?,
         liveness: SessionLivenessBox,
+        ownerAway: OwnerAwayCenter? = nil,
         nudge: @escaping @Sendable (Set<SliceKind>) -> Void,
         sessionStateChanged: @escaping (Int64) -> Void,
         sessionStatesChanged: @escaping () -> Void = {}
@@ -85,6 +95,7 @@ final class FastLane: HubCompanion {
         self.agentStates = agentStates
         self.terminalCenter = terminalCenter
         self.liveness = liveness
+        self.ownerAway = ownerAway
         self.nudge = nudge
         self.sessionStateChanged = sessionStateChanged
         self.sessionStatesChanged = sessionStatesChanged
@@ -119,6 +130,14 @@ final class FastLane: HubCompanion {
             }
             lastStatuses = center.statuses
         }
+        if let away = ownerAway {
+            let previous = away.onChange
+            previousOnAwayChange = previous
+            away.onChange = { [weak self] isAway in
+                previous?(isAway)
+                self?.awayChanged(isAway)
+            }
+        }
         copyLiveness()
         observations = Self.observedTables.map { observe($0.table, kinds: $0.kinds) }
     }
@@ -134,6 +153,8 @@ final class FastLane: HubCompanion {
         }
         previousOnChange = nil
         previousOnRead = nil
+        ownerAway?.onChange = previousOnAwayChange
+        previousOnAwayChange = nil
         observations.forEach { $0.cancel() }
         observations = []
         observedTables = 0
@@ -155,6 +176,12 @@ final class FastLane: HubCompanion {
         copyLiveness()
         workbenches.sorted().forEach(sessionStateChanged)
         sessionStatesChanged()
+    }
+
+    /// The owner left the Mac: the work alerts push what is still unresolved.
+    private func awayChanged(_ isAway: Bool) {
+        guard isRunning, isAway else { return }
+        nudge(Self.awayKinds)
     }
 
     /// An unchanged read may still follow a liveness change the statuses do

@@ -61,7 +61,8 @@ public struct WorkAlertPayload: Codable, Equatable, Sendable {
     }
 }
 
-/// The `WorkAlertPayload.key` formats.
+/// The `WorkAlertPayload.key` formats. Mirrored by the Desktop's Core `WorkAlertPolicy` (Core links no Kit type);
+/// `WorkAlertSliceTests` pins the two together.
 public enum WorkAlertKey {
     public static func ask(_ id: Int64) -> String { "ask-\(id)" }
 

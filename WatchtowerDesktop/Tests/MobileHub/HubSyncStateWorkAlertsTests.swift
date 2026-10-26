@@ -21,12 +21,36 @@ final class HubSyncStateWorkAlertsTests: XCTestCase {
     func testPushedAtIsSetOnce() throws {
         let sidecar = try HubSyncState.inMemory()
         _ = try sidecar.noteWorkAlerts(["ask-7"], at: t0)
-        try sidecar.markWorkAlertsPushed(["ask-7", "unknown"], at: t0.addingTimeInterval(10))
-        try sidecar.markWorkAlertsPushed(["ask-7"], at: t0.addingTimeInterval(99))
+        let pushed = try sidecar.noteWorkAlerts(["ask-7"], pushing: true, at: t0.addingTimeInterval(10))
+        let again = try sidecar.noteWorkAlerts(["ask-7"], pushing: true, at: t0.addingTimeInterval(99))
 
-        let marks = try sidecar.noteWorkAlerts([], at: t0).marks
-        XCTAssertEqual(marks["ask-7"]?.pushedAt, t0.addingTimeInterval(10))
-        XCTAssertNil(marks["unknown"], "pushing a key never noted creates no row")
+        XCTAssertEqual(pushed.marks["ask-7"], HubSyncState.WorkAlertMark(seenAt: t0, pushedAt: t0.addingTimeInterval(10), generation: 0))
+        XCTAssertEqual(again.marks["ask-7"]?.pushedAt, t0.addingTimeInterval(10), "the first push stamp stays")
+    }
+
+    func testAPushNotesAnUnseenKeyAndLeavesOthersAlone() throws {
+        let sidecar = try HubSyncState.inMemory()
+        _ = try sidecar.noteWorkAlerts(["ask-1"], at: t0)
+
+        let marks = try sidecar.noteWorkAlerts(["ask-2"], pushing: true, at: t0.addingTimeInterval(5)).marks
+
+        let at = t0.addingTimeInterval(5)
+        XCTAssertEqual(marks["ask-2"], HubSyncState.WorkAlertMark(seenAt: at, pushedAt: at, generation: 0))
+        XCTAssertNil(marks["ask-1"]?.pushedAt, "a key not named is not pushed")
+    }
+
+    /// A row only seen in an earlier generation (it outlived a reset: seen more than the alert lifetime before it)
+    /// is pushed in the current one, so the push is published.
+    func testAPushMovesASeenRowToTheCurrentGeneration() throws {
+        let sidecar = try HubSyncState.inMemory()
+        _ = try sidecar.noteWorkAlerts(["stop-3-1"], at: t0)
+        try sidecar.wipeSyncState(now: t0.addingTimeInterval(8 * 86_400))
+        XCTAssertEqual(try sidecar.noteWorkAlerts([], at: t0).marks["stop-3-1"]?.generation, 0)
+
+        let marks = try sidecar.noteWorkAlerts(["stop-3-1"], pushing: true, at: t0.addingTimeInterval(9 * 86_400)).marks
+
+        XCTAssertEqual(marks["stop-3-1"]?.generation, 1)
+        XCTAssertEqual(marks["stop-3-1"]?.seenAt, t0, "the first sighting stays")
     }
 
     func testPruneKeepsOpenKeys() throws {

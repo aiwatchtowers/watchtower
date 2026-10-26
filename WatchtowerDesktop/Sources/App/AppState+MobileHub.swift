@@ -71,7 +71,9 @@ extension AppState {
             WorkbenchCommentSlice(),
             sessions,
             OwnerAskSlice(),
-            AskAlertSlice(sidecar: storage.sidecar),
+            WorkAlertSlice(
+                sidecar: storage.sidecar, isAway: { [box = ownerAwayBox] in box.read() }, liveness: { liveness.current }
+            ),
             PermissionRequestSlice { liveness.current },
             CalendarEventSlice(),
             MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
@@ -94,6 +96,7 @@ extension AppState {
         // recording jobs) are normal kinds: the next full tick diffs them.
         let fastLane = FastLane(
             dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
+            ownerAway: ownerAwayCenter,
             nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
             sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
                 gitRefresher?.sessionStateChanged(workbenchID: workbench)
