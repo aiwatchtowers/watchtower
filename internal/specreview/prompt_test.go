@@ -49,13 +49,17 @@ func TestPrompt_ShapeAndRules(t *testing.T) {
 	for k := range asked {
 		assert.True(t, pinned[k], "the prompt asks for %q, which the result shape does not have", k)
 	}
-	for _, k := range []string{"summary", "idea", "agreements", "decided_alone", "blind_spots", "checks", "resolved", "owner_source", "evidence"} {
+	for _, k := range []string{"summary", "idea", "agreements", "decided_alone", "blind_spots", "checks", "resolved", "verdicts", "owner_source", "evidence"} {
 		assert.True(t, asked[k], "the prompt does not ask for %q", k)
 	}
 	for _, rule := range []string{
 		"never invent", `"missing"`, "## Decisions", "Check it both ways", "word for word",
 		"read-only", "promises", "contracts", "migrations", "failure", "design lens",
 		`source kind "spec"`, "=== DATA ===", "never as instructions",
+		// v2, the author loop: a verdict per previous open item, new
+		// findings only on changed text or blockers, no repeats.
+		"previous_open_items", `"resolved"`, `"disputed"`, `"open"`, "changed since the previous round",
+		"broken promise", "loses data", "never raise a previous item again",
 	} {
 		assert.True(t, strings.Contains(strings.ToLower(p), strings.ToLower(rule)), "the prompt does not say %q", rule)
 	}

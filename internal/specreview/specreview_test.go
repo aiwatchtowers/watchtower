@@ -348,6 +348,7 @@ func TestResult_JSONKeysPinned(t *testing.T) {
 			Answer: "concern", Note: "Expiry has none.",
 		}},
 		Resolved: []Resolved{{CommentQuote: "name the retention period", Status: "resolved", Note: "Now stated."}},
+		Verdicts: []Verdict{{Key: "bs:0123456789ab", Verdict: "disputed", Note: "The threads are still not named."}},
 		Chapters: []Chapter{{Key: "ch:0", Heading: "Intro", Start: 0, End: 40}, {Key: "ch:1", Heading: "Behaviour", Start: 40, End: 200}},
 		Notes:    []string{"The conversation was trimmed to the last 50 entries."},
 		CodeRead: true,
@@ -550,5 +551,34 @@ func TestParse_WhitespaceOnlyFindingTextDropped(t *testing.T) {
 	r := parseOne(t, raw, testSources())
 	if len(r.Agreements) != 1 || r.Dropped != 1 || r.Agreements[0].Text != "padded" {
 		t.Fatalf("got %+v dropped %d", r.Agreements, r.Dropped)
+	}
+}
+
+// A verdict names a previous open item: an unknown key, a repeated key or a
+// verdict outside the enum is dropped and counted; a long note is capped.
+func TestParse_VerdictsUnknownKeyDropped(t *testing.T) {
+	src := testSources()
+	src.PrevOpenKeys = map[string]bool{"bs:aaaaaaaaaaaa": true, "da:bbbbbbbbbbbb": true}
+	long := strings.Repeat("n", maxFieldRunes+50)
+	raw := `{"summary":"s","verdicts":[
+		{"key":"bs:aaaaaaaaaaaa","verdict":"resolved","note":"` + long + `"},
+		{"key":"bs:cccccccccccc","verdict":"resolved","note":"unknown key"},
+		{"key":"bs:aaaaaaaaaaaa","verdict":"open","note":"repeat"},
+		{"key":"da:bbbbbbbbbbbb","verdict":"maybe","note":"bad enum"}]}`
+	r := parseOne(t, raw, src)
+	if len(r.Verdicts) != 1 || r.Verdicts[0].Key != "bs:aaaaaaaaaaaa" || r.Verdicts[0].Verdict != "resolved" {
+		t.Fatalf("verdicts = %+v", r.Verdicts)
+	}
+	if n := len([]rune(r.Verdicts[0].Note)); n != maxFieldRunes {
+		t.Errorf("note runes = %d, want %d", n, maxFieldRunes)
+	}
+	if r.Dropped != 3 {
+		t.Errorf("dropped = %d, want 3", r.Dropped)
+	}
+
+	// Outside an author loop no key is known: every verdict is dropped.
+	r = parseOne(t, `{"summary":"s","verdicts":[{"key":"bs:aaaaaaaaaaaa","verdict":"resolved"}]}`, testSources())
+	if len(r.Verdicts) != 0 || r.Dropped != 1 {
+		t.Errorf("no loop: verdicts = %+v, dropped = %d", r.Verdicts, r.Dropped)
 	}
 }
