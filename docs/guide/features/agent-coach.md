@@ -40,7 +40,8 @@ watchtower coach run --dry-run
 ```
 
 - `status` shows corrections, hours and cost per task, your share of active time, findings per spec review and comments per diff review, for the last 14 days against the 14 before.
-- `accept` applies a suggestion; `accept 12 --stdin` takes your own edited text from standard input instead. If the text changed since the suggestion was made, it is marked superseded and nothing is written.
+- `proposals` and `run` show each suggestion's change: removed lines with `-`, added ones with `+`.
+- `accept` applies a suggestion; `accept 12 --stdin` takes your own edited text from standard input instead (empty input is refused). If the text changed since the suggestion was made, it is marked superseded and nothing is written.
 - `rollback` undoes an accepted edit. If you changed the place since, it prints the difference and needs `--force`.
 - `run` does the weekly pass now; `--dry-run` prints what would be suggested and writes nothing.
 - Add `--json` for scripts.
@@ -51,7 +52,7 @@ On a spec review's findings screen, **Not useful** sits next to **Fine as is** a
 
 ## When it's empty or wrong
 
-- **No suggestions:** the coach needs three separate sources for a pattern and runs about once a week, only when the Claude plan is not near its limit. Run `watchtower coach run` to try now.
+- **No suggestions:** the coach needs three separate sources for a pattern and runs about once a week. Run `watchtower coach run` to try now.
 - **Numbers show unknown:** turn on **Analytics** for the workbench; without tasks or sessions there is nothing to divide by.
 - **A superseded suggestion:** you edited that text meanwhile. The next weekly pass can suggest again.
 - **Rolled-back CLAUDE.md is empty:** if an edit created the file, rolling back leaves it empty.
