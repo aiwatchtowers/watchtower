@@ -72,7 +72,8 @@ extension AppState {
             sessions,
             OwnerAskSlice(),
             WorkAlertSlice(
-                sidecar: storage.sidecar, isAway: { [box = ownerAwayBox] in box.read() }, liveness: { liveness.current }
+                sidecar: storage.sidecar, isAway: { [box = ownerAwayBox] in box.read() }, liveness: { liveness.current },
+                hiddenIDs: { hidden.current }
             ),
             PermissionRequestSlice { liveness.current },
             CalendarEventSlice(),

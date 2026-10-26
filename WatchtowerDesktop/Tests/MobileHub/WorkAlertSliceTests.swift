@@ -23,6 +23,7 @@ final class WorkAlertSliceTests: XCTestCase {
     )
     private let away = OSAllocatedUnfairLock(initialState: true)
     private let live = OSAllocatedUnfairLock(initialState: SessionLiveness())
+    private let hidden = OSAllocatedUnfairLock(initialState: Set<Int64>())
     private let day: TimeInterval = 86_400
     private var enabledAt: Date!
     /// When the live sessions' runs started (the hook stamps are trusted after it).
@@ -61,9 +62,10 @@ final class WorkAlertSliceTests: XCTestCase {
     }
 
     private func slice() -> WorkAlertSlice {
-        let clock = self.clock, away = self.away, live = self.live
+        let clock = self.clock, away = self.away, live = self.live, hidden = self.hidden
         return WorkAlertSlice(
-            sidecar: sidecar, isAway: { away.withLock { $0 } }, liveness: { live.withLock { $0 } }, now: { clock.withLock { $0 } }
+            sidecar: sidecar, isAway: { away.withLock { $0 } }, liveness: { live.withLock { $0 } },
+            hiddenIDs: { hidden.withLock { $0 } }, now: { clock.withLock { $0 } }
         )
     }
 
@@ -289,6 +291,51 @@ final class WorkAlertSliceTests: XCTestCase {
         setAway(false)
         _ = try alerts()
         XCTAssertNil(try sidecar.metaValue(forKey: WorkAlertSlice.awaySinceKey))
+    }
+
+    /// A push whose publish failed (no recorded hash) waits for the owner's next departure: it never first reaches
+    /// the zone, with its signal, while the owner sits at the Mac.
+    func testAPushThatNeverReachedTheZoneWaitsForTheNextDeparture() async throws {
+        let id = try ask(in: try workbench())
+        XCTAssertEqual(try alerts().map(\.askID), [id], "pushed while away; the publish failed (no hash)")
+        XCTAssertEqual(try sidecar.hashes(forKind: .askAlert), [:])
+
+        setAway(false)
+        XCTAssertEqual(try alerts(), [], "held at the Mac")
+        let transport = StubHubTransport()
+        let publisher = publisher(transport)
+        advance(30)
+        try await publisher.publishOnce()
+        XCTAssertEqual(try savedAlerts(transport), [])
+        XCTAssertEqual(signals(transport), 0)
+
+        setAway(true)
+        advance(30)
+        try await publisher.publishOnce()
+        XCTAssertEqual(try savedAlerts(transport), ["ask_alert-ask-\(id)"])
+        XCTAssertEqual(signals(transport), 1)
+
+        setAway(false)
+        advance(30)
+        try await publisher.publishOnce()
+        XCTAssertEqual(try alerts().map(\.askID), [id], "a published alert stays at the Mac until its ask resolves")
+        XCTAssertEqual(signals(transport), 1)
+    }
+
+    /// A session waiting in the Desktop's Undo batch (PROJ-17) never alerts: not its stop, its asks or its requests.
+    func testASessionInTheUndoBatchNeverAlerts() throws {
+        let project = try workbench()
+        let gone = try session(in: project)
+        setLive([gone])
+        try setState(gone, state: "waiting", at: now.addingTimeInterval(-60))
+        try ask(in: project, sessionID: gone)
+        try request(session: gone, workbench: project)
+        hidden.withLock { $0 = [gone] }
+
+        XCTAssertEqual(try alerts(), [])
+
+        hidden.withLock { $0 = [] }
+        XCTAssertEqual(Set(try alerts().map(\.event)), [.ask, .permission], "Undo: it alerts again")
     }
 
     // MARK: - One stop, one push

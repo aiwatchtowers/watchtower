@@ -21,7 +21,9 @@ import WatchtowerSync
 ///   within `WorkAlertPolicy.departureWindow` (30 min) before the departure — the first pass that reads the owner
 ///   away, stored as `work_alerts_away_since` until a pass reads them back. A pushed key never pushes again (a second
 ///   away period, a hub restart, a republish, a rotation);
-/// - a record for each candidate pushed in the current sync generation within 7 days of its push. A resolved stop
+/// - a record for each candidate pushed in the current sync generation within 7 days of its push; while the owner is
+///   at the Mac only those already in the zone (a recorded hash): a push whose publish failed is held until the next
+///   departure, so its first save and signal never buzz the phone while the owner is at the Mac. A resolved stop
 ///   (answered, decided, working again) leaves the candidates, so the publisher deletes its record and signal; an
 ///   account reset publishes nothing it pushed before into the new zone;
 /// - a stop an open ask or a pending request stood for (`WorkAlertPolicy.coveredStopKeys`) is remembered as a seen-only
@@ -50,17 +52,21 @@ struct WorkAlertSlice: SliceSource {
     let sidecar: HubSyncState
     let isAway: @Sendable () -> Bool
     let liveness: @Sendable () -> SessionLiveness
+    /// The sessions deleted on the Mac whose DELETE waits for Undo (PROJ-17): they never alert.
+    let hiddenIDs: @Sendable () -> Set<Int64>
     let now: @Sendable () -> Date
 
     init(
         sidecar: HubSyncState,
         isAway: @escaping @Sendable () -> Bool,
         liveness: @escaping @Sendable () -> SessionLiveness,
+        hiddenIDs: @escaping @Sendable () -> Set<Int64> = { [] },
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.sidecar = sidecar
         self.isAway = isAway
         self.liveness = liveness
+        self.hiddenIDs = hiddenIDs
         self.now = now
     }
 
@@ -69,11 +75,15 @@ struct WorkAlertSlice: SliceSource {
         // The hub's first enable; the heartbeat sets the same value.
         let enabledAt = try HubIdentity(sidecar: sidecar).ensureEnabledAt(stamp)
         let names = Dictionary(uniqueKeysWithValues: try WorkbenchSlice.publishedWorkbenchRefs(db).map { ($0.id, $0.name) })
-        let asks = try openAsks(db, published: names)
-        let requests = try PermissionRequestSlice(liveness: liveness, now: now).pending(db)
+        let hidden = hiddenIDs()
+        let asks = try openAsks(db, published: names).filter { $0.input.sessionID.map(hidden.contains) != true }
+        let requests = try PermissionRequestSlice(liveness: liveness, now: now).pending(db).filter { !hidden.contains($0.sessionID) }
         let waiting = Set(requests.map(\.sessionID))
-        let sessions = try TerminalSessionSlice(liveness: liveness, reportSummary: { _, _ in nil }, now: now)
-            .publishedSessions(db)
+        // Labelled: the hidden ids are not the reader's main closure.
+        let reader = TerminalSessionSlice(
+            liveness: liveness, reportSummary: { _, _ in nil }, now: now, hiddenIDs: { hidden } // swiftlint:disable:this trailing_closure
+        )
+        let sessions = try reader.publishedSessions(db)
             .map { item in
                 WorkAlertPolicy.SessionInput(
                     id: item.session.id, workbenchID: item.workbenchID, title: item.session.title, kind: item.state.kind,
@@ -97,9 +107,13 @@ struct WorkAlertSlice: SliceSource {
             WorkAlertPolicy.counts($0, enabledAt: enabledAt, workAlertsStartedAt: startedAt) && covered[Self.cover($0.key)] == nil
         }
         let keys = candidates.map(\.key)
-        let pushing = try awaySince(stamp).map { since in
+        let since = try awaySince(stamp)
+        let pushing = since.map { since in
             Set(candidates.filter { WorkAlertPolicy.pushesWhileAway($0, awaySince: since) }.map(\.key))
         } ?? []
+        // At the Mac only what already reached the zone stays: a push whose publish failed waits for the next
+        // departure, so its first save (and its signal) never lands while the owner sits at the Mac.
+        let inZone: Set<String>? = since == nil ? Set(try sidecar.hashes(forKind: kind).keys) : nil
         let (generation, marks) = try sidecar.noteWorkAlerts(keys, pushing: pushing, at: stamp)
         let current = all.map(\.key)
         try sidecar.pruneWorkAlerts(
@@ -109,7 +123,8 @@ struct WorkAlertSlice: SliceSource {
         let encoder = RelayCoder.makeEncoder()
         return try candidates.compactMap { candidate in
             guard let mark = marks[candidate.key], let pushedAt = mark.pushedAt, mark.generation == generation,
-                  stamp.timeIntervalSince(pushedAt) <= Self.lifetime else { return nil }
+                  stamp.timeIntervalSince(pushedAt) <= Self.lifetime,
+                  inZone?.contains(kind.recordName(id: candidate.key)) ?? true else { return nil }
             let payload = Self.payload(
                 candidate, workbenchName: names[candidate.workbenchID] ?? "",
                 quick: candidate.askID.map(quick.contains) ?? false
