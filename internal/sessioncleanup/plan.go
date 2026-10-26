@@ -362,7 +362,7 @@ func (b *builder) evaluateWorktree(ctx context.Context, w worktree) Item {
 	}
 	if head, err := b.repo.recordedHead(w); err == nil {
 		it.LastCommitAt = b.repo.commitDate(ctx, head)
-		it.Merged = b.repo.merged[head]
+		it.Merged = b.repo.isMerged(ctx, head)
 	}
 	return it
 }

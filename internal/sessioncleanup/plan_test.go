@@ -611,8 +611,13 @@ func TestItemsCarryLastCommitAndMerged(t *testing.T) {
 	gitIn(t, root, "push", "-q", "origin", "feat/merged:main")
 	gitIn(t, f.repo, "fetch", "-q", "origin")
 	f.pushedWork("wt-open", "feat/open")
+	detached := filepath.Join(f.base, "wt-detached")
+	gitIn(t, f.repo, "worktree", "add", "-q", "--detach", detached, "origin/main")
 
 	p := f.plan(Request{Sweep: true})
+	if d := findItem(t, p, "worktree:"+detached); d.LastCommitAt != "2026-09-01T10:00:00Z" || !d.Merged {
+		t.Fatalf("detached worktree = %+v", d)
+	}
 	merged := findItem(t, p, "branch:feat/merged")
 	if merged.LastCommitAt != "2026-09-01T10:00:00Z" || !merged.Merged {
 		t.Fatalf("merged branch = %+v", merged)
@@ -701,5 +706,16 @@ func TestBundlesAreFoundBeforeSizes(t *testing.T) {
 	}
 	if nb != 2 {
 		t.Fatalf("Bundles calls = %d, want 2 (%v)", nb, log.ops)
+	}
+}
+
+func TestSessionModeWorktreeCarriesOrigin(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.rootedWorktree(".claude/worktrees/agent-cd34", "worktree-agent-cd34")
+	f.record(root, "worktree-agent-cd34")
+	it := findItem(t, f.plan(Request{}), "worktree:"+root)
+	if it.Origin != "subagent" {
+		t.Fatalf("origin = %q, want subagent", it.Origin)
 	}
 }

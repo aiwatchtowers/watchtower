@@ -68,7 +68,8 @@ type repoState struct {
 	adminDirs     map[string]string // worktree root -> <common>/worktrees/<name>
 	contained     map[string]bool   // sha -> in the default branch or a remote ref
 	tipDates      map[string]string // sha -> committer date, RFC 3339 UTC (display only)
-	merged        map[string]bool   // sha of a branch tip in the default branch or origin's copy
+	merged        map[string]bool   // sha in the default branch or origin's copy (tips listed up front, others cached)
+	mergedRefs    []string          // the existing default refs merged is read against
 }
 
 // readRepo inventories the repository holding folder.
@@ -188,6 +189,7 @@ func (r *repoState) readDisplayFacts(ctx context.Context) {
 		if _, code, err := r.git.exitCode(ctx, r.folder, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil || code != 0 {
 			continue
 		}
+		r.mergedRefs = append(r.mergedRefs, ref)
 		out, err := r.git.output(ctx, r.folder, "for-each-ref", "--merged="+ref, "--format=%(objectname)", "refs/heads")
 		if err != nil {
 			continue
@@ -198,6 +200,27 @@ func (r *repoState) readDisplayFacts(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// isMerged: sha is an ancestor of the local or origin default branch. Branch
+// tips are answered by the listing; any other commit (a detached HEAD) by
+// `merge-base --is-ancestor`. Display only: a failure reads as false.
+func (r *repoState) isMerged(ctx context.Context, sha string) bool {
+	if v, ok := r.merged[sha]; ok {
+		return v
+	}
+	if sha == "" {
+		return false
+	}
+	in := false
+	for _, ref := range r.mergedRefs {
+		if _, code, err := r.git.exitCode(ctx, r.folder, "merge-base", "--is-ancestor", sha, ref); err == nil && code == 0 {
+			in = true
+			break
+		}
+	}
+	r.merged[sha] = in
+	return in
 }
 
 // commitDate is the committer date of sha: a branch tip's from the single
