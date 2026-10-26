@@ -10,9 +10,9 @@
 > change that would break a guard test or remove a contract must be raised as a
 > question before touching code.
 
-**Module:** `internal/specreview/` + `internal/db/spec_reviews.go` + `internal/daemon/spec_review_sweep.go` + `cmd/workbench_spec_review.go` + `cmd/workbench_spec_review_launch.go` + `internal/tools/workbench_asks.go` (`doc_type`, launcher)
+**Module:** `internal/specreview/` (`loop.go`) + `internal/db/spec_reviews.go` + `internal/daemon/spec_review_sweep.go` + `cmd/workbench_spec_review.go` + `cmd/workbench_spec_review_launch.go` + `internal/tools/workbench_asks.go` (`doc_type`, launcher)
 **Last full audit:** 2026-10-25 (created)
-**Owner approval:** spec `docs/superpowers/specs/2026-10-25-spec-review-design.md`; feature note `docs/features/spec-review.md`.
+**Owner approval:** spec `docs/superpowers/specs/2026-10-25-spec-review-design.md`; author loop spec `docs/superpowers/specs/2026-10-26-spec-review-author-loop-design.md` (asks #647, #649, #650, #653, #658); feature note `docs/features/spec-review.md`.
 
 ---
 
@@ -40,10 +40,10 @@ folder; a write outside its row would let a spec steer the owner's data.
 **Status:** Enforced (Go).
 
 **Observable:** A review ask is filed and returned even when the reviewer cannot be
-launched, is refused (plan near limit), the surface has no launcher, or the
+launched, the surface has no launcher, or the
 `spec_reviews` queue write fails (it runs after the ask's own transaction has
 committed). The review row is then `skipped` with the reason ("launch failed: …",
-"plan near limit", "no reviewer on this surface", "could not queue: …"; a queue
+"no reviewer on this surface", "could not queue: …"; a queue
 failure may leave no row, and the reason is then only in `spec_review`); the ask
 itself is never failed or delayed by it.
 
@@ -87,8 +87,49 @@ all of them unreliable.
 
 ---
 
+## SPECREVIEW-04 — a hidden review ask always becomes visible
+
+**Status:** Enforced (Go).
+
+**Observable:** A spec or plan review ask in the author loop (`spec_reviews.loop = 'author'`) is hidden from the owner only while the loop runs. Every exit ends in `loop = 'owner'` with its `loop_end`: the normal end (`settled`: nothing left for the author), the round cap (`cap`, 3 rounds), a reviewer that failed, was skipped or could not start (`reviewer_failed`, also from `ask_owner` when the queue or launch is skipped), an ask that lost its session or whose findings could not be delivered (`session_gone`) and an author silent for `AuthorTimeout` (30 min from `finished_at`, `timeout`). The daemon's `sweepSpecLoops` owns the time-based and dead-reviewer exits and does not depend on the launcher or on the Desktop being open; the owner never gets more than one ask per loop.
+
+**Why locked:** A loop stuck on a dead session, a failed reviewer or a silent author would hide the owner's ask for good.
+
+**Test guards:**
+- `internal/daemon/spec_review_sweep_test.go::TestSpecReviewSweep_LoopTimeoutReveals`
+- `internal/daemon/spec_review_sweep_test.go::TestSpecReviewSweep_LoopSessionGoneReveals`
+- `internal/daemon/spec_review_sweep_test.go::TestSpecReviewSweep_DeadReviewerRevealsLoop`
+- `internal/daemon/spec_review_sweep_test.go::TestSpecReviewSweep_FailedOrSkippedLoopReveals`
+- `internal/tools/workbench_spec_review_loop_test.go::TestAskOwner_LoopSkipReveals`
+- `internal/specreview/run_test.go::TestRun_LoopFailureReveals`
+- `internal/specreview/loop_test.go::TestNextRound_CapMovesOpenToUnsettled`
+
+**Locked since:** 2026-10-26
+
+---
+
+## SPECREVIEW-05 — nothing the author changed in the loop is hidden from the owner
+
+**Status:** Enforced (Go).
+
+**Observable:** Every finding the author answered `fixed` in any round ends in the final ask, either in the `ledger` (the reviewer judged it resolved, with its round and note) or in `open_items` (a dispute or "not settled"). `NextRound` drops no `fixed` reply, and an early `Reveal` keeps each such item: a done row shows its own `open_items`, a failed row the previous round's, and an unchecked fix says so instead of "the author did not answer".
+
+**Why locked:** The author could otherwise rewrite what the owner agreed without the owner seeing it.
+
+**Test guards:**
+- `internal/specreview/loop_test.go::TestNextRound_*` (resolved and disputed settle, a disputed-after-fixed item stays open, a missing verdict stays open, a missing reply is `fixed`, new findings skip known keys, settled when nothing is open)
+- `internal/specreview/run_test.go::TestReveal_DoneRowUsesItsOpenItems`
+- `internal/specreview/run_test.go::TestReveal_FailedRowUsesPrevious`
+
+**Locked since:** 2026-10-26
+
+---
+
 ## Changelog
 
 - 2026-10-25 (spec review Plan 1): file created with SPECREVIEW-01, 02, 03.
 - 2026-10-25 (Plan 1 final review fixes): SPECREVIEW-02 covers a failed queue write (queued after the ask's commit); SPECREVIEW-03 checks the speaker of the owner's words and stores `speaker` on every source.
 - 2026-10-25 (PR #473 review fixes): wording only, no guard changed — SPECREVIEW-03's Observable names the chosen option labels among the owner's answer texts (as `ownerAnswerWords` always did). A plan's review header carries no `decisions_section`; a spec's Decisions section is a `## ` heading starting with "Decisions" (`isDecisionsHeading`, Swift `SpecReviewDecisions`); an empty idea is left out of the result (`idea` omitted).
+- 2026-10-26 (spec review author loop, board #1121, **owner approved in asks #653 and #658**): **SPECREVIEW-04** and **-05** added; SPECREVIEW-01..03 unchanged (delivery of findings is the Desktop's, not the reviewer's). Migration 00160 (`spec_reviews` `loop`, `round`, `replies`, `open_items`, `ledger`, `loop_end`), `get_spec_review` (DEV-06 nineteen tools), `review_replies` on `ask_owner`, prompt `review.spec` v2, pack v18. The old "the owner is the filter" rule of the 2026-10-25 spec is replaced for spec and plan asks in a loop (owner decision D2, ask #649).
+- 2026-10-26 (author loop final review fixes): SPECREVIEW-04 gains the guard `TestSpecReviewSweep_FailedOrSkippedLoopReveals` — the sweep reveals a loop row left `failed`/`skipped` when the immediate reveal did not land. No guard weakened.
+- 2026-10-26 (owner): wording only, no guard changed — the automatic start no longer skips on the Claude plan's limits, so SPECREVIEW-02's Observable drops "plan near limit" from its examples.

@@ -38,9 +38,9 @@ struct ScanView: View {
                     .overlay(alignment: .bottom) {
                         Text("Point the camera at the code on your Mac.")
                             .font(.subheadline)
-                            .padding()
+                            .padding(Spacing.large)
                             .background(.regularMaterial, in: Capsule())
-                            .padding(.bottom, 32)
+                            .padding(.bottom, Spacing.hero)
                     }
             } else {
                 ContentUnavailableView(

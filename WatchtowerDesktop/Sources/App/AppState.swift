@@ -92,12 +92,16 @@ final class AppState {
     private(set) var ownerPendingSource: String?
 
     /// The Settings window's selected tab: an in-app link opens Settings on it.
-    var settingsTab: SettingsTab = .connections
+    var settingsTab: SettingsTab = .general
     /// A section the tab scrolls to once it shows (the tab clears it).
     var settingsAnchor: SettingsAnchor?
-    /// The Connections tab's selected service, held for the same reason
-    /// (the Inbox cheat sheet → Slack's reaction dictionary).
-    var settingsConnection: ConnectionService = .slack
+    /// The Connections tab's open service (nil: the overview), so a link opens a service.
+    var selectedConnection: ConnectionService?
+    /// A Slack connect in flight survives leaving the Connections tab (`SlackAuthFlowState`).
+    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
+    @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
+    /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
+    @ObservationIgnored lazy var sharedConfig = ConfigService()
 
     /// True while initialize() is running (before DB and onboarding check complete).
     var isLoading: Bool = true
@@ -313,7 +317,7 @@ final class AppState {
     /// Linear Accounts ViewModel — held here so an in-flight consent survives leaving Settings.
     private(set) var linearAccountsViewModel: LinearAccountsViewModel?
 
-    /// Confluence spaces pickers (Settings → Jira), one per Jira account id —
+    /// Confluence spaces pickers (Connections → Jira), one per Jira account id —
     /// held here so a select/unselect or re-consent still running when the
     /// Settings pane goes away finishes and is visible on return.
     private(set) var confluenceSpacesViewModels: [Int64: ConfluenceSpacesViewModel] = [:]
@@ -323,7 +327,7 @@ final class AppState {
     /// the Settings window.
     private(set) var externalConnectionsViewModel: ExternalConnectionsViewModel?
 
-    /// Reaction Dictionary ViewModel (Settings → Slack "Reaction commands"
+    /// Reaction Dictionary ViewModel (Connections → Slack "Reaction commands"
     /// editor) — persists across tab switches like its sibling account VMs
     /// above.
     private(set) var reactionDictionaryViewModel: ReactionDictionaryViewModel?
@@ -372,11 +376,15 @@ final class AppState {
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
+    /// The spec review author loop (#1121): each finished round typed into
+    /// the author's session, and the session rows' round line.
+    private(set) var specReviewLoopCenter: SpecReviewLoopCenter?
     /// The Analytics pane's `agents report` runs and Turn On (#298).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
+    @ObservationIgnored let ownerAwayCenter = OwnerAwayCenter(box: OwnerAwayBox())
     /// Raises an unanswered Chat question into an owner ask (owner asks v2,
     /// Part 5); nil without a CLI runner.
     private(set) var chatQuestionEscalator: ChatQuestionEscalator?
@@ -549,9 +557,10 @@ final class AppState {
         // Once per launch, before anything is shown or listed.
         cvm.cleanUpUntouchedConversations()
         let hvm = ChatHistoryViewModel(dbManager: db)
-        hvm.load()
+        hvm.reloadRows()
+        hvm.startObserving()
         Self.wireChat(cvm, history: hvm)
-        wireActionStripRefresh(cvm)
+        wireActionStripRefresh(cvm, history: hvm)
         chatViewModel = cvm
         chatHistoryViewModel = hvm
     }
@@ -721,10 +730,12 @@ final class AppState {
                     self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    self?.specReviewLoopCenter?.stop()
                     // An agents report / enable child gets SIGTERM.
                     self?.agentAnalyticsCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
+                    self?.ownerAwayCenter.stop()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
                     // Sessions waiting in the Undo batch were deleted in the
@@ -1049,12 +1060,11 @@ final class AppState {
     private(set) var isApplyingFeatureSuggestion = false
     private(set) var featureSuggestionError: String?
 
-    /// One of Settings' Add account sheets is up: the feature suggestion
-    /// waits for it.
+    /// One of the Add account sheets is up: the feature suggestion waits for it.
     var isAddingAccount = false
 
-    /// The offer shows in Settings once no Add account sheet is up; it
-    /// closes only through its own buttons.
+    /// The offer shows over the main window once no Add account sheet is
+    /// up; it closes only through its own buttons.
     var showsFeatureSuggestion: Bool {
         !featureSuggestion.isEmpty && !isAddingAccount
     }
@@ -1666,22 +1676,6 @@ final class AppState {
         peopleRoster.start(accountID: account.id)
     }
 
-    /// Re-consents one Slack account from a failed send's card ("sign in
-    /// again to grant send"): the same `slack login --account <id>` flow as
-    /// Settings → Slack → Reconnect. Returns why it failed (nil on success or
-    /// a cancelled sign-in) so the card can say so.
-    func reconnectSlack(accountID: Int64) async -> String? {
-        guard let vm = slackAccountsViewModel else {
-            return "Slack accounts are not loaded yet — open Settings → Slack."
-        }
-        if vm.accounts.isEmpty { await vm.refreshAsync() }
-        guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
-            return "Slack account #\(accountID) is no longer connected."
-        }
-        await vm.relogin(account)
-        return vm.error
-    }
-
     func initJiraAccounts(dbPool: DatabasePool) {
         let vm = JiraAccountsViewModel(dbPool: dbPool)
         vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
@@ -1818,6 +1812,10 @@ final class AppState {
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
+        let specReviewLoop = SpecReviewLoopCenter(
+            dbPool: dbPool, delivery: lineDelivery, cli: WorkbenchCLI(runner: cliRunner ?? UnresolvedCLIRunner())
+        )
+        vm.specReviewLoop = specReviewLoop
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
         workbenchesViewModel?.stop()
         workbenchesViewModel = vm
@@ -1828,6 +1826,8 @@ final class AppState {
         sessionLineDelivery = lineDelivery
         sessionReportCenter?.stop()
         sessionReportCenter = reports
+        specReviewLoopCenter?.stop()
+        specReviewLoopCenter = specReviewLoop
         replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload; off screen, once a window shows).
         notices.start()
@@ -1835,7 +1835,9 @@ final class AppState {
         vm.asks.start()
         agentStates.start()
         reports.start()
+        specReviewLoop.start()
         ownerPresenceCenter?.start()
+        ownerAwayCenter.start()
         chatQuestionEscalator?.start()
         vm.startHostReattach()
         // Old pasted Workchat files go once the reattach is done; the runs
@@ -2048,10 +2050,7 @@ final class AppState {
 
     /// Re-resolves `owner` off the main thread. A failed read keeps the last value (logged):
     /// a transient error must not flip a known owner to unknown and hide Generate.
-    ///
-    /// Reads can finish out of order (an account VM's init refresh racing a
-    /// later reload); like `refreshConnectedSources()`, an older read never
-    /// overwrites a newer one.
+    /// Like `refreshConnectedSources()`, an older read never overwrites a newer one.
     func refreshOwner() async {
         guard let pool = databaseManager?.dbPool else { return }
         ownerGeneration += 1

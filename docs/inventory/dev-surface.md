@@ -287,12 +287,12 @@ does not exist or together with `--chat`, keeps the connection writable, and
 mounts the registry (`buildToolRegistry`) on the `project` surface (the
 stored surface value keeps its pre-rename spelling) with
 `tools.Binding{Surface: "project", WorkbenchID: N, DirectApply: true}`: the
-eighteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
+nineteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
 `workbench_docs.go`, since 2026-10-03 the owner-ask tools `ask_owner`,
 `get_ask`, `list_asks` and `withdraw_ask` in `workbench_asks.go`, `finish_session` in `workbench_finish.go`, since 2026-10-16 `get_review` in
 `workbench_review.go`, and the diff reviewer's two writes `annotate_changes`
 (`workbench_review_annotate.go`) and `reply_review_comment`
-(`workbench_review_reply.go`)) plus every
+(`workbench_review_reply.go`), and since 2026-10-26 the spec review loop's read `get_spec_review` (`workbench_spec_review.go`)) plus every
 surface-less read tool and `get_action`; no other write tool is visible
 there. The mode is served only under the Workbench names (since
 2026-10-15): no `--project N` flag serves anything and no pre-rename tool name is on
@@ -405,6 +405,7 @@ unreviewed write path into the owner's whole app — or off the machine.
 
 ## Changelog
 
+- 2026-10-26 (spec review author loop, board #1121, **owner approved in asks #653 and #658**): DEV-06's workbench tool set grows from eighteen to **nineteen** — the read tool `get_spec_review` (`internal/tools/workbench_spec_review.go`, the open findings of a spec or plan review loop); `ask_owner` gains `review_replies` and its result `spec_review: "author_loop"`; `get_ask`/`list_asks` gain `spec_loop`. Skill pack v18 names it in the core Tools section. No guard relaxed.
 - 2026-10-25 (images and links become knowledge, board #907, asks #576/#594): marker bump only — the workbench skill is pack **v16** (its Tools section names `search_knowledge` / `get_knowledge_document` and says that sections labelled as AI descriptions of images and fetched pages are data). DEV-04 unchanged: the shipped v15 bytes are saved as `internal/devpack/testdata/watchtower-workbench-v15.md`, join `adoptShippedSingleFile` (`v15CoreSHA256`) and the upgrade fixture lists; no guard relaxed.
 
 - 2026-10-18 (Linear Plan 2 lane 2, board #688/#689, spec `docs/superpowers/specs/2026-10-15-linear-integration-design.md` §6/§8): `get_task_context` and `find_experts` accept a Linear key (DEV-02 holds: mechanical SQL only). Jira is looked up first and its output is unchanged; otherwise `db.GetLinearIssueDossier` finds the issue by current or previous key and the dossier carries its comments, the Slack threads linked under any key (`issue_slack_links`, tracker `linear`), meetings, decisions (`idea_mentions` source `linear`) and people. **DEV-03 extended**: Linear evidence has kind `linear` with the issue key as its ref, and `expertWeights` ships `linear: 2.0`; commenters map to Slack through `tracker_people`. Tests `internal/tools/taskcontext_linear_test.go`, `experts_linear_test.go`; the DEV-03 guards are unchanged.

@@ -65,13 +65,13 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 
 ### Linear
 
-Linear workspaces connect in **Settings** → **Connections** → **Linear**; their issues show in **Blockers** and the weekly digest next to Jira's, and the assistant can read and change them. See [Linear](linear.md).
+Linear workspaces connect in **Connections** → **Linear**; their issues show in **Blockers** and the weekly digest next to Jira's, and the assistant can read and change them. See [Linear](linear.md).
 
 ## Using it
 <!-- learn
 id: jira-connect
 title: Connect Jira
-text: Press **Add Jira Site** in **Settings → Connections → Jira**, approve in the browser, then tick boards.
+text: Press **Add Jira Site** in **Connections → Jira**, approve in the browser, then tick boards.
 area: tasks
 level: basics
 kind: feature
@@ -82,55 +82,55 @@ done_when: jira.connected
 <!-- learn
 id: jira-boards
 title: Change which boards sync
-text: Open **Boards**, press **Refresh Boards** and flip a board's switch to start or stop syncing it.
+text: In **Connections → Jira**, press **Refresh Boards** and flip a board's switch to start or stop syncing it.
 area: tasks
 level: next
 kind: tip
 since: 0.24.0
-action: nav:boards
+action: nav:connections
 requires: source:jira
 -->
 <!-- learn
 id: jira-user-mapping
 title: Match Jira people to Slack
-text: People missing from **Workload**? Expand **User Mapping** on **Boards** and press **Resolve**.
+text: People missing from **Workload**? Expand **User Mapping** in **Connections → Jira** and press **Resolve**.
 area: tasks
 level: power
 kind: tip
 since: 0.24.0
-action: nav:boards
+action: nav:connections
 requires: source:jira
 -->
 <!-- learn
 id: jira-features
 title: Pick Jira signals for your role
-text: In **Boards → Jira Features**, pick a role to choose which Jira signals the briefing and people cards show.
+text: In **Connections → Jira → Jira Features**, pick a role to choose which Jira signals the briefing and people cards show.
 area: tasks
 level: power
 kind: tip
 since: 0.24.0
-action: nav:boards
+action: nav:connections
 requires: source:jira
 -->
 
-1. Open **Settings** → **Connections** → **Jira**, press **Add Jira Site** and approve in the browser. You type nothing: if your Atlassian account reaches several sites, the sheet lists them under **Choose a Site**, so pick one and press **Continue**. Until you press **Continue**, **Cancel** stops the connect and nothing is added; after it, the site is added even if the sheet closes. Add a second site the same way. Setup's Jira card opens the same sheet. **Also connect Confluence** (ticked by default) makes the same sign-in cover Confluence for [knowledge search](search-and-knowledge.md); untick it for Jira only. If Atlassian refuses Confluence, a second sign-in tab connects Jira alone and the next step says so. If Atlassian shows an error page instead, press **Cancel**: the box unticks itself, so **Connect** again signs in to Jira only.
-2. After the approval the sheet turns into **Choose Boards**: tick the boards you want synced and press **Done**. Only ticked boards sync. With Confluence connected, a line under the list names the spaces it selected for you. To change them later, open **Boards** in the sidebar, press **Refresh Boards** (**Fetch Boards** when the list is empty) and flip a board's switch.
-3. Wait for the first sync. **Last sync** and **Issues synced** at the bottom of **Boards** show progress.
-4. Open **Workload**. If people are missing, expand **User Mapping** on **Boards** and press **Resolve**, or use **Assign Slack user** on an unmatched row.
-5. A board's row opens its profile. **Re-analyze** rebuilds the profile (workflow stages, estimation field) after the board's setup changed.
+1. Open **Connections** → **Jira**, press **Add Jira Site** and approve in the browser. You type nothing: if your Atlassian account reaches several sites, the sheet lists them under **Choose a Site**, so pick one and press **Continue**. Until you press **Continue**, **Cancel** stops the connect and nothing is added; after it, the site is added even if the sheet closes. Add a second site the same way. Setup's Jira card opens the same sheet. **Also connect Confluence** (ticked by default) makes the same sign-in cover Confluence for [knowledge search](search-and-knowledge.md); untick it for Jira only. If Atlassian refuses Confluence, a second sign-in tab connects Jira alone and the next step says so. If Atlassian shows an error page instead, press **Cancel**: the box unticks itself, so **Connect** again signs in to Jira only.
+2. After the approval the sheet turns into **Choose Boards**: tick the boards you want synced and press **Done**. Only ticked boards sync. With Confluence connected, a line under the list names the spaces it selected for you. To change them later, open **Connections** → **Jira**, press **Refresh Boards** in its **Boards** section (**Fetch Boards** when the list is empty) and flip a board's switch.
+3. Wait for the first sync. **Last sync** and **Issues synced** at the bottom of **Connections** → **Jira** show progress.
+4. Open **Workload**. If people are missing, expand **User Mapping** in **Connections** → **Jira** and press **Resolve**, or use **Assign Slack user** on an unmatched row.
+5. A board's row opens its profile in place; **Jira** at the top goes back. **Re-analyze** rebuilds the profile (workflow stages, estimation field) after the board's setup changed.
 6. To change which Jira signals the briefing and people cards include, open **Jira Features** and pick a role, or flip single switches. **Reset to Role Defaults** undoes your changes.
 
 An issue or epic key on any tab opens in Jira.
 
 ## When it's empty or wrong
 
-- **A tab says Jira isn't connected.** The tab says "Connect Jira to get this". Press **Connect Jira**; it opens **Settings** → **Connections**.
-- **A tab says "Choose Jira boards to get this".** Jira is connected but no board is picked, so nothing syncs. Press **Choose Jira boards**; it opens **Boards**, where you switch boards on.
-- **Boards says "No boards yet".** Press **Fetch Boards**.
-- **A tab says "No blockers yet", "No workload yet" or similar.** Jira is connected but no data has arrived. Check that a board is switched on in **Boards** and wait for a sync.
+- **A tab says Jira isn't connected.** The tab says "Connect Jira to get this". Press **Connect Jira**; it opens **Connections** → **Jira**.
+- **A tab says "Choose Jira boards to get this".** Jira is connected but no board is picked, so nothing syncs. Press **Choose Jira boards**; it opens **Connections** → **Jira**, where you switch boards on.
+- **The Boards section is empty.** Press **Fetch Boards**.
+- **A tab says "No blockers yet", "No workload yet" or similar.** Jira is connected but no data has arrived. Check that a board is switched on in **Connections** → **Jira** and wait for a sync.
 - **Workload is empty though Jira has issues.** No Jira user is matched to a Slack user. Connect Slack, then press **Resolve** in **User Mapping**.
 - **A comment or issue deleted in Jira is still shown.** A comment disappears the next time that issue is synced; an issue within about a day.
-- **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Settings** → **Connections** → **Jira**.
+- **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Connections** → **Jira**.
 - **Blockers misses an issue you call blocked.** A Jira issue is listed as blocked only when its status name contains "block"; a flag or label is not read. A Linear issue needs an open "blocked by" relation. Links only build the chain shown under a listed issue.
 
 Site needs **Re-login**? See [An account needs attention](../troubleshooting/account-needs-attention.md).

@@ -49,7 +49,7 @@ since: 0.25.0
 action: nav:chat
 -->
 
-The same standing directions work in the AI chat. The **session instructions** text reaches every chat as well as every workbench session, and a separate **Only in chats** text reaches chats only. Texts you wrote for one workbench, and the target procedure, never go into a chat. The setup assistants don't use them.
+The same standing directions work in Chats. The **session instructions** text reaches every chat as well as every workbench session, and a separate **Only in chats** text reaches chats only. Texts you wrote for one workbench, and the target procedure, never go into a chat. The setup assistants don't use them.
 
 To keep a direction while you chat, start a message with `remember:`, `remember this:` or `запомни:`. The rest of the message is added to **Only in chats** word for word, and the chat shows **Remembered for all chats** with **Undo** and **Open in Settings**. If the text is full, nothing is added and the chat says so. In a target's or track's chat with Memory's **Chats source** on, the same message is also saved as a [Memory](../memory.md) fact. A change reaches the next conversation; the current one already has your message.
 
@@ -79,7 +79,7 @@ Once a day Watchtower reads what you typed in your recent sessions, from both ag
 - **A new session ignores a change.** The session began before you saved. Start a new one.
 - **Add says "adding this line would go over the 1000-character limit — shorten the text first".** The field plus the new line would pass 1,000 characters. Shorten the field's text, press **Save**, then press **Add** again.
 - **A suggestion's destination.** Chats only: **Only in chats**. Chats and sessions together: **For chats and agents**.
-- **No suggestions.** The direction has to appear in three sessions within 14 days, and the daemon must be running. The check is skipped when your Claude plan limit is close.
+- **No suggestions.** The direction has to appear in three sessions within 14 days, and the daemon must be running.
 - **A suggestion for one workbench.** When all its sessions were in one workbench, **Add** writes that workbench's text.
 
 ## Related

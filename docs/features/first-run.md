@@ -33,7 +33,8 @@ until the next morning's hour.
      (`internal/jira/sync.go`), so an ETA would never come true (#572). The
      line is "Choose Jira boards to get this" (`ReadinessSource.actionTitle`),
      and the action (`performEmptyStateAction(.connect(.jiraBoards))`, Home's
-     Getting ready card) opens the **Boards** tab, not Settings. Stream
+     Getting ready card) opens Connections → Jira (the Boards tab until #899),
+     not Settings. Stream
      Digests (`jiraOrMail`) waits on boards only while mail is not connected.
      Only enabled, not removed sites count, and v1 is install-wide (one
      site with a picked board counts for all; Go skips per account). On Home
@@ -285,7 +286,8 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   `"projects"`, its persisted raw value (R1). `{hour}` is filled from
   `briefing.hour` (the day plan has no hour of its own since C2, 2026-10-22:
   it is made with the brief by the Morning brief built-in). Exempt tabs, which keep their own states:
-  `search`, `usage`, `mcpServer`, `chat` (`EmptyStateCopy.swift:61`).
+  `usage`, `mcpServer`, `chat`, `home` and `connections` (a card per service,
+  never empty); `search` and `boards` left with their tabs (#899).
   `EmptyStateCopyCoverageTests` sweeps `SidebarDestination.allCases`: every tab
   has copy XOR is exempt, and the icon matches the sidebar's.
 - **C1, the one Inbox (2026-10-22, board #861):** the `briefings`, `dayPlan`,
@@ -315,9 +317,7 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   Ideas/Create, Calendar's connect options, Targets' "React with an emoji in
   Slack" line (R11). `ContentAwareEmptyState` (`TabEmptyState.swift:86`) keeps a
   tab's own "nothing here" (no blockers, nothing upcoming) while its feature is
-  `ready` — Blockers, Project Map, Releases, Calendar's empty list. Boards pins
-  Jira to `needsSource(.jira)` while the view knows Jira is not connected, so
-  Connect Jira shows even before the first evaluation. A tab's read error shows
+  `ready` — Blockers, Project Map, Releases, Calendar's empty list. A tab's read error shows
   before its empty state. "No matches" filter states are untouched.
 - **The one button** (`FeatureEmptyState.visibleAction`, `:103`): Turn on while
   `off` — for **any** off feature with a registry id, hiding the tab's own
@@ -482,7 +482,7 @@ the zone and the memory to persist out. Rules, first match wins:
 5. Cards = the features whose readiness (through
    `FeatureReadiness.honoringOwner`, OWNER-02) is neither `off` nor
    `needsSource`, in `ReadinessFeature.allCases` order. Each `needsSource`
-   feature goes into one row per missing source ("Connect Jira to get Boards,
+   feature goes into one row per missing source ("Connect Jira to get
    Workload, Blockers, Project Map and Releases", with **Connect Jira**). The
    zone opens on a card with a source (`source != .none`) or on a Connect row
    that a switched-on feature (`featureID != nil`) waits for — goals picked,
@@ -509,8 +509,10 @@ every card is terminal (owner, ask #304); no new ETA phrase, no countdown.
 `EmptyStateCopyTable.featureCard` (`EmptyStateCopy.swift:147`). A ready
 feature's link goes to its tab
 (`AppState.homeDestination`, `AppState+Home.swift:61`; Slack sync →
-Statistics, knowledge index → Search, Jira → Boards); **Connect** runs the
-empty states' `performEmptyStateAction(.connect)`. While the first sync runs,
+Statistics, knowledge index → AI Chat, Jira → Connections on Jira, #899);
+**Connect** runs the empty states' `performEmptyStateAction(.connect)`, which
+opens the Connections tab on the source (`ConnectionService(readinessSource:)`;
+a source naming several opens the overview). While the first sync runs,
 its line (Catch-Up's) shows on top of the cards.
 
 ### Today cards (retired 2026-10-19, #717)

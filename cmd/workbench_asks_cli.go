@@ -136,7 +136,7 @@ func listAsksForClients(workbenchID int64, open bool) ([]askListJSON, error) {
 	titles := map[int64]string{}
 	list := []askListJSON{}
 	for _, w := range workbenches {
-		rows, err := database.ListOwnerAsks(w.ID, db.OwnerAskFilter{Statuses: statuses})
+		rows, err := database.ListOwnerAsks(w.ID, db.OwnerAskFilter{Statuses: statuses, ExcludeSpecLoop: true})
 		if err != nil {
 			return nil, err
 		}

@@ -924,4 +924,17 @@ extension AppRoot: LinkHost {
     func openNow() {
         env.navigation.tab = .now
     }
+
+    /// A tapped work alert: the alert's hub on screen (a switch resets every stack), then its screen on the
+    /// Workbench tab. A hub this phone no longer has opens nothing.
+    func open(_ destination: AlertDestination) {
+        guard env.session(destination.hubID) != nil else {
+            Self.logger.notice("alert tap for a hub with no session here")
+            return
+        }
+        if env.activeHubID != destination.hubID {
+            env.activate(destination.hubID)
+        }
+        env.navigation.show(destination)
+    }
 }

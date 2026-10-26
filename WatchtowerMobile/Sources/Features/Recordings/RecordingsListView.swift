@@ -55,48 +55,47 @@ struct RecordingsListView: View {
     }
 
     private func content(_ model: RecordingsListModel) -> some View {
-        List {
-            if let empty = model.emptyText {
-                Text(empty).foregroundStyle(.secondary)
-            }
-            if let unreadable = model.unreadableText {
-                Button {
-                    showingUnreadable = true
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(PhoneTone.red.color)
-                            .frame(width: 40, height: 40)
-                            .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(unreadable).font(.body.weight(.medium)).foregroundStyle(.primary)
-                            Text("Kept on this iPhone, never sent").font(.footnote).foregroundStyle(.secondary)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if let empty = model.emptyText {
+                    Text(empty).foregroundStyle(.secondary).padding(Spacing.small)
+                }
+                if let unreadable = model.unreadableText {
+                    Button {
+                        showingUnreadable = true
+                    } label: {
+                        FlatRow(icon: .symbol("exclamationmark.triangle", tone: .red), title: unreadable) {
+                            Text("Kept on this iPhone, never sent")
+                        } trailing: {
+                            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary).accessibilityHidden(true)
                         }
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary).accessibilityHidden(true)
                     }
-                    .frame(minHeight: 44)
+                    .buttonStyle(.plain)
+                    .card(padding: EdgeInsets())
+                    .padding(.top, Spacing.regular)
+                    .accessibilityHint("Shows the files to share or delete")
                 }
-                .accessibilityHint("Shows the files to share or delete")
+                group("In progress", model.inProgress)
+                group("Earlier", model.earlier)
             }
-            if !model.inProgress.isEmpty {
-                Section {
-                    ForEach(model.inProgress) { row($0) }
-                } header: {
-                    Text("In progress").font(TypeScale.sectionHeader).textCase(nil)
-                }
-            }
-            if !model.earlier.isEmpty {
-                Section {
-                    ForEach(model.earlier) { row($0) }
-                } header: {
-                    Text("Earlier").font(TypeScale.sectionHeader).textCase(nil)
-                }
-            }
+            .padding(.horizontal, Spacing.large)
+            .padding(.bottom, Spacing.large)
         }
-        // A list screen on systemBackground (design pass §2.7, §9.3).
-        .listStyle(.plain)
+    }
+
+    /// A caps header over one card of rows with a hairline between each two.
+    @ViewBuilder
+    private func group(_ title: String, _ entries: [RecordingEntry]) -> some View {
+        if !entries.isEmpty {
+            SectionHeader(title, count: entries.count)
+            VStack(spacing: 0) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    if index > 0 { CardRowDivider(inset: Spacing.medium) }
+                    row(entry)
+                }
+            }
+            .card(padding: EdgeInsets())
+        }
     }
 
     @ViewBuilder
@@ -105,10 +104,11 @@ struct RecordingsListView: View {
             NavigationLink(value: CalendarRoute.recap(transcriptID)) {
                 RecordingRow(entry: entry)
             }
+            .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(entry.accessibilityLabel)
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
                 RecordingRow(entry: entry)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(entry.accessibilityLabel)
@@ -118,56 +118,53 @@ struct RecordingsListView: View {
                         // even while another hub's capture is on screen.
                         Task { await env.activeSession.recorder.retry(id: id) }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
+                    .buttonStyle(SecondaryActionStyle())
+                    .padding(.horizontal, Spacing.medium)
                     .accessibilityLabel("Retry sending \(entry.title)")
                 }
                 if let held = entry.heldForUnlinkedMac {
-                    HStack(spacing: 12) {
+                    HStack(spacing: Spacing.medium) {
                         if let audio = env.heldAudioURL(held) {
                             ShareLink(item: audio) {
-                                Label("Share", systemImage: "square.and.arrow.up")
+                                Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                             }
+                            .buttonStyle(SecondaryActionStyle())
                             .accessibilityLabel("Share \(entry.title)")
                         }
                         Button(role: .destructive) {
                             deleting = held
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label("Delete", systemImage: "trash").frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(SecondaryActionStyle())
                         .accessibilityLabel("Delete \(entry.title)")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
+                    .padding(.horizontal, Spacing.medium)
                 }
             }
+            .padding(.bottom, Spacing.regular)
         }
     }
 }
 
-/// Icon, title, subtitle and the coloured state line.
+/// A flat row: icon, title, subtitle and the coloured state line.
 private struct RecordingRow: View {
     let entry: RecordingEntry
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(entry.tone.color)
-                .frame(width: 40, height: 40)
-                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(entry.title).font(.body.weight(.medium)).lineLimit(1)
-                    if entry.isNew {
-                        Circle().fill(PhoneTone.accent.color).frame(width: 7, height: 7)
-                    }
-                }
-                Text(entry.subtitle).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                Text(entry.statusText).font(.footnote).foregroundStyle(entry.tone.color).lineLimit(2)
+        FlatRow(icon: .symbol(icon, tone: entry.tone), title: entry.title, titleLineLimit: 1, insets: RowInsets.flat) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(entry.subtitle)
+                Text(entry.statusText).foregroundStyle(entry.tone.color).lineLimit(2)
+            }
+        } trailing: {
+            if entry.isNew {
+                Circle()
+                    .fill(PhoneTone.accent.color)
+                    .frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
+                    .accessibilityHidden(true)
             }
         }
-        .frame(minHeight: 44)
     }
 
     private var icon: String {
@@ -195,16 +192,24 @@ private struct UnreadableRecordingsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    ForEach(env.unreadableAudio) { file in
-                        row(file)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(env.unreadableAudio.enumerated()), id: \.element.id) { index, file in
+                            if index > 0 { CardRowDivider(inset: Spacing.medium) }
+                            row(file)
+                        }
                     }
-                } footer: {
+                    .card(padding: EdgeInsets())
                     Text("Their details couldn't be read while this iPhone was setting a Mac's data aside, so they are not sent to any Mac.")
+                        .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, Spacing.small)
+                        .padding(.top, Spacing.compact)
                 }
+                .padding(.horizontal, Spacing.large)
+                .padding(.top, Spacing.regular)
             }
-            .listStyle(.plain)
             .overlay {
                 if env.unreadableAudio.isEmpty {
                     Text("No unreadable recordings").foregroundStyle(.secondary)
@@ -250,28 +255,28 @@ private struct UnreadableRecordingsView: View {
     }
 
     private func row(_ file: UnreadableAudio) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(file.name).font(.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
-                Text(details(file)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(file.name).font(TypeScale.rowTitle).lineLimit(1).truncationMode(.middle)
+                Text(details(file)).font(TypeScale.meta).foregroundStyle(.secondary).lineLimit(1)
             }
             .accessibilityElement(children: .combine)
-            HStack(spacing: 12) {
+            HStack(spacing: Spacing.medium) {
                 ShareLink(item: file.url) {
-                    Label("Share", systemImage: "square.and.arrow.up")
+                    Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
                 }
                 .accessibilityLabel("Share \(file.name)")
                 Button(role: .destructive) {
                     deleting = [file.name]
                 } label: {
-                    Label("Delete", systemImage: "trash")
+                    Label("Delete", systemImage: "trash").frame(maxWidth: .infinity)
                 }
                 .accessibilityLabel("Delete \(file.name)")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
+            .buttonStyle(SecondaryActionStyle())
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.cozy)
     }
 
     /// "Today 10:00 · 2.4 MB".

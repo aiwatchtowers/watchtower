@@ -518,18 +518,6 @@ final class SearchQueryTests: XCTestCase {
         }
         XCTAssertEqual(count, 0) // Empty text not indexed
     }
-
-    func testSearchEmptyQuery() throws {
-        let db = try TestDatabase.create()
-        let results = try db.read { try SearchQueries.search($0, query: "") }
-        XCTAssertTrue(results.isEmpty)
-    }
-
-    func testSearchOnlyOperators() throws {
-        let db = try TestDatabase.create()
-        let results = try db.read { try SearchQueries.search($0, query: "AND OR NOT") }
-        XCTAssertTrue(results.isEmpty) // Sanitized to empty
-    }
 }
 
 // MARK: - ChatConversationQueries

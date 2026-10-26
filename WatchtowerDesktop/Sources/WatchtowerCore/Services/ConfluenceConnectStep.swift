@@ -79,7 +79,7 @@ package enum ConfluenceConnectStep {
         askedConfluence && !connected && (cancelled || timedOut)
     }
 
-    private static let settings = "Settings → Connections → Jira"
+    private static let settings = "Connections → Jira"
 
     /// The step's Confluence line.
     package static func line(_ outcome: Outcome) -> String {

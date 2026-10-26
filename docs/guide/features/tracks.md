@@ -48,7 +48,7 @@ action: nav:tracks
 <!-- learn
 id: tracks-chat-cleanup
 title: Clean up old tracks from the chat
-text: Ask the AI Chat to dismiss a set of tracks; it proposes the exact set and waits for your **Approve**.
+text: Ask Chats to dismiss a set of tracks; it proposes the exact set and waits for your **Approve**.
 area: communication
 level: power
 kind: tip
@@ -61,7 +61,7 @@ action: chat:Dismiss every auto track older than a month
 3. Press **Done** when you have read it. **Open in Slack**, **Discuss in Chat** and **Hand to Agent…** sit beside it.
 4. The **⋯** menu has **Stop watching**, which takes the track off the list. A mined track adds **Make a Task**, which creates a [target](targets.md) and opens it; a custom track adds **Go to Target** when it is linked to one, and **Delete…**, which asks inline.
 5. Stopped tracks fold into **Stopped · N** at the end of the Tracks filter; **Show** lists them and **Restore** on a card brings it back.
-6. To clean up many at once, ask the [AI Chat](ai-chat.md), for example "dismiss every auto track older than a month". It proposes the exact set and waits for your **Approve**.
+6. To clean up many at once, ask [Chats](ai-chat.md), for example "dismiss every auto track older than a month". It proposes the exact set and waits for your **Approve**.
 
 ### Custom tracks on the card
 

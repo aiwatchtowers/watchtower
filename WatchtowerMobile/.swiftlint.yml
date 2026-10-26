@@ -1,4 +1,4 @@
-# Copy of WatchtowerDesktop/.swiftlint.yml (rules must stay in sync — parent_config merges included paths, so inheritance is unusable here). Only included/excluded and the mobile-only custom_rules at the end differ.
+# Copy of WatchtowerDesktop/.swiftlint.yml (rules must stay in sync — parent_config merges included paths, so inheritance is unusable here). Only included/excluded and the custom_rules at the end differ.
 
 included:
   - Sources
@@ -166,14 +166,32 @@ type_name:
 # waiting-for-you and ask elements only, so under Sources/Features/ and
 # Sources/DesignSystem/ only DesignSystem/PhoneTone.swift may name it;
 # screens and the design layer use `PhoneTone.waitingForYou` or a session
-# record's published tone.
+# record's published tone. The shared `Tone.warning`, `Tone.now` and
+# `Tone.priority(_:)` (WatchtowerDesign, re-exported) are orange too, so the
+# rule refuses them by name.
 custom_rules:
   orange_outside_phone_tone:
     name: "Orange outside PhoneTone"
     included: ".*/Sources/(Features|DesignSystem)/.*\\.swift"
     excluded: ".*/Sources/DesignSystem/PhoneTone\\.swift"
-    regex: "\\.orange\\b|systemOrange"
+    regex: "\\.orange\\b|systemOrange|\\bTone\\.(warning|now|priority)\\b"
     message: "Orange is for waiting-for-you and asks only: use PhoneTone.waitingForYou (PhoneTone.swift)."
+    severity: error
+  # The Desktop's kit rules (WatchtowerDesktop/.swiftlint.yml), same regexes,
+  # over the phone's screens: they take the shared WatchtowerDesign tokens
+  # instead of numbers. Screens written before the tokens were shared are in
+  # .swiftlint-baseline.json until they are rebuilt.
+  kit_no_raw_metrics:
+    name: 'kit_no_raw_metrics'
+    regex: '\.padding\((\s*\.\w+\s*,)?\s*[1-9][0-9.]*\s*\)|spacing:\s*[1-9][0-9.]*|cornerRadius:\s*[1-9][0-9.]*|\.cornerRadius\(\s*[1-9]|\.system\(size:\s*[0-9]'
+    included: '.*/Sources/Features/.*\.swift'
+    message: 'Use Spacing / Radius / IconSize tokens.'
+    severity: error
+  kit_no_color_opacity:
+    name: 'kit_no_color_opacity'
+    regex: '\w\.opacity\(\s*0?\.[0-9]'
+    included: '.*/Sources/Features/.*\.swift'
+    message: 'Use Fill / ChipTint tokens (view .opacity for dimming is fine).'
     severity: error
 
 reporter: xcode

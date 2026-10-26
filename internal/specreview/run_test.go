@@ -3,6 +3,7 @@ package specreview
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -302,6 +303,28 @@ func TestSpecReview01_RunWritesOnlyItsRow(t *testing.T) {
 	before2 := dumpTables(t, f2.d)
 	require.Error(t, Run(context.Background(), f2.deps(&fakeAgent{err: errors.New("boom")}), askID2))
 	assert.Equal(t, before2, dumpTables(t, f2.d))
+
+	// An author-loop round 2 (with a previous row) writes only its row, when
+	// it advances the loop and when it fails and reveals the ask.
+	for _, agent := range []*fakeAgent{{out: loopReply2}, {err: errors.New("boom")}} {
+		f3 := newFixture(t)
+		f3.write(t, "docs/specs/x-design.md", runDoc)
+		first, second := loopRound2(t, f3, nil)
+		before3 := dumpTables(t, f3.d)
+		beforeFolder3 := folderState(t, f3.folder)
+		prevRow, err := f3.d.GetSpecReview(first)
+		require.NoError(t, err)
+		_ = Run(context.Background(), f3.deps(agent), second)
+		row, err := f3.d.GetSpecReview(second)
+		require.NoError(t, err)
+		require.Contains(t, []string{"done", "failed"}, row.Status)
+		require.NotEmpty(t, row.Ledger+row.OpenItems, "the loop columns were written")
+		assert.Equal(t, before3, dumpTables(t, f3.d), "no table but spec_reviews changes")
+		assert.Equal(t, beforeFolder3, folderState(t, f3.folder), "the folder is untouched")
+		after, err := f3.d.GetSpecReview(first)
+		require.NoError(t, err)
+		assert.Equal(t, prevRow, after, "the previous round's row is only read")
+	}
 }
 
 // A review whose ask was withdrawn (or superseded) before the reviewer
@@ -318,4 +341,228 @@ func TestRun_AskWithdrawnBeforeClaimDoesNotRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "failed", row.Status)
 	assert.Equal(t, "ask withdrawn", row.Reason)
+}
+
+// loopPrevOpen is round 1's open items in the loop fixtures.
+var loopPrevOpen = []AuthorItem{
+	{Key: "bs:aaaaaaaaaaaa", Kind: KindBlindSpot, Text: "Muted threads", Round: 1},
+	{Key: "da:bbbbbbbbbbbb", Kind: KindDecidedAlone, Text: "State is local", Round: 1,
+		Where: &Anchor{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours"}},
+	{Key: "ck:cccccccccccc", Kind: KindCheck, Text: "Does every promise have a task?", Note: "Expiry has none.", Round: 1},
+}
+
+// loopReplies is the author's answer to loopPrevOpen.
+var loopReplies = []Reply{
+	{Key: "bs:aaaaaaaaaaaa", Reply: ReplyFixed, Note: "named threads"},
+	{Key: "da:bbbbbbbbbbbb", Reply: ReplyDisagree, Note: "the owner asked for it"},
+	{Key: "ck:cccccccccccc", Reply: ReplyFixed},
+}
+
+// loopRound2 files round 1 (done, in the author loop, with loopPrevOpen open
+// and prevLedger settled) and a queued round 2 on top of it with loopReplies.
+func loopRound2(t *testing.T, f *fixture, prevLedger []LedgerEntry) (first, second int64) {
+	t.Helper()
+	first = f.ask(t, "spec", runDoc).ID
+	open, err := encodeList(loopPrevOpen)
+	require.NoError(t, err)
+	ledger, err := encodeList(prevLedger)
+	require.NoError(t, err)
+	_, err = f.d.Exec(`UPDATE spec_reviews SET status = 'done', loop = 'author', round = 1, open_items = ?, ledger = ?
+		WHERE ask_id = ?`, open, ledger, first)
+	require.NoError(t, err)
+	replies, err := encodeList(loopReplies)
+	require.NoError(t, err)
+	require.NoError(t, f.d.WithTx(func(tx *sql.Tx) error {
+		second, _, err = f.d.InsertOwnerAsk(tx, db.OwnerAsk{
+			WorkbenchID: f.wb, SessionID: sql.NullInt64{Int64: f.session, Valid: true},
+			TargetID: sql.NullInt64{Int64: f.tgt, Valid: true}, Kind: "review", Title: "Round 2",
+			DocPath: "docs/specs/x-design.md", DocSnapshot: runDoc, DocType: "spec",
+			PreviousAskID: sql.NullInt64{Int64: first, Valid: true},
+		})
+		if err != nil {
+			return err
+		}
+		return f.d.QueueSpecReview(tx, second, runNow, &db.SpecLoopStart{Round: 2, Replies: replies})
+	}))
+	return first, second
+}
+
+// loopReply2 resolves the fixed blind spot, disputes the disagreed decision,
+// disputes the "fixed" check (it stays open) and raises one new blind spot.
+const loopReply2 = `{"summary":"Round two.","agreements":[],"decided_alone":[],"checks":[],"resolved":[],
+  "blind_spots":[{"text":"Expiry after a restart","why":"the timer is in memory","where":null}],
+  "verdicts":[
+    {"key":"bs:aaaaaaaaaaaa","verdict":"resolved","note":"named now"},
+    {"key":"da:bbbbbbbbbbbb","verdict":"disputed","note":"still nobody agreed it"},
+    {"key":"ck:cccccccccccc","verdict":"disputed","note":"expiry still has no task"}]}`
+
+func loopColumns(t *testing.T, d *db.DB, askID int64) (*db.SpecReview, []AuthorItem, []LedgerEntry) {
+	t.Helper()
+	row, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	ledger, open, err := decodeLoop(row)
+	require.NoError(t, err)
+	return row, open, ledger
+}
+
+func TestRun_LoopRoundTwoFinishes(t *testing.T) {
+	f := newFixture(t)
+	prevLedger := []LedgerEntry{{AuthorItem: AuthorItem{Key: "ag:zzzzzzzzzzzz", Kind: KindAgreement, Text: "old", Round: 1}, Verdict: VerdictResolved, Settled: 1}}
+	_, second := loopRound2(t, f, prevLedger)
+	agent := &fakeAgent{out: loopReply2}
+	require.NoError(t, Run(context.Background(), f.deps(agent), second))
+
+	assert.Contains(t, agent.user, "[bs:aaaaaaaaaaaa] blind_spot: Muted threads — author: fixed (named threads)")
+	assert.Contains(t, agent.user, "[da:bbbbbbbbbbbb] decided_alone: State is local — author: disagree: the owner asked for it")
+	assert.Contains(t, agent.user, "[ck:cccccccccccc] check: Does every promise have a task? — author: fixed\n")
+	assert.NotContains(t, agent.user, "<<<previous_findings")
+
+	row, open, ledger := loopColumns(t, f.d, second)
+	assert.Equal(t, "done", row.Status)
+	assert.Equal(t, "author", row.Loop, "an item is still open: the loop goes on")
+	assert.Equal(t, "", row.LoopEnd)
+	assert.Equal(t, 0, row.Dropped)
+	require.Len(t, open, 2)
+	assert.Equal(t, "ck:cccccccccccc", open[0].Key)
+	assert.Equal(t, ReplyFixed, open[0].Reply.Reply)
+	assert.Equal(t, KindBlindSpot, open[1].Kind)
+	assert.Equal(t, "Expiry after a restart", open[1].Text)
+	assert.Equal(t, 2, open[1].Round)
+	require.Len(t, ledger, 3)
+	assert.Equal(t, "ag:zzzzzzzzzzzz", ledger[0].Key)
+	assert.Equal(t, [2]string{"bs:aaaaaaaaaaaa", VerdictResolved}, [2]string{ledger[1].Key, ledger[1].Verdict})
+	assert.Equal(t, [2]string{"da:bbbbbbbbbbbb", VerdictDisputed}, [2]string{ledger[2].Key, ledger[2].Verdict})
+	assert.Equal(t, "still nobody agreed it", ledger[2].VerdictNote)
+	assert.Equal(t, 2, ledger[2].Settled)
+	var res Result
+	require.NoError(t, json.Unmarshal([]byte(row.Result), &res))
+	assert.Len(t, res.Verdicts, 3)
+
+	// A round that leaves nothing open ends the loop for the owner.
+	f2 := newFixture(t)
+	_, second2 := loopRound2(t, f2, nil)
+	settle := `{"summary":"All settled.","verdicts":[
+		{"key":"bs:aaaaaaaaaaaa","verdict":"resolved"},{"key":"da:bbbbbbbbbbbb","verdict":"disputed"},
+		{"key":"ck:cccccccccccc","verdict":"resolved"}]}`
+	require.NoError(t, Run(context.Background(), f2.deps(&fakeAgent{out: settle}), second2))
+	row2, open2, ledger2 := loopColumns(t, f2.d, second2)
+	assert.Equal(t, "owner", row2.Loop)
+	assert.Equal(t, EndSettled, row2.LoopEnd)
+	assert.Empty(t, open2)
+	assert.Empty(t, row2.OpenItems)
+	assert.Len(t, ledger2, 3)
+}
+
+func TestRun_LoopFailureReveals(t *testing.T) {
+	f := newFixture(t)
+	prevLedger := []LedgerEntry{{AuthorItem: AuthorItem{Key: "ag:zzzzzzzzzzzz", Kind: KindAgreement, Text: "old", Round: 1}, Verdict: VerdictResolved, Settled: 1}}
+	_, second := loopRound2(t, f, prevLedger)
+	require.Error(t, Run(context.Background(), f.deps(&fakeAgent{err: errors.New("boom")}), second))
+
+	row, open, ledger := loopColumns(t, f.d, second)
+	assert.Equal(t, "failed", row.Status)
+	assert.Equal(t, "owner", row.Loop)
+	assert.Equal(t, EndReviewerFailed, row.LoopEnd)
+	assert.Empty(t, open)
+	require.Len(t, ledger, 4, "the previous ledger plus the previous open items")
+	assert.Equal(t, "ag:zzzzzzzzzzzz", ledger[0].Key)
+	notes := map[string]string{}
+	for _, e := range ledger[1:] {
+		assert.Equal(t, VerdictUnsettled, e.Verdict)
+		notes[e.Key] = e.VerdictNote
+	}
+	assert.Equal(t, map[string]string{
+		"bs:aaaaaaaaaaaa": "The fix was not checked: the reviewer failed",
+		"da:bbbbbbbbbbbb": "the owner asked for it",
+		"ck:cccccccccccc": "The fix was not checked: the reviewer failed",
+	}, notes)
+
+	// Round 1 of a loop failing: nothing was found yet, the ask shows with an
+	// empty ledger.
+	f2 := newFixture(t)
+	var askID int64
+	require.NoError(t, f2.d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		askID, _, err = f2.d.InsertOwnerAsk(tx, db.OwnerAsk{
+			WorkbenchID: f2.wb, SessionID: sql.NullInt64{Int64: f2.session, Valid: true}, Kind: "review",
+			Title: "Review", DocPath: "docs/specs/x-design.md", DocSnapshot: runDoc, DocType: "spec",
+		})
+		if err != nil {
+			return err
+		}
+		return f2.d.QueueSpecReview(tx, askID, runNow, &db.SpecLoopStart{Round: 1})
+	}))
+	require.Error(t, Run(context.Background(), f2.deps(&fakeAgent{out: "not json"}), askID))
+	row2, err := f2.d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "owner", row2.Loop)
+	assert.Equal(t, EndReviewerFailed, row2.LoopEnd)
+	assert.Empty(t, row2.Ledger)
+}
+
+func TestReveal_DoneRowUsesItsOpenItems(t *testing.T) {
+	f := newFixture(t)
+	first, _ := loopRound2(t, f, []LedgerEntry{{AuthorItem: AuthorItem{Key: "ag:zzzzzzzzzzzz", Round: 1}, Verdict: VerdictResolved, Settled: 1}})
+	// Round 1's open items carry no reply; give one a disagree carried over.
+	open := append([]AuthorItem{}, loopPrevOpen...)
+	open[1].Reply = &Reply{Key: open[1].Key, Reply: ReplyDisagree, Note: "kept on purpose"}
+	js, err := encodeList(open)
+	require.NoError(t, err)
+	_, err = f.d.Exec(`UPDATE spec_reviews SET open_items = ? WHERE ask_id = ?`, js, first)
+	require.NoError(t, err)
+
+	require.NoError(t, Reveal(f.d, first, EndTimeout, runNow))
+	row, gotOpen, ledger := loopColumns(t, f.d, first)
+	assert.Equal(t, "owner", row.Loop)
+	assert.Equal(t, EndTimeout, row.LoopEnd)
+	assert.Empty(t, gotOpen)
+	require.Len(t, ledger, 4)
+	assert.Equal(t, "ag:zzzzzzzzzzzz", ledger[0].Key)
+	assert.Equal(t, "The author did not answer", ledger[1].VerdictNote)
+	assert.Equal(t, "kept on purpose", ledger[2].VerdictNote)
+	assert.Equal(t, "The author did not answer", ledger[3].VerdictNote)
+	for _, e := range ledger[1:] {
+		assert.Equal(t, VerdictUnsettled, e.Verdict)
+		assert.Equal(t, 1, e.Settled)
+	}
+}
+
+func TestReveal_FailedRowUsesPrevious(t *testing.T) {
+	f := newFixture(t)
+	_, second := loopRound2(t, f, nil)
+	ok, err := f.d.ClaimSpecReview(second, 7, runNow)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, f.d.FailSpecReview(second, 7, "boom", runNow))
+
+	require.NoError(t, Reveal(f.d, second, EndSessionGone, runNow))
+	row, _, ledger := loopColumns(t, f.d, second)
+	assert.Equal(t, "owner", row.Loop)
+	assert.Equal(t, EndSessionGone, row.LoopEnd)
+	require.Len(t, ledger, 3)
+	assert.Equal(t, "The fix was not checked: the author's session ended", ledger[0].VerdictNote)
+	assert.Equal(t, "named threads", ledger[0].Reply.Note, "this round's reply is kept")
+	assert.Equal(t, "the owner asked for it", ledger[1].VerdictNote)
+	assert.Equal(t, 2, ledger[1].Settled)
+}
+
+func TestReveal_NoOpOnOwnerRow(t *testing.T) {
+	f := newFixture(t)
+	first, _ := loopRound2(t, f, nil)
+	_, err := f.d.Exec(`UPDATE spec_reviews SET loop = 'owner', loop_end = 'settled', ledger = '[]' WHERE ask_id = ?`, first)
+	require.NoError(t, err)
+	before, err := f.d.GetSpecReview(first)
+	require.NoError(t, err)
+	require.NoError(t, Reveal(f.d, first, EndTimeout, runNow))
+	after, err := f.d.GetSpecReview(first)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+
+	// A row outside any loop is left alone too.
+	plain := f.ask(t, "spec", runDoc).ID
+	require.NoError(t, Reveal(f.d, plain, EndTimeout, runNow))
+	r, err := f.d.GetSpecReview(plain)
+	require.NoError(t, err)
+	assert.Equal(t, "", r.Loop)
+	assert.Equal(t, "", r.LoopEnd)
 }

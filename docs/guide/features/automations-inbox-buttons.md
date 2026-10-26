@@ -23,7 +23,7 @@ A card is written by `output.inbox({title, body, priority?, link?, actions?})`; 
 | Kind | Key | A press does |
 |---|---|---|
 | Link | `open: "<url>"` | Opens the page. Only `http`, `https` and `watchtower-nav://` links work. |
-| Chat | `chat: "<first message>"` | Opens a new **AI Chat** with the card attached and the message in the composer. Nothing is sent. |
+| Chat | `chat: "<first message>"` | Opens a new chat in **Chats** with the card attached and the message in the composer. Nothing is sent. |
 | Agent | `agent: {task, workbench?}` | Adds a target to the workbench and starts a session on it. |
 | Reply | `reply: "<value>", data?: {…}` | Queues one run of the same recipe. |
 

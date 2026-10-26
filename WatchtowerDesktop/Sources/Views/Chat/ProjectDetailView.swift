@@ -3,28 +3,50 @@ import GRDB
 import SwiftUI
 import WatchtowerCore
 
-/// The project page shown in the chat detail area (spec §6.1). Navigation
-/// (open a chat, start one, leave after delete) goes through the callbacks:
-/// the split view owns the history selection.
+/// The project page shown in the chat detail area (spec 2026-10-26 §7):
+/// the name, edited in place; the landing's composer bound to the project
+/// (`ChatViewModel.openProject` sets `landingProjectID`, so its first
+/// keystroke makes the chat there and its first turn leaves the page); the
+/// project's chats; and, beside them or below under `HomeContent.twoColumnWidth`,
+/// the Instructions and Knowledge cards. Navigation (open a chat, leave
+/// after delete) goes through the callbacks: the split view owns the
+/// history selection.
+///
+/// A project New Project… just made (`ChatViewModel.projectNameFocusRequest`,
+/// set by `createProject`) opens with the name field focused.
 struct ProjectDetailView: View {
     @State private var vm: ProjectDetailViewModel
+    @Bindable var chatVM: ChatViewModel
     let dbPool: DatabasePool
-    let onNewChat: (Int64) -> Void
+    let modelSuggestions: [String]
+    let maxComposerHeight: CGFloat
     let onOpenChat: (Int64) -> Void
     let onRenamed: () -> Void
     let onDeleted: (Int64) -> Void
+    /// The chats waiting in the panel's Undo window (or being deleted):
+    /// not listed (spec 2026-10-26 §5.3).
+    let hiddenChatIDs: Set<Int64>
+    /// The panel's chats as last read: a change (a chat moved, deleted,
+    /// archived or answered elsewhere) re-reads the page's list.
+    let panelChats: [ChatConversation]
     @State private var showSourcePicker = false
     @State private var confirmDelete = false
+    @State private var dropTargeted = false
+    @FocusState private var nameFocused: Bool
 
     init(
         projectID: Int64,
+        chatVM: ChatViewModel,
         dbPool: DatabasePool,
         attachmentsRoot: URL?,
-        onNewChat: @escaping (Int64) -> Void,
+        modelSuggestions: [String],
+        maxComposerHeight: CGFloat,
         onOpenChat: @escaping (Int64) -> Void,
         onRenamed: @escaping () -> Void,
         onDeleted: @escaping (Int64) -> Void,
-        onPromptChanged: @escaping (Int64) -> Void
+        onPromptChanged: @escaping (Int64) -> Void,
+        hiddenChatIDs: Set<Int64> = [],
+        panelChats: [ChatConversation] = []
     ) {
         _vm = State(initialValue: ProjectDetailViewModel(
             projectID: projectID,
@@ -33,87 +55,55 @@ struct ProjectDetailView: View {
             importFile: ProjectDetailViewModel.storeImporter(dbPool: dbPool, rootDir: attachmentsRoot),
             onPromptChanged: onPromptChanged
         ))
+        self.chatVM = chatVM
         self.dbPool = dbPool
-        self.onNewChat = onNewChat
+        self.modelSuggestions = modelSuggestions
+        self.maxComposerHeight = maxComposerHeight
         self.onOpenChat = onOpenChat
         self.onRenamed = onRenamed
         self.onDeleted = onDeleted
+        self.hiddenChatIDs = hiddenChatIDs
+        self.panelChats = panelChats
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: Spacing.page) {
                 if let message = vm.errorMessage {
-                    Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                    Text(message).font(.callout).foregroundStyle(Tone.error).textSelection(.enabled)
                 }
-                TextField("Project name", text: $vm.nameDraft)
-                    .font(.title2.weight(.semibold))
-                    .textFieldStyle(.plain)
-                    .disabled(!vm.draftsLoaded)
-                    .onSubmit(commitName)
-
-                section("Instructions", caption: "Given to the assistant in every chat of this project.") {
-                    TextEditor(text: Binding(get: { vm.instructionsDraft }, set: { vm.instructionsEdited($0) }))
-                        .font(.body)
-                        .frame(minHeight: 120)
-                        .disabled(!vm.draftsLoaded)
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
-                }
-
-                section("Files", caption: "Text files are read in full; images and PDFs are shown to Claude at the start of each session.") {
-                    ForEach(vm.files) { file in
-                        HStack {
-                            Image(systemName: file.mime.hasPrefix("image/") ? "photo" : "doc")
-                            Text(file.name)
-                            Spacer()
-                            Button { Task { await vm.removeFile(file) } } label: { Image(systemName: "xmark.circle") }
-                                .buttonStyle(.borderless)
-                                .help("Remove file")
-                                .accessibilityLabel("Remove file")
-                        }
-                    }
-                    Button("Add files…", action: pickFiles)
-                }
-                .dropDestination(for: URL.self) { urls, _ in
-                    guard !urls.isEmpty else { return false }
-                    Task { await vm.addFiles(urls) }
-                    return true
-                }
-
-                section("Pinned sources", caption: "Where the assistant looks first for this project.") {
-                    ForEach(vm.sources) { source in
-                        HStack {
-                            Text(source.label)
-                            Text(source.kind.replacingOccurrences(of: "_", with: " "))
-                                .font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            Button { Task { await vm.removeSource(source) } } label: { Image(systemName: "xmark.circle") }
-                                .buttonStyle(.borderless)
-                                .help("Unpin")
-                                .accessibilityLabel("Unpin")
-                        }
-                    }
-                    Button("Pin a source…") { showSourcePicker = true }
-                }
-
-                section("Chats", caption: nil) {
-                    Button("New chat in this project") { newChat() }
-                    ForEach(vm.chats) { chat in
-                        Button(chat.displayTitle) { onOpenChat(chat.id) }
-                            .buttonStyle(.link)
+                header
+                HomeColumnsLayout(spacing: Spacing.wide) {
+                    mainColumn
+                    VStack(alignment: .leading, spacing: Spacing.medium) {
+                        instructionsCard
+                        knowledgeCard
                     }
                 }
-
-                Button("Delete project…", role: .destructive) { confirmDelete = true }
             }
-            .frame(maxWidth: 760, alignment: .leading)
-            .padding(24)
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, Spacing.hero)
+            .padding(.top, Spacing.wide)
+            .padding(.bottom, Spacing.hero)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear { vm.load() }
+        // A chat left the Undo bar: deleted (or restored) for good.
+        .onChange(of: hiddenChatIDs) { _, _ in vm.reloadLists() }
+        .onChange(of: panelChats) { _, _ in vm.reloadLists() }
+        .onAppear {
+            vm.load()
+            if chatVM.projectNameFocusRequest == vm.projectID {
+                chatVM.projectNameFocusRequest = nil
+                // After the load enabled the field (a render later).
+                Task { @MainActor in nameFocused = true }
+            }
+        }
         .onDisappear {
             commitName()
-            Task { await vm.flush() }
+            Task {
+                // An open editor's text is kept, like a name never submitted.
+                if vm.instructionsEditor != nil { await vm.commitInstructionsEdit() }
+                await vm.flush()
+            }
         }
         .sheet(isPresented: $showSourcePicker) {
             ProjectSourcePickerSheet(dbPool: dbPool) { hit in Task { await vm.addSource(hit) } }
@@ -127,15 +117,193 @@ struct ProjectDetailView: View {
         }
     }
 
-    /// The pending instructions save lands first: the new chat's session
-    /// prewarms right away and reads the instructions at spawn. A failed
-    /// save keeps the owner here, with the banner saying why.
-    private func newChat() {
-        Task {
-            guard await vm.flush() else { return }
-            onNewChat(vm.projectID)
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.cozy) {
+            TextField("Project name", text: $vm.nameDraft)
+                .font(.title.bold())
+                .textFieldStyle(.plain)
+                .focused($nameFocused)
+                .disabled(!vm.draftsLoaded)
+                .onSubmit(commitName)
+                .onChange(of: nameFocused) { _, focused in
+                    if !focused { commitName() }
+                }
+            Menu {
+                Button("Rename") { nameFocused = true }
+                Divider()
+                Button("Delete Project…", role: .destructive) { confirmDelete = true }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(!vm.draftsLoaded)
+            .help("Project menu")
+            .accessibilityLabel("Project menu")
         }
     }
+
+    // MARK: - Main column
+
+    private var mainColumn: some View {
+        VStack(alignment: .leading, spacing: Spacing.page) {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                ChatComposerView(
+                    chatVM: chatVM,
+                    modelSuggestions: modelSuggestions,
+                    maxHeight: maxComposerHeight,
+                    placeholder: composerPlaceholder
+                )
+                if let error = chatVM.errorMessage {
+                    Text(error).font(.caption).foregroundStyle(Tone.error)
+                }
+            }
+            chatList
+        }
+    }
+
+    private var composerPlaceholder: String {
+        let name = vm.project?.name ?? ""
+        return name.isEmpty ? "New chat in this project…" : "New chat in “\(name)”…"
+    }
+
+    private var chatList: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            let chats = vm.chats.filter { !hiddenChatIDs.contains($0.id) }
+            HomeZoneTitle(title: "Chats in this project", detail: "\(chats.count)")
+            if chats.isEmpty {
+                Text("No chats yet — ask something above.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                let now = Date()
+                VStack(spacing: 0) {
+                    ForEach(chats) { chat in
+                        Button { onOpenChat(chat.id) } label: {
+                            HStack(spacing: Spacing.medium) {
+                                Text(chat.displayTitle).lineLimit(1)
+                                Spacer(minLength: Spacing.regular)
+                                Text(TimeFormatting.shortAge(from: chat.updatedDate, now: now))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .kitRow(isSelected: false)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Chat: \(chat.displayTitle)")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Instructions
+
+    private static let instructionsCaption = "Given to the assistant in every chat of this project."
+
+    private var instructionsCard: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack {
+                Text("Instructions").font(.subheadline.weight(.semibold))
+                Spacer()
+                if vm.instructionsEditor == nil, !vm.instructionsDraft.isEmpty {
+                    Button("Edit") { vm.beginInstructionsEdit() }
+                        .buttonStyle(.kitQuiet)
+                        .disabled(!vm.draftsLoaded)
+                }
+            }
+            if vm.instructionsEditor != nil {
+                TextEditor(text: Binding(get: { vm.instructionsEditor ?? "" }, set: { vm.instructionsEditor = $0 }))
+                    .font(.callout)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 120)
+                    .padding(Spacing.small)
+                    .background(Surface.text, in: RoundedRectangle(cornerRadius: Radius.control))
+                    .accessibilityLabel("Instructions")
+                caption(Self.instructionsCaption)
+                HStack(spacing: Spacing.regular) {
+                    Spacer()
+                    Button("Cancel") { vm.cancelInstructionsEdit() }
+                        .buttonStyle(.kitQuiet)
+                    Button("Save") { Task { await vm.commitInstructionsEdit() } }
+                        .buttonStyle(.kitSecondary)
+                }
+            } else if vm.instructionsDraft.isEmpty {
+                Button("Add instructions") { vm.beginInstructionsEdit() }
+                    .buttonStyle(.kitQuiet)
+                    .disabled(!vm.draftsLoaded)
+                caption(Self.instructionsCaption)
+            } else {
+                Text(vm.instructionsDraft)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
+    // MARK: - Knowledge
+
+    private var knowledgeCard: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack {
+                Text("Knowledge").font(.subheadline.weight(.semibold))
+                Spacer()
+                Menu {
+                    Button("Files…", action: pickFiles)
+                    Button("Source…") { showSourcePicker = true }
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Add knowledge")
+                .accessibilityLabel("Add knowledge")
+            }
+            caption("The assistant looks here first in every chat of this project.")
+            if !vm.knowledge.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(vm.knowledge) { item in
+                        ProjectKnowledgeRow(item: item) { Task { await vm.removeKnowledge(item.id) } }
+                    }
+                }
+            }
+            Text("Drop files here")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(Spacing.cozy)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.row).strokeBorder(
+                        dropTargeted ? Color.accentColor : Stroke.hairlineColor,
+                        style: StrokeStyle(lineWidth: Stroke.selection, dash: [Spacing.small])
+                    )
+                )
+        }
+        .padding(Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+        .dropDestination(for: URL.self) { urls, _ in
+            let files = urls.filter(\.isFileURL)
+            guard !files.isEmpty else { return false }
+            Task { await vm.addFiles(files) }
+            return true
+        } isTargeted: { dropTargeted = $0 }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary)
+    }
+
+    // MARK: - Actions
 
     /// A name typed but never submitted is kept when the page goes away.
     private func commitName() {
@@ -158,14 +326,49 @@ struct ProjectDetailView: View {
             Task { await vm.addFiles(panel.urls) }
         }
     }
+}
 
-    private func section<Content: View>(
-        _ title: String, caption: String?, @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
-            if let caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
-            content()
+/// One file or pinned source on the Knowledge card: its kind badge, its
+/// name, and a remove button shown on hover. The hidden button takes no
+/// focus; VoiceOver has the remove as the row's own action.
+struct ProjectKnowledgeRow: View {
+    let item: ProjectKnowledgeItem
+    let onRemove: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            Chip(text: item.badge, color: Self.tone(item.kind))
+            Text(item.title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            Button(action: onRemove) { Image(systemName: "xmark").font(.caption) }
+                .buttonStyle(.kitQuiet)
+                .opacity(isHovered ? 1 : 0)
+                .disabled(!isHovered)
+                .help(item.isFile ? "Remove file" : "Unpin")
+                .accessibilityHidden(true)
+        }
+        .kitRow(isSelected: false)
+        .onHover { isHovered = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: Text(removeLabel), onRemove)
+    }
+
+    /// The row's VoiceOver action.
+    var removeLabel: String {
+        item.isFile ? "Remove \(item.title)" : "Unpin \(item.title)"
+    }
+
+    static func tone(_ kind: ProjectKnowledgeItem.Kind) -> Color {
+        switch kind {
+        case .jira: Tone.status("blue")
+        case .slack: Tone.status("purple")
+        case .confluence: Tone.status("teal")
+        case .target: Tone.status("green")
+        case .track: Tone.warning
+        case .pdf, .markdown, .image, .file, .person, .otherSource: Tone.status("gray")
         }
     }
 }

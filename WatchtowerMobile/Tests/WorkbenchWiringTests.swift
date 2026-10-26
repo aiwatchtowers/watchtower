@@ -59,37 +59,38 @@ final class WorkbenchWiringTests: XCTestCase {
     // MARK: - Level 2: the menu
 
     func testZeroSessionsShowNoSessionsYet() throws {
-        let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.notesID, snapshot: try demoSnapshot(now: now), now: now))
-        XCTAssertTrue(menu.sessions.isEmpty)
+        let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.notesID, snapshot: try demoSnapshot(now: now), now: now, asOf: nil))
+        XCTAssertTrue(menu.sections.isEmpty)
+        XCTAssertTrue(menu.finished.isEmpty)
         XCTAssertEqual(menu.sessionsEmptyText, "No sessions yet")
-        XCTAssertTrue(menu.waiting.isEmpty)
+        XCTAssertTrue(menu.unattachedAsks.isEmpty)
     }
 
     func testTheMenuSublineAndWaitingStack() throws {
-        let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.acmeID, snapshot: try demoSnapshot(now: now), now: now))
+        let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.acmeID, snapshot: try demoSnapshot(now: now), now: now, asOf: nil))
         XCTAssertEqual(menu.title, "Acme")
         XCTAssertEqual(menu.branch, "main")
         XCTAssertEqual(menu.boardCounts.map(\.text), ["3 in progress", "3 todo", "1 blocked"])
         XCTAssertEqual(menu.boardCounts.map(\.tone), [.blue, .secondary, .red])
         XCTAssertTrue(menu.boardCounts.allSatisfy { $0.role == .status })
         XCTAssertNil(menu.sessionsEmptyText)
-        XCTAssertEqual(menu.waitingHeader, "Waiting for you · 3")
-        // Newest first.
-        XCTAssertEqual(menu.waiting.map(\.id), [.ask(111), .ask(109), .ask(110)])
-        XCTAssertEqual(menu.waiting.map(\.kindLabel), ["Check", "Question", "Review"], "words, not codes (design pass N4)")
-        XCTAssertEqual(menu.waiting.map(\.kindIcon), ["checklist", "questionmark.bubble", "doc.text.magnifyingglass"])
-        XCTAssertEqual(menu.waiting.first?.subline, "Archive closed targets · #415 · 5m")
+        XCTAssertTrue(menu.unattachedAsks.isEmpty, "every demo ask has its session in the list")
         XCTAssertEqual(menu.closedLabel, "3 closed", "the DisclosureGroup draws the only disclosure mark")
         XCTAssertEqual(menu.closedAsks.map(\.id), [107, 106, 105])
     }
 
-    func testSessionsListLiveFirstThenNewest() throws {
-        let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.acmeID, snapshot: try demoSnapshot(now: now), now: now))
-        XCTAssertEqual(menu.sessions.map(\.id), [10, 11, 12, 14, 13, 15, 16, 17])
+    func testAnAskWithoutItsSessionStillWaits() throws {
+        var snapshot = try demoSnapshot(now: now)
+        snapshot.asks.append(try mirror(OwnerAsk.self, DemoSeed.JSON.ask(120, workbench: DemoSeed.acmeID, [
+            "kind": "question", "title": "Rename the board?", "created_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-60))
+        ])))
+        let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.acmeID, snapshot: snapshot, now: now, asOf: nil))
+        XCTAssertEqual(menu.unattachedAsks.map(\.id), [.ask(120)])
+        XCTAssertEqual(menu.unattachedAsks.first?.kindLabel, "Question", "words, not codes (design pass N4)")
     }
 
     func testAnUnknownWorkbenchHasNoMenu() throws {
-        XCTAssertNil(WorkbenchMenuModel(workbenchID: 999, snapshot: try demoSnapshot(now: now), now: now))
+        XCTAssertNil(WorkbenchMenuModel(workbenchID: 999, snapshot: try demoSnapshot(now: now), now: now, asOf: nil))
     }
 
     // MARK: - Replica read

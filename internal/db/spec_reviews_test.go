@@ -17,7 +17,7 @@ func newReviewAsk(t *testing.T, d *DB) int64 {
 
 func queueSpecReview(t *testing.T, d *DB, askID int64, now time.Time) {
 	t.Helper()
-	require.NoError(t, d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, now) }))
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, now, nil) }))
 }
 
 func TestSpecReview_QueueClaimFinish(t *testing.T) {
@@ -225,4 +225,111 @@ func TestRelaunchQueuedSpecReview_OnlyQueued(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "running", got.Status)
 	assert.Equal(t, 9, got.PID)
+}
+
+func queueSpecLoop(t *testing.T, d *DB, askID int64, now time.Time, l *SpecLoopStart) {
+	t.Helper()
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error { return d.QueueSpecReview(tx, askID, now, l) }))
+}
+
+func TestQueueSpecReview_LoopStart(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	queueSpecLoop(t, d, askID, now, &SpecLoopStart{Round: 2, Replies: `[{"k":"a"}]`})
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "author", got.Loop)
+	assert.Equal(t, 2, got.Round)
+	assert.Equal(t, `[{"k":"a"}]`, got.Replies)
+	assert.Empty(t, got.OpenItems)
+	assert.Empty(t, got.Ledger)
+	assert.Empty(t, got.LoopEnd)
+}
+
+func TestQueueSpecReview_NilKeepsLoop(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	queueSpecLoop(t, d, askID, now, &SpecLoopStart{Round: 1, Replies: "R"})
+	ok, err := d.RevealSpecLoop(askID, "clean", "L", now)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	queueSpecLoop(t, d, askID, now.Add(time.Minute), nil)
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "queued", got.Status)
+	assert.Equal(t, "owner", got.Loop)
+	assert.Equal(t, "L", got.Ledger)
+	assert.Equal(t, "R", got.Replies)
+	assert.Equal(t, "clean", got.LoopEnd)
+}
+
+func TestFinishSpecReview_LoopColumnsOnlyForAuthor(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	queueSpecLoop(t, d, askID, now, &SpecLoopStart{Round: 1})
+	_, err := d.ClaimSpecReview(askID, 7, now)
+	require.NoError(t, err)
+	require.NoError(t, d.FinishSpecReview(askID, 7, SpecReview{Result: "{}", Loop: "author", OpenItems: "O", Ledger: "L", LoopEnd: "E"}, now))
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "O", got.OpenItems)
+	assert.Equal(t, "L", got.Ledger)
+
+	ok, err := d.RevealSpecLoop(askID, "done", "L2", now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	queueSpecLoop(t, d, askID, now, nil)
+	_, err = d.ClaimSpecReview(askID, 8, now)
+	require.NoError(t, err)
+	require.NoError(t, d.FinishSpecReview(askID, 8, SpecReview{Result: "{}", Loop: "author", OpenItems: "X", Ledger: "X", LoopEnd: "X"}, now))
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "owner", got.Loop)
+	assert.Equal(t, "L2", got.Ledger)
+	assert.Equal(t, "done", got.LoopEnd)
+	assert.Empty(t, got.OpenItems)
+}
+
+func TestRevealSpecLoop_OnlyFromAuthor(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	queueSpecLoop(t, d, askID, now, &SpecLoopStart{Round: 1})
+	ok, err := d.RevealSpecLoop(askID, "clean", "first", now)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	ok, err = d.RevealSpecLoop(askID, "other", "second", now)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "first", got.Ledger)
+	assert.Equal(t, "clean", got.LoopEnd)
+}
+
+func TestSpecLoopsToSweep_OpenAuthorRowsOnly(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	pid := newTestWorkbench(t, d)
+	mk := func(title string) int64 {
+		return mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, Kind: "review", Title: title, DocPath: "docs/" + title + ".md", DocType: "spec"})
+	}
+	open, withdrawn, owner := mk("a"), mk("b"), mk("c")
+	for _, id := range []int64{open, withdrawn, owner} {
+		queueSpecLoop(t, d, id, now, &SpecLoopStart{Round: 1})
+	}
+	require.NoError(t, d.WithdrawOwnerAsk(pid, withdrawn, WithdrawnByAgent))
+	_, err := d.RevealSpecLoop(owner, "clean", "", now)
+	require.NoError(t, err)
+
+	rows, err := d.SpecLoopsToSweep()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, open, rows[0].AskID)
+	assert.Equal(t, "queued", rows[0].Status)
+	assert.False(t, rows[0].SessionBound)
 }

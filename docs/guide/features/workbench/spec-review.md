@@ -1,6 +1,6 @@
 # Reviewing a spec or plan
 
-When an agent asks you to review a spec or a plan, a second, independent agent has already read it against what you actually said. You open the review ask with its findings ready. It is for anyone who wants to approve a plan without rereading the whole conversation.
+When an agent asks you to review a spec or a plan, a second, independent agent has already read it against what you actually said. The agent fixes what the reviewer finds before you see the ask, so you open it with the corrections already made and only the real disagreements left. It is for anyone who wants to approve a plan without rereading the whole conversation.
 
 ## Why use it
 
@@ -22,7 +22,13 @@ The reviewer starts at once when the agent files a review ask for a spec or a pl
 
 It checks every claim against a quote. A finding whose quote it cannot show in the sources is dropped.
 
-Only your comments reach the agent. The reviewer's notes and your marks stay on your side until you send the round.
+### The agent answers the reviewer first
+
+For a spec or a plan the agent works on, the ask stays hidden while the reviewer and the agent go back and forth. The reviewer's findings go straight to the agent, which either fixes the document or disagrees with a reason. The reviewer then checks the new version. The loop runs at most three reviewer rounds. The session row shows **Spec review: round 2 of 3** meanwhile, and nothing reaches your notifications.
+
+The ask appears when nothing is left for the agent: every finding is fixed or disputed. It also appears at once if the reviewer fails or cannot start, the session is gone, or the agent does not answer a round within 30 minutes. In those cases the unanswered findings show as disputes, with the reason at the top.
+
+Specs and plans from a session with no reviewer, other documents and asks that were already open keep the plain review ask.
 
 ## Using it
 <!-- learn
@@ -35,6 +41,14 @@ kind: tip
 since: 0.25.0
 action: nav:projects
 -->
+
+### After the agent's loop
+
+You open one ask. **Disputed** comes first: each card shows the finding, the reviewer's position and the agent's reason. Press **Reviewer is right** to make the agent fix it, or **Author is right** to keep the document; a comment is optional. Below it, **Fixed by the author** is folded: every finding the agent fixed on its own, with its note and round, so you can see what changed. **Reopen** turns one into a dispute.
+
+**Approve** is one press. A dispute you left open counts as **Author is right**. After an early end, approving with unanswered findings asks once. Findings you marked **Reviewer is right** go to the agent as comments to apply; it does not start another review round for them. On the iPhone the one-line summary reads, for example, "Reviewer and author disagree on 2 · 5 fixed by the author".
+
+### The review without a loop
 
 Open the review ask. The drawer shows three steps.
 
@@ -52,7 +66,6 @@ The spec screen opens only for open asks. A closed ask shows the classic read-on
 
 - **No findings yet.** While the reviewer works, the drawer shows its progress with **Read the spec**, and the findings open there when it is done. If you opened the ask before the reviewer started, you stay in the classic view and a banner offers the findings when they are ready.
 - **Only the classic view, with a reason above it.** The reviewer failed or was skipped. Press **Run reviewer** to start it.
-- **It was skipped with "plan near limit".** The automatic run is skipped when your Claude plan is close to its limit. **Run reviewer** still works.
 - **Nothing about the code.** With Ollama the reviewer cannot read files, so it judges from the document and the conversation alone, and says so.
 - **On the iPhone** you see a one-line reviewer summary above the classic review. The findings screen is on the Mac.
 

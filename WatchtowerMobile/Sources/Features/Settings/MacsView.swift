@@ -43,7 +43,7 @@ struct MacsView: View {
             Section {
                 ForEach(items) { item in
                     HubListRow(item: item)
-                        .listRowInsets(RowInsets.flat)
+                        .macsListRow()
                         .swipeActions(edge: .trailing) { actions(item) }
                         .contextMenu { actions(item) }
                 }
@@ -59,16 +59,19 @@ struct MacsView: View {
                     } label: {
                         Label("Add Mac", systemImage: "qrcode.viewfinder")
                     }
-                    .frame(minHeight: 44)
+                    .buttonStyle(SecondaryActionStyle())
                     .disabled(!canAdd || linking.isBusy)
-                } footer: {
+                    .macsListRow()
                     if !canAdd {
-                        Text("You can link up to \(HubRegistry.limit) Macs").font(TypeScale.meta)
+                        Text("You can link up to \(HubRegistry.limit) Macs")
+                            .font(TypeScale.meta)
+                            .foregroundStyle(.secondary)
+                            .macsListRow()
                     }
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .macsList()
     }
 
     /// The demo has no link to end: only a live build offers Unlink and
@@ -124,12 +127,14 @@ struct UnopenedMacsView: View {
                 Section {
                     ForEach(items) { item in
                         HubListRow(item: item)
-                            .listRowInsets(RowInsets.flat)
+                            .macsListRow()
                             .swipeActions(edge: .trailing) { forget(item) }
                             .contextMenu { forget(item) }
                     }
                 } header: {
                     Text("Watchtower couldn't open the data of these Macs on this iPhone. Try again, or forget a Mac and link it again.")
+                        .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
                         .textCase(nil)
                 }
                 Section {
@@ -142,18 +147,20 @@ struct UnopenedMacsView: View {
                     } label: {
                         Label("Try Again", systemImage: "arrow.clockwise")
                     }
-                    .frame(minHeight: 44)
+                    .buttonStyle(ProminentActionStyle())
                     .disabled(retrying || linking.isBusy)
+                    .macsListRow()
                     Button {
                         linking.startScan()
                     } label: {
                         Label("Add Mac", systemImage: "qrcode.viewfinder")
                     }
-                    .frame(minHeight: 44)
+                    .buttonStyle(SecondaryActionStyle())
                     .disabled(!canAdd || linking.isBusy)
+                    .macsListRow()
                 }
             }
-            .listStyle(.insetGrouped)
+            .macsList()
             .navigationTitle("Macs")
         }
         .confirmationDialog(
@@ -174,5 +181,18 @@ struct UnopenedMacsView: View {
             asking = MacsModel.Ask(action: .forget, item: item)
         }
         .disabled(linking.isBusy)
+    }
+}
+
+extension View {
+    /// The Macs lists' look (Settings → Macs, the switcher's sheet, the
+    /// unopened Macs): flat rows on the page, no grouped fill.
+    func macsList() -> some View {
+        listStyle(.plain).scrollContentBackground(.hidden)
+    }
+
+    /// One row of such a list: the flat row's insets, no separator or plate.
+    func macsListRow() -> some View {
+        listRowInsets(RowInsets.flat).listRowBackground(Color.clear).listRowSeparator(.hidden)
     }
 }

@@ -14,7 +14,7 @@ Nothing is deleted without a notice of at least 72 hours, and reconnecting stops
 - **Not reached for 30 days:** when no account of a source (Slack, Google, Jira or Linear) has synced for 30 days, the data of each is scheduled, due 72 hours later (on a Mac that stays on, at the 30-day mark). Days offline count, but a Mac back after a long time away first tries to sync. A disabled account still counts, and one account syncing keeps all of them safe; for Jira, a Confluence sync counts too. A source your company's profile does not allow is never scheduled this way while the rule holds.
 - **Removed accounts:** **Remove** keeps a Slack, Jira or Linear account's data. Once that account has not been reached for 30 days, its data is scheduled the same way, 72 hours out. Adding it back stops it. (Removing a Google account already deletes its mail and events.)
 
-From the moment it is scheduled you see a red line under the account in **Settings → Connections**, a banner on [Home](../features/home.md) with **Reconnect** until the deletion starts, and a macOS notification. A second notification says when the data is gone.
+From the moment it is scheduled you see a red line under the account in **Connections**, a banner on [Home](../features/home.md) with **Reconnect** until the deletion starts, and a macOS notification. A second notification says when the data is gone.
 
 If the account is in error rather than revoked when the time comes, the deletion waits and its line says it is on hold. Once it starts, it runs in small steps over a few sync cycles and finishes even if you turn the setting off; **Re-login** is unavailable until then, and a `watchtower … login` in the terminal is refused with a message pointing to `watchtower accounts purges`. If it fails three times in a row, it stops: the line and a notification show the error, the account syncs again, and any new attempt comes with a new notice.
 
@@ -53,7 +53,7 @@ Kept: briefings, Catch Up recaps, ideas and decisions, memory notes, chats, auto
 
 ## My data was deleted
 
-You see **Data deleted** on the account's row in **Settings → Connections**, with a line saying when.
+You see **Data deleted** on the account's row in **Connections**, with a line saying when.
 
 The account was revoked or not reached for 30 days while the setting was on, and nobody reconnected within the notice. Deleted data cannot be restored from Watchtower.
 

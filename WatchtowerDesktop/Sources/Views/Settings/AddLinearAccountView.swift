@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Sheet for connecting a Linear workspace, from Settings → Linear and
+/// Sheet for connecting a Linear workspace, from Connections → Linear and
 /// onboarding's Connect step. Two ways in: Linear's browser sign-in
 /// (`linear add --app-return`) or a personal API key, typed into a secure
 /// field and handed to `linear add --api-key` on stdin. Closes itself once

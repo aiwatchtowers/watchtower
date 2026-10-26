@@ -4,7 +4,7 @@ Chat replies fail, digests and briefings report "Didn't work yet", or Setup keep
 
 ## What you see
 
-- In the AI Chat, a card: "The AI provider isn't signed in. Open Terminal and run: claude login" (or `codex login`), with no **Retry**.
+- In Chats, a card: "The AI provider isn't signed in. Open Terminal and run: claude login" (or `codex login`), with no **Retry**.
 - In **Settings → System → AI**, a red cross by **Claude CLI Path** or **Codex CLI Path** ("Claude CLI not found"), or after **Test Connection**: "Not authenticated. Run 'claude' in Terminal."
 - In a Workbench: "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart." or "Codex was not found."
 - A status line "Didn't work yet — retries automatically" whose reason names the tool.

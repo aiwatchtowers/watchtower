@@ -18,7 +18,9 @@ struct SpecReviewView<AskContext: View>: View {
             header
                 .padding(.horizontal, Spacing.medium)
                 .padding(.vertical, Spacing.regular)
-            if let result = SpecReviewPresentation.reviewedResult(model.row) {
+            if model.isLoop {
+                loopBody
+            } else if let result = SpecReviewPresentation.reviewedResult(model.row) {
                 ReviewPhasePicker(
                     phase: Binding(get: { model.phase }, set: { model.phase = $0 }),
                     progress: SpecReviewPresentation.progressLine(model)
@@ -49,7 +51,7 @@ struct SpecReviewView<AskContext: View>: View {
                 }
             }
             Spacer(minLength: Spacing.regular)
-            if model.row != nil, !model.isReviewerActive {
+            if model.row != nil, !model.isReviewerActive, !model.isLoop {
                 Button("Re-run reviewer") { Task { await model.runReviewer(force: true) } }
                     .buttonStyle(.kitQuiet)
                     .controlSize(.small)
@@ -59,6 +61,41 @@ struct SpecReviewView<AskContext: View>: View {
                 .buttonStyle(.kitSecondary)
                 .controlSize(.small)
                 .help("Open the document with margin comments")
+        }
+    }
+
+    /// A finished author loop (spec 2026-10-26 §6): **Decide** (the
+    /// disputes, the author's fixes, Approve) first, then Meaning and the
+    /// chapters to read, with no marks. Without a readable result there is
+    /// only Decide.
+    @ViewBuilder
+    private var loopBody: some View {
+        if let result = SpecReviewPresentation.reviewedResult(model.row) {
+            HStack(spacing: Spacing.cozy) {
+                KitSegmentedPicker(
+                    title: "Phase",
+                    selection: Binding(get: { model.phase }, set: { model.phase = $0 }),
+                    segments: SpecReviewPresentation.loopPhases.map { KitSegment(value: $0.phase, title: $0.title) }
+                )
+                if let line = model.row.flatMap(SpecReviewSummary.loopLine) {
+                    Text(line).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .padding(.horizontal, Spacing.medium)
+            .padding(.bottom, Spacing.regular)
+            Divider()
+            Group {
+                switch model.phase {
+                case .wrapup: SpecReviewLoopView(model: model)
+                case .meaning: SpecReviewMeaningView(model: model, result: result, askContext: askContext)
+                case .chapters: SpecReviewChaptersView(model: model)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            Divider()
+            SpecReviewLoopView(model: model)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -84,7 +121,7 @@ struct SpecReviewNextStepButton: View {
     let model: SpecReviewModel
 
     var body: some View {
-        if let next = SpecReviewPresentation.nextStep(model.phase) {
+        if let next = SpecReviewPresentation.nextStep(model.phase, loop: model.isLoop) {
             HStack {
                 Spacer()
                 Button(next.title) { model.phase = next.phase }
@@ -137,9 +174,12 @@ enum SpecReviewPresentation {
     /// opened before the reviewer's row existed. A review that finishes
     /// while the classic view is open offers a banner and never replaces
     /// it; a failed or skipped one leaves the classic view below its reason.
+    /// A finished author loop (`loop == .owner`) always has its screen,
+    /// whatever the reviewer's last status.
     static func drawerMode(row: SpecReviewRow?, showClassic: Bool, loaded: Bool = true) -> DrawerMode {
         guard loaded else { return .loading }
         guard let row else { return .classic(nil) }
+        if row.loop == .owner { return showClassic ? .classic(.banner) : .review }
         if reviewedResult(row) != nil { return showClassic ? .classic(.banner) : .review }
         if row.status == .queued || row.status == .running { return showClassic ? .classic(.status) : .review }
         return .classic(.status)
@@ -156,6 +196,14 @@ enum SpecReviewPresentation {
     static func reviewedResult(_ row: SpecReviewRow?) -> SpecReviewResult? {
         guard let row, row.status == .done else { return nil }
         return row.result
+    }
+
+    /// The loop screen's **Go to Meaning** button: only when the ask has
+    /// questions and Meaning exists — a reviewed result to show it from
+    /// (a loop whose reviewer failed has none, and the button would do
+    /// nothing).
+    static func showsGoToMeaning(row: SpecReviewRow?, hasQuestions: Bool) -> Bool {
+        hasQuestions && reviewedResult(row) != nil
     }
 
     static func title(docName: String) -> String {
@@ -285,12 +333,63 @@ enum SpecReviewPresentation {
         return "\(viewed)/\(chapters.count) chapters viewed · \(marks)"
     }
 
-    static func nextStep(_ phase: ReviewPhase) -> (phase: ReviewPhase, title: String)? {
-        switch phase {
-        case .meaning: (.chapters, "Next: Chapters →")
-        case .chapters: (.wrapup, "Next: Wrap-up →")
-        case .wrapup: nil
+    /// A finished loop's steps: Decide (the `.wrapup` slot) first, then
+    /// Meaning and Chapters to read.
+    static let loopPhases: [(phase: ReviewPhase, title: String)] = [
+        (.wrapup, "1 Decide"), (.meaning, "2 Meaning"), (.chapters, "3 Chapters")
+    ]
+
+    static func nextStep(_ phase: ReviewPhase, loop: Bool = false) -> (phase: ReviewPhase, title: String)? {
+        if loop {
+            switch phase {
+            case .meaning: return (.chapters, "Next: Chapters →")
+            case .chapters: return (.wrapup, "Back to Decide →")
+            case .wrapup: return nil
+            }
         }
+        switch phase {
+        case .meaning: return (.chapters, "Next: Chapters →")
+        case .chapters: return (.wrapup, "Next: Wrap-up →")
+        case .wrapup: return nil
+        }
+    }
+
+    /// A dispute card's badge: the reviewer kept it (Disputed) or the
+    /// loop ended before it settled (Not settled).
+    static func disputeBadge(_ entry: SpecReviewLedgerEntry) -> Badge {
+        entry.verdict == "unsettled"
+            ? Badge(title: "Not settled", tint: .warning)
+            : Badge(title: "Disputed", tint: .error)
+    }
+
+    /// The reviewer's position on a dispute: its verdict note (for an
+    /// unsettled item, the cap or no-answer note), else the finding's own
+    /// note. An unsettled item whose note is the author's reason, copied
+    /// there by an early end, shows the finding's note instead.
+    static func reviewerPosition(_ entry: SpecReviewLedgerEntry) -> String? {
+        let verdict = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let own = entry.item.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if entry.verdict == "unsettled", !verdict.isEmpty, verdict == authorReason(entry) {
+            return own.isEmpty ? nil : own
+        }
+        if !verdict.isEmpty { return verdict }
+        return own.isEmpty ? nil : own
+    }
+
+    /// The author's reason (its last reply's note); nil when it gave none.
+    static func authorReason(_ entry: SpecReviewLedgerEntry) -> String? {
+        let note = entry.item.reply?.note.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return note.isEmpty ? nil : note
+    }
+
+    /// "Round 2": the round the fix was confirmed in.
+    static func fixRound(_ entry: SpecReviewLedgerEntry) -> String {
+        "Round \(entry.settled > 0 ? entry.settled : entry.item.round)"
+    }
+
+    /// The author's note on a fix, or "no note".
+    static func fixNote(_ entry: SpecReviewLedgerEntry) -> String {
+        authorReason(entry) ?? "no note"
     }
 
     struct WrapUpItem: Equatable, Identifiable {

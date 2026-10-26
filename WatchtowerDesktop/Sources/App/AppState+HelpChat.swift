@@ -19,21 +19,22 @@ extension AppState {
 
     /// After a relaunch the AI Chat tab has not made its resume decision yet:
     /// the popup runs the same `enterTab` landing policy from the keys the tab
-    /// stores, so it continues the last chat too.
+    /// stores, so it continues the last chat too. A landing in a project
+    /// leaves it first (`enterHelpPopup`): the popup is outside projects.
     private func resumeLastChatIfUnopened() {
-        guard let chatViewModel, chatViewModel.conversationID == nil else { return }
+        guard let chatViewModel else { return }
         let defaults = UserDefaults.standard
         let workspace = databaseManager?.dbPool.path ?? ""
         let sameWorkspace = defaults.string(forKey: "chat.lastWorkspace") == workspace
         let lastID = defaults.integer(forKey: "chat.lastConversationID")
         let viewedAt = defaults.double(forKey: "chat.lastViewedAt")
-        chatViewModel.enterTab(
+        chatViewModel.enterHelpPopup(
             rememberedConversationID: sameWorkspace && lastID != 0 ? Int64(lastID) : nil,
             lastViewedAt: sameWorkspace && viewedAt != 0 ? Date(timeIntervalSince1970: viewedAt) : nil,
             now: Date())
     }
 
-    /// Opens the popup with `prefill` in its composer (Search's Ask in chat); an existing draft is kept.
+    /// Opens the popup with `prefill` in its composer (an analytics hint's Discuss); an existing draft is kept.
     func openHelpChat(prefill: String) {
         ensureChatViewModels()
         guard let chatViewModel else { return }
@@ -84,7 +85,8 @@ extension AppState {
         if let route = InboxRoute.fromNavHost(raw, today: Self.inboxToday()) {
             openInbox(route)
         } else if let destination = SidebarDestination(rawValue: raw) {
-            selectedDestination = destination
+            // Connections opens on its overview, like a sidebar click.
+            if destination == .connections { openConnections() } else { selectedDestination = destination }
         } else {
             return
         }

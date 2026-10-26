@@ -139,7 +139,7 @@ final class CalendarWiringTests: XCTestCase {
             let agenda = AgendaDayModel(
                 day: day(offset), snapshot: calendarSnapshot, recordings: recordings, now: now, calendar: calendar
             )
-            strings += agenda.cards.flatMap { [$0.title, $0.timeText, $0.detailLine] + $0.pills.map(\.text) + $0.actionTitles }
+            strings += agenda.cards.flatMap { [$0.title, $0.timeText] + $0.pills.map(\.text) + $0.actionTitles }
         }
         for event in calendarSnapshot.events {
             let detail = try XCTUnwrap(EventDetailModel(
@@ -148,7 +148,7 @@ final class CalendarWiringTests: XCTestCase {
             strings += detail.allStrings
         }
         strings += NextMeetingCardModel(events: calendarSnapshot.events, now: now, calendar: calendar).map {
-            [$0.header, $0.title, $0.line]
+            [$0.row.title] + [$0.row.detail].compactMap { $0 }
         } ?? []
         XCTAssertFalse(strings.isEmpty)
         XCTAssertFalse(strings.contains { $0.localizedCaseInsensitiveContains("Make target") })
@@ -438,15 +438,13 @@ final class CalendarWiringTests: XCTestCase {
         )
         let card = try XCTUnwrap(NextMeetingCardModel(events: [later, allDay, ended, soon], now: now, calendar: calendar))
         XCTAssertEqual(card.id, "soon")
-        XCTAssertEqual(card.header, "Next · in 26 min")
-        XCTAssertTrue(card.line.hasSuffix("· 5 people · prep ready"), card.line)
+        XCTAssertEqual(card.row.state, .next)
+        XCTAssertEqual(card.row.detail, "in 25 min")
+        XCTAssertEqual(card.row.attendeesText, "5")
 
         let ongoing = event("ongoing", start: now.addingTimeInterval(-600), minutes: 30)
         XCTAssertEqual(NextMeetingCardModel(events: [later, ongoing], now: now, calendar: calendar)?.id, "ongoing")
         XCTAssertNil(NextMeetingCardModel(events: [ended, allDay], now: now, calendar: calendar))
-        XCTAssertTrue(
-            try XCTUnwrap(NextMeetingCardModel(events: [later], now: now, calendar: calendar)).line.hasSuffix("· no prep yet")
-        )
     }
 
     // MARK: - Week strip

@@ -117,27 +117,20 @@ func TestPhaseMediaDescribe_KnowledgeOffWritesNothing(t *testing.T) {
 	assert.Zero(t, countPipelineRuns(t, database, "media-describe"))
 }
 
-func TestPhaseMediaDescribe_NearLimitSkips(t *testing.T) {
+func TestPhaseMediaDescribe_NoPlanGate(t *testing.T) {
 	d, database := newKnowledgeTestDaemon(t)
 	d.config.Knowledge.Enabled = true
-	img, link := seedPendingMedia(t, database)
+	img, _ := seedPendingMedia(t, database)
 	gen, op := &mediaTestGen{}, &mediaTestOpener{}
 	newMediaTestPipeline(d, database, gen, op)
-	setNearLimit(t, database, true)
+	require.NoError(t, database.UpsertPlanUsageStatus(db.PlanUsageStatus{State: "ok", UpdatedAt: time.Now(),
+		LimitsJSON: `[{"key":"session","group":"x","percent":90,"projection":{"state":"will_hit"}}]`}))
 
-	d.phaseMediaDescribe(context.Background())
-
-	assert.Zero(t, gen.calls.Load())
-	assert.Zero(t, op.opens.Load())
-	assertMediaUntouched(t, database, img, link)
-	assert.Zero(t, countPipelineRuns(t, database, "media-describe"))
-
-	setNearLimit(t, database, false)
 	d.phaseMediaDescribe(context.Background())
 	assert.Equal(t, 1, countPipelineRuns(t, database, "media-describe"))
 	var status string
 	require.NoError(t, database.QueryRow(`SELECT status FROM media_items WHERE id = ?`, img).Scan(&status))
-	assert.Equal(t, "ok", status, "the gate open, the image is described")
+	assert.Equal(t, "ok", status, "a projected plan limit does not hold the image back")
 }
 
 func TestPhaseMediaDescribe_ErrorDoesNotStopKnowledgeIndex(t *testing.T) {

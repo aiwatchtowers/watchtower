@@ -258,7 +258,7 @@ final class MeetingRecorderWarmEngineTests: MeetingRecorderTestCase {
         var sawGap = false
         var prewarmedInGap = false
         var handovers = 0
-        center.onLiveEngineHandedToJobForTesting = { [weak center] in
+        center.onLiveEngineHandedOnForTesting = { [weak center] in
             guard let center else { return XCTFail("the handover seam fired after the center was deallocated") }
             handovers += 1
             sawGap = center.jobs.first?.engine != nil && !center.isCapturing && center.activeJobID == nil

@@ -56,19 +56,30 @@ var workbenchSpecReviewShowCmd = &cobra.Command{
 	RunE: runSpecReviewShow,
 }
 
+var workbenchSpecReviewRevealCmd = &cobra.Command{
+	Use:    "reveal --ask N --reason session_gone",
+	Short:  "End the author loop of ask N and show it to the owner",
+	Hidden: true,
+	Args:   cobra.NoArgs,
+	RunE:   runSpecReviewReveal,
+}
+
 var (
-	specReviewFlagAsk   int64
-	specReviewFlagForce bool
-	specReviewFlagJSON  bool
+	specReviewFlagReason string
+	specReviewFlagAsk    int64
+	specReviewFlagForce  bool
+	specReviewFlagJSON   bool
 )
 
 func init() {
-	for _, c := range []*cobra.Command{workbenchSpecReviewRunCmd, workbenchSpecReviewStartCmd, workbenchSpecReviewShowCmd} {
+	for _, c := range []*cobra.Command{workbenchSpecReviewRunCmd, workbenchSpecReviewStartCmd, workbenchSpecReviewShowCmd, workbenchSpecReviewRevealCmd} {
 		c.Flags().Int64Var(&specReviewFlagAsk, "ask", 0, "owner ask id")
 		_ = c.MarkFlagRequired("ask")
 		workbenchSpecReviewCmd.AddCommand(c)
 	}
 	workbenchSpecReviewStartCmd.Flags().BoolVar(&specReviewFlagForce, "force", false, "run a done, failed or skipped review again")
+	workbenchSpecReviewRevealCmd.Flags().StringVar(&specReviewFlagReason, "reason", "", "why the loop ends (session_gone)")
+	_ = workbenchSpecReviewRevealCmd.MarkFlagRequired("reason")
 	workbenchSpecReviewShowCmd.Flags().BoolVar(&specReviewFlagJSON, "json", false, "output JSON")
 	workbenchCmd.AddCommand(workbenchSpecReviewCmd)
 }
@@ -228,8 +239,7 @@ func runSpecReviewStart(cmd *cobra.Command, _ []string) error {
 	if t := specreview.DocType(ask.DocType); ask.Kind != "review" || (t != specreview.Spec && t != specreview.Plan) {
 		return usageError("ask %d is not a spec or plan review", id)
 	}
-	// The owner pressed Run: no plan-limit gate here (only ask_owner's
-	// automatic start skips near the limit).
+	// The owner pressed Run.
 	if err := database.RequeueSpecReview(id, specReviewFlagForce, time.Now()); err != nil {
 		if errors.Is(err, db.ErrSpecReviewBusy) {
 			return &exitCodeError{code: 3, err: fmt.Errorf("spec review of ask %d: %w", id, err)}
@@ -262,6 +272,11 @@ type specReviewShowJSON struct {
 	FinishedAt string                        `json:"finished_at"`
 	Result     json.RawMessage               `json:"result"` // null until done
 	Marks      map[string]specReviewMarkJSON `json:"marks"`
+	Loop       string                        `json:"loop"`
+	Round      int                           `json:"round"`
+	LoopEnd    string                        `json:"loop_end"`
+	OpenItems  json.RawMessage               `json:"open_items"`
+	Ledger     json.RawMessage               `json:"ledger"`
 }
 
 type specReviewMarkJSON struct {
@@ -298,6 +313,8 @@ func runSpecReviewShow(cmd *cobra.Command, _ []string) error {
 		AskID: row.AskID, Status: row.Status, Reason: row.Reason, Provider: row.Provider, Model: row.Model,
 		Dropped: row.Dropped, Attempt: row.Attempt, QueuedAt: row.QueuedAt, StartedAt: row.StartedAt,
 		FinishedAt: row.FinishedAt, Marks: map[string]specReviewMarkJSON{},
+		Loop: row.Loop, Round: row.Round, LoopEnd: row.LoopEnd,
+		OpenItems: listOrEmpty(row.OpenItems), Ledger: listOrEmpty(row.Ledger),
 	}
 	if row.Result != "" {
 		out.Result = json.RawMessage(row.Result)
@@ -314,5 +331,37 @@ func runSpecReviewShow(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(w, " (%s)", row.Reason)
 	}
 	fmt.Fprintf(w, ", attempt %d, %d findings dropped, %d marks\n", row.Attempt, row.Dropped, len(marks))
+	return nil
+}
+
+// listOrEmpty is a loop column as a JSON array: [] when the column is empty.
+func listOrEmpty(s string) json.RawMessage {
+	if s == "" {
+		return json.RawMessage("[]")
+	}
+	return json.RawMessage(s)
+}
+
+// runSpecReviewReveal ends ask N's author loop for the one reason a caller
+// outside the daemon knows: the asking session is gone. A row already shown
+// to the owner is left as it is (exit 0).
+func runSpecReviewReveal(cmd *cobra.Command, _ []string) error {
+	if specReviewFlagReason != specreview.EndSessionGone {
+		return usageError("--reason must be %s", specreview.EndSessionGone)
+	}
+	cfg, err := loadWorkbenchCLIConfig()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+	id := specReviewFlagAsk
+	if err := specreview.Reveal(database, id, specReviewFlagReason, time.Now()); err != nil {
+		return fmt.Errorf("revealing spec review of ask %d: %w", id, err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "spec review of ask %d revealed\n", id)
 	return nil
 }

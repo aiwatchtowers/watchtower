@@ -161,9 +161,17 @@ final class HubSession {
     /// The phone's lines to sessions and Finish (PROJ-16).
     let sessionInputs: SessionInputSender
     let deviceSettings: DeviceSettings
+    /// This hub's work-alert push subscription; nil for the demo.
+    let alertRegistrar: AlertSubscriptionRegistrar?
+    /// A shared-scope hub's local work alerts, posted after each fetch (ask #622); nil in any other scope.
+    @ObservationIgnored private let sharedAlerts: SharedAlertPoster?
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
+    /// Takes settled work alerts out of Notification Center after each successful fetch or engine apply.
+    private let alertCleaner: DeliveredAlertCleaner
+    /// The sweep's own decode cache: its reads never race the screens' observation over one cache.
+    @ObservationIgnored private let alertSweepCache = ReplicaDecodeCache()
     /// The calendar slices as the Calendar and Now tabs draw them.
     let calendarReplica = CalendarReplicaModel()
     /// The phone recorder (record a meeting or a voice note), owned for the
@@ -377,6 +385,9 @@ final class HubSession {
         hold: RecordingHold? = nil,
         databaseScope: CloudDatabaseScope? = nil,
         notifications: NotificationCenter = .default,
+        subscriptionSaver: (any SubscriptionSaving)? = nil,
+        alertCleaner: DeliveredAlertCleaner? = nil,
+        alertPosting: LocalAlertPosting? = nil,
         startsActive: Bool = true,
         uploadRetriesAllowed: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         replicaObservesSuspension: Bool = false,
@@ -396,6 +407,7 @@ final class HubSession {
         self.sleep = sleep
         self.now = now
         self.energy = energy
+        self.alertCleaner = alertCleaner ?? .live
         isActive = startsActive
         self.transport = transport
         self.transportStore = transportStore
@@ -413,8 +425,7 @@ final class HubSession {
             keys: try keys ?? (demoKeys ? DemoSeed.phoneKeys() : nil), seqFloor: seqFloor,
             observesSuspension: replicaObservesSuspension
         )
-        let store = sealed.store
-        let secure = sealed.secure
+        let (store, secure) = (sealed.store, sealed.secure)
         self.store = store
         self.secure = secure
         hasDeviceKeys = sealed.hasDeviceKeys
@@ -464,22 +475,104 @@ final class HubSession {
         if !startsActive {
             recorder.setForeground(false)
         }
-        feed = RelayFeed(
-            transport: secure,
-            store: store,
-            outbox: outbox,
-            uploads: uploader,
-            onActionApplied: hydrateAfterEcho
-        )
+        feed = RelayFeed(transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrateAfterEcho)
         // Sealed like every other write: the hub drops a plaintext `device` record.
-        let settings = DeviceSettings(transport: secure, defaults: defaults, hubID: hubID)
-        settings.linkedDevice = device
-        deviceSettings = settings
+        (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
+            secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
+            scope: databaseScope, transport: transport, saver: subscriptionSaver)
+        sharedAlerts = Self.makeSharedAlerts(
+            hubID: hubID, scope: databaseScope, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
+            posting: alertPosting)
         workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
         startBoot(startWork, notifications: notifications)
+    }
+
+    /// Takes this hub's settled alerts out of Notification Center after a successful fetch or engine apply, even
+    /// one that changed nothing. The snapshot is read from the store right after that hydrate, never the screens'
+    /// in-memory one, which lags it: an ask or a stopped state the hydrate just brought must not read as absent or
+    /// still working under this fetch's time. Only while the app is active (so unlocked, every stored row open);
+    /// the return to the foreground fetches or applies, and sweeps then.
+    private func sweepDeliveredAlerts(fetchedAt: Date) {
+        guard isActive else { return }
+        let snapshot: WorkbenchReplicaSnapshot
+        do {
+            snapshot = try store.reader.read { [store, alertSweepCache] db in
+                try WorkbenchReplicaSnapshot.read(from: db, store: store, cache: alertSweepCache)
+            }
+        } catch {
+            Self.logger.error("alert sweep read failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        let (cleaner, hubID) = (alertCleaner, hubID)
+        Task { @MainActor in await cleaner.clear(hubID: hubID, snapshot: snapshot, fetchedAt: fetchedAt, now: Date()) }
+    }
+
+    /// The poster of a shared-scope hub's work alerts, over this phone's keys for the hub; nil in any other scope or
+    /// without keys. A private-scope hub never posts locally: its push subscription delivers.
+    private static func makeSharedAlerts(
+        hubID: String,
+        scope: CloudDatabaseScope?,
+        keys: PhoneKeys?,
+        store: ReplicaStore,
+        defaults: UserDefaults,
+        posting: LocalAlertPosting?
+    ) -> SharedAlertPoster? {
+        guard case .shared = scope, let keys else { return nil }
+        return SharedAlertPoster(hubID: hubID, store: store, keys: keys.store, defaults: defaults, posting: posting ?? .live)
+    }
+
+    /// Posts a shared-scope hub's new work alerts after a fetch or engine apply, in the background too (a silent
+    /// push is when they matter); the phone's "When work stops" switch decides.
+    private func postSharedAlerts() async {
+        await sharedAlerts?.postNew(enabled: deviceSettings.workAlerts)
+    }
+
+    /// The `device` settings (sealed like every other write: the hub drops a plaintext `device` record) and the
+    /// hub's alert subscription. The alerts switch is the phone's, kept in the app group's defaults; it works by
+    /// saving or deleting the subscription (the notification extension never reads it).
+    private static func makeDeviceSettings(
+        secure: SecureTransport,
+        defaults: UserDefaults,
+        kind: TransportKind,
+        hubID: String,
+        device: LinkedDevice?,
+        scope: CloudDatabaseScope?,
+        transport: any CloudSyncTransport,
+        saver: (any SubscriptionSaving)?
+    ) -> (DeviceSettings, AlertSubscriptionRegistrar?) {
+        let settings = DeviceSettings(
+            transport: secure, defaults: defaults,
+            alertDefaults: kind == .cloudKit ? UserDefaults(suiteName: AppEnvironment.appGroupID) : nil,
+            hubID: hubID
+        )
+        settings.linkedDevice = device
+        let registrar = makeAlertRegistrar(hubID: hubID, kind: kind, scope: scope, transport: transport, saver: saver)
+        return (settings, registrar)
+    }
+
+    /// The hub's alert subscription, only over the live engine (or a saver a test injects). A CloudKit container
+    /// raises an uncatchable exception in a process without the app's iCloud entitlement (the unsigned test host,
+    /// where a `CloudKitTransport` never starts its engine either), so the live saver needs both.
+    private static func makeAlertRegistrar(
+        hubID: String,
+        kind: TransportKind,
+        scope: CloudDatabaseScope?,
+        transport: any CloudSyncTransport,
+        saver: (any SubscriptionSaving)?
+    ) -> AlertSubscriptionRegistrar? {
+        guard kind == .cloudKit, let scope,
+              let saver = saver ?? liveSaver(transport: transport)
+        else { return nil }
+        return AlertSubscriptionRegistrar(hubID: hubID, scope: scope, saver: saver)
+    }
+
+    /// The private database's saver, only for a `CloudKitTransport` in an entitled process.
+    private static func liveSaver(transport: any CloudSyncTransport) -> (any SubscriptionSaving)? {
+        guard transport is CloudKitTransport, CloudKitTransport.entitlementPresent() else { return nil }
+        return CloudKitSubscriptionSaver()
     }
 
     /// The recording uploader: sealed through `secure`, re-sending only
@@ -637,6 +730,7 @@ final class HubSession {
                     Task { @MainActor in await self?.applyBuffered() }
                 }
                 await cloud.start()
+                await alertRegistrar?.apply(enabled: deviceSettings.workAlerts)
             }
         }
     }
@@ -871,8 +965,11 @@ final class HubSession {
             Self.logger.error("replica hydrate failed (\(what, privacy: .public)): \(error.localizedDescription, privacy: .public)")
             return .failed
         }
-        lastSyncAt = now()
+        let fetchedAt = now()
+        lastSyncAt = fetchedAt
         lastFetchError = nil
+        sweepDeliveredAlerts(fetchedAt: fetchedAt)
+        await postSharedAlerts()
         var routed = 0
         do {
             routed = try await feed.pollOnce()
@@ -910,7 +1007,10 @@ final class HubSession {
             Self.logger.error("engine fetch apply failed: \(error.localizedDescription, privacy: .public)")
             return
         }
-        lastSyncAt = now()
+        let appliedAt = now()
+        lastSyncAt = appliedAt
+        sweepDeliveredAlerts(fetchedAt: appliedAt)
+        await postSharedAlerts()
         do {
             _ = try await feed.pollOnce()
         } catch {
@@ -950,6 +1050,11 @@ final class HubSession {
         // Review Focus 1: rows a locked background hydrate stored open now (the unlock signal may have passed
         // while the app was suspended), before the return's fetch.
         indexStoredRows()
+        Task { [deviceSettings] in await deviceSettings.touchIfStale() }
+        // A subscription save or delete that failed earlier is retried; one already applied costs no CloudKit call.
+        if isBootstrapped, let alertRegistrar {
+            Task { [deviceSettings] in await alertRegistrar.apply(enabled: deviceSettings.workAlerts) }
+        }
         let recent = !fullFetchOwed && (lastSyncAt.map { now().timeIntervalSince($0) < SessionCadence.foregroundRefetchAfter(role: role) } ?? false)
         restartLoop(firstCycle: recent ? nil : .foreground)
         if recent, isBootstrapped {

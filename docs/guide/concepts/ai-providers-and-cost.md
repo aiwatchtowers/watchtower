@@ -19,7 +19,7 @@ since: 0.24.0
 | **Codex** | The Codex command-line tool | Installed and signed in |
 | **Ollama / Local** | Any OpenAI-compatible server (Ollama, LM Studio, vLLM), at `http://localhost:11434` unless you change it | A running server and a chosen model |
 
-Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "auto-detect"), then press **Test Connection**. The main AI Chat also has a provider and model pill for switching per chat. If your company's profile limits providers, the provider picker in **Settings → System → AI** lists only those; a configured provider it forbids shows "(not allowed)" there, and every AI call fails until you pick another.
+Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "auto-detect"), then press **Test Connection**. The main chat also has a provider and model pill for switching per chat. If your company's profile limits providers, the provider picker in **Settings → System → AI** lists only those; a configured provider it forbids shows "(not allowed)" there, and every AI call fails until you pick another.
 
 ## Light and strong models
 <!-- learn
@@ -105,7 +105,7 @@ It never refreshes that sign-in, so if Claude Code's token has expired the tab s
 - The menu bar shows `5h N% · 7d M%`; a `⚠︎` prefix marks a warning. **Show in the menu bar** on this tab hides it.
 - Notifications fire once per limit per window, when the 5-hour or weekly limit is projected to be hit before it resets, and when any limit reaches 90%. The switch is **Claude plan limits** in **Settings → Features → Notifications**.
 - **Refresh** polls once now.
-- When a limit is projected to be hit, history backfill pauses ("Loading history paused — Claude plan limit"). Nothing else is held back.
+- The limits are information only: Watchtower never pauses or skips its own work because of them.
 - The feature is **Claude plan limits** in Settings → Features; off stops the polling.
 
 ## Related

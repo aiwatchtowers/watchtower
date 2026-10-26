@@ -7,7 +7,6 @@ Claude runs out of quota sooner than expected, a warning says a limit will be hi
 - A menu bar text `5h N% · 7d M%`, with a `⚠︎` prefix on a warning, and a notice that the 5-hour or weekly limit is projected to be hit.
 - On **Usage → Claude plan**: "Sign in to Claude Code to see your plan limits.", "Your Claude Code sign-in expired — open Claude Code to refresh it." or "Couldn't update: …".
 - In the chat: "The provider is rate-limiting requests. Try again in a moment."
-- "Loading history paused — Claude plan limit" in the menu bar.
 
 ## Why
 
@@ -26,7 +25,7 @@ Your Claude plan limit belongs to your Claude account, so Watchtower's backgroun
 
 ## How to check
 
-**Usage** shows fewer AI calls for the next day, and the 5-hour percentage grows slower. History backfill resumes by itself when no limit is projected to be hit.
+**Usage** shows fewer AI calls for the next day, and the 5-hour percentage grows slower. History backfill runs on at its own pace; the plan limit never pauses it.
 
 ## If it did not help
 

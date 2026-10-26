@@ -95,7 +95,7 @@ extension AppState {
     }
 
     /// A day plan item's source (moved from `DayPlanView`): its target, the
-    /// plan's linked briefing, Boards for Jira, the Linear issue. A focus,
+    /// plan's linked briefing, Connections → Jira for Jira, the Linear issue. A focus,
     /// calendar or manual item has nowhere to go.
     func openDayPlanItemSource(_ item: DayPlanItem) {
         guard let sid = item.sourceId, !sid.isEmpty else { return }
@@ -115,9 +115,9 @@ extension AppState {
                 navigateToDayPlan(plan?.planDate)
             }
         case .jira:
-            selectedDestination = .boards
+            openConnections(.jira)
         case .linear:
-            // Linear has no Boards tab: open the issue itself, else Blockers.
+            // Open the Linear issue itself, else Blockers.
             if !openTrackerIssue(tracker: .linear, key: sid) {
                 selectedDestination = .blockers
             }

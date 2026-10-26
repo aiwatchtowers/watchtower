@@ -115,7 +115,11 @@ func TestMain(m *testing.M) {
 	// No git a cmd test starts may leave maintenance writing into a
 	// t.TempDir repository after it returns.
 	gittest.DisableBackgroundGit()
-	if err := db.InitTestTemplate(); err != nil {
+	// Most cmd tests open a fresh database file through the config; seeding
+	// it from the migrated template instead of running goose from scratch
+	// (~0.5 s per Open) took this package from past the 10-minute default
+	// timeout to under three minutes.
+	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}

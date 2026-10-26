@@ -11,7 +11,7 @@ protocol AccountPurgeNotifying {
 extension NotificationService: AccountPurgeNotifying {}
 
 /// The purge ledger as the app shows it (board #601): the open rows behind
-/// the red lines on Settings → Connections and Home, the recently done ones,
+/// the red lines on the Connections tab and Home, the recently done ones,
 /// one notification per row per state, and the switch's effective state from
 /// `watchtower accounts purges --json`. The daemon writes `account_purges`
 /// from another process, so GRDB observation never fires: a 30 s poll

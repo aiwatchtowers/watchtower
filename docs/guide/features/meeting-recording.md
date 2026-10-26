@@ -23,11 +23,15 @@ done_when: meeting.recorded
 
 **Record** captures the microphone and the system audio (the other participants). The first time, macOS asks for two permissions: microphone, and system audio recording. While you record, a pill at the bottom right of the window shows the elapsed time and **Stop**, whatever tab you are on. **Stop** is white on red, readable whether or not Watchtower is the active app.
 
-Drag the pill by its background to any corner of the window. It snaps to the nearest corner on release and stays there across launches, and the live-transcript panel opens from it toward the middle of the window. While pills show, the window keeps a strip free along their edge, so they never cover a control, a terminal or a composer on any tab.
+The pill floats over the window. Drag it by its background anywhere in the window: it stays where you drop it, across launches, and snaps flush to an edge or into a corner when you drop it close to one. The live-transcript panel opens from it toward the middle of the window. Nothing on the screen moves to make room for it, so if it covers something, drag it aside.
+
+Click the microphone icon on the pill to mute yourself in the recording. While it shows a red crossed-out microphone, your voice is not recorded and its meter stays flat; the other participants are still recorded. This mutes only the recording, not you in the call itself. Every recording starts unmuted.
 
 After **Stop**, the recording joins a queue, and each queued recording gets its own pill: "Transcribing 2/5", "Identifying speakers…", "Summarizing…".
 
-You can start a new recording while an old one is processing. Only one transcription runs at a time, so the new one keeps capturing and its live panel reads "Waiting for previous transcription… live transcript will catch up."
+You can start a new recording while an old one is processing. Only one transcription runs at a time, so while an earlier recording is still being transcribed, the new live panel reads "Waiting for previous transcription… live transcript will catch up." It catches up as soon as that transcription ends.
+
+A recording whose live transcript is ready is saved right after **Stop**, even while the next meeting records. One that has to be transcribed from its audio (every recording, with live transcription off) waits until the recording in progress stops; its pill reads "Waiting for the recording to stop".
 
 If the call goes quiet, you get a warning. When nothing has come from the call for over 2 minutes after it was heard, the pill shows **No call audio** in orange and a notification fires. It usually means the output device changed.
 

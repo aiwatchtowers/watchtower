@@ -65,6 +65,11 @@ final class SystemAudioRecorder: AudioRecording {
         impl = nil
         return try recorder.stop()
     }
+
+    func setMicMuted(_ muted: Bool) {
+        guard #available(macOS 14.4, *), let recorder = impl as? TapRecorderImpl else { return }
+        recorder.setMicMuted(muted)
+    }
 }
 
 /// Accumulates per-frame raw mic/system samples into ~100 ms RMS pairs for the
@@ -123,7 +128,7 @@ private final class TapRecorderImpl {
     private let levelsContinuation: AsyncStream<CaptureLevels>.Continuation?
     /// ~10 Hz live level throttle. Like `activityAccumulator`, touched only
     /// inside the IO block (which CoreAudio schedules on `writeQueue`), and fed
-    /// the same RAW pre-gain values — never the AGC-scaled mic term.
+    /// the same pre-AGC (post-mute) values — never the AGC-scaled mic term.
     private var levelAccumulator = LevelAccumulator()
     /// Best-effort mic/system RMS sidecar (rec_X.activity) for the diarization
     /// post-pass. Losing it only loses the «Я» speaker label, so every failure
@@ -134,6 +139,9 @@ private final class TapRecorderImpl {
     /// recording into the next. nil = the `transcription.micAGC` gate is off,
     /// and the mix line below is then exactly what it was before the AGC.
     private var micAGC: MicAGC?
+    /// The owner's mute (`setMicMuted`). Touched only on `writeQueue`, like
+    /// the accumulators.
+    private var micMute = MicMute()
     /// Rebuilds the tap on a default-device change; nil when the
     /// `transcription.reattachSystemAudio` gate is off or its listener could
     /// not be installed. Lives on `controlQueue`.
@@ -281,6 +289,10 @@ private final class TapRecorderImpl {
         levelsContinuation?.finish()
     }
 
+    func setMicMuted(_ muted: Bool) {
+        writeQueue.async { self.micMute.muted = muted }
+    }
+
     // MARK: Capture path
 
     /// Mixes one IO cycle to mono: buffer 0 is the mic sub-device, the rest is
@@ -374,21 +386,30 @@ private final class TapRecorderImpl {
             from: previousGain, to: micAGC?.appliedGain ?? 1, frameCount: frameCount
         )
         var agcGain = glide.start
+        // The mute scales the mic before the sidecar, the meter and the mix:
+        // a muted owner is absent from the file, from the «Я» heuristic and
+        // from the meter alike. The AGC above keeps judging the raw mic, so
+        // unmuting resumes at a gain that matches the room.
+        let mute = micMute.ramp(frameCount: frameCount)
+        var muteGain = mute.start
 
         for frame in 0..<frameCount {
-            let mic = channelAverage(firstBuffer, frame: frame)
+            let mic = channelAverage(firstBuffer, frame: frame) * muteGain
+            muteGain += mute.step
             let system = systemAverage(frame: frame)
-            // The sidecar records the RAW pre-gain mic level on purpose:
-            // RoleAssigner's «Я» heuristic compares mic vs system RMS, so
-            // scaling the mic here would change what that comparison means.
+            // The sidecar records the pre-AGC mic level on purpose (muted
+            // stretches read as silence, like the file): RoleAssigner's «Я»
+            // heuristic compares mic vs system RMS, so the AGC's scaling
+            // would change what that comparison means.
             // Gated on firstWriteError so the sidecar timeline never advances
             // past where the audio file stopped.
             if firstWriteError == nil {
                 activityAccumulator?.add(mic: mic, sys: system)
             }
-            // The live level meter uses the same RAW pre-gain values as the
+            // The live level meter uses the same pre-AGC values as the
             // sidecar, and unlike it keeps running past a write error — it
-            // reports what the capture hardware hears, not what the file holds.
+            // reports what is being captured, not what the file holds (a
+            // muted mic reads flat).
             levelAccumulator.add(mic: mic, sys: system)
             out[frame] = tanhf(system + 0.9 * agcGain * mic)
             agcGain += glide.step

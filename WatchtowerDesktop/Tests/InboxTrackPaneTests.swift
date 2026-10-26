@@ -263,7 +263,7 @@ final class InboxTrackPaneTests: XCTestCase {
         XCTAssertEqual(state.value.instruction, "watch the refund owner")
         XCTAssertFalse(state.value.collecting)
         XCTAssertFalse(state.value.editingInstruction)
-        let fetched = try manager.dbPool.read { db in
+        let fetched = try await manager.dbPool.read { db in
             try Row.fetchOne(db, sql: "SELECT instruction, enabled, dismissed_at FROM tracks WHERE id = ?",
                              arguments: [custom.id])
         }
@@ -362,7 +362,7 @@ final class InboxTrackPaneTests: XCTestCase {
         let failure = await appState.makeTask(fromTrack: auto)
 
         XCTAssertNil(failure)
-        let fetched = try manager.dbPool.read { db in
+        let fetched = try await manager.dbPool.read { db in
             try Row.fetchOne(db, sql: "SELECT id, text, source_type, source_id FROM targets WHERE source_type = 'track'")
         }
         let target = try XCTUnwrap(fetched)

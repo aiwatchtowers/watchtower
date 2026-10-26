@@ -140,6 +140,9 @@ final class ChatViewModel {
     /// thread. It may already hold a fresh, message-less conversation — made
     /// on the first keystroke so its session prewarms — and stays up until
     /// that conversation's first turn starts or another one is opened.
+    /// A project page is the landing too, bound to its project
+    /// (`openProject`): its composer is this one, and the page is shown
+    /// in the landing's place while `openProjectID` is set.
     private(set) var isOnLanding = true
     /// The conversation the landing made (or reused) for its draft. Left for
     /// anything but its own first turn, it is deleted while still untouched.
@@ -157,6 +160,14 @@ final class ChatViewModel {
         }
     }
     var landingDraftID: Int64? { landingDraft?.id }
+    /// The project the landing's composer makes its conversation in; nil =
+    /// outside any project. Only two places set it (controller ruling on
+    /// spec 2026-10-26 §4/§7): the project page's composer (`openProject`)
+    /// and `+` / ⌘N while the visible panel shows that project
+    /// (`showLanding(inProject:)`). It clears on opening any chat, on the
+    /// landing's first turn, when the page closes, and when the panel
+    /// leaves the project (`panelLevelChanged`, the fallback included).
+    private(set) var landingProjectID: Int64?
     @ObservationIgnored private let defaults: UserDefaults
     private var landingDraftKey: String { "chat.landingDraft.\(dbManager.dbPool.path)" }
     private var storedLandingDraft: LandingDraft? {
@@ -164,6 +175,9 @@ final class ChatViewModel {
     }
     /// Active (unarchived) projects for the sidebar.
     private(set) var projects: [ChatProject] = []
+    /// A project New Project… just made (`createProject`): its page opens
+    /// with the name field focused, and clears this (spec 2026-10-26 §7).
+    var projectNameFocusRequest: Int64?
     /// Keys the owner closed the panel for during the CURRENT turn — a
     /// streaming turn does not reopen a panel the owner just dismissed.
     /// Cleared at the start of every new turn.
@@ -262,6 +276,7 @@ final class ChatViewModel {
         discardLandingDraft(except: id)
         openProjectID = nil
         isOnLanding = false
+        landingProjectID = nil
         let switching = id != conversationID
         conversationID = id
         editingMessageID = nil
@@ -328,7 +343,7 @@ final class ChatViewModel {
         let last = id.flatMap(landingSnapshot(conversationID:))
         switch ChatLandingPolicy.decide(last: last, lastViewedAt: viewedAt, hasUnsentInput: unsent, now: now) {
         case .resume(let id): select(conversationID: id)
-        case .landing: showLanding()
+        case .landing: showLanding(inProject: landingProjectID)
         }
     }
 
@@ -337,11 +352,29 @@ final class ChatViewModel {
     /// (the pool's idle TTL). The landing's own still-untouched draft stays
     /// its draft, so no second empty row is made; any other chat is let go
     /// (never adopted as a draft — it is not the landing's to delete).
-    func showLanding() {
+    /// `projectID` is where the landing's chat is made; a draft made for
+    /// another project is not shown (the next keystroke makes a new one and
+    /// the old draft goes when it is selected).
+    func showLanding(inProject projectID: Int64? = nil) {
         openProjectID = nil
         isOnLanding = true
-        if let id = conversationID, id == landingDraftID { return }
+        landingProjectID = projectID
+        if let id = conversationID, id == landingDraftID, landingDraft?.projectID == projectID { return }
         clearShownConversation()
+    }
+
+    /// The conversation is the one on this view model's screen: shown, not
+    /// the landing or a project page (whether the Chats tab itself is on
+    /// screen is the caller's to know).
+    func isShowing(conversationID id: Int64) -> Bool {
+        !isOnLanding && openProjectID == nil && conversationID == id
+    }
+
+    /// A turn of that conversation is running now (the panel's "Answering"
+    /// state). Reads the pool's observable `clients`, so a view asking at
+    /// render time follows it.
+    func isAnswering(conversationID id: Int64) -> Bool {
+        pool.runningTurnID(conversationID: id) != nil
     }
 
     /// Text or attachments typed but not sent.
@@ -379,7 +412,9 @@ final class ChatViewModel {
         writes.start { [weak self] in
             do {
                 let deleted = try await dbPool.write { db in
-                    try ChatConversationQueries.deleteIfUntouched(db, id: draft.id, createdAt: draft.createdAt)
+                    try ChatConversationQueries.deleteIfUntouched(
+                        db, id: draft.id, createdAt: draft.createdAt, projectID: draft.projectID
+                    )
                 }
                 guard deleted, let self else { return }
                 self.pool.close(conversationID: draft.id)
@@ -469,6 +504,7 @@ final class ChatViewModel {
         do {
             let project = try await write { try ChatProjectQueries.create($0, name: name) }
             reloadProjects()
+            projectNameFocusRequest = project.id
             openProject(project.id)
             return project.id
         } catch {
@@ -478,14 +514,48 @@ final class ChatViewModel {
     }
 
     /// Shows a project page; the chat's artifact panel closes with the chat.
+    /// The page's composer is the landing's, in this project (spec
+    /// 2026-10-26 §7): its first keystroke makes the conversation there and
+    /// the page stays until that chat's first turn starts. A draft the
+    /// landing already made in this project stays its draft; any other one
+    /// goes, and a chat on screen is let go, so the page's composer never
+    /// writes into it.
     func openProject(_ id: Int64) {
-        discardLandingDraft()
-        // The landing's (now discarded) draft is not what a later return shows.
-        if isOnLanding { clearShownConversation() }
+        let keepsDraft = conversationID != nil && conversationID == landingDraftID && landingDraft?.projectID == id
+        if !keepsDraft {
+            discardLandingDraft()
+            clearShownConversation()
+        }
         openProjectID = id
-        isOnLanding = false
+        isOnLanding = true
+        landingProjectID = id
         artifactPanel = nil
         sourcesPanel = nil
+    }
+
+    /// The Chats panel's level changed (`ChatHistoryViewModel.onLevelChanged`:
+    /// ‹, ⌘[, the switcher, the fallback when the project is gone): a
+    /// landing — or project page — in another project gives way to the
+    /// landing outside any project, so nothing is made in a project the
+    /// panel no longer shows.
+    func panelLevelChanged(to projectID: Int64?) {
+        guard let landing = landingProjectID, landing != projectID else { return }
+        if isOnLanding {
+            showLanding(inProject: nil)
+        } else {
+            landingProjectID = nil
+        }
+    }
+
+    /// The ⌘/ popup opens over this chat (spec 2026-10-26 §2: it behaves
+    /// as before the panel, outside any project): a landing or project page
+    /// in a project becomes the plain landing first — the popup's composer
+    /// never makes a chat in a project —, then, with nothing shown, the
+    /// tab's resume decision runs (`enterTab`).
+    func enterHelpPopup(rememberedConversationID: Int64?, lastViewedAt: Date?, now: Date) {
+        if isOnLanding, landingProjectID != nil { showLanding(inProject: nil) }
+        guard conversationID == nil else { return }
+        enterTab(rememberedConversationID: rememberedConversationID, lastViewedAt: lastViewedAt, now: now)
     }
 
     /// Called by the project page after a write that changes the project's
@@ -501,12 +571,17 @@ final class ChatViewModel {
     /// are detached (`ON DELETE SET NULL`), so the shown one reloads too.
     func projectDeleted(_ id: Int64) {
         pool.retireSessions(projectID: id, deleted: true)
-        reloadProjects()
-        if openProjectID == id {
-            showLanding()
-        } else {
-            reload()
+        if landingProjectID == id { landingProjectID = nil }
+        // The landing's draft in that project now sits outside any project
+        // (`ON DELETE SET NULL`): it stays the landing's draft there, so it
+        // is still reused or discarded.
+        if let draft = landingDraft, draft.projectID == id {
+            landingDraft = LandingDraft(id: draft.id, createdAt: draft.createdAt)
         }
+        reloadProjects()
+        if openProjectID == id { showLanding() }
+        // The shown chat — or the landing's kept draft — is detached now.
+        reload()
         reloadConversations()
     }
 
@@ -815,9 +890,12 @@ final class ChatViewModel {
             screen: screen, forceReplay: false, titleText: trimmed, alsoWrite: alsoWrite))
         // The landing's own turn only: a landing left meanwhile is not.
         if started, fromLanding, isOnLanding, conversationID == id {
-            // The landing's first turn: its draft is a real chat now.
+            // The landing's first turn: its draft is a real chat now, shown
+            // in place of the landing or the project page.
             landingDraft = nil
             isOnLanding = false
+            openProjectID = nil
+            landingProjectID = nil
             onLandingTurnStarted?(id)
         }
         return started
@@ -840,14 +918,17 @@ final class ChatViewModel {
 
     private func createConversationForComposer() async -> Int64? {
         guard isOnLanding else { return await newConversation() }
-        // The landing's own earlier draft, still untouched, is reused rather
-        // than a second empty row made.
+        // The landing's own earlier draft, still untouched and in the same
+        // project, is reused rather than a second empty row made.
+        let projectID = landingProjectID
         let reusable: Int64?
         do {
             let previous = landingDraft ?? storedLandingDraft
             reusable = try previous.flatMap { draft in
                 try dbManager.dbPool.read {
-                    try ChatConversationQueries.fetchUntouched($0, id: draft.id, createdAt: draft.createdAt)?.id
+                    try ChatConversationQueries.fetchUntouched(
+                        $0, id: draft.id, createdAt: draft.createdAt, projectID: projectID
+                    )?.id
                 }
             }
         } catch {
@@ -860,23 +941,31 @@ final class ChatViewModel {
         } else {
             let conv: ChatConversation
             do {
-                conv = try await writeNewConversation(projectID: nil)
+                conv = try await writeNewConversation(projectID: projectID)
             } catch {
                 errorMessage = "Couldn't start a new chat: \(error.localizedDescription)"
                 return nil
             }
-            // The owner left the landing while the row was written: it is
-            // not the landing's draft any more, and nobody wrote into it.
-            guard isOnLanding, conversationID == nil else {
-                discardIfUntouched(LandingDraft(id: conv.id, createdAt: conv.createdAt))
+            // The owner left the landing (or moved it to another project)
+            // while the row was written: it is not the landing's draft any
+            // more, and nobody wrote into it.
+            guard isOnLanding, conversationID == nil, landingProjectID == projectID else {
+                discardIfUntouched(LandingDraft(id: conv.id, createdAt: conv.createdAt, projectID: conv.projectID))
                 return nil
             }
             id = conv.id
             reloadConversations()
         }
+        // A project page (and the landing's project) stays until the
+        // draft's first turn.
+        let page = openProjectID
         select(conversationID: id)
         isOnLanding = true
-        landingDraft = currentConversation.map { LandingDraft(id: $0.id, createdAt: $0.createdAt) }
+        openProjectID = page
+        landingProjectID = projectID
+        landingDraft = currentConversation.map {
+            LandingDraft(id: $0.id, createdAt: $0.createdAt, projectID: $0.projectID)
+        }
         return id
     }
 
@@ -1182,21 +1271,31 @@ final class ChatViewModel {
     }
 }
 
-/// The landing's draft as persisted: `"<id>|<created_at>"`.
+/// The landing's draft as persisted: `"<id>|<created_at>"`, plus
+/// `"|<project_id>"` for a draft made in a project (an older two-part value
+/// reads as outside any project).
 struct LandingDraft: Equatable {
     let id: Int64
     let createdAt: Double
+    let projectID: Int64?
 
-    init(id: Int64, createdAt: Double) {
+    init(id: Int64, createdAt: Double, projectID: Int64? = nil) {
         self.id = id
         self.createdAt = createdAt
+        self.projectID = projectID
     }
 
     init?(stored: String) {
-        let parts = stored.split(separator: "|")
-        guard parts.count == 2, let id = Int64(parts[0]), let createdAt = Double(parts[1]) else { return nil }
-        self.init(id: id, createdAt: createdAt)
+        let parts = stored.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 2 || parts.count == 3,
+              let id = Int64(parts[0]), let createdAt = Double(parts[1]) else { return nil }
+        var projectID: Int64?
+        if parts.count == 3 {
+            guard let project = Int64(parts[2]) else { return nil }
+            projectID = project
+        }
+        self.init(id: id, createdAt: createdAt, projectID: projectID)
     }
 
-    var stored: String { "\(id)|\(createdAt)" }
+    var stored: String { projectID.map { "\(id)|\(createdAt)|\($0)" } ?? "\(id)|\(createdAt)" }
 }

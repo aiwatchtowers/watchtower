@@ -67,8 +67,8 @@ kind: feature
 since: 0.24.0
 -->
 
-- **Now** shows whether your Mac is online ("Mac online · 12s"), everything **Waiting for you** across workbenches, and session counts. The gear opens Settings.
-- **Workbench** lists your workbenches as cards. Open one for **Sessions** (asks, reports, a stop button) or **Board** (targets with status, priority and comments). Its badge counts open asks.
+- **Now** shows your Mac's status, then **Waiting for you**, **Working** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
+- **Workbench** lists your workbenches as cards. Open one for **Sessions** (in the Mac's sessions panel order) or **Board** (targets with status, priority and comments). Its badge counts open asks.
 - **Calendar** shows the events your Mac publishes, with prep, the **Record** button and the **Recordings** list.
 
 Asks come in three kinds: a question, a review (select text, **Comment on the selection**, then **Approve** or **Request changes**) and a check (mark each step **OK**, **Broken** or **Skipped**).
@@ -84,7 +84,7 @@ kind: feature
 since: 0.24.0
 -->
 
-Tap **Chat** on a session to read its conversation, with subagent markers that open the subagent's own chat. Tool output is never shown. The Mac sends it only while the screen is open, plus five minutes. It shows the newest 300 lines. The **Tell the session…** bar appears on the main chat only.
+A session opens as its chat, with a field to write to it and its report behind **⋯**. Tool output is never shown. See [iPhone: the workchat](iphone-workbench.md).
 
 ### Let the phone do more
 <!-- learn
@@ -155,6 +155,7 @@ Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not
 ## Related
 
 - [iPhone: permission prompts and interrupts](iphone-agent-prompts.md)
+- [iPhone: work alerts](iphone-alerts.md)
 - [Menu bar and updates](menu-bar-and-updates.md) for keeping the Mac side awake and running.
 
 For developers: [docs/features/mobile-companion.md](../../features/mobile-companion.md)

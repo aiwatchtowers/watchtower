@@ -21,6 +21,14 @@ final class MobileSettingsViewModelTests: XCTestCase {
 
     // MARK: - The toggle
 
+    func testKeepAwakeToggleDefaultsOnAndWritesThroughTheHost() async throws {
+        let model = fixture.makeModel(entitlementPresent: true)
+        XCTAssertTrue(model.keepAwake)
+        model.setKeepAwake(false)
+        XCTAssertFalse(model.keepAwake)
+        XCTAssertFalse(fixture.host.isMobileKeepAwakeEnabled)
+    }
+
     func testAnAdHocBuildDisablesTheToggleAndOffersNoCode() async throws {
         fixture.host.isMobileSyncEnabled = false
         let model = fixture.makeModel(entitlementPresent: false)

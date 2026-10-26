@@ -1,0 +1,6 @@
+{
+  "ask_id": 42,
+  "round": 2,
+  "items": 5,
+  "line": "Spec review of ask #42, round 2: 5 findings to address — read them with get_spec_review 42 using the watchtower-workbench skill."
+}

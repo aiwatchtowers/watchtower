@@ -71,6 +71,17 @@ enum DesignShotCatalog {
             DesignShot(name: "buttons", size: NSSize(width: 460, height: 64)) {
                 AnyView(DesignShotFixtures.buttons().padding(12).shotFrame().panelBackground())
             },
+            // The chat project page (spec 2026-10-26 §7): the cards beside
+            // the chats from 900 pt of content, below them under it.
+            DesignShot(name: "chat-project-page-wide", size: NSSize(width: 1100, height: 720)) {
+                ProjectPageShotFixtures.page()
+            },
+            DesignShot(name: "chat-project-page-narrow", size: NSSize(width: 640, height: 1000)) {
+                ProjectPageShotFixtures.page()
+            },
+            DesignShot(name: "chat-project-page-empty", size: NSSize(width: 1100, height: 520)) {
+                ProjectPageShotFixtures.page(empty: true)
+            },
             // Home (#717): two columns from 900 pt of content, one below.
             DesignShot(name: "home-wide", size: NSSize(width: 1280, height: 960)) {
                 HomeShotFixtures.home()
@@ -106,8 +117,11 @@ enum DesignShotCatalog {
             DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 600)) {
                 AnyView(HomeShotFixtures.organizationPolicy().shotFrame().detailBackground())
             },
-            DesignShot(name: "settings-connections-blocked", size: NSSize(width: 760, height: 420)) {
+            DesignShot(name: "connections-blocked", size: NSSize(width: 900, height: 520)) {
                 AnyView(HomeShotFixtures.connectionsBlocked().shotFrame().detailBackground())
+            },
+            DesignShot(name: "connections-overview", size: NSSize(width: 900, height: 620)) {
+                AnyView(HomeShotFixtures.connectionsOverview().shotFrame().detailBackground())
             },
             DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
                 AutomationShotFixtures.list()
@@ -260,6 +274,9 @@ enum DesignShotCatalog {
             DesignShot(name: "spec-review-wrapup", size: NSSize(width: 760, height: 900)) {
                 SpecReviewShotFixtures.screen(.wrapup)
             },
+            DesignShot(name: "spec-review-loop", size: NSSize(width: 760, height: 1180)) {
+                SpecReviewShotFixtures.loop()
+            },
             DesignShot(name: "spec-review-running", size: NSSize(width: 760, height: 360)) {
                 SpecReviewShotFixtures.running()
             },
@@ -279,10 +296,6 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "branch-review-chapter-risks", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.chapterRisks()
-            },
-            // Search while the messages index is rebuilt (#892).
-            DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {
-                AnyView(SearchShotFixtures.rebuildPending().shotFrame().detailBackground())
             },
             // Agent Settings as a page screen (#1150).
             DesignShot(name: "workbench-agent-settings", size: NSSize(width: 1040, height: 900)) {
@@ -336,6 +349,7 @@ enum DesignShotFixtures {
         BuiltinShotFixtures.cleanUp()
         CleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
+        ProjectPageShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

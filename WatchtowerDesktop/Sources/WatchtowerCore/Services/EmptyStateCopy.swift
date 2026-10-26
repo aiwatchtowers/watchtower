@@ -72,9 +72,10 @@ package enum EmptyStateCopyTable {
         )
     }
 
-    /// Raw values with intentionally no shared empty state (search, usage,
-    /// mcpServer, chat keep theirs; home is never empty).
-    package static let exempt: Set<String> = ["search", "usage", "mcpServer", "chat", "home"]
+    /// Raw values with intentionally no shared empty state (usage,
+    /// mcpServer, chat keep theirs; home is never empty; connections always
+    /// shows a card per service).
+    package static let exempt: Set<String> = ["usage", "mcpServer", "chat", "home", "connections"]
 
     private static func jira(_ icon: String, _ title: String, _ landsHere: String) -> EmptyStateCopy {
         EmptyStateCopy(icon: icon, title: title, landsHere: landsHere, feature: .jira, primaryAction: .connect(.jira))
@@ -148,7 +149,6 @@ package enum EmptyStateCopyTable {
         "blockers": jira("exclamationmark.triangle", "No blockers yet", "Jira and Linear views: what is blocked and by what."),
         "projectMap": jira("map", "No project map yet", "Jira views: how the projects and their epics fit together."),
         "releases": jira("shippingbox", "No releases yet", "Jira views: upcoming releases and what is in them."),
-        "boards": jira("rectangle.on.rectangle.angled", "No boards yet", "Jira views: your Jira boards and their columns."),
         // The workbench's Clean Up screen with nothing that can go (board #1107).
         "workbenchCleanup": EmptyStateCopy(
             icon: "checkmark", title: "Nothing to clean up",

@@ -63,7 +63,7 @@ struct OnboardingConnectStepView: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Connect your sources").font(.headline)
-                Text("Only what your goals need. Skip any of them and connect later in Settings → Connections.")
+                Text("Only what your goals need. Skip any of them and connect later in the Connections tab.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

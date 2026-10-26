@@ -12,21 +12,25 @@ struct MacNotShowingView: View {
     ]
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            SettingsCard(
+                title: "Check on your Mac",
+                footer: "Then choose Use Watchtower on iPhone in Settings → Mobile on the Mac, and scan the code it shows."
+            ) {
                 ForEach(Array(Self.checklist.enumerated()), id: \.offset) { index, item in
-                    Label {
-                        Text(item)
-                    } icon: {
-                        Image(systemName: "\(index + 1).circle").foregroundStyle(.secondary)
+                    if index > 0 { CardRowDivider() }
+                    HStack(spacing: Spacing.medium) {
+                        Image(systemName: "\(index + 1).circle")
+                            .foregroundStyle(.secondary)
+                            .frame(width: PhoneMetrics.stepColumn)
+                        Text(item).font(TypeScale.rowTitle)
+                        Spacer(minLength: 0)
                     }
-                    .frame(minHeight: 44, alignment: .leading)
+                    .frame(minHeight: PhoneMetrics.minTouch, alignment: .leading)
+                    .accessibilityElement(children: .combine)
                 }
-            } header: {
-                Text("Check on your Mac")
-            } footer: {
-                Text("Then choose Use Watchtower on iPhone in Settings → Mobile on the Mac, and scan the code it shows.")
             }
+            .padding(.horizontal, Spacing.large)
         }
         .navigationTitle("The Mac doesn't show up")
         .navigationBarTitleDisplayMode(.inline)

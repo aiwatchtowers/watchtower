@@ -9,43 +9,92 @@ struct BoardView: View {
     let workbenchID: Int64
     let now: Date
     @State private var filter = BoardFilter.open
+    /// The owner flipped the Done fold from the filter's default (closed
+    /// under Open, open under Archive, where every archived target stays
+    /// visible); a filter change resets it.
+    @State private var doneFlipped = false
     @State private var sendError: String?
 
     var body: some View {
         let board = BoardModel(workbenchID: workbenchID, snapshot: replica.snapshot, filter: filter, now: now)
-        List {
-            if !board.pendingCreates.isEmpty {
-                Section("New targets") {
-                    ForEach(board.pendingCreates) { row in
-                        BoardWriteRowView(row: row, onApplyAnyway: { _ in }, onDismiss: dismiss)
-                    }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: Spacing.regular) {
+                chips(board)
+                if !board.pendingCreates.isEmpty {
+                    SectionHeader("New targets")
+                    writes(board.pendingCreates)
                 }
-            }
-            if !board.unplacedReplies.isEmpty {
-                Section("Replies") {
-                    ForEach(board.unplacedReplies) { row in
-                        BoardWriteRowView(row: row, onApplyAnyway: { _ in }, onDismiss: dismiss)
-                    }
+                if !board.unplacedReplies.isEmpty {
+                    SectionHeader("Replies")
+                    writes(board.unplacedReplies)
                 }
-            }
-            Section {
                 if board.roots.isEmpty {
                     Text(filter == .archive ? "Nothing archived" : "No targets here")
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, Spacing.small)
                 } else {
-                    ForEach(board.roots) { BoardNodeView(node: $0) }
+                    ForEach(BoardLane.lanes(board.roots)) { lane in
+                        laneView(lane)
+                    }
                 }
-            } header: {
-                chips(board)
-                    .textCase(nil)
-                    .listRowInsets(EdgeInsets())
             }
+            .padding(.horizontal, Spacing.large)
+            .padding(.bottom, Spacing.large)
         }
-        .listStyle(.plain)
+        .background(Color(.systemBackground))
         .alert("Couldn't dismiss", isPresented: Binding(get: { sendError != nil }, set: { if !$0 { sendError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(sendError ?? "")
+        }
+    }
+
+    /// Closed under Open (mockup 5), open under Archive, unless flipped.
+    static func doneFoldOpen(flipped: Bool, filter: BoardFilter) -> Bool {
+        (filter == .archive) != flipped
+    }
+
+    private var showDone: Bool { Self.doneFoldOpen(flipped: doneFlipped, filter: filter) }
+
+    private func writes(_ rows: [BoardWriteRow]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                if index > 0 { CardRowDivider() }
+                BoardWriteRowView(row: row, onApplyAnyway: { _ in }, onDismiss: dismiss)
+            }
+        }
+        .card()
+    }
+
+    /// A lane (mockup 5): its title and count, then its cards. The done lane
+    /// is a fold ("▸ Done 14"), closed until opened.
+    @ViewBuilder
+    private func laneView(_ lane: BoardLane) -> some View {
+        if lane.isDone {
+            Button {
+                withAnimation(Motion.toggle) { doneFlipped.toggle() }
+            } label: {
+                HStack(spacing: Spacing.regular) {
+                    Image(systemName: showDone ? "chevron.down" : "chevron.right")
+                        .font(TypeScale.meta)
+                        .frame(width: PhoneMetrics.iconColumn)
+                    Text(lane.title).font(TypeScale.laneHeader)
+                    Text("\(lane.nodes.count)").font(TypeScale.laneHeader).monospacedDigit().foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.secondary)
+                .padding(SectionHeader.insets)
+                .frame(minHeight: PhoneMetrics.minTouch)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(showDone ? "Expanded" : "Collapsed")
+            if showDone {
+                ForEach(lane.nodes) { BoardNodeView(node: $0) }
+            }
+        } else {
+            SectionHeader(lane.title, count: lane.nodes.count, style: .lane)
+            ForEach(lane.nodes) { BoardNodeView(node: $0) }
         }
     }
 
@@ -61,77 +110,98 @@ struct BoardView: View {
     /// trailing 24 pt fade shows that they scroll.
     private func chips(_ board: BoardModel) -> some View {
         ViewThatFits(in: .horizontal) {
-            chipRow(board).padding(.horizontal, Spacing.large)
+            chipRow(board)
             ScrollView(.horizontal, showsIndicators: false) {
-                chipRow(board).padding(.horizontal, Spacing.large)
+                chipRow(board)
             }
             .mask {
                 HStack(spacing: 0) {
                     Color.black
-                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: 24)
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: Spacing.wide)
                 }
             }
         }
     }
 
     private func chipRow(_ board: BoardModel) -> some View {
-        HStack(spacing: Spacing.compact) {
+        HStack(spacing: 0) {
             ForEach(BoardFilter.allCases) { chip in
-                FilterChip(title: chip.title, count: board.count(chip), isSelected: chip == filter) { filter = chip }
+                FilterChip(title: chip.title, count: board.count(chip), isSelected: chip == filter) {
+                    filter = chip
+                    doneFlipped = false
+                }
             }
         }
     }
 }
 
-/// One tree node: a disclosure when it has visible children, else a row.
+/// One lane of the board: the top-level targets sharing a status or column
+/// label, in board order (mockup 5). Presentation only; the tree is the
+/// model's.
+struct BoardLane: Identifiable, Equatable {
+    let title: String
+    let nodes: [BoardNode]
+    let isDone: Bool
+
+    var id: String { (isDone ? "done:" : "lane:") + title }
+
+    /// Roots grouped by their label, `column ?? status label` (the replica
+    /// carries no column order, so lanes follow first-seen board order and a
+    /// parent falls into its status lane, not its children's); done roots
+    /// share one lane, placed last.
+    static func lanes(_ roots: [BoardNode]) -> [Self] {
+        var order: [String] = []
+        var groups: [String: [BoardNode]] = [:]
+        for node in roots where !node.row.isDimmed {
+            let title = node.row.statusText
+            if groups[title] == nil { order.append(title) }
+            groups[title, default: []].append(node)
+        }
+        var lanes = order.map { Self(title: $0, nodes: groups[$0] ?? [], isDone: false) }
+        let done = roots.filter(\.row.isDimmed)
+        if !done.isEmpty { lanes.append(Self(title: "Done", nodes: done, isDone: true)) }
+        return lanes
+    }
+}
+
+/// One tree node: a board card; a node with visible children shows them
+/// indented under it, and its chevron folds them.
 struct BoardNodeView: View {
     let node: BoardNode
     @State private var expanded = true
 
     var body: some View {
-        if node.hasDisclosure {
-            DisclosureGroup(isExpanded: $expanded) {
-                ForEach(node.children) { Self(node: $0) }
-            } label: {
-                link
-            }
-        } else {
-            link
-        }
-    }
-
-    private var link: some View {
-        NavigationLink(value: BoardTargetRoute(id: node.id)) {
-            BoardRowView(row: node.row)
-        }
-        .listRowInsets(RowInsets.flat)
-    }
-}
-
-/// A board row (design pass B2): the status glyph in its tone, the title (two
-/// lines; struck through and secondary when done), a meta line with the
-/// priority dot first, and a thin bar under it when the progress is a
-/// percent. Nothing on the right but the list's chevron.
-struct BoardRowView: View {
-    let row: BoardRowModel
-
-    var body: some View {
-        FlatRow(icon: .symbol(row.statusGlyph, tone: row.statusTone), title: row.title, isDimmed: row.isDimmed, insets: EdgeInsets()) {
-            if row.hasMeta {
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    if row.hasMetaLine {
-                        HStack(spacing: Spacing.compact) {
-                            PriorityDot(priority: row.priority)
-                            MetaLine(items: row.details)
-                        }
-                    }
-                    if let value = row.progressValue {
-                        ThinProgressBar(value: value, tone: row.progressTone, height: 3).frame(width: 64)
-                    }
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            card
+            if node.hasDisclosure, expanded {
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    ForEach(node.children) { Self(node: $0) }
                 }
+                .padding(.leading, Spacing.large)
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(row.statusText)
+    }
+
+    private var card: some View {
+        NavigationLink(value: BoardTargetRoute(id: node.id)) {
+            BoardCard(model: node.row.card, isDimmed: node.row.isDimmed)
+                .padding(.trailing, node.hasDisclosure ? PhoneMetrics.minTouch - Spacing.large : 0)
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .trailing) {
+            if node.hasDisclosure {
+                Button {
+                    withAnimation(Motion.toggle) { expanded.toggle() }
+                } label: {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
+                        .frame(width: PhoneMetrics.minTouch, height: PhoneMetrics.minTouch)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded ? "Collapse sub-targets" : "Expand sub-targets")
+            }
+        }
     }
 }

@@ -23,7 +23,6 @@ const day = 86400.0
 
 type fakeStore struct {
 	rows     []db.HistoryBackfill
-	plan     *db.PlanUsageStatus
 	failures int // RecordHistoryBackfillFailure calls
 	holds    int // HoldHistoryBackfill calls
 }
@@ -84,8 +83,6 @@ func (s *fakeStore) ReleaseHistoryBackfillHold(id int64, _ time.Time) error {
 	s.row(id).HeldSince = nil
 	return nil
 }
-
-func (s *fakeStore) GetPlanUsageStatus() (*db.PlanUsageStatus, error) { return s.plan, nil }
 
 type call struct {
 	op       string
@@ -403,30 +400,18 @@ func TestRunner_CanceledIncompleteProcessKeepsTheHold(t *testing.T) {
 	assert.Equal(t, 0, st.failures)
 }
 
-func TestRunner_PlanGateHoldsChunk(t *testing.T) {
-	st := &fakeStore{
-		rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "gmail", 1, 30*day, 0)},
-		plan: &db.PlanUsageStatus{State: "ok",
-			LimitsJSON: `[{"key":"session","projection":{"state":"will_hit"}}]`},
-	}
+// Ask #655: the Claude plan never gates a chunk; a projected limit changes nothing.
+func TestRunner_NoPlanGate(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "gmail", 1, 30*day, 0)}}
 	a, b := &fakeSource{kind: "slack", id: 1}, &fakeSource{kind: "gmail", id: 1}
-	r := newRunner(st, a, b)
-	require.NoError(t, r.Step(context.Background()))
-	assert.Equal(t, 1, a.count("fetch"))
-	assert.Equal(t, 0, a.count("process"))
-	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
-	assert.Equal(t, "plan_limit", st.rows[0].Waiting)
-	assert.Empty(t, b.calls, "the gate stops the whole Step")
-
-	st.plan.LimitsJSON = `[{"key":"session","projection":{"state":"safe"}}]`
-	require.NoError(t, r.Step(context.Background()))
+	require.NoError(t, newRunner(st, a, b).Step(context.Background()))
 	assert.Equal(t, 1, a.count("process"))
 	assert.Equal(t, 28*day, st.rows[0].ReachedTS)
 	assert.Equal(t, "", st.rows[0].Waiting)
 	assert.Equal(t, 1, b.count("process"))
 }
 
-func TestRunner_PlanGateClearsWaitingBeforeFailedProcess(t *testing.T) {
+func TestRunner_StalePlanLimitWaitingClearedBeforeFailedProcess(t *testing.T) {
 	r0 := running(1, "gmail", 1, 30*day, 0)
 	r0.Waiting = "plan_limit"
 	st := &fakeStore{rows: []db.HistoryBackfill{r0}}
@@ -435,10 +420,9 @@ func TestRunner_PlanGateClearsWaitingBeforeFailedProcess(t *testing.T) {
 	assert.Equal(t, "", st.rows[0].Waiting)
 }
 
-// F6: waiting=plan_limit means "the plan gate holds this row"; a row that is
-// paused, has no source wired, or whose fetch failed never reached the gate,
-// so it must not keep claiming that.
-func TestRunner_WaitingClearedWhenTheGateIsNotWhatHolds(t *testing.T) {
+// A stale waiting=plan_limit from an older version is cleared whatever the
+// row does next.
+func TestRunner_StaleWaitingCleared(t *testing.T) {
 	waitingRow := func(id int64, kind string) db.HistoryBackfill {
 		r := running(id, kind, id, 30*day, 0)
 		r.Waiting = "plan_limit"

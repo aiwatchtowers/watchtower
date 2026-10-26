@@ -16,7 +16,7 @@ The reference is the app's own good screens: Workbench, Calendar and AI Chat. A 
 
 ## Tokens
 
-Use the token, never the number. The scale is closed: a screen that needs a new step adds a token to `DesignKit/` in the same PR.
+Use the token, never the number. The scale is closed: a screen that needs a new step adds a token in the same PR. The tokens below (all but `Surface`, which is macOS-only and stays in `DesignKit/`) live in the Kit's `WatchtowerKit/Sources/WatchtowerDesign/`, one copy that `DesignKit` re-exports and the iPhone app reads too; `TokenTests` there pins every value.
 
 | Token | Values |
 |---|---|
@@ -26,9 +26,9 @@ Use the token, never the number. The scale is closed: a screen that needs a new 
 | `Stroke` | `hairline` 0.5 pt separator, `selection` 1.5 pt accent |
 | `Surface` | `detail`, `window`, `text`, `control` |
 | `Tone` | `status(_:)` and `priority(_:)` colour map |
-| `PaneWidth` | split side list `sideListMin` 170, `sideListIdeal` 220, `sideListMax` 360 beside `detailMin` 260; `narrowPage` 420 (a centred status page). A readable text column is `ReadableColumn.maxLineWidth` (760) |
+| `PaneWidth` | split side list `sideListMin` 170, `sideListIdeal` 220, `sideListMax` 360 beside `detailMin` 260; `narrowPage` 420 (a centred status page); `gridCardMin` 240, the least card width in an adaptive grid. A readable text column is `ReadableColumn.maxLineWidth` (760) |
 | `ListLayout` | a column list: `rowMinHeight` 28, `lineMinHeight` 22 (a progress line above it), `markColumn` 26, `numberColumn` 84, `dateColumn` 104, `textColumn` 190, `progressBar` 160 |
-| `IconSize` | `chevron` 8, `header` 14, `composer` 16, `composerLarge` 24, `tile` 26 |
+| `IconSize` | `stateDot` 7, `chevron` 8, `header` 14, `composer` 16, `composerLarge` 24, `tile` 26 |
 | `Tracking` | `caps` 0.6 (small uppercase labels) |
 | `Motion` | `toggle` (`.snappy` 0.15 s), `panel` (`.easeInOut` 0.2 s) |
 

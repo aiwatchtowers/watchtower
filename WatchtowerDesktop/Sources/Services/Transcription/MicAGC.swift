@@ -155,3 +155,23 @@ struct MicAGC {
         Float(1 - exp(-dt / tau))
     }
 }
+
+/// The owner's mic mute (`AudioRecording.setMicMuted`) as a per-cycle gain
+/// on the mic term. A toggle glides over one IO cycle instead of stepping
+/// (a step is an audible click), reaching the target by the cycle's last
+/// frame; every cycle after a mute is silent to the bit.
+struct MicMute {
+    var muted = false
+    private(set) var gain: Float = 1
+
+    /// This cycle's per-frame ramp: frame `i` (0-based) scales the mic by
+    /// `start + step * i`. `frameCount` must be positive (the recorder
+    /// drops empty cycles).
+    mutating func ramp(frameCount: Int) -> (start: Float, step: Float) {
+        let target: Float = muted ? 0 : 1
+        let step = (target - gain) / Float(frameCount)
+        let start = gain + step
+        gain = target
+        return (start, step)
+    }
+}

@@ -3,7 +3,7 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// Settings → Linear: the CLI calls the view model makes, run against
+/// Connections → Linear: the CLI calls the view model makes, run against
 /// stand-in CLI scripts (the JiraAccountsViewModelTests pattern) — argv,
 /// stdin, exit codes and the daemon restart policy.
 @MainActor

@@ -662,4 +662,22 @@ final class TerminalSessionQueriesTests: XCTestCase {
                                              arguments: [row.id]), true)
         }
     }
+
+    func testAgentStatesIgnoreAuthorLoop() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let s = try TerminalSessionQueries.create(db, claude(project, "A"))
+            let ask = try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: s.id, kind: "review", docPath: "docs/spec.md")
+            try db.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES (?, 'running', '2026-10-26T10:00:00Z', 'author')
+                """, arguments: [ask])
+            let row = try XCTUnwrap(try TerminalSessionQueries.fetchAgentStates(db, liveIDs: []).first)
+            XCTAssertEqual(row.openAsks, 0)
+            XCTAssertNil(row.oldestOpenAskID)
+            XCTAssertEqual(row.openReviewAsks, 0)
+            try db.execute(sql: "UPDATE spec_reviews SET loop = 'owner'")
+            XCTAssertEqual(try TerminalSessionQueries.fetchAgentStates(db, liveIDs: []).first?.openReviewAsks, 1)
+        }
+    }
 }

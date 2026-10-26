@@ -109,8 +109,9 @@ package enum WorkbenchQueries {
             active[row["project_id"]] = row["active_count"]
         }
         var asks: [Int64: Int] = [:]
+        let visible = OwnerAskQueries.notInSpecLoop("owner_asks")
         for row in try Row.fetchAll(db, sql: """
-            SELECT project_id, COUNT(*) AS n FROM owner_asks WHERE status = 'open' GROUP BY project_id
+            SELECT project_id, COUNT(*) AS n FROM owner_asks WHERE status = 'open' AND \(visible) GROUP BY project_id
             """) {
             asks[row["project_id"]] = row["n"]
         }

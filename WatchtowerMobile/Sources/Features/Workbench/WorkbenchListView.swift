@@ -18,7 +18,8 @@ struct WorkbenchListView: View {
     private var replica: WorkbenchReplicaModel { env.workbenchReplica }
 
     var body: some View {
-        NavigationStack {
+        @Bindable var navigation = env.navigation
+        return NavigationStack(path: $navigation.workbenchPath) {
             content
                 .navigationTitle("Workbenches")
                 .hubSwitcher()
@@ -29,7 +30,7 @@ struct WorkbenchListView: View {
                     BoardTargetDetailView(replica: replica, writer: env.boardWriter, targetID: route.id)
                 }
                 .navigationDestination(for: SessionRoute.self) { route in
-                    SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
+                    WorkchatView(replica: replica, sessionID: route.id, store: env.store, requester: env.chatRequests)
                 }
                 .navigationDestination(for: SessionChatRoute.self) { route in
                     SessionChatView(replica: replica, route: route, store: env.store, requester: env.chatRequests)
@@ -50,30 +51,30 @@ struct WorkbenchListView: View {
                 description: Text("Your Mac's workbenches show up here.")
             )
         } else {
-            List {
-                Section {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Spacing.regular) {
+                    SectionHeader(workbenches.count == 1 ? "1 folder on your Mac" : "\(workbenches.count) folders on your Mac")
                     ForEach(workbenches) { workbench in
                         NavigationLink(value: WorkbenchRoute(id: workbench.id)) {
                             WorkbenchCardView(card: WorkbenchCardModel(workbench))
                         }
-                        .listRowInsets(RowInsets.flat)
+                        .buttonStyle(.plain)
                     }
-                } header: {
-                    Text(workbenches.count == 1 ? "1 folder on your Mac" : "\(workbenches.count) folders on your Mac")
-                        .font(TypeScale.sectionHeader)
-                        .textCase(nil)
-                } footer: {
                     Text("Workbenches are folders bound on the Mac. New ones are added there.")
                         .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, Spacing.small)
                 }
+                .padding(.horizontal, Spacing.large)
+                .padding(.bottom, Spacing.large)
             }
-            .listStyle(.plain)
+            .background(Color(.systemBackground))
             .refreshable { await env.refresh(.pull) }
         }
     }
 }
 
-/// One Workbench list row (design pass spec W1–W3): the name and its pills,
+/// One workbench as a card (design pass spec W1–W3): the name and its pills,
 /// the folder and the branch, then compact session counts with the board's
 /// progress.
 struct WorkbenchCardView: View {
@@ -87,6 +88,10 @@ struct WorkbenchCardView: View {
                 ForEach(card.pills) { pill in
                     Pill(text: pill.text, tone: pill.tone, style: pill.tone == .secondary ? .neutral : .tinted)
                 }
+                Image(systemName: "chevron.right")
+                    .font(TypeScale.meta.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
             HStack(spacing: Spacing.compact) {
                 Text(card.folder)
@@ -103,8 +108,8 @@ struct WorkbenchCardView: View {
             // centred on the text.
             FlowRow(spacing: Spacing.regular) {
                 ForEach(card.stateCounts) { count in
-                    HStack(spacing: 3) {
-                        SessionDot(tone: count.tone, isRing: count.isRing, size: 7)
+                    HStack(spacing: Spacing.small) {
+                        SessionDot(tone: count.tone, isRing: count.isRing, size: PhoneMetrics.macDot)
                         Text("\(count.amount)").font(TypeScale.time).foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .ignore)
@@ -118,5 +123,6 @@ struct WorkbenchCardView: View {
                 }
             }
         }
+        .card()
     }
 }

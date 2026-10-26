@@ -1052,7 +1052,7 @@ context_id TEXT,
 created_at REAL NOT NULL,
 updated_at REAL NOT NULL
 , pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
-CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER)
+CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL)
 
 table	chat_fts
 CREATE VIRTUAL TABLE chat_fts USING fts5(
@@ -2871,7 +2871,7 @@ attempt INTEGER NOT NULL DEFAULT 0,
 queued_at TEXT NOT NULL,
 started_at TEXT NOT NULL DEFAULT '',
 finished_at TEXT NOT NULL DEFAULT ''
-)
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '')
 
 table	stream_digests
 CREATE TABLE "stream_digests" (
@@ -4296,6 +4296,7 @@ GROUP BY up.ancestor
 11	model	TEXT	notnull=0	dflt=NULL	pk=0
 12	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
 13	active_leaf_message_id	INTEGER	notnull=0	dflt=NULL	pk=0
+14	read_at	REAL	notnull=0	dflt=NULL	pk=0
 
 ## chat_fts
 0	text		notnull=0	dflt=NULL	pk=0
@@ -5876,6 +5877,12 @@ GROUP BY up.ancestor
 10	queued_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	started_at	TEXT	notnull=1	dflt=''	pk=0
 12	finished_at	TEXT	notnull=1	dflt=''	pk=0
+13	loop	TEXT	notnull=1	dflt=''	pk=0
+14	round	INTEGER	notnull=1	dflt=0	pk=0
+15	replies	TEXT	notnull=1	dflt=''	pk=0
+16	open_items	TEXT	notnull=1	dflt=''	pk=0
+17	ledger	TEXT	notnull=1	dflt=''	pk=0
+18	loop_end	TEXT	notnull=1	dflt=''	pk=0
 
 ## stream_digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

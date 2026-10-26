@@ -31,84 +31,112 @@ struct EventDetailView: View {
     }
 
     private func content(_ model: EventDetailModel) -> some View {
-        List {
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(model.title).font(TypeScale.screenTitle)
-                    Text(model.whenLine).font(.subheadline).foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                header(model)
+                section("Prep") {
+                    if let empty = model.prepEmptyText {
+                        Text(empty).foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(model.prepBullets.enumerated()), id: \.offset) { _, bullet in
+                        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                            Circle()
+                                .fill(Color.secondary)
+                                .frame(width: PhoneMetrics.priorityDot, height: PhoneMetrics.priorityDot)
+                                .accessibilityHidden(true)
+                            Text(bullet).font(TypeScale.rowTitle)
+                        }
+                    }
+                    if let more = model.prepMoreText {
+                        Text(more).font(TypeScale.meta).foregroundStyle(.secondary)
+                    }
                 }
-                if let line = model.attendeesLine {
-                    HStack(spacing: 10) {
-                        // The line next to it says the same for VoiceOver.
-                        HStack(spacing: -6) {
-                            ForEach(model.attendees) { attendee in
-                                Text(attendee.initials)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(attendee.tone.color)
-                                    .frame(width: 32, height: 32)
-                                    .background(attendee.tone.color.opacity(0.2), in: Circle())
-                                    .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                if !model.linkedTargets.isEmpty {
+                    section("Linked targets") {
+                        ForEach(Array(model.linkedTargets.enumerated()), id: \.element.id) { index, target in
+                            if index > 0 { CardRowDivider() }
+                            HStack {
+                                Text(target.text).font(TypeScale.rowTitle)
+                                Spacer()
+                                Text(target.status).font(TypeScale.meta).foregroundStyle(.secondary)
                             }
                         }
-                        .accessibilityHidden(true)
-                        Text(line).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if let description = model.description {
-                    Text(description).font(.callout)
-                }
-            }
-            Section("Prep") {
-                if let empty = model.prepEmptyText {
-                    Text(empty).foregroundStyle(.secondary)
-                }
-                ForEach(Array(model.prepBullets.enumerated()), id: \.offset) { _, bullet in
-                    Label(bullet, systemImage: "circle.fill")
-                        .labelStyle(BulletLabelStyle())
-                }
-                if let more = model.prepMoreText {
-                    Text(more).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if !model.linkedTargets.isEmpty {
-                Section("Linked targets") {
-                    ForEach(model.linkedTargets) { target in
-                        HStack {
-                            Text(target.text)
-                            Spacer()
-                            Text(target.status).font(.caption).foregroundStyle(.secondary)
+                        if let more = model.linkedTargetsMoreText {
+                            Text(more).font(TypeScale.meta).foregroundStyle(.secondary)
                         }
                     }
-                    if let more = model.linkedTargetsMoreText {
-                        Text(more).font(.caption).foregroundStyle(.secondary)
-                    }
                 }
+                section("Recording") { recording(model) }
             }
-            Section("Recording") {
-                if let percent = model.transcribingPercent {
-                    HStack(spacing: Spacing.regular) {
-                        Image(systemName: "waveform").foregroundStyle(PhoneTone.purple.color)
-                        Text(EventDetailModel.transcribingTitle).font(.callout)
-                        Spacer(minLength: Spacing.regular)
-                        ThinProgressBar(value: Double(percent) / 100, tone: .purple)
-                            .frame(width: 80)
-                            .accessibilityHidden(true)
-                        Text("\(percent)%").font(TypeScale.time)
-                    }
-                    .accessibilityElement(children: .combine)
-                } else if model.recordingPills.isEmpty {
-                    Text(model.recordingText).foregroundStyle(.secondary)
-                } else {
-                    FlowRow {
-                        ForEach(model.recordingPills) { Pill(text: $0.text, tone: $0.tone) }
-                    }
-                    if model.recordingText != model.recordingPills.first?.text {
-                        Text(model.recordingText).font(.callout)
-                    }
-                }
-            }
+            .padding(.horizontal, Spacing.large)
+            .padding(.bottom, Spacing.large)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar(model) }
+    }
+
+    private func header(_ model: EventDetailModel) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                Text(model.title).font(TypeScale.screenTitle)
+                Text(model.whenLine).font(.subheadline).foregroundStyle(.secondary)
+            }
+            if let line = model.attendeesLine {
+                HStack(spacing: Spacing.cozy) {
+                    // The line next to it says the same for VoiceOver.
+                    HStack(spacing: -Spacing.compact) {
+                        ForEach(model.attendees) { attendee in
+                            Text(attendee.initials)
+                                .font(TypeScale.kind)
+                                .foregroundStyle(attendee.tone.color)
+                                .frame(width: EventDetailMetrics.avatar, height: EventDetailMetrics.avatar)
+                                .background(attendee.tone.color.opacity(ChipTint.fillOpacity), in: Circle())
+                                .overlay(Circle().stroke(Color(.systemBackground), lineWidth: Stroke.selection))
+                        }
+                    }
+                    .accessibilityHidden(true)
+                    Text(line).font(TypeScale.meta).foregroundStyle(.secondary)
+                }
+            }
+            if let description = model.description {
+                Text(description).font(TypeScale.rowTitle)
+            }
+        }
+        .padding(.top, Spacing.regular)
+        .padding(.horizontal, Spacing.small)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A caps header over one plain card; rows inside are flat.
+    private func section<Body: View>(_ title: String, @ViewBuilder _ body: () -> Body) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionHeader(title)
+            VStack(alignment: .leading, spacing: Spacing.regular) { body() }.card()
+        }
+    }
+
+    @ViewBuilder
+    private func recording(_ model: EventDetailModel) -> some View {
+        if let percent = model.transcribingPercent {
+            HStack(spacing: Spacing.regular) {
+                Image(systemName: "waveform").foregroundStyle(PhoneTone.purple.color)
+                Text(EventDetailModel.transcribingTitle).font(TypeScale.rowTitle)
+                Spacer(minLength: Spacing.regular)
+                ThinProgressBar(value: Double(percent) / 100, tone: .purple)
+                    .frame(width: EventDetailMetrics.progressWidth)
+                    .accessibilityHidden(true)
+                Text("\(percent)%").font(TypeScale.time)
+            }
+            .accessibilityElement(children: .combine)
+        } else if model.recordingPills.isEmpty {
+            Text(model.recordingText).foregroundStyle(.secondary)
+        } else {
+            FlowRow {
+                ForEach(model.recordingPills) { Pill(text: $0.text, tone: $0.tone) }
+            }
+            if model.recordingText != model.recordingPills.first?.text {
+                Text(model.recordingText).font(TypeScale.rowTitle)
+            }
+        }
     }
 
     @ViewBuilder
@@ -134,8 +162,7 @@ struct EventDetailView: View {
                 } label: {
                     Label(action.title, systemImage: "video").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+                .buttonStyle(SecondaryActionStyle())
             }
         case .record:
             if let meeting = model.meetingEvent {
@@ -155,12 +182,8 @@ struct EventDetailView: View {
     }
 }
 
-/// A small dot before each prep bullet.
-private struct BulletLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            configuration.icon.font(.system(size: 5)).foregroundStyle(.secondary)
-            configuration.title
-        }
-    }
+/// The event detail's own sizes, beside the parts' `PhoneMetrics`.
+private enum EventDetailMetrics {
+    static let avatar: CGFloat = 32
+    static let progressWidth: CGFloat = 80
 }

@@ -5,7 +5,7 @@ import SwiftUI
 /// would refuse the run with "no owner identity", so the screen says why up
 /// front and points at the fix.
 struct NoOwnerEmptyState: View {
-    /// Opens Settings on the Connections tab.
+    /// Opens the Connections tab.
     let openConnections: () -> Void
 
     var body: some View {

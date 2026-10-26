@@ -9,6 +9,8 @@ protocol MobileSettingsHost: AnyObject {
     var mobileHub: MobileHubService? { get }
     var mobileHubInitError: String? { get }
     func setMobileSyncEnabled(_ enabled: Bool)
+    /// "Keep this Mac awake for the iPhone"; on unless the owner turned it off.
+    var isMobileKeepAwakeEnabled: Bool { get set }
     /// The organization's `MobileSync = off` decides the toggle (#608).
     var mobileSyncLockedByPolicy: Bool { get }
 }
@@ -126,6 +128,7 @@ final class MobileSettingsViewModel {
     let flavor: HubFlavor
 
     private(set) var isOn: Bool
+    private(set) var keepAwake: Bool
     /// The Mac's iCloud account from the link center; nil until probed or
     /// while the hub is off.
     private(set) var account: CloudAvailability?
@@ -168,6 +171,7 @@ final class MobileSettingsViewModel {
         self.now = now
         self.sleep = sleep
         isOn = host.isMobileSyncEnabled
+        keepAwake = host.isMobileKeepAwakeEnabled
         checkedAt = now()
     }
 
@@ -276,6 +280,12 @@ final class MobileSettingsViewModel {
     }
 
     // MARK: - The toggle
+
+    /// "Keep this Mac awake for the iPhone" (ask #614).
+    func setKeepAwake(_ enabled: Bool) {
+        host.isMobileKeepAwakeEnabled = enabled
+        keepAwake = enabled
+    }
 
     /// The opt-in toggle; turning on needs a signed build. Turning off
     /// closes an open QR sheet and its link first.

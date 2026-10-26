@@ -50,7 +50,7 @@ Times are local. "Every cycle" means every 15 minutes by default.
 | Reaction commands | Every cycle, right after the Slack sync; the [Reactions](../features/automations-rules.md) built-in composes each | Slack; Reactions on (on by default) |
 | Calendar events, mail | Every cycle | An account connected; calendar and Gmail sync on (on by default) |
 | Jira issues | Every cycle, at most every 15 minutes (own interval) | A Jira site connected |
-| Linear issues | Every cycle, at most every 15 minutes (own interval) | A Linear workspace connected in **Settings** → **Connections** → **Linear** |
+| Linear issues | Every cycle, at most every 15 minutes (own interval) | A Linear workspace connected in **Connections** → **Linear** |
 | Confluence pages | Every cycle | A space picked; Confluence in search on |
 | Channel digests | Every cycle, for channels with new messages | Slack Digests on |
 | Daily rollup | Every cycle, once there are new digests (at least two channels); gives up after 3 failed tries a day | Slack Digests on |
@@ -63,7 +63,7 @@ Times are local. "Every cycle" means every 15 minutes by default.
 | Next-step suggestions | Every cycle, for targets with none or a stale one | Next Step Suggestions on |
 | Briefing, then day plan | Once a day, at or after 08:00 (**Time** on the [Morning brief](../features/automations-built-in.md) card), in one run; the plan's conflicts are re-checked every cycle after | Morning brief on; Watchtower knows who you are |
 | History backfill | After everything else, while a new source is loading | A newly connected source |
-| Image and link descriptions | Every cycle, before the search index, up to 2 minutes; paused near the Claude plan limit | Knowledge search on; images need Claude or Codex |
+| Image and link descriptions | Every cycle, before the search index, up to 2 minutes | Knowledge search on; images need Claude or Codex |
 | Search index | Every cycle, in slices of up to 60 seconds | Knowledge search on (on by default) |
 | Agent analytics | Every cycle | A Workbench with agent analytics enabled |
 | Snoozed items coming back | Every cycle | Nothing |

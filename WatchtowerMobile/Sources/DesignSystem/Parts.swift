@@ -1,35 +1,71 @@
 import SwiftUI
 
-/// A session's state dot: filled while the process runs, a ring otherwise,
-/// in the Mac's tone.
+/// A session's state dot, the Desktop's `SessionLiveDot`: `circle.fill`
+/// while the process runs, `circle` (a ring) otherwise, in the Mac's tone;
+/// `pulses` while background agents run, still under Reduce Motion.
+/// Decorative: the row's caption reads the state.
+///
+///     SessionDot(tone: row.tone, isRing: row.isRing)
 struct SessionDot: View {
     let tone: PhoneTone
     let isRing: Bool
-    var size: CGFloat = 9
+    var pulses = false
+    var size = PhoneMetrics.sessionDot
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func symbol(isRing: Bool) -> String {
+        isRing ? "circle" : "circle.fill"
+    }
 
     var body: some View {
-        Group {
-            if isRing {
-                Circle().strokeBorder(tone.color, lineWidth: 1.5)
-            } else {
-                Circle().fill(tone.color)
-            }
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
+        Image(systemName: Self.symbol(isRing: isRing))
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .foregroundStyle(tone.color)
+            .symbolEffect(.pulse, isActive: pulses && !reduceMotion)
+            .accessibilityHidden(true)
     }
 }
 
-/// A thin progress bar in the model's tone.
+/// A state's glyph as the mockups draw it (1, 2, 4): a white SF Symbol on a
+/// disc in the tone ("?" waiting on an ask, a raised hand for an approval,
+/// a check for finished). Decorative: the caption beside it reads the
+/// state.
+///
+///     StateMark(glyph: "questionmark", tone: .waitingForYou)
+struct StateMark: View {
+    let glyph: String
+    let tone: PhoneTone
+    var size = PhoneMetrics.iconColumn
+
+    var body: some View {
+        Circle()
+            .fill(tone.color)
+            .frame(width: size, height: size)
+            .overlay {
+                Image(systemName: glyph)
+                    .resizable()
+                    .scaledToFit()
+                    .fontWeight(.bold)
+                    .foregroundStyle(.white)
+                    .padding(size / 4)
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+/// A thin progress bar in the model's tone, on the card fill (mockup
+/// `.bar`).
 struct ThinProgressBar: View {
     let value: Double
     let tone: PhoneTone
-    var height: CGFloat = 4
+    var height = PhoneMetrics.progressBar
 
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.secondary.opacity(0.2))
+                Capsule().fill(Fill.card)
                 Capsule()
                     .fill(tone.color)
                     .frame(width: proxy.size.width * min(1, max(0, value)))
@@ -63,12 +99,12 @@ struct StepRow: View {
 
     var body: some View {
         HStack(spacing: Spacing.medium) {
-            icon.frame(width: 22)
+            icon.frame(width: PhoneMetrics.stepColumn)
             Text(text)
                 .font(.body)
                 .foregroundStyle(state == .todo ? Color.secondary : Color.primary)
         }
-        .frame(minHeight: 44, alignment: .leading)
+        .frame(minHeight: PhoneMetrics.minTouch, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)
         .accessibilityValue(state.accessibilityValue)
@@ -88,8 +124,8 @@ struct StepRow: View {
 /// A wrapping row: items 6 pt apart, lines 4 pt apart. Replaces the
 /// HStack-or-VStack `ViewThatFits` fallbacks, which went one item per line.
 struct FlowRow: Layout {
-    var spacing: CGFloat = 6
-    let lineSpacing: CGFloat = 4
+    var spacing = Spacing.compact
+    let lineSpacing = Spacing.small
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         Self.arrange(

@@ -266,4 +266,59 @@ final class OwnerAskQueriesTests: XCTestCase {
             XCTAssertEqual(asks.map(\.automationRunID), [run, nil])
         }
     }
+
+    /// A spec review row for `ask` in `loop` ('author' hides the ask).
+    private func specReview(_ d: Database, ask: Int64, loop: String) throws {
+        try d.execute(sql: """
+            INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES (?, 'running', '2026-10-26T10:00:00Z', ?)
+            """, arguments: [ask, loop])
+    }
+
+    func testOpenAsksSkipsAuthorLoop() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let hidden = try TestDatabase.insertOwnerAsk(d, projectID: p, kind: "review", docPath: "docs/spec.md")
+            let plain = try TestDatabase.insertOwnerAsk(d, projectID: p, kind: "review", docPath: "docs/spec.md")
+            try specReview(d, ask: hidden, loop: "author")
+            XCTAssertEqual(try OwnerAskQueries.openAsks(d, projectID: p).asks.map(\.id), [plain])
+            XCTAssertEqual(try OwnerAskQueries.openAsksAllWorkbenches(d).rows.map(\.ask.id), [plain])
+            XCTAssertEqual(try OwnerAskQueries.ask(d, id: hidden, projectID: p)?.id, hidden, "ask(_:id:) stays unfiltered")
+            XCTAssertNil(try OwnerAskQueries.visibleAsk(d, id: hidden, projectID: p), "no owner surface opens a hidden ask")
+            XCTAssertEqual(try OwnerAskQueries.visibleAsk(d, id: plain, projectID: p)?.id, plain)
+        }
+    }
+
+    func testOpenAsksShowsOwnerLoop() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let id = try TestDatabase.insertOwnerAsk(d, projectID: p, kind: "review", docPath: "docs/spec.md")
+            try specReview(d, ask: id, loop: "owner")
+            XCTAssertEqual(try OwnerAskQueries.openAsks(d, projectID: p).asks.map(\.id), [id])
+        }
+    }
+
+    func testAnswerRefusesAuthorLoop() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let id = try TestDatabase.insertOwnerAsk(d, projectID: p, kind: "review", docPath: "docs/spec.md")
+            try specReview(d, ask: id, loop: "author")
+            let answer = OwnerAskAnswer(verdict: .approved, answers: [])
+            XCTAssertThrowsError(try OwnerAskQueries.answer(d, askID: id, projectID: p, with: answer)) {
+                XCTAssertEqual($0 as? AskAnswerError, .notOpen)
+            }
+            XCTAssertEqual(try String.fetchOne(d, sql: "SELECT status FROM owner_asks WHERE id = ?", arguments: [id]), "open")
+        }
+    }
+
+    func testClosedAsksSkipAuthorLoop() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let s = try session(d, projectID: p)
+            let hidden = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s, status: "withdrawn")
+            let shown = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s, status: "withdrawn")
+            try specReview(d, ask: hidden, loop: "author")
+            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: s).asks.map(\.id), [shown])
+            XCTAssertEqual(try OwnerAskQueries.closedCounts(d, projectID: p)[s], 1)
+        }
+    }
 }

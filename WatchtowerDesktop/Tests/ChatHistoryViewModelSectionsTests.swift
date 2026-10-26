@@ -20,7 +20,7 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
     private func loaded() async -> ChatHistoryViewModel {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
         let done = expectation(description: "load")
-        vm.load { done.fulfill() }
+        vm.reloadRows { done.fulfill() }
         await fulfillment(of: [done], timeout: 5)
         return vm
     }
@@ -38,10 +38,10 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
             (try Self.answered(d, title: "A"), try Self.answered(d, title: "B"))
         }
         let vm = await loaded()
-        XCTAssertEqual(vm.sections.map(\.kind), [.today])
+        XCTAssertEqual(vm.sections.map(\.kind), [.recent])
 
         await vm.togglePin(a)
-        XCTAssertEqual(vm.sections.map(\.kind), [.pinned, .today])
+        XCTAssertEqual(vm.sections.map(\.kind), [.pinned, .recent])
         await vm.rename(b, title: "  Renamed  ")
         XCTAssertEqual(vm.conversations.first { $0.id == b }?.title, "Renamed")
         XCTAssertEqual(vm.conversations.first { $0.id == b }?.titleSource, "user")
@@ -53,52 +53,41 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
         XCTAssertNil(vm.lastError)
     }
 
-    /// A message-less chat (the landing's unsent draft) is listed only while selected.
-    /// ↑/↓ walk the chats in the order shown (Pinned first), stop at the
-    /// ends, and with nothing selected start from the first (↓) or last (↑).
-    func testSelectAdjacentWalksTheListedOrder() async throws {
-        let (a, b, c) = try await dbManager.dbPool.write { d in
-            (try Self.answered(d, title: "A"), try Self.answered(d, title: "B"), try Self.answered(d, title: "C"))
+    /// Archiving the chat on screen clears the selection: no other chat is
+    /// selected — and marked read — in its place (the view shows the landing).
+    func testArchivingTheSelectedChatSelectsNoOther() async throws {
+        let (a, b) = try await dbManager.dbPool.write { d -> (Int64, Int64) in
+            let a = try Self.answered(d, title: "A")
+            let b = try Self.answered(d, title: "B")
+            let parent = try Int64.fetchOne(d, sql: "SELECT active_leaf_message_id FROM chat_conversations WHERE id = ?",
+                                            arguments: [b])
+            let answer = try TestDatabase.insertChatMessage(
+                d, conversationID: b, role: "assistant", text: "unread", parentID: parent)
+            try d.execute(sql: "UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?",
+                          arguments: [answer, b])
+            return (a, b)
         }
         let vm = await loaded()
-        XCTAssertFalse(vm.selectAdjacent(by: 0))
-        await vm.togglePin(b)
-        let shown = vm.sections.flatMap(\.conversations).map(\.id)
-        XCTAssertEqual(shown.first, b, "the pinned chat leads")
-        XCTAssertEqual(Set(shown), [a, b, c])
-
+        vm.selectedConversationID = a
+        await vm.writesSettled()
+        await vm.archive(a)
         XCTAssertNil(vm.selectedConversationID)
-        XCTAssertTrue(vm.selectAdjacent(by: 1))
-        XCTAssertEqual(vm.selectedConversationID, shown[0])
-        XCTAssertFalse(vm.selectAdjacent(by: -1), "already the first")
-        XCTAssertEqual(vm.selectedConversationID, shown[0])
-        XCTAssertTrue(vm.selectAdjacent(by: 1))
-        XCTAssertTrue(vm.selectAdjacent(by: 1))
-        XCTAssertEqual(vm.selectedConversationID, shown[2])
-        XCTAssertFalse(vm.selectAdjacent(by: 1), "already the last")
-        XCTAssertTrue(vm.selectAdjacent(by: -1))
-        XCTAssertEqual(vm.selectedConversationID, shown[1])
-
-        vm.selectedConversationID = nil
-        XCTAssertTrue(vm.selectAdjacent(by: -1))
-        XCTAssertEqual(vm.selectedConversationID, shown[2], "↑ with nothing selected picks the last")
+        await vm.writesSettled()
+        let readAt = try await dbManager.dbPool.read {
+            try Double.fetchOne($0, sql: "SELECT read_at FROM chat_conversations WHERE id = ?", arguments: [b])
+        }
+        XCTAssertNil(readAt, "the other chat was never shown, so it stays unread")
     }
 
-    func testSelectAdjacentOnAnEmptyHistoryDoesNothing() async {
-        let vm = await loaded()
-        XCTAssertFalse(vm.selectAdjacent(by: 1))
-        XCTAssertFalse(vm.selectAdjacent(by: -1))
-        XCTAssertNil(vm.selectedConversationID)
-    }
-
+    /// A message-less chat (the landing's unsent draft) is listed only while selected.
     func testMessageLessChatsAreListedOnlyWhileSelected() async throws {
         let (answered, empty) = try await dbManager.dbPool.write { d in
             (try Self.answered(d, title: "A"), try TestDatabase.insertChatConversation(d, title: ""))
         }
         let vm = await loaded()
-        XCTAssertEqual(vm.sections.flatMap(\.conversations).map(\.id), [answered])
+        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [answered])
         vm.selectedConversationID = empty
-        XCTAssertEqual(Set(vm.sections.flatMap(\.conversations).map(\.id)), [answered, empty])
+        XCTAssertEqual(Set(vm.sections.flatMap(\.items).map(\.id)), [answered, empty])
     }
 
     func testSearchFindsMessages() async throws {

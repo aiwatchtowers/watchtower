@@ -126,7 +126,7 @@ still decides only the `briefing` feature.
 
 **Sidebar visibility.** A tab shows when its feature rule AND its source
 rule hold (`SidebarDestination.isVisible`, `ConnectedSources`): Calendar
-needs a calendar; Boards, Workload, Project Map and Releases need
+needs a calendar; Workload, Project Map and Releases need
 Jira, Blockers Jira or Linear; Statistics needs Slack or mail; Catch-Up needs any source
 (Slack, mail, Jira, Linear or a calendar). Inbox has neither rule since C1 (it
 also holds the briefings, plans, tracks and ideas, whose tabs had none); Catch-Up needs
@@ -134,7 +134,7 @@ also holds the briefings, plans, tracks and ideas, whose tabs had none); Catch-U
 2026-10-03, #284). A selection that lands on a hidden tab falls back to
 Home, which has no gate (first-run P2, `docs/features/first-run.md`). The quiet "+ Connect Slack, Mail, Jira…"
 row at the bottom of the menu names the kinds still missing (Mail = any
-Google, IMAP or CalDAV/ICS source), opens Settings → Connections, and hides
+Google, IMAP or CalDAV/ICS source), opens the Connections tab, and hides
 for good with its × (`sidebar_connect_row_dismissed`).
 
 **C1, the one Inbox (2026-10-22, board #861):** the Briefings, Day Plan,
@@ -220,8 +220,10 @@ Jira → Tasks & Jira) offers the features those goals turn on and that are
 off now. Nothing is enabled without Turn on, which enables them through
 `FeatureManagerService.enableNow([ids])` (never Settings → Features'
 staged changes) and restarts the daemon once; a retry after a failed
-restart only restarts. The offer is a sheet in the Settings window, shown
-once no Add account sheet is up, and closes only through its own buttons.
+restart only restarts. The offer is a sheet over the main window
+(`FeatureSuggestionPresenter`, where the Connections tab connects since
+#899), shown once no Add account sheet is up, and closes only through its
+own buttons; a failed Turn on keeps its error in the sheet.
 
 **Finish landing.** Home, for every goal set (first-run P2,
 `AppState.landOnHome`). Re-runs keep the current tab. During the very first
