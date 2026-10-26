@@ -4,20 +4,33 @@ import WatchtowerKit
 import WatchtowerSync
 
 /// What the Mac did with a line the phone sent (`result.delivery` of an
-/// `applied` echo, spec §6.6).
+/// `applied` echo, spec §6.6); `queued` is a submitted line the Mac sent
+/// while the agent worked (`result.while_busy`, PROJ-16 amended), which
+/// the agent reads at its next step.
 enum SessionInputDelivery: String, Equatable {
-    case submitted, typed
+    case submitted, typed, queued
 
     var text: String {
         switch self {
         case .submitted: "Sent to the session"
         case .typed: "Typed into the session — press Return on the Mac"
+        case .queued: Self.queuedText
         }
     }
+
+    /// The line under the owner's bubble in the workchat (spec §5.4).
+    var caption: String {
+        switch self {
+        case .submitted: "Sent"
+        case .typed, .queued: text
+        }
+    }
+
+    static let queuedText = "Queued · the agent reads it at its next step"
 }
 
-/// The phone's lines to a session (spec §5.2, §6.6, PROJ-16): "Tell the
-/// session…" (`session_input`), Finish (`session_finish_request`) and a
+/// The phone's lines to a session (spec §5.2, §6.6, PROJ-16): the
+/// workchat's composer (`session_input`), Finish (`session_finish_request`) and a
 /// held line's Cancel (`session_input_cancel`), through the outbox. Owned by
 /// `AppEnvironment`, so a line's way survives leaving the session. Also a
 /// permission prompt's answer (`permission_answer`) and Interrupt
@@ -33,6 +46,9 @@ final class SessionInputSender {
 
     /// Session id → where its last applied line went this run.
     private(set) var delivered: [Int64: SessionInputDelivery] = [:]
+    /// Action id → where that applied line went this run: the caption of
+    /// its bubble until the feed shows the line.
+    private(set) var lineDeliveries: [String: SessionInputDelivery] = [:]
     /// Session id → the permission request whose answer the Mac applied
     /// this run.
     private(set) var answered: [Int64: Int64] = [:]
@@ -132,10 +148,16 @@ final class SessionInputSender {
         }
         guard action.kind == .sessionInput || action.kind == .sessionFinishRequest,
               let sessionID = action.entityID.flatMap(Int64.init) else { return }
-        if case let .string(value)? = action.result?["delivery"], let delivery = SessionInputDelivery(rawValue: value) {
-            delivered[sessionID] = delivery
-        } else {
-            delivered[sessionID] = .submitted
+        var delivery = SessionInputDelivery.submitted
+        if case let .string(value)? = action.result?["delivery"], let known = SessionInputDelivery(rawValue: value) {
+            delivery = known
+        }
+        if delivery == .submitted, action.result?["while_busy"] == .bool(true) {
+            delivery = .queued
+        }
+        delivered[sessionID] = delivery
+        if action.kind == .sessionInput {
+            lineDeliveries[action.id] = delivery
         }
     }
 
@@ -148,20 +170,25 @@ final class SessionInputSender {
     }
 }
 
-/// The session detail's input (spec §6.6, PROJ-16): the "Tell the
-/// session…" bar and Finish show only on a phone whose typing the Mac
-/// allowed and whose own toggle is on, for a live session. A session at a
-/// permission prompt takes nothing from the phone: "Needs approval on the
-/// Mac" (or "Answer the request above" when the screen's permission card
-/// takes this phone's answer, #517), no send. Each line on its way shows how far the Mac got, a held
-/// one why (with Cancel), a refused one the Mac's message (with Dismiss).
+/// The workchat's input (spec §5.4, §6.6, PROJ-16): the composer and Finish
+/// show only on a phone whose typing the Mac allowed and whose own toggle
+/// is on, for a live session. A session at a permission prompt takes
+/// nothing from the phone: "Needs approval on the Mac" (or "Answer the
+/// request above" when the screen's permission card takes this phone's
+/// answer, #517), no send. Each line on its way shows how far the Mac got,
+/// a held one why (with Cancel), a refused one the Mac's message (with
+/// Dismiss).
 struct SessionInputModel: Equatable {
     static let needsApproval = "Needs approval on the Mac"
     static let answerAbove = "Answer the request above"
-    static let footnote = "Delivered when the agent is idle"
+    /// The composer's note: a Claude session takes a line while it works
+    /// (PROJ-16 amended), every other agent only once it stops.
+    static func footnote(_ agent: TerminalSessionState.Agent) -> String? {
+        agent == .claudeCode ? nil : "Delivered when the agent stops"
+    }
 
     /// Why a live session takes no line from this phone (board #515): the
-    /// bar's place says what to do instead of staying empty.
+    /// composer's place says what to do instead of staying empty.
     enum TypingHint: Equatable {
         /// The phone's own toggle is off: one tap asks the Mac.
         case turnOn
@@ -192,9 +219,9 @@ struct SessionInputModel: Equatable {
         let pending: PendingAction
     }
 
-    /// The bar is on screen.
+    /// The composer is on screen.
     let showsBar: Bool
-    /// In the bar's place on a live session this phone may not type to.
+    /// In the composer's place on a live session this phone may not type to.
     let typingHint: TypingHint?
     /// Finish is in the actions menu.
     let showsFinish: Bool
@@ -253,7 +280,7 @@ struct SessionInputModel: Equatable {
     /// Why the Mac holds a line (spec §6.6).
     static func heldText(_ reason: ActionReason?) -> String {
         switch reason {
-        case .agentBusy?: "Held — goes when the agent is idle"
+        case .agentBusy?: "Queued · sends when the agent stops"
         case .needsApproval?: "Held — \(needsApproval)"
         case .promptHasText?: "Held — text is typed in the session on the Mac"
         default: "Held — the Mac can't read the session's state yet"

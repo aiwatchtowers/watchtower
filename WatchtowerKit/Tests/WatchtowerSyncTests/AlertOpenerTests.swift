@@ -11,8 +11,8 @@ final class AlertOpenerTests: XCTestCase {
 
     /// The hub's payload as `AskAlertSlice` encodes it (RelayCoder: snake_case keys, sorted).
     private let alertJSON = """
-        {"ask_id":42,"kind":"question","quick":true,"session_id":7,"title":"Approve the Acme rollout plan",\
-        "workbench_id":3,"workbench_name":"Acme"}
+        {"ask_id":42,"body":"Approve the Acme rollout plan","event":"ask","key":"ask-42","quick":true,"session_id":7,\
+        "title":"Acme","workbench_id":3,"workbench_name":"Acme"}
         """
 
     private func alertRecord(id: String = "42") -> CloudRecord {
@@ -29,9 +29,9 @@ final class AlertOpenerTests: XCTestCase {
         try XCTUnwrap(TestE2E.phoneStore(epochs: epochs).alertMaterial(hubID))
     }
 
-    private let expected = AskAlertPayload(
-        askID: 42, workbenchID: 3, workbenchName: "Acme", sessionID: 7, kind: "question",
-        title: "Approve the Acme rollout plan", quick: true)
+    private let expected = WorkAlertPayload(
+        event: .ask, key: "ask-42", workbenchID: 3, workbenchName: "Acme", sessionID: 7, askID: 42, requestID: nil,
+        title: "Acme", body: "Approve the Acme rollout plan", quick: true)
 
     func testAnAlertOpensWithTheAlertKeyOnly() async throws {
         let wire = try await seal(alertRecord())
@@ -133,6 +133,55 @@ final class AlertOpenerTests: XCTestCase {
         XCTAssertThrowsError(try AlertOpener(material: try material()).payload(wireName: wire.recordName, envelope: wire.payload)) {
             XCTAssertEqual($0 as? EnvelopeError, .frameMalformed)
         }
+    }
+
+    func testEveryEventRoundTripsThroughTheSealedEnvelope() async throws {
+        let opener = AlertOpener(material: try material())
+        let stopped = WorkAlertPayload(
+            event: .sessionStopped, key: WorkAlertKey.stop(session: 7, stateAt: stamp), workbenchID: 3,
+            workbenchName: "Acme", sessionID: 7, askID: nil, requestID: nil, title: "Acme \u{00B7} Fix login",
+            body: "Stopped", quick: false)
+        let payloads = [
+            expected,
+            WorkAlertPayload(
+                event: .permission, key: WorkAlertKey.permission(5), workbenchID: 3, workbenchName: "Acme", sessionID: 7,
+                askID: nil, requestID: 5, title: "Acme", body: "Needs permission", quick: false),
+            stopped,
+            WorkAlertPayload(
+                event: .sessionFailed, key: "stop-7-1", workbenchID: 3, workbenchName: "Acme", sessionID: nil,
+                askID: nil, requestID: nil, title: "Acme", body: "Failed", quick: false)
+        ]
+        for payload in payloads {
+            let record = CloudRecord(
+                recordName: SliceKind.askAlert.recordName(id: payload.key), zone: .data, kind: SliceKind.askAlert.rawValue,
+                modifiedAt: stamp, payload: try JSONEncoder().encode(payload))
+            let wire = try await seal(record)
+            XCTAssertEqual(opener.open(wireName: wire.recordName, envelope: wire.payload), payload, payload.key)
+        }
+        // The encoder writes the spec's snake_case keys.
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(payloads[1])) as? [String: Any])
+        XCTAssertEqual(
+            Set(object.keys),
+            ["event", "key", "workbench_id", "workbench_name", "session_id", "request_id", "title", "body", "quick"])
+        XCTAssertEqual(object["event"] as? String, "permission")
+        let stoppedObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(stopped)) as? [String: Any]
+        XCTAssertEqual(stoppedObject?["event"] as? String, "session_stopped")
+    }
+
+    func testAnOldAskShapedPayloadDoesNotOpen() async throws {
+        let old = """
+            {"ask_id":42,"kind":"question","quick":true,"session_id":7,"title":"Approve","workbench_id":3,"workbench_name":"Acme"}
+            """
+        let wire = try await seal(CloudRecord(
+            recordName: SliceKind.askAlert.recordName(id: "42"), zone: .data, kind: SliceKind.askAlert.rawValue,
+            modifiedAt: stamp, payload: Data(old.utf8)))
+        XCTAssertNil(AlertOpener(material: try material()).open(wireName: wire.recordName, envelope: wire.payload))
+    }
+
+    func testKeyFormats() {
+        XCTAssertEqual(WorkAlertKey.ask(42), "ask-42")
+        XCTAssertEqual(WorkAlertKey.permission(5), "perm-5")
+        XCTAssertEqual(WorkAlertKey.stop(session: 7, stateAt: Date(timeIntervalSince1970: 1_700_000_000.123)), "stop-7-1700000000123")
     }
 
     /// The extension reads the material from the alert group without a full phone key store.

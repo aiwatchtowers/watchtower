@@ -92,8 +92,8 @@ enum DemoSeed {
             ownerUser: ownerUser,
             sharing: .none
         )
-        // Linked, typing not allowed yet: the Settings toggle demos
-        // "Waiting for your Mac to confirm".
+        // Linked, typing allowed: with the phone's toggle on, the workchat
+        // shows its composer.
         let linkedAt = now.addingTimeInterval(-3_600)
         let grant = DeviceGrant(
             deviceID: device.deviceID,
@@ -102,7 +102,7 @@ enum DemoSeed {
             scope: device.scope,
             linked: true,
             linkedAt: linkedAt,
-            typingAllowed: false,
+            typingAllowed: true,
             startSessionsAllowed: true,
             decidedAt: linkedAt
         )

@@ -47,6 +47,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 ## Mobile
 
 - **Sync with iPhone** (off by default) makes this Mac the hub for the iPhone app, through your own iCloud. On a build without iCloud signing it says **Needs a signed build**. **Use Watchtower on iPhone** shows a QR code valid for 10 minutes. See [iPhone](../features/iphone.md).
+- **Keep this Mac awake for the iPhone** (on by default; shown while Sync with iPhone is on) stops the Mac from sleeping on its own while a session runs and a linked phone has been in touch in the last 24 hours. A closed lid on battery still sleeps the Mac.
 - Each linked phone shows **Same Apple ID** or **Shared** and one line per permission, each with **Allow…** or **Revoke**: typing into your sessions, starting sessions (allowed only once typing is: **Starting sessions needs typing**) and answering permission prompts. **Remove…** unlinks it.
 
 ## Profile

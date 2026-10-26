@@ -46,7 +46,7 @@ struct NowView: View {
             }
             // A permission request's row opens its session (#517).
             .navigationDestination(for: SessionRoute.self) { route in
-                SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
+                WorkchatView(replica: replica, sessionID: route.id, store: env.store, requester: env.chatRequests)
             }
             .navigationDestination(for: SessionChatRoute.self) { route in
                 SessionChatView(replica: replica, route: route, store: env.store, requester: env.chatRequests)

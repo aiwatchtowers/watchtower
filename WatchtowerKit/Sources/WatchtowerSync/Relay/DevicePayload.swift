@@ -44,6 +44,9 @@ public struct DevicePayload: Codable, Equatable, Sendable {
     /// The phone asks to answer permission prompts (the Mac decides; `permissionsRequested`). Absent reads false;
     /// false is not written.
     let permissionsAsked: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// When the phone last reached out to the Mac (keep-awake, ask #614). Written only when set; absent from
+    /// older phones, whose `updatedAt` stands in.
+    public let seenAt: Date?
     public let updatedAt: Date
 
     public var recordName: String { "device-\(deviceID)" }
@@ -63,6 +66,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         case typingRequested
         case startSessions
         case permissionsAsked = "permissionsRequested"
+        case seenAt
         case updatedAt
     }
 
@@ -78,6 +82,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         typingRequested: Bool,
         startSessions: Bool,
         permissionsRequested: Bool = false,
+        seenAt: Date? = nil,
         updatedAt: Date
     ) {
         self.deviceID = deviceID
@@ -91,6 +96,7 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         self.typingRequested = typingRequested
         self.startSessions = startSessions
         permissionsAsked = permissionsRequested ? true : nil
+        self.seenAt = seenAt
         self.updatedAt = updatedAt
     }
 }

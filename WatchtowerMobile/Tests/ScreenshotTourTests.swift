@@ -62,6 +62,9 @@ final class ScreenshotTourTests: XCTestCase {
         let defaults = try makeDefaults()
         let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults)
         for hub in DemoSeed.hubs {
+            // The demo Mac allows typing; the phone's own toggle is on, so the
+            // workchat shows its composer.
+            defaults.set(true, forKey: "hub.\(hub.hubID).device.typingRequested")
             let session = try HubSession(
                 transport: InMemoryCloudTransport(),
                 replicaPath: try makeReplicaPath(),
@@ -216,18 +219,22 @@ final class ScreenshotTourTests: XCTestCase {
         ]
     }
 
-    /// 09 waiting (asks, report, chips), 10 needs approval, 11 finished,
-    /// 12 failed.
+    /// The workchat (mockups 3, 4, 8): 09 waiting (inline asks), 09w
+    /// working (the timer, a sent line), 10 needs approval, 11 finished,
+    /// 12 failed; 12r the report and timeline behind the actions menu.
     static func sessionShots() -> [Shot] {
-        [("09", 11, "waiting"), ("10", 12, "needs-approval"), ("11", 13, "finished"), ("12", 16, "failed")].map { number, id, slug in
-            Shot(
-                number: number, slug: "session-\(id)-\(slug)", source: "Features/Workbench/SessionDetailView.swift",
-                reached: .bareStack,
-                make: stack {
-                    SessionDetailView(replica: $0.workbenchReplica, sessionID: id, store: $0.store, requester: $0.reportRequests)
-                }
-            )
-        }
+        let workchat = "Features/Workbench/WorkchatView.swift"
+        let shots = [("09", 11, "waiting"), ("09w", 10, "working"), ("10", 12, "needs-approval"), ("11", 13, "finished"), ("12", 16, "failed")]
+            .map { number, id, slug in
+                Shot(number: number, slug: "session-\(id)-\(slug)", source: workchat, reached: .bareStack, make: stack {
+                    WorkchatView(replica: $0.workbenchReplica, sessionID: id, store: $0.store, requester: $0.chatRequests)
+                })
+            }
+        return shots + [
+            Shot(number: "12r", slug: "session-11-report", source: "Features/Workbench/SessionReportView.swift", reached: .bareStack, make: stack {
+                SessionReportView(replica: $0.workbenchReplica, sessionID: 11, store: $0.store, requester: $0.reportRequests)
+            })
+        ]
     }
 
     /// 13 question, 14 review, 15 check, 16 answered, 17 withdrawn.
