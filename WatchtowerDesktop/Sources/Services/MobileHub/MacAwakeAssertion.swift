@@ -11,14 +11,28 @@ protocol PowerAsserting {
     func release(_ id: UInt32)
 }
 
-struct IOKitPower: PowerAsserting {
+/// The keep-awake log: a refused assertion and an unreadable live-session count are logged, never swallowed.
+let keepAwakeLogger = Logger(subsystem: Constants.bundleID, category: "KeepAwake")
+
+/// Logs a refused assertion once per streak of refusals: the companion retries every 30 s.
+final class IOKitPower: PowerAsserting {
+    private var refusing = false
+
     func create(reason: String) -> UInt32? {
         var id = IOPMAssertionID(0)
         let result = IOPMAssertionCreateWithName(
             kIOPMAssertPreventUserIdleSystemSleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn), reason as CFString, &id
         )
-        return result == kIOReturnSuccess ? id : nil
+        guard result == kIOReturnSuccess else {
+            if !refusing {
+                keepAwakeLogger.error("keep-awake assertion refused: IOReturn \(result, privacy: .public)")
+            }
+            refusing = true
+            return nil
+        }
+        refusing = false
+        return id
     }
 
     func release(_ id: UInt32) {
@@ -81,10 +95,15 @@ final class KeepAwakeCompanion: HubCompanion, @unchecked Sendable {
     }
 
     /// Live board sessions: the workbenches with a live agent session (plain shells never count), by the
-    /// slice's own query.
+    /// slice's own query; 0 (logged) when the read fails, so the Mac is not held awake on an unknown count.
     static func liveBoardSessions(_ pool: DatabasePool, liveIDs: Set<Int64>) -> Int {
         guard !liveIDs.isEmpty else { return 0 }
-        return (try? pool.read { try TerminalSessionSlice.liveWorkbenchIDs($0, liveIDs: liveIDs).count }) ?? 0
+        do {
+            return try pool.read { try TerminalSessionSlice.liveWorkbenchIDs($0, liveIDs: liveIDs).count }
+        } catch {
+            keepAwakeLogger.error("live board sessions unreadable: \(error.localizedDescription, privacy: .public)")
+            return 0
+        }
     }
 
     func evaluate() async {

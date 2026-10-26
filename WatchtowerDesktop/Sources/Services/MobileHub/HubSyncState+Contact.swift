@@ -1,14 +1,22 @@
 import Foundation
 import GRDB
+import os
 
 /// When a linked phone was last in touch (keep-awake, ask #614): the latest
 /// admitted action or `device` record, kept in `hub_meta`.
 extension HubSyncState {
     static let lastPhoneContactKey = "last_phone_contact"
 
-    /// nil before any contact, and when the value is unreadable.
+    /// nil before any contact, and when the value is unreadable (a failed read is logged).
     func lastPhoneContact() -> Date? {
-        guard let raw = try? metaValue(forKey: Self.lastPhoneContactKey), let seconds = TimeInterval(raw) else { return nil }
+        let raw: String?
+        do {
+            raw = try metaValue(forKey: Self.lastPhoneContactKey)
+        } catch {
+            keepAwakeLogger.error("last phone contact unreadable: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        guard let raw, let seconds = TimeInterval(raw) else { return nil }
         return Date(timeIntervalSince1970: seconds)
     }
 

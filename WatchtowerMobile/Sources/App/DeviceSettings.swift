@@ -164,7 +164,8 @@ final class DeviceSettings {
     nonisolated static let touchAfter: TimeInterval = 3600
 
     /// Rewrites the `device` record when the last write is older than `touchAfter`. Any write counts (a toggle
-    /// carries `seen_at` too). Not linked, or the Mac not accepting writes: nothing is sent.
+    /// carries `seen_at` too). Not linked, or the Mac not accepting writes: nothing is sent. A failed write is
+    /// logged and leaves the stamp alone, so the next return retries it.
     func touchIfStale() async {
         guard linkedDevice != nil else { return }
         let last = defaults.object(forKey: keys.lastDeviceWrite) as? Double
@@ -172,7 +173,9 @@ final class DeviceSettings {
         let prior = lastWrite
         let write = Task { [weak self] in
             await prior?.value
-            _ = await self?.writeDeviceRecord()
+            if await self?.writeDeviceRecord() != nil {
+                Self.logger.warning("keep-awake touch not sent; the next return to the foreground tries again")
+            }
         }
         lastWrite = write
         await write.value
