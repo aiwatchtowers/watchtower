@@ -160,10 +160,13 @@ final class ChatViewModel {
         }
     }
     var landingDraftID: Int64? { landingDraft?.id }
-    /// The project the landing's composer makes its conversation in (the
-    /// header `+` or ⌘N while a project is the Chats panel's level, the
-    /// project page's composer); nil = outside any project. Set by
-    /// `showLanding(inProject:)`.
+    /// The project the landing's composer makes its conversation in; nil =
+    /// outside any project. Only two places set it (controller ruling on
+    /// spec 2026-10-26 §4/§7): the project page's composer (`openProject`)
+    /// and `+` / ⌘N while the visible panel shows that project
+    /// (`showLanding(inProject:)`). It clears on opening any chat, on the
+    /// landing's first turn, when the page closes, and when the panel
+    /// leaves the project (`panelLevelChanged`, the fallback included).
     private(set) var landingProjectID: Int64?
     @ObservationIgnored private let defaults: UserDefaults
     private var landingDraftKey: String { "chat.landingDraft.\(dbManager.dbPool.path)" }
@@ -273,6 +276,7 @@ final class ChatViewModel {
         discardLandingDraft(except: id)
         openProjectID = nil
         isOnLanding = false
+        landingProjectID = nil
         let switching = id != conversationID
         conversationID = id
         editingMessageID = nil
@@ -527,6 +531,31 @@ final class ChatViewModel {
         landingProjectID = id
         artifactPanel = nil
         sourcesPanel = nil
+    }
+
+    /// The Chats panel's level changed (`ChatHistoryViewModel.onLevelChanged`:
+    /// ‹, ⌘[, the switcher, the fallback when the project is gone): a
+    /// landing — or project page — in another project gives way to the
+    /// landing outside any project, so nothing is made in a project the
+    /// panel no longer shows.
+    func panelLevelChanged(to projectID: Int64?) {
+        guard let landing = landingProjectID, landing != projectID else { return }
+        if isOnLanding {
+            showLanding(inProject: nil)
+        } else {
+            landingProjectID = nil
+        }
+    }
+
+    /// The ⌘/ popup opens over this chat (spec 2026-10-26 §2: it behaves
+    /// as before the panel, outside any project): a landing or project page
+    /// in a project becomes the plain landing first — the popup's composer
+    /// never makes a chat in a project —, then, with nothing shown, the
+    /// tab's resume decision runs (`enterTab`).
+    func enterHelpPopup(rememberedConversationID: Int64?, lastViewedAt: Date?, now: Date) {
+        if isOnLanding, landingProjectID != nil { showLanding(inProject: nil) }
+        guard conversationID == nil else { return }
+        enterTab(rememberedConversationID: rememberedConversationID, lastViewedAt: lastViewedAt, now: now)
     }
 
     /// Called by the project page after a write that changes the project's
@@ -866,6 +895,7 @@ final class ChatViewModel {
             landingDraft = nil
             isOnLanding = false
             openProjectID = nil
+            landingProjectID = nil
             onLandingTurnStarted?(id)
         }
         return started
@@ -926,11 +956,13 @@ final class ChatViewModel {
             id = conv.id
             reloadConversations()
         }
-        // A project page stays on screen until the draft's first turn.
+        // A project page (and the landing's project) stays until the
+        // draft's first turn.
         let page = openProjectID
         select(conversationID: id)
         isOnLanding = true
         openProjectID = page
+        landingProjectID = projectID
         landingDraft = currentConversation.map {
             LandingDraft(id: $0.id, createdAt: $0.createdAt, projectID: $0.projectID)
         }

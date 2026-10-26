@@ -12,6 +12,8 @@ extension AppState {
         // The panel's quick delete commits through the chat's own path (spec
         // 2026-10-26 §5.3): the session retired, then the row deleted.
         hvm.forgetConversation = { [weak cvm] id in cvm?.forget(conversationID: id) }
+        // The landing leaves a project the panel stops showing (spec §4).
+        hvm.onLevelChanged = { [weak cvm] level in cvm?.panelLevelChanged(to: level.projectID) }
     }
 
     /// The chat's two signals, each assigned only here (they are single

@@ -145,6 +145,26 @@ final class ChatPanelKeysTests: XCTestCase {
         )
     }
 
+    /// ⌘1…⌘9 and ⌘[ act on the panel only while it is visible (ask #660):
+    /// hidden, the context resolves to neither — even inside a project.
+    func testAHiddenPanelTakesNeitherTheRowKeysNorBack() async throws {
+        let fixture = try await fixture()
+        let vm = fixture.vm
+        let project = try await dbManager.dbPool.write { try ChatProjectQueries.create($0, name: "P").id }
+        vm.selectLevel(.project(project))
+        let hidden = ChatsMenuContext(historyVM: vm, panelVisible: false) { _ in }
+        XCTAssertFalse(hidden.canUseRowKeys)
+        XCTAssertEqual(
+            ItemShortcutTarget.resolve(workbench: nil, chats: hidden.shortcutState),
+            .init(items: nil, back: nil)
+        )
+        let shown = ChatsMenuContext(historyVM: vm, panelVisible: true) { _ in }
+        XCTAssertEqual(
+            ItemShortcutTarget.resolve(workbench: nil, chats: shown.shortcutState),
+            .init(items: .chatRows, back: .showAllChats)
+        )
+    }
+
     /// The Undo bar under the list: the chat's name, and Undo brings it
     /// back and hands the panel the keyboard (where ⌘Z does the same).
     func testTheUndoBarNamesTheChatAndRestoresIt() async throws {

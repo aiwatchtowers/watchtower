@@ -221,4 +221,127 @@ final class ChatViewModelLandingProjectTests: XCTestCase {
         XCTAssertEqual(vm.projectNameFocusRequest, id)
         XCTAssertEqual(vm.openProjectID, id)
     }
+
+    // MARK: - Where a new chat lands (controller ruling on spec §4/§7)
+
+    /// The two view models wired as the app does.
+    private func wired() async -> (ChatViewModel, ChatHistoryViewModel) {
+        let vm = makeViewModel()
+        let history = ChatHistoryViewModel(dbManager: dbManager, attachmentsRoot: nil, defaults: defaults)
+        AppState.wireChat(vm, history: history)
+        let done = expectation(description: "reload")
+        history.reloadRows { done.fulfill() }
+        await fulfillment(of: [done], timeout: 5)
+        return (vm, history)
+    }
+
+    private var afterTheWindow: Date { Date().addingTimeInterval(ChatLandingPolicy.resumeWindow + 60) }
+
+    /// `+` in a project, then ‹: the All chats landing makes a chat outside it.
+    func testPlusInAProjectThenBackLandsOutsideIt() async throws {
+        let projectID = try await project("X")
+        let (vm, history) = await wired()
+        history.selectLevel(.project(projectID))
+        vm.showLanding(inProject: projectID)
+        await vm.draftStarted()
+        let projectDraft = try XCTUnwrap(vm.conversationID)
+
+        history.selectLevel(.all)
+        XCTAssertNil(vm.landingProjectID)
+        XCTAssertTrue(vm.isOnLanding)
+        XCTAssertNil(vm.conversationID, "the project's draft is let go")
+        await vm.draftStarted()
+        let id = try XCTUnwrap(vm.conversationID)
+        XCTAssertNotEqual(id, projectDraft)
+        XCTAssertNil(try conversation(id)?.projectID)
+    }
+
+    /// The project page, then ‹ (or opening a chat): coming back after the
+    /// resume window lands outside the project.
+    func testThePagesProjectDoesNotOutliveThePage() async throws {
+        let projectID = try await project("X")
+        let (vm, history) = await wired()
+        history.selectLevel(.project(projectID))
+        vm.openProject(projectID)
+        history.selectLevel(.all)
+        XCTAssertNil(vm.openProjectID, "‹ leaves the page")
+        XCTAssertNil(vm.landingProjectID)
+        vm.enterTab(rememberedConversationID: nil, lastViewedAt: nil, now: afterTheWindow)
+        XCTAssertTrue(vm.isOnLanding)
+        XCTAssertNil(vm.landingProjectID)
+
+        let created = await vm.newConversation()
+        let other = try XCTUnwrap(created)
+        vm.openProject(projectID)
+        vm.select(conversationID: other)
+        XCTAssertNil(vm.landingProjectID, "opening a chat clears it")
+        vm.enterTab(rememberedConversationID: other, lastViewedAt: nil, now: afterTheWindow)
+        await vm.draftStarted()
+        let id = try XCTUnwrap(vm.conversationID)
+        XCTAssertNil(try conversation(id)?.projectID)
+    }
+
+    /// The page's composer keeps its project through the first keystroke.
+    func testThePagesComposerKeepsItsProjectAfterTheKeystroke() async throws {
+        let projectID = try await project("X")
+        let (vm, _) = await wired()
+        vm.openProject(projectID)
+        await vm.draftStarted()
+        XCTAssertEqual(vm.landingProjectID, projectID)
+        XCTAssertEqual(vm.openProjectID, projectID)
+    }
+
+    /// A project archived elsewhere while the landing is in it: the panel
+    /// falls back to All chats and the landing leaves the project too.
+    func testAnArchivedProjectsFallbackTakesTheLandingOutOfIt() async throws {
+        let projectID = try await project("X")
+        let (vm, history) = await wired()
+        history.selectLevel(.project(projectID))
+        vm.showLanding(inProject: projectID)
+        try await dbManager.dbPool.write { d in
+            try d.execute(sql: "UPDATE chat_projects SET archived_at = 1 WHERE id = ?", arguments: [projectID])
+        }
+        let done = expectation(description: "reload")
+        history.reloadRows { done.fulfill() }
+        await fulfillment(of: [done], timeout: 5)
+        XCTAssertEqual(history.level, .all)
+        XCTAssertNil(vm.landingProjectID)
+        await vm.draftStarted()
+        let id = try XCTUnwrap(vm.conversationID)
+        XCTAssertNil(try conversation(id)?.projectID)
+    }
+
+    /// The ⌘/ popup over a project page or a project landing never makes
+    /// a chat in the project.
+    func testTheHelpPopupNeverMakesAChatInAProject() async throws {
+        let projectID = try await project("X")
+        let vm = makeViewModel()
+        vm.openProject(projectID)
+        vm.enterHelpPopup(rememberedConversationID: nil, lastViewedAt: nil, now: Date())
+        XCTAssertNil(vm.openProjectID)
+        XCTAssertNil(vm.landingProjectID)
+        await vm.draftStarted()
+        let id = try XCTUnwrap(vm.conversationID)
+        XCTAssertNil(try conversation(id)?.projectID)
+
+        let other = makeViewModel()
+        other.showLanding(inProject: projectID)
+        await other.draftStarted()
+        let projectDraft = try XCTUnwrap(other.conversationID)
+        other.enterHelpPopup(rememberedConversationID: nil, lastViewedAt: nil, now: Date())
+        XCTAssertNotEqual(other.conversationID, projectDraft, "the project's draft is not the popup's")
+        await other.draftStarted()
+        let popupChat = try XCTUnwrap(other.conversationID)
+        XCTAssertNil(try conversation(popupChat)?.projectID)
+    }
+
+    /// A chat already on screen stays on screen when the popup opens.
+    func testTheHelpPopupKeepsTheChatOnScreen() async throws {
+        let vm = makeViewModel()
+        let created = await vm.newConversation()
+        let id = try XCTUnwrap(created)
+        vm.enterHelpPopup(rememberedConversationID: nil, lastViewedAt: nil, now: afterTheWindow)
+        XCTAssertEqual(vm.conversationID, id)
+        XCTAssertFalse(vm.isOnLanding)
+    }
 }

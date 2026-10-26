@@ -11,11 +11,14 @@ struct ChatsMenuContext {
     let historyVM: ChatHistoryViewModel
     /// The search sheet or the rename field has the keys.
     var keysTaken = false
+    /// The Chats panel is shown: ⌘1…⌘9 and ⌘[ act on it only then (ask
+    /// #660).
+    var panelVisible = true
     /// Opens a chat as a click on its row does.
     let openChat: (Int64) -> Void
 
-    /// ⌘1…⌘9 open the panel's rows.
-    var canUseRowKeys: Bool { !keysTaken }
+    /// ⌘1…⌘9 (and ⌘[) act on the panel's rows.
+    var canUseRowKeys: Bool { !keysTaken && panelVisible }
 
     var shortcutState: ItemShortcutTarget.Chats {
         .init(canUseRowKeys: canUseRowKeys, projectSelected: historyVM.level != .all)
