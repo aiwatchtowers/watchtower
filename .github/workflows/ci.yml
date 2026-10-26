@@ -357,11 +357,10 @@ jobs:
         run: swiftlint lint --strict
 
       # The iPhone app has its own config: the `orange_outside_phone_tone`
-      # rule is the only enforcement of "orange = waiting for you"; the kit
-      # rules' legacy screen hits are in its baseline.
+      # rule is the only enforcement of "orange = waiting for you".
       - name: SwiftLint (mobile app)
         working-directory: WatchtowerMobile
-        run: swiftlint lint --strict --baseline .swiftlint-baseline.json
+        run: swiftlint lint --strict
 
       # The shared mobile Kit package (WatchtowerSync + WatchtowerKit).
       - name: Test (mobile Kit)

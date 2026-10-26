@@ -345,7 +345,7 @@ lint-swift:
 	bash scripts/kit-lint-guard.sh
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 	cd WatchtowerKit && swiftlint lint --strict
-	cd WatchtowerMobile && swiftlint lint --strict --baseline .swiftlint-baseline.json
+	cd WatchtowerMobile && swiftlint lint --strict
 
 lint-all: lint lint-swift
 

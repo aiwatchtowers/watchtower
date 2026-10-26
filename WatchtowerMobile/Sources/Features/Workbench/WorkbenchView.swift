@@ -85,7 +85,7 @@ struct WorkbenchView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: Spacing.small) {
                 Text(replica.snapshot.workbench(workbenchID)?.name ?? "Workbench")
                     .font(.headline)
                     .foregroundStyle(.primary)
@@ -98,7 +98,7 @@ struct WorkbenchView: View {
     }
 
     private func content(_ menu: WorkbenchMenuModel, now: Date) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: Spacing.regular) {
             HStack(spacing: Spacing.regular) {
                 if let branch = menu.branch {
                     Pill(text: branch, style: .neutral, monospaced: true)
@@ -111,7 +111,7 @@ struct WorkbenchView: View {
                 ForEach(Segment.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
+            .padding(.horizontal, Spacing.large)
             switch segment {
             // The working timers tick each second; the rest follows the
             // minute timeline.

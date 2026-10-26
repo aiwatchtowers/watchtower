@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate WatchtowerDesktop/.swiftlint-baseline.json (or, with
-# `--root WatchtowerMobile`, the phone's) with repo-relative paths.
+# Regenerate WatchtowerDesktop/.swiftlint-baseline.json with repo-relative paths.
 # swiftlint --write-baseline stores absolute file:// URLs; strip them so the
 # baseline works from any checkout (CI included). The file is pretty-printed
 # so its diffs are reviewable.
@@ -13,24 +12,16 @@
 set -euo pipefail
 
 allow='[]'
-root=WatchtowerDesktop
 while [ $# -gt 0 ]; do
     case "$1" in
-        --root)
-            [ $# -ge 2 ] || { echo "swiftlint-baseline: --root needs WatchtowerDesktop or WatchtowerMobile" >&2; exit 64; }
-            case "$2" in
-                WatchtowerDesktop|WatchtowerMobile) root=$2 ;;
-                *) echo "swiftlint-baseline: --root is WatchtowerDesktop or WatchtowerMobile" >&2; exit 64 ;;
-            esac
-            shift 2 ;;
         --allow-new)
             [ $# -ge 2 ] || { echo "swiftlint-baseline: --allow-new needs a rule id" >&2; exit 64; }
             allow=$(jq -c --arg r "$2" '. + [$r]' <<<"$allow"); shift 2 ;;
-        *) echo "usage: $0 [--root WatchtowerDesktop|WatchtowerMobile] [--allow-new <rule-id>]..." >&2; exit 64 ;;
+        *) echo "usage: $0 [--allow-new <rule-id>]..." >&2; exit 64 ;;
     esac
 done
 
-cd "$(dirname "$0")/../$root"
+cd "$(dirname "$0")/../WatchtowerDesktop"
 baseline=.swiftlint-baseline.json
 raw=$(mktemp); new=$(mktemp)
 trap 'rm -f "$raw" "$new"' EXIT
@@ -43,7 +34,7 @@ if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
     exit 1
 fi
 
-jq --arg root "$root" 'map(.violation.location.file |= (sub("^file://.*/" + $root + "/"; "")))' "$raw" > "$new"
+jq 'map(.violation.location.file |= (sub("^file://.*/WatchtowerDesktop/"; "")))' "$raw" > "$new"
 
 old='[]'
 [ -f "$baseline" ] && old="$baseline"

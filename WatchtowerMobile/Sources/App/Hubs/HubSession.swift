@@ -420,8 +420,7 @@ final class HubSession {
             keys: try keys ?? (demoKeys ? DemoSeed.phoneKeys() : nil), seqFloor: seqFloor,
             observesSuspension: replicaObservesSuspension
         )
-        let store = sealed.store
-        let secure = sealed.secure
+        let (store, secure) = (sealed.store, sealed.secure)
         self.store = store
         self.secure = secure
         hasDeviceKeys = sealed.hasDeviceKeys

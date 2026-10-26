@@ -235,7 +235,8 @@ final class SettingsWiringTests: XCTestCase {
             "Asks, approvals and finished or failed sessions, only while you're away from your Mac.")
         XCTAssertEqual(
             WorkAlertsCopy.footer(anyShared: true),
-            "Asks, approvals and finished or failed sessions, only while you're away from your Mac. Alerts don't reach a phone on another Apple ID yet.")
+            "Asks, approvals and finished or failed sessions, only while you're away from your Mac. "
+                + "Alerts don't reach a phone on another Apple ID yet.")
     }
 
     // MARK: - Workbench toggles
