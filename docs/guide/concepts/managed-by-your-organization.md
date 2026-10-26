@@ -27,7 +27,7 @@ text: A locked control follows your company's profile; **Settings → System →
 area: setup
 level: power
 kind: feature
-since: next
+since: 0.25.0
 -->
 
 Open **Settings → System → Privacy**. The **Organization policy** section lists every rule in plain words, and any problem with the profile. The command `watchtower policy show` prints the same list.

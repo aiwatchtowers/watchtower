@@ -35,7 +35,7 @@ text: A run gets 300 reads or 5,000 rows; past that a read throws a **Validation
 area: automations
 level: power
 kind: tip
-since: next
+since: 0.25.0
 action: nav:automations
 -->
 

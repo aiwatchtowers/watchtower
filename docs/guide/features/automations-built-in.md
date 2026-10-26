@@ -25,7 +25,7 @@ text: A **Built in** card lists its steps under **Does**, and **Show in Inbox** 
 area: automations
 level: next
 kind: tip
-since: next
+since: 0.25.0
 action: nav:automations
 -->
 

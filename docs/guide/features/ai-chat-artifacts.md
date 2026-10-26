@@ -80,7 +80,7 @@ text: Press **Add to Knowledge** on a document, table or code artifact and the a
 area: assistant
 level: next
 kind: feature
-since: next
+since: 0.25.0
 action: nav:chat
 -->
 

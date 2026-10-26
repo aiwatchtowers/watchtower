@@ -14,7 +14,7 @@ text: A spec or plan the agent sends for review comes with an independent review
 area: development
 level: next
 kind: feature
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 
@@ -32,7 +32,7 @@ text: Open the review ask and mark each finding **Fine as is** or **Comment**, t
 area: development
 level: next
 kind: tip
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 

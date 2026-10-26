@@ -14,7 +14,7 @@ text: With **Finish check** on, an agent finishes only when every sub-target is 
 area: development
 level: next
 kind: tip
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 

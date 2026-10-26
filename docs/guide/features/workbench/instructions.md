@@ -35,7 +35,7 @@ text: The text in **For chats and agents** reaches every AI chat too;**Only in c
 area: assistant
 level: next
 kind: feature
-since: next
+since: 0.25.0
 action: nav:chat
 -->
 <!-- learn
@@ -45,7 +45,7 @@ text: Type `remember:` and a direction in a chat, and it is kept for all your ch
 area: assistant
 level: next
 kind: tip
-since: next
+since: 0.25.0
 action: nav:chat
 -->
 
@@ -61,7 +61,7 @@ text: When you give the same direction in three sessions or chats, Watchtower of
 area: development
 level: power
 kind: tip
-since: next
+since: 0.25.0
 -->
 
 Once a day Watchtower reads what you typed in your recent sessions, from both agents, and in your chats. When you gave the same standing direction in at least three sessions of the last 14 days and your texts don't hold it yet, it offers it as a suggestion. Nothing changes until you press **Add**, and once you dismiss a suggestion, that suggestion never comes back.

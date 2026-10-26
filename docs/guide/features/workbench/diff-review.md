@@ -24,7 +24,7 @@ text: Press **Approve** in Branch review and the agent finishes the branch the w
 area: development
 level: next
 kind: feature
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 <!-- learn
@@ -34,7 +34,7 @@ text: Branch review lists files as a folder tree with unviewed counts; open a hi
 area: development
 level: next
 kind: tip
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 
@@ -76,7 +76,7 @@ text: In **Deep**, each chapter lists what to look at from the AI overview; turn
 area: development
 level: power
 kind: feature
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 <!-- learn
@@ -86,7 +86,7 @@ text: Press **Chapter viewed →** or ⌥⌘Return to mark a chapter's files Vie
 area: development
 level: power
 kind: tip
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 
@@ -110,7 +110,7 @@ text: Select lines in Branch review and press ⇧⌘A to quote them into the ses
 area: development
 level: next
 kind: feature
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 
@@ -124,7 +124,7 @@ text: ⌘-click a name in the diff, or press ⌃⌘J, to open its definition wit
 area: development
 level: power
 kind: tip
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 

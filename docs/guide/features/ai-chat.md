@@ -139,7 +139,7 @@ text: Select across paragraphs or a whole table in an answer and ⌘C copies it 
 area: assistant
 level: power
 kind: tip
-since: next
+since: 0.25.0
 action: nav:chat
 -->
 

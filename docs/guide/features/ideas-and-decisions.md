@@ -15,7 +15,7 @@ text: Ideas and decisions found in your AI chats wait under **Needs your decisio
 area: planning
 level: next
 kind: feature
-since: next
+since: 0.25.0
 action: nav:ideas
 -->
 
@@ -97,7 +97,7 @@ text: Start a chat message with **decided:** or **fact:** and it is saved to the
 area: planning
 level: next
 kind: feature
-since: next
+since: 0.25.0
 action: nav:chat
 -->
 

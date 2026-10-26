@@ -28,7 +28,7 @@ text: Press **N more** under the feed to see up to 50 waiting rows right on Home
 area: communication
 level: next
 kind: tip
-since: next
+since: 0.25.0
 action: nav:home
 -->
 
@@ -82,7 +82,7 @@ text: The **Learn Watchtower** zone on Home shows three features to try; **Got i
 area: setup
 level: basics
 kind: feature
-since: next
+since: 0.25.0
 action: nav:home
 -->
 

@@ -28,7 +28,7 @@ text: A new session appears in the list right away and reads **Starting…** whi
 area: development
 level: next
 kind: tip
-since: next
+since: 0.25.0
 action: nav:projects
 -->
 <!-- learn

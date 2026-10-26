@@ -24,7 +24,7 @@ text: Time Machine skips Watchtower's data folders; backups made earlier still h
 area: setup
 level: next
 kind: tip
-since: next
+since: 0.25.0
 -->
 
 Time Machine skips two folders: `~/.local/share/watchtower` (the database, Memory, logs, sign-ins) and `~/Library/Application Support/Watchtower` (recordings, iPhone sync). The app marks them again at every launch and daemon start. `~/.config/watchtower` is still backed up: mostly settings, though an old config may still hold a Slack token.
@@ -100,7 +100,7 @@ text: An assistant reads at most 300 times or 5,000 rows per session; past that,
 area: assistant
 level: power
 kind: tip
-since: next
+since: 0.25.0
 -->
 <!-- learn
 id: privacy-audit-log
@@ -109,7 +109,7 @@ text: Every read leaves one content-free line in the Mac's system log, under `co
 area: setup
 level: power
 kind: feature
-since: next
+since: 0.25.0
 -->
 
 An assistant can read your synced data at most 300 times, or 5,000 rows, in one session. One read returns at most 256 KB, and a list at most 200 rows. The limit holds for AI Chat, workbench agents, automation runs and any app connected to `watchtower mcp`. Past it the read is refused with **this session's read limit is reached (300 calls / 5000 rows); the owner can start a new session**; a new chat, session or run starts a fresh count. A chat built into a screen counts per message, and each `watchtower tools call` on its own. Your own board, asks and skills do not count.

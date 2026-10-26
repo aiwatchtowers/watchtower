@@ -24,7 +24,7 @@ text: Add a `summary:` line to a recipe to set the short text the list shows; it
 area: automations
 level: power
 kind: tip
-since: next
+since: 0.25.0
 action: nav:automations
 -->
 The top of the file holds the settings:
@@ -118,7 +118,7 @@ text: In the editor's **Chat**, the assistant reads your recipes, runs, channels
 area: automations
 level: next
 kind: tip
-since: next
+since: 0.25.0
 action: nav:automations
 -->
 
@@ -129,7 +129,7 @@ text: Press ⌥⌘0 (**Hide Draft**) in the automation editor to hide the draft 
 area: automations
 level: power
 kind: tip
-since: next
+since: 0.25.0
 action: nav:automations
 -->
 - The list's groups (**Built in**, **Personal**, one per workbench) fold, and Watchtower remembers it. A failed recipe shows its error first.

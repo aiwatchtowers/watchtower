@@ -29,7 +29,7 @@ text: Images in Slack, mail, Confluence and your chats get an AI description, so
 area: assistant
 level: next
 kind: feature
-since: next
+since: 0.25.0
 requires: feature:knowledge-search
 -->
 
@@ -40,7 +40,7 @@ text: Public links posted in Slack and Confluence are opened and summarized, so 
 area: assistant
 level: power
 kind: feature
-since: next
+since: 0.25.0
 requires: feature:knowledge-search
 -->
 
