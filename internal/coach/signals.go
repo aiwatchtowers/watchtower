@@ -76,11 +76,12 @@ type CurrentText struct {
 
 // Inputs is everything the weekly pass shows the model. Accepted are the
 // accepted proposals without a no-effect verdict, NoEffect those whose verdict
-// is no_effect (accepted or rolled back).
+// is no_effect (accepted or rolled back), RolledBack the other rolled-back
+// ones (the owner undid them: a reworded version must not come back).
 type Inputs struct {
-	Signals                            []Signal
-	Texts                              []CurrentText
-	Open, Declined, Accepted, NoEffect []db.CoachProposal
+	Signals                                        []Signal
+	Texts                                          []CurrentText
+	Open, Declined, Accepted, NoEffect, RolledBack []db.CoachProposal
 }
 
 // userHomeDir is the home directory ~/.claude/settings.json is read from; a
@@ -373,6 +374,8 @@ func loadProposals(d *db.DB, in *Inputs) error {
 			in.Declined = append(in.Declined, p)
 		case p.Status == "accepted":
 			in.Accepted = append(in.Accepted, p)
+		case p.Status == "rolled_back":
+			in.RolledBack = append(in.RolledBack, p)
 		}
 	}
 	return nil

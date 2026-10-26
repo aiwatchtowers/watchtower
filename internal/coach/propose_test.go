@@ -320,3 +320,36 @@ func TestChangedLines(t *testing.T) {
 	assert.Empty(t, removed)
 	assert.Empty(t, added)
 }
+
+// TestCoachPrompt_AllowTableMatchesGo pins coach.propose's allow-rule list to
+// safeAllowVerbs and every Bash(...) example the prompt allows to SafeAllowRule:
+// the prompt never teaches a rule Go refuses.
+func TestCoachPrompt_AllowTableMatchesGo(t *testing.T) {
+	tmpl := prompts.Defaults[prompts.CoachPropose]
+	const lead = "where <command> is exactly one of: "
+	i := strings.Index(tmpl, lead)
+	require.GreaterOrEqual(t, i, 0, "the prompt lists the allowed commands")
+	list := tmpl[i+len(lead):]
+	list = list[:strings.Index(list, ".")]
+	var listed []string
+	for _, v := range strings.Split(list, ", ") {
+		listed = append(listed, strings.TrimSpace(v))
+	}
+	var want []string
+	for v := range safeAllowVerbs {
+		want = append(want, v)
+	}
+	assert.ElementsMatch(t, want, listed)
+
+	assert.True(t, SafeAllowRule("Bash(go test:*)"))
+	assert.Contains(t, tmpl, "Bash(go test:*) is allowed")
+	assert.False(t, SafeAllowRule("Bash(make:*)"))
+	assert.Contains(t, tmpl, "Bash(make:*) is not")
+	assert.NotContains(t, tmpl, "Bash(rg:*)")
+}
+
+func TestValidateAfter_AllowListMustGrow(t *testing.T) {
+	cur := CurrentText{Destination: DestSettingsAllow, Text: "Bash(ls:*)\nBash(go test:*)"}
+	require.Error(t, ValidateAfter(cur, "Bash(ls:*)\nBash(go test:*)\nBash(ls:*)"), "an already-listed rule is no change")
+	require.NoError(t, ValidateAfter(cur, "Bash(ls:*)\nBash(go test:*)\nBash(cat:*)"))
+}

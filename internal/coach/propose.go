@@ -190,7 +190,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 	}
 	known := map[string]bool{}
 	busy := map[textKey]bool{}
-	for _, group := range [][]db.CoachProposal{in.Open, in.Declined, in.Accepted, in.NoEffect} {
+	for _, group := range [][]db.CoachProposal{in.Open, in.Declined, in.Accepted, in.NoEffect, in.RolledBack} {
 		for _, p := range group {
 			known[p.Fingerprint] = true
 		}
@@ -375,8 +375,8 @@ func kindFits(kind, before, after string) bool {
 // owner text within its rune budget (surrounding space not counted); a
 // prompt's additions one per line, each passing prompts.ValidateAddition, with
 // at most prompts.MaxAdditionRunes in all, for a prompt the store tunes; an
-// allow list that keeps every rule it had and adds only safe Bash rules
-// (SafeAllowRule).
+// allow list that keeps every rule it had and adds at least one rule, only
+// safe Bash rules (SafeAllowRule).
 func ValidateAfter(t CurrentText, after string) error {
 	switch t.Destination {
 	case DestSession, DestProcedure, DestChat, DestClaudeMDUser:
@@ -418,6 +418,9 @@ func ValidateAfter(t CurrentText, after string) error {
 			if !now[r] {
 				return errors.New("the allow list may only grow")
 			}
+		}
+		if len(now) == len(had) {
+			return errors.New("the allow list already has every rule")
 		}
 		return nil
 	}
@@ -499,6 +502,7 @@ func buildUser(in Inputs, slots int, lang string) string {
 		{"OPEN (waiting for the owner; do not repeat)", in.Open},
 		{"DECLINED (never propose again)", in.Declined},
 		{"ACCEPTED (already applied)", in.Accepted},
+		{"ROLLED BACK (the owner undid them; never propose again)", in.RolledBack},
 		{"NO EFFECT (accepted edits that changed nothing; propose removing them when still in a text)", in.NoEffect},
 	} {
 		fmt.Fprintf(&b, "\n=== %s ===\n", g.name)

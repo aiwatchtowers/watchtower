@@ -275,6 +275,7 @@ func TestCollect_ProposalBuckets(t *testing.T) {
 	mk("works1", "accepted", "works")
 	mk("noeff1", "accepted", "no_effect")
 	mk("noeff2", "rolled_back", "no_effect")
+	mk("undone1", "rolled_back", "")
 	mk("super1", "superseded", "")
 
 	in, err := Collect(context.Background(), d.DB, d.al, noFeed, sigNow)
@@ -290,6 +291,11 @@ func TestCollect_ProposalBuckets(t *testing.T) {
 	assert.Equal(t, []string{"declined1"}, titles(in.Declined))
 	assert.Equal(t, []string{"works1"}, titles(in.Accepted))
 	assert.ElementsMatch(t, []string{"noeff1", "noeff2"}, titles(in.NoEffect))
+	assert.Equal(t, []string{"undone1"}, titles(in.RolledBack))
+	user := buildUser(in, 1, "")
+	i := strings.Index(user, "=== ROLLED BACK")
+	require.GreaterOrEqual(t, i, 0, "the model sees what the owner undid")
+	assert.Contains(t, user[i:], "] undone1\n")
 }
 
 func TestCollect_DraftAndOutdatedCommentsAreNotEvidence(t *testing.T) {
