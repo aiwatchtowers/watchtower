@@ -48,9 +48,13 @@ func WithAdditions(tmpl string, adds []string) string {
 	return b.String()
 }
 
-// additionsFor reads the additions of a base prompt id. A failed read is
-// logged and yields none: a prompt never fails over its additions.
+// additionsFor reads the additions of a base prompt id; none for a prompt a
+// built-in owns (MovedToBuiltin). A failed read is logged and yields none: a
+// prompt never fails over its additions.
 func (s *Store) additionsFor(id string) []string {
+	if _, moved := MovedToBuiltin[id]; moved {
+		return nil // a built-in automation owns this text
+	}
 	rows, err := s.db.ListPromptAdditions(id)
 	if err != nil {
 		s.logger.Warn("reading prompt additions", "id", id, "err", err)

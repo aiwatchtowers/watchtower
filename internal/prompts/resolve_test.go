@@ -149,11 +149,11 @@ func TestResolve_AppendsAdditions(t *testing.T) {
 
 func TestResolve_AdditionsOnRoleVariant(t *testing.T) {
 	database := openTestDB(t)
-	require.NoError(t, database.UpsertPrompt(db.Prompt{ID: BriefingDaily + "_top_management", Template: "variant", Version: 3}))
-	_, err := database.AddPromptAddition(BriefingDaily, "Keep it short.", 0, time.Now())
+	require.NoError(t, database.UpsertPrompt(db.Prompt{ID: DigestChannel + "_top_management", Template: "variant", Version: 3}))
+	_, err := database.AddPromptAddition(DigestChannel, "Keep it short.", 0, time.Now())
 	require.NoError(t, err)
 
-	tmpl, _, err := Resolve(New(database, nil), BriefingDaily, "top_management")
+	tmpl, _, err := Resolve(New(database, nil), DigestChannel, "top_management")
 	require.NoError(t, err)
 	assert.Equal(t, WithAdditions("variant", []string{"Keep it short."}), tmpl)
 }
@@ -204,4 +204,16 @@ func TestWithAdditions_Format(t *testing.T) {
 	assert.Equal(t, tmpl, WithAdditions(tmpl, nil))
 	want := tmpl + "\n\n=== OWNER PREFERENCES (approved by the owner) ===\n- Do not flag naming choices.\n"
 	assert.Equal(t, want, WithAdditions(tmpl, []string{"Do not flag naming choices."}))
+}
+
+func TestResolve_NoAdditionsForBuiltinOwnedPrompt(t *testing.T) {
+	database := openTestDB(t)
+	store := New(database, nil)
+	require.NoError(t, store.Seed())
+	_, err := database.AddPromptAddition(BriefingDaily, "Keep it short.", 0, time.Now())
+	require.NoError(t, err)
+
+	tmpl, _, err := Resolve(store, BriefingDaily, "")
+	require.NoError(t, err)
+	assert.Equal(t, Defaults[BriefingDaily], tmpl)
 }
