@@ -73,6 +73,9 @@ final class SessionInputHandlers: HubCompanion {
     /// Lines on their first try, inside `send` (no sidecar row yet; the
     /// relay's `begun` covers them).
     private var firstTries: Set<String> = []
+    /// Lines whose last gate answered go while the agent worked: their echo
+    /// says so (`while_busy`).
+    private var goneWhileBusy: Set<String> = []
     private var running = true
     /// The later echoes, one after another.
     private var echoes: Task<Void, Never>?
@@ -265,6 +268,7 @@ final class SessionInputHandlers: HubCompanion {
         }
         guard retry else {
             verdicts[line.recordName] = nil
+            noteBusy(line)
             return .go
         }
         do {
@@ -279,14 +283,26 @@ final class SessionInputHandlers: HubCompanion {
             return .hold
         }
         verdicts[line.recordName] = nil
+        noteBusy(line)
         return .go
+    }
+
+    private func noteBusy(_ line: PhoneLine) {
+        if control.isWorking(line.sessionID) {
+            goneWhileBusy.insert(line.recordName)
+        } else {
+            goneWhileBusy.remove(line.recordName)
+        }
     }
 
     private func verdict(_ line: PhoneLine) -> Verdict? {
         if let failure = standingFailure(line) { return .fail(failure) }
         // The state was read right before (the delivery's fresh read): a
         // session it does not list was deleted.
-        switch control.lineCheck(line.sessionID) {
+        // Only Claude sessions reach this handler (`isBoardSession`), and Claude
+        // Code queues a line typed mid-turn: a working agent does not hold it
+        // (PROJ-16 amended, ask #614). A permission prompt still does.
+        switch control.workchatLineCheck(line.sessionID) {
         case .go: return nil
         case .sessionGone: return .fail(.sessionNotRunning)
         case .hold(.needsApproval): return .hold(.needsApproval)
@@ -306,7 +322,10 @@ final class SessionInputHandlers: HubCompanion {
     private func resolve(_ delivery: SessionLineDelivery.Delivery, of line: PhoneLine) -> Resolution {
         let verdict = verdicts.removeValue(forKey: line.recordName)
         switch delivery {
-        case .submitted: return .final(.applied(["delivery": .string("submitted")]))
+        case .submitted:
+            var result: [String: JSONValue] = ["delivery": .string("submitted")]
+            if goneWhileBusy.remove(line.recordName) != nil { result["while_busy"] = .bool(true) }
+            return .final(.applied(result))
         case .typed: return .final(.applied(["delivery": .string("typed")]))
         case .copied: return .final(.failed(.cannotType, message: Self.cannotTypeMessage))
         case .noSession:

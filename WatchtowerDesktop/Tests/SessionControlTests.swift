@@ -225,7 +225,9 @@ final class SessionControlTests: XCTestCase {
         }
     }
 
-    /// PROJ-16 guard: the phone's check still holds a working agent.
+    /// PROJ-16 guard: `lineCheck` still holds a working agent. The hub uses it
+    /// no more for Claude (`workchatLineCheck`, ask #614); it stays the
+    /// strict check for any kind that does not queue a mid-turn line.
     func testPhoneLineCheckStillHoldsWhileWorking() async throws {
         let session = try await liveSession()
         setState(session, .working)

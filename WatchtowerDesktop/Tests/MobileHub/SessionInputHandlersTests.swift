@@ -257,9 +257,11 @@ final class SessionInputHandlersTests: XCTestCase {
         XCTAssertTrue(typed.isEmpty)
     }
 
-    /// Condition (2): while the agent works the line is held (`agent_busy`),
-    /// retried on each successful state read, and goes once it stopped.
-    func testProj16_AWorkingSessionHoldsTheLineUntilItStops() async throws {
+    /// Condition (2), amended 2026-10-25 (ask #614): a working Claude agent
+    /// takes the line (it queues it and reads it at its next step) and the
+    /// echo says so (`while_busy`); a permission prompt still holds the next
+    /// line, so a prompt never gets a phone line.
+    func testProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt() async throws {
         let session = try await liveSession()
         setState(session, .working)
         let handlers = try makeHandlers()
@@ -267,25 +269,51 @@ final class SessionInputHandlersTests: XCTestCase {
 
         let outcome = try await handlers.handle(action)
 
-        XCTAssertEqual(outcome.status, .held)
-        XCTAssertEqual(outcome.reason, .agentBusy)
-        XCTAssertTrue(typed.isEmpty)
-        await delivery.deliverHeld()
-        XCTAssertTrue(typed.isEmpty, "still working: still held")
-        for kind: SessionSwitcherPresentation.State.Kind in [.running, .background] {
-            setState(session, kind)
-            await delivery.deliverHeld()
-            XCTAssertTrue(typed.isEmpty, "\(kind) is not idle")
-        }
-
-        setState(session, .stopped)
-        await delivery.deliverHeld()
-
+        XCTAssertEqual(outcome.status, .applied)
+        XCTAssertEqual(outcome.result, ["delivery": .string("submitted"), "while_busy": .bool(true)])
         XCTAssertEqual(pastes, ["Also update the changelog"])
         XCTAssertEqual(typed.last, [0x0D], "one line, then its Return (PROJ-12)")
-        await handlers.echoesSettled()
-        XCTAssertEqual(echoes.outcomes(of: action), [.applied(["delivery": .string("submitted")])])
-        XCTAssertTrue(try sidecar.heldLines().isEmpty)
+
+        setState(session, .needsApproval, at: "2026-10-12T10:00:30.000Z")
+        let next = try await handlers.handle(input(session, "and the readme"))
+
+        XCTAssertEqual(next.status, .held)
+        XCTAssertEqual(next.reason, .needsApproval)
+        XCTAssertEqual(pastes, ["Also update the changelog"], "a prompt never gets a phone line")
+    }
+
+    /// An idle agent's echo carries no `while_busy` key (older bytes stay
+    /// identical).
+    func testProj16_AnIdleSessionEchoHasNoWhileBusy() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+
+        let outcome = try await makeHandlers().handle(input(session, "go on"))
+
+        XCTAssertEqual(outcome.result, ["delivery": .string("submitted")])
+    }
+
+    /// Send while busy is Claude only. A Codex session is not a board
+    /// session of this handler: it is refused before any line check (the
+    /// busy hold of `lineCheck` is never reached for it), and nothing types.
+    func testProj16_AWorkingCodexSessionStillHoldsTheLine() async throws {
+        let acme = folder.path
+        let session = try await pool.write { db -> TerminalSession in
+            let project = try TestDatabase.insertWorkbench(db, folder: acme)
+            return try TerminalSessionQueries.create(db, .init(
+                projectID: project, kind: .codex, title: "Codex", folderPath: acme,
+                claudeSessionID: UUID().uuidString.lowercased()
+            ))
+        }
+        workbenchID = try XCTUnwrap(session.projectID)
+        setState(session.id, .working)
+
+        let outcome = try await makeHandlers().handle(input(session.id, "Also update the changelog"))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .notFound)
+        XCTAssertTrue(pastes.isEmpty)
+        XCTAssertTrue(typed.isEmpty)
     }
 
     /// I-5: a session at a permission prompt never gets a phone line, not
@@ -305,7 +333,7 @@ final class SessionInputHandlersTests: XCTestCase {
         XCTAssertEqual(wrapUp.reason, .needsApproval)
         XCTAssertTrue(typed.isEmpty, "nothing reaches a permission prompt")
         // Answered on the Mac, the agent works on: still nothing.
-        setState(session, .working)
+        setState(session, .running)
         await delivery.deliverHeld()
         XCTAssertTrue(typed.isEmpty)
         await handlers.echoesSettled()
@@ -341,7 +369,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// session is idle by then: nothing typed, `expired`.
     func testProj16_AHeldLineExpiresAfter24h() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let handlers = try makeHandlers()
         let action = input(session, "Ship it")
         _ = try await handlers.handle(action)
@@ -418,7 +446,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// them is typed later.
     func testProj16_RevokeFailsHeldLines() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let handlers = try makeHandlers()
         let link = MobileLinkCenter(
             sidecar: sidecar, shares: FakeShareService(), macName: "Acme Mac", ownerUser: { "_owner-acme" }, nudge: { _ in }
@@ -576,7 +604,7 @@ final class SessionInputHandlersTests: XCTestCase {
 
     func testCancelWhileHeldCancelsTheOriginal() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let handlers = try makeHandlers()
         let action = input(session, "Never mind")
         _ = try await handlers.handle(action)
@@ -597,7 +625,7 @@ final class SessionInputHandlersTests: XCTestCase {
 
     func testAHeldLineSurvivesAHubRestartAndGoesOnIdle() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let before = try makeHandlers()
         before.start()
         let action = input(session, "After the restart")
@@ -621,7 +649,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// second time: `outcome_unknown`.
     func testALineInterruptedMidPasteIsOutcomeUnknownAfterARestart() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let before = try makeHandlers()
         let action = input(session, "Half way")
         _ = try await before.handle(action)
@@ -642,7 +670,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// `session_not_running`, and the line is dropped.
     func testASessionDeletedWhileALineIsHeldFailsSessionNotRunning() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let handlers = try makeHandlers()
         let action = input(session, "Too late")
         _ = try await handlers.handle(action)
@@ -700,7 +728,7 @@ final class SessionInputHandlersTests: XCTestCase {
 
     func testOnlyThePhoneThatSentALineCanCancelIt() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         try sidecar.linkTestDevice("device-b")
         let handlers = try makeHandlers()
         let action = input(session, "Mine")
@@ -722,7 +750,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// line is not typed, and nothing follows the `cancelled` echo.
     func testACancelDuringAnInFlightRetryTypesNothing() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let handlers = try makeHandlers()
         let action = input(session, "Never mind")
         _ = try await handlers.handle(action)
@@ -744,7 +772,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// stopped hub types nothing, and the next start types it once.
     func testAStopDuringAnInFlightRetryTypesNothingAndTheNextStartTypesItOnce() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let before = try makeHandlers()
         let action = input(session, "Later")
         _ = try await before.handle(action)
@@ -768,7 +796,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// once.
     func testAQuickStopAndStartTypesTheLineOnce() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let before = try makeHandlers()
         let after = try makeHandlers()
         let action = input(session, "Once")
@@ -836,7 +864,7 @@ final class SessionInputHandlersTests: XCTestCase {
     /// the sending phone (never a plaintext write).
     func testTheRelayEchoesHeldThenTheLaterOutcomeAndKeepsIt() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .running)
         let transport = StubHubTransport()
         let dispatcher = MobileHubCommandDispatcher()
         let handlers = try makeHandlers(lateEcho: RelayProcessor.lateEcho(transport: transport.sealing(), sidecar: sidecar))
