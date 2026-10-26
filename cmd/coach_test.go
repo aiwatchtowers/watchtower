@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/specreview"
 )
 
@@ -81,6 +82,71 @@ func TestCoachAccept_RefusedUnderAgent(t *testing.T) {
 	p, err := d.GetCoachProposal(id)
 	require.NoError(t, err)
 	assert.Equal(t, "open", p.Status)
+}
+
+// AGENT-07 (ask #659): without a marker an owner verb runs only after the
+// owner confirms it in the running Desktop; the window shows the proposal and
+// its change. No Desktop or a denial writes nothing.
+func TestCoachOwnerVerbs_NeedTheDesktopsConfirmation(t *testing.T) {
+	verbs := [][]string{{"accept"}, {"decline"}, {"rollback"}, {"run"}}
+	for _, v := range verbs {
+		t.Run(v[0]+" without a Desktop", func(t *testing.T) {
+			d := coachSetup(t)
+			id := insertCoachProposal(t, d, "fp1", "Be brief.")
+			withOwnerDesktop(t, ownerconfirm.Reply{}, fmt.Errorf("%w: test", ownerconfirm.ErrNoDesktop))
+			args := v
+			if v[0] != "run" {
+				args = []string{v[0], strconv.FormatInt(id, 10)}
+			}
+			_, err := runCoach(t, "", args...)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "open Watchtower to confirm this")
+			p, err := d.GetCoachProposal(id)
+			require.NoError(t, err)
+			assert.Equal(t, "open", p.Status)
+			o, err := d.GetOwnerInstructions()
+			require.NoError(t, err)
+			assert.Empty(t, o.Session)
+		})
+	}
+
+	t.Run("the owner denies", func(t *testing.T) {
+		d := coachSetup(t)
+		id := insertCoachProposal(t, d, "fp1", "Be brief.")
+		withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+		out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+		require.Error(t, err)
+		assert.JSONEq(t, "false", string(coachJSONObject(t, out)["ok"]))
+		p, err := d.GetCoachProposal(id)
+		require.NoError(t, err)
+		assert.Equal(t, "open", p.Status)
+	})
+
+	t.Run("the owner confirms what the window shows", func(t *testing.T) {
+		d := coachSetup(t)
+		id := insertCoachProposal(t, d, "fp1", "Be brief.")
+		reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+		_, err := runCoach(t, "Be very brief.", "accept", strconv.FormatInt(id, 10), "--stdin")
+		require.NoError(t, err)
+		require.Len(t, *reqs, 1)
+		detail := (*reqs)[0].Detail
+		assert.Contains(t, detail, "Be brief")
+		assert.Contains(t, detail, "+ Be brief.")
+		assert.Contains(t, detail, "With your text:\nBe very brief.")
+		o, err := d.GetOwnerInstructions()
+		require.NoError(t, err)
+		assert.Equal(t, "Be very brief.", o.Session)
+	})
+
+	t.Run("a marker is refused before the Desktop is asked", func(t *testing.T) {
+		d := coachSetup(t)
+		id := insertCoachProposal(t, d, "fp1", "Be brief.")
+		reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+		t.Setenv(agentEnvMarkers[0], "1")
+		_, err := runCoach(t, "", "decline", strconv.FormatInt(id, 10))
+		require.Error(t, err)
+		assert.Empty(t, *reqs)
+	})
 }
 
 func TestCoachAccept_RefusedUnderAgentJSON(t *testing.T) {

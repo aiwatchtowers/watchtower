@@ -46,7 +46,7 @@ watchtower coach run --dry-run
 - `run` does the weekly pass now; `--dry-run` prints what would be suggested and writes nothing.
 - Add `--json` for scripts.
 
-`accept`, `decline`, `rollback` and `run` are your own decisions: an AI agent running them is refused.
+`accept`, `decline`, `rollback` and `run` are your own decisions: an AI agent running them is refused, and from a terminal Watchtower must be open so you can confirm each one in its window.
 
 On a spec review's findings screen, **Not useful** sits next to **Fine as is** and **Comment**. It is never sent to the author; it only teaches the coach.
 

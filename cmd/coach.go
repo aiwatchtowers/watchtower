@@ -383,6 +383,9 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 			return nil, errors.New("--stdin read no text: pipe the edited whole text, or accept without --stdin")
 		}
 	}
+	if err := coachConfirm(e, "accept a coach proposal", id, edited); err != nil {
+		return nil, err
+	}
 	if err := e.applier().Accept(id, edited); err != nil {
 		return nil, codedCoachErr(err)
 	}
@@ -392,6 +395,9 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 func runCoachDecline(e *coachEnv, arg string) (any, error) {
 	id, err := parseCoachID(arg)
 	if err != nil {
+		return nil, err
+	}
+	if err := coachConfirm(e, "decline a coach proposal", id, ""); err != nil {
 		return nil, err
 	}
 	if err := e.applier().Decline(id); err != nil {
@@ -405,6 +411,9 @@ func runCoachRollback(e *coachEnv, arg string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := coachConfirm(e, "roll back a coach proposal", id, ""); err != nil {
+		return nil, err
+	}
 	diff, err := e.applier().Rollback(id, coachFlagForce)
 	if err != nil {
 		ce := codedCoachErr(err)
@@ -412,6 +421,27 @@ func runCoachRollback(e *coachEnv, arg string) (any, error) {
 		return nil, ce
 	}
 	return coachDecisionJSON{OK: true, ID: id, Status: "rolled_back"}, nil
+}
+
+// coachConfirm is AGENT-07's second step for a decision on proposal id (the
+// marker refusal ran first, in RunE): the owner confirms it in the running
+// Desktop, whose window shows the proposal, its change and, for an edited
+// accept, the owner's text.
+func coachConfirm(e *coachEnv, verb string, id int64, edited string) error {
+	return confirmWithOwner(verb, coachConfirmDetail(e, id, edited))
+}
+
+func coachConfirmDetail(e *coachEnv, id int64, edited string) string {
+	p, err := e.db.GetCoachProposal(id)
+	if err != nil {
+		return detailUnavailable(err)
+	}
+	var b strings.Builder
+	printCoachProposals(&b, []coachProposalJSON{proposalJSON(p)})
+	if edited != "" {
+		b.WriteString("With your text:\n" + edited)
+	}
+	return b.String()
 }
 
 func codedCoachErr(err error) *coachCodedError {
@@ -454,6 +484,13 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	detail := "Judge the accepted proposals, read the last weeks' signals and ask the model for new proposals (nothing is applied)."
+	if coachFlagDryRun {
+		detail = "Ask the model for proposals and print them; nothing is written."
+	}
+	if err := confirmWithOwner("run the coach", detail); err != nil {
+		return nil, err
 	}
 	now := time.Now()
 	res := coachRunJSON{OK: true, DryRun: coachFlagDryRun, Proposals: []coachProposalJSON{}}
