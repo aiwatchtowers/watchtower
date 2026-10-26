@@ -364,6 +364,9 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 		if loop, err = specLoopStart(d, a, prev, reviewed && ask.SessionID.Valid && launch != nil); err != nil {
 			return nil, err
 		}
+		if loop == nil && len(a.ReviewReplies) > 0 {
+			return nil, &ValidationError{Msg: errRepliesNoLoop}
+		}
 	}
 	// Read before the insert, which would otherwise find itself.
 	series, err := openQuestionSeriesAsk(d, ask, a.PreviousAskID)

@@ -60,13 +60,22 @@ func validateReviewReplies(a askOwnerArgs) error {
 	return nil
 }
 
+// errRepliesNoLoop refuses review_replies on an ask that will not loop, which
+// would otherwise drop them.
+const errRepliesNoLoop = "review_replies: this ask will not start a review loop (it needs a spec or plan document, " +
+	"a Watchtower session and a reviewer on this surface) — file it without review_replies"
+
 // specLoopStart decides a filed spec/plan ask's loop: nil (no loop: no
 // session, or no reviewer launcher) or the round to queue with the author's
 // replies. With replies, the previous ask must be an open ask whose review is
 // in the author loop and every key one of its open items; without replies a
-// previous ask in the author loop advances the round, anything else starts
-// round 1. Called from Scope and again in fileAsk (the loop may have been
-// revealed in between).
+// previous ask in the author loop advances the round, a previous review the
+// owner already has (loop 'owner') starts no hidden loop — the re-round is a
+// classic visible review —, anything else starts round 1. A round past
+// MaxLoopRounds starts no loop either. Replies on an ask that will not loop
+// are refused (in fileAsk, where loop is known; Scope passes loop=false and
+// checks only the previous ask). Called from Scope and again in fileAsk (the
+// loop may have been revealed in between).
 func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.SpecLoopStart, error) {
 	var row *db.SpecReview
 	if prev != nil {
@@ -88,8 +97,14 @@ func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.
 		return nil, nil
 	}
 	start := &db.SpecLoopStart{Round: 1}
-	if row != nil && row.Loop == "author" {
+	switch {
+	case row != nil && row.Loop == "owner":
+		return nil, nil
+	case row != nil && row.Loop == "author":
 		start.Round = row.Round + 1
+	}
+	if start.Round > specreview.MaxLoopRounds {
+		return nil, nil
 	}
 	if len(a.ReviewReplies) > 0 {
 		replies := make([]specreview.Reply, 0, len(a.ReviewReplies))

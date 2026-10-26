@@ -279,7 +279,7 @@ func (db *DB) ListSpecReviewMarks(askID int64) (map[string]SpecReviewMark, error
 // RevealSpecLoop ends the author loop for the owner: loop='owner' with the end
 // reason and the settled ledger, open_items cleared. False when the row was not
 // in the 'author' loop (nothing changed).
-func (db *DB) RevealSpecLoop(askID int64, end, ledger string, now time.Time) (bool, error) {
+func (db *DB) RevealSpecLoop(askID int64, end, ledger string, _ time.Time) (bool, error) {
 	res, err := db.Exec(`UPDATE spec_reviews SET loop = 'owner', loop_end = ?, ledger = ?, open_items = ''
 		WHERE ask_id = ? AND loop = 'author'`, end, ledger, askID)
 	if err != nil {

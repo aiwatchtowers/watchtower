@@ -207,6 +207,62 @@ func TestAskOwner_RoundTwoQueuedWithReplies(t *testing.T) {
 	assert.Equal(t, "", r3.Replies)
 }
 
+// A round past MaxLoopRounds starts no hidden loop: the ask is a classic
+// visible review.
+func TestAskOwner_RoundPastCapStartsNoLoop(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+	finishRound(t, fx.d, first)
+	_, err := fx.d.Exec(`UPDATE spec_reviews SET round = ? WHERE ask_id = ?`, specreview.MaxLoopRounds, first)
+	require.NoError(t, err)
+
+	out := mustApply(t, fx.reg, fx.a, "ask_owner", reRound(first, `[]`))
+	id := askID(t, out)
+
+	assert.Equal(t, "queued", out["spec_review"])
+	assert.Equal(t, "", specRow(t, fx.d, id).Loop)
+}
+
+// review_replies on an ask that will not loop (no session, no reviewer on the
+// surface, or not a spec/plan) are refused instead of dropped.
+func TestAskOwner_RepliesRefusedWhenAskWillNotLoop(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+	finishRound(t, fx.d, first)
+	replies := `[{"key":"ag:1","reply":"fixed"}]`
+	refused := func(reg *Registry, args, why string) {
+		t.Helper()
+		rc, err := proposeIn(t, reg, fx.a, "ask_owner", args)
+		require.NoError(t, err, why)
+		assert.Equal(t, "failed", rc.Status, why)
+		assert.Equal(t, errRepliesNoLoop, rc.Error, why)
+	}
+
+	refused(askRegistryWith(t, fx.d, "", okLauncher), reRound(first, replies), "no session")
+	sid := seedTerminalSession(t, fx.d, fx.a)
+	refused(askRegistryWith(t, fx.d, strconv.FormatInt(sid, 10), nil), reRound(first, replies), "no reviewer on this surface")
+	refused(fx.reg, fmt.Sprintf(`{"kind":"review","title":"Review","doc_path":%q,"doc_type":"other",`+
+		`"previous_ask_id":%d,"changes":"fixed","review_replies":%s,"reason":"r"}`, loopSpecPath, first, replies), "doc_type other")
+
+	assert.Equal(t, "open", storedAsk(t, fx.d, fx.a, first).Status, "the refused asks supersede nothing")
+}
+
+// A previous review the owner already has (loop 'owner') starts no new hidden
+// loop: the re-round is a classic visible review.
+func TestAskOwner_OwnerLoopPreviousStartsClassicReview(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+	finishRound(t, fx.d, first)
+	_, err := fx.d.RevealSpecLoop(first, specreview.EndSettled, "", time.Now())
+	require.NoError(t, err)
+
+	out := mustApply(t, fx.reg, fx.a, "ask_owner", reRound(first, `[]`))
+	id := askID(t, out)
+
+	assert.Equal(t, "queued", out["spec_review"])
+	assert.Equal(t, "", specRow(t, fx.d, id).Loop, "visible to the owner from the start")
+}
+
 func TestGetSpecReview_ItemsOnlyForAuthorDone(t *testing.T) {
 	fx := newLoopFixture(t, okLauncher)
 	id := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))

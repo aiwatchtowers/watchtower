@@ -113,7 +113,9 @@ func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 }
 
 // sweepSpecLoops ends the author loops that cannot go on: the asking session
-// is gone, or the author left a delivered round unanswered for AuthorTimeout.
+// is gone, the author left a delivered round unanswered for AuthorTimeout, or
+// the round's reviewer failed or was skipped and the immediate reveal after it
+// did not land (SPECREVIEW-04: the row would otherwise stay hidden for good).
 // It needs no launcher.
 func (d *Daemon) sweepSpecLoops(now time.Time) {
 	rows, err := d.db.SpecLoopsToSweep()
@@ -125,9 +127,15 @@ func (d *Daemon) sweepSpecLoops(now time.Time) {
 		switch {
 		case !r.SessionBound:
 			d.revealSpecLoop(r.AskID, specreview.EndSessionGone, now)
+		case r.Status == "failed" || r.Status == "skipped":
+			d.revealSpecLoop(r.AskID, specreview.EndReviewerFailed, now)
 		case r.Status == "done":
 			fin, perr := db.ParseSpecReviewTime(r.FinishedAt)
-			if perr == nil && fin.Add(specreview.AuthorTimeout).Before(now) {
+			if perr != nil {
+				d.logger.Printf("spec review sweep: ask %d: unreadable finished_at, the loop's timeout cannot run: %v", r.AskID, perr)
+				continue
+			}
+			if fin.Add(specreview.AuthorTimeout).Before(now) {
 				d.revealSpecLoop(r.AskID, specreview.EndTimeout, now)
 			}
 		}

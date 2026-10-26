@@ -312,3 +312,39 @@ func TestSpecReviewSweep_DeadReviewerRevealsLoop(t *testing.T) {
 	assert.Equal(t, "owner", row.Loop)
 	assert.Equal(t, "reviewer_failed", row.LoopEnd)
 }
+
+// A loop row left failed or skipped (the immediate reveal after the reviewer's
+// failure or skip did not land) on an open, session-bound ask is revealed by
+// the sweep, so the ask never stays hidden for good (SPECREVIEW-04).
+func TestSpecReviewSweep_FailedOrSkippedLoopReveals(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	failed := specLoopAsk(t, database, true)
+	skipped := specLoopAsk(t, database, true)
+	_, err := database.Exec(`UPDATE spec_reviews SET status = 'failed', reason = 'boom' WHERE ask_id = ?`, failed)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE spec_reviews SET status = 'skipped', reason = 'plan near limit' WHERE ask_id = ?`, skipped)
+	require.NoError(t, err)
+
+	d.sweepSpecLoops(time.Now())
+
+	for _, id := range []int64{failed, skipped} {
+		loop, end := loopEnd(t, database, id)
+		assert.Equal(t, "owner", loop, "ask %d", id)
+		assert.Equal(t, "reviewer_failed", end, "ask %d", id)
+	}
+}
+
+// A done loop row whose finished_at cannot be read is logged, not skipped in
+// silence: its timeout cannot run.
+func TestSpecReviewSweep_UnreadableFinishedAtIsLogged(t *testing.T) {
+	d, database, logs := newBackfillDaemon(t)
+	id := specLoopAsk(t, database, true)
+	_, err := database.Exec(`UPDATE spec_reviews SET status = 'done', result = '{}', finished_at = 'not a time' WHERE ask_id = ?`, id)
+	require.NoError(t, err)
+
+	d.sweepSpecLoops(time.Now())
+
+	loop, _ := loopEnd(t, database, id)
+	assert.Equal(t, "author", loop)
+	assert.Contains(t, logs.String(), "unreadable finished_at")
+}
