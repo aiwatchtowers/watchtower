@@ -12,7 +12,7 @@ import WatchtowerSync
 /// once:
 /// - only for an ask opened at or after the hub's `enabled_at`, so a first
 ///   enable never alerts on the asks already waiting;
-/// - remembered in the sidecar's `alerted_asks` with the sync generation
+/// - remembered in the sidecar's `work_alerts` with the sync generation
 ///   that wrote it. A rebuilt hub or a full republish finds it there; an
 ///   account reset (a new generation, a new zone) publishes no record for
 ///   an alert confirmed published before, and stamps an unconfirmed one
@@ -55,6 +55,9 @@ struct AskAlertSlice: SliceSource {
         }
     }
 
+    /// The ledger key and record id of an ask's alert (`ask_alert-ask-<id>` on the wire).
+    private static func key(_ askID: Int64) -> String { "ask-\(askID)" }
+
     func records(_ db: Database) throws -> [SliceRecord] {
         let stamp = now()
         // The hub's first enable; the heartbeat sets the same value.
@@ -66,22 +69,25 @@ struct AskAlertSlice: SliceSource {
             FROM owner_asks WHERE status = 'open' ORDER BY id
             """)
         let open = rows.filter { names[$0["project_id"]] != nil }
-        let fresh = open.compactMap { row -> Int64? in
+        // Task 4 adaptation (Task 6 rewrites this slice): the ledger keys an ask as `ask-<id>`, and every
+        // noted key counts as pushed at once, as before.
+        let fresh = open.compactMap { row -> String? in
             guard let created = SliceDate.parse(row["created_at"] ?? ""), created >= enabledAt else { return nil }
-            return row["id"]
+            return Self.key(row["id"])
         }
-        let (generation, alerted) = try sidecar.markAlerted(fresh, at: stamp)
+        let (generation, alerted) = try sidecar.noteWorkAlerts(fresh, at: stamp)
+        try sidecar.markWorkAlertsPushed(fresh, at: stamp)
         // Every open ask stays remembered, published or not.
-        try sidecar.pruneAlertedAsks(
-            olderThan: stamp.addingTimeInterval(-Self.lifetime), keeping: Set(rows.map { $0["id"] as Int64 })
+        try sidecar.pruneWorkAlerts(
+            olderThan: stamp.addingTimeInterval(-Self.lifetime), keeping: Set(rows.map { Self.key($0["id"]) })
         )
         let encoder = RelayCoder.makeEncoder()
         return try open.compactMap { row in
             let id: Int64 = row["id"]
-            guard let alert = alerted[id], alert.generation == generation,
-                  stamp.timeIntervalSince(alert.at) <= Self.lifetime else { return nil }
+            guard let alert = alerted[Self.key(id)], alert.generation == generation,
+                  stamp.timeIntervalSince(alert.seenAt) <= Self.lifetime else { return nil }
             let payload = makePayload(row, workbenchName: names[row["project_id"]] ?? "")
-            return SliceRecord(kind: kind, id: String(id), modifiedAt: stamp, payload: try encoder.encode(payload))
+            return SliceRecord(kind: kind, id: Self.key(id), modifiedAt: stamp, payload: try encoder.encode(payload))
         }
     }
 
