@@ -696,22 +696,25 @@ final class SessionCleanupCenterTests: XCTestCase {
         XCTAssertFalse(center.isApplying(workbenchID: 2))
     }
 
-    /// A child that said `done` but never exits cannot hold the apply: past
-    /// the limit its group is stopped and `done` stands.
+    /// A child that said `done` but neither exits nor closes stdout (a
+    /// grandchild holding the pipe) cannot hold the apply: the run stops
+    /// reading at `done`, past the limit its group is stopped and `done`
+    /// stands. Bounded waits: the old code hung here.
     func testChildThatNeverExitsAfterDoneIsStopped() async {
         let (center, streamer) = streamedCenter()
         center.exitAfterDoneLimit = .milliseconds(50)
         let apply = center.startStreamedApply(.workbench(2), workbenchID: 2, items: [CleanupStreamFixture.wtA])
         await waitUntil("apply run") { !streamer.runs.isEmpty }
         streamer.runs[0].send(CleanupStreamFixture.doneApply())
-        streamer.runs[0].endLines()
+        await waitUntil("done lands with stdout still open") {
+            if case .done = center.cleanupPhase(for: .workbench(2)) { return true }
+            return false
+        }
+        await waitUntil("the apply ends") { !center.isApplying(workbenchID: 2) }
+        XCTAssertEqual(streamer.runs[0].stopCount, 1, "stopped once the limit passed")
+        streamer.runs[0].finish()
         let ok = await apply.value
         XCTAssertTrue(ok)
-        XCTAssertEqual(streamer.runs[0].stopCount, 1, "stopped once the limit passed")
-        guard case .done = center.cleanupPhase(for: .workbench(2)) else {
-            return XCTFail("done stands, got \(center.cleanupPhase(for: .workbench(2)))")
-        }
-        XCTAssertFalse(center.isApplying(workbenchID: 2))
     }
 
     /// A child that exits right after `done` is reaped, never stopped.

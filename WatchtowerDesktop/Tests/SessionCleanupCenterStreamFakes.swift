@@ -39,11 +39,6 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
             continuation.yield(line)
         }
 
-        /// Ends stdout without exiting: a child that never exits.
-        func endLines() {
-            continuation.finish()
-        }
-
         /// Ends stdout and exits with `status`; idempotent.
         func finish(status: Int32 = 0, message: String = "") {
             continuation.finish()

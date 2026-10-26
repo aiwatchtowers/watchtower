@@ -517,8 +517,8 @@ final class SessionCleanupCenter {
     /// current run; a bad line or an unknown event is skipped. Cancelling
     /// the calling task stops a `stoppable` child (a plan); an apply's is
     /// never stopped — a superseded apply's lines are read and dropped. A
-    /// stream without `done` is a failure with the CLI's words; after
-    /// `done` the child's exit is awaited (reaped) for at most
+    /// stream without `done` is a failure with the CLI's words; reading
+    /// stops at `done`, then the child's exit is awaited (reaped) for at most
     /// `exitAfterDoneLimit` — then its group is stopped — and `done` stands.
     /// Superseded or cancelled: the outcome is meaningless and callers drop
     /// it.
@@ -557,6 +557,10 @@ final class SessionCleanupCenter {
                 if case let .done(plan) = event {
                     done = plan
                     batches.flush()
+                    // `done` is the last line: stop reading here, so a child
+                    // (or a grandchild) holding stdout open cannot hold the
+                    // run; its exit is awaited, bounded, below.
+                    break
                 }
             }
             batches.flush()
