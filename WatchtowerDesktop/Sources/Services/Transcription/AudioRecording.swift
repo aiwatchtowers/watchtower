@@ -7,11 +7,11 @@ struct RecordingResult: Equatable {
 }
 
 /// One ~100 ms window of live capture levels for the recording UI's meters.
-/// Both values are RMS over the RAW pre-gain samples — the `rec_X.activity`
-/// sidecar's convention — so the meter reflects what the mic actually picks
-/// up, not what `MicAGC` makes of it.
+/// Both values are RMS over the pre-AGC samples — the `rec_X.activity`
+/// sidecar's convention — so the meter reflects what is being captured, not
+/// what `MicAGC` makes of it (a muted mic reads 0).
 struct CaptureLevels: Equatable, Sendable {
-    let mic: Float     // raw pre-AGC mic RMS over the last ~100 ms
+    let mic: Float     // pre-AGC (post-mute) mic RMS over the last ~100 ms
     let system: Float  // system-channel RMS over the same window
 }
 
