@@ -23,7 +23,7 @@ done_when: meeting.recorded
 
 **Record** captures the microphone and the system audio (the other participants). The first time, macOS asks for two permissions: microphone, and system audio recording. While you record, a pill at the bottom right of the window shows the elapsed time and **Stop**, whatever tab you are on. **Stop** is white on red, readable whether or not Watchtower is the active app.
 
-Drag the pill by its background to any corner of the window. It snaps to the nearest corner on release and stays there across launches, and the live-transcript panel opens from it toward the middle of the window. While pills show, the window keeps a strip free along their edge, so they never cover a control, a terminal or a composer on any tab.
+The pill floats over the window. Drag it by its background anywhere in the window: it stays where you drop it, across launches, and snaps back into a corner when you drop it close to one. The live-transcript panel opens from it toward the middle of the window. Nothing on the screen moves to make room for it, so if it covers something, drag it aside.
 
 After **Stop**, the recording joins a queue, and each queued recording gets its own pill: "Transcribing 2/5", "Identifying speakers…", "Summarizing…".
 

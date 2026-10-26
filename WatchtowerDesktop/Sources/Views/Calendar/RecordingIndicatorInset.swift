@@ -1,34 +1,14 @@
 import SwiftUI
 
-/// How much space the main window keeps free along the edge the recorder
-/// pills (`RecordingIndicatorView`) sit on, so they never cover content.
-/// Zero while no pill is visible. The root view measures the indicator
-/// stack and pads its whole content by this much on the pills' edge (#397):
-/// every screen is cleared at once, with nothing to opt into.
+/// Spacing of the recorder pills (`RecordingIndicatorView`). The pills
+/// float over the window's content and reserve nothing: the owner drags
+/// them out of the way instead.
 enum RecordingIndicatorInset {
     /// The indicator stack's outer padding — the gap between its pills and
-    /// the window's edge.
+    /// the window's edge when docked in a corner.
     static let outerPadding: CGFloat = 16
     /// Spacing between pills in the stack.
     static let stackSpacing: CGFloat = 10
-
-    /// `stackHeight` is the measured height of the pill stack without its
-    /// outer padding; an empty stack (nothing recording, queued or failed)
-    /// measures zero and reserves nothing. While the live-transcript panel is
-    /// expanded, the panel itself reserves nothing: it is a transient overlay
-    /// the owner opened that may cover content, and the recorder pills sit
-    /// beyond it, so reserving them would pad a gap that clears nothing. Only
-    /// what is drawn between the panel and the window's edge
-    /// (`belowPanelHeight`: the model-download capsules) still reserves its
-    /// own height.
-    static func reservedHeight(
-        stackHeight: CGFloat,
-        expandedPanelShown: Bool = false,
-        belowPanelHeight: CGFloat = 0
-    ) -> CGFloat {
-        let covered = expandedPanelShown ? belowPanelHeight : stackHeight
-        return covered > 0 ? covered + outerPadding : 0
-    }
 
     /// The whole stack's extent from the window's edge, the expanded panel
     /// included — what a neighbour in the same corner must stay clear of.
@@ -37,20 +17,74 @@ enum RecordingIndicatorInset {
     }
 }
 
-/// What the indicator reports to its host (`RecordingIndicatorHost`) after
-/// every layout change.
-struct RecordingIndicatorLayout: Equatable {
-    /// Space the content keeps free on the corner's edge.
-    var reservedInset: CGFloat
-    /// The stack's full extent from the edge (`occupiedHeight`).
-    var occupiedHeight: CGFloat
+/// Where the stack sits: a corner it is anchored to, plus the owner's
+/// offset from that corner's docked spot. Both are kept across launches;
+/// the offset is clamped into the window whenever it is drawn, so a
+/// smaller window or a taller stack never pushes a pill out of sight.
+struct RecordingIndicatorPlacement: Equatable {
+    static let offsetXKey = "recordingIndicator.offsetX"
+    static let offsetYKey = "recordingIndicator.offsetY"
+    /// A release this close to the corner's docked spot, per axis, docks on
+    /// that axis.
+    static let dockDistance: CGFloat = 24
 
-    static let empty = Self(reservedInset: 0, occupiedHeight: 0)
+    var corner: RecordingIndicatorCorner
+    var offset: CGSize
+
+    /// Docked in its corner: only then do the neighbours sharing the edge
+    /// (`extractPillLift`, `bannerDrop`) step aside — a stack the owner
+    /// moved elsewhere pushes nothing.
+    var isDocked: Bool { offset == .zero }
+
+    /// The offset kept inside `window` for a stack of `stack` size: the
+    /// stack moves only toward the window's interior from its corner, and
+    /// no farther than the opposite edge's padding. An unmeasured window
+    /// leaves the offset as it is.
+    func clampedOffset(stack: CGSize, window: CGSize) -> CGSize {
+        guard window.width > 0, window.height > 0 else { return offset }
+        let pad = RecordingIndicatorInset.outerPadding
+        let roomX = max(0, window.width - stack.width - 2 * pad)
+        let roomY = max(0, window.height - stack.height - 2 * pad)
+        let x = corner.isLeading ? min(max(offset.width, 0), roomX) : max(min(offset.width, 0), -roomX)
+        let y = corner.isTop ? min(max(offset.height, 0), roomY) : max(min(offset.height, 0), -roomY)
+        return CGSize(width: x, height: y)
+    }
+
+    /// The placement a drag of `translation` leaves the stack in: anchored
+    /// to the corner of the quadrant its centre lands in (so the stack's
+    /// order and the live panel still open toward the interior), at the
+    /// spot it was dropped, clamped into the window and docked on each axis
+    /// that ends within `dockDistance` of the corner's spot. An unmeasured
+    /// window keeps the placement.
+    func released(translation: CGSize, stack: CGSize, window: CGSize) -> Self {
+        guard window.width > 0, window.height > 0 else { return self }
+        let start = clampedOffset(stack: stack, window: window)
+        let origin = Self.dockedOrigin(corner: corner, stack: stack, window: window)
+        let dropped = CGPoint(x: origin.x + start.width + translation.width,
+                              y: origin.y + start.height + translation.height)
+        let centre = CGPoint(x: dropped.x + stack.width / 2, y: dropped.y + stack.height / 2)
+        let newCorner = RecordingIndicatorCorner.nearest(to: centre, in: window)
+        let newOrigin = Self.dockedOrigin(corner: newCorner, stack: stack, window: window)
+        var placed = Self(corner: newCorner,
+                          offset: CGSize(width: dropped.x - newOrigin.x, height: dropped.y - newOrigin.y))
+        placed.offset = placed.clampedOffset(stack: stack, window: window)
+        if abs(placed.offset.width) < Self.dockDistance { placed.offset.width = 0 }
+        if abs(placed.offset.height) < Self.dockDistance { placed.offset.height = 0 }
+        return placed
+    }
+
+    /// The stack's top-left corner when docked in `corner`.
+    static func dockedOrigin(corner: RecordingIndicatorCorner, stack: CGSize, window: CGSize) -> CGPoint {
+        let pad = RecordingIndicatorInset.outerPadding
+        return CGPoint(x: corner.isLeading ? pad : window.width - pad - stack.width,
+                       y: corner.isTop ? pad : window.height - pad - stack.height)
+    }
 }
 
-/// The window corner the recorder pills sit in (#397). The owner drags the
-/// stack and it snaps to the corner nearest the release point; the choice
-/// is kept across launches under `storageKey`.
+/// The window corner the recorder pills are anchored to (#397): the one of
+/// the quadrant the owner drops the stack in
+/// (`RecordingIndicatorPlacement.released`), kept across launches under
+/// `storageKey`.
 enum RecordingIndicatorCorner: String, CaseIterable {
     case topLeading, topTrailing, bottomLeading, bottomTrailing
 
@@ -73,13 +107,10 @@ enum RecordingIndicatorCorner: String, CaseIterable {
 
     var horizontalAlignment: HorizontalAlignment { isLeading ? .leading : .trailing }
 
-    /// The content edge that reserves the pills' height.
-    var insetEdge: Edge.Set { isTop ? .top : .bottom }
-
     /// The stack's parts, top to bottom: from the window's interior to its
     /// edge in a bottom corner, mirrored in a top one. The download pills
-    /// stay between the recorder pills and the edge (what `reservedHeight`
-    /// counts), and the live panel opens toward the interior.
+    /// stay between the recorder pills and the edge, and the live panel
+    /// opens toward the interior.
     enum StackPart: CaseIterable { case interrupted, jobs, recording, downloads }
 
     var stackParts: [StackPart] {
@@ -102,13 +133,6 @@ enum RecordingIndicatorCorner: String, CaseIterable {
     /// whole stack, expanded panel included, when it sits in a top corner.
     func bannerDrop(occupiedHeight: CGFloat) -> CGFloat {
         isTop ? occupiedHeight : 0
-    }
-
-    /// The corner a drag released at `point` leaves the stack in; with no
-    /// measured window yet, the stack stays where it was.
-    func snapped(releasedAt point: CGPoint, in size: CGSize) -> Self {
-        guard size.width > 0, size.height > 0 else { return self }
-        return Self.nearest(to: point, in: size)
     }
 
     /// The corner of the quadrant `point` falls in. The midlines go to the
