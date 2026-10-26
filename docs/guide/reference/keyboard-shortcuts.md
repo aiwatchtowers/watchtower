@@ -1,10 +1,10 @@
 # Keyboard shortcuts
 
-Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows the same list in a window. On a workbench page the **Workbench** menu holds the workbench's chords and the **Navigate** menu the Files editor's; the tray's **New Voice Idea** shows ⌃⌥D. Some chords differ by tab: ⌘K is **Search chats** in AI Chat and **Go to…** on the Workbench tab, ⌘N is **New chat** in AI Chat and **New target** in Targets.
+Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows the same list in a window. On a workbench page the **Workbench** menu holds the workbench's chords and the **Navigate** menu the Files editor's; the tray's **New Voice Idea** shows ⌃⌥D. Some chords differ by tab: ⌘K is **Search chats** in Chats and **Go to…** on the Workbench tab, ⌘N is **New chat** in Chats and **New target** in Targets.
 
 ## By area
 
-**Help → Keyboard Shortcuts** opens this list in a window. On a workbench page the **Workbench** menu shows the workbench's chords and the **Navigate** menu the Files editor's; the menu-bar icon's **New Voice Idea** shows ⌃⌥D. Some chords mean different things on different tabs: ⌘K is **Search chats** in AI Chat and **Go to…** on the Workbench tab, ⌘N is **New chat** in AI Chat and **New target** in Targets.
+**Help → Keyboard Shortcuts** opens this list in a window. On a workbench page the **Workbench** menu shows the workbench's chords and the **Navigate** menu the Files editor's; the menu-bar icon's **New Voice Idea** shows ⌃⌥D. Some chords mean different things on different tabs: ⌘K is **Search chats** in Chats and **Go to…** on the Workbench tab, ⌘N is **New chat** in Chats and **New target** in Targets.
 
 ### Global
 <!-- learn
@@ -67,11 +67,11 @@ action: hotkey:settings
 | **⌘,** | Settings |
 | **⌘Q** | Quit Watchtower |
 
-### AI Chat
+### Chats
 <!-- learn
 id: shortcuts-search-chats
 title: Find an old chat
-text: In AI Chat, press **⌘K** to search your chats.
+text: In Chats, press **⌘K** to search your chats.
 area: assistant
 level: next
 kind: shortcut

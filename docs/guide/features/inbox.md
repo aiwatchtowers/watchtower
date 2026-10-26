@@ -93,7 +93,7 @@ since: 0.24.0
 action: nav:inbox
 -->
 
-**Needs your decision** holds every action waiting for you, whatever started it: a reaction, the AI Chat, a target's chat, an automation or a Workbench terminal. Actions that touch an outside system, such as Jira, always wait for **Approve**.
+**Needs your decision** holds every action waiting for you, whatever started it: a reaction, the main chat, a target's chat, an automation or a Workbench terminal. Actions that touch an outside system, such as Jira, always wait for **Approve**.
 
 ### Attention detection
 

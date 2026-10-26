@@ -73,11 +73,11 @@ Details: [Calendar and meeting prep](../features/calendar-and-meeting-prep.md) a
 
 Once a few days of data have landed, ask a question across all of it.
 
-- **Try:** open **AI Chat** and ask "what did my team decide this week?".
+- **Try:** open **Chats** and ask "what did my team decide this week?".
 - **See:** an answer with a **Sources** panel, drawn from Slack, mail, Jira, meetings and digests.
 - **Needs:** a signed-in AI tool and the Knowledge search switch on; digests help only if **Slack Digests** is on.
 
-Details: [AI Chat](../features/ai-chat.md), [Digests](../features/digests.md) and [Tracks](../features/tracks.md).
+Details: [Chats](../features/ai-chat.md), [Digests](../features/digests.md) and [Tracks](../features/tracks.md).
 
 ## Day 5: hand a coding task to an agent
 

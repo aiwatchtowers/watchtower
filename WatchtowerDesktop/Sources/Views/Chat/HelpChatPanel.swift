@@ -46,7 +46,7 @@ struct HelpChatPanel: View {
             // The tab's own New: no empty conversation row until a send.
             Button("New") { chatVM.showLanding() }
                 .disabled(chatVM.isStreaming)
-            Button("Open in AI Chat") {
+            Button("Open in Chats") {
                 appState.selectedDestination = .chat
                 close()
             }

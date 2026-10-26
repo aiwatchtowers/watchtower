@@ -35,7 +35,7 @@ var chatTitleFlagDBPath string
 
 var chatCmd = &cobra.Command{
 	Use:   "chat",
-	Short: "AI Chat helpers (used by the desktop app)",
+	Short: "Chats helpers (used by the desktop app)",
 }
 
 var chatTitleCmd = &cobra.Command{

@@ -13,7 +13,7 @@ You remember a thing was discussed, but not where. Ask the assistant "what did w
 - the pages of this user guide, from the app itself (the assistant's help answers use them);
 - Slack threads and channel days, Gmail and IMAP threads, Jira and Linear issues with their comments;
 - calendar events, meeting transcripts and recaps, digest topics, ideas and decisions;
-- artifacts from your AI chats that you added with **Add to Knowledge** (see [Artifacts in the AI Chat](ai-chat-artifacts.md));
+- artifacts from your AI chats that you added with **Add to Knowledge** (see [Artifacts in Chats](ai-chat-artifacts.md));
 - the text files (`.md`, `.markdown`, `.txt`) of a workbench folder, visible only to that workbench's own sessions;
 - the Confluence spaces you select (pages, blog posts, comments and the text of attachments).
 
@@ -42,7 +42,7 @@ since: 0.25.0
 requires: feature:knowledge-search
 -->
 
-**Images.** New images in Slack messages, Confluence pages and attachments, mail, and the images you attach in **AI Chat** or to a workbench target get an AI description: what it shows, the text on it, and keys like `PROJ-123`. It joins the message, page or mail as a section labelled "Image (AI description of an attached image)", so a screenshot is found by what it shows, and a key on it links the thread to that issue. Tiny images, tracking pixels and repeated mail logos are skipped. Chat images feed Ideas & Decisions; target images reach the agent with the target.
+**Images.** New images in Slack messages, Confluence pages and attachments, mail, and the images you attach in **Chats** or to a workbench target get an AI description: what it shows, the text on it, and keys like `PROJ-123`. It joins the message, page or mail as a section labelled "Image (AI description of an attached image)", so a screenshot is found by what it shows, and a key on it links the thread to that issue. Tiny images, tracking pixels and repeated mail logos are skipped. Chat images feed Ideas & Decisions; target images reach the agent with the target.
 
 **Links.** New links in Slack and Confluence are opened and summarized: "Link (AI summary of a fetched public page)". Never opened: links in mail, links whose address carries a token, key or signature or reads like `/reset`, `/invite` or `/login`, addresses on your Mac or local network, Slack, Atlassian, Linear, Gmail and Google Calendar links (already synced), Google Docs and Drive links, and addresses with a port other than the usual web ones. Login pages are not summarized.
 
@@ -58,7 +58,7 @@ Only images and links that arrive while Knowledge search is on are processed, ne
 <!-- learn
 id: search-ask-chat-for-message
 title: Find the exact Slack message
-text: Ask **AI Chat** with every word you remember; the answer links straight to the message in Slack.
+text: Ask **Chats** with every word you remember; the answer links straight to the message in Slack.
 area: assistant
 level: basics
 kind: feature
@@ -79,7 +79,7 @@ action: connect:confluence
 done_when: confluence.connected
 -->
 
-**Ask across everything.** Open **AI Chat**, or press **⌘/**, and ask in plain words. The steps show as "Searched knowledge: ..." so you can see what the assistant looked up. Coding agents in a Workbench and other tools you connect through the **MCP Server** setup use the same index.
+**Ask across everything.** Open **Chats**, or press **⌘/**, and ask in plain words. The steps show as "Searched knowledge: ..." so you can see what the assistant looked up. Coding agents in a Workbench and other tools you connect through the **MCP Server** setup use the same index.
 
 **Add Confluence.** When you add a Jira site, **Also connect Confluence** is ticked: the same sign-in grants Confluence, and **Choose Boards** selects up to five spaces you wrote in or viewed in the last 90 days and names them. Nothing is selected while **Confluence in search** is off. To change them, or to add Confluence to a site connected without it:
 

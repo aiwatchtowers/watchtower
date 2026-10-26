@@ -19,7 +19,7 @@ Terms the guide uses, in alphabetical order. Each links to the page that explain
 - **Idea** — a proposal not yet decided, mined from your sources for you to triage. See [Ideas and decisions](../features/ideas-and-decisions.md).
 - **Light and Strong model** — the two model tiers: cheap and fast for bulk work, stronger for hard writing. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
 - **Memory** — a vault of notes about people, projects and topics that the assistant builds and reads. See [Memory](../features/memory.md).
-- **Proposal** — a write the assistant suggests and applies only after you approve it (unless you set that tool to run without approval). See [AI chat](../features/ai-chat.md).
+- **Proposal** — a write the assistant suggests and applies only after you approve it (unless you set that tool to run without approval). See [Chats](../features/ai-chat.md).
 - **Quick Connection** — an external tool server you add so the assistant can read from it. See [Quick Connections](../features/quick-connections.md).
 - **Recipe** — the file that defines an automation: a header, a permission list and a short script. See [Automations](../features/automations.md).
 - **Session** — one Claude Code or Codex agent running in a workbench's folder. See [Sessions](../features/workbench/sessions.md).

@@ -1,6 +1,6 @@
-# AI Chat
+# Chats
 
-The **AI Chat** tab is the assistant you talk to about your work: it searches what Watchtower has synced, keeps long conversations organized, takes files, and returns documents. It can also propose changes, but only [you approve them](ai-chat-actions.md).
+The **Chats** tab is the assistant you talk to about your work: it searches what Watchtower has synced, keeps long conversations organized, takes files, and returns documents. It can also propose changes, but only [you approve them](ai-chat-actions.md).
 
 ## Why use it
 
@@ -10,7 +10,7 @@ You ask "what did we decide about the payments rollout?" and get an answer drawn
 <!-- learn
 id: chat-ask-your-work
 title: Ask about your work
-text: Ask the **AI Chat** a question and it searches Slack, mail, Jira and meetings, with **Sources** one click away.
+text: Ask **Chats** a question and it searches Slack, mail, Jira and meetings, with **Sources** one click away.
 area: assistant
 level: basics
 kind: feature
@@ -83,7 +83,7 @@ action: nav:chat
 <!-- learn
 id: chat-search-chats
 title: Find an old conversation
-text: Press ⌘K in **AI Chat** to search the text of every message you and the assistant wrote.
+text: Press ⌘K in **Chats** to search the text of every message you and the assistant wrote.
 area: assistant
 level: next
 kind: shortcut
@@ -91,7 +91,7 @@ since: 0.24.0
 action: hotkey:search-chats
 -->
 
-1. Open **AI Chat**. A start page offers a composer, starter prompts, and your pinned and recent chats. If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
+1. Open **Chats**. A start page offers a composer, starter prompts, and your pinned and recent chats. If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
 2. Type and press Enter (Shift+Enter adds a line). **Stop** (Esc) keeps what was written and offers **Continue**. Hover your message to **Edit**; hover a reply to **Regenerate**. Every version is kept, switch with the arrows.
 3. Type `@` to point at a person, Slack channel, Jira issue, target or track. Type `/` at the start to load one of your enabled skills.
 4. Attach files with the paperclip, drag and drop, or ⌘V. Images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB. One message's files together stay under 30 MB. Anything else, or a folder, is refused with the file's name and the reason. Files are stored privately in the workspace and deleted with their chat.
@@ -110,15 +110,15 @@ since: 0.24.0
 action: hotkey:help
 -->
 
-Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same chat as a panel over it. It continues the conversation the **AI Chat** tab has selected, so what you say there shows up here and the other way round. **New** starts a fresh conversation, and **Open in AI Chat** switches to the tab on this conversation.
+Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same chat as a panel over it. It continues the conversation the **Chats** tab has selected, so what you say there shows up here and the other way round. **New** starts a fresh conversation, and **Open in Chats** switches to the tab on this conversation.
 
-**Esc** stops a running answer; a second **Esc** closes the panel, and while one streams you can't send another message. In the **AI Chat** tab, **⌘/** puts the cursor in the message box; in a Workbench **Files** editor it still toggles a comment.
+**Esc** stops a running answer; a second **Esc** closes the panel, and while one streams you can't send another message. In the **Chats** tab, **⌘/** puts the cursor in the message box; in a Workbench **Files** editor it still toggles a comment.
 
 **Watchtower User Guide** in the **Help** menu opens this guide's front page.
 
 ### Artifacts
 
-Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. On the Claude provider a page, deck or doc is published to your claude.ai account instead. See [Artifacts in the AI Chat](ai-chat-artifacts.md).
+Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. On the Claude provider a page, deck or doc is published to your claude.ai account instead. See [Artifacts in Chats](ai-chat-artifacts.md).
 
 ### Ask about a passage
 <!-- learn
@@ -179,7 +179,7 @@ Provider not signed in? See [The Claude or Codex tool is not found or not signed
 ## Related
 
 - [Writing, Slack send, Confluence and automations from the chat](ai-chat-actions.md)
-- [Artifacts in the AI Chat](ai-chat-artifacts.md)
+- [Artifacts in Chats](ai-chat-artifacts.md)
 - [Memory](memory.md)
 - [Quick Connections](quick-connections.md)
 

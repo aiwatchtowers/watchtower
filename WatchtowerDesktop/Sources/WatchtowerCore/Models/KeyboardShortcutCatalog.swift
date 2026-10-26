@@ -42,7 +42,7 @@ package enum KeyboardShortcutCatalog {
             Entry("⌘,", "Settings"),
             Entry("⌘Q", "Quit Watchtower")
         ]),
-        Area("AI Chat", [
+        Area("Chats", [
             Entry("⌘N", "New chat"),
             Entry("⌘K", "Search chats"),
             Entry("Return", "Send the message"),

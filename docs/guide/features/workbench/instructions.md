@@ -49,7 +49,7 @@ since: 0.25.0
 action: nav:chat
 -->
 
-The same standing directions work in the AI chat. The **session instructions** text reaches every chat as well as every workbench session, and a separate **Only in chats** text reaches chats only. Texts you wrote for one workbench, and the target procedure, never go into a chat. The setup assistants don't use them.
+The same standing directions work in Chats. The **session instructions** text reaches every chat as well as every workbench session, and a separate **Only in chats** text reaches chats only. Texts you wrote for one workbench, and the target procedure, never go into a chat. The setup assistants don't use them.
 
 To keep a direction while you chat, start a message with `remember:`, `remember this:` or `запомни:`. The rest of the message is added to **Only in chats** word for word, and the chat shows **Remembered for all chats** with **Undo** and **Open in Settings**. If the text is full, nothing is added and the chat says so. In a target's or track's chat with Memory's **Chats source** on, the same message is also saved as a [Memory](../memory.md) fact. A change reaches the next conversation; the current one already has your message.
 

@@ -44,7 +44,7 @@ requires: feature:memory
 
 **Where memory reaches you.** Five **surface** switches decide whether memory may show up elsewhere:
 
-- **Chat surface**: the AI Chat starts with a short map of what memory holds and can look things up.
+- **Chat surface**: the main chat starts with a short map of what memory holds and can look things up.
 - **Briefing surface**: the briefing may add a short *Memory revisions* note when a belief clearly changed. Nothing worth saying, nothing shown.
 - **Reflection surface**: about once a week the assistant reviews its own history and marks beliefs that keep flip-flopping as disputed. It never changes a confidence by itself.
 - **Day Plan surface**: folds open loops from memory into the day plan. It has little to add until Targets & Tracks mirrors is also on.
@@ -92,6 +92,6 @@ Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 
 ## Related
 
-- [AI Chat](ai-chat.md)
+- [Chats](ai-chat.md)
 
 For developers: [docs/features/memory.md](../../features/memory.md)

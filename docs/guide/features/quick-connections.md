@@ -1,6 +1,6 @@
 # Quick Connections
 
-Quick Connections let the [AI Chat](ai-chat.md) read from a tool Watchtower does not sync, such as a tracker or a notes app, by plugging in that tool's MCP server. They are for tools you want to ask about now and then, not to watch in the background.
+Quick Connections let [Chats](ai-chat.md) read from a tool Watchtower does not sync, such as a tracker or a notes app, by plugging in that tool's MCP server. They are for tools you want to ask about now and then, not to watch in the background.
 
 ## Why use it
 
@@ -14,7 +14,7 @@ Then ask "what's on my Trello board for this sprint?" in the chat; the assistant
 
 If the server does not say, a tool is allowed when its name starts with get, list, search, read, find, describe or lookup and does not go on to create, update, delete, send or the like. Every other tool stays hidden, and tools the server declares as writes can never be allowed.
 
-**Where it works.** Only chats that can use tools see a connection: the main AI Chat and a target's chat. Draft-only chats never do. Automations can call the same allowed tools through their `mcp()` function. Quick Connections work with the Claude and Codex AI providers; under Ollama the Settings card says so, and enabled connections do nothing.
+**Where it works.** Only chats that can use tools see a connection: the main chat and a target's chat. Draft-only chats never do. Automations can call the same allowed tools through their `mcp()` function. Quick Connections work with the Claude and Codex AI providers; under Ollama the Settings card says so, and enabled connections do nothing.
 
 **The server's text is not an instruction.** A connection's tool descriptions, its own instructions and the answers its tools return come from outside Watchtower. The assistant is told to treat them as data from that server, never to follow orders found in them, and to send the server only what your question needs.
 
@@ -71,7 +71,7 @@ The status dot shows the state: green is OK, orange is a problem the next chat r
 
 ## Related
 
-- [AI Chat](ai-chat.md)
+- [Chats](ai-chat.md)
 - [Automations](automations.md)
 
 For developers: [docs/features/quick-connections.md](../../features/quick-connections.md)

@@ -1,6 +1,6 @@
-# Artifacts in the AI Chat
+# Artifacts in Chats
 
-When the assistant writes something you will copy, send or keep, such as a document, table, email or Slack draft, event, code or an HTML page, it opens in the artifact panel instead of the chat. This page is for anyone working with those drafts in the [AI Chat](ai-chat.md).
+When the assistant writes something you will copy, send or keep, such as a document, table, email or Slack draft, event, code or an HTML page, it opens in the artifact panel instead of the chat. This page is for anyone working with those drafts in [Chats](ai-chat.md).
 
 ## Why use it
 
@@ -95,7 +95,7 @@ A document, table, code or HTML page has **Add to Knowledge** in its header. It 
 
 ## Related
 
-- [AI Chat](ai-chat.md)
-- [Writing and changing things from the AI Chat](ai-chat-actions.md)
+- [Chats](ai-chat.md)
+- [Writing and changing things from Chats](ai-chat-actions.md)
 
 For developers: [docs/features/chat-redesign.md](../../features/chat-redesign.md)
