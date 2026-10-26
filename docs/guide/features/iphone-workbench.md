@@ -18,7 +18,7 @@ A Claude Code session takes your line while it works and reads it at its next st
 
 **Now** starts with your Mac: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
 
-- **Waiting for you**, newest first across workbenches: asks (a question with suggested answers takes one tap), permission prompts, and sessions that stopped, finished or failed in the last 24 hours. The first 20 show; the rest are **N more on your Mac**.
+- **Waiting for you**, newest first across workbenches: asks (a question with suggested answers takes one tap), permission prompts, and sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. The first 20 show; the rest are **N more on your Mac**.
 - **Working**: sessions whose agent is working, each with its timer (**as of 40 min ago** while the Mac is asleep).
 - **Next meeting**, with **Record**.
 

@@ -37,8 +37,8 @@ final class NowWiringTests: XCTestCase {
         let model = model(try demoSnapshot(now: now))
         XCTAssertNil(model.emptyText)
         XCTAssertEqual(model.waitingForYou.map(\.id), [
-            .ask(111), .ask(109), .ask(110), .session(14), .session(21), .session(13), .session(15), .session(16)
-        ])
+            .ask(111), .ask(109), .ask(110), .session(21), .session(13), .session(15), .session(16)
+        ], "session 14 waits on ask #110: only the ask's row shows")
         let question = try XCTUnwrap(model.waitingForYou.first { $0.id == .ask(109) })
         XCTAssertEqual(question.title, "Which menu wording?")
         XCTAssertEqual(question.meta, "Acme · Archive closed targets · ask #109")
@@ -74,6 +74,25 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(finished.glyph, "checkmark")
         XCTAssertEqual(finished.tone, .blue)
         XCTAssertFalse(model.waitingForYou.contains { $0.id == .session(17) }, "a session that never ran is not waiting")
+    }
+
+    /// Owner decision (ask #622): an ended session with an open ask is one waiting thing, shown as the ask.
+    func testAnEndedSessionWithAnOpenAskShowsOnlyTheAsk() throws {
+        var snapshot = WorkbenchReplicaSnapshot()
+        snapshot.sessions = [try mirror(TerminalSessionState.self, DemoSeed.JSON.session(50, workbench: DemoSeed.acmeID, [
+            "title": "Lane totals", "state_kind": "finished", "state_caption": "Finished", "state_tone": "blue", "live": false,
+            "open_asks": 1, "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-120)),
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-120))
+        ]))]
+        snapshot.asks = [try mirror(OwnerAsk.self, DemoSeed.JSON.ask(70, workbench: DemoSeed.acmeID, [
+            "session_id": 50, "created_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-60))
+        ]))]
+        let model = model(snapshot)
+        XCTAssertEqual(model.waitingForYou.map(\.id), [.ask(70)])
+        XCTAssertEqual(model.waitingCount, 1)
+
+        snapshot.asks = []
+        XCTAssertEqual(self.model(snapshot).waitingForYou.map(\.id), [.session(50)], "with the ask answered the session waits again")
     }
 
     func testAnEndedSessionLeavesNowAfterADay() throws {

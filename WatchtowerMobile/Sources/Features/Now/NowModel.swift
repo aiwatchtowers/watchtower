@@ -4,7 +4,7 @@ import WatchtowerKit
 /// The Now tab (spec §5.5, mockup 1): the Mac status chip, then Waiting for
 /// you across every workbench (open asks with their quick answers, pending
 /// permission requests, sessions that stopped, finished or failed in the
-/// last 24 h; newest first, 20
+/// last 24 h unless an open ask of theirs already shows; newest first, 20
 /// shown), then Working (live working sessions with timers). The next
 /// meeting is `NextMeetingCardModel` (Calendar).
 struct NowModel {
@@ -26,10 +26,13 @@ struct NowModel {
     init(snapshot: WorkbenchReplicaSnapshot, linked: Bool, now: Date) {
         mac = .of(heartbeat: snapshot.heartbeat?.updatedAt, linked: linked, now: now)
         chip = MacStatusChipModel(macName: snapshot.heartbeat?.macName ?? "", state: mac.chipState(linked: linked), now: now)
-        let asks: [NowWaitingRow] = snapshot.openAsks().map { NowWaitingRow($0, snapshot: snapshot, now: now) }
+        let openAsks = snapshot.openAsks()
+        let asks: [NowWaitingRow] = openAsks.map { NowWaitingRow($0, snapshot: snapshot, now: now) }
         let requests: [NowWaitingRow] = snapshot.pendingPermissions.map { NowWaitingRow($0, snapshot: snapshot, now: now) }
+        // One row per waiting thing (ask #622): an ended session with an open ask shows as that ask only.
+        let askedSessions = Set(openAsks.compactMap(\.sessionID))
         let ended: [NowWaitingRow] = snapshot.sessions
-            .filter { [.stopped, .finished, .failed].contains($0.stateKind) }
+            .filter { [.stopped, .finished, .failed].contains($0.stateKind) && !askedSessions.contains($0.id) }
             .map { NowWaitingRow(ended: $0, snapshot: snapshot, now: now) }
             .filter { now.timeIntervalSince($0.at) <= Self.endedSessionWindow }
         let all = (asks + requests + ended).sorted { $0.at != $1.at ? $0.at > $1.at : $0.order < $1.order }
