@@ -75,7 +75,7 @@ Every implementer reads the spec section its task names, `docs/review/review-rul
 
 **Depends on:** Tasks 3, 4, 6 · **Spec:** §4
 
-- `ChatSidebarView` header: `All chats ⌄` / `‹ 📁 name ⌄` + `+` (⌘N; in the project when one is selected). `‹` and ⌘[ (Chats tab only, not while a text field has focus — same rule as Workbench) go back to All chats.
+- `ChatSidebarView` header: `All chats ⌄` / `‹ 📁 name ⌄` + `+` (⌘N; in the project when one is selected). `‹` goes back to All chats. ⌘[ is done in Task 9 (shared View → Back item).
 - `ChatProjectSwitcherPopover`: Find project, RECENT (`SwitcherPopoverRow`), divider, New Project…, ‹ All Chats.
 - Remove the PROJECTS section and the "New chat" row. In a project, the first row is **Project overview** (opens the project page; a tab when the page is on screen).
 - Render tests for both levels and the popover.
@@ -99,6 +99,7 @@ Every implementer reads the spec section its task names, `docs/review/review-rul
 - Undo bar under the list (`SessionDeleteToast` shape, generalised or a chat twin).
 - Keyboard: a `SessionsPanelKeyView`-style key handler — ↑/↓ cursor, Return, ⌘⌫, ⌘Z. `KeyboardShortcutCatalog` "Chats" entries.
 - ⌘1…⌘9 (spec §5.4): `ChatView` publishes `.focusedSceneValue(\.chatsMenu, ChatsMenuContext(…))`; move the "Sessions" items out of `WorkbenchCommands` into one shared View → "Go to Item" menu, enabled by `workbenchMenu?.canUseSessionKeys` or `chatsMenu?.canUseRowKeys`, still gated by `WorkbenchCommands.pageTakesKeys` at fire time; the choice is `ItemShortcutTarget.resolve(workbench:chats:)` in Core with tests (Workbench page → sessions, Chats → chats, palette open / other tab → disabled). Existing Workbench ⌘1…⌘9 tests must pass unchanged.
+- ⌘[ (spec §4): the same move for Workbench's "Back to Workbenches" — one shared View → Back item; `resolve` returns the workbench's `backAction(popAvailable:)` result (subagent pop, then workbench list) or, on Chats, back to All chats while a project is selected; disabled otherwise. Tests for each case; existing Workbench back tests pass unchanged.
 - Tests: pending-delete timing (injected clock), undo, commit on quit, keyboard policy.
 - Checks: `make test-swift FILTER='PendingChatDeletes|ChatPanelKeys|ChatSidebarRender'`, `make lint-swift`.
 

@@ -45,6 +45,8 @@ The `⌄` opens a popover modelled on `WorkbenchSwitcherPopover` (mockup board 2
 
 `+` in the header: a new chat (⌘N, the landing) — in the current project when one is selected (the landing composer creates the conversation with that `project_id`).
 
+**⌘[** today exists only as the Workbench menu's **Back to Workbenches** item (`WorkbenchCommands`, enabled by `context.backAction(popAvailable:)`: pop a Workchat subagent first, else the workbench list). Like ⌘1…⌘9 (§5.4), it becomes **one** shared item, **View → Back** (⌘[), resolved by the same pure function: the workbench context → its existing `backAction` (unchanged behaviour, including the subagent pop), the Chats context → back to All chats while a project is selected, otherwise disabled. The Workbench menu loses the item; its title in the help/shortcut catalog stays "Back to the workbench list" under Workbench and gains "Back to All chats" under Chats. As today, the Files editor (Monaco) keeps ⌘[ inside it.
+
 The PROJECTS section of the list goes away; projects live only in the switcher. The selected level (All chats or project id) is remembered across launches (UserDefaults, per workspace), falling back to All chats when the project is gone.
 
 **Implementation note:** the popover shares its look with the workbench one. Extract the row and segments views into a shared DesignKit-level piece (`SwitcherPopoverRow` + the existing `WorkbenchStateSegments` generalised over a tone enum) rather than copying them; the chat twin owns its own data (`ChatProjectSwitcherPresentation` in WatchtowerCore: ordering, matching, segments — pure, tested).
@@ -128,7 +130,7 @@ CHAT-01..05 untouched: nothing here sends, stores owner text differently or chan
 - Desktop: render tests in the `ChatSidebarRenderTests` style for the header at both levels, rows in each state, the older group; delete + Undo timing (`PendingChatDeletes` twin of `PendingSessionDeletes`); the read mark on select and on turn finish.
 - Go: the migration (`TestAllTablesExist` unaffected; schema golden + Desktop test schema regenerated); the system-prompt golden after the guide titles change; `go test ./docs/guide`.
 - The pending-approval state appearing without a list reload (a proposal written by another process, signalled through `onActionAwaited`).
-- ⌘1…⌘9 dispatch: Workbench on screen → sessions, Chats on screen → chat rows, elsewhere disabled.
+- ⌘1…⌘9 and ⌘[ dispatch: Workbench on screen → sessions / its `backAction`, Chats on screen → chat rows / All chats, elsewhere disabled.
 - `make desktop-shots` of the panel and the project page before review.
 
 ## Decisions
@@ -140,5 +142,6 @@ CHAT-01..05 untouched: nothing here sends, stores owner text differently or chan
 - The switcher is **the Workbench switcher's shape** (‹, Find field, RECENT with state segments, New Project…, All Chats); no "Project Settings…" item — conversation (owner's screenshot of the workbench switcher).
 - Mockups on the canvas accepted ("ну норм. Делаем") — conversation.
 - **No project description field** — conversation (proposed by the agent, consistent with "prefer simple designs").
+- Review round 3 (ask #640): ⌘[ becomes one shared View → Back item dispatching to Workbench's `backAction` or the Chats level, like ⌘1…⌘9.
 - Review round 2 (ask #635): the panel refresh goes into the existing `AppState+Chat.swift` closures (no new assignment of the single-closure callbacks); ⌘1…⌘9 enable through a second focused scene value beside `workbenchMenu`/`canUseSessionKeys`.
 - Review round 1 (ask #626): regenerate the system-prompt golden; ⌘1…⌘9 shared with Workbench through one dispatching set; the waiting-for-approval state refreshes on the pool's callbacks; the guide describes the new panel.
