@@ -81,7 +81,7 @@ struct CleanupRowView: View {
             name.frame(maxWidth: .infinity, alignment: .leading)
             Text(row.ownerText)
                 .font(.caption)
-                .foregroundStyle(row.ownerText == "—" ? .tertiary : .secondary)
+                .foregroundStyle(row.hasOwner ? .secondary : .tertiary)
                 .lineLimit(1)
                 .help(row.ownerText)
                 .frame(width: CleanupColumns.owner, alignment: .leading)
@@ -98,6 +98,10 @@ struct CleanupRowView: View {
         .onTapGesture { click() }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(ticked ? [.isSelected] : [])
+        .accessibilityValue(row.canChoose ? (ticked ? "Selected" : "Not selected") : "")
+        .accessibilityAction(named: ticked ? "Unselect" : "Select") {
+            if row.canChoose { onClick(false) }
+        }
     }
 
     private func click() {
@@ -106,9 +110,13 @@ struct CleanupRowView: View {
 
     @ViewBuilder private var checkbox: some View {
         if row.canChoose {
-            Toggle("Select \(row.title)", isOn: Binding(get: { ticked }, set: { _ in click() }))
+            // The row's click is the one handler (a click on the box would
+            // otherwise reach both); VoiceOver ticks through the row's action.
+            Toggle("Select \(row.title)", isOn: .constant(ticked))
                 .toggleStyle(.checkbox)
                 .labelsHidden()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         } else if row.state == .checking {
             RoundedRectangle(cornerRadius: Radius.mark, style: .continuous)
                 .strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
@@ -136,7 +144,7 @@ struct CleanupRowView: View {
     }
 
     @ViewBuilder private var size: some View {
-        let pending = row.sizeText == "checking" || row.sizeText == "measuring"
+        let pending = row.sizePending
         HStack(spacing: Spacing.small) {
             if pending { ProgressView().controlSize(.mini) }
             Text(row.sizeText)

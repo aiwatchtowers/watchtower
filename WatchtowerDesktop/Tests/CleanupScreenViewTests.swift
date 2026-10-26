@@ -28,7 +28,8 @@ final class CleanupScreenViewTests: XCTestCase {
         let folderPath = folder.path
         projectID = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folderPath) }
         appState = AppState(workbenchDefaults: AppState.isolatedDefaults)
-        appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
+        // A terminal view that takes the keyboard, as the real one does.
+        appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0, view: KeyTakingView()) }
         appState.terminalCenter.transcriptExists = { _ in true }
         appState.workbenchDefaults.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         appState.initWorkbenches(
@@ -51,20 +52,30 @@ final class CleanupScreenViewTests: XCTestCase {
         appState = nil
     }
 
-    func testScreenCoversTheWorkspaceWithoutRecreatingIt() async throws {
-        let vm = try XCTUnwrap(appState.workbenchesViewModel)
+    private func insertSession(_ title: String) async throws -> TerminalSession {
         let projectID = projectID
         let folderPath = folder.path
-        let session = try await pool.write { db in
+        return try await pool.write { db in
             try TerminalSessionQueries.create(db, .init(
-                projectID: projectID, kind: .claude, title: "Login redirect",
+                projectID: projectID, kind: .claude, title: title,
                 folderPath: folderPath, claudeSessionID: UUID().uuidString.lowercased()
             ))
         }
+    }
+
+    private func page(showing session: TerminalSession) async throws -> WorkbenchesViewModel {
+        let vm = try XCTUnwrap(appState.workbenchesViewModel)
         await vm.reload()
         vm.selectedWorkbenchID = projectID
         await vm.loadSessions(projectID: projectID)
         await vm.showSession(id: session.id)
+        return vm
+    }
+
+    func testScreenCoversTheWorkspaceWithoutRecreatingIt() async throws {
+        let session = try await insertSession("Login redirect")
+        let vm = try await page(showing: session)
+        let projectID = projectID
         let project = try XCTUnwrap(vm.selectedWorkbench)
         let process = try XCTUnwrap(appState.terminalCenter.process(for: session.id) as? FakeTerminalSession)
 
@@ -78,9 +89,20 @@ final class CleanupScreenViewTests: XCTestCase {
         XCTAssertTrue(process.view.window === window, "the terminal is on screen")
         let terminalHost = try XCTUnwrap(process.view.superview)
         let layout = vm.layout(projectID: projectID)
+        // Positive control: uncovered, a focus request gives the terminal the keyboard.
+        appState.terminalCenter.requestKeyboardFocus(session.id)
+        try await drainMainQueue()
+        XCTAssertTrue(window.firstResponder === process.view, "the fake terminal takes the keyboard")
 
         await vm.openCleanupScreen(projectID: projectID).value
         settle(0.1)
+        try await drainMainQueue()
+        XCTAssertTrue(vm.isObscured(sessionID: session.id, projectID: projectID))
+        XCTAssertFalse(window.firstResponder === process.view, "keys go to the screen, not the hidden terminal")
+        appState.terminalCenter.requestKeyboardFocus(session.id)
+        settle(0.1)
+        try await drainMainQueue()
+        XCTAssertFalse(window.firstResponder === process.view, "a focus request does not reach the covered terminal")
         XCTAssertTrue(vm.cleanupScreenOpen(projectID: projectID))
         XCTAssertTrue(process.view.window === window, "covered, not taken out of the window")
         XCTAssertTrue(process.view.superview === terminalHost, "the same terminal host view")
@@ -98,6 +120,32 @@ final class CleanupScreenViewTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: projectID), layout)
     }
 
+    /// Picking a session (the sessions panel) puts it on screen: the Clean
+    /// Up screen closes first, as a tab click does (spec §3.1).
+    func testShowingASessionClosesTheScreen() async throws {
+        let first = try await insertSession("first")
+        let second = try await insertSession("second")
+        let vm = try await page(showing: first)
+        await vm.openCleanupScreen(projectID: projectID).value
+        XCTAssertTrue(vm.cleanupScreenOpen(projectID: projectID))
+
+        await vm.showSession(id: second.id)
+
+        XCTAssertFalse(vm.cleanupScreenOpen(projectID: projectID))
+        XCTAssertEqual(vm.layout(projectID: projectID).visiblePanes.first, .session(second.id))
+    }
+
+    /// ⌘A and Esc are the screen's only while the Search field does not have
+    /// the keyboard; there they select and clear its text.
+    func testShortcutsStepAsideForTheSearchField() {
+        let free = CleanupFooter.shortcuts(searchFocused: false)
+        XCTAssertEqual(free.selectAll, KeyboardShortcut("a", modifiers: .command))
+        XCTAssertEqual(free.clear, KeyboardShortcut(.escape, modifiers: []))
+        let typing = CleanupFooter.shortcuts(searchFocused: true)
+        XCTAssertNil(typing.selectAll)
+        XCTAssertNil(typing.clear)
+    }
+
     /// The footer (mockups A, B, F): Clean Up… waits with nothing ticked;
     /// with a tick it can go; while another cleanup of the workbench runs
     /// (a Delete and Clean Up) the total reads "Another cleanup is running"
@@ -112,7 +160,7 @@ final class CleanupScreenViewTests: XCTestCase {
             let state = try XCTUnwrap(vm.cleanupScreens[projectID])
             return CleanupFooter(
                 vm: vm, projectID: projectID, model: try XCTUnwrap(vm.cleanupScreenModel(projectID: projectID)),
-                state: state, phase: vm.sessionCleanup?.cleanupPhase(for: state.scope) ?? .idle,
+                state: state,
                 ticks: .constant(state.ticks), confirming: .constant(false)
             )
         }
@@ -133,6 +181,33 @@ final class CleanupScreenViewTests: XCTestCase {
         vm.cleanupRunWorkbenches[99] = nil
     }
 
+    /// The footer never mistakes the screen's own apply for another cleanup:
+    /// while `sweepRuns` holds it, the line is the total.
+    func testOwnApplyIsNotAnotherCleanup() async throws {
+        let vm = try XCTUnwrap(appState.workbenchesViewModel)
+        let projectID = projectID
+        await vm.openCleanupScreen(projectID: projectID).value
+        let state = try XCTUnwrap(vm.cleanupScreens[projectID])
+        vm.sweepRuns[projectID] = Task { false }
+        defer { vm.sweepRuns[projectID] = nil }
+        let footer = CleanupFooter(
+            vm: vm, projectID: projectID, model: try XCTUnwrap(vm.cleanupScreenModel(projectID: projectID)),
+            state: state, ticks: .constant([]), confirming: .constant(false)
+        )
+        XCTAssertThrowsError(try footer.inspect().find(text: CleanupFooter.anotherRunning))
+        XCTAssertTrue(try footer.inspect().find(button: "Clean Up…").isDisabled(), "its own apply still runs")
+    }
+
+    /// The terminal host moves the keyboard in a main-queue block, which runs
+    /// only once this test's main-actor job suspends: suspend, then turn the
+    /// run loop.
+    private func drainMainQueue() async throws {
+        for _ in 0..<3 {
+            try await Task.sleep(for: .milliseconds(20))
+            settle(0.02)
+        }
+    }
+
     /// Turns the run loop until `condition` holds, bounded.
     private func waitFor(_ condition: () -> Bool) {
         let deadline = Date().addingTimeInterval(2)
@@ -142,4 +217,9 @@ final class CleanupScreenViewTests: XCTestCase {
     private func settle(_ seconds: TimeInterval) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
+}
+
+/// A terminal stand-in that accepts the keyboard, like the real terminal view.
+private final class KeyTakingView: NSView {
+    override var acceptsFirstResponder: Bool { true }
 }

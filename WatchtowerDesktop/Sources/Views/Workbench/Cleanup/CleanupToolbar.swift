@@ -9,6 +9,8 @@ struct CleanupToolbar: View {
     let projectID: Int64
     let state: CleanupScreenState
     @Binding var filters: CleanupFilters
+    /// The Search field took (true) or left (false) the keyboard.
+    var onSearchFocus: (Bool) -> Void = { _ in }
     @State private var hovered: String?
 
     var body: some View {
@@ -34,8 +36,8 @@ struct CleanupToolbar: View {
     /// The session's chip: its ✕ widens the screen to the whole workbench
     /// and plans again (its own CLI mode).
     private func sessionChip(_ sessionID: Int64) -> some View {
-        let title = vm.sessions.first { $0.id == sessionID }?.title ?? "Session \(sessionID)"
-        return toggle("Session: “\(title)” ✕", isOn: Binding(
+        let title = vm.sessions.first { $0.id == sessionID }?.title
+        return toggle(CleanupScreenModel.sessionChipText(title: title, sessionID: sessionID), isOn: Binding(
             get: { true },
             set: { if !$0 { vm.widenCleanupScope(projectID: projectID) } }
         ), help: "Show the whole workbench instead of this session")
@@ -43,7 +45,7 @@ struct CleanupToolbar: View {
     }
 
     private var search: some View {
-        SearchField(text: $filters.search, placeholder: "Search")
+        SearchField(text: $filters.search, placeholder: "Search", onFocusChange: onSearchFocus)
             .padding(.horizontal, Spacing.regular)
             .padding(.vertical, Spacing.small)
             .frame(width: 200)

@@ -11,30 +11,40 @@ struct CleanupFooter: View {
     let projectID: Int64
     let model: CleanupScreenModel
     let state: CleanupScreenState
-    let phase: SessionCleanupPhase
     @Binding var ticks: Set<String>
     @Binding var confirming: Bool
+    /// The Search field has the keyboard: ⌘A and Esc stay the field's.
+    var searchFocused = false
 
     static let anotherRunning = "Another cleanup is running"
+
+    /// ⌘A (Select All That Can Go) and Esc (Clear) — none while the Search
+    /// field has the keyboard, so they select and clear its text instead.
+    static func shortcuts(searchFocused: Bool) -> (selectAll: KeyboardShortcut?, clear: KeyboardShortcut?) {
+        guard !searchFocused else { return (nil, nil) }
+        return (KeyboardShortcut("a", modifiers: .command), KeyboardShortcut(.escape, modifiers: []))
+    }
 
     var body: some View {
         let live = model.liveTicks(ticks)
         let free = vm.canRefreshCleanup(projectID: projectID)
-        // This screen's own apply is not "another" cleanup.
-        let otherRuns = !free && phase != .applying
+        // This screen's own apply (`sweepRuns`, until its run fully ends)
+        // is not "another" cleanup.
+        let otherRuns = !free && vm.sweepRuns[projectID] == nil
+        let keys = Self.shortcuts(searchFocused: searchFocused)
         HStack(spacing: Spacing.regular) {
             Button("Select All That Can Go") {
                 ticks = model.selectAll(filters: state.filters, into: ticks)
             }
-            .keyboardShortcut("a", modifiers: .command)
+            .keyboardShortcut(keys.selectAll)
             .buttonStyle(.kitQuiet)
             if !ticks.isEmpty {
                 Button("Clear") { ticks = [] }
-                    .keyboardShortcut(.escape, modifiers: [])
+                    .keyboardShortcut(keys.clear)
                     .buttonStyle(.kitQuiet)
             }
             Spacer(minLength: Spacing.regular)
-            total(otherRuns ? Self.anotherRunning : model.totalText(for: live))
+            total(otherRuns: otherRuns, live: live)
             Button("Clean Up…") { confirming = true }
                 .buttonStyle(.kitDestructive)
                 .disabled(!free || model.applyKeys(for: live).isEmpty)
@@ -49,17 +59,17 @@ struct CleanupFooter: View {
     }
 
     /// "3 worktrees, 3 branches · ~25 GB": the counts in the primary colour.
-    private func total(_ text: String) -> some View {
-        let parts = text.components(separatedBy: " · ")
-        let counts = text == "Nothing selected" || text == Self.anotherRunning ? nil : parts.first
-        return HStack(spacing: 0) {
-            if let counts {
-                Text(counts).fontWeight(.medium).foregroundStyle(.primary)
-                if parts.count > 1 {
-                    Text(" · " + parts.dropFirst().joined(separator: " · ")).foregroundStyle(.secondary)
+    private func total(otherRuns: Bool, live: Set<String>) -> some View {
+        HStack(spacing: 0) {
+            if otherRuns {
+                Text(Self.anotherRunning).foregroundStyle(.secondary)
+            } else if let parts = model.totalParts(for: live) {
+                Text(parts.counts).fontWeight(.medium).foregroundStyle(.primary)
+                if let size = parts.size {
+                    Text(" · " + size).foregroundStyle(.secondary)
                 }
             } else {
-                Text(text).foregroundStyle(.secondary)
+                Text(model.totalText(for: live)).foregroundStyle(.secondary)
             }
         }
         .font(.caption)

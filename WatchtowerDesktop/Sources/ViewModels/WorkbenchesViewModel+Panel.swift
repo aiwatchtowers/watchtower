@@ -275,6 +275,7 @@ extension WorkbenchesViewModel {
     /// toggle puts the shown session's.
     func showBesideItsSession(_ pane: WorkspacePane, sessionID: Int64, projectID: Int64) {
         beginSwitch(projectID: projectID)
+        closeCleanupScreen(projectID: projectID)
         var updated = layout(projectID: projectID)
         Self.placeBesideItsSession(pane, sessionID: sessionID, in: &updated)
         setLayout(updated, projectID: projectID)

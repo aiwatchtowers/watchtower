@@ -43,6 +43,8 @@ struct CleanupScreenView: View {
     /// The empty state's **Show kept**: the list shows although nothing can go.
     @State private var showsKept = false
     @State private var confirming = false
+    /// The Search field has the keyboard: ⌘A and Esc are its own then.
+    @State private var searchFocused = false
     @FocusState private var focused: Bool
 
     static let title = "Clean up worktrees and branches"
@@ -54,7 +56,8 @@ struct CleanupScreenView: View {
             content(now: context.date)
         }
         .background(Surface.detail)
-        // Keys go to the screen, not to the hidden terminal behind it.
+        // Keys go to the screen, not to the hidden terminal behind it
+        // (pinned by `CleanupScreenViewTests`).
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
@@ -98,15 +101,17 @@ struct CleanupScreenView: View {
             VStack(alignment: .leading, spacing: 0) {
                 header
                 CleanupStatusLine(
-                    vm: vm, projectID: projectID, state: state, phase: phase, progress: progress, now: now
+                    vm: vm, projectID: projectID, state: state, progress: progress, now: now
                 )
                 .padding(.top, Spacing.cozy)
                 .padding(.bottom, Spacing.medium)
                 if empty {
                     emptyState(model)
                 } else {
-                    CleanupToolbar(vm: vm, projectID: projectID, state: state, filters: binding(\.filters))
-                        .padding(.bottom, Spacing.cozy)
+                    CleanupToolbar(vm: vm, projectID: projectID, state: state, filters: binding(\.filters)) {
+                        searchFocused = $0
+                    }
+                    .padding(.bottom, Spacing.cozy)
                     list(model)
                 }
             }
@@ -114,8 +119,8 @@ struct CleanupScreenView: View {
             .padding(.top, Spacing.large)
             if !empty {
                 CleanupFooter(
-                    vm: vm, projectID: projectID, model: model, state: state, phase: phase,
-                    ticks: binding(\.ticks), confirming: $confirming
+                    vm: vm, projectID: projectID, model: model, state: state,
+                    ticks: binding(\.ticks), confirming: $confirming, searchFocused: searchFocused
                 )
             }
         }
@@ -146,13 +151,12 @@ struct CleanupScreenView: View {
     }
 
     private func emptyState(_ model: CleanupScreenModel) -> some View {
-        let kept = model.keptSummary()
-        return TabEmptyState(copyKey: Self.emptyCopyKey, context: .neutral) {
-            if !kept.isEmpty {
-                Text("Kept: \(kept)")
+        TabEmptyState(copyKey: Self.emptyCopyKey, context: .neutral) {
+            if let kept = model.emptyKeptText() {
+                Text(kept)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Show kept") {
+                Button(CleanupScreenModel.showKeptTitle) {
                     showsKept = true
                     keptFolded = false
                 }
@@ -238,7 +242,6 @@ struct CleanupStatusLine: View {
     let vm: WorkbenchesViewModel
     let projectID: Int64
     let state: CleanupScreenState
-    let phase: SessionCleanupPhase
     let progress: SessionCleanupProgress?
     let now: Date
 

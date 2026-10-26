@@ -29,8 +29,12 @@ package struct CleanupRow: Identifiable, Equatable, Sendable {
     package var title: String
     package var subtitle: String
     package var ownerText: String
+    /// False when the Owner column has nothing to say ("—").
+    package var hasOwner: Bool
     package var origin: SessionCleanupOrigin
     package var sizeText: String
+    /// A worktree still being checked or measured: its size is on the way.
+    package var sizePending: Bool
     /// Known size of a measured worktree; nil otherwise.
     package var bytes: Int64?
     package var lastCommitAt: Date?
@@ -149,6 +153,29 @@ package struct CleanupScreenModel {
         return groups.map { "\($0.count) \(Self.summaryPhrase($0.key, count: $0.count))" }.joined(separator: " · ")
     }
 
+    /// The empty screen's kept line (mockup G): "Kept: 1 — unpushed
+    /// commits", "Kept: 3 — 2 unpushed commits · 1 recent session"; nil
+    /// when nothing is kept.
+    package func emptyKeptText() -> String? {
+        let kept = entries.filter { !$0.row.state.canGo }
+        guard !kept.isEmpty else { return nil }
+        let groups = Self.grouped(kept.map { Self.summaryGroup($0) })
+        let reasons = groups.count == 1
+            ? Self.summaryPhrase(groups[0].key, count: groups[0].count)
+            : keptSummary()
+        return "Kept: \(kept.count) — \(reasons)"
+    }
+
+    /// The empty screen's button that shows the kept rows anyway.
+    package static let showKeptTitle = "Show kept"
+
+    /// The session scope's chip (mockup D): "Session: “Login redirect” ✕";
+    /// an untitled or unknown session reads "Session N".
+    package static func sessionChipText(title: String?, sessionID: Int64) -> String {
+        let name = title.flatMap { $0.isEmpty ? nil : $0 } ?? "Session \(sessionID)"
+        return "Session: “\(name)” ✕"
+    }
+
     // MARK: Ticking
 
     /// `ticks` plus every row the filters show that can be chosen.
@@ -183,10 +210,17 @@ package struct CleanupScreenModel {
     /// The footer's total: "3 worktrees, 3 branches · ~25 GB",
     /// "Nothing selected".
     package func totalText(for ticks: Set<String>) -> String {
+        guard let parts = totalParts(for: ticks) else { return "Nothing selected" }
+        return parts.counts + (parts.size.map { " · " + $0 } ?? "")
+    }
+
+    /// `totalText`'s two halves — ("3 worktrees, 3 branches", "~25 GB") —
+    /// for a footer that sets the counts apart; nil when nothing is chosen.
+    package func totalParts(for ticks: Set<String>) -> (counts: String, size: String?)? {
         let chosen = chosen(ticks)
         let counts = Self.countParts(chosen.flatMap(\.counted))
-        guard !counts.isEmpty else { return "Nothing selected" }
-        return counts.joined(separator: ", ") + (Self.sizePart(chosen).map { " · " + $0 } ?? "")
+        guard !counts.isEmpty else { return nil }
+        return (counts.joined(separator: ", "), Self.sizePart(chosen))
     }
 
     /// "Remove 3 worktrees and 3 branches (~25 GB)?"
@@ -443,8 +477,10 @@ package struct CleanupScreenModel {
                 title: title(lead),
                 subtitle: subtitle(lead),
                 ownerText: ownerText(lead),
+                hasOwner: ownerText(lead) != Self.noOwner,
                 origin: lead.origin,
                 sizeText: sizeText(lead),
+                sizePending: lead.kind == .worktree && (checking.contains(lead.key) || sizing.contains(lead.key)),
                 bytes: lead.kind == .worktree && lead.bytesKnown && !checking.contains(lead.key)
                     && !sizing.contains(lead.key) ? lead.bytes : nil,
                 lastCommitAt: lastCommitAt,
@@ -500,8 +536,10 @@ package struct CleanupScreenModel {
             }
         }
 
+        static let noOwner = "—"
+
         private func ownerText(_ item: Item) -> String {
-            guard item.kind == .worktree else { return "—" }
+            guard item.kind == .worktree else { return Self.noOwner }
             if let owner = item.owner, !owner.isUnknown, let id = owner.sessionID {
                 guard !owner.title.isEmpty else { return "Session \(id)" }
                 let name = "“\(owner.title)”"
@@ -512,7 +550,7 @@ package struct CleanupScreenModel {
             case .subagent: return "Subagent"
             case .placed: return "Session deleted"
             case .manual: return "Made by hand"
-            case .session, .none: return "—"
+            case .session, .none: return Self.noOwner
             }
         }
 

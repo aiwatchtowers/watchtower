@@ -292,6 +292,40 @@ final class CleanupScreenModelTests: XCTestCase {
         XCTAssertEqual(m2.totalText(for: [unmeasured.key]), "1 worktree · size unknown")
     }
 
+    /// The view's typed facts (Task 10 review): no matching of display strings.
+    func testPendingSizeOwnerAndTotalParts() {
+        let checked = worktree("checked", gb: 12)
+        let checking = worktree("checking", gb: nil)
+        let measuring = worktree("measuring", gb: nil)
+        let m = model([checked, checking, measuring, branch("old")], checking: [checking.key], sizing: [measuring.key])
+        XCTAssertEqual(row(checked.key, in: m)?.sizePending, false)
+        XCTAssertEqual(row(checking.key, in: m)?.sizePending, true)
+        XCTAssertEqual(row(measuring.key, in: m)?.sizePending, true)
+        XCTAssertEqual(row("branch:old", in: m)?.sizePending, false)
+        XCTAssertEqual(row(checked.key, in: m)?.hasOwner, true)
+        XCTAssertEqual(row("branch:old", in: m)?.hasOwner, false)
+
+        XCTAssertNil(m.totalParts(for: []))
+        XCTAssertEqual(m.totalParts(for: [checked.key])?.counts, "1 worktree")
+        XCTAssertEqual(m.totalParts(for: [checked.key])?.size, "~12 GB")
+        XCTAssertNil(m.totalParts(for: ["branch:old"])?.size)
+    }
+
+    /// The screen's own words (mockups D and G).
+    func testEmptyKeptLineAndChipCopy() {
+        XCTAssertEqual(model([worktree("u", keep: .unpushedCommits)]).emptyKeptText(), "Kept: 1 — unpushed commits")
+        XCTAssertEqual(
+            model([worktree("u1", keep: .unpushedCommits), worktree("u2", keep: .unpushedCommits),
+                   worktree("r", keep: .sessionRecent)]).emptyKeptText(),
+            "Kept: 3 — 2 unpushed commits · 1 recent session"
+        )
+        XCTAssertNil(model([worktree("goes")]).emptyKeptText())
+        XCTAssertEqual(Model.showKeptTitle, "Show kept")
+        XCTAssertEqual(Model.sessionChipText(title: "Login redirect", sessionID: 3), "Session: “Login redirect” ✕")
+        XCTAssertEqual(Model.sessionChipText(title: nil, sessionID: 3), "Session: “Session 3” ✕")
+        XCTAssertEqual(Model.sessionChipText(title: "", sessionID: 3), "Session: “Session 3” ✕")
+    }
+
     func testResultLine() {
         func done(_ item: Item) -> Item {
             var copy = item
