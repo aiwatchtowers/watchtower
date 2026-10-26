@@ -42,7 +42,8 @@ type Item struct {
 	LastCommitAt string `json:"last_commit_at"`
 	// Merged: the tip is in the default branch or origin's copy of it.
 	Merged bool `json:"merged"`
-	// Worktree is the root a bundle's lsreg item belongs to.
+	// Worktree is the root a bundle's lsreg item or an orphan's process
+	// item belongs to; "" for a stale LaunchServices entry.
 	Worktree string `json:"worktree,omitempty"`
 }
 

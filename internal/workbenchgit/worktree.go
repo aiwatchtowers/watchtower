@@ -257,6 +257,9 @@ const (
 	OriginPlaced Origin = "placed"
 	// OriginManual is anything else.
 	OriginManual Origin = "manual"
+	// OriginSession is never returned by WorktreeOrigin: the cleanup sweep
+	// sets it on a worktree whose recording session it knows.
+	OriginSession Origin = "session"
 )
 
 var subagentNamePattern = regexp.MustCompile(`^agent-[0-9a-f]+$`)

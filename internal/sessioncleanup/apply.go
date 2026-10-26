@@ -113,7 +113,7 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 // what it needs to re-check them.
 type applier struct {
 	deps   Deps
-	req    Request // workbench resolved; sizes off for the re-checks
+	req    Request // workbench resolved; sizes and display facts off for the re-checks
 	git    gitCmd
 	folder string
 	items  []Item
@@ -127,7 +127,7 @@ type applier struct {
 func newApplier(b *builder, p Plan, only []string) *applier {
 	a := &applier{deps: b.deps, req: b.req, git: b.repo.git, folder: b.repo.folder, items: p.Items,
 		tips: map[string]string{}, self: b.self, walked: b.walked, report: b.report}
-	a.req.NoSize, a.req.Observer = true, nil
+	a.req.NoSize, a.req.Observer, a.req.recheck = true, nil, true
 	for _, br := range b.repo.branches {
 		a.tips[br.Name] = br.Sha
 	}

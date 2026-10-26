@@ -806,3 +806,101 @@ func TestWorktreeChecksKeepOrderInParallel(t *testing.T) {
 		t.Fatalf("Checked events %v, want the listing order %v", checked, want)
 	}
 }
+
+// TestOrphanItemsNameTheirWorktree: a session-mode orphan carries its
+// worktree's root, as a bundle does, so the screen folds it into that
+// worktree's row.
+func TestOrphanItemsNameTheirWorktree(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.procs.list = []Proc{{PID: 501, PPID: 1, UID: os.Getuid(), Start: "Mon Oct 12 10:00:00 2026",
+		Exe: filepath.Join(root, ".build", "stub"), Cwd: root}}
+	it := wantItem(t, f.plan(Request{}), "process:501:Mon Oct 12 10:00:00 2026", ActionRemove, "")
+	if it.Worktree != root {
+		t.Fatalf("orphan worktree = %q, want %q", it.Worktree, root)
+	}
+}
+
+// gitCounter counts the git runs whose arguments start with each prefix.
+type gitCounter struct {
+	SystemGit
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (g *gitCounter) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	joined := strings.Join(args, " ")
+	g.mu.Lock()
+	for prefix := range g.counts {
+		if strings.HasPrefix(joined, prefix) {
+			g.counts[prefix]++
+		}
+	}
+	// The catches ask only about the local default branch; the display's
+	// merged flag also asks about origin's copy.
+	if strings.HasPrefix(joined, gitAncestor) && strings.HasSuffix(joined, " refs/remotes/origin/main") {
+		g.counts[gitOriginAncestor]++
+	}
+	g.mu.Unlock()
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
+}
+
+const (
+	gitTipDates  = "for-each-ref --format=%(objectname)%00%(committerdate:iso-strict)"
+	gitMergedSet = "for-each-ref --merged="
+	gitAncestor  = "merge-base --is-ancestor"
+	gitLogDate   = "log -1 --format=%cI"
+	// gitOriginAncestor counts the display's merge-base runs only.
+	gitOriginAncestor = "display merge-base"
+)
+
+func newGitCounter() *gitCounter {
+	return &gitCounter{counts: map[string]int{gitTipDates: 0, gitMergedSet: 0, gitAncestor: 0, gitLogDate: 0}}
+}
+
+// TestListedUnmergedTipAsksNoMergeBase: a worktree on an unmerged branch
+// tip is answered by the up-front listing, not by `merge-base`.
+func TestListedUnmergedTipAsksNoMergeBase(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt-open", "feat/open")
+	g := newGitCounter()
+	f.git = g
+	p := f.plan(Request{Sweep: true})
+	if findItem(t, p, "worktree:"+root).Merged || findItem(t, p, "branch:feat/open").Merged {
+		t.Fatal("an unmerged tip reads as merged")
+	}
+	if g.counts[gitOriginAncestor] != 0 {
+		t.Fatalf("the display's merge-base ran %d times for listed tips", g.counts[gitOriginAncestor])
+	}
+}
+
+// TestApplyRechecksReadNoDisplayFacts: the dates and the merged set are
+// read once, by the apply's own evaluation; its re-checks never report, so
+// they read neither.
+func TestApplyRechecksReadNoDisplayFacts(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	detached := filepath.Join(f.base, "wt-detached")
+	gitIn(t, f.repo, "worktree", "add", "-q", "--detach", detached, "main~0")
+	f.record(detached, "")
+	gitIn(t, detached, "commit", "-q", "--allow-empty", "-m", "detached work")
+	gitIn(t, detached, "push", "-q", "origin", "HEAD:refs/heads/side")
+	g := newGitCounter()
+	f.git = g
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	if it := findItem(t, res.Plan, "worktree:"+root); it.LastCommitAt == "" {
+		t.Fatalf("the apply's evaluation lost the display facts: %+v", it)
+	}
+	if g.counts[gitTipDates] != 1 || g.counts[gitMergedSet] > 2 {
+		t.Fatalf("display listings ran %d / %d times, want once per evaluation", g.counts[gitTipDates], g.counts[gitMergedSet])
+	}
+	if g.counts[gitLogDate] != 1 || g.counts[gitOriginAncestor] != 1 {
+		t.Fatalf("display facts of the detached head read %d / %d times, want once", g.counts[gitLogDate], g.counts[gitOriginAncestor])
+	}
+}

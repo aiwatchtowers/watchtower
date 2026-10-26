@@ -46,6 +46,9 @@ type Request struct {
 	// Observer hears the evaluation (and an apply) as it goes; nil = no
 	// events. Apply's re-checks never report.
 	Observer Observer
+	// recheck marks an apply's re-check: it never reports, so it reads no
+	// display facts (dates, merged).
+	recheck bool
 }
 
 // builder carries one evaluation's facts.
@@ -180,7 +183,7 @@ func (b *builder) loadRepo(ctx context.Context, g gitCmd) error {
 	if !gitbin.InsideRepository(folder) {
 		return fmt.Errorf("the workbench folder %s is not in a git repository", folder)
 	}
-	b.repo, err = readRepo(ctx, g, folder)
+	b.repo, err = readRepo(ctx, g, folder, !b.req.recheck)
 	return err
 }
 
@@ -472,7 +475,10 @@ func (b *builder) evaluateWorktree(ctx context.Context, w worktree) Item {
 	}
 	it.Origin = string(workbenchgit.WorktreeOrigin(b.repo.mainRoot(), w.Root, w.Branch))
 	if it.Owner != nil && !it.Owner.Unknown {
-		it.Origin = "session"
+		it.Origin = string(workbenchgit.OriginSession)
+	}
+	if b.req.recheck {
+		return it
 	}
 	if head, err := b.repo.recordedHead(w); err == nil {
 		it.LastCommitAt = b.repo.commitDate(ctx, head)
@@ -559,7 +565,10 @@ func sortedKeys(set map[string]bool) []string {
 
 func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
 	it := Item{Key: "branch:" + br.Name, Kind: KindBranch, Name: br.Name, Branch: br.Name, Action: ActionRemove,
-		BytesKnown: true, LastCommitAt: b.repo.commitDate(ctx, br.Sha), Merged: b.repo.merged[br.Sha]}
+		BytesKnown: true}
+	if !b.req.recheck {
+		it.LastCommitAt, it.Merged = b.repo.commitDate(ctx, br.Sha), b.repo.isMerged(ctx, br.Sha)
+	}
 	for _, c := range b.branchCatches() {
 		reason, detail, err := c(ctx, b, br)
 		if err != nil {
@@ -626,7 +635,7 @@ func (b *builder) orphanItems(root string) []Item {
 	items := make([]Item, 0, len(orphans))
 	for _, p := range orphans {
 		items = append(items, Item{Key: procKey(p), Kind: KindProcess,
-			Name: filepath.Base(p.Exe), Detail: p.Exe, Action: ActionRemove, BytesKnown: true})
+			Name: filepath.Base(p.Exe), Detail: p.Exe, Action: ActionRemove, BytesKnown: true, Worktree: root})
 	}
 	return items
 }

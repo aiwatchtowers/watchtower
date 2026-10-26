@@ -71,12 +71,14 @@ type repoState struct {
 	adminDirs     map[string]string // worktree root -> <common>/worktrees/<name>
 	contained     map[string]bool   // sha -> in the default branch or a remote ref
 	tipDates      map[string]string // sha -> committer date, RFC 3339 UTC (display only)
-	merged        map[string]bool   // sha in the default branch or origin's copy (tips listed up front, others cached)
+	merged        map[string]bool   // sha in the default branch or origin's copy: every tip listed up front (true or false), others cached
 	mergedRefs    []string          // the existing default refs merged is read against
 }
 
-// readRepo inventories the repository holding folder.
-func readRepo(ctx context.Context, g gitCmd, folder string) (*repoState, error) {
+// readRepo inventories the repository holding folder; display reads the
+// tips' dates and the merged set too (a re-check, which never reports,
+// skips them).
+func readRepo(ctx context.Context, g gitCmd, folder string, display bool) (*repoState, error) {
 	r := &repoState{git: g, folder: folder, contained: map[string]bool{}}
 	out, err := g.output(ctx, folder, "rev-parse", "--git-common-dir")
 	if err != nil {
@@ -94,7 +96,9 @@ func readRepo(ctx context.Context, g gitCmd, folder string) (*repoState, error) 
 		return nil, err
 	}
 	r.defaultBranch, r.defaultErr = r.findDefaultBranch(ctx)
-	r.readDisplayFacts(ctx)
+	if display {
+		r.readDisplayFacts(ctx)
+	}
 	if r.adminDirs, err = readAdminDirs(r.commonDir); err != nil {
 		return nil, err
 	}
@@ -188,6 +192,7 @@ func (r *repoState) readDisplayFacts(ctx context.Context) {
 	if r.defaultBranch == "" {
 		return
 	}
+	listed := true // every --merged listing answered: a tip absent from all is unmerged
 	for _, ref := range []string{"refs/heads/" + r.defaultBranch, "refs/remotes/origin/" + r.defaultBranch} {
 		if _, code, err := r.git.exitCode(ctx, r.folder, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil || code != 0 {
 			continue
@@ -195,6 +200,7 @@ func (r *repoState) readDisplayFacts(ctx context.Context) {
 		r.mergedRefs = append(r.mergedRefs, ref)
 		out, err := r.git.output(ctx, r.folder, "for-each-ref", "--merged="+ref, "--format=%(objectname)", "refs/heads")
 		if err != nil {
+			listed = false
 			continue
 		}
 		for sha := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
@@ -203,11 +209,20 @@ func (r *repoState) readDisplayFacts(ctx context.Context) {
 			}
 		}
 	}
+	if !listed {
+		return
+	}
+	for _, br := range r.branches {
+		if !r.merged[br.Sha] {
+			r.merged[br.Sha] = false
+		}
+	}
 }
 
 // isMerged: sha is an ancestor of the local or origin default branch. Branch
-// tips are answered by the listing; any other commit (a detached HEAD) by
-// `merge-base --is-ancestor`. Display only: a failure reads as false.
+// tips are answered by the listing (merged or not); any other commit (a
+// detached HEAD) by `merge-base --is-ancestor`, then cached. Display only: a
+// failure reads as false.
 func (r *repoState) isMerged(ctx context.Context, sha string) bool {
 	r.mu.Lock()
 	v, ok := r.merged[sha]
