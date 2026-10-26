@@ -127,6 +127,9 @@ final class SessionInputHandlers: HubCompanion {
         }
     }
 
+    /// The lines marked as gone while the agent worked and not settled yet (tests).
+    var busyMarkCount: Int { goneWhileBusy.count }
+
     /// Waits for the later echoes queued so far (tests).
     func echoesSettled() async {
         await echoes?.value
@@ -149,6 +152,7 @@ final class SessionInputHandlers: HubCompanion {
                 lineDelivery.dropHeld(sessionID: sessionID) { $0 == .input(recordName) }
             }
             owned = [:]
+            goneWhileBusy = []
         }
     }
 
@@ -319,12 +323,19 @@ final class SessionInputHandlers: HubCompanion {
         return nil
     }
 
+    /// A try's resolution; a line that is over (not held) leaves its busy mark.
     private func resolve(_ delivery: SessionLineDelivery.Delivery, of line: PhoneLine) -> Resolution {
+        let resolution = settle(delivery, of: line, whileBusy: goneWhileBusy.contains(line.recordName))
+        if case .held = resolution {} else { goneWhileBusy.remove(line.recordName) }
+        return resolution
+    }
+
+    private func settle(_ delivery: SessionLineDelivery.Delivery, of line: PhoneLine, whileBusy: Bool) -> Resolution {
         let verdict = verdicts.removeValue(forKey: line.recordName)
         switch delivery {
         case .submitted:
             var result: [String: JSONValue] = ["delivery": .string("submitted")]
-            if goneWhileBusy.remove(line.recordName) != nil { result["while_busy"] = .bool(true) }
+            if whileBusy { result["while_busy"] = .bool(true) }
             return .final(.applied(result))
         case .typed: return .final(.applied(["delivery": .string("typed")]))
         case .copied: return .final(.failed(.cannotType, message: Self.cannotTypeMessage))
@@ -383,6 +394,7 @@ final class SessionInputHandlers: HubCompanion {
     private func finish(_ line: PhoneLine, _ outcome: ActionOutcome) {
         lineDelivery.dropHeld(sessionID: line.sessionID) { $0 == line.key }
         owned[line.recordName] = nil
+        goneWhileBusy.remove(line.recordName)
         do {
             try sidecar.removeHeldLine(line.recordName)
         } catch {

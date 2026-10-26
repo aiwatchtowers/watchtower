@@ -282,6 +282,26 @@ final class SessionInputHandlersTests: XCTestCase {
         XCTAssertEqual(pastes, ["Also update the changelog"], "a prompt never gets a phone line")
     }
 
+    /// A line that went while the agent worked but did not end submitted
+    /// (here its Return was withheld at a prompt shown during the paste)
+    /// leaves no busy mark behind; a stop clears any.
+    func testABusyMarkEndsWithItsLine() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let handlers = try makeHandlers()
+        // The delivery's first read is the gate's; the prompt shows by its re-read after the paste.
+        duringRead = { [weak self] in
+            self?.duringRead = { [weak self] in self?.setState(session, .needsApproval, at: "2026-10-12T10:00:30.000Z") }
+        }
+
+        let outcome = try await handlers.handle(input(session, "Also update the changelog"))
+
+        XCTAssertEqual(outcome.result, ["delivery": .string("typed")])
+        XCTAssertEqual(handlers.busyMarkCount, 0)
+        handlers.stop()
+        XCTAssertEqual(handlers.busyMarkCount, 0)
+    }
+
     /// An idle agent's echo carries no `while_busy` key (older bytes stay
     /// identical).
     func testProj16_AnIdleSessionEchoHasNoWhileBusy() async throws {
