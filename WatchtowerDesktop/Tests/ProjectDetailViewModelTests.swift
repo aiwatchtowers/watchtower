@@ -181,6 +181,26 @@ final class ProjectDetailViewModelTests: XCTestCase {
             atPath: root.appendingPathComponent("projects/\(projectID)").path))
     }
 
+    /// A chat moved out of the project elsewhere (the panel's Move to
+    /// Project) leaves the page's list once the panel's rows change and the
+    /// page re-reads (`ProjectDetailView`'s `panelChats` → `reloadLists`).
+    func testAChatMovedElsewhereLeavesTheListOnReload() async throws {
+        let projectID = self.projectID
+        let chatID = try await pool.write { d -> Int64 in
+            let id = try TestDatabase.insertChatConversation(d, title: "c")
+            let msg = try TestDatabase.insertChatMessage(d, conversationID: id, role: "user", text: "q")
+            try d.execute(sql: "UPDATE chat_conversations SET active_leaf_message_id = ?, project_id = ? WHERE id = ?",
+                          arguments: [msg, projectID, id])
+            return id
+        }
+        let vm = makeVM()
+        vm.load()
+        XCTAssertEqual(vm.chats.map(\.id), [chatID])
+        try await pool.write { try ChatConversationQueries.setProject($0, id: chatID, projectID: nil) }
+        vm.reloadLists()
+        XCTAssertTrue(vm.chats.isEmpty)
+    }
+
     func testDeleteProjectKeepsChats() async throws {
         let projectID = self.projectID
         let chatID = try await pool.write { d -> Int64 in
@@ -188,7 +208,10 @@ final class ProjectDetailViewModelTests: XCTestCase {
                 sql: "INSERT INTO chat_conversations (title, created_at, updated_at, project_id) VALUES ('c', 1, 1, ?)",
                 arguments: [projectID]
             )
-            return d.lastInsertedRowID
+            let id = d.lastInsertedRowID
+            let msg = try TestDatabase.insertChatMessage(d, conversationID: id, role: "user", text: "q")
+            try d.execute(sql: "UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?", arguments: [msg, id])
+            return id
         }
         let vm = makeVM()
         vm.load()

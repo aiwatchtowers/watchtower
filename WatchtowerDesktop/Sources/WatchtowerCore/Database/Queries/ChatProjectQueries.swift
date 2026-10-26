@@ -187,13 +187,18 @@ package enum ChatProjectQueries {
         return (true, try ChatAttachmentQueries.referenceCount(db, path: path) == 0 ? path : nil)
     }
 
+    /// The project page's chats: unarchived, with a message or a file — the
+    /// Chats panel's rule (`ChatHistoryViewModel.sections`), so the page's
+    /// own unsent draft and an untouched chat are not listed.
     package static func conversations(_ db: Database, projectID: Int64) throws -> [ChatConversation] {
         try ChatConversation.fetchAll(
             db,
             sql: """
-                SELECT * FROM chat_conversations
-                WHERE project_id = ? AND archived_at IS NULL
-                ORDER BY updated_at DESC, id DESC
+                SELECT c.* FROM chat_conversations c
+                WHERE c.project_id = ? AND c.archived_at IS NULL
+                  AND (c.active_leaf_message_id IS NOT NULL
+                       OR EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id))
+                ORDER BY c.updated_at DESC, c.id DESC
                 """,
             arguments: [projectID]
         )

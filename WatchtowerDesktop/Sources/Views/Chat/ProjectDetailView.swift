@@ -26,6 +26,9 @@ struct ProjectDetailView: View {
     /// The chats waiting in the panel's Undo window (or being deleted):
     /// not listed (spec 2026-10-26 §5.3).
     let hiddenChatIDs: Set<Int64>
+    /// The panel's chats as last read: a change (a chat moved, deleted,
+    /// archived or answered elsewhere) re-reads the page's list.
+    let panelChats: [ChatConversation]
     @State private var showSourcePicker = false
     @State private var confirmDelete = false
     @State private var dropTargeted = false
@@ -42,7 +45,8 @@ struct ProjectDetailView: View {
         onRenamed: @escaping () -> Void,
         onDeleted: @escaping (Int64) -> Void,
         onPromptChanged: @escaping (Int64) -> Void,
-        hiddenChatIDs: Set<Int64> = []
+        hiddenChatIDs: Set<Int64> = [],
+        panelChats: [ChatConversation] = []
     ) {
         _vm = State(initialValue: ProjectDetailViewModel(
             projectID: projectID,
@@ -59,6 +63,7 @@ struct ProjectDetailView: View {
         self.onRenamed = onRenamed
         self.onDeleted = onDeleted
         self.hiddenChatIDs = hiddenChatIDs
+        self.panelChats = panelChats
     }
 
     var body: some View {
@@ -83,6 +88,7 @@ struct ProjectDetailView: View {
         }
         // A chat left the Undo bar: deleted (or restored) for good.
         .onChange(of: hiddenChatIDs) { _, _ in vm.reloadLists() }
+        .onChange(of: panelChats) { _, _ in vm.reloadLists() }
         .onAppear {
             vm.load()
             if chatVM.projectNameFocusRequest == vm.projectID {
@@ -323,7 +329,8 @@ struct ProjectDetailView: View {
 }
 
 /// One file or pinned source on the Knowledge card: its kind badge, its
-/// name, and a remove button shown on hover (always there for VoiceOver).
+/// name, and a remove button shown on hover. The hidden button takes no
+/// focus; VoiceOver has the remove as the row's own action.
 struct ProjectKnowledgeRow: View {
     let item: ProjectKnowledgeItem
     let onRemove: () -> Void
@@ -339,11 +346,19 @@ struct ProjectKnowledgeRow: View {
             Button(action: onRemove) { Image(systemName: "xmark").font(.caption) }
                 .buttonStyle(.kitQuiet)
                 .opacity(isHovered ? 1 : 0)
+                .disabled(!isHovered)
                 .help(item.isFile ? "Remove file" : "Unpin")
-                .accessibilityLabel(item.isFile ? "Remove \(item.title)" : "Unpin \(item.title)")
+                .accessibilityHidden(true)
         }
         .kitRow(isSelected: false)
         .onHover { isHovered = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: Text(removeLabel), onRemove)
+    }
+
+    /// The row's VoiceOver action.
+    var removeLabel: String {
+        item.isFile ? "Remove \(item.title)" : "Unpin \(item.title)"
     }
 
     static func tone(_ kind: ProjectKnowledgeItem.Kind) -> Color {

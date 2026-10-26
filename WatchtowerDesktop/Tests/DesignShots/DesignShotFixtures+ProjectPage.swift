@@ -60,6 +60,9 @@ enum ProjectPageShotFixtures {
             for (title, age) in [("Pricing models of the competitors", 3600.0), ("Customer interviews: findings", 86400),
                                  ("Draft report for the team", 3 * 86400)] {
                 let id = try TestDatabase.insertChatConversation(db, title: title, updatedAt: now - age)
+                let msg = try TestDatabase.insertChatMessage(db, conversationID: id, role: "user", text: title)
+                try db.execute(sql: "UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?",
+                               arguments: [msg, id])
                 try ChatConversationQueries.setProject(db, id: id, projectID: project.id)
             }
             for (name, mime) in [("market-report.pdf", "application/pdf"), ("interview-notes.md", "text/markdown")] {
