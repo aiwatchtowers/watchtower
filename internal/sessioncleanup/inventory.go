@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -58,6 +59,8 @@ type branchRef struct{ Name, Sha string }
 
 // repoState is the workbench repository as one evaluation sees it.
 type repoState struct {
+	// mu guards the three caches below: worktrees are checked concurrently.
+	mu            sync.Mutex
 	git           gitCmd
 	folder        string // the workbench folder, symlink-resolved
 	commonDir     string
@@ -67,6 +70,9 @@ type repoState struct {
 	branches      []branchRef
 	adminDirs     map[string]string // worktree root -> <common>/worktrees/<name>
 	contained     map[string]bool   // sha -> in the default branch or a remote ref
+	tipDates      map[string]string // sha -> committer date, RFC 3339 UTC (display only)
+	merged        map[string]bool   // sha in the default branch or origin's copy (tips listed up front, others cached)
+	mergedRefs    []string          // the existing default refs merged is read against
 }
 
 // readRepo inventories the repository holding folder.
@@ -88,6 +94,7 @@ func readRepo(ctx context.Context, g gitCmd, folder string) (*repoState, error) 
 		return nil, err
 	}
 	r.defaultBranch, r.defaultErr = r.findDefaultBranch(ctx)
+	r.readDisplayFacts(ctx)
 	if r.adminDirs, err = readAdminDirs(r.commonDir); err != nil {
 		return nil, err
 	}
@@ -161,6 +168,104 @@ func readBranches(ctx context.Context, g gitCmd, folder string) ([]branchRef, er
 	return list, nil
 }
 
+// readDisplayFacts reads the tips' committer dates and the merged set for
+// the Clean Up screen. They are display-only: a failing git call leaves
+// them empty (unknown date, merged false) and never fails the plan.
+func (r *repoState) readDisplayFacts(ctx context.Context) {
+	r.tipDates, r.merged = map[string]string{}, map[string]bool{}
+	out, err := r.git.output(ctx, r.folder, "for-each-ref", "--format=%(objectname)%00%(committerdate:iso-strict)", "refs/heads")
+	if err == nil {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+			sha, date, ok := strings.Cut(line, "\x00")
+			if !ok || sha == "" {
+				continue
+			}
+			if t, perr := time.Parse(time.RFC3339, date); perr == nil {
+				r.tipDates[sha] = t.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	if r.defaultBranch == "" {
+		return
+	}
+	for _, ref := range []string{"refs/heads/" + r.defaultBranch, "refs/remotes/origin/" + r.defaultBranch} {
+		if _, code, err := r.git.exitCode(ctx, r.folder, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil || code != 0 {
+			continue
+		}
+		r.mergedRefs = append(r.mergedRefs, ref)
+		out, err := r.git.output(ctx, r.folder, "for-each-ref", "--merged="+ref, "--format=%(objectname)", "refs/heads")
+		if err != nil {
+			continue
+		}
+		for sha := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+			if sha != "" {
+				r.merged[sha] = true
+			}
+		}
+	}
+}
+
+// isMerged: sha is an ancestor of the local or origin default branch. Branch
+// tips are answered by the listing; any other commit (a detached HEAD) by
+// `merge-base --is-ancestor`. Display only: a failure reads as false.
+func (r *repoState) isMerged(ctx context.Context, sha string) bool {
+	r.mu.Lock()
+	v, ok := r.merged[sha]
+	r.mu.Unlock()
+	if ok {
+		return v
+	}
+	if sha == "" {
+		return false
+	}
+	in := false
+	for _, ref := range r.mergedRefs {
+		if _, code, err := r.git.exitCode(ctx, r.folder, "merge-base", "--is-ancestor", sha, ref); err == nil && code == 0 {
+			in = true
+			break
+		}
+	}
+	r.mu.Lock()
+	r.merged[sha] = in
+	r.mu.Unlock()
+	return in
+}
+
+// commitDate is the committer date of sha: a branch tip's from the single
+// listing, any other commit (a detached HEAD) by one `git log`; "" = unknown.
+func (r *repoState) commitDate(ctx context.Context, sha string) string {
+	r.mu.Lock()
+	d, ok := r.tipDates[sha]
+	r.mu.Unlock()
+	if ok {
+		return d
+	}
+	if sha == "" {
+		return ""
+	}
+	out, err := r.git.output(ctx, r.folder, "log", "-1", "--format=%cI", sha)
+	if err != nil {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(out)))
+	if err != nil {
+		return ""
+	}
+	d = t.UTC().Format(time.RFC3339)
+	r.mu.Lock()
+	r.tipDates[sha] = d
+	r.mu.Unlock()
+	return d
+}
+
+// mainRoot is the main worktree's root (the first listed entry).
+func (r *repoState) mainRoot() string {
+	if len(r.worktrees) == 0 {
+		return r.folder
+	}
+	return r.worktrees[0].Root
+}
+
 // findDefaultBranch: origin/HEAD's target, else main, else master, else
 // "" (unknown). Only "not a symbolic ref" (exit 1) falls through to main and
 // master; any other symbolic-ref failure is returned with "".
@@ -224,7 +329,10 @@ func readAdminDirs(commonDir string) (map[string]string, error) {
 // isContained reports whether sha is an ancestor of the default branch or
 // contained in any refs/remotes/* ref. No fetch: what the remote refs say now.
 func (r *repoState) isContained(ctx context.Context, sha string) (bool, error) {
-	if v, ok := r.contained[sha]; ok {
+	r.mu.Lock()
+	v, ok := r.contained[sha]
+	r.mu.Unlock()
+	if ok {
 		return v, nil
 	}
 	in, err := r.inDefault(ctx, sha)
@@ -234,7 +342,9 @@ func (r *repoState) isContained(ctx context.Context, sha string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	r.mu.Lock()
 	r.contained[sha] = in
+	r.mu.Unlock()
 	return in, nil
 }
 

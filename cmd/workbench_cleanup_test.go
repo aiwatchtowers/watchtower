@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -695,4 +697,181 @@ func TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList(t *testing.T) {
 	// workbench, so it is unregistered.
 	assert.Contains(t, strings.Join(calls, "\n"), root+" :: claude mcp remove --scope local watchtower-workbench",
 		"a kept worktree's MCP entry is unregistered")
+}
+
+// appLS lists one fixed bundle per worktree and has no stale entries.
+type appLS struct{}
+
+func (appLS) Bundles(root string) []string             { return []string{filepath.Join(root, "Build", "App.app")} }
+func (appLS) Unregister(context.Context, string) error { return nil }
+func (appLS) Register(context.Context, string) error   { return nil }
+func (appLS) Stale(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func TestCleanupCmd_JSONItemKeys(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	_, err := f.database.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now()), f.session)
+	require.NoError(t, err)
+	prev := cleanupDeps
+	cleanupDeps = func(d *db.DB) sessioncleanup.Deps {
+		deps := prev(d)
+		deps.LS = appLS{}
+		return deps
+	}
+	t.Cleanup(func() { cleanupDeps = prev })
+
+	out, err := runCleanupCmd(t, "--workbench", strconv.FormatInt(f.wb, 10), "--sweep", "--json")
+	require.NoError(t, err, out)
+	var raw struct {
+		Items []map[string]any `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &raw), out)
+	keysOf := func(key string) []string {
+		for _, it := range raw.Items {
+			if it["key"] == key {
+				ks := make([]string, 0, len(it))
+				for k := range it {
+					ks = append(ks, k)
+				}
+				sort.Strings(ks)
+				return ks
+			}
+		}
+		t.Fatalf("no item %s in %s", key, out)
+		return nil
+	}
+	base := []string{"key", "kind", "name", "branch", "bytes", "bytes_known", "action", "reason", "detail",
+		"done", "error", "owner", "origin", "last_commit_at", "merged"}
+	sort.Strings(base)
+	assert.Equal(t, base, keysOf("worktree:"+root))
+	withWorktree := append(append([]string{}, base...), "worktree")
+	sort.Strings(withWorktree)
+	// The bundle item has no owner (omitempty) but names its worktree.
+	want := slices.DeleteFunc(withWorktree, func(k string) bool { return k == "owner" })
+	assert.Equal(t, want, keysOf("lsreg:"+filepath.Join(root, "Build", "App.app")))
+}
+
+// streamLines runs a streamed cleanup and decodes each stdout line.
+func streamLines(t *testing.T, out string) []map[string]json.RawMessage {
+	t.Helper()
+	var lines []map[string]json.RawMessage
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		var m map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(l), &m), l)
+		lines = append(lines, m)
+	}
+	return lines
+}
+
+func lineKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func lineEvent(t *testing.T, m map[string]json.RawMessage) string {
+	t.Helper()
+	var ev string
+	require.NoError(t, json.Unmarshal(m["event"], &ev))
+	return ev
+}
+
+func TestCleanupCmd_StreamNeedsJSON(t *testing.T) {
+	f := newCleanupFixture(t)
+	out, err := runCleanupCmd(t, "--session", f.sessionArg(), "--stream")
+	requireExitCode(t, err, 2)
+	assert.Contains(t, err.Error()+out, "--stream needs --json")
+}
+
+func TestCleanupCmd_StreamPlanLines(t *testing.T) {
+	f := newCleanupFixture(t)
+	f.pushedWorktree("wt", "feat/x")
+	_, err := f.database.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now()), f.session)
+	require.NoError(t, err)
+	args := []string{"--workbench", strconv.FormatInt(f.wb, 10), "--sweep", "--json"}
+
+	plain, err := runCleanupCmd(t, args...)
+	require.NoError(t, err, plain)
+	out, err := runCleanupCmd(t, append(args, "--stream")...)
+	require.NoError(t, err, out)
+
+	lines := streamLines(t, out)
+	require.GreaterOrEqual(t, len(lines), 3, out)
+	assert.Equal(t, "listed", lineEvent(t, lines[0]))
+	assert.Equal(t, "done", lineEvent(t, lines[len(lines)-1]))
+	want := map[string][]string{
+		"listed": {"event", "items"}, "checked": {"event", "item"},
+		"sized": {"bytes", "bytes_known", "event", "key"}, "done": {"event", "plan"},
+	}
+	seen := map[string]bool{}
+	for _, l := range lines {
+		ev := lineEvent(t, l)
+		seen[ev] = true
+		assert.Equal(t, want[ev], lineKeys(l), ev)
+	}
+	assert.True(t, seen["checked"] && seen["sized"], out)
+	var streamed, direct any
+	require.NoError(t, json.Unmarshal(lines[len(lines)-1]["plan"], &streamed))
+	require.NoError(t, json.Unmarshal([]byte(plain), &direct))
+	assert.Equal(t, direct, streamed)
+}
+
+func TestCleanupCmd_StreamApplyLines(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	out, err := runCleanupCmd(t, "--session", f.sessionArg(), "--apply", "--item", "worktree:"+root, "--json", "--stream")
+	require.NoError(t, err, out)
+	lines := streamLines(t, out)
+	var events []string
+	for _, l := range lines {
+		events = append(events, lineEvent(t, l))
+	}
+	require.Equal(t, "listed", events[0], out)
+	require.Equal(t, "done", events[len(events)-1], out)
+	ri, di := slices.Index(events, "removing"), slices.Index(events, "removed")
+	require.GreaterOrEqual(t, ri, 0, out)
+	assert.Less(t, ri, di, out)
+	assert.Equal(t, []string{"event", "key"}, lineKeys(lines[ri]))
+	assert.Equal(t, []string{"event", "item"}, lineKeys(lines[di]))
+	assert.NoDirExists(t, root)
+}
+
+// scanFailsAfter fails the process scan from its n-th call on.
+type scanFailsAfter struct {
+	noCleanupProcs
+	n, calls int
+}
+
+func (s *scanFailsAfter) Scan(ctx context.Context) ([]sessioncleanup.Proc, error) {
+	s.calls++
+	if s.calls >= s.n {
+		return nil, errors.New("process table unavailable")
+	}
+	return s.noCleanupProcs.Scan(ctx)
+}
+
+func TestCleanupCmd_StreamFailureHasNoDone(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	orig := cleanupDeps
+	cleanupDeps = func(d *db.DB) sessioncleanup.Deps {
+		deps := orig(d)
+		deps.Procs = &scanFailsAfter{n: 1}
+		return deps
+	}
+	t.Cleanup(func() { cleanupDeps = orig })
+
+	out, err := runCleanupCmd(t, "--session", f.sessionArg(), "--apply", "--item", "worktree:"+root, "--json", "--stream")
+	require.Error(t, err, out)
+	requireNotUsage(t, err)
+	// The engine fails before it reports anything: no line, above all no done.
+	assert.NotContains(t, out, `"done"`)
+	assert.DirExists(t, root)
 }

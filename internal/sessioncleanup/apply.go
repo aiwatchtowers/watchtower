@@ -121,12 +121,13 @@ type applier struct {
 	halt   error             // set by a failure that stops the apply
 	self   int               // this process: never an orphan
 	walked map[string]string // W9 walks of the evaluation, reused until the final re-check
+	report *reporter         // the request's Observer; the re-checks' builders have none
 }
 
 func newApplier(b *builder, p Plan, only []string) *applier {
 	a := &applier{deps: b.deps, req: b.req, git: b.repo.git, folder: b.repo.folder, items: p.Items,
-		tips: map[string]string{}, self: b.self, walked: b.walked}
-	a.req.NoSize = true
+		tips: map[string]string{}, self: b.self, walked: b.walked, report: b.report}
+	a.req.NoSize, a.req.Observer = true, nil
 	for _, br := range b.repo.branches {
 		a.tips[br.Name] = br.Sha
 	}
@@ -179,16 +180,23 @@ func (a *applier) run(ctx context.Context) {
 	for _, kind := range []Kind{KindWorktree, KindBranch} {
 		for i := range a.items {
 			if a.items[i].Kind == kind && a.items[i].Action == ActionRemove {
-				a.act(ctx, i)
+				a.actReported(ctx, i)
 			}
 		}
 	}
 	for i := range a.items {
 		if a.items[i].Kind == KindLsreg && a.items[i].Action == ActionRemove && a.ownerRoot(a.items[i]) == "" {
-			a.act(ctx, i)
+			a.actReported(ctx, i)
 		}
 	}
 	a.settleDependents()
+}
+
+// actReported is act between the Observer's Removing and Removed.
+func (a *applier) actReported(ctx context.Context, i int) {
+	a.report.removing(a.items[i].Key)
+	a.act(ctx, i)
+	a.report.removed(a.items[i])
 }
 
 // act re-checks and removes one item, unless the apply has stopped.
