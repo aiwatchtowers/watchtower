@@ -68,7 +68,11 @@ extension WorkbenchesViewModel {
     @discardableResult
     func openCleanupScreen(projectID: Int64, sessionID: Int64? = nil) -> Task<Void, Never> {
         let scope = sessionID.map(SessionCleanupScope.session) ?? .workbench(projectID)
-        if cleanupScreens[projectID]?.scope != scope {
+        if let shown = cleanupScreens[projectID]?.scope, shown != scope {
+            // Leaving the old scope is closing it: its result goes.
+            closeCleanupScreen(projectID: projectID)
+        }
+        if cleanupScreens[projectID] == nil {
             cleanupScreens[projectID] = CleanupScreenState(scope: scope)
         }
         return planShownScope(projectID: projectID, scope: scope)
@@ -118,6 +122,8 @@ extension WorkbenchesViewModel {
     func retryCleanup(projectID: Int64) {
         guard let state = cleanupScreens[projectID], let center = sessionCleanup,
               case .failed = center.cleanupPhase(for: state.scope) else { return }
+        // Every plan empties `sentKeys` and every apply fills it, so an
+        // empty set means the failed run was a plan.
         if state.sentKeys.isEmpty {
             refreshCleanup(projectID: projectID)
         } else {
@@ -129,14 +135,21 @@ extension WorkbenchesViewModel {
     /// of either scope, or Delete and Clean Up's: Refresh and Clean Up…
     /// are disabled then ("Another cleanup is running").
     func canRefreshCleanup(projectID: Int64) -> Bool {
-        guard let center = sessionCleanup else { return false }
-        return !center.isApplying(workbenchID: projectID) && sweepRuns[projectID] == nil
+        sessionCleanup != nil && !cleanupApplyRuns(projectID: projectID)
     }
 
     /// True while a cleanup apply of workbench `projectID` runs: the Delete
     /// dialog's **Delete and Clean Up** waits (Delete Only does not).
     func deleteAndCleanUpBlocked(projectID: Int64) -> Bool {
+        cleanupApplyRuns(projectID: projectID)
+    }
+
+    /// Whether a cleanup apply of workbench `projectID` runs: the center's,
+    /// the screen's, or a Delete and Clean Up still closing its terminal or
+    /// re-planning before its apply starts.
+    private func cleanupApplyRuns(projectID: Int64) -> Bool {
         sessionCleanup?.isApplying(workbenchID: projectID) == true || sweepRuns[projectID] != nil
+            || cleanupRunWorkbenches.values.contains(projectID)
     }
 
     /// The screen's streamed run so far: its rows, checks and stage.

@@ -153,6 +153,11 @@ final class WorkbenchesViewModel {
     /// The Delete and Clean Up runs this view model owns, per session: a
     /// view going away never cancels one.
     @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]
+    /// Each Delete and Clean Up run's workbench, per session: the run
+    /// counts as that workbench's cleanup apply from its start, before the
+    /// terminal closed and any re-plan (one apply per workbench, spec
+    /// 2026-10-26 §3.2).
+    @ObservationIgnored var cleanupRunWorkbenches: [Int64: Int64] = [:]
     /// The automatic cleanups of finished placed sessions whose agent
     /// exited (session worktrees spec §9), per session; gone when done.
     @ObservationIgnored var placedCleanupRuns: [Int64: Task<Void, Never>] = [:]

@@ -79,6 +79,7 @@ extension WorkbenchesViewModel {
             await self.runDeleteAndCleanUp(session, workbenchID: workbenchID, center: center, choice: choice)
         }
         cleanupRuns[session.id] = run
+        cleanupRunWorkbenches[session.id] = workbenchID
         return run
     }
 
@@ -133,6 +134,7 @@ extension WorkbenchesViewModel {
         cleaningUpSessions.remove(sessionID)
         closedForCleanup.remove(sessionID)
         cleanupRuns[sessionID] = nil
+        cleanupRunWorkbenches[sessionID] = nil
     }
 
     /// The Undo bar's line for the sessions waiting in it whose Delete and

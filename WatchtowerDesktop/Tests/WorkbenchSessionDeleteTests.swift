@@ -485,6 +485,45 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertFalse(vm.deleteAndCleanUpBlocked(projectID: p), "free again once it ended")
     }
 
+    /// A Delete and Clean Up counts as the workbench's cleanup apply from its
+    /// start: while it re-plans (its apply not started yet), the screen's
+    /// Clean Up… and Refresh wait and another session's Delete and Clean Up
+    /// is refused.
+    func testDeleteAndCleanUpBlocksTheScreenBeforeItsApplyStarts() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(CleanupFixture.planBusy), .success(CleanupFixture.replanFree), .success(CleanupFixture.applied)
+        ])
+        let streamer = RepliedCleanupStreamer(replies: [.success(CleanupFixture.plan)])
+        let (vm, _) = makeVM(runner, streamer: streamer)
+        let (p, row) = try await liveSession(vm)
+        await vm.newSession(projectID: p)
+        let other = try XCTUnwrap(vm.sessions.first { $0.id != row.id })
+        await vm.openCleanupScreen(projectID: p).value
+        vm.cleanupScreens[p]?.ticks = ["worktree:/tmp/example/.claude/worktrees/x"]
+        await vm.planCleanupBeforeDelete(row)
+        let choice = try XCTUnwrap(vm.deleteCleanupChoice(row))
+        XCTAssertTrue(choice.needsReplan, "the fixture re-plans after the terminal closes")
+
+        runner.holdsCalls = true
+        let deleting = vm.startDeleteAndCleanUp(row, choice: choice)
+        await waitForHeldCall(runner)
+
+        XCTAssertFalse(vm.canRefreshCleanup(projectID: p))
+        let screenApply = await vm.applyCleanupScreen(projectID: p)
+        XCTAssertFalse(screenApply, "the screen's Clean Up… waits")
+        XCTAssertFalse(streamer.calls.contains { $0.args.contains("--apply") })
+        XCTAssertTrue(vm.deleteAndCleanUpBlocked(projectID: p))
+        let second = await vm.startDeleteAndCleanUp(other, choice: choice).value
+        XCTAssertFalse(second, "a second session's Delete and Clean Up is refused")
+        XCTAssertTrue(terminals.liveIDs.contains(other.id))
+
+        runner.holdsCalls = false
+        runner.release()
+        let deleted = await deleting.value
+        XCTAssertTrue(deleted, "the first Delete and Clean Up was never refused")
+        XCTAssertTrue(vm.canRefreshCleanup(projectID: p), "free again once it ended")
+    }
+
     // MARK: - Leaving the page (F1)
 
     /// The Delete dialog's task starts the plan, then the owner leaves the
@@ -537,15 +576,18 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         let (vm, cleanup) = makeVM(FakeSessionCleanupRunner(replies: []), streamer: streamer)
         let (p, row) = try await liveSession(vm)
         let (store, id) = (try XCTUnwrap(pool), row.id)
-        let stored = String(bytes: CleanupFixture.applied, encoding: .utf8)
-        // Go stores the apply's result as it runs; the plan comes first.
-        try await openScreen(vm, on: row)
-        try await store.write { db in
-            try db.execute(
-                sql: "UPDATE terminal_sessions SET cleanup_result = ?, cleanup_at = ? WHERE id = ?",
-                arguments: [stored, "2026-10-12T10:00:00Z", id]
-            )
+        streamer.onCall = { run in
+            // Go stores the apply's result as it runs.
+            guard run.args.contains("--apply") else { return }
+            try? store.write { db in
+                try db.execute(
+                    sql: "UPDATE terminal_sessions SET cleanup_result = ?, cleanup_at = ? WHERE id = ?",
+                    arguments: [String(bytes: CleanupFixture.applied, encoding: .utf8), "2026-10-12T10:00:00Z", id]
+                )
+            }
         }
+        try await openScreen(vm, on: row)
+        XCTAssertNil(vm.cleanupReportLine(sessionID: row.id), "nothing stored before the apply")
         // The worktree row goes with its removable branch (PROJ-18,
         // 2026-10-26 amendment); a kept item and a stray key cannot be
         // applied whatever the ticks say.

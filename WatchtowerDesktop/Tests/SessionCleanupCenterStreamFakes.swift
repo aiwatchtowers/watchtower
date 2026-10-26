@@ -207,6 +207,8 @@ func waitUntil(
 final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable {
     /// When true, each run waits for `release()` before it answers.
     var holdsCalls = false
+    /// Runs on each run before it answers (a test writing what Go would).
+    var onCall: (@Sendable (ScriptedCleanupStreamer.Run) -> Void)?
 
     private let scripted = ScriptedCleanupStreamer()
     private let lock = NSLock()
@@ -240,6 +242,7 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
             let next = replies.count > 1 ? replies.removeFirst() : replies.first ?? .success(Data("{}".utf8))
             return (next, holdsCalls)
         }
+        onCall?(run)
         Task.detached { [self] in
             if holds {
                 await withCheckedContinuation { continuation in

@@ -50,11 +50,12 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
     /// Another worktree the session visited, also removable in the plan.
     private var otherWorktree: String { acme + "/.claude/worktrees/y" }
 
-    private func makeVM(_ runner: FakeSessionCleanupRunner) -> WorkbenchesViewModel {
+    /// `streamer` runs the Clean Up screen's streamed runs.
+    private func makeVM(_ runner: FakeSessionCleanupRunner, streamer: RepliedCleanupStreamer? = nil) -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: cli), defaults: defaults,
                                       terminalCenter: terminals)
         vm.titleService = { _ in .init(title: "", written: false) }
-        let cleanup = SessionCleanupCenter(runner: runner)
+        let cleanup = SessionCleanupCenter(runner: runner, streamer: streamer)
         cleanup.liveSessionIDs = { [terminals] in terminals?.liveIDs ?? [] }
         vm.sessionCleanup = cleanup
         return vm
@@ -174,6 +175,24 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         processes[row.id] = lastProcess
         try await exitAgent(vm, row)
         XCTAssertEqual(applyCalls(runner).count, 1, "with the screen closed the exit cleans up")
+    }
+
+    /// The screen moved from the session to the whole workbench: the
+    /// session's ready plan is forgotten, so its natural-exit cleanup runs.
+    func testScopeChangeFreesTheSessionForItsAutomaticCleanup() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(fullPlan)])
+        let streamer = RepliedCleanupStreamer(replies: [.success(fullPlan)])
+        defer { streamer.finishAll() }
+        let vm = makeVM(runner, streamer: streamer)
+        let row = try await runningRow(finished: true)
+        let p = try XCTUnwrap(row.projectID)
+        await vm.openCleanupScreen(projectID: p, sessionID: row.id).value
+        guard case .ready = vm.sessionCleanup?.cleanupPhase(for: .session(row.id)) else { return XCTFail("no plan") }
+
+        await vm.openCleanupScreen(projectID: p).value
+        try await exitAgent(vm, row)
+
+        XCTAssertEqual(applyCalls(runner).count, 1, "the exit cleans up once the screen left the session")
     }
 
     func testUnfinishedExitDoesNothing() async throws {

@@ -269,6 +269,35 @@ final class SessionCleanupSweepTests: XCTestCase {
         XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
     }
 
+    /// Opening another scope closes the shown one: its ready plan or its
+    /// result is forgotten, so nothing stale comes back and the scope is
+    /// free again (a placed session's cleanup, the hint).
+    func testChangingTheScopeForgetsTheOldScopesPhase() async throws {
+        let runner = RepliedCleanupStreamer(replies: [
+            .success(CleanupFixture.plan), .success(SweepFixture.plan),
+            .success(CleanupFixture.plan), .success(CleanupFixture.applied), .success(SweepFixture.plan)
+        ])
+        let (vm, cleanup) = makeVM(runner)
+
+        // A ready plan of session 9, then the workbench.
+        await vm.openCleanupScreen(projectID: workbenchID, sessionID: 9).value
+        _ = try readyPlan(cleanup, .session(9))
+        await vm.openCleanupScreen(projectID: workbenchID).value
+        XCTAssertEqual(cleanup.cleanupPhase(for: .session(9)), .idle, "the ready plan was forgotten")
+        XCTAssertFalse(vm.cleanupScreenShows(sessionID: 9))
+
+        // A finished apply of session 9, then the workbench again.
+        await vm.openCleanupScreen(projectID: workbenchID, sessionID: 9).value
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle, "the workbench's plan went too")
+        tick(vm, ["worktree:/tmp/example/.claude/worktrees/x"])
+        let ok = await vm.applyCleanupScreen(projectID: workbenchID)
+        XCTAssertTrue(ok)
+        guard case .done = cleanup.cleanupPhase(for: .session(9)) else { return XCTFail("expected the result") }
+        await vm.openCleanupScreen(projectID: workbenchID).value
+        XCTAssertEqual(cleanup.cleanupPhase(for: .session(9)), .idle, "the result was forgotten")
+        XCTAssertEqual(vm.cleanupScreens[workbenchID]?.scope, .workbench(workbenchID))
+    }
+
     // MARK: - One apply at a time
 
     func testRefreshAndCleanUpDisabledWhileApplying() async throws {
