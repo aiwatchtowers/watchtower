@@ -45,6 +45,10 @@ Type into **Message the session…** and send. Your line shows under it:
 
 The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. The report shows the targets' progress, the pull requests and the session's milestones.
 
+### Keep the Mac awake for the phone
+
+While a session runs and the phone has been in touch in the last 24 hours, the Mac does not sleep on its own. Turn this off under Settings → **Mobile** → **Keep this Mac awake for the iPhone**. A closed lid on battery still sleeps it.
+
 ## When it's empty or wrong
 
 - **Asking your Mac…** then **Your Mac has not sent this chat yet. Is it awake?**: the Mac is asleep or offline; the chat appears once it answers.
