@@ -69,12 +69,18 @@ func TestCoachProposal_RoundTrip(t *testing.T) {
 	require.NotNil(t, got.VerdictValue)
 	assert.Equal(t, 1.0, *got.VerdictValue)
 
+	// Only an accepted proposal takes a verdict.
+	assert.ErrorIs(t, d.SetCoachVerdict(global, "works", &v, now), ErrCoachStateChanged)
+
 	fps, err := d.CoachFingerprints()
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"fp1": "accepted", "fp2": "open"}, fps)
 
 	_, err = d.GetCoachProposal(9999)
 	assert.ErrorIs(t, err, sql.ErrNoRows)
+
+	require.NoError(t, d.DecideCoachProposal(id, "accepted", "rolled_back", now))
+	assert.ErrorIs(t, d.SetCoachVerdict(id, "no_effect", nil, now), ErrCoachStateChanged)
 }
 
 func TestInsertCoachProposal_DuplicateFingerprintIsNoop(t *testing.T) {

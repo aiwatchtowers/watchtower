@@ -248,17 +248,17 @@ func (db *DB) MarkCoachAccepted(id int64, after string, baseline *float64, n int
 	return coachCAS(res, err, "accepting coach proposal")
 }
 
-// SetCoachVerdict stores the outcome verdict of an accepted proposal.
+// SetCoachVerdict stores the outcome verdict of an accepted proposal, only
+// while it is still accepted (a rolled-back one keeps no verdict); otherwise
+// ErrCoachStateChanged.
 func (db *DB) SetCoachVerdict(id int64, verdict string, value *float64, now time.Time) error {
 	var v any
 	if value != nil {
 		v = *value
 	}
-	if _, err := db.Exec(`UPDATE coach_proposals SET verdict = ?, verdict_value = ?, verdict_at = ? WHERE id = ?`,
-		verdict, v, coachStamp(now), id); err != nil {
-		return fmt.Errorf("setting coach verdict: %w", err)
-	}
-	return nil
+	res, err := db.Exec(`UPDATE coach_proposals SET verdict = ?, verdict_value = ?, verdict_at = ?
+		WHERE id = ? AND status = 'accepted'`, verdict, v, coachStamp(now), id)
+	return coachCAS(res, err, "setting coach verdict")
 }
 
 // ListPromptAdditions returns the additions to one prompt, oldest first.
