@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 )
 
@@ -69,7 +70,7 @@ func (p *Pipeline) GenerateRecap(
 	cleaned := cleanJSON(aiResponse) // reuse helper from pipeline.go (same package)
 	var raw RecapResult
 	if err := json.Unmarshal([]byte(cleaned), &raw); err != nil {
-		return nil, fmt.Errorf("parsing AI response: %w (raw: %.300s)", err, aiResponse)
+		return nil, fmt.Errorf("parsing AI response: %w (%s)", err, logredact.Body([]byte(aiResponse)))
 	}
 
 	raw.Summary = strings.TrimSpace(raw.Summary)

@@ -31,11 +31,11 @@ package enum HomeQueries {
     private static func newestOpenSuggestion(_ db: Database, now: Date) throws -> HomeInstructionSuggestion? {
         let cutoff = ISO8601DateFormatter().string(from: now.addingTimeInterval(-7 * 24 * 3600))
         let row = try Row.fetchOne(db, sql: """
-            SELECT id, text FROM instruction_suggestions
+            SELECT id, text, field FROM instruction_suggestions
             WHERE status = 'open' AND first_seen_at >= ?
             ORDER BY first_seen_at DESC, id DESC LIMIT 1
             """, arguments: [cutoff])
-        return row.map { HomeInstructionSuggestion(id: $0["id"], text: $0["text"]) }
+        return row.map { HomeInstructionSuggestion(id: $0["id"], text: $0["text"], field: $0["field"]) }
     }
 
     /// One source's read: nil when a table it needs is missing (no content)

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	goslack "github.com/slack-go/slack"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,7 +53,7 @@ func stubSlackIdentityServer(t *testing.T, userID, teamID, teamName, teamDomain 
 
 	original := newSlackClientForToken
 	newSlackClientForToken = func(token string) *watchtowerslack.Client {
-		return watchtowerslack.NewClientWithAPIUnlimited(goslack.New(token, goslack.OptionAPIURL(srv.URL+"/")))
+		return watchtowerslack.NewClientWithAPIURLUnlimited(token, srv.URL+"/")
 	}
 	t.Cleanup(func() { newSlackClientForToken = original })
 }
@@ -217,7 +216,7 @@ func TestEnsureLegacySlackAccount_OfflineStillMigratesToken(t *testing.T) {
 	// Slack keeps syncing — team info fills in on the next online call.
 	original := newSlackClientForToken
 	newSlackClientForToken = func(token string) *watchtowerslack.Client {
-		return watchtowerslack.NewClientWithAPIUnlimited(goslack.New(token, goslack.OptionAPIURL("http://127.0.0.1:0/")))
+		return watchtowerslack.NewClientWithAPIURLUnlimited(token, "http://127.0.0.1:0/")
 	}
 	t.Cleanup(func() { newSlackClientForToken = original })
 

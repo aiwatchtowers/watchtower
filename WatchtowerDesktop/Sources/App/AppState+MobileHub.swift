@@ -12,6 +12,67 @@ extension AppState {
         set { mobileSyncDefaults.set(newValue, forKey: Constants.mobileKeepAwakeKey) }
     }
 
+    /// The owner's toggle, outvoted by the organization's `MobileSync = off`
+    /// (#608); the stored toggle itself is never rewritten by the policy.
+    var isMobileSyncEnabled: Bool {
+        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey) && managedPolicy.policy.mobileSyncMode != "off"
+    }
+
+    /// The Settings → Mobile toggle: on starts the hub (building it on first
+    /// use), off stops it. The hub object is kept, so toggling never opens a
+    /// second transport.
+    func setMobileSyncEnabled(_ enabled: Bool) {
+        // MobileSync = off (#608) cannot be turned on from here, whatever
+        // the view shows; the stored toggle is left as it was.
+        if enabled, mobileSyncLockedByPolicy { return }
+        mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
+        guard enabled else {
+            mobileHub?.disable()
+            return
+        }
+        if let hub = mobileHub {
+            Task { await hub.start() }
+        } else if let pool = mobileHubPool {
+            initMobileHub(dbPool: pool)
+        }
+    }
+
+    var mobileSyncLockedByPolicy: Bool { managedPolicy.policy.mobileSyncMode == "off" }
+
+    /// Every policy tick: a wipe under `MobileSync = off` whose hub could not
+    /// be built (no storage yet) is tried again (`wipeHubForPolicyOff` runs
+    /// once per run).
+    func retryPolicyOffWipe() {
+        guard mobileSyncPolicy.current == "off", mobileHub == nil, let pool = mobileHubPool else { return }
+        wipeHubForPolicyOff(dbPool: pool)
+    }
+
+    /// Follows a changed policy on the hub: `off` stops it and removes what
+    /// it published (`disable`); leaving `off` starts it again only when the
+    /// owner's toggle is on; `workbench_only` empties the other kinds at the
+    /// next cycle (`mobileSyncPolicy`). Nothing is turned on by itself.
+    func managedPolicyChanged(_ policy: ManagedPolicy) {
+        let previous = mobileSyncPolicy.current
+        let mode = policy.mobileSyncMode
+        mobileSyncPolicy.store(mode)
+        guard mode != previous else { return }
+        if mode == "off" {
+            if let hub = mobileHub {
+                hub.disable()
+            } else if let pool = mobileHubPool {
+                wipeHubForPolicyOff(dbPool: pool)
+            }
+        } else if previous == "off", isMobileSyncEnabled {
+            if let hub = mobileHub {
+                Task { await hub.start() }
+            } else if let pool = mobileHubPool {
+                initMobileHub(dbPool: pool)
+            }
+        }
+    }
+}
+
+extension AppState {
     /// A phone start with "Bring the window forward" (mobile POC spec §6.5):
     /// the workbench's page on the main window, the app in front — before
     /// the start, so its Work on it placement lands on that page.
@@ -94,9 +155,10 @@ extension AppState {
         let publisher = SlicePublisher(
             dbPool: dbPool, state: storage.sidecar, transport: storage.secure, sources: sources, assets: storage.sliceAssets,
             isLinked: hasPhone,
+            allowedKinds: { [mobileSyncPolicy] in mobileSyncPolicy.allowedKinds },
             // Labelled: a trailing closure would bind to `clock`, the first
             // closure parameter.
-            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+            sendNow: { await transport.sendNow() }
         )
         followPendingDeletes(into: hidden)
         // The companions' changes (git status, summaries, reports, phone
@@ -118,7 +180,10 @@ extension AppState {
         let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings, keepAwake]
         let hub = try assembleMobileHub(
             storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
-            recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
+            recordingUploads: .init { [recordings, mobileSyncPolicy] upload, audio in
+                try mobileSyncPolicy.checkRecordingAllowed() // #608: not workbench data
+                try await recordings.ingest(upload, audio: audio)
+            }
         )
         wireTyping(hub.linkCenter, inputs: inputs)
         return hub

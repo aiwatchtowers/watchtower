@@ -87,14 +87,9 @@ package struct ChatTurnRequest: Equatable, Sendable {
 }
 
 /// Whether a provider session has seen the history a turn builds on.
-/// `continuousLeafID` is the last message the live session answered — or,
-/// for a session spawned with `--resume`, the conversation's leaf at spawn.
+/// `continuousLeafID` is the last message the live session answered; nil for
+/// a new session, which has seen nothing (sessions never resume, #604 G11).
 package enum ChatContinuity {
-    package static func initialLeaf(resumeSessionID: String?, activeLeafID: Int64?) -> Int64? {
-        guard let resumeSessionID, !resumeSessionID.isEmpty else { return nil }
-        return activeLeafID
-    }
-
     /// `historyTipID` is the parent of the user message being sent.
     package static func replayNeeded(historyTipID: Int64?, continuousLeafID: Int64?) -> Bool {
         historyTipID != continuousLeafID

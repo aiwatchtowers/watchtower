@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/linear"
+	"watchtower/internal/logredact"
 	"watchtower/internal/oauthpage"
 )
 
@@ -768,7 +769,7 @@ func runLinearSync(cmd *cobra.Command, _ []string) error {
 		if errors.Is(err, linear.ErrAuthRevoked) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: authorization revoked; run 'watchtower linear login --account %d'\n", a.ID, a.ID)
 			errs = errors.Join(errs, fmt.Errorf("account %d: %w", a.ID, err))
-			if werr := database.SetLinearAccountAuthState(a.ID, "revoked", err.Error()); werr != nil {
+			if werr := database.SetLinearAccountAuthState(a.ID, "revoked", logredact.Full(err)); werr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "account %d: recording revoked state: %v\n", a.ID, werr)
 				errs = errors.Join(errs, fmt.Errorf("account %d: recording revoked state: %w", a.ID, werr))
 			}

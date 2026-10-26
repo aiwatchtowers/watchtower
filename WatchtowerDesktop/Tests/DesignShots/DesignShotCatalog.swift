@@ -46,6 +46,22 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
+            DesignShot(name: "chat-knowledge-marks", size: NSSize(width: 560, height: 260)) {
+                AnyView(DesignShotFixtures.chatKnowledgeMarks().padding(12).shotFrame().detailBackground())
+            },
+            // Native text runs (§5b): finished and streaming must match.
+            DesignShot(name: "chat-markdown-finished", size: NSSize(width: 784, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 760).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-streaming", size: NSSize(width: 784, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 760).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-finished-narrow", size: NSSize(width: 344, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 320).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
+            },
             DesignShot(name: "workchat-live-line", size: NSSize(width: 560, height: 120)) {
                 AnyView(DesignShotFixtures.workchatLiveLine().padding(12).shotFrame().detailBackground())
             },
@@ -70,11 +86,34 @@ enum DesignShotCatalog {
             DesignShot(name: "home-account-purge", size: NSSize(width: 1280, height: 720)) {
                 HomeShotFixtures.home(purges: HomeShotFixtures.purges)
             },
+            // Learn Watchtower (#718): the last zone of the right column, the
+            // all-seen line, and See all.
+            DesignShot(name: "home-learn", size: NSSize(width: 1280, height: 1560)) {
+                HomeShotFixtures.home(learn: LearnShotFixtures.selection())
+            },
+            DesignShot(name: "learn-zone", size: NSSize(width: 440, height: 0)) {
+                AnyView(LearnShotFixtures.zone().shotFrame().detailBackground())
+            },
+            DesignShot(name: "learn-zone-all-seen", size: NSSize(width: 440, height: 0)) {
+                AnyView(LearnShotFixtures.zone(allSeen: true).shotFrame().detailBackground())
+            },
+            DesignShot(name: "learn-all-sheet", size: NSSize(width: 680, height: 760)) {
+                AnyView(LearnShotFixtures.sheet().shotFrame())
+            },
             DesignShot(name: "settings-privacy", size: NSSize(width: 640, height: 420)) {
                 AnyView(HomeShotFixtures.privacySettings().shotFrame().detailBackground())
             },
+            DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 600)) {
+                AnyView(HomeShotFixtures.organizationPolicy().shotFrame().detailBackground())
+            },
+            DesignShot(name: "settings-connections-blocked", size: NSSize(width: 760, height: 420)) {
+                AnyView(HomeShotFixtures.connectionsBlocked().shotFrame().detailBackground())
+            },
             DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
                 AutomationShotFixtures.list()
+            },
+            DesignShot(name: "automation-list-collapsed", size: NSSize(width: 1280, height: 760)) {
+                AutomationShotFixtures.list(collapsed: true)
             },
             DesignShot(name: "automation-card", size: NSSize(width: 900, height: 720)) {
                 AnyView(AutomationShotFixtures.card().detailBackground())
@@ -141,6 +180,9 @@ enum DesignShotCatalog {
             DesignShot(name: "inbox-decision-card", size: NSSize(width: 1180, height: 720)) {
                 OneInboxShotFixtures.decisionCard()
             },
+            DesignShot(name: "inbox-chat-decision-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.chatDecisionCard()
+            },
             DesignShot(name: "inbox-message-card", size: NSSize(width: 1180, height: 720)) {
                 OneInboxShotFixtures.messageCard()
             },
@@ -196,6 +238,9 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
             },
+            DesignShot(name: "branch-review-chat-panel", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.changesWithChat()
+            },
             DesignShot(name: "branch-review-empty", size: NSSize(width: 1180, height: 520)) {
                 ReviewShotFixtures.empty()
             },
@@ -204,6 +249,36 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
+            },
+            // Spec review in the review ask drawer (spec 2026-10-25 §7).
+            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
+                SpecReviewShotFixtures.screen(.meaning)
+            },
+            DesignShot(name: "spec-review-chapters", size: NSSize(width: 760, height: 900)) {
+                SpecReviewShotFixtures.screen(.chapters)
+            },
+            DesignShot(name: "spec-review-wrapup", size: NSSize(width: 760, height: 900)) {
+                SpecReviewShotFixtures.screen(.wrapup)
+            },
+            DesignShot(name: "spec-review-running", size: NSSize(width: 760, height: 360)) {
+                SpecReviewShotFixtures.running()
+            },
+            DesignShot(name: "spec-review-strips", size: NSSize(width: 760, height: 150)) {
+                SpecReviewShotFixtures.strips()
+            },
+            // Approve / Request changes (#964, mockup 3).
+            DesignShot(name: "branch-review-approve-popover", size: NSSize(width: 400, height: 260)) {
+                ReviewShotFixtures.approvePopover()
+            },
+            DesignShot(name: "branch-review-approved", size: NSSize(width: 1180, height: 560)) {
+                ReviewShotFixtures.approved()
+            },
+            // Branch review polish (#958–#962): the preview and the chapter's risks.
+            DesignShot(name: "branch-review-preview", size: NSSize(width: 1180, height: 560)) {
+                ReviewShotFixtures.preview()
+            },
+            DesignShot(name: "branch-review-chapter-risks", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.chapterRisks()
             },
             // Search while the messages index is rebuilt (#892).
             DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {
@@ -245,6 +320,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        SpecReviewShotFixtures.cleanUp()
         InboxShotFixtures.cleanUp()
         OneInboxShotFixtures.cleanUp()
         AutomationShotFixtures.cleanUp()
@@ -399,6 +475,23 @@ enum DesignShotFixtures {
         } catch {
             return failure(error)
         }
+    }
+
+    /// An owner message that saved a decision, and each other mark state.
+    static func chatKnowledgeMarks() -> AnyView {
+        let marks: [(ChatKnowledgeMark, String)] = [
+            (.saved(kind: "note", ideaID: 2), "note"), (.empty, "decision"), (.changed(ideaID: 3), "decision"),
+            (.undone, "decision"), (.failed("database is locked"), "decision")
+        ]
+        return AnyView(VStack(alignment: .trailing, spacing: 12) {
+            UserMessageBubble(text: "decided: release acme on Tuesdays from next week")
+            ChatKnowledgeMarkLine(mark: .saved(kind: "decision", ideaID: 1), prefixKind: "decision",
+                                  undo: {}, openInInbox: { _ in })
+            ForEach(Array(marks.enumerated()), id: \.offset) { _, entry in
+                ChatKnowledgeMarkLine(mark: entry.0, prefixKind: entry.1, undo: {}, openInInbox: { _ in })
+            }
+            Spacer(minLength: 0)
+        })
     }
 
     // MARK: - Workchat

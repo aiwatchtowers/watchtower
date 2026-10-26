@@ -75,15 +75,79 @@ final class AutomationListSectionsTests: XCTestCase {
                        ["Needs confirmation", "Paused", "Can't read", "Draft"])
     }
 
-    func testOffLinePrefix() {
+    /// A scheduled recipe, optionally with a newest run and a next run.
+    private func scheduled(
+        enabled: Bool = true,
+        confirmed: Bool = true,
+        disabledReason: String = "",
+        lastRun: AutomationRun? = nil,
+        nextRunAt: Date? = nil,
+        tokens7d: Int64 = 0
+    ) -> AutomationListItem {
+        let automation = Automation(
+            id: 1, slug: "docs", name: "Docs", triggerKind: "schedule", triggerSpecJSON: #"{"schedule":"0 7 * * *"}"#,
+            approvalHash: "h2", confirmedHash: confirmed ? "h2" : "h1", enabled: enabled, nextRunAt: nextRunAt,
+            disabledReason: disabledReason
+        )
+        return AutomationListItem(
+            automation: automation, lastRun: lastRun, activeRun: nil, tokens7d: tokens7d,
+            badges: AutomationListItem.badges(for: automation, grants: []), triggerText: "Daily 07:00"
+        )
+    }
+
+    private func failedRun(_ error: String) -> AutomationRun {
+        AutomationRun(id: 5, automationID: 1, status: .failed, error: error, finishedAt: now.addingTimeInterval(-3600))
+    }
+
+    /// Line 1 says "off" (or the dot does, behind a chip): line 3 never does.
+    func testLineHasNoOffPrefix() {
         let off = item(id: 1, name: "a", enabled: false)
-        let on = item(id: 2, name: "b")
-        XCTAssertTrue(AutomationRowPresentation.line(off, changes: nil, now: now).hasPrefix("Off · "))
         XCTAssertEqual(AutomationRowPresentation.line(off, changes: nil, now: now),
-                       "Off · " + AutomationCardPresentation.rowDetailLine(off, changes: nil, now: now))
-        XCTAssertFalse(AutomationRowPresentation.line(on, changes: nil, now: now).hasPrefix("Off"))
+                       AutomationCardPresentation.rowDetailLine(off, changes: nil, now: now))
+        XCTAssertFalse(AutomationRowPresentation.line(off, changes: nil, now: now).hasPrefix("Off"))
         XCTAssertFalse(AutomationRowPresentation.isOn(off))
-        XCTAssertTrue(AutomationRowPresentation.isOn(on))
+        XCTAssertTrue(AutomationRowPresentation.isOn(item(id: 2, name: "b")))
+    }
+
+    /// A failed last run leads line 3 with its error's first line, so a cut
+    /// line still shows it, and the line is a warning.
+    func testFailedLineLeadsWithTheError() {
+        let failed = scheduled(lastRun: failedRun("fetch: example.com timed out\nstack"))
+        XCTAssertEqual(AutomationRowPresentation.line(failed, changes: nil, now: now),
+                       "fetch: example.com timed out · Daily 07:00")
+        XCTAssertTrue(AutomationRowPresentation.isFailed(failed))
+        XCTAssertEqual(AutomationRowPresentation.state(failed, now: now), .failed)
+        XCTAssertFalse(AutomationRowPresentation.isFailed(scheduled()))
+    }
+
+    /// Behind a Needs confirmation or Paused chip, a failed run still shows
+    /// its error first, as a warning.
+    func testFailedRunBehindAChipStillWarns() {
+        for item in [scheduled(confirmed: false, lastRun: failedRun("boom")),
+                     scheduled(enabled: false, disabledReason: "stopped", lastRun: failedRun("boom"))] {
+            guard case .chip = AutomationRowPresentation.state(item, now: now) else {
+                return XCTFail("expected a chip on line 1")
+            }
+            XCTAssertTrue(AutomationRowPresentation.isFailed(item))
+            XCTAssertEqual(AutomationRowPresentation.line(item, changes: nil, now: now), "boom · Daily 07:00")
+        }
+    }
+
+    /// Line 1 shows the next run, so line 3 keeps the trigger (and the
+    /// week's tokens) without saying it again.
+    func testNextRunIsNotRepeated() {
+        let next = now.addingTimeInterval(26 * 60)
+        let idle = scheduled(nextRunAt: next)
+        XCTAssertEqual(AutomationRowPresentation.state(idle, now: now), .next("in 26 min"))
+        XCTAssertEqual(AutomationRowPresentation.line(idle, changes: nil, now: now), "Daily 07:00")
+        let busy = scheduled(nextRunAt: next, tokens7d: 7300)
+        XCTAssertEqual(AutomationRowPresentation.line(busy, changes: nil, now: now),
+                       "Daily 07:00 · 7.3k tokens this week")
+        // A last run on line 1 leaves the next run to line 3.
+        let ran = scheduled(lastRun: AutomationRun(id: 6, automationID: 1, status: .succeeded,
+                                                   finishedAt: now.addingTimeInterval(-3600)),
+                            nextRunAt: next)
+        XCTAssertTrue(AutomationRowPresentation.line(ran, changes: nil, now: now).contains("next in 26 min"))
     }
 
     // MARK: - Draft rows
@@ -118,14 +182,18 @@ final class AutomationListSectionsTests: XCTestCase {
             + #""outputs":[],"budget_tokens":40000,"budget_minutes":5},"dry_run":null},"at":"2026-10-21T09:00:00Z"}"#
     }
 
+    /// Seeds the conversation's cache rows, one per non-blank line, the
+    /// newest cached at `modified`.
     private func writeCache(_ conversationID: Int64, _ text: String, modified: Date) throws {
-        let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: conversationID)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try text.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+        try pool.write { db in
+            for line in lines {
+                try AutomationDraftCacheQueries.append(db, conversationID: conversationID, entryJSON: line, at: modified)
+            }
+        }
     }
 
-    func testDraftRowsFromCacheFiles() throws {
+    func testDraftRowsFromCacheRows() throws {
         let personal = try insertDraftConversation("d1")
         let workbench = try insertDraftConversation("d2-wb3")
         _ = try insertDraftConversation("d4")
@@ -141,7 +209,7 @@ final class AutomationListSectionsTests: XCTestCase {
         try writeCache(broken, line(name: "Fine") + "\n{not json\n", modified: now)
 
         let rows = try pool.read { db in
-            try AutomationDraftRows.load(db, databasePath: path, liveWorkbenchIDs: [3])
+            try AutomationDraftRows.load(db, liveWorkbenchIDs: [3])
         }
         XCTAssertEqual(rows.map(\.conversationID), [workbench, personal])
         XCTAssertEqual(rows.map(\.workbenchID), [3, nil])
@@ -155,7 +223,7 @@ final class AutomationListSectionsTests: XCTestCase {
         let gone = try insertDraftConversation("d3-wb9")
         try writeCache(gone, line(name: "Gone") + "\n", modified: now)
         let rows = try pool.read { db in
-            try AutomationDraftRows.load(db, databasePath: path, liveWorkbenchIDs: [3])
+            try AutomationDraftRows.load(db, liveWorkbenchIDs: [3])
         }
         XCTAssertEqual(rows, [])
     }
@@ -164,9 +232,27 @@ final class AutomationListSectionsTests: XCTestCase {
         let id = try insertDraftConversation("d6")
         try writeCache(id, #"{"recipe_text":"x","result":null,"error":"boom"}"# + "\n", modified: now)
         let rows = try pool.read { db in
-            try AutomationDraftRows.load(db, databasePath: path, liveWorkbenchIDs: [])
+            try AutomationDraftRows.load(db, liveWorkbenchIDs: [])
         }
         XCTAssertEqual(rows.map(\.name), ["New automation"])
+    }
+
+    /// A draft row's line 2: the drafted recipe's summary, else its
+    /// description's first sentence; none without a drafted recipe.
+    func testDraftRowSummaryFromTheDraftedRecipe() throws {
+        let own = try insertDraftConversation("d7")
+        let derived = try insertDraftConversation("d8")
+        let failed = try insertDraftConversation("d9")
+        try writeCache(own, #"{"recipe_text":"---\nname: A\nsummary: Sorts the mail\n---\nLong text.","result":null}"#
+            + "\n", modified: now)
+        try writeCache(derived, #"{"recipe_text":"---\nname: B\n---\nPosts a digest. Then more.","result":null}"#
+            + "\n", modified: now.addingTimeInterval(-1))
+        try writeCache(failed, #"{"recipe_text":"","result":null,"error":"boom"}"# + "\n",
+                       modified: now.addingTimeInterval(-2))
+        let rows = try pool.read { db in
+            try AutomationDraftRows.load(db, liveWorkbenchIDs: [])
+        }
+        XCTAssertEqual(rows.map(\.summary), ["Sorts the mail", "Posts a digest.", nil])
     }
 
     func testWorkbenchIDFromContextID() {

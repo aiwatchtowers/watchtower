@@ -34,7 +34,7 @@ jobs:
   # A push (main included) and workflow_dispatch always run everything.
   gate:
     name: Dedupe gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
@@ -84,7 +84,7 @@ jobs:
     name: Guide Check
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.guide == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -107,7 +107,7 @@ jobs:
     name: Go Lint
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -135,7 +135,7 @@ jobs:
     name: Leak Check
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -189,7 +189,7 @@ jobs:
     name: Go Test
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail the job, not run to GitHub's 6 h default. Measured
     # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
     timeout-minutes: 60
@@ -240,7 +240,7 @@ jobs:
     name: Go Test (race ${{ matrix.shard }}/3)
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # Both shards report: one shard's race must not hide the other's.
       fail-fast: false
@@ -271,7 +271,7 @@ jobs:
     name: Code index changes
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -303,7 +303,7 @@ jobs:
     name: Code Index (full grammars)
     needs: [gate, codeindex-changes]
     if: needs.gate.outputs.run == 'true' && needs.codeindex-changes.outputs.codeindex == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -467,6 +467,14 @@ jobs:
         working-directory: .
         run: make test-swift-strict-pool
 
+      # The code viewer's and Branch review's editor pages (index.html,
+      # diff.html) in a headless WKWebView against the pinned Monaco build,
+      # which is gitignored: fetched (checksummed) first.
+      - name: Editor bridge check
+        timeout-minutes: 10
+        working-directory: .
+        run: scripts/fetch-monaco.sh && make editor-bridge-check
+
   # Drops the main SPM build caches the latest main push replaced: one ~2 GB
   # entry against the repo's 10 GB cache. Its own job so actions: write (cache
   # deletion) never reaches a job that runs the checkout's code; no checkout.
@@ -477,7 +485,7 @@ jobs:
     # still leaves a new entry behind; the KEEP guard below covers a run that
     # never saved one.
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.swift-test.outputs.spm-key != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: write
     steps:

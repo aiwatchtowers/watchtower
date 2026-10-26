@@ -63,4 +63,15 @@ struct ConnectionTestTests {
             #expect(got == tc.want, "\(tc.name)")
         }
     }
+
+    @Test("a provider the organization forbids is refused with Go's wording")
+    func policyRefusesWithoutRunningCLI() {
+        let claudeOnly = ManagedPolicy.normalize(["AllowedAIProviders": ["claude"]])
+        #expect(ConnectionTest.policyRefusal(provider: "codex", policy: claudeOnly)
+            == "policy: AI provider codex is not allowed by your organization (allowed: claude)")
+        #expect(ConnectionTest.policyRefusal(provider: "claude", policy: claudeOnly) == nil)
+        #expect(ConnectionTest.policyRefusal(provider: "ollama", policy: .none) == nil)
+        let none = ManagedPolicy.normalize(["AllowedAIProviders": [String]()])
+        #expect(ConnectionTest.policyRefusal(provider: "claude", policy: none)?.hasSuffix("(allowed: none)") == true)
+    }
 }

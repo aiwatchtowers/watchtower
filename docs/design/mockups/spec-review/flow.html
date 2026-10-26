@@ -1,0 +1,74 @@
+<h2>Ревью спеки — как Deep-ревью кода, по блокам</h2>
+<p class="subtitle">Те же три фазы, что в Changes → Deep: <b>Смысл → Главы → Итог</b>. Глава — это блок спеки, а не файл. A (сводка) живёт в «Смысле» и «Итоге», C (карточки) — в главах. Находки выдуманы для примера.</p>
+
+<style>
+  .row{display:flex;gap:8px;align-items:flex-start;margin:4px 0;font-size:12px}
+  .tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap}
+  .ok{background:#1f7a3a22;color:#1f7a3a}.diff{background:#b26a0022;color:#b26a00}
+  .miss{background:#b0202022;color:#b02020}.self{background:#3a5bd922;color:#3a5bd9}
+  .q{font-size:11px;opacity:.8;border-left:2px solid #8884;padding-left:6px;margin:2px 0}
+  .sec{font-size:11px;font-weight:700;text-transform:uppercase;opacity:.6;margin:10px 0 4px}
+  .strip{display:flex;gap:4px;margin-bottom:8px;font-size:12px}
+  .strip span{padding:3px 10px;border-radius:12px;border:1px solid #8885}
+  .strip .on{background:#3a5bd9;color:#fff;border-color:#3a5bd9}
+  .lay{display:flex;gap:8px}
+  .side{width:34%;font-size:12px;border-right:1px solid #8884;padding-right:8px}
+  .side div{padding:3px 4px;border-radius:4px}
+  .side .cur{background:#3a5bd922}
+  .main{flex:1;font-size:12px}
+  .card{border:1px solid #8885;border-radius:6px;padding:8px;margin:6px 0}
+  .btns{display:flex;gap:6px;margin-top:6px}.btns span{border:1px solid #8886;border-radius:4px;padding:2px 8px;font-size:11px}
+  .spec{background:#8881;border-radius:4px;padding:6px;font-size:11px;font-family:ui-monospace,monospace}
+</style>
+
+<div class="mockup"><div class="mockup-header">1 · Смысл — «реализуется ли моя идея»</div><div class="mockup-body">
+  <div class="strip"><span class="on">Смысл</span><span>Главы 0/6</span><span>Итог</span></div>
+  <div class="sec">Твоя идея (из разговора, target #604)</div>
+  <div class="q">«Всё, что компания пишет мимо watchtower.db, убрать: либо не писать, либо в БД — чтобы потом одним ключом зашифровать»</div>
+  <div class="sec">Цель спеки</div>
+  <div class="q">Remove the company content that sits outside watchtower.db only by accident…</div>
+  <div class="row"><span class="tag ok">совпадает</span> Ревьюер: цель та же; сужение — memory vault и одноразовый импорт вынесены в Stage B/C.</div>
+  <div class="sec">Сводка ревьюера</div>
+  <div class="row">11 договорённостей: <span class="tag ok">9 как договорились</span><span class="tag diff">1 иначе</span><span class="tag miss">1 потеряна</span></div>
+  <div class="row"><span class="tag self">4 решил сам</span><span class="tag miss">2 белых пятна</span> · дизайн: экранов нет — линза выключена</div>
+</div></div>
+
+<div class="mockup"><div class="mockup-header">2 · Главы — блок спеки + находки по нему карточками</div><div class="mockup-body">
+  <div class="strip"><span>Смысл</span><span class="on">Главы 2/6</span><span>Итог</span></div>
+  <div class="lay">
+    <div class="side">
+      <div>✓ Goal &amp; Architecture</div>
+      <div>✓ Логи + guard FILES-01</div>
+      <div class="cur">● Чат без --resume <span class="tag diff">1</span></div>
+      <div>○ Миграция 00154 <span class="tag self">2</span></div>
+      <div>○ Swift: черновики, sidecar <span class="tag miss">1</span></div>
+      <div>○ Тесты и guard-тесты</div>
+    </div>
+    <div class="main">
+      <div class="spec">Task 5: every Claude call passes --no-session-persistence and replays chat history from the database… TestChat04_ClaudeArgsOnResume → TestChat04_ClaudeArgsNeverResume</div>
+      <div class="card">
+        <div class="row"><span class="tag ok">как договорились</span> Отказ от --resume</div>
+        <div class="q">Ты, ask #571: «ок, resume не нужен, история из БД»</div>
+      </div>
+      <div class="card">
+        <div class="row"><span class="tag diff">иначе</span> Guard-тест меняется</div>
+        <div class="q">Ты одобрил отказ от resume, но не смену guard-теста TestChat04 — это контракт CHAT-04, нужно явное «да».</div>
+        <div class="btns"><span>✓ Так и надо</span><span>✎ Комментарий</span></div>
+      </div>
+      <div class="sec">Чек-лист главы (линзы)</div>
+      <div class="row">☑ Каждое «сделаем X» имеет задачу · ☐ Есть критерий готовности · ☐ Затронутые контракты inventory названы</div>
+      <div class="btns"><span>Глава просмотрена ✓</span></div>
+    </div>
+  </div>
+</div></div>
+
+<div class="mockup"><div class="mockup-header">3 · Итог — что ты одобряешь и что уходит автору раундом</div><div class="mockup-body">
+  <div class="strip"><span>Смысл</span><span>Главы 6/6</span><span class="on">Итог</span></div>
+  <div class="sec">Договорённости (все 11)</div>
+  <div class="row"><span class="tag ok">✓</span> 9 — как договорились, ты подтвердил</div>
+  <div class="row"><span class="tag diff">✎</span> Guard-тест TestChat04 → комментарий автору</div>
+  <div class="row"><span class="tag miss">✎</span> Импорт старых файлов → «верни в Stage A»</div>
+  <div class="sec">Решил сам — 4</div><div class="row">3 принято, 1 → комментарий</div>
+  <div class="sec">Белые пятна — 2</div><div class="row">оба → вопросы автору</div>
+  <div class="btns"><span>Отправить раунд автору (4 комментария)</span><span>Одобрить спеку</span></div>
+</div></div>

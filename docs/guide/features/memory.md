@@ -7,6 +7,27 @@ Memory is the assistant's long-term notebook about your work: a page per person,
 Without memory the assistant sees recent messages. With it, "who owns the deploy pipeline?" or "what did we settle with Alice last month?" has a place to be answered from, and every note can be opened back at its source. Memory does not change how digests work.
 
 ## How it works
+<!-- learn
+id: memory-more-sources
+title: Let memory read mail and meetings
+text: In **Settings → Features → Memory → Advanced**, turn on the Gmail, Calendar or Jira source to widen what it notes.
+area: assistant
+level: power
+kind: tip
+since: 0.24.0
+requires: feature:memory
+-->
+
+<!-- learn
+id: memory-remember-fact
+title: Pin a fact with remember this:
+text: In a target's or track's chat, start a line with `remember this:` and memory keeps it as your own statement.
+area: assistant
+level: power
+kind: tip
+since: 0.24.0
+requires: feature:memory
+-->
 
 **Plain files you can read.** The memory is markdown files in a git repository in your workspace folder (`memory/`). The files are the memory; the app's database only keeps a search index, which can be rebuilt from them at any time. Open the folder in Obsidian or any editor if you like. Before each run Watchtower saves your manual edits as a separate "owner edit" entry, so nothing you wrote is overwritten and history shows who changed what.
 
@@ -18,7 +39,7 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 - **Gmail source**: each email thread becomes one episode; senders become person pages (matched to Slack colleagues by email).
 - **Calendar source**: each ended meeting becomes one episode, with its recap folded in when one exists. Capture happens on the first memory run after the meeting ends.
 - **Jira source**: episodes from Jira and Linear issues.
-- **Chats source**: lets a target's or track's chat pin a fact. Start a line with `remember this:` (or `remember:`); the rest becomes your own recorded statement. Without the prefix a chat turn is treated as drafting and never becomes memory. It also needs the **Chat surface** switch and the Semantic tier.
+- **Chats source**: lets a target's or track's chat pin a fact. Start a line with `remember this:` (or `remember:`); the rest becomes your own recorded statement. Without the prefix a chat turn is treated as drafting and never becomes memory. It also needs the **Chat surface** switch and the Semantic tier. A message that starts with the prefix also adds its text to your chat instructions, so it does both ([Your instructions](workbench/instructions.md#in-your-chats)).
 - **Targets & Tracks mirrors**: each target and track gets a page with status, next step and an **Open loops** list, kept in sync and cleared when done. Nothing is written back into your targets.
 
 **Where memory reaches you.** Five **surface** switches decide whether memory may show up elsewhere:
@@ -30,6 +51,29 @@ Without memory the assistant sees recent messages. With it, "who owns the deploy
 - **Meeting Prep surface**: adds what memory knows about each attendee, framed as the assistant's notes. An attendee with no page is skipped.
 
 ## Using it
+<!-- learn
+id: memory-turn-on
+title: Give the assistant a memory
+text: Turn on **Memory** and the assistant keeps a page per person, channel and project, each note linked to its source.
+area: assistant
+level: next
+kind: feature
+since: 0.24.0
+action: turnOn:memory
+done_when: memory.on
+-->
+
+<!-- learn
+id: memory-edit-page
+title: Correct what memory knows
+text: Open a page in the **Memory** tab and click **Edit**; your change is kept as an owner edit, never overwritten.
+area: assistant
+level: next
+kind: tip
+since: 0.24.0
+action: nav:memory
+requires: feature:memory
+-->
 
 1. Turn on **Memory** in **Settings → Features** (setup turns it on if you pick the **Work communication** goal). Add the sources and surfaces you want.
 2. Open the **Memory** tab. Search the pages and beliefs, and sort by **Recent** or **Important**. Select one to see its links, history and importance.

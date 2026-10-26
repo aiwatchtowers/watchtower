@@ -1,10 +1,12 @@
 import XCTest
 
 /// Chat performance + "comments go as one batch" for quote-reply (projects
-/// POC phase 6, selection quoting since #536): no thread row hosts a text
-/// view — a selection is read from the window's field editor
-/// (`ChatSelectionQuote.swift`) — and neither the selection overlay nor the
-/// batch view can send: the batch goes out only through the chat's own send.
+/// POC phase 6, selection quoting since #536): the thread's row, thread,
+/// feed and markdown files host no text view themselves — since spec
+/// 2026-10-24 §5b (ask #539) the one text view is a finished answer's run
+/// of prose (`MarkdownTextRun.swift`), never the streaming reply's — and
+/// neither the selection overlay nor the batch view can send: the batch
+/// goes out only through the chat's own send.
 final class ChatSelectionQuoteScanTests: XCTestCase {
     private func source(_ path: String) throws -> String {
         let sources = URL(fileURLWithPath: #filePath)
@@ -20,9 +22,12 @@ final class ChatSelectionQuoteScanTests: XCTestCase {
                      "Views/Chat/ChatFeedView.swift"] {
             let text = try source(file)
             for token in ["NSTextView", "DocumentTextView", "NSViewRepresentable"] {
-                XCTAssertFalse(text.contains(token), "\(file) must not reference \(token): rows stay SwiftUI text")
+                XCTAssertFalse(text.contains(token), "\(file) must not reference \(token): the run view is MarkdownTextRun's")
             }
         }
+        // Only a finished answer draws native text; the streaming one stays SwiftUI.
+        let row = try source("Views/Chat/ChatMessageRow.swift")
+        XCTAssertTrue(row.contains("if isRunning {\n                                MarkdownView(text: markdown)"))
     }
 
     func testTheSelectionOverlayAndTheBatchViewNeverSend() throws {

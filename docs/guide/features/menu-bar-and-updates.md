@@ -34,6 +34,25 @@ Installing replaces the app in place and restarts it. Before it swaps anything, 
 ## Using it
 
 ### Menu items
+<!-- learn
+id: menubar-sync-now
+title: Sync right now
+text: Press **Sync Now** in the menu-bar icon's menu to sync at once instead of waiting for the next cycle.
+area: setup
+level: next
+kind: tip
+since: 0.24.0
+-->
+<!-- learn
+id: menubar-run-automation
+title: Run an automation from the menu bar
+text: **Run automation** in the menu-bar menu lists your recipes; click one to run it without opening the window.
+area: automations
+level: next
+kind: tip
+since: 0.24.0
+action: nav:automations
+-->
 
 - **Sync Now** asks the running daemon to sync immediately. It is greyed out when no daemon runs, and a sync already in progress finishes first.
 - **Run automation** lists your recipes with their last result; clicking one runs it without opening the window. **Open Automations…** opens the tab.
@@ -43,6 +62,15 @@ Installing replaces the app in place and restarts it. Before it swaps anything, 
 - **Quit Watchtower** is the one full exit.
 
 ### Close, quit, launch
+<!-- learn
+id: menubar-close-keeps-syncing
+title: Close the window, keep syncing
+text: Close the window and Watchtower stays in the menu bar, syncing; only **Quit Watchtower** stops it.
+area: setup
+level: basics
+kind: tip
+since: 0.24.0
+-->
 
 Closing the window leaves the Dock and keeps Watchtower in the menu bar. If Settings or another window is open, the Dock icon stays until it closes too.
 
@@ -51,6 +79,15 @@ Closing the window leaves the Dock and keeps Watchtower in the menu bar. If Sett
 Watchtower registers itself as a login item once per installed copy, so the daemon is already running when you sit down. A login launch opens straight to the menu bar with no window. To stop that, turn Watchtower off in System Settings → General → Login Items; there is no switch in the app, and it will not turn itself back on.
 
 ### Install an update
+<!-- learn
+id: menubar-install-update
+title: Install an update
+text: When **Update to <version> available…** shows in the menu, press **Download**, then **Install & Restart**.
+area: setup
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 1. Click **Update to <version> available…** (or the notification). It opens Settings → System → **Update**.
 2. Press **Download**. Release notes show above it.

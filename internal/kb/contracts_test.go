@@ -59,7 +59,7 @@ func dumpKB(t *testing.T, d *db.DB) string {
 // kbSourceTables are the tables the indexer reads; it must never write them.
 var kbSourceTables = []string{
 	"messages", "gmail_messages", "imap_messages", "jira_issues", "jira_comments", "linear_issues", "linear_comments", "calendar_events",
-	"meeting_transcripts", "meeting_recaps", "digests", "digest_topics", "stream_digests", "ideas", "idea_mentions",
+	"meeting_transcripts", "meeting_recaps", "digests", "digest_topics", "stream_digests", "ideas", "idea_mentions", "chat_artifacts", "chat_knowledge_artifacts",
 	"ext_documents", "ext_comments", "ext_users", "projects",
 }
 
@@ -152,7 +152,9 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 func TestKB02_NoGeneratorImports(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
-	forbidden := []string{"watchtower/internal/digest", "watchtower/internal/ai", "watchtower/internal/codex", "watchtower/internal/ollama", "watchtower/internal/providers"}
+	forbidden := []string{"watchtower/internal/digest", "watchtower/internal/ai", "watchtower/internal/codex", "watchtower/internal/ollama", "watchtower/internal/providers",
+		// the media describer lives outside the index; kb renders stored rows only
+		"watchtower/internal/media", "watchtower/internal/prompts"}
 	fset := token.NewFileSet()
 	files := 0
 	for _, e := range entries {
@@ -192,6 +194,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		"digest":        {"выкатку", "итоги"},
 		"stream_digest": {"стейдж", "untitled"},
 		"idea":          {"кэш*"},
+		"chat_artifact": {"чертёж*"},
 		"confluence":    {"канарейк*", "diagram"},
 		"project_doc":   {"роадмап", "rollout"},
 		"guide":         {"inbox"},

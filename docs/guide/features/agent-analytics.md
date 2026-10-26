@@ -7,6 +7,16 @@ Agent analytics reads the history of the Claude Code sessions that ran in a work
 Agent bills and habits are invisible until you add them up. Analytics turns the transcripts Claude Code already writes into numbers you can query: what a week of sessions cost, what loads into every session before you type, which tools failed, and which skills ran. Then it tells you the one change worth making first.
 
 ## How it works
+<!-- learn
+id: agent-analytics-turn-on
+title: See what your agents cost
+text: Open **Analytics** in a workbench's title row and press **Turn On** to total its sessions' tokens, cost and errors.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 You turn analytics on per workbench. Watchtower then reads the transcript files Claude Code keeps under `~/.claude/projects/`, picks the ones that belong to the workbench folder (or one of its git worktrees, including worktrees that cleanup has removed) and stores one row per API call, tool call, skill and error in the local database. It copies no prompt or reply text, only counts and a pointer back to the file.
 
@@ -52,6 +62,16 @@ Find a workbench's number with `watchtower workbench list`, or use the id in its
 - **`unknown_records` is not 0.** Claude Code writes record types Watchtower does not read. They are skipped and counted, and the totals are unaffected.
 
 ## What the Analytics view shows
+<!-- learn
+id: agent-analytics-main-thing
+title: Make the change that saves the most
+text: **The main thing** in Analytics names one fix, such as allow rules or a big CLAUDE.md, with a button that does it.
+area: development
+level: power
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 The view starts with the header and tiles, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
 

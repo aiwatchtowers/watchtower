@@ -57,7 +57,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     private func controller(
         _ center: EmbeddedChatCenter,
         spec: ChatSurfaceSpec,
-        onSaved: @escaping () -> Void = {}
+        onSaved: @escaping (Int64?) -> Void = { _ in }
     ) -> AutomationEditorChat {
         AutomationEditorChat(conversationID: spec.key.conversationID ?? 0, dbPool: pool, toolsAvailable: true,
                              center: center, cliRunner: FakeCLIRunner(), onSaved: onSaved) { _ in spec }
@@ -123,6 +123,14 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertFalse(args.contains("--context-type"))
         XCTAssertFalse(args.contains("--context-id"))
         XCTAssertTrue(args.contains("--conversation"))
+    }
+
+    /// Spec §7: the prompt names the automation's id for the run reads.
+    func testContextBlockNamesIDForRunReads() {
+        let block = AutomationEditorChatSurface.contextBlock(automation: Automation(id: 42, slug: "digest", name: "Digest"))
+        XCTAssertTrue(block.contains("ID: 42"))
+        XCTAssertTrue(block.contains("`automation: \"42\"`"))
+        XCTAssertTrue(block.contains("list_automation_runs"))
     }
 
     // MARK: - Workbench scope at creation (spec §4)
@@ -272,10 +280,8 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     private func panelSpec(_ panel: String?, cached: String? = nil) async throws -> ChatSurfaceSpec {
         let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: "ctx-p", dbPool: pool)
         if let cached {
-            let url = AutomationDraftEntry.cacheURL(databasePath: pool.path, conversationID: conversationID)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try ((String(bytes: try JSONEncoder().encode(["recipe_text": cached]), encoding: .utf8) ?? "") + "\n")
-                .write(to: url, atomically: true, encoding: .utf8)
+            let json = String(bytes: try JSONEncoder().encode(["recipe_text": cached]), encoding: .utf8) ?? ""
+            try await pool.write { try AutomationDraftCacheQueries.append($0, conversationID: conversationID, entryJSON: json, at: Date()) }
         }
         return AutomationEditorChatSurface.newSpec(
             provider: "claude", contextID: "ctx-p", workbench: nil, conversationID: conversationID,
@@ -378,12 +384,11 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         let spec = try await newSpec()
         let chat = controller(center(mock), spec: spec)
         XCTAssertTrue(chat.draft.isEmpty)
-        let url = AutomationDraftEntry.cacheURL(databasePath: pool.path, conversationID: chat.conversationID)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let line = #"{"recipe_text":"r","result":{"ok":true,"errors":[],"widening":[],"manifest":{"name":"Mail","#
             + #""slug":"","scope":"personal","trigger_kind":"manual","trigger":"manual","permissions":[],"#
             + #""outputs":[],"budget_tokens":1000,"budget_minutes":1,"approval_hash":"h"},"dry_run":null},"at":"x"}"#
-        try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+        let conversationID = chat.conversationID
+        try await pool.write { try AutomationDraftCacheQueries.append($0, conversationID: conversationID, entryJSON: line, at: Date()) }
 
         chat.dryRunAgain()
         let reloaded = await eventually { chat.draft.name == "Mail" }
@@ -394,17 +399,17 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     func testAppliedSaveRefreshesTheList() async throws {
         let spec = try await newSpec()
-        var saves = 0
-        let chat = controller(center(MockClaudeService()), spec: spec) { saves += 1 }
+        var saves: [Int64?] = []
+        let chat = controller(center(MockClaudeService()), spec: spec) { saves.append($0) }
         let conversationID = chat.conversationID
         let id = try await pool.write { db in
             try TestDatabase.insertAgentAction(db, tool: "save_automation", argsJSON: #"{"is_new":true}"#,
                                                surface: "automation_editor", conversationID: conversationID,
-                                               status: "applied")
+                                               status: "applied", resultJSON: #"{"automation_id":12}"#)
         }
         XCTAssertNil(chat.savedNote)
         await chat.actionFeed.retry(id)
-        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(saves, [12], "a new recipe's save names the automation it wrote")
         XCTAssertEqual(chat.savedNote, SaveAutomationCardModel.appliedNewNote)
         chat.close()
     }
@@ -457,12 +462,11 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(streaming)
         open.close()
 
-        let url = AutomationDraftEntry.cacheURL(databasePath: pool.path, conversationID: open.conversationID)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let line = #"{"recipe_text":"r","result":{"ok":true,"errors":[],"widening":[],"manifest":{"name":"Away","#
             + #""slug":"","scope":"personal","trigger_kind":"manual","trigger":"manual","permissions":[],"#
             + #""outputs":[],"budget_tokens":1000,"budget_minutes":1,"approval_hash":"h"},"dry_run":null},"at":"x"}"#
-        try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+        let conversationID = open.conversationID
+        try await pool.write { try AutomationDraftCacheQueries.append($0, conversationID: conversationID, entryJSON: line, at: Date()) }
         mock.release()
         let finished = await eventually { !open.engine.isStreaming }
         XCTAssertTrue(finished)

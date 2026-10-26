@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/guide"
 	"watchtower/internal/ideas"
 	"watchtower/internal/inbox"
+	"watchtower/internal/media"
 	"watchtower/internal/memory"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -217,6 +218,25 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 			// built-in: neither writes a pipeline_runs or automation_runs row.
 			run:   runMorningBriefBothWays,
 			check: assertNoPipelineOrAutomationRuns,
+		},
+		{
+			// The media pass is part of Knowledge search: off = no fetch,
+			// no model call, no media row touched and no run row.
+			name: "media",
+			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
+				cfg.Knowledge.Enabled = false
+				seedPendingMedia(t, database)
+				d.SetMediaPipeline(&media.Pipeline{DB: database, Gen: gen, WorkspaceDir: cfg.WorkspaceDir(),
+					Openers: map[string]media.Opener{"slack": &mediaTestOpener{}}, Logger: l})
+			},
+			run: func(d *Daemon) { d.phaseMediaDescribe(context.Background()) },
+			check: func(t *testing.T, cfg *config.Config, database *db.DB) {
+				assertNoPipelineRuns(t, cfg, database)
+				var worked int
+				require.NoError(t, database.QueryRow(`SELECT count(*) FROM media_items
+					WHERE status != 'pending' OR attempts != 0 OR described_at != ''`).Scan(&worked))
+				assert.Zero(t, worked, "knowledge.enabled=false must never work a media row")
+			},
 		},
 		{
 			name: "day_plan",

@@ -17,12 +17,32 @@ A source is an account Watchtower reads from. You connect them in **Settings →
 Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission.
 
 ## Several accounts of one kind
+<!-- learn
+id: sources-second-account
+title: Connect a second workspace
+text: Add another Slack workspace, Google account or Jira site in **Settings → Connections**; each syncs on its own.
+area: setup
+level: next
+kind: feature
+since: 0.24.0
+-->
+<!-- learn
+id: sources-pause-account
+title: Pause an account, keep its data
+text: Turn off a Slack or Jira account's **Enabled** switch to stop syncing it without removing anything.
+area: setup
+level: next
+kind: tip
+since: 0.24.0
+-->
 
 Each account syncs on its own. One account failing never stops the others, and its row shows the problem while the rest keep working.
 
 Slack and Jira rows have an **Enabled** switch that stops syncing an account without removing it. Turning it back on syncs new messages again, but a month of history that was still loading does not resume. Names are made automatically (team name, site name, mail domain) and **Rename…** changes one.
 
 A red dot on a service means at least one of its accounts has a problem. An expired or revoked sign-in is the usual cause.
+
+A source your company's profile forbids is listed as **Blocked by your organization**: its accounts stop syncing and keep their data, and nothing new can be connected.
 
 Use **Reconnect Slack** or **Re-login** on the row. Your data stays and syncing resumes. More in [Troubleshooting](../troubleshooting/README.md).
 

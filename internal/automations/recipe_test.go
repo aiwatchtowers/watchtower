@@ -765,3 +765,57 @@ func TestApprovalHash_TrackScanIsHashed(t *testing.T) {
 		t.Errorf("fields permissions=%q trigger=%q", fields["permissions"], fields["trigger"])
 	}
 }
+
+func TestParseRecipe_Summary(t *testing.T) {
+	r := mustParse(t, recipeWith(baseFrontmatter+"summary: Your brief and day plan\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	if r.Summary != "Your brief and day plan" {
+		t.Fatalf("Summary = %q", r.Summary)
+	}
+}
+
+func TestParseRecipe_SummaryTooLong(t *testing.T) {
+	_, err := ParseRecipe("t", recipeWith(baseFrontmatter+"summary: "+strings.Repeat("x", 61)+"\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	var pe *ParseError
+	if !errors.As(err, &pe) || pe.Line == 0 || !strings.Contains(pe.Msg, "summary") || !strings.Contains(pe.Msg, "60") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestParseRecipe_SummaryMultiline(t *testing.T) {
+	_, err := ParseRecipe("t", recipeWith(baseFrontmatter+"summary: |\n  one\n  two\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestApprovalHash_IgnoresSummary(t *testing.T) {
+	a := mustParse(t, recipeWith(baseFrontmatter+"summary: One\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	b := mustParse(t, recipeWith(baseFrontmatter+"summary: Two\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	if ApprovalHash(a) != ApprovalHash(b) {
+		t.Fatal("summary changed the approval hash")
+	}
+}
+
+func TestFallbackSummary(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("abcdefghi ", 10))
+	word60 := strings.Repeat("abcdefghi ", 5) + "abcdefghij" // 60 runes, then a space
+	cyr := strings.TrimSpace(strings.Repeat("привет мир ", 6))
+	cases := []struct{ name, in, want string }{
+		{"two sentences", "Every morning, writes your brief. Then plans.", "Every morning, writes your brief."},
+		{"empty", "", ""},
+		{"newline wrapped", "Writes the brief.\nThen plans.", "Writes the brief."},
+		{"wrapped no period", "Writes the\nbrief\n\n and plans", "Writes the brief and plans"},
+		{"short no separator", "Writes the brief.", "Writes the brief."},
+		{"short no period", "Writes the brief", "Writes the brief"},
+		{"long cut at space", long + ". Next.", strings.Repeat("abcdefghi ", 5) + "abcdefghi…"},
+		{"60 ends on a word", word60 + " tail words here", word60 + "…"},
+		{"cyrillic", cyr, "привет мир привет мир привет мир привет мир привет мир…"},
+		{"no space in 60", strings.Repeat("x", 100), strings.Repeat("x", 60) + "…"},
+	}
+	for _, c := range cases {
+		if got := FallbackSummary(c.in); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}

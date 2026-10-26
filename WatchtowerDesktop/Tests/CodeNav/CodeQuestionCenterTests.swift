@@ -555,9 +555,9 @@ final class CodeQuestionCenterTests: XCTestCase {
         await stub.assertAllGroupsReaped()
     }
 
-    /// As a follow-up on a resumed Claude session (no system prompt), the
-    /// locations ride with that turn's prompt, once.
-    func testWhereUsedAsAFollowUpCarriesTheResultsInTheTurn() async throws {
+    /// As a follow-up, the locations join the context the turn's system
+    /// prompt carries (no turn resumes a session, #604 G11), and stay there.
+    func testWhereUsedAsAFollowUpCarriesTheResultsInTheSystemPrompt() async throws {
         let stub = try CodeCLIStub()
         defer { stub.remove() }
         let (center, _, buffer) = makeCenter(startSearch: stubStarter(stub, ["STUB_SEARCH_DONE": "1"]))
@@ -572,11 +572,13 @@ final class CodeQuestionCenterTests: XCTestCase {
         _ = await eventually { engine?.isStreaming == false }
         await center.quickAction(.whereUsed, workbenchID: project.id)
         await reply("At a.swift:1.", after: 2, engine: engine)
-        XCTAssertNil(ai.calls[1].systemPrompt, "the session already holds the context")
-        XCTAssertTrue(ai.calls[1].prompt.contains("- a.swift:1: hit"), ai.calls[1].prompt)
+        let system = try XCTUnwrap(ai.calls[1].systemPrompt)
+        XCTAssertTrue(system.contains("- a.swift:1: hit"), system)
+        XCTAssertFalse(ai.calls[1].prompt.contains("- a.swift:1: hit"), "not in the turn's own text")
         await center.ask("Thanks", workbenchID: project.id)
         await reply("ok", after: 3, engine: engine)
-        XCTAssertEqual(ai.calls[2].prompt, "Thanks", "attached once")
+        XCTAssertTrue(ai.calls[2].prompt.hasSuffix("Thanks"), ai.calls[2].prompt)
+        XCTAssertTrue(try XCTUnwrap(ai.calls[2].systemPrompt).contains("- a.swift:1: hit"), "still in the context")
         await stub.assertAllGroupsReaped()
     }
 
@@ -642,9 +644,9 @@ final class CodeQuestionCenterTests: XCTestCase {
         }
     }
 
-    /// Explain on a resumed Claude session, then "Where is it used?" for
+    /// Explain, then "Where is it used?" for
     /// `load` with the search held until the test finishes it.
-    private func resumedWhereUsed(_ search: HeldSearch) async throws -> (CodeQuestionCenter, EmbeddedChatEngine) {
+    private func explainedThenWhereUsed(_ search: HeldSearch) async throws -> (CodeQuestionCenter, EmbeddedChatEngine) {
         let (center, _, buffer) = makeCenter(startSearch: search.starter)
         center.selectionChanged(selection(buffer, "load", CodeTextRange(startLine: 2, startCol: 13, endLine: 2, endCol: 17)),
                                 workbenchID: project.id)
@@ -660,14 +662,14 @@ final class CodeQuestionCenterTests: XCTestCase {
         return (center, engine)
     }
 
-    /// Retry of a failed resumed Where-used turn sends the usages again:
-    /// they are kept until a turn carrying them completes.
-    func testRetryOfAResumedWhereUsedTurnKeepsTheUsages() async throws {
+    /// Retry of a failed Where-used follow-up sends the usages again: they
+    /// are part of the context.
+    func testRetryOfAWhereUsedFollowUpKeepsTheUsages() async throws {
         let search = HeldSearch()
-        let (center, engine) = try await resumedWhereUsed(search)
+        let (center, engine) = try await explainedThenWhereUsed(search)
         search.finish(with: [("a.swift", 1)])
         _ = await eventually { ai.calls.count == 2 }
-        XCTAssertTrue(ai.calls[1].prompt.contains("- a.swift:1: hit"), ai.calls[1].prompt)
+        XCTAssertTrue(try XCTUnwrap(ai.calls[1].systemPrompt).contains("- a.swift:1: hit"))
         ai.emit(.error("overloaded"))
         ai.finish()
         let failed = await eventually { engine.canRetry }
@@ -675,12 +677,9 @@ final class CodeQuestionCenterTests: XCTestCase {
         engine.retry()
         let retried = await eventually { ai.calls.count == 3 }
         XCTAssertTrue(retried)
-        XCTAssertEqual(ai.calls[2].sessionID, "s1")
-        XCTAssertTrue(ai.calls[2].prompt.contains("- a.swift:1: hit"), "the retry carries the usages: \(ai.calls[2].prompt)")
-        await reply("At a.swift:1.", after: 3, engine: engine)
-        await center.ask("Thanks", workbenchID: project.id)
-        await reply("ok", after: 4, engine: engine)
-        XCTAssertEqual(ai.calls[3].prompt, "Thanks", "a completed turn used them up")
+        XCTAssertNil(ai.calls[2].sessionID)
+        let retrySystem = try XCTUnwrap(ai.calls[2].systemPrompt)
+        XCTAssertTrue(retrySystem.contains("- a.swift:1: hit"), "the retry carries the usages: \(retrySystem)")
     }
 
     /// A follow-up the owner sends from the composer while the search runs
@@ -688,20 +687,23 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// the next, unrelated turn.
     func testAFollowUpDuringTheUsageSearchDoesNotCarryTheUsages() async throws {
         let search = HeldSearch()
-        let (center, engine) = try await resumedWhereUsed(search)
+        let (center, engine) = try await explainedThenWhereUsed(search)
         XCTAssertTrue(engine.send("Is it thread-safe?"))
         _ = await eventually { ai.calls.count == 2 }
         search.finish(with: [("a.swift", 1)])
         _ = await eventually { center.sessions[project.id]?.notice != nil }
         XCTAssertEqual(center.sessions[project.id]?.notice, "Wait for the answer to finish, then ask again.")
-        XCTAssertEqual(ai.calls[1].prompt, "Is it thread-safe?")
-        // That turn fails: no completed turn clears anything for the next.
+        XCTAssertTrue(ai.calls[1].prompt.hasSuffix("Is it thread-safe?"), ai.calls[1].prompt)
+        XCTAssertFalse(try XCTUnwrap(ai.calls[1].systemPrompt).contains("- a.swift:1: hit"))
+        // That turn fails: the next turn still carries no usages.
         ai.emit(.error("overloaded"))
         ai.finish()
         _ = await eventually { engine.canRetry }
         await center.ask("Thanks", workbenchID: project.id)
         await reply("ok", after: 3, engine: engine)
-        XCTAssertEqual(ai.calls[2].prompt, "Thanks", "no usages leak into an unrelated turn")
+        XCTAssertTrue(ai.calls[2].prompt.hasSuffix("Thanks"), ai.calls[2].prompt)
+        XCTAssertFalse(ai.calls[2].prompt.contains("- a.swift:1: hit"), "no usages leak into an unrelated turn")
+        XCTAssertFalse(try XCTUnwrap(ai.calls[2].systemPrompt).contains("- a.swift:1: hit"))
         XCTAssertNil(center.sessions[project.id]?.context.usages, "the unsent question's usages are rolled back")
     }
 
@@ -799,7 +801,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         engine.draft = "And then?"
         XCTAssertTrue(engine.sendDraft(), "↩ follows up in the card")
         _ = await eventually { ai.calls.count == 2 }
-        XCTAssertEqual(ai.calls[1].sessionID, "s1", "the same conversation")
+        XCTAssertTrue(ai.calls[1].prompt.contains("Assistant: It reads the config."), "the same conversation, replayed")
         ai.emit(.text("ok"), .turnComplete("ok"), .done)
         ai.finish()
     }

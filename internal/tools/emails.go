@@ -62,7 +62,8 @@ func NewListEmails() *Tool {
 			"Read one message's body with get_email.",
 		InputSchema: mustSchema[listEmailsArgs]("list_emails"),
 		Access:      AccessRead,
-		Surfaces:    []string{AutomationSurface},
+		CompanyData: true,
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a listEmailsArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -105,7 +106,8 @@ func NewGetEmail() *Tool {
 			"unread is the state when the message was synced and may be stale.",
 		InputSchema: mustSchema[getEmailArgs]("get_email"),
 		Access:      AccessRead,
-		Surfaces:    []string{AutomationSurface},
+		CompanyData: true,
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a getEmailArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {

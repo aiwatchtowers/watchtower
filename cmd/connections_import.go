@@ -132,6 +132,9 @@ func validateImportCandidate(c externalmcp.ImportCandidate) error {
 	if err := validateConnectionAddFlags(c.Name, c.Kind, c.Command, c.URL); err != nil {
 		return err
 	}
+	if err := connectionPolicyError(c.Name, c.Kind, c.URL, c.Command); err != nil {
+		return err
+	}
 	return requireSecretTransport(c.Kind, c.URL, c.Secret)
 }
 

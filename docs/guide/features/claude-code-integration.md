@@ -33,6 +33,15 @@ Skills are plain files in your skills folder, marked as Watchtower's. Running th
 ## Using it
 
 ### Install for Claude Code
+<!-- learn
+id: claude-code-install
+title: Give your own agent Watchtower's context
+text: Run `watchtower integrate claude-code` and Claude Code can look up a ticket's background and who to ask.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 Run in a terminal:
 
@@ -50,6 +59,16 @@ Options:
 `watchtower integrate status` shows each skill as installed, drifted or missing, plus the binary path. `watchtower integrate remove` deletes only skills carrying Watchtower's marker and unregisters the server.
 
 ### Install for another client
+<!-- learn
+id: claude-code-other-clients
+title: Connect Cursor or Codex
+text: The **MCP Server** screen shows the config block to copy into Cursor, Codex or any MCP client.
+area: development
+level: power
+kind: tip
+since: 0.24.0
+action: nav:mcpServer
+-->
 
 For Cursor or any client that reads a `.mcp.json`, add the server by hand (the **MCP Server** screen shows both this block and the `claude mcp add` command, each with **Copy config**; it runs nothing):
 

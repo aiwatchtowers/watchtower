@@ -741,21 +741,22 @@ package enum TestDatabase {
         lastMentionAt: String = "",
         createdAt: String? = nil,
         updatedAt: String? = nil,
-        seenAt: String? = nil
+        seenAt: String? = nil,
+        chatBorn: Bool = false
     ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO ideas (kind, title, essence, status, source, snooze_until,
                 needs_review, review_reason, similar_to_id, merged_into_id,
                 superseded_by_id, converted_target_id, owner_rating, rating_comment,
-                last_mention_at, created_at, updated_at, seen_at)
+                last_mention_at, created_at, updated_at, seen_at, chat_born)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
                 COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                ?)
+                ?, ?)
             """, arguments: [kind, title, essence, status, source, snoozeUntil,
                              needsReview, reviewReason, similarToID, mergedIntoID,
                              supersededByID, convertedTargetID, ownerRating, ratingComment,
-                             lastMentionAt, createdAt, updatedAt, seenAt])
+                             lastMentionAt, createdAt, updatedAt, seenAt, chatBorn])
         return db.lastInsertedRowID
     }
 

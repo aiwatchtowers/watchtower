@@ -186,11 +186,11 @@ func TestSyncStopsWatermarkAtFirstFailureButStillStoresLaterMessages(t *testing.
 
 	syncer, acct := newTestSyncer(t, database, ts)
 	// Force the middle message's upsert to fail; real ones still hit the DB.
-	syncer.upsertImapMessage = func(m db.ImapMessage, syncedAt string) error {
+	syncer.upsertImapMessage = func(ctx context.Context, m db.ImapMessage, syncedAt string, images []db.MediaFound) error {
 		if m.UID == int64(uid2) {
 			return fmt.Errorf("forced failure for uid %d", uid2)
 		}
-		return database.UpsertImapMessage(m, syncedAt)
+		return database.UpsertImapMessageMedia(ctx, m, syncedAt, false, images)
 	}
 
 	n, err := syncer.Sync(context.Background())

@@ -1,9 +1,8 @@
 import Foundation
 
-/// The conversation so far, written into a turn that starts a fresh provider
-/// run: a Claude turn resumes its session, which holds the earlier turns, but
-/// a Codex or Ollama turn (or a Claude turn after a provider switch) starts
-/// from nothing (board #361). The block and its wording follow the main
+/// The conversation so far, written into every turn after the first: each
+/// turn is a fresh provider run on every provider, since no session is
+/// resumed (board #361, #604 G11). The block and its wording follow the main
 /// chat's Go replay (`internal/chat/replay.go`): the newest messages kept
 /// first under `capCharacters`, the oldest dropped and counted. Pure.
 package enum EmbeddedChatReplay {

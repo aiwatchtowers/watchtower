@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 )
 
 // ModelUnavailableError is codex refusing the model before the turn ran:
@@ -72,9 +73,9 @@ func classifyTurn(model, msg, tags string) error {
 	case strings.Contains(lower, refusalChatGPT), strings.Contains(lower, refusalNoAccess):
 		return &ModelUnavailableError{Model: model}
 	case tags != "":
-		return fmt.Errorf("codex error (%s): %s", tags, msg)
+		return logredact.Errorf("codex error (%s): %s", tags, logredact.Text(msg))
 	}
-	return fmt.Errorf("codex error: %s", msg)
+	return logredact.Errorf("codex error: %s", logredact.Text(msg))
 }
 
 // failedTurn finds why a codex run failed in its JSONL output: the
@@ -121,7 +122,7 @@ func runError(model string, output []byte, err error, stderr, codexBin string) e
 	// would make digest's aiUnavailable call it a transport failure.
 	var refused *ModelUnavailableError
 	if s := strings.TrimSpace(stderr); s != "" && !errors.As(turnErr, &refused) {
-		turnErr = fmt.Errorf("%w (stderr: %s)", turnErr, s)
+		turnErr = logredact.Errorf("%w (stderr: %s)", turnErr, logredact.Text(s))
 	}
 	return digest.WithCause(turnErr, exitErr)
 }

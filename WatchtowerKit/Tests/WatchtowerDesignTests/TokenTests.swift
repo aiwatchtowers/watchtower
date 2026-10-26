@@ -71,8 +71,16 @@ final class TokenTests: XCTestCase {
 
     func testIconSizes() {
         XCTAssertEqual(
-            [IconSize.chevron, IconSize.header, IconSize.composer, IconSize.composerLarge],
-            [8, 14, 16, 24]
+            [IconSize.chevron, IconSize.header, IconSize.composer, IconSize.composerLarge, IconSize.tile],
+            [8, 14, 16, 24, 26]
+        )
+    }
+
+    func testPaneWidths() {
+        XCTAssertEqual(
+            [PaneWidth.sideListMin, PaneWidth.sideListIdeal, PaneWidth.sideListMax,
+             PaneWidth.detailMin, PaneWidth.narrowPage],
+            [170, 220, 360, 260, 420]
         )
     }
 

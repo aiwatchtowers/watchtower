@@ -1,8 +1,10 @@
+import GRDB
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// A CLI double answering by subcommand (`args[1]`), recording each call and
-/// what its `--file` held when it ran, optionally held at a gate.
+/// the recipe text it was sent on stdin, optionally held at a gate.
 private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
     typealias Handler = @Sendable ([String]) throws -> Data
 
@@ -15,7 +17,7 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var gateOpened = false
 
     var invocations: [[String]] { lock.withLock { recorded } }
-    /// Subcommand → the `--file` (validate: the positional file) text at call time.
+    /// Subcommand → the recipe text it was sent on stdin.
     var fileTexts: [String: String] { lock.withLock { files } }
     var isHolding: Bool { lock.withLock { gate != nil } }
 
@@ -37,11 +39,16 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     func run(args: [String]) async throws -> Data {
+        try await run(args: args, text: nil)
+    }
+
+    /// validate and save send the recipe on stdin (`validate -`, `--file -`).
+    func run(args: [String], stdin: Data) async throws -> Data {
+        try await run(args: args, text: String(bytes: stdin, encoding: .utf8))
+    }
+
+    private func run(args: [String], text: String?) async throws -> Data {
         let sub = args.count > 1 ? args[1] : ""
-        var path: String?
-        if sub == "validate", args.count > 2 { path = args[2] }
-        if let flag = args.firstIndex(of: "--file"), args.indices.contains(flag + 1) { path = args[flag + 1] }
-        let text = path.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
         let (handler, held) = lock.withLock {
             recorded.append(args)
             if let text { files[sub] = text }
@@ -84,7 +91,8 @@ final class AutomationEditorCenterTests: XCTestCase {
     private typealias Fixtures = AutomationEditFixtures
 
     private var runner: EditorRunner!
-    private var tempDir: URL!
+    /// The system temp folder's recipe-draft entries when the test began.
+    private var tempBefore: Set<String> = []
     private var grants: [AutomationToolGrant] = []
     private var refreshed: [Int64] = []
     private var sleeper: TestSleeper!
@@ -93,9 +101,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         try await super.setUp()
         sleeper = TestSleeper()
         runner = EditorRunner()
-        tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("editor-center-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempBefore = try recipeTempEntries()
         grants = []
         refreshed = []
         runner.on("show") { _ in try Fixtures.showJSON() }
@@ -104,19 +110,17 @@ final class AutomationEditorCenterTests: XCTestCase {
     override func tearDown() async throws {
         runner.release()
         sleeper.fire()
-        try? FileManager.default.removeItem(at: tempDir)
         try await super.tearDown()
     }
 
-    private func makeCenter(draftCacheDir: URL? = nil) -> AutomationEditorCenter {
+    private func makeCenter(draftCache: (any DatabaseWriter)? = nil) -> AutomationEditorCenter {
         let sleeper: TestSleeper = sleeper
         let sleep: (Duration) async -> Void = { await sleeper.sleep($0) }
         return AutomationEditorCenter(
             cli: AutomationsCLI(runner: runner),
             grants: { [weak self] _ in self?.grants ?? [] },
             refresh: { [weak self] id in self?.refreshed.append(id) },
-            draftCacheDir: draftCacheDir,
-            tempDirectory: tempDir,
+            draftCache: draftCache,
             sleep: sleep
         )
     }
@@ -154,8 +158,16 @@ final class AutomationEditorCenterTests: XCTestCase {
         }
     }
 
+    /// The `watchtower-automation-*` entries the editor wrote to the system
+    /// temp folder before #604 S7, whatever else is there.
+    private func recipeTempEntries() throws -> Set<String> {
+        Set(try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)
+            .filter { $0.hasPrefix("watchtower-automation-") })
+    }
+
+    /// Entries this test added: none, since the recipe goes on stdin.
     private func tempEntries() throws -> [String] {
-        try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+        try recipeTempEntries().subtracting(tempBefore).sorted()
     }
 
     // MARK: - Save
@@ -376,13 +388,16 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertNil(center.saving[7], "closed")
     }
 
-    func testTempFileRemovedOnFailure() async throws {
+    /// The recipe goes on stdin (#604 S7): a failed validate or save leaves
+    /// no temp entry behind, because none is ever written.
+    func testRecipeTravelsOnStdinAndFailuresLeaveNoTempEntry() async throws {
         runner.on("validate") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: boom\n") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
         await center.check(7)
         XCTAssertEqual(center.saving[7], .failed("Error: boom"))
-        XCTAssertNotNil(runner.fileTexts["validate"], "the file existed while validate ran")
+        XCTAssertNotNil(runner.fileTexts["validate"], "validate got the recipe on stdin")
+        XCTAssertTrue(runner.invocations.contains { $0.starts(with: ["automations", "validate", "-"]) })
         XCTAssertEqual(try tempEntries(), [])
 
         runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
@@ -390,6 +405,8 @@ final class AutomationEditorCenterTests: XCTestCase {
         let plan = try await checkedPlan(center, 7)
         await center.commit(7, plan: plan, turnOn: true)
         XCTAssertEqual(center.saving[7], .failed("Error: disk full"))
+        XCTAssertNotNil(runner.fileTexts["save"], "save got the recipe on stdin")
+        XCTAssertTrue(runner.invocations.contains { $0.contains("--file") && $0.contains("-") && $0[1] == "save" })
         XCTAssertEqual(try tempEntries(), [])
     }
 
@@ -607,11 +624,15 @@ final class AutomationEditorCenterTests: XCTestCase {
     func testSaveAndTurnOnEnablesAfterTheConfirmedSave() async throws {
         runner.on("validate") { _ in try Fixtures.validateJSON(approval: "hn") }
         runner.on("save") { _ in Self.saveJSON(approval: "hn") }
-        let cacheDir = tempDir.appendingPathComponent("automation-drafts", isDirectory: true)
-        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        let cache = cacheDir.appendingPathComponent("42.jsonl")
-        try Data("{}\n".utf8).write(to: cache)
-        let center = makeCenter(draftCacheDir: cacheDir)
+        let cache = try TestDatabase.create()
+        try await cache.write { db in
+            try db.execute(sql: """
+                INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at)
+                VALUES (42, 'New automation', 'automation_draft', 'd', 0, 0)
+                """)
+            try AutomationDraftCacheQueries.append(db, conversationID: 42, entryJSON: "{}", at: Date())
+        }
+        let center = makeCenter(draftCache: cache)
         let key = AutomationEditorCenter.newDraftKey(conversationID: 42)
         XCTAssertEqual(key, -42)
         XCTAssertTrue(AutomationEditorCenter.isNewDraft(key))
@@ -633,7 +654,8 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(runner.invocations.last, ["automations", "enable", "7"])
         XCTAssertEqual(center.saving[key], .done)
         XCTAssertEqual(center.savedIDs[key], 7)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path), "the draft cache is removed")
+        let left = try await cache.read { try AutomationDraftCacheQueries.entries($0, conversationID: 42) }
+        XCTAssertEqual(left, [], "the draft cache is removed")
     }
 
     func testNewWorkbenchDraftValidatesAndSavesInItsFolder() async throws {

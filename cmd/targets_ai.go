@@ -28,7 +28,7 @@ import (
 // cmd/targets.go alongside the lifecycle commands.
 
 func runTargetsExtract(cmd *cobra.Command, _ []string) error {
-	rawText, err := textFlagValue(targetsFlagExtractText, targetsFlagExtractTextFile)
+	rawText, err := textFlagValue(cmd.InOrStdin(), targetsFlagExtractText, targetsFlagExtractTextFile)
 	if err != nil {
 		return err
 	}

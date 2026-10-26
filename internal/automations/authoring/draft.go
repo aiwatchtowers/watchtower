@@ -143,7 +143,7 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	if err := json.Unmarshal(call.Args, &a); err != nil {
 		return nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
-	res, err := evaluate(ctx, d, a)
+	res, err := evaluate(ctx, d, a, call.Binding.ConversationID)
 	d.cacheDraft(call.Binding, a.RecipeText, res, err)
 	if err != nil {
 		return nil, err
@@ -151,8 +151,9 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	return res, nil
 }
 
-// evaluate validates a draft, computes its widening and dry-runs it.
-func evaluate(ctx context.Context, d Deps, a draftArgs) (*DraftResult, error) {
+// evaluate validates a draft, computes its widening and dry-runs it; the dry
+// run's reads spend conversation's read budget (READ-01).
+func evaluate(ctx context.Context, d Deps, a draftArgs, conversation int64) (*DraftResult, error) {
 	if strings.TrimSpace(a.RecipeText) == "" {
 		return nil, &tools.ValidationError{Msg: "recipe_text is required"}
 	}
@@ -204,7 +205,7 @@ func evaluate(ctx context.Context, d Deps, a draftArgs) (*DraftResult, error) {
 	if scope.BuiltinID != "" && b.DefaultPrompt == nil {
 		b.DefaultPrompt = builtin.DefaultPromptFunc // builtin.defaultPrompt(name) in the dry run
 	}
-	rep, err := automations.DryRunInMemory(ctx, b, r, automations.DryRunOptions{Budget: draftBudget(r.Budget)})
+	rep, err := automations.DryRunInMemory(ctx, b, r, automations.DryRunOptions{Budget: draftBudget(r.Budget), ConversationID: conversation})
 	if err != nil {
 		return nil, fmt.Errorf("draft_automation: %w", err)
 	}

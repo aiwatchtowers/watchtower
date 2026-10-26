@@ -250,7 +250,8 @@ struct MainNavigationView: View {
         var actions = AutomationsTabActions()
         actions.builtin = BuiltinCardActions(
             setEnabled: { await appState.setBuiltinEnabled($0, on: $1) },
-            saveParameters: { await appState.saveBuiltinParameters($0) }
+            saveParameters: { await appState.saveBuiltinParameters($0) },
+            openInbox: { appState.openInbox(InboxRoute(filter: $0, selection: nil)) }
         )
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
         actions.onOpenSession = { projectID, sessionID in
@@ -350,7 +351,14 @@ struct MainNavigationView: View {
                     hooks: automationHooks(vm),
                     reactionDictionary: appState.reactionDictionaryViewModel,
                     isApplyingFeatures: appState.featureManager.isApplying
-                )
+                ) { [appState] automation in
+                    AutomationPolicyBlock.isBlocked(
+                        automation, policy: appState.managedPolicy.policy,
+                        connections: appState.externalConnectionsViewModel?.connections
+                    )
+                }
+                // The policy check needs the Quick Connections (#608).
+                .onAppear { appState.externalConnectionsViewModel?.refresh() }
             } else {
                 Text("Automations unavailable")
                     .foregroundStyle(.secondary)

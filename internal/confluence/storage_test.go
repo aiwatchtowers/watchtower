@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/extsync"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -129,4 +131,77 @@ func TestStorageFallbackScansJiraKeys(t *testing.T) {
 	assert.Contains(t, sections[0].Text, "PROJ-42")
 	assert.Nil(t, users, "the fallback strip parses no ac:link/ri:user element, so it can never find a mention")
 	assert.Equal(t, []string{"PROJ-42"}, keys)
+}
+
+// TestStorageMedia pins what a page records: its attachment and external
+// images and its public links, each anchored at its enclosing heading; an
+// external image or link Fetchable refuses (a signed URL, the synced
+// Atlassian site, mailto, an in-page anchor) and another page's attachment
+// are never recorded.
+func TestStorageMedia(t *testing.T) {
+	raw, err := os.ReadFile("testdata/storage/media.xhtml")
+	require.NoError(t, err)
+	got := StorageMedia(string(raw))
+	assert.Equal(t, []extsync.MediaRef{
+		{Kind: "link", Locator: "url:https://example.com/guide", URL: "https://example.com/guide?utm_source=x"},
+		{Kind: "image", Locator: "att:chart.png", Name: "chart.png"},
+		{Kind: "image", Locator: "url:https://images.example.org/diagram.png", URL: "https://images.example.org/diagram.png", Anchor: "Release-plan"},
+		{Kind: "link", Locator: "url:https://docs.example.net/spec", URL: "https://docs.example.net/spec", Anchor: "Release-plan"},
+		{Kind: "image", Locator: "att:table shot.png", Name: "table shot.png", Anchor: "Release-plan"},
+	}, got)
+
+	// One image named twice records once, at its first place.
+	twice := StorageMedia(`<p><ac:image><ri:attachment ri:filename="a.png" /></ac:image></p>` +
+		`<h1>Later</h1><p><ac:image><ri:attachment ri:filename="a.png" /></ac:image></p>`)
+	assert.Equal(t, []extsync.MediaRef{{Kind: "image", Locator: "att:a.png", Name: "a.png"}}, twice)
+
+	// An image inside a heading belongs to that heading's section.
+	inHeading := StorageMedia(`<p>x</p><h2>Shot <ac:image><ri:attachment ri:filename="h.png" /></ac:image></h2>`)
+	assert.Equal(t, []extsync.MediaRef{{Kind: "image", Locator: "att:h.png", Name: "h.png", Anchor: "Shot"}}, inHeading)
+}
+
+// TestStorageToSections_Unchanged pins that recording media changed no
+// text: every fixture (media.xhtml's golden was written before the media
+// walk existed) still converts byte-identically, through StorageToSections
+// and through the one walk the fetcher runs for text and media together.
+func TestStorageToSections_Unchanged(t *testing.T) {
+	files, _ := filepath.Glob("testdata/storage/*.xhtml")
+	require.NotEmpty(t, files)
+	for _, f := range files {
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			raw, err := os.ReadFile(f)
+			require.NoError(t, err)
+			want, err := os.ReadFile(strings.TrimSuffix(f, ".xhtml") + ".golden.json")
+			require.NoError(t, err)
+			var golden struct {
+				Sections []extsync.Section `json:"sections"`
+			}
+			require.NoError(t, json.Unmarshal(want, &golden))
+			wantJSON, err := json.Marshal(golden.Sections)
+			require.NoError(t, err)
+
+			secs, _, _, _ := StorageToSections(string(raw), 1_000_000)
+			gotJSON, err := json.Marshal(secs)
+			require.NoError(t, err)
+			assert.Equal(t, string(wantJSON), string(gotJSON))
+
+			conv := convertStorage(string(raw), 1_000_000)
+			walkJSON, err := json.Marshal(conv.sections)
+			require.NoError(t, err)
+			assert.Equal(t, string(wantJSON), string(walkJSON))
+		})
+	}
+}
+
+// A ref whose section the body cap cut off is anchored at the page (no
+// anchor): an anchor always names a stored section.
+func TestStorageMedia_AnchorOnlyAtKeptSections(t *testing.T) {
+	body := `<h2>Kept</h2><p>short <ac:image><ri:attachment ri:filename="k.png" /></ac:image></p>` +
+		`<h2>Cut</h2><p>` + strings.Repeat("long text ", 50) + `<a href="https://example.com/c">c</a></p>`
+	r := convertStorage(body, 10) // "Kept\nshort" fits; "Cut" is dropped whole
+	require.Equal(t, "[truncated]", r.sections[len(r.sections)-1].Text)
+	assert.Equal(t, []extsync.MediaRef{
+		{Kind: "image", Locator: "att:k.png", Name: "k.png", Anchor: "Kept"},
+		{Kind: "link", Locator: "url:https://example.com/c", URL: "https://example.com/c"},
+	}, r.media)
 }

@@ -11,6 +11,12 @@ protocol MobileSettingsHost: AnyObject {
     func setMobileSyncEnabled(_ enabled: Bool)
     /// "Keep this Mac awake for the iPhone"; on unless the owner turned it off.
     var isMobileKeepAwakeEnabled: Bool { get set }
+    /// The organization's `MobileSync = off` decides the toggle (#608).
+    var mobileSyncLockedByPolicy: Bool { get }
+}
+
+extension MobileSettingsHost {
+    var mobileSyncLockedByPolicy: Bool { false }
 }
 
 /// Settings → Mobile on the Mac (mobile POC spec §2.3, §8 I-1, §9, §10):
@@ -174,6 +180,8 @@ final class MobileSettingsViewModel {
     var devices: [HubSyncState.LinkedDevice] { hub?.linkCenter?.devices ?? [] }
     var showsCorpNotice: Bool { flavor == .corp }
     var toggleDisabled: Bool { !entitlementPresent && !isOn }
+    /// Off by the organization's policy (#608): shown off and locked.
+    var lockedByPolicy: Bool { host.mobileSyncLockedByPolicy }
 
     /// The spec's sentence for an iCloud account the Mac can't use.
     var accountMessage: String? {

@@ -115,4 +115,6 @@ Reads are 15–45 % faster, in line with the spike. With `PRAGMA cache_size = -6
 
 Spec §5.3: these run on a notarized throwaway probe (`spike/603-keychain-gate`, never merged) before any Stage 2 code. The owner's results go here.
 
-Not run yet.
+G1–G4 not run: the owner closed the check without running it on 2026-10-25 (ask #497, not a priority now). Stage 2 code stays parked until they run; whoever picks Stage 2 up runs the probe first.
+
+G5, partial (an agent run of the probe's unsigned ad-hoc build, 2026-10-21): without the keychain-access-groups entitlement a write fails at once with `errSecMissingEntitlement` (-34018) and a read returns `errSecItemNotFound` (-25300) — the same code as a key that really is gone. No item was created and no dialog appeared. So Stage 2 checks the entitlement directly at launch and never treats a not-found read as key loss on its own.

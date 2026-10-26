@@ -845,7 +845,7 @@ final class SlicePublisherTests: XCTestCase {
     private func withAssetStore(_ body: (SliceAssetStore) async throws -> Void) async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("slice-assets-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
-        try await body(SliceAssetStore(directory: dir))
+        try await body(SliceAssetStore(directory: dir, descriptors: try HubSyncState.inMemory()))
     }
 
     private func assetPublisher(_ source: StubAssetSliceSource, store: SliceAssetStore?) -> SlicePublisher {
@@ -887,8 +887,8 @@ final class SlicePublisherTests: XCTestCase {
             XCTAssertEqual(try TestOpening.assetPlaintext(try XCTUnwrap(try dataSaves().last?.record)), Data("[2]".utf8))
             XCTAssertEqual(
                 try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path).sorted(),
-                ["segments.json", "segments.json.desc"],
-                "replaced in place: the sealed file and its descriptor, nothing else"
+                ["segments.json"],
+                "replaced in place: the sealed file, nothing else (its descriptor is a row, #604 S12)"
             )
         }
     }

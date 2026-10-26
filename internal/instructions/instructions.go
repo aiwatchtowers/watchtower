@@ -22,6 +22,7 @@ const (
 const (
 	sessionHeader   = "Owner's instructions (follow in every turn):"
 	workbenchHeader = "For this workbench:"
+	chatHeader      = "For the chat:"
 	procedurePtr    = "Target procedure: update_target returns it when a target goes in_progress."
 	procedureHead   = "Owner's target procedure — follow it for #"
 )
@@ -30,6 +31,10 @@ const (
 // constants, so bytes equal runes): the most the brief's cap can grow by.
 const SlotMaxRunes = len(sessionHeader) + 1 + MaxRunes + 1 +
 	len(workbenchHeader) + 1 + MaxRunes + 1 + len(procedurePtr)
+
+// ChatSlotMaxRunes bounds ChatSlot's output for maximal texts.
+const ChatSlotMaxRunes = len(sessionHeader) + 1 + MaxRunes + 1 +
+	len(chatHeader) + 1 + MaxRunes
 
 // ErrTooLong reports an instruction text over MaxRunes.
 var ErrTooLong = fmt.Errorf("instruction text is over the limit of %d characters", MaxRunes)
@@ -131,4 +136,22 @@ func Fingerprint(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// ChatSlot renders the owner's instructions for an AI chat: the global
+// session text, then the chat-only text under its own header. "" when both
+// are empty. Workbench additions and procedures never reach a chat.
+func ChatSlot(g db.OwnerInstructions) string {
+	s, c := strings.TrimSpace(g.Session), strings.TrimSpace(g.Chat)
+	var parts []string
+	if s != "" || c != "" {
+		parts = append(parts, sessionHeader)
+		if s != "" {
+			parts = append(parts, s)
+		}
+		if c != "" {
+			parts = append(parts, chatHeader, c)
+		}
+	}
+	return strings.Join(parts, "\n")
 }

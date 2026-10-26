@@ -51,7 +51,11 @@ func init() {
 	f.StringVar(&aiSessionFlagModel, "model", "", "override the AI model (default: the provider's strong tier)")
 	f.StringVar(&aiSessionFlagSurface, "surface", "main", "chat surface: main|target")
 	f.Int64Var(&aiSessionFlagProjectID, "project-id", 0, "chat project whose instructions and files join the prompt")
-	f.StringVar(&aiSessionFlagResume, "resume", "", "Claude session id to resume")
+	// No Claude session is stored any more (#604 G11): a new child replays
+	// the history from the database. The flag stays accepted (an older
+	// Desktop still passes it) and does nothing.
+	f.StringVar(&aiSessionFlagResume, "resume", "", "ignored: chats replay their history instead of resuming")
+	_ = f.MarkHidden("resume")
 	f.StringVar(&aiSessionFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 }
 
@@ -81,6 +85,9 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := notifyShutdownContext(ctx, stderrLogf)
 	defer cancel()
 
+	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return fail(chat.CodeProviderUnavailable, err.Error())
+	}
 	model := aiSessionFlagModel
 	if model == "" {
 		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
@@ -106,16 +113,21 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	}
 	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, chatProjectID)
 
+	var mounted []ai.ExternalMCPServer
 	backend, err := newSessionBackend(sessionWiring{
 		cfg: cfg, database: database, dbPath: dbPath, conv: conv,
 		model: model, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile,
 		project: project, chatProjectID: chatProjectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI,
+		onMounted: func(ext []ai.ExternalMCPServer) { mounted = ext },
 	})
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
 
-	s := chat.NewSession(backend, out)
+	// The policy is asked again at every turn (#608).
+	s := chat.NewSession(policyCheckedBackend{
+		Backend: backend, provider: cfg.AI.Provider, mounted: mounted, claudeAIOn: claudeAI.mode.On, end: cancel,
+	}, out)
 	s.Provider = providers.ByID(cfg.AI.Provider).ID
 	s.Model = model
 	s.TurnFile = turnFile
@@ -215,6 +227,9 @@ type sessionWiring struct {
 	chatProjectID int64                  // 0 = not a project chat; bound into the ollama registry
 	warn          io.Writer              // skipped project files are named here
 	claudeAI      claudeAISetup          // zero = claude.ai mode off
+	// onMounted hears the Quick Connections a warm Claude session mounts for
+	// its whole life (the per-turn policy check, #608); nil = nobody.
+	onMounted func([]ai.ExternalMCPServer)
 }
 
 // newSessionBackend picks the provider backend for `ai session`.
@@ -237,6 +252,9 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		return chat.NewTurnBackend(loop, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
 	default:
 		ext := loadExternalMCPServers(w.cfg, w.dbPath)
+		if w.onMounted != nil {
+			w.onMounted(ext)
+		}
 		opts := claudeSessionOptions(w, ext)
 		if w.claudeAI.mode.On {
 			sink := newRegistrySink(buildToolRegistry(w.cfg, w.database), w.database, w.conv, w.warn)
@@ -282,7 +300,6 @@ func claudeSessionOptions(w sessionWiring, ext []ai.ExternalMCPServer) chat.Clau
 	return chat.ClaudeOptions{
 		Binary:          claude.FindBinary(w.cfg.ClaudePath),
 		Model:           w.model,
-		ResumeSessionID: aiSessionFlagResume,
 		SystemPrompt:    ai.WithExternalDataRule(w.prompt, ext),
 		MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
 		Tools:           ai.SessionBuiltinTools,

@@ -76,7 +76,7 @@ struct WorkOnTargetButton: View {
     /// default, each disabled when its CLI is known to be missing.
     static func otherAgents(_ target: Target, vm: WorkbenchesViewModel?) -> [AgentChoice] {
         guard let vm, let projectID = target.workbenchID else { return [] }
-        return AgentChoicePresentation.workOnOthers(defaultAgent: vm.defaultAgent) {
+        return AgentChoicePresentation.workOnOthers(defaultAgent: vm.defaultAgent, policy: vm.managedPolicy()) {
             vm.agentAvailable($0, projectID: projectID)
         }
     }

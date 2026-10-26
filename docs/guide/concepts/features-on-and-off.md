@@ -3,6 +3,15 @@
 Every background output has its own switch in **Settings → Features**, and a tab stays empty until its feature is on and its source is connected. This page covers the switches, what depends on what, and how to read the status line an empty tab shows.
 
 ## What the switches do
+<!-- learn
+id: features-switch-off
+title: Switch off what you don't read
+text: Turn a feature off in **Settings → Features** and it stops spending AI; what it already made stays.
+area: setup
+level: basics
+kind: tip
+since: 0.24.0
+-->
 
 Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch. Automations are not in the list: they are always there and spend nothing until you confirm a recipe (see [Automations](../features/automations.md)). Daily Briefing, Day Plan, Tracks, Ideas & Decisions and Reaction Commands are not in it either: their switch is **Turn On** / **Turn Off** on the **Morning brief**, **Track my threads**, **Idea finder** and **Reactions** cards in Automations → **Built in**, and Settings → Features shows "These now live in Automations → Built in" with **Open Automations** (see [Built-in automations](../features/automations-built-in.md)).
 
@@ -18,7 +27,7 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Feature | Cost | Feeds into |
 |---|---|---|
 | Attention detection (no AI) | None | Briefing |
-| Knowledge search (no AI) | None | |
+| Knowledge search | Medium (images and links) | |
 | Confluence in search (no AI) | None | Knowledge search |
 | Slack Digests | Heavy | Tracks, People Cards, Ideas, Briefing |
 | Stream Digests (mail and Jira) | Medium | Ideas, Attention detection |
@@ -37,6 +46,15 @@ The Tracks, Ideas & Decisions, Reaction Commands, Daily Briefing and Day Plan ro
 Tracks and People Cards read what Slack Digests writes, so they run only while Slack Digests is on too. With Slack Digests off, the empty Tracks filter, the People tab and their Home lines say **Needs Slack Digests** with a **Turn on Slack Digests** button, and onboarding's **Customize** screen shows **Needs Slack Digests** with a **Turn on Slack Digests** button under them. Memory has an **Advanced** section with switches for each source and each place memory is used.
 
 ## Why a tab is empty and what its status line means
+<!-- learn
+id: features-turn-on-from-tab
+title: Turn a feature on from its tab
+text: An empty tab that says **Off — Turn on** switches its feature on at once with **Turn on**, no Save needed.
+area: setup
+level: next
+kind: tip
+since: 0.24.0
+-->
 
 An empty tab shows an icon, a title ("No briefings yet"), one sentence on what will land there, a status line and at most one button. It is one of these, checked in this order:
 

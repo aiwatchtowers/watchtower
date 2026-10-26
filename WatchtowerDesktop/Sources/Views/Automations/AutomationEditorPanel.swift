@@ -52,6 +52,8 @@ struct AutomationEditorPanel: View {
         return false
     }
 
+    @AppStorage("automations.draftColumnHidden") private var draftHidden = false
+
     private var form: AutomationFormModel? { key.flatMap { editor.drafts[$0] } }
 
     /// A save or confirm runs: nothing is editable, so nothing typed is dropped.
@@ -68,11 +70,13 @@ struct AutomationEditorPanel: View {
             HStack(spacing: 0) {
                 left
                     .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
-                Rectangle()
-                    .fill(Stroke.hairlineColor)
-                    .frame(width: Stroke.hairline)
-                draftSide
-                    .frame(minWidth: 320, idealWidth: 380, maxWidth: 440, maxHeight: .infinity)
+                if !draftHidden {
+                    Rectangle()
+                        .fill(Stroke.hairlineColor)
+                        .frame(width: Stroke.hairline)
+                    draftSide
+                        .frame(minWidth: 320, idealWidth: 380, maxWidth: 440, maxHeight: .infinity)
+                }
             }
         }
         .task { await open() }
@@ -110,6 +114,19 @@ struct AutomationEditorPanel: View {
                                       help: off ? AutomationEditorChatSurface.unavailableHelp : nil)
                 }
             )
+            if let key, AutomationDraftFooter.showsCompactSave(hidden: draftHidden, canSave: editor.canSave(key)) {
+                Button("Save…") { draftHidden = false }
+                    .buttonStyle(.kitPrimary)
+            }
+            Button {
+                draftHidden.toggle()
+            } label: {
+                Image(systemName: "sidebar.right")
+            }
+            .buttonStyle(.kitIcon(isOn: !draftHidden))
+            .keyboardShortcut("0", modifiers: [.option, .command])
+            .help(draftHidden ? "Show Draft" : "Hide Draft")
+            .accessibilityLabel(draftHidden ? "Show Draft" : "Hide Draft")
             if isNew, let onDiscardDraft {
                 Menu {
                     Button("Discard Draft", role: .destructive) {
@@ -499,10 +516,16 @@ struct AutomationEditorPanel: View {
     private func whenLanded(_ key: Int64, _ work: @escaping @MainActor () async -> Void) {
         pressTask?.cancel()
         let editor = editor
+        let vm = vm
+        let draftContextID = newDraftContextID
         pressTask = Task {
             await Task { await work() }.value
             guard !Task.isCancelled else {
-                editor.settleUnwatched(key)
+                // A new draft saved with the panel away still leaves the list
+                // (its own task: this one is cancelled, which a database write refuses).
+                if let savedID = editor.settleUnwatched(key), let draftContextID {
+                    Task { await vm.draftSaved(contextID: draftContextID, conversationID: -key, automationID: savedID) }
+                }
                 return
             }
             if !finishIfSaved() { finishIfConfirmed() }
@@ -566,10 +589,27 @@ struct AutomationEditorPanel: View {
         return true
     }
 
-    /// The draft is done with: the next Edit loads the file afresh.
+    /// The draft is done with: the next Edit loads the file afresh. A new
+    /// draft first leaves the list, its chat becoming the automation's
+    /// (`draftSaved`); the saved automation opens only while this panel is
+    /// still the one shown.
     private func finish(_ key: Int64, _ savedID: Int64) {
         editor.discard(key)
-        onSaved(savedID)
+        guard let draftContextID = newDraftContextID else {
+            onSaved(savedID)
+            return
+        }
+        let vm = vm, target = target, onSaved = onSaved
+        Task {
+            await vm.draftSaved(contextID: draftContextID, conversationID: -key, automationID: savedID)
+            if vm.panel == .editor(target) { onSaved(savedID) }
+        }
+    }
+
+    /// A new draft's conversation context id; nil for a saved automation.
+    private var newDraftContextID: String? {
+        if case let .newDraft(contextID, _, _) = target { return contextID }
+        return nil
     }
 
     /// A stale confirm: the recipe changed on disk, so the draft is loaded again.

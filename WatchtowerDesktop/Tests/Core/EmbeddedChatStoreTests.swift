@@ -60,14 +60,6 @@ final class EmbeddedChatStoreTests: XCTestCase {
         }
     }
 
-    func testSessionIDRoundTrips() async throws {
-        for store in stores() {
-            XCTAssertNil(try store.loadSessionID())
-            try await store.saveSessionID("s-1")
-            XCTAssertEqual(try store.loadSessionID(), "s-1")
-        }
-    }
-
     func testMemoryIDsNeverCollideWithPersistedOnes() async throws {
         let store = MemoryEmbeddedChatStore()
         let id = try await store.append(role: "assistant", text: "Hi!")
@@ -91,7 +83,7 @@ final class EmbeddedChatStoreTests: XCTestCase {
         } catch {
             XCTAssertTrue(error is ChatContextGoneError)
         }
-        XCTAssertThrowsError(try store.loadSessionID()) { XCTAssertTrue($0 is ChatContextGoneError) }
+        XCTAssertThrowsError(try store.loadMessages()) { XCTAssertTrue($0 is ChatContextGoneError) }
     }
 
     /// Storage format unchanged: an embedded row leaves the main chat's tree

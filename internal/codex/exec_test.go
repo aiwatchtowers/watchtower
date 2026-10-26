@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"watchtower/internal/logredact"
 )
 
 // fakeCodexScript writes a temporary executable shell script that prints the
@@ -68,7 +70,7 @@ func TestQuerySync_PropagatesNonZeroExit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "boom") {
+	if !strings.Contains(logredact.Full(err), "boom") {
 		t.Errorf("error should include stderr, got: %v", err)
 	}
 }
@@ -178,7 +180,7 @@ func TestQuery_ErrorEvent(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected codex error to surface")
 	}
-	if !strings.Contains(err.Error(), "rate limited") {
+	if !strings.Contains(logredact.Full(err), "rate limited") {
 		t.Errorf("error should include codex message, got: %v", err)
 	}
 }

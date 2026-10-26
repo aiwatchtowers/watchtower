@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/policy/policytest"
 )
 
 var t0 = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
@@ -358,5 +359,54 @@ func TestApply_LeasesOnlyWhenAsked(t *testing.T) {
 	got, err = Apply(d, true, true, t0)
 	if err != nil || len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonLease {
 		t.Fatalf("the pass after the syncs schedules the lease, got %+v %v", got, err)
+	}
+}
+
+// TestPurge01_PolicyForbiddenSourceHoldsLease (#608, ask #572): a source the
+// organization's policy forbids is not synced, so its stale clock schedules
+// no lease purge, and an open lease row of it is cancelled; its data stays.
+// A revoked account of it still follows the revoked rule.
+func TestPurge01_PolicyForbiddenSourceHoldsLease(t *testing.T) {
+	stale := t0.Add(-Lease + Grace - time.Minute)
+	accounts := []db.PurgeAccount{acct("slack", 1, "ok", stale), acct("slack", 2, "removed", stale.Add(-Lease))}
+	held := func(source string) bool { return source == "slack" }
+	if got := PlanWith(accounts, nil, true, t0, held); len(got.Schedule) != 0 {
+		t.Fatalf("a held source schedules no lease, got %+v", got.Schedule)
+	}
+	open := []db.AccountPurge{{ID: 7, Source: "slack", AccountID: 1, Reason: ReasonLease, State: "scheduled", DueAt: ts(t0.Add(Grace))}}
+	if got := PlanWith(accounts, open, true, t0, held); len(got.Cancel) != 1 || got.Cancel[0] != 7 {
+		t.Fatalf("an open lease row of a held source is cancelled, got %+v", got)
+	}
+	if got := PlanWith(accounts, nil, true, t0, nil); len(got.Schedule) != 2 {
+		t.Fatalf("not held: both leases are scheduled, got %+v", got.Schedule)
+	}
+	revoked := []db.PurgeAccount{acct("slack", 3, "revoked", stale)}
+	revoked[0].RevokedAt = ts(t0.Add(-time.Hour))
+	if got := PlanWith(revoked, nil, true, t0, held); len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonRevoked {
+		t.Fatalf("a revoked account still schedules its revoked purge, got %+v", got.Schedule)
+	}
+}
+
+// Apply reads the live policy: a forbidden source's stale lease is not
+// scheduled, and it is as soon as the source is allowed again (#608).
+func TestPurge01_ApplyLeaseHoldFollowsLivePolicy(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	stale := t0.Add(-Lease)
+	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'ok', ?)`, ts(stale)); err != nil {
+		t.Fatal(err)
+	}
+	policytest.Set(t, map[string]any{"AllowedSources": []any{"google"}})
+	got, err := Apply(d, true, true, t0)
+	if err != nil || len(got.Schedule) != 0 {
+		t.Fatalf("held: Apply = %+v, %v; want no lease", got, err)
+	}
+	policytest.Set(t, nil)
+	got, err = Apply(d, true, true, t0)
+	if err != nil || len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonLease {
+		t.Fatalf("allowed again: Apply = %+v, %v; want the lease scheduled", got, err)
 	}
 }

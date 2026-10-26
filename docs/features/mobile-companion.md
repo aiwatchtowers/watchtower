@@ -88,7 +88,7 @@ Since 2026-10-12, every record the hub and a phone exchange through CloudKit is 
 
 - **The hub** (`SlicePublisher` through `MobileHubStorage.secure`) seals each DataZone record as `data` (or `alert` for `ask_alert`), signed, one record at a time. One record that cannot be sealed, such as a keybox without a recipient key, is skipped alone and never blocks its batch.
   - Slice hashes stay hashes of the plaintext (random nonces make every envelope differ).
-  - Staged slice assets (`SliceAssetStore`) are sealed files with a `<fileName>.desc` descriptor beside them. The Mac keeps `K_asset` next to its own plaintext; FileVault is the at-rest story there. A crash between the file and its descriptor reads as "not staged" and is staged again.
+  - Staged slice assets (`SliceAssetStore`) are sealed files; each one's descriptor (with `K_asset`) is a row of `hubstate.db`'s `slice_assets` (#604 S12, `SliceAssetDescriptorStoring`), never a `.desc` file — one an earlier build left is moved into a row at init. FileVault is the at-rest story on the Mac. A crash between the file and its row reads as "not staged" and is staged again.
 - **The phone writes RelayZone only.** `device` records, actions and uploads are sealed `relayToHub` under the phone's p2h key. The hub's echoes come back sealed `relayToPhone` to the authenticated sender (F16).
   - The hub opens a p2h record only from a linked phone, in an accepted epoch: the current one, or the previous one for 7 days (D10).
   - The hub opens its own h2p echoes by trying each linked phone's key (F2, `relayDeviceIDs`).
@@ -721,6 +721,8 @@ One phone links up to `HubRegistry.limit` = 4 Macs (multi-hub spec §5–§7, pl
 - **No suspected-leak rotation in the UI**: `RotationReason.manual` exists, nothing calls it yet.
 - **One hub process per sidecar.** The damaged-identity recovery treats every second `.corrupt` read as damage, and two signed builds sharing one sidecar would cut each other.
 - **CloudKit environments** must match between the Mac and the phone (see above); a mismatch fails silently.
+
+**Organization policy (2026-10-25, #608):** the MDM key `MobileSync` decides the hub. `off` outvotes `mobileSyncEnabled` (kept as stored), disables a running hub (zones deleted, phones forgotten — re-pairing is needed after the policy loosens) and, when the toggle is on at launch, builds the hub once to wipe; the Settings → Mobile toggle is locked. `workbench_only` publishes only `SliceKind.workbenchOnly` (workbench, targets on the board, comments, sessions, reports, timelines, asks, ask alerts, permission requests, session chat, heartbeat, device grant); every other kind is published empty, so the phone deletes it, and phone recording uploads are refused. See `docs/features/mdm-policy.md`.
 
 ## Keep the Mac awake (2026-10-26, ask #614)
 

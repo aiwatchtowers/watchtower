@@ -49,6 +49,8 @@ struct AutomationsView: View {
     var reactionDictionary: ReactionDictionaryViewModel?
     /// The feature manager is applying a change: a built-in's Turn On/Off waits.
     var isApplyingFeatures = false
+    /// Whether the organization's policy blocks an automation (#608).
+    var policyBlocked: (Automation) -> Bool = { _ in false }
 
     @State private var searchText = ""
 
@@ -75,7 +77,8 @@ struct AutomationsView: View {
     var body: some View {
         PanelSplit(
             isPanelShown: true,
-            width: PanelSplitWidth(key: "automations.detailWidth", range: 720...1600, ideal: 900)
+            width: PanelSplitWidth(key: "automations.detailWidth", range: 720...1600, ideal: 900),
+            showsEdgeLine: false
         ) {
             listColumn
         } panel: {
@@ -97,18 +100,24 @@ struct AutomationsView: View {
 
     /// The first listed automation, while the panel shows nothing else; an
     /// automation whose row is not listed (its workbench not loaded yet) is
-    /// never picked.
+    /// never picked. A row in an open group comes first, so a folded group
+    /// opens only when every group with an automation is folded.
     private func autoSelect() {
-        vm.autoSelect(first: sections.lazy.flatMap(\.items).first?.id)
+        let open = sections.lazy.filter { vm.isExpanded($0, query: searchText) }.flatMap(\.items).first
+        vm.autoSelect(first: (open ?? sections.lazy.flatMap(\.items).first)?.id)
     }
 
     // MARK: - List
 
+    /// Shaped like the AI Chat history and the Workbench sessions panel:
+    /// a plain list of tabs on `panelSurface()`, the open row running on
+    /// into the detail. No List selection, whose highlight would draw over
+    /// the tab; a row selects on its own click.
     private var listColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Spacing.regular) {
                 Text("Automations")
-                    .font(.title3.weight(.semibold))
+                    .font(.headline)
                 Spacer()
                 Button {
                     vm.showNew(AutomationNewFlow())
@@ -120,7 +129,7 @@ struct AutomationsView: View {
                 .accessibilityLabel("New automation")
             }
             .padding(.horizontal, Spacing.medium)
-            .padding(.top, Spacing.medium)
+            .padding(.vertical, Spacing.regular)
 
             HStack(spacing: Spacing.compact) {
                 Image(systemName: "magnifyingglass")
@@ -128,22 +137,21 @@ struct AutomationsView: View {
                 SearchField(text: $searchText, placeholder: "Search automations")
             }
             .padding(.horizontal, Spacing.medium)
-            .padding(.vertical, Spacing.regular)
+            .padding(.bottom, Spacing.small)
 
             if let message = vm.lastError {
                 WriteErrorBanner(message: message) { vm.lastError = nil }
                     .padding(.bottom, Spacing.regular)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    let now = Date()
-                    ForEach(sections) { section in
-                        SectionHeader(title: section.title, systemImage: Self.sectionIcon(section.id),
-                                      count: section.count)
-                            .padding(.horizontal, Spacing.regular)
-                            .padding(.top, Spacing.medium)
-                            .padding(.bottom, Spacing.small)
+            List {
+                let now = Date()
+                ForEach(sections) { section in
+                    let expanded = vm.isExpanded(section, query: searchText)
+                    AutomationSectionHeader(section: section, expanded: expanded) {
+                        vm.toggleSection(section.id)
+                    }
+                    if expanded {
                         // Draft rows are keyed by their context id: a
                         // conversation id may equal an automation's id.
                         ForEach(section.drafts, id: \.contextID) { row in
@@ -154,14 +162,14 @@ struct AutomationsView: View {
                                 item: item,
                                 changes: vm.details[item.id]?.changes,
                                 isSelected: vm.selectedID == item.id,
-                                now: now
+                                now: now,
+                                policyBlocked: policyBlocked(item.automation)
                             ) { vm.select(item.id) }
                         }
                     }
                 }
-                .padding(.horizontal, Spacing.regular)
-                .padding(.bottom, Spacing.medium)
             }
+            .clearPlainList()
             .overlay {
                 if sections.isEmpty, !isEmpty, !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
                     Text("No automation matches “\(searchText)”.")
@@ -171,14 +179,8 @@ struct AutomationsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private static func sectionIcon(_ id: String) -> String {
-        switch id {
-        case "builtin": "shippingbox"
-        case "personal": "person"
-        default: "folder"
-        }
+        // Its edge line lies under the tabs (`PanelSplit` draws none here).
+        .panelSurface()
     }
 
     private func isOpen(_ row: AutomationDraftRow) -> Bool {
@@ -353,7 +355,7 @@ struct AutomationsView: View {
 
     private func discardHandler(_ target: AutomationEditorTarget) -> (() -> Void)? {
         guard case let .newDraft(contextID, _, _) = target else { return nil }
-        return { vm.discardDraft(contextID: contextID) }
+        return { Task { await vm.discardDraft(contextID: contextID) } }
     }
 
     private func workbenchName(_ id: Int64) -> String? {

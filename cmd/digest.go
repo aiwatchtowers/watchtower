@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/jira"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
@@ -431,7 +432,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 			final.PeriodTo = pipe.LastStepPeriodTo.Format(time.RFC3339)
 		}
 		if err != nil {
-			final.Error = err.Error()
+			final.Error = logredact.Full(err)
 		}
 		emit(final)
 
@@ -439,7 +440,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		if runID > 0 {
 			var errMsg string
 			if err != nil {
-				errMsg = err.Error()
+				errMsg = logredact.Full(err)
 			}
 			inTok, outTok, totalAPI := 0, 0, 0
 			if usage != nil {
@@ -464,7 +465,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		spinner.Stop("failed")
 		if runID > 0 {
-			_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, err.Error())
+			_ = database.CompletePipelineRun(runID, 0, 0, 0, 0, 0, nil, nil, logredact.Full(err))
 		}
 		return fmt.Errorf("digest pipeline: %w", err)
 	}
@@ -648,7 +649,7 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 	{
 		errMsg := ""
 		if err != nil {
-			errMsg = err.Error()
+			errMsg = logredact.Full(err)
 		}
 		inTok, outTok, totalAPI := 0, 0, 0
 		if usage != nil {

@@ -59,7 +59,7 @@ func init() {
 
 	meetingPrepCmd.AddCommand(meetingExtractTopicsCmd)
 	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagText, "text", "", "raw text to split into topics (this or --text-file is required)")
-	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagTextFile, "text-file", "", "read the text from this file instead of --text")
+	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagTextFile, "text-file", "", "read the text from this file (- = stdin) instead of --text")
 	meetingExtractTopicsCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagEventID, "event-id", "", "optional event id for title context")
 	meetingExtractTopicsCmd.Flags().BoolVar(&meetingExtractTopicsFlagJSON, "json", false, "output as JSON (default format is also JSON — kept for symmetry)")
@@ -67,7 +67,7 @@ func init() {
 	meetingPrepCmd.AddCommand(meetingRecapCmd)
 	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagEventID, "event-id", "", "calendar event id (required)")
 	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagText, "text", "", "raw recap text (this or --text-file is required)")
-	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagTextFile, "text-file", "", "read the recap text from this file instead of --text")
+	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagTextFile, "text-file", "", "read the recap text from this file (- = stdin) instead of --text")
 	meetingRecapCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	meetingRecapCmd.Flags().BoolVar(&meetingRecapFlagJSON, "json", true, "output as JSON (default true)")
 }
@@ -205,7 +205,7 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 	if meetingRecapFlagEventID == "" {
 		return fmt.Errorf("--event-id is required")
 	}
-	text, err := textFlagValue(meetingRecapFlagText, meetingRecapFlagTextFile)
+	text, err := textFlagValue(cmd.InOrStdin(), meetingRecapFlagText, meetingRecapFlagTextFile)
 	if err != nil {
 		return err
 	}
@@ -269,7 +269,7 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 }
 
 func runMeetingExtractTopics(cmd *cobra.Command, args []string) error {
-	text, err := textFlagValue(meetingExtractTopicsFlagText, meetingExtractTopicsFlagTextFile)
+	text, err := textFlagValue(cmd.InOrStdin(), meetingExtractTopicsFlagText, meetingExtractTopicsFlagTextFile)
 	if err != nil {
 		return err
 	}

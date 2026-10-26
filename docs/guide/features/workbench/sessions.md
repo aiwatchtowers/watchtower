@@ -4,7 +4,7 @@ A session is one Claude Code or Codex conversation running in an embedded termin
 
 ## Why use it
 
-With several sessions running, the terminals tell you nothing until you open each one. Watchtower reads each session's state from the agent's own hooks, so the panel shows which session works, which needs a permission and which is waiting for you.
+With several sessions running, the terminals say nothing until you open each one. Watchtower reads each session's state from the agent's own hooks, so the panel shows which session works, which needs a permission and which is waiting for you.
 
 ## How it works
 
@@ -15,6 +15,16 @@ Copying from inside the terminal works as in your own terminal: when Claude Code
 Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](updates-and-quitting.md).
 
 ### Session states
+<!-- learn
+id: sessions-states
+title: Read a session's state at a glance
+text: The caption under each session says whether it works, needs approval, waits for you or has finished.
+area: development
+level: basics
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 A caption under the session name says what the agent is doing. When several apply, the first row wins.
 
@@ -25,7 +35,7 @@ A caption under the session name says what the agent is doing. When several appl
 | **Working** | green | The agent works on your prompt. |
 | **Agents working** (or **N agents working**) | green, pulsing | The agent finished its turn but helper agents or teammates it started are still busy. |
 | **Ready to check · ask #N** | purple | Its open asks are only checks or reviews for you (**Ready for review** when all are reviews). |
-| **Finished** | blue | The agent said it is done. Orange while an ask is still open. |
+| **Finished** | blue | The agent said it is done. Orange while an ask is still open, such as the one that tells you what it left of its target and why. |
 | **Waiting for you · ask #N** | orange | A question of the agent waits for your answer. |
 | **Stopped** | grey | The agent finished its turn. |
 | **Running** / **Not running** | green / grey | No state reported yet, or not started. |
@@ -38,24 +48,54 @@ When no helper has reported for 30 minutes, Watchtower asks Claude Code whether 
 
 ### Where the agent works
 
-A line under the caption shows the agent's place: **main folder · main**, or **⑂ name · branch** when it moved into a git worktree, or **worktree removed** when that worktree is gone. Until Watchtower knows where a session works, it shows the main folder.
+A line under the caption shows the agent's place: **main folder · main**, or **⑂ name · branch** when it moved into a git worktree, or **worktree removed** when that worktree is gone. Until Watchtower knows the place, it shows the main folder.
 
 ### Sessions an automation opens
 
-A workbench automation can start an agent session to do part of its work, such as a review round. It appears in SESSIONS like any other, titled "⚙ <name> · run #N", and starts in the background so it does not take the page from you. You can watch it, type into it, stop it or resume it.
+A workbench automation can start an agent session to do part of its work, such as a review round. It shows in SESSIONS like any other, titled "⚙ <name> · run #N", and starts in the background, not taking the page from you. You can watch it, type into it, stop it or resume it.
 
-The run waits until the session finishes. If you stop it or its process ends, the run carries on knowing the session stopped. If Watchtower was not open when the automation asked, the session starts the next time it is.
+The run waits until the session finishes. If you stop it or it exits, the run goes on, knowing it stopped. If Watchtower was not open when the automation asked, the session starts the next time it is.
 
 ## Using it
 
 ### Start, resume and restart
+<!-- learn
+id: sessions-new-session
+title: Start a session with ⌘T
+text: Press ⌘T on a workbench page, or **+** in the sessions panel, to start the default agent in the folder.
+area: development
+level: basics
+kind: shortcut
+since: 0.24.0
+action: hotkey:new-session
+-->
+<!-- learn
+id: sessions-resume
+title: Resume a stopped session
+text: Press **Resume** on a stopped session to continue the conversation where it left off.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
-- **+** in the sessions panel starts a session of the default agent. Hold it to pick the agent. ⌘T does the same on a workbench page.
+- **+** in the sessions panel starts a session of the default agent (hold it to pick one; ⌘T on a workbench page). It is on screen at once and reads **Starting…** while it is set up (and its [worktree](worktrees-and-cleanup.md) made, when it gets one).
 - **Work on It** on a board card starts a session for that target. See [Board and targets](board-and-targets.md).
 - **Resume** continues a stopped session where it left off. **Restart** appears when one exits and **Start fresh** when it cannot be resumed.
 - **Settings → System → Workbench → Default Agent** picks the agent for new sessions. Codex differs in a few ways; see [Codex](codex.md).
 
 ### Find a session
+<!-- learn
+id: sessions-go-to
+title: Jump to any session with ⌘K
+text: Press ⌘K on the Workbench tab and type a session name, or `#` and a target number.
+area: development
+level: next
+kind: shortcut
+since: 0.24.0
+action: hotkey:go-to
+-->
 
 - ⌘1…⌘9 open the first nine sessions of the list.
 - **Go to…** (⌘K on the Workbench tab) searches names across every workbench and its sessions. Type `#` and a target number to find the session on that target.
@@ -63,6 +103,16 @@ The run waits until the session finishes. If you stop it or its process ends, th
 - ⌥⌘S hides and shows the sessions panel.
 
 ### Tidy up the list
+<!-- learn
+id: sessions-quick-delete
+title: Clear finished sessions in one click
+text: Hover a finished or stopped session and click **✕**; **Undo** in the bar brings it back.
+area: development
+level: next
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 - A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers whether it is open. A session you are looking at never jumps.
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.

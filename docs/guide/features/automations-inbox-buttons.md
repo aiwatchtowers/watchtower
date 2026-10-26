@@ -7,8 +7,18 @@ An automation can leave a card in the [Inbox](inbox.md) with buttons of its own:
 A recipe that watches your Jira board leaves a card, "PAY-12 has been blocked for 3 days". Beside it sit **Open PAY-12** and **Nudge the owner**. You press the second one and the recipe runs once more, this time to draft that nudge. The card is the place where you decide; the button is the next step.
 
 ## How it works
+<!-- learn
+id: buttons-card-actions
+title: Put buttons on automation cards
+text: Give `output.inbox` up to four `actions` to open a page, start a chat or hand the card to an agent.
+area: automations
+level: power
+kind: feature
+since: 0.24.0
+action: nav:automations
+-->
 
-A card is written by `output.inbox({title, body, link?, actions?})`. `actions` holds up to four buttons, each with a `label` of at most 40 characters and exactly one kind:
+A card is written by `output.inbox({title, body, priority?, link?, actions?})`; `priority` is `"high"`, `"medium"` or `"low"`, and any other value throws a validation error (the run fails unless the script catches it). `actions` holds up to four buttons, each with a `label` of at most 40 characters and exactly one kind:
 
 | Kind | Key | A press does |
 |---|---|---|
@@ -31,6 +41,16 @@ Under the recipe's own buttons every card has a common row:
 - **Done** and **Dismiss**.
 
 ### Replying to a card
+<!-- learn
+id: buttons-reply
+title: Answer a card to run it again
+text: A **Reply** button runs the recipe once more with your choice, such as drafting a nudge; it needs `inbox:reply`.
+area: automations
+level: power
+kind: feature
+since: 0.24.0
+action: nav:inbox
+-->
 
 A Reply press runs the recipe once with `trigger.kind === "reply"` and `trigger.reply = {output_id, action, value, data, card: {title, link}}`. The `data` is read back from the stored card, not from the screen. One press is one run; it is never merged with another run. A card takes one press, and the button then reads **Sent — run #N**.
 
@@ -54,7 +74,7 @@ output.inbox({
 
 Its permissions include `inbox:reply` and its outputs include `inbox`. In the script, check `trigger.kind === "reply"` first and branch on `trigger.reply.value`.
 
-1. Open the card in **Inbox**, **Actions**.
+1. Open the card in the Inbox's **Automations** filter.
 2. Press **Nudge the owner**. The button changes to **Sent — run #N**.
 3. Follow the run from the card's source line or from the automation's **History**.
 

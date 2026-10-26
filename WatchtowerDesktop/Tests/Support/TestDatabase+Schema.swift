@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS workspace (
     domain            TEXT NOT NULL DEFAULT '',
     synced_at         TEXT,              -- ISO8601 timestamp of last sync
     inbox_last_processed_ts REAL NOT NULL DEFAULT 0  -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0, digest_fastforward_ts REAL NOT NULL DEFAULT 0);
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0, digest_fastforward_ts REAL NOT NULL DEFAULT 0, ideas_chat_floor INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS users (
     id            TEXT PRIMARY KEY,  -- Slack user ID
     name          TEXT NOT NULL,
@@ -870,7 +870,7 @@ CREATE TABLE IF NOT EXISTS ideas (
     last_mention_at TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-, seen_at TEXT);
+, seen_at TEXT, chat_born INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS jira_comments (
     account_id          INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
     issue_key           TEXT NOT NULL,
@@ -1354,7 +1354,7 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     answer           TEXT NOT NULL DEFAULT '',   -- JSON, Desktop-written
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     answered_at      TEXT NOT NULL DEFAULT '',
-    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '', automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
+    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '', automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, doc_type TEXT NOT NULL DEFAULT '',
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
@@ -1742,7 +1742,7 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   sent_at        TEXT,
   delivered_at   TEXT
-);
+, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')));
 CREATE TABLE IF NOT EXISTS review_comments (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id       INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
@@ -1865,24 +1865,6 @@ CREATE TABLE IF NOT EXISTS permission_requests (
   created_at          TEXT NOT NULL,
   decided_at          TEXT,
   decided_by          TEXT
-);
-CREATE TABLE IF NOT EXISTS owner_instructions (
-    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
-    body       TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS instruction_suggestions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    text            TEXT NOT NULL,
-    field           TEXT NOT NULL CHECK (field IN ('session','procedure')),
-    workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE,
-    session_count   INTEGER NOT NULL DEFAULT 0,
-    workbench_count INTEGER NOT NULL DEFAULT 0,
-    first_seen_at   TEXT NOT NULL,
-    last_seen_at    TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
-    fingerprint     TEXT NOT NULL UNIQUE,
-    decided_at      TEXT NULL
 );
 CREATE TABLE IF NOT EXISTS reaction_events (
     account_id INTEGER NOT NULL,
@@ -2037,16 +2019,6 @@ CREATE TABLE IF NOT EXISTS "stream_digests" (
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     read_at      TEXT
 );
-CREATE TABLE IF NOT EXISTS "idea_mentions" (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear')),
-    ref         TEXT NOT NULL DEFAULT '',
-    quote       TEXT NOT NULL DEFAULT '',
-    author      TEXT NOT NULL DEFAULT '',
-    said_at     TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
 CREATE TABLE IF NOT EXISTS db_maintenance (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -2168,6 +2140,161 @@ CREATE TABLE IF NOT EXISTS builtin_migrations (
     attempts   INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 , first_attempted_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS "owner_instructions" (
+    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure','chat')),
+    body       TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS "instruction_suggestions" (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    text            TEXT NOT NULL,
+    field           TEXT NOT NULL CHECK (field IN ('session','procedure','chat')),
+    workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_count   INTEGER NOT NULL DEFAULT 0,
+    workbench_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_at   TEXT NOT NULL,
+    last_seen_at    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
+    fingerprint     TEXT NOT NULL UNIQUE,
+    decided_at      TEXT NULL
+);
+CREATE TABLE IF NOT EXISTS instruction_chat_lines (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    line            TEXT NOT NULL,
+    conversation_id INTEGER NULL,
+    message_id      INTEGER NULL,
+    added_at        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_knowledge_artifacts (
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    artifact_key    TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    kept_at         TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, artifact_key)
+);
+CREATE TABLE IF NOT EXISTS "idea_mentions" (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear','chat')),
+    ref         TEXT NOT NULL DEFAULT '',
+    quote       TEXT NOT NULL DEFAULT '',
+    author      TEXT NOT NULL DEFAULT '',
+    said_at     TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE TABLE IF NOT EXISTS media_state (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    start_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS media_items (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind               TEXT NOT NULL CHECK (kind IN ('image','link')),
+    parent_kind        TEXT NOT NULL CHECK (parent_kind IN ('slack','confluence','gmail','imap','chat','target')),
+    parent_key         TEXT NOT NULL,
+    slack_channel_id   TEXT,
+    slack_ts           TEXT,
+    ext_source_id      INTEGER,
+    ext_id             TEXT,
+    gmail_account_id   INTEGER,
+    gmail_message_id   TEXT,
+    imap_account_id    INTEGER,
+    imap_uidvalidity   INTEGER,
+    imap_uid           INTEGER,
+    chat_attachment_id INTEGER REFERENCES chat_attachments(id) ON DELETE CASCADE,
+    target_image_id    INTEGER REFERENCES project_target_images(id) ON DELETE CASCADE,
+    anchor             TEXT NOT NULL DEFAULT '',
+    locator            TEXT NOT NULL,
+    fetch_url          TEXT NOT NULL DEFAULT '',
+    name               TEXT NOT NULL DEFAULT '',
+    media_type         TEXT NOT NULL DEFAULT '',
+    size_bytes         INTEGER NOT NULL DEFAULT 0,
+    content_key        TEXT NOT NULL DEFAULT '',
+    scope              TEXT NOT NULL,
+    from_owner         INTEGER NOT NULL DEFAULT 0,
+    content_at         TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','ok','skipped_type','skipped_junk','too_large','unreachable','unavailable','failed')),
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    error              TEXT NOT NULL DEFAULT '',
+    title              TEXT NOT NULL DEFAULT '',
+    body               TEXT NOT NULL DEFAULT '',
+    image_text         TEXT NOT NULL DEFAULT '',
+    keys_json          TEXT NOT NULL DEFAULT '[]',
+    kb_source          TEXT NOT NULL DEFAULT '',
+    kb_ref             TEXT NOT NULL DEFAULT '',
+    discovered_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    described_at       TEXT NOT NULL DEFAULT '',
+    -- a row that could only wait (a source off, a reference not synced yet)
+    -- is not listed again before this time ('' = now)
+    next_try_at        TEXT NOT NULL DEFAULT '',
+    UNIQUE (parent_key, kind, locator),
+    FOREIGN KEY (slack_channel_id, slack_ts) REFERENCES messages(channel_id, ts) ON DELETE CASCADE,
+    FOREIGN KEY (ext_source_id, ext_id) REFERENCES ext_documents(source_id, ext_id) ON DELETE CASCADE,
+    FOREIGN KEY (gmail_account_id, gmail_message_id) REFERENCES gmail_messages(account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (imap_account_id, imap_uidvalidity, imap_uid) REFERENCES imap_messages(account_id, uidvalidity, uid) ON DELETE CASCADE,
+    -- exactly the parent kind's columns are set
+    CHECK ((slack_channel_id IS NOT NULL) = (parent_kind = 'slack')
+       AND (slack_ts IS NOT NULL) = (parent_kind = 'slack')
+       AND (ext_source_id IS NOT NULL) = (parent_kind = 'confluence')
+       AND (ext_id IS NOT NULL) = (parent_kind = 'confluence')
+       AND (gmail_account_id IS NOT NULL) = (parent_kind = 'gmail')
+       AND (gmail_message_id IS NOT NULL) = (parent_kind = 'gmail')
+       AND (imap_account_id IS NOT NULL) = (parent_kind = 'imap')
+       AND (imap_uidvalidity IS NOT NULL) = (parent_kind = 'imap')
+       AND (imap_uid IS NOT NULL) = (parent_kind = 'imap')
+       AND (chat_attachment_id IS NOT NULL) = (parent_kind = 'chat')
+       AND (target_image_id IS NOT NULL) = (parent_kind = 'target'))
+);
+CREATE TABLE IF NOT EXISTS automation_draft_cache (
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    entry_json      TEXT NOT NULL,
+    at              TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, seq)
+);
+CREATE TABLE IF NOT EXISTS pending_transcripts (
+    recording      TEXT PRIMARY KEY,
+    event_id       TEXT,
+    title          TEXT,
+    transcript     TEXT,
+    meta_json      TEXT,
+    started_at     REAL NOT NULL,
+    transcribed_at REAL
+);
+CREATE TABLE IF NOT EXISTS chat_queued_drafts (
+    surface_key TEXT PRIMARY KEY,
+    text        TEXT NOT NULL,
+    at          REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS spec_reviews (
+    ask_id      INTEGER PRIMARY KEY REFERENCES owner_asks(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL CHECK (status IN ('queued','running','done','failed','skipped')),
+    reason      TEXT NOT NULL DEFAULT '',
+    result      TEXT NOT NULL DEFAULT '',
+    provider    TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL DEFAULT '',
+    doc_sha     TEXT NOT NULL DEFAULT '',
+    dropped     INTEGER NOT NULL DEFAULT 0,
+    pid         INTEGER NOT NULL DEFAULT 0,
+    attempt     INTEGER NOT NULL DEFAULT 0,
+    queued_at   TEXT NOT NULL,
+    started_at  TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS spec_review_marks (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
+    body       TEXT NOT NULL DEFAULT '',
+    about      TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
+);
+CREATE TABLE IF NOT EXISTS learn_seen (
+    item_id TEXT PRIMARY KEY,
+    how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
+    seen_at TEXT NOT NULL
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2450,7 +2577,6 @@ CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id
 CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 CREATE INDEX IF NOT EXISTS review_notes_session ON review_notes(project_id, session_id, kind, ord);
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
-CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_linear_states_team ON linear_workflow_states(account_id, team_id, position);
 CREATE INDEX IF NOT EXISTS idx_linear_labels_team ON linear_labels(account_id, team_id);
 CREATE INDEX IF NOT EXISTS idx_targets_due         ON targets(due_date);
@@ -2484,8 +2610,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_track_identity
 CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_decision_identity
     ON issue_slack_links(tracker, issue_key, digest_id) WHERE link_type = 'decision';
 CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
-CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
-CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
     ON account_purges(source, account_id) WHERE state IN ('scheduled','running');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scope, COALESCE(project_id, 0), slug)
@@ -2500,6 +2624,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automati
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_automation_id ON tracks(automation_id) WHERE automation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
+CREATE INDEX IF NOT EXISTS idx_instruction_chat_lines_message ON instruction_chat_lines(message_id);
+CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
+CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
+CREATE INDEX IF NOT EXISTS idx_media_items_pending ON media_items(status, from_owner, content_at);
+CREATE INDEX IF NOT EXISTS idx_media_items_content ON media_items(content_key, scope);
+CREATE INDEX IF NOT EXISTS idx_media_items_slack ON media_items(slack_channel_id, slack_ts);
+CREATE INDEX IF NOT EXISTS idx_media_items_ext ON media_items(ext_source_id, ext_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_gmail ON media_items(gmail_account_id, gmail_message_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_imap ON media_items(imap_account_id, imap_uidvalidity, imap_uid);
+CREATE INDEX IF NOT EXISTS idx_media_items_chat ON media_items(chat_attachment_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_target ON media_items(target_image_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
@@ -2808,6 +2945,39 @@ END;
 CREATE TRIGGER IF NOT EXISTS trg_automations_delete_watch_track AFTER DELETE ON automations
 BEGIN
     UPDATE tracks SET automation_id = NULL, enabled = 0 WHERE automation_id = OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS media_items_kb_dirty_upd AFTER UPDATE OF status, body, kb_source, kb_ref ON media_items
+WHEN (OLD.status = 'ok' OR NEW.status = 'ok') AND (NEW.kb_ref != '' OR OLD.kb_ref != '')
+BEGIN
+    INSERT INTO kb_dirty (source, key) SELECT NEW.kb_source, NEW.kb_ref WHERE NEW.kb_ref != ''
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    -- an ok row moved to another document: the old one loses its section
+    INSERT INTO kb_dirty (source, key) SELECT OLD.kb_source, OLD.kb_ref
+        WHERE OLD.status = 'ok' AND OLD.kb_ref != ''
+          AND (OLD.kb_source != NEW.kb_source OR OLD.kb_ref != NEW.kb_ref)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS media_items_kb_dirty_del AFTER DELETE ON media_items
+WHEN OLD.status = 'ok' AND OLD.kb_ref != ''
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES (OLD.kb_source, OLD.kb_ref)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS chat_attachments_media AFTER INSERT ON chat_attachments
+WHEN NEW.conversation_id IS NOT NULL
+ AND NEW.mime IN ('image/png','image/jpeg','image/gif','image/webp')
+BEGIN
+    INSERT INTO media_items (kind, parent_kind, parent_key, chat_attachment_id, locator, name,
+                             media_type, size_bytes, scope, from_owner, content_at)
+    VALUES ('image', 'chat', 'chat:' || NEW.id, NEW.id, NEW.path, NEW.name,
+            NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END;
+CREATE TRIGGER IF NOT EXISTS project_target_images_media AFTER INSERT ON project_target_images
+BEGIN
+    INSERT INTO media_items (kind, parent_kind, parent_key, target_image_id, locator, name,
+                             media_type, size_bytes, scope, from_owner, content_at)
+    VALUES ('image', 'target', 'target:' || NEW.id, NEW.id, NEW.path, NEW.file_name,
+            NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END;
 """#
 }

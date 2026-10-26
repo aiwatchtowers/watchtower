@@ -11,11 +11,14 @@ package enum GettingReadyPolicy {
     /// `readiness` is P1's map; empty = not evaluated yet. A ready card stays
     /// in the zone until every card is ready or error (owner, ask #304).
     /// `ownerPendingSource` names the connected source ("Jira", "Linear")
-    /// still to report who the owner is, when the owner is unknown.
+    /// still to report who the owner is, when the owner is unknown. `policy`
+    /// is the organization's (#608): a Connect row whose every source it
+    /// forbids is left out, since nothing behind it can be connected.
     package static func step(
         readiness: [ReadinessFeature: Readiness],
         ownerKnown: Bool,
         ownerPendingSource: String? = nil,
+        policy: ManagedPolicy = .none,
         memory: GettingReadyMemory,
         sawUnready: Bool,
         now: Date,
@@ -33,7 +36,7 @@ package enum GettingReadyPolicy {
         let ownerGap: ReadinessSource = ownerPendingSource.map { .ownerIdentityPending($0) } ?? .ownerIdentity
         let (cards, sourceRows) = entries(
             readiness: readiness, ownerKnown: ownerKnown, ownerGap: ownerGap,
-            briefingHour: briefingHour)
+            policy: policy, briefingHour: briefingHour)
         // The zone opens on a card that reads a source, or on a Connect row a
         // feature the owner's goals switched on waits for (goals picked,
         // Connect skipped). Always-on features (Inbox) do not count, so a
@@ -68,6 +71,7 @@ package enum GettingReadyPolicy {
         readiness: [ReadinessFeature: Readiness],
         ownerKnown: Bool,
         ownerGap: ReadinessSource,
+        policy: ManagedPolicy,
         briefingHour: Int
     ) -> ([GettingReadyCard], [GettingReadySourceRow]) {
         var cards: [GettingReadyCard] = []
@@ -104,6 +108,21 @@ package enum GettingReadyPolicy {
                     readiness: state))
             }
         }
-        return (cards, sourceRows)
+        return (cards, sourceRows.filter { connectable($0.source, policy: policy) })
+    }
+
+    /// Whether the policy lets at least one source behind a Connect row be
+    /// connected (`PolicySourceMap`'s names: a calendar is Google or CalDAV,
+    /// mail is Google or IMAP).
+    static func connectable(_ source: ReadinessSource, policy: ManagedPolicy) -> Bool {
+        let sources: [String] = switch source {
+        case .slack: ["slack"]
+        case .jira: ["jira"]
+        case .calendar: ["google", "caldav"]
+        case .jiraOrMail: ["jira", "google", "imap"]
+        case .anySource: ManagedPolicy.knownSources
+        default: []
+        }
+        return sources.isEmpty || sources.contains(where: policy.sourceAllowed)
     }
 }

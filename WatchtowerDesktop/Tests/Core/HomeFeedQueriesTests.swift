@@ -264,7 +264,7 @@ final class HomeFeedQueriesTests: XCTestCase {
         }
         let data = try read()
         XCTAssertEqual(data.targets.count, 10)
-        let feed = HomeFeedBuilder.feed(data, now: now, calendar: calendar, expanded: false, hidden: [])
+        let feed = HomeFeedBuilder.feed(data, now: now, calendar: calendar, hidden: [])
         XCTAssertEqual(feed.laterToday.map(\.title), ["Later today"])
         XCTAssertEqual(feed.waiting.count + feed.hiddenWaiting, 9)
     }

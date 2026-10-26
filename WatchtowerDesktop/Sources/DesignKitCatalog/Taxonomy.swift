@@ -87,7 +87,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
     var components: [String] {
         switch self {
         case .colours: ["Surface", "Fill", "Tone", "ChipTint", "detailBackground", "panelBackground"]
-        case .spacing: ["Spacing"]
+        case .spacing: ["Spacing", "PaneWidth"]
         case .radius: ["Radius"]
         case .strokes: ["Stroke"]
         case .typography: ["Tracking"]
@@ -99,7 +99,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .inputs: ["kit"]
         case .display: ["Chip", "CountBadge", "OutlineTag", "MenuLabel", "SectionHeader"]
         case .containers: ["card", "kitRow"]
-        case .settings: ["SettingsSection", "SettingRow"]
+        case .settings: ["SettingsSection", "SettingRow", "ManagedByOrganizationBadge", "managedByOrganization"]
         case .panels: ["PanelSplit", "PanelSplitWidth", "PanelResizeHandle", "panelSurface", "panelTab",
                        "panelListStyle", "workspaceListStyle", "clearPlainList"]
         case .popover: ["popoverSurface"]

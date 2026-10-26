@@ -95,10 +95,10 @@ final class IdeaChatSurfaceTests: XCTestCase {
         XCTAssertEqual(mock.toolModes, [nil])
     }
 
-    /// A resumed turn drops the system prompt (the CLI uses --resume), so the
-    /// per-turn prompt must itself carry the idea context block (mirrors
-    /// TargetChatViewModelTests.testResumedTurnCarriesTaskContextAndActionContract).
-    func testResumedTurnCarriesIdeaContext() async throws {
+    /// A stored session id is never resumed (#604 G11): the turn sends the
+    /// system prompt, which carries the idea context (mirrors
+    /// TargetChatViewModelTests.testALaterTurnSendsTheSystemPromptAndTheReplay).
+    func testAStoredSessionIsNotResumedAndTheTurnCarriesTheSystemPrompt() async throws {
         let idea = try makeIdea()
         try await dbManager.dbPool.write { db in
             let conv = try ChatConversationQueries.create(
@@ -113,11 +113,10 @@ final class IdeaChatSurfaceTests: XCTestCase {
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 
-        let prompt = try XCTUnwrap(mock.prompts.first)
-        XCTAssertTrue(prompt.contains("=== IDEA ==="))
-        XCTAssertTrue(prompt.contains(idea.title))
-        XCTAssertTrue(prompt.hasSuffix("again"), "user text must follow the carried context")
-        XCTAssertEqual(mock.systemPrompts, [nil])
+        XCTAssertEqual(mock.prompts, ["again"])
+        let system = try XCTUnwrap(mock.systemPrompts.first.flatMap { $0 })
+        XCTAssertTrue(system.contains("=== IDEA ==="))
+        XCTAssertTrue(system.contains(idea.title))
     }
 
     func testFirstTurnSendsTheSystemPrompt() async throws {
@@ -131,7 +130,7 @@ final class IdeaChatSurfaceTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(mock.systemPrompts.first.flatMap { $0 }).contains("=== IDEA ==="))
         let conv = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
         let sessionID = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: conv)?.sessionID }
-        XCTAssertEqual(sessionID, "s9")
+        XCTAssertNil(sessionID, "never resumed, so never kept (#604 G11)")
     }
 
     /// The Go prompt (internal/ai/prompt.go) and this Swift copy are a
@@ -221,6 +220,18 @@ final class IdeaChatSurfaceTests: XCTestCase {
         XCTAssertTrue(block.contains("=== MENTIONS ==="))
         XCTAssertTrue(block.contains("Automate weekly stakeholder updates"))
         XCTAssertTrue(block.contains("we should really automate this"))
+    }
+
+    /// The Discuss chat's context never carries an assistant chat mention:
+    /// its quote is a model's words (ask #516).
+    func testIdeaContextBlockLeavesOutAssistantChatMentions() async throws {
+        let idea = try makeIdea(essence: "Ship on Monday")
+        let assistant = IdeaMention(row: Row(["id": 1, "idea_id": idea.id, "source": "chat", "ref": "chat:1:2",
+                                              "quote": "model conclusion", "author": "assistant"]
+            as [String: (any DatabaseValueConvertible)?]))
+        let block = IdeaChatSurface.ideaContextBlock(idea, mentions: [assistant])
+        XCTAssertFalse(block.contains("model conclusion"), block)
+        XCTAssertTrue(block.contains("(none recorded)"), block)
     }
 
     // MARK: - Helpers

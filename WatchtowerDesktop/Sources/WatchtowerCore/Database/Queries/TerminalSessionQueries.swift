@@ -289,6 +289,28 @@ package enum TerminalSessionQueries {
         }
     }
 
+    /// Moves a new row, inserted in the workbench folder before its first
+    /// launch, into the worktree its start made. `created_at` becomes now:
+    /// a placed row owns its worktree and branch by record only when both
+    /// were born no later than the row (PROJ-18, Go `sessioncleanup`), as
+    /// when placement made them before the insert. Throws `notFound` when
+    /// the row is gone.
+    package static func place(
+        _ db: Database, id: Int64, folderPath: String, worktreeBranch: String, worktreeBase: String?
+    ) throws -> TerminalSession {
+        try db.execute(
+            sql: """
+                UPDATE terminal_sessions SET folder_path = ?, worktree_branch = ?, worktree_base = ?,
+                    created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                WHERE id = ?
+                """,
+            arguments: [folderPath, worktreeBranch, worktreeBase, id]
+        )
+        try db.requireUpdated(orThrow: TerminalSessionQueryError.notFound(id))
+        guard let row = try fetch(db, id: id) else { throw TerminalSessionQueryError.notFound(id) }
+        return row
+    }
+
     package static func delete(_ db: Database, id: Int64) throws {
         try db.execute(sql: "DELETE FROM terminal_sessions WHERE id = ?", arguments: [id])
     }

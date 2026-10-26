@@ -50,7 +50,7 @@ struct AskView: View {
                 if let notice = model.carriedNotice {
                     Text(notice).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
-                body(of: form)
+                body(of: form, ask: ask)
                 if let status = AskStatusRow.Model(form.status) {
                     AskStatusRow(model: status) { dismiss(status) }
                 }
@@ -71,7 +71,7 @@ struct AskView: View {
     }
 
     @ViewBuilder
-    private func body(of form: AskFormModel) -> some View {
+    private func body(of form: AskFormModel, ask: OwnerAsk) -> some View {
         if let openOnMac = form.openOnMac {
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 Label(openOnMac, systemImage: "desktopcomputer").font(TypeScale.rowEmphasis)
@@ -85,7 +85,7 @@ struct AskView: View {
                 QuestionAskView(page: page, model: model, isEditable: form.isEditable)
             }
             if let review = form.review {
-                ReviewAskView(review: review, model: model, isEditable: form.isEditable)
+                ReviewAskView(review: review, specReview: ask.specReview, model: model, isEditable: form.isEditable)
             }
             if !form.checks.isEmpty {
                 CheckAskView(rows: form.checks, model: model, isEditable: form.isEditable)

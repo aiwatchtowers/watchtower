@@ -45,6 +45,10 @@ final class AppState {
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
     let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
+    /// The organization policy forced through the MDM (#608). Read only once
+    /// `initialize()` starts it, so a test that never initializes never reads
+    /// this Mac's managed preferences.
+    let managedPolicy: ManagedPolicyCenter
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -71,18 +75,28 @@ final class AppState {
         performer: AppHomeFeedPerformer(appState: self)
     )
 
+    /// Home's Learn Watchtower zone (#718): the guide's cards and the seen
+    /// state. Started with the main app's DB wiring, after `homeCenter`.
+    @ObservationIgnored private(set) lazy var learnCenter = LearnCenter(environment: LiveLearnEnvironment(appState: self)) {
+        try await LiveLearnEnvironment.loadCatalog()
+    }
+    /// Onboarding was finished before this launch (`LearnVersionPolicy`):
+    /// the local step at init, or the database profile `reconcileOnboarding`
+    /// restores it from — never this launch's own onboarding finishing.
+    @ObservationIgnored private(set) var learnOnboardingFinishedAtLaunch: Bool
+
     /// The owner (`OwnerQueries.resolve`, OWNER-01); unknown → `NoOwnerEmptyState` (OWNER-02). Re-read on
     /// DB open, account reloads and Day Plan/Briefings/Inbox appear (the daemon fills Jira's cross-process).
     private(set) var owner: Owner = .unknown
     /// With the owner unknown, the source still to report it (`OwnerQueries.pendingIdentitySource`).
     private(set) var ownerPendingSource: String?
 
-    /// The Settings window's selected tab, so an in-app link can open
-    /// Settings on a given tab (the no-owner empty state → Connections).
+    /// The Settings window's selected tab: an in-app link opens Settings on it.
     var settingsTab: SettingsTab = .connections
-
-    /// The Connections tab's selected service, held here for the same reason
-    /// as `settingsTab` (the Inbox cheat sheet → Slack's reaction dictionary).
+    /// A section the tab scrolls to once it shows (the tab clears it).
+    var settingsAnchor: SettingsAnchor?
+    /// The Connections tab's selected service, held for the same reason
+    /// (the Inbox cheat sheet → Slack's reaction dictionary).
     var settingsConnection: ConnectionService = .slack
 
     /// True while initialize() is running (before DB and onboarding check complete).
@@ -383,11 +397,14 @@ final class AppState {
     private(set) var mobileHubInitError: String?
     /// Where the toggle lives; tests pass a throwaway suite.
     @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
+    /// The policy's `MobileSync` mode for the hub's background parts (#608).
+    @ObservationIgnored let mobileSyncPolicy = MobileSyncPolicyBox()
+    @ObservationIgnored private var policyOffWipeDone = false
     /// Opens the hub's transport and sidecar; tests pass a stub.
     @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
-    @ObservationIgnored private var mobileHubPool: DatabasePool?
+    @ObservationIgnored private(set) var mobileHubPool: DatabasePool?
     /// Built with the first hub and kept across rebuilds, so a QR on screen
     /// keeps its link when `initWorkbenches` replaces the hub.
     @ObservationIgnored var mobileLinkCenter: MobileLinkCenter?
@@ -471,7 +488,8 @@ final class AppState {
     /// (design shots have no installed CLI); nil finds the installed one.
     @ObservationIgnored var trackActionRunnerOverride: (any CLIRunnerProtocol)?
 
-    /// `onboardingDefaults` backs the onboarding step and goals,
+    /// `managedPolicyRead` reads the organization policy (design shots pass a
+    /// fixture). `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `migrateDatabase` and
     /// `openDatabase` the database migration and open, `databaseCompaction`
     /// the launch's compaction step (nil: the real one), `peopleRosterRun`
@@ -485,11 +503,14 @@ final class AppState {
         databaseCompaction: DatabaseCompactionStep? = nil,
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
         featureManager: FeatureManagerService? = nil,
-        onboardingGoals: OnboardingGoalsModel? = nil
+        onboardingGoals: OnboardingGoalsModel? = nil,
+        managedPolicyRead: @escaping () -> [String: Any] = { ManagedPolicyReader.appRead() }
     ) {
+        managedPolicy = ManagedPolicyCenter(read: managedPolicyRead)
         let features = featureManager ?? FeatureManagerService()
         self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
+        learnOnboardingFinishedAtLaunch = onboarding.currentStep == .complete
         self.workbenchDefaults = workbenchDefaults
         codeUsagesCenter = CodeUsagesCenter(defaults: workbenchDefaults)
         self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
@@ -512,6 +533,8 @@ final class AppState {
         daemonManager.onSyncFinished = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
+        managedPolicy.onChange = { [weak self] in self?.managedPolicyChanged($0) }
+        managedPolicy.onRefresh = { [weak self] _ in self?.retryPolicyOffWipe() }
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
@@ -557,7 +580,7 @@ final class AppState {
         let prompts = await builtinDefaultPrompts(automation)
         return makeAutomationEditorChat(
             conversationID: conversationID, pool: pool, provider: provider, panelDraftBox: box,
-            onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
+            onSaved: { [weak self] _ in self?.automationsViewModel?.refresh() },
             makeSpec: { outcomes in
                 AutomationEditorChatSurface.spec(automation: automation, defaultPrompts: prompts, provider: provider,
                                                  conversationID: conversationID, dbPool: pool, outcomes: outcomes,
@@ -566,41 +589,18 @@ final class AppState {
         )
     }
 
-    /// The panel's chat for a new automation, keyed by an explicit context id
-    /// (`draftContextID(for:)`), so each draft keeps its own conversation. A
-    /// workbench that is gone opens nothing (never a personal chat in its place).
-    func newAutomationEditorChat(contextID: String, scope: AutomationScopeChoice) async throws -> AutomationEditorChat? {
-        guard let pool = databaseManager?.dbPool else { return nil }
-        var workbench: AutomationEditorChatSurface.NewWorkbench?
-        if case let .workbench(id, _, _) = scope {
-            guard let project = workbenchesViewModel?.summaries.first(where: { $0.project.id == id })?.project
-            else { return nil }
-            workbench = (id, project.name, project.folderURL.lastPathComponent)
-        }
-        let provider = Constants.aiProviderID()
-        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool)
-        let box = PanelDraftBox()
-        return makeAutomationEditorChat(conversationID: conversationID, pool: pool, provider: provider,
-                                        panelDraftBox: box,
-                                        onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
-                                        makeSpec: { outcomes in
-            AutomationEditorChatSurface.newSpec(
-                provider: provider, contextID: contextID, workbench: workbench, conversationID: conversationID,
-                dbPool: pool, outcomes: outcomes, panelDraft: box.read)
-        })
-    }
-
     /// Starts a new draft and returns its conversation key for `scope`.
     func draftContextID(for scope: AutomationScopeChoice) -> String {
         AutomationEditorChatSurface.draftContextID(draftID: UUID().uuidString, workbenchID: scope.workbenchID)
     }
 
-    private func makeAutomationEditorChat(
+    /// Internal, not private: `newAutomationEditorChat` lives in AppState+Automations.swift.
+    func makeAutomationEditorChat(
         conversationID: Int64,
         pool: DatabasePool,
         provider: String,
         panelDraftBox: PanelDraftBox,
-        onSaved: @escaping () -> Void,
+        onSaved: @escaping (Int64?) -> Void,
         makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) -> AutomationEditorChat {
         AutomationEditorChat(
@@ -735,6 +735,7 @@ final class AppState {
                     self?.automationsViewModel?.stop()
                     self?.automationSessionCenter?.stop()
                     self?.homeCenter.endReading()
+                    self?.learnCenter.stop()
                     self?.readinessCenter.stop()
                 }
             }
@@ -779,9 +780,15 @@ final class AppState {
         isInitializing = true
         isLoading = true
         Constants.prewarmResolvedEnvironment()
-        // Surface a recording captured before a crash/relaunch so the global
-        // indicator can offer to (re-)transcribe it. No DB needed.
-        meetingRecorderCenter.restorePendingOnLaunch()
+        // Before anything a key decides starts (the mobile hub, the pickers).
+        managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
+        // Text older versions handed the CLI through temp files (now stdin).
+        Task.detached(priority: .utility) {
+            StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
+        }
+        // A recording captured before a crash/relaunch is surfaced once the
+        // pool opens (`wireMeetingRecorderLoaders`): its pending row lives in
+        // the database.
         // Neither direction of this handshake needs the DB, so it is wired
         // unconditionally rather than inside the DB-dependent Task below.
         dictationCenter.meetingBusy = { [meetingRecorderCenter] in meetingRecorderCenter.isBusy }
@@ -981,7 +988,9 @@ final class AppState {
         var skipThisLaunch = false
         if let dbPool, onboarding.currentStep != .complete {
             switch await checkProfileOnboarding(dbPool: dbPool) {
-            case .done: onboarding.goTo(.complete)
+            case .done:
+                onboarding.goTo(.complete)
+                learnOnboardingFinishedAtLaunch = true
             case .unreadable: skipThisLaunch = true
             case .pending: break
             }
@@ -1012,26 +1021,6 @@ final class AppState {
     /// says.
     var onboardingHasSlackAccount: Bool {
         databaseManager != nil && featureVisibility.connectedSources.slack
-    }
-
-    private enum ProfileOnboarding {
-        /// Profile missing or onboarding_done == false.
-        case pending
-        case done
-        /// The read failed (logged).
-        case unreadable
-    }
-
-    private func checkProfileOnboarding(dbPool: DatabasePool) async -> ProfileOnboarding {
-        do {
-            return try await dbPool.read { db in
-                guard let profile = try ProfileQueries.fetchCurrentProfile(db) else { return .pending }
-                return profile.onboardingDone ? .done : .pending
-            }
-        } catch {
-            print("[AppState] onboarding check failed: \(error.localizedDescription)")
-            return .unreadable
-        }
     }
 
     /// Every daemon start or restart the app makes runs on this queue
@@ -1338,8 +1327,10 @@ final class AppState {
                 await vm?.loadDetail(id)
             }
         )
-        // A new draft the editor holds is a list row, cache file or not.
+        // A new draft the editor holds is a list row, cached draft rows or not.
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
+        vm.embeddedChats = embeddedChatCenter
+        vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
         automationEditorCenter = editorCenter
         automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in
@@ -1555,6 +1546,7 @@ final class AppState {
         startWarmEnginePolicy(dbPool: manager.dbPool)
         readinessCenter.start(pool: manager.dbPool)
         homeCenter.beginReading(pool: manager.dbPool)
+        startLearn(pool: manager.dbPool)
         // So the quit path always has a pool to close, even before the Chat
         // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
         // creating the pool here only starts its idle-eviction poll; it never
@@ -1801,6 +1793,7 @@ final class AppState {
         )
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
+        vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
@@ -1877,22 +1870,45 @@ final class AppState {
 
     private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
 
-    var isMobileSyncEnabled: Bool {
-        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey)
-    }
-
     /// Tears down the previous hub and, while the toggle is on, builds and
     /// starts a new one over the run's one transport and sidecar. Called at
-    /// the end of `initWorkbenches`. With the toggle off nothing is opened.
+    /// the end of `initWorkbenches`. With the toggle off nothing is opened —
+    /// unless the organization's `MobileSync = off` must still wipe the
+    /// phone (`wipeHubForPolicyOff`).
     func initMobileHub(dbPool: DatabasePool) {
         let previous = mobileHub
         previous?.dispose()
         mobileHub = nil
         mobileHubPool = dbPool
-        guard isMobileSyncEnabled else { return }
-        let storage: MobileHubStorage
+        guard isMobileSyncEnabled else {
+            wipeHubForPolicyOff(dbPool: dbPool)
+            return
+        }
+        guard let hub = buildRunHub(dbPool: dbPool) else { return }
+        Task {
+            // The replaced hub's relay pass ends first: two never overlap.
+            await previous?.waitUntilStopped()
+            await hub.start()
+        }
+    }
+
+    /// `MobileSync = off` (#608) found the owner's toggle on and no hub
+    /// running (a profile installed while the app was quit): the hub is
+    /// built once and disabled, so what the phone held is removed. Once per
+    /// run; the toggle itself is kept.
+    func wipeHubForPolicyOff(dbPool: DatabasePool) {
+        guard mobileSyncPolicy.current == "off", mobileHub == nil, !policyOffWipeDone,
+              mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey),
+              let hub = buildRunHub(dbPool: dbPool) else { return }
+        policyOffWipeDone = true
+        hub.disable()
+    }
+
+    /// Builds the run's hub over its one storage (opened on first use) into
+    /// `mobileHub`; nil (the error kept) when it cannot be built.
+    private func buildRunHub(dbPool: DatabasePool) -> MobileHubService? {
         do {
-            storage = try mobileHubStorage ?? makeMobileHubStorage()
+            let storage = try mobileHubStorage ?? makeMobileHubStorage()
             if mobileHubStorage == nil {
                 // Once per run, with the storage: CKSyncEngine learns of
                 // remote changes from pushes (the relay poll is the backstop).
@@ -1901,32 +1917,11 @@ final class AppState {
             mobileHubStorage = storage
             mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
             mobileHubInitError = nil
+            return mobileHub
         } catch {
             mobileHubInitError = error.localizedDescription
             Self.mobileHubLogger.error("mobile hub unavailable: \(error.localizedDescription, privacy: .public)")
-            return
-        }
-        let hub = mobileHub
-        Task {
-            // The replaced hub's relay pass ends first: two never overlap.
-            await previous?.waitUntilStopped()
-            await hub?.start()
-        }
-    }
-
-    /// The Settings → Mobile toggle: on starts the hub (building it on first
-    /// use), off stops it. The hub object is kept, so toggling never opens a
-    /// second transport.
-    func setMobileSyncEnabled(_ enabled: Bool) {
-        mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
-        guard enabled else {
-            mobileHub?.disable()
-            return
-        }
-        if let hub = mobileHub {
-            Task { await hub.start() }
-        } else if let pool = mobileHubPool {
-            initMobileHub(dbPool: pool)
+            return nil
         }
     }
 

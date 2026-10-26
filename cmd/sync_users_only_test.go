@@ -10,7 +10,6 @@ import (
 	gosync "sync"
 	"testing"
 
-	goslack "github.com/slack-go/slack"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,7 +75,7 @@ func stubUsersOnlySlack(t *testing.T) *usersOnlySlack {
 
 	original := newSlackClientForToken
 	newSlackClientForToken = func(token string) *watchtowerslack.Client {
-		return watchtowerslack.NewClientWithAPIUnlimited(goslack.New(token, goslack.OptionAPIURL(srv.URL+"/")))
+		return watchtowerslack.NewClientWithAPIURLUnlimited(token, srv.URL+"/")
 	}
 	t.Cleanup(func() { newSlackClientForToken = original })
 	return f

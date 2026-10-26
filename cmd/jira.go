@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/logredact"
 	"watchtower/internal/oauthpage"
 
 	"github.com/spf13/cobra"
@@ -1825,7 +1826,7 @@ func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
 	if runID > 0 {
 		errMsg := ""
 		if analyzeErr != nil {
-			errMsg = analyzeErr.Error()
+			errMsg = logredact.Full(analyzeErr)
 		}
 		inTok, outTok, totalAPI := analyzer.AccumulatedUsage()
 		_ = database.CompletePipelineRun(runID, analyzed, inTok, outTok, 0, totalAPI, nil, nil, errMsg)

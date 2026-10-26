@@ -26,7 +26,8 @@ Use the token, never the number. The scale is closed: a screen that needs a new 
 | `Stroke` | `hairline` 0.5 pt separator, `selection` 1.5 pt accent |
 | `Surface` | `detail`, `window`, `text`, `control` |
 | `Tone` | `status(_:)` and `priority(_:)` colour map |
-| `IconSize` | `chevron` 8, `header` 14, `composer` 16, `composerLarge` 24 |
+| `PaneWidth` | split side list `sideListMin` 170, `sideListIdeal` 220, `sideListMax` 360 beside `detailMin` 260; `narrowPage` 420 (a centred status page). A readable text column is `ReadableColumn.maxLineWidth` (760) |
+| `IconSize` | `chevron` 8, `header` 14, `composer` 16, `composerLarge` 24, `tile` 26 |
 | `Tracking` | `caps` 0.6 (small uppercase labels) |
 | `Motion` | `toggle` (`.snappy` 0.15 s), `panel` (`.easeInOut` 0.2 s) |
 

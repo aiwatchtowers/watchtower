@@ -547,13 +547,13 @@ func TestClaudeArgs_ClaudeAIModeDropsReservedAllowTokens(t *testing.T) {
 	allowed := "mcp__watchtower,mcp__claude_ai_Gmail,mcp__claude_ai_Gmail__send,mcp__Claude_AI_Drive__search," +
 		"mcp__claude__ai_x__y,mcp__github__get_issue,WebSearch"
 	o := ClaudeOptions{AllowedTools: allowed, ClaudeAI: ClaudeAIMode{On: true}}
-	assert.Equal(t, "mcp__watchtower,mcp__github__get_issue,WebSearch", flagValue(claudeArgs(o, "p", "", ""), "--allowedTools"))
+	assert.Equal(t, "mcp__watchtower,mcp__github__get_issue,WebSearch", flagValue(claudeArgs(o, "p", ""), "--allowedTools"))
 
 	o.AllowedTools = "mcp__claude_ai_Gmail"
-	assert.Empty(t, flagValue(claudeArgs(o, "p", "", ""), "--allowedTools"), "no empty --allowedTools flag")
+	assert.Empty(t, flagValue(claudeArgs(o, "p", ""), "--allowedTools"), "no empty --allowedTools flag")
 
 	o = ClaudeOptions{AllowedTools: allowed}
-	assert.Equal(t, allowed, flagValue(claudeArgs(o, "p", "", ""), "--allowedTools"), "off: unchanged")
+	assert.Equal(t, allowed, flagValue(claudeArgs(o, "p", ""), "--allowedTools"), "off: unchanged")
 }
 
 // flagValue is the value after flag in args ("" when absent).

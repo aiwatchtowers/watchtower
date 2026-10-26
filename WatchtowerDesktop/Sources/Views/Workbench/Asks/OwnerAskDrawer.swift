@@ -123,15 +123,45 @@ struct OwnerAskDrawer: View {
     @State private var cursor: Int?
     @State private var fieldFocus: OwnerAskFieldFocus?
     @State private var commentStep: OwnerAskCommentStep?
+    /// The open review ask's spec review (spec 2026-10-25 §7); nil for
+    /// other asks, a closed one, or without the CLI.
+    @State private var specReview: SpecReviewModel?
+    /// **Read the spec** was pressed, or the drawer opened before the
+    /// reviewer's row existed: the classic view stays put, a finished
+    /// review only offers a banner.
+    @State private var showClassic = false
+    /// The ask whose spec review has had its first load: until then an
+    /// open review ask shows nothing, so the classic view never flashes
+    /// before the screen replaces it.
+    @State private var specReviewLoadedFor: Int64?
 
     private var asks: OwnerAsksViewModel { vm.asks }
+
+    /// An open review ask of a spec or a plan, with the CLI: it may have a spec review.
+    private var specReviewApplies: Bool {
+        SpecReviewPresentation.applies(kind: ask.kind, docType: ask.docType, isOpen: ask.isOpen, hasCLI: vm.cli != nil)
+    }
+
+    private var specReviewMode: SpecReviewPresentation.DrawerMode {
+        guard specReviewApplies else { return .classic(nil) }
+        let loaded = specReviewLoadedFor == ask.id
+        return SpecReviewPresentation.drawerMode(row: loaded ? specReview?.row : nil, showClassic: showClassic, loaded: loaded)
+    }
+
+    /// The spec review screen is up (or about to be): its own Send and
+    /// Approve answer the ask, so the footer's verdict buttons and the keys
+    /// that write the classic draft stand aside.
+    private var showsSpecReview: Bool { specReviewMode == .review || specReviewMode == .loading }
 
     /// Input goes to the draft only while the ask is open and no answer is
     /// being written (`OwnerAsksViewModel.editDraft`).
     private var editable: Bool { ask.isOpen && !asks.isAnswering(ask.id) }
 
     private var keys: OwnerAskDrawerKeys {
-        OwnerAskDrawerKeys(vm: vm, ask: ask, editable: editable, cursor: $cursor, fieldFocus: $fieldFocus, commentStep: $commentStep)
+        OwnerAskDrawerKeys(
+            vm: vm, ask: ask, editable: editable, cursor: $cursor, fieldFocus: $fieldFocus, commentStep: $commentStep,
+            draftKeys: !showsSpecReview
+        )
     }
 
     var body: some View {
@@ -152,6 +182,8 @@ struct OwnerAskDrawer: View {
         }
         .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID, sessionID: ask.sessionID))
         .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
+        .task(id: ask.id) { await loadSpecReview() }
+        .onDisappear { specReview?.stopPolling() }
         // "k of N ›" swaps the ask under the same drawer.
         .onChange(of: ask.id) { _, _ in
             scrollTarget = nil
@@ -183,6 +215,7 @@ struct OwnerAskDrawer: View {
             OwnerAskAnswerBar(
                 asks: asks,
                 ask: ask,
+                showsVerdicts: !showsSpecReview,
                 statusLine: OwnerAskPresentation.askStatusLine(ask, replacedBy: asks.replacements[ask.projectID]?[ask.id])
             )
         }
@@ -223,7 +256,51 @@ struct OwnerAskDrawer: View {
     /// A review's document scrolls by itself (a snapshot may be 2 MiB, too
     /// much for a SwiftUI scroll view): the top sections scroll above it in
     /// at most 40% of the height, the note sits below it.
+    @ViewBuilder
     private var reviewLayout: some View {
+        let mode = specReviewMode
+        if mode == .loading {
+            Color.clear
+        } else if let specReview, mode == .review {
+            // The ask's own header and questions sit on Meaning: the answer
+            // the screen sends carries their answers (and the margin
+            // comments made under Read the spec).
+            SpecReviewView(model: specReview, onReadSpec: { showClassic = true }, askContext: { topSections })
+        } else {
+            if let specReview, case let .classic(strip?) = mode {
+                SpecReviewStatusView(
+                    model: specReview,
+                    style: .strip,
+                    onOpenFindings: strip == .banner ? { showClassic = false } : nil
+                )
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.regular)
+                Divider()
+            }
+            classicReviewLayout
+        }
+    }
+
+    /// Opens the spec review of an open review ask: its row and marks, then
+    /// the model follows the reviewer (`followReviewer`: a missing row is
+    /// looked for again a few times, the poll while it runs). A row that
+    /// turns up later leaves the classic view in place.
+    private func loadSpecReview() async {
+        specReview?.stopPolling()
+        specReview = nil
+        showClassic = false
+        specReviewLoadedFor = nil
+        guard specReviewApplies, let cli = vm.cli else { return }
+        let model = SpecReviewModel(ask: ask, dbPool: vm.dbPool, cli: cli, asks: asks)
+        await model.load()
+        guard !Task.isCancelled else { return }
+        specReview = model
+        showClassic = model.row == nil
+        specReviewLoadedFor = ask.id
+        await model.followReviewer()
+    }
+
+    private var classicReviewLayout: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 if hasTopSections {
@@ -249,6 +326,7 @@ struct OwnerAskDrawer: View {
     /// #90): the answer button the key names, pressed as a click would —
     /// nothing while it is off.
     private func pressAnswerKey(_ shift: Bool) {
+        guard !showsSpecReview else { return }
         asks.pressKey(on: ask, shift: shift)
     }
 
@@ -260,10 +338,14 @@ struct OwnerAskDrawer: View {
     }
 
     /// A review's focus item jumps to its place once the snapshot is
-    /// rendered; one not in it gets no link.
+    /// rendered; one not in it gets no link. From the spec review screen
+    /// the jump opens Read the spec first.
     private func focusAction(_ focus: OwnerAskFocus) -> (() -> Void)? {
         guard ask.kind == .review, let range = asks.reviewDocuments.range(of: focus, askID: ask.id) else { return nil }
-        return { scrollTarget = DocumentScrollTarget(offset: range.location) }
+        return {
+            showClassic = true
+            scrollTarget = DocumentScrollTarget(offset: range.location)
+        }
     }
 
     private func noticeRow(_ notice: OwnerAsksViewModel.AnswerNotice) -> some View {

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"watchtower/internal/db"
 )
 
 // splitIDIdx splits "<id>:<idx>" from the right.
@@ -428,7 +430,7 @@ func (ideaSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.
 }
 
 func (ideaSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
-	return queryStrings(ctx, q, `SELECT 'idea:' || id FROM ideas`)
+	return queryStrings(ctx, q, `SELECT 'idea:' || id FROM ideas WHERE `+db.KnowledgeVisibleIdeaCond(""))
 }
 
 type ideaMention struct {
@@ -437,7 +439,7 @@ type ideaMention struct {
 }
 
 func loadIdeaMentions(ctx context.Context, q Queryer, ideaID string) ([]ideaMention, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id, author, quote FROM idea_mentions WHERE idea_id = ? ORDER BY said_at, id`, ideaID)
+	rows, err := q.QueryContext(ctx, `SELECT id, author, quote FROM idea_mentions WHERE idea_id = ? AND `+db.AgentVisibleMentionCond("")+` ORDER BY said_at, id`, ideaID)
 	if err != nil {
 		return nil, err
 	}
@@ -459,7 +461,7 @@ func (ideaSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error
 		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	var kind, status, title, essence, lastMention, updatedAt string
-	err := q.QueryRowContext(ctx, `SELECT kind, status, title, essence, last_mention_at, updated_at FROM ideas WHERE id = ?`, id).
+	err := q.QueryRowContext(ctx, `SELECT kind, status, title, essence, last_mention_at, updated_at FROM ideas WHERE id = ? AND `+db.KnowledgeVisibleIdeaCond(""), id).
 		Scan(&kind, &status, &title, &essence, &lastMention, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

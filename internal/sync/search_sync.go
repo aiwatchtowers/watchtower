@@ -210,6 +210,7 @@ var ErrBackfillIncomplete = errors.New("slack backfill search incomplete (rate l
 // progress heartbeat or the account's auth/error state. An incomplete search
 // returns an error wrapping ErrBackfillIncomplete.
 func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (int, error) {
+	o.resetMediaPlan()
 	after, before := slackSearchRange(from, to)
 	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false, nil)
 	if err != nil {
@@ -311,6 +312,9 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 		// seenUsers dedupe on the raw id, but everything written to the DB
 		// (EnsureChannel/EnsureUser/db.Message/discoveredChannelIDs) is namespaced.
 		dbMsgs := make([]db.Message, 0, len(result.Messages))
+		plan := o.mediaPlan(ctx) // read once per run, before the page's write transaction
+		var writes []slackMediaWrite
+		var lookups []slackFileLookup
 		for _, msg := range result.Messages {
 			namespacedChannelID := watchtowerslack.Namespace(o.accountID, msg.Channel.ID)
 			namespacedUserID := watchtowerslack.Namespace(o.accountID, msg.User)
@@ -367,14 +371,21 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 				Subtype:    "",
 				Permalink:  msg.Permalink,
 			})
+			if plan != nil && plan.isNew(msg.Timestamp) {
+				writes = append(writes, searchMediaWrite(msg, namespacedChannelID, namespacedUserID, plan))
+				if needsFileLookup(msg) {
+					lookups = append(lookups, slackFileLookup{channelID: namespacedChannelID, ts: msg.Timestamp, threadTS: threadTS.String})
+				}
+			}
 		}
 
 		// Batch upsert messages
 		if len(dbMsgs) > 0 {
-			count, err := o.upsertSearchPage(dbMsgs)
+			count, err := o.upsertSearchPage(ctx, dbMsgs, writes)
 			if err != nil {
 				return false, totalMessages, seenChannels, err
 			}
+			o.lookUpFileShares(ctx, lookups)
 			totalMessages += count
 			if live {
 				o.progress.AddMessages(count)
@@ -439,9 +450,24 @@ func parseSlackTS(ts string) (time.Time, error) {
 	return time.Unix(sec, 0), nil
 }
 
+// searchMediaWrite is a search match's media: its links always replace the
+// stored ones, its images only when the match listed files (a Slack
+// tombstone replaces both, with nothing).
+func searchMediaWrite(m watchtowerslack.SearchMatch, channelID, userID string, plan *slackMediaPlan) slackMediaWrite {
+	replace := slackReplaceLinks
+	if len(m.Files) > 0 || m.Subtype == "tombstone" {
+		replace = slackReplaceAll
+	}
+	return slackMediaWrite{
+		channelID: channelID, ts: m.Timestamp, user: userID,
+		found: slackMediaFound(m.Text, m.Subtype, m.Files, plan.refused), replace: replace,
+	}
+}
+
 // upsertSearchPage wraps a batch upsert in its own function scope so that
-// defer tx.Rollback() runs per-page rather than accumulating in the caller's loop.
-func (o *Orchestrator) upsertSearchPage(msgs []db.Message) (int, error) {
+// defer tx.Rollback() runs per-page rather than accumulating in the caller's
+// loop. The page's media is recorded in the same transaction.
+func (o *Orchestrator) upsertSearchPage(ctx context.Context, msgs []db.Message, media []slackMediaWrite) (int, error) {
 	tx, err := o.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("beginning transaction: %w", err)
@@ -451,6 +477,9 @@ func (o *Orchestrator) upsertSearchPage(msgs []db.Message) (int, error) {
 	count, err := o.db.UpsertMessageBatch(tx, msgs)
 	if err != nil {
 		return 0, fmt.Errorf("upserting search messages: %w", err)
+	}
+	for _, w := range media {
+		o.recordSlackMedia(ctx, tx, w)
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -3,6 +3,15 @@
 Seven tabs, in this order: **General**, **Connections**, **Features**, **Meetings**, **System**, **Mobile**, **Profile**. Settings opens on **Connections**. Tabs that edit configuration share one **Save** bar (⌘S); the **Mobile** switch and the **Skills** card apply at once. This page lists only what the screen does not explain.
 
 ## General
+<!-- learn
+id: settings-assistant-language
+title: Pick the assistant's language
+text: **Assistant language** in **Settings → General** sets the language of briefings, digests, tracks and Catch Up.
+area: setup
+level: basics
+kind: tip
+since: 0.24.0
+-->
 
 - **Assistant language** — the language of Catch Up, briefings, tracks and digests. A new install starts from your Mac's first preferred language, else English. In chat the assistant answers in the language you write. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
 
@@ -20,6 +29,15 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 - **Quick Connections** — outside tool servers the assistant may read from; write tools never reach the chat. See [Quick Connections](../features/quick-connections.md).
 
 ## Features
+<!-- learn
+id: settings-pause-notifications
+title: Pause every notification
+text: Turn on **Pause notifications** in **Settings → Features** to silence every notice until you turn it off.
+area: setup
+level: next
+kind: tip
+since: 0.24.0
+-->
 
 - The list turns each feature on or off, asking first if others depend on the one turned off. **Keep ML engines in memory** keeps the speech models loaded. **Save** restarts the background sync once. See [Features on and off](../concepts/features-on-and-off.md).
 - **Briefing, Day Plan, Tracks, Ideas and Reaction commands** have no switch here: "These now live in Automations → Built in", and **Open Automations** leads there. See [Built-in automations](../features/automations-built-in.md).
@@ -37,12 +55,12 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 
 ## System
 
-- **AI** — provider (Claude, Codex, Ollama / Local), **Light Model** and **Strong Model** (empty = the provider's default), CLI paths (empty = auto-detected), **Test Connection**. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
-- **Workbench** — **Default Agent** (Claude Code or Codex) for new sessions and the **Work on It** button (the menu offers **Work on It with …** the other agent), plus **Session instructions** and **Target procedure**, your standing directions for the agents (each has its own **Save**). See [Your instructions](../features/workbench/instructions.md).
-- **Sync** — **Poll Interval** (default `15m`), **Workers**, **Initial History Days** (bounds the first Slack sync to a few days; the month of history comes from [history backfill](../concepts/history-backfill.md)), **Sync Threads**.
+- **AI** — provider (Claude, Codex, Ollama / Local), **Light Model** and **Strong Model** (empty = the provider's default), **Workers** (parallel AI calls, default 5), CLI paths (empty = auto-detected), **Test Connection**. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
+- **Workbench** — **Default Agent** (Claude Code or Codex) for new sessions and the **Work on It** button (the menu offers **Work on It with …** the other agent). Your standing directions moved to **Profile → Instructions**; this tab keeps a pointer. See [Your instructions](../features/workbench/instructions.md).
+- **Sync** — **Poll Interval** (default `15m`), **Workers** (parallel sync work, default 1; not the AI one), **Initial History Days** (bounds the first Slack sync to a few days; the month of history comes from [history backfill](../concepts/history-backfill.md)), **Sync Threads**.
 - **Daemon** — read-only status; the app starts and stops it. **Open Logs** opens the live log window.
 - **Data** — storage, **Reset AI-Generated Data** (deletes what the AI made, then rebuilds it), and **Reset All Data** under Danger Zone.
-- **Privacy** — **Delete an account's data when its access is revoked** (off by default, on in the corporate build). See [Revoked access](../concepts/revoked-access.md).
+- **Privacy** — **Delete an account's data when its access is revoked** (off by default, on in the corporate build), and **Organization policy** when your company manages the Mac. See [Revoked access](../concepts/revoked-access.md) and [Managed by your organization](../concepts/managed-by-your-organization.md).
 - **Update** — checks on launch and every 6 hours; nothing downloads until you press **Download** here or **Update Now** in the Software Update window. See [Menu bar and updates](../features/menu-bar-and-updates.md).
 
 ## Mobile
@@ -52,7 +70,17 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 - Each linked phone shows **Same Apple ID** or **Shared** and one line per permission, each with **Allow…** or **Revoke**: typing into your sessions, starting sessions (allowed only once typing is: **Starting sessions needs typing**) and answering permission prompts. **Remove…** unlinks it.
 
 ## Profile
+<!-- learn
+id: settings-tools-without-approval
+title: Let a tool run without asking
+text: In **Settings → Profile → Assistant tools**, tick where a write tool may run without your approval.
+area: assistant
+level: power
+kind: tip
+since: 0.24.0
+-->
 
+- **Instructions** — **For chats and agents**, **Only in chats** and **Target procedure**, each with its own **Save**, and **Preview what the agent gets…**. See [Your instructions](../features/workbench/instructions.md).
 - Your role, team, manager, reports, peers and starred channels and people. **Run Setup Again** repeats [setup](../start/setup.md).
 - **Skills** — turn skills on or off, edit them, or add **New Skill**. Built-in skills can be disabled but not deleted.
 - **Assistant tools** — per write tool, **Run without approval in:** checkboxes for **Chat**, **Target chat**, **Slack reactions** and **Automations**. Tools that write outside this Mac (tagged *external*) always need approval, everywhere. See [AI chat](../features/ai-chat.md).

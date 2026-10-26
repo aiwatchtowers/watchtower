@@ -9,7 +9,6 @@ import XCTest
 final class WatchtowerAIServiceTests: XCTestCase {
     func testBuildArgsIncludesProviderFlagWhenSet() {
         let args = WatchtowerAIService.buildArgs(
-            sessionID: nil,
             dbPath: nil,
             model: nil,
             provider: "codex",
@@ -19,9 +18,19 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--provider", "codex"])
     }
 
+    func testBuildArgsAddsTheBareOwnerInstructionsFlagOnlyWhenAsked() {
+        let on = WatchtowerAIService.buildArgs(
+            dbPath: nil, model: nil, provider: nil, toolMode: nil, ownerInstructions: true
+        )
+        XCTAssertEqual(on, ["ai", "query", "--prompt-stdin", "--owner-instructions"])
+        let off = WatchtowerAIService.buildArgs(
+            dbPath: nil, model: nil, provider: nil, toolMode: nil, ownerInstructions: false
+        )
+        XCTAssertFalse(off.contains("--owner-instructions"))
+    }
+
     func testBuildArgsOmitsProviderFlagWhenNil() {
         let args = WatchtowerAIService.buildArgs(
-            sessionID: nil,
             dbPath: nil,
             model: nil,
             provider: nil,
@@ -33,7 +42,6 @@ final class WatchtowerAIServiceTests: XCTestCase {
 
     func testBuildArgsOmitsProviderFlagWhenEmpty() {
         let args = WatchtowerAIService.buildArgs(
-            sessionID: nil,
             dbPath: nil,
             model: nil,
             provider: "",
@@ -45,7 +53,6 @@ final class WatchtowerAIServiceTests: XCTestCase {
 
     func testBuildArgsIncludesModelAndProviderTogether() {
         let args = WatchtowerAIService.buildArgs(
-            sessionID: nil,
             dbPath: nil,
             model: "gpt-5.4",
             provider: "codex",
@@ -58,7 +65,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
     func testBuildArgsEmitsChatToolModeFlags() {
         let mode = ChatToolMode(surface: "target", conversationID: 7, turnID: "t1", contextType: "target", contextID: "42")
         let args = WatchtowerAIService.buildArgs(
-            sessionID: nil, dbPath: "/tmp/w.db", model: nil, provider: nil, toolMode: mode
+            dbPath: "/tmp/w.db", model: nil, provider: nil, toolMode: mode
         )
         XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--db-path", "/tmp/w.db",
                               "--tools", "chat", "--surface", "target", "--conversation", "7", "--turn", "t1",
@@ -73,7 +80,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
         let secret = "PRIVATE-CONTEXT-7c1e"
         let message = "-v OWNER-TEXT-3d2a"
         let args = WatchtowerAIService.buildArgs(
-            sessionID: nil, dbPath: nil, model: nil, provider: "codex", toolMode: nil
+            dbPath: nil, model: nil, provider: "codex", toolMode: nil
         )
         XCTAssertFalse(args.contains { $0.contains(secret) || $0.contains("OWNER-TEXT") })
         XCTAssertFalse(args.contains("--system-prompt"))
@@ -116,7 +123,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
     /// --allowed-tools flag is gone for good.
     func testBuildArgsWithoutToolModeNeverEmitsToolsFlag() {
         let args = WatchtowerAIService.buildArgs(
-            sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude", toolMode: nil
+            dbPath: "/tmp/w.db", model: "m", provider: "claude", toolMode: nil
         )
         XCTAssertFalse(args.contains("--tools"))
         XCTAssertFalse(args.contains("--allowed-tools"))
@@ -126,7 +133,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
     /// §9.1), with no tool mode.
     func testBuildArgsReadFolder() {
         let args = WatchtowerAIService.buildArgs(
-            sessionID: nil, dbPath: "/tmp/w.db", model: nil,
+            dbPath: "/tmp/w.db", model: nil,
             provider: "codex", toolMode: nil, readFolder: "/work/acme"
         )
         XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--db-path", "/tmp/w.db", "--provider", "codex",
@@ -137,13 +144,13 @@ final class WatchtowerAIServiceTests: XCTestCase {
     /// Without a folder (every other chat) the argv is what it was.
     func testBuildArgsWithoutReadFolderIsUnchanged() {
         let args = WatchtowerAIService.buildArgs(
-            sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude",
+            dbPath: "/tmp/w.db", model: "m", provider: "claude",
             toolMode: nil
         )
-        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--session-id", "sid", "--db-path", "/tmp/w.db",
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--db-path", "/tmp/w.db",
                               "--model", "m", "--provider", "claude"])
         XCTAssertEqual(WatchtowerAIService.buildArgs(
-            sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude",
+            dbPath: "/tmp/w.db", model: "m", provider: "claude",
             toolMode: nil, readFolder: ""
         ), args)
     }

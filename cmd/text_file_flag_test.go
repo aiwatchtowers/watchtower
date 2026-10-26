@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -10,19 +11,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The Desktop pipes the text: --text-file - reads stdin (#604 S6), nothing
+// is written to a temp file.
+func TestTextFlagValue_Stdin(t *testing.T) {
+	got, err := textFlagValue(strings.NewReader("piped -- text\nwith lines"), "", "-")
+	require.NoError(t, err)
+	assert.Equal(t, "piped -- text\nwith lines", got)
+}
+
 func TestTextFlagValue(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "paste.txt")
 	require.NoError(t, os.WriteFile(file, []byte("pasted -- text\nwith lines"), 0o600))
 
-	got, err := textFlagValue("", file)
+	got, err := textFlagValue(nil, "", file)
 	require.NoError(t, err)
 	assert.Equal(t, "pasted -- text\nwith lines", got)
 
-	got, err = textFlagValue("inline", "")
+	got, err = textFlagValue(nil, "inline", "")
 	require.NoError(t, err)
 	assert.Equal(t, "inline", got)
 
-	_, err = textFlagValue("", filepath.Join(t.TempDir(), "missing.txt"))
+	_, err = textFlagValue(nil, "", filepath.Join(t.TempDir(), "missing.txt"))
 	assert.ErrorContains(t, err, "reading --text-file")
 }
 

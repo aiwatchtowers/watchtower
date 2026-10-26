@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"watchtower/internal/extract"
 	"watchtower/internal/extsync"
 	"watchtower/internal/jira"
+	"watchtower/internal/media"
 )
 
 // fakeConfluenceFetcher serves a fixed space list; everything else is empty.
@@ -489,6 +491,46 @@ func TestExternalSyncWiring_SetsFetcherLogger(t *testing.T) {
 	wireExternalSync(daemon.New(env.cfg), env.cfg, env.db, accounts, clients, logger)
 
 	assert.NotNil(t, env.fetcher.logger, "wireExternalSync must wire the fetcher's SetLogger seam")
+}
+
+// TestExternalSyncWiring_RegistersConfluenceMedia pins that the daemon's
+// media pass gets the Confluence opener over the external sync's own
+// fetcher, the inline-image resolver and the relink hook, and that the
+// engine options carry the media recorder (daemon and `confluence sync`).
+func TestExternalSyncWiring_RegistersConfluenceMedia(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	newConfluenceFetcher = func(*jira.Client, string) extsync.Fetcher { return env.fetcher }
+	logger := log.New(io.Discard, "", 0)
+	env.cfg.Knowledge.Connectors.Enabled = true
+	d := daemon.New(env.cfg)
+	d.SetMediaPipeline(newMediaPipeline(env.cfg, env.db, nil, logger))
+
+	accounts, clients := buildAtlassianClients(env.cfg, env.db, logger)
+	wireExternalSync(d, env.cfg, env.db, accounts, clients, logger)
+
+	p := d.MediaPipeline()
+	op, ok := p.Openers["confluence"].(media.ConfluenceOpener)
+	require.True(t, ok, "the Confluence opener is registered")
+	assert.Same(t, env.fetcher, op.Fetchers[accounts[0].ID], "the opener rides the external sync's fetcher")
+	assert.IsType(t, media.ConfluenceResolver{}, p.Resolvers["confluence"])
+	assert.Len(t, p.AfterDescribed, 1)
+	assert.NotNil(t, p.Openers["chat"], "the existing openers are kept")
+	assert.NotNil(t, extSyncOptions(env.cfg, logger, 0).Media)
+}
+
+// Without a media pass set first, the wiring registers nothing and says so.
+func TestExternalSyncWiring_NoMediaPassIsLogged(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	newConfluenceFetcher = func(*jira.Client, string) extsync.Fetcher { return env.fetcher }
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	env.cfg.Knowledge.Connectors.Enabled = true
+	d := daemon.New(env.cfg)
+
+	accounts, clients := buildAtlassianClients(env.cfg, env.db, logger)
+	wireExternalSync(d, env.cfg, env.db, accounts, clients, logger)
+	assert.Nil(t, d.MediaPipeline())
+	assert.Equal(t, 1, strings.Count(buf.String(), "no media pass to register with"))
 }
 
 func TestExternalSyncWiring_OffBuildsNoFetcher(t *testing.T) {

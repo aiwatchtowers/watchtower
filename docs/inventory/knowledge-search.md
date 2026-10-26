@@ -80,6 +80,20 @@ resets.
 
 **Guard:** `TestKB01_IncrementalEqualsRebuild` (`internal/kb/contracts_test.go`)
 
+**Media sections (2026-10-25, asks #576/#590/#594):** the `ok` rows of
+`media_items` (image descriptions and link summaries, written by the daemon's
+media pass outside `internal/kb`) render as labelled sections of their parent's
+Slack, Gmail, IMAP or Confluence document (`internal/kb/media.go`); chat and
+target items are never indexed. A row becoming or leaving `ok`, changing its
+body or moving to another document marks the documents in `kb_dirty` by
+trigger (migration 00156), so the rebuild equivalence holds with media too,
+also when a described Slack message became a thread root. Guards added:
+`TestKB01_ReindexEqualsIncrementalWithMedia` (`internal/kb/media_test.go`),
+`TestKB01_PromotedParentRedoEqualsReindex` (`internal/media/pipeline_test.go`),
+`TestMediaParentRef_EqualsBuildKey`, `TestKB_OnlyOKMediaRendered`,
+`TestKB_OwnerUploadMediaNeverIndexed`, `TestMediaKBDirtyTriggers` and
+`TestMediaKBDirty_MovedRefMarksOldDocument` (`internal/db/media_test.go`).
+
 ## KB-02 — mechanical (no model calls)
 
 **Status:** Enforced
@@ -96,6 +110,17 @@ structurally: no non-test `.go` file under `internal/kb/` may import
 **Guard:** `TestKB02_NoGeneratorImports` (`internal/kb/contracts_test.go`) —
 a scan-floor assertion (≥10 files walked) guards against the test silently
 passing over an empty or wrong directory.
+
+**Media (2026-10-25, asks #576/#590/#594):** the index stays mechanical
+although images and links are now described by a model: the describer lives
+in `internal/media` (its own daemon phase, `phaseMediaDescribe`, before
+`phaseKnowledgeIndex`), and `internal/kb` only renders the stored rows. The
+import scan's forbidden list adds `internal/media` (with its subpackages) and
+`internal/prompts`. A description is section text, never a title, link or
+section boundary: line breaks fold into spaces and every chunk of it starts
+with its label (`kb.MediaImageLabel` / `kb.MediaLinkLabel`, `(continued)` on
+later pieces). Guards added: `TestKB_DescriptionRenderedAsPlainSectionText`,
+`TestKB_DescriptionCannotForgeLabel`, `TestKB_LongMediaEveryChunkLabelled`.
 
 ## KB-03 — every hit is resolvable
 
@@ -121,6 +146,26 @@ state the same rule.
 of their documents is reachable by search and every hit from every source
 resolves.
 
+**Media (2026-10-25, asks #576/#590/#594):** a hit found only through an
+image description or a link summary opens like any other: its document is
+the parent's, and its chunk anchor is the item's own anchor (the Slack
+message ts, the Confluence heading) or the parent's. Guard added:
+`TestKB03_MediaSectionResolvable` (`internal/kb/media_test.go`).
+
+## KB-04 — link fetching reaches only public, non-secret, non-company pages
+
+**Status:** Enforced
+
+**Observable:** A link found in synced content is opened for knowledge only when it is a plain public web page: `http`/`https` on ports 80/443, a host that resolves to a public address (checked at connect time and again on every redirect), no secret-looking query or fragment keys (tokens, keys, signatures, session ids, in any case or nesting), no capability-path words (invite, reset, verify, confirm, unsubscribe, magic and the like), not a host Watchtower already syncs or never opens (`linkrule.SyncedHosts`: Slack, Atlassian, Linear, Gmail, Google Calendar, Docs and Drive), not one of the company's own domains (`OrgDomains`: Google, IMAP/Outlook and the Jira and Linear identities of accounts not removed, public mail providers left out) and not on the owner's deny list. The request ignores proxy environment variables and sends no cookies or auth headers. A refused link is never fetched.
+
+**Test guards:**
+- Guard: `internal/media/linkrule/linkrule_test.go::TestFetchable_RefusesSecrets`, `TestFetchable_RefusesSyncedHosts`, `TestFetchable_RefusesCapabilityPaths`, `TestFetchable_Ports`; `internal/media/webfetch/fetch_test.go::TestGet_RefusesLoopbackServer`, `TestGet_RefusesNameResolvingToLoopback`, `TestGet_RefusesRedirectToPrivate`, `TestGet_RedirectRerunsCheck`, `TestGet_RefusesNonWebPort`, `TestGet_RefusesNonWebScheme`, `TestGet_IgnoresEnvProxy`, `TestGet_SendsNoCookiesOrAuth`; `internal/media/policy_test.go::TestOrgDomains_FromOwnerAccounts`, `TestOrgDomains_NoAccountsNothing`
+- Supporting: `TestFetchable_AllowsPlain`, `TestFetchable_FixRound1Refusals`, `TestFetchable_CamelCaseAndBrackets`, `TestFetchable_NestedAndAcronymKeys`, `TestFetchable_SessionIDKeys`
+
+**Why locked:** Fetching a link leaks that it was seen and can act on it (a one-time login, an invite) or read the company's intranet from the owner's machine. These rules are the owner's security decisions A–D (asks #590, #598) for images and links becoming knowledge (#471, #474).
+
+**Locked since:** 2026-10-25
+
 ## Read-only-ness
 
 Not a Knowledge Search contract — `search_knowledge` and
@@ -133,6 +178,10 @@ DEV-01.
 
 ## Changelog
 
+- 2026-10-25 (v0.25.0 release audit, **KB-04 added, owner approved in ask #607**): the link-fetch safety rules of #471/#474 are a contract; guards as listed under KB-04. No existing guard changed.
+- 2026-10-25 (images and links become knowledge, board #907, spec `docs/superpowers/specs/2026-10-25-media-knowledge-design.md`, **KB-01..03 extended, owner approved in asks #576, #590 and #594**): image descriptions and link summaries render as labelled sections of their parent document (KB-01, re-rendered through `kb_dirty` triggers of migration 00156); the describer stays outside the index and the KB-02 import scan forbids `internal/media` and `internal/prompts` too; a media-only hit resolves and anchors (KB-03). The model-facing reader line (`kb.MediaReaderLine`) is in the main system prompt, the `search_knowledge` description and the workbench skill. Guards added as listed under each contract, plus `TestPromptBlocks_MediaSectionsAreData` (`internal/chat`), `TestSearchKnowledgeDescription_MediaSectionsAreData` (`internal/tools`), `TestWorkbenchSkill_MediaSectionsAreData` (`internal/devpack`). No guard relaxed. Feature note: `docs/features/media-knowledge.md`.
+
+- 2026-10-24 (AI chats feed the knowledge base, spec `docs/superpowers/specs/2026-10-24-chat-knowledge-design.md`, **KB-01 extended, owner approved in ask #551**): the new `chat_artifact` source (`internal/kb/source_chat_artifact.go`) indexes the artifact versions the owner kept (`chat_knowledge_artifacts`, migration 00154): one document per (conversation, artifact key), the kept version only (a newer version is indexed only after **Update in Knowledge**), HTML reduced to text, removed with **Remove from Knowledge** or with the conversation; `code_question` conversations are never indexed. It joins KB-01's rebuild/no-source-write guards (it writes no source table). **Chat-born visibility rule:** the `ideas` source and `search_knowledge` leave out `chat_born = 1` items whose status is `proposed`, `not_now`, `rejected` or `dropped` (`db.KnowledgeVisibleIdeaCond`), so an unapproved item from a chat never surfaces as knowledge; approving it makes it indexable. **Assistant words are never indexed:** an idea document leaves out every chat mention authored by `assistant` (`db.AgentVisibleMentionCond` in `loadIdeaMentions`), and a chat mention's stored quote is the turn's own text, never the model's (ask #516; `TestKB_IdeaDocSkipsAssistantChatMentions`, `TestConsolidate_ChatAttachOnActiveItem_AssistantQuoteNotIndexed`). A kept HTML artifact whose `<head>` is never closed still indexes its body (`TestHTMLToText_MalformedPages`). `search_knowledge`'s source list names `chat_artifact` (`TestSearchKnowledge_SchemaListsEverySource`). No guard relaxed.
 - 2026-10-18 (Linear Plan 2 lane 2, board #688/#689, spec `docs/superpowers/specs/2026-10-15-linear-integration-design.md` §6/§8): a fourteenth source, `linear` (`internal/kb/source_linear.go`): one document per Linear issue with its comments, key and **KB-03** anchor `linear:<account>:<key>` / `{account_id, key}`, link = the issue url; a team move re-keys the document (the old key builds to nil and leaves on the reconcile). Guards only grow: KB-03's fixture covers the source (`seedLinear`, query `импортёр*`), KB-01's `kbSourceTables` gains `linear_issues`/`linear_comments`. Workbench/chat-project scopes still match Jira project keys only. KB-01..03 otherwise unchanged.
 - 2026-10-17 (in-app help, board #426; owner, ask #244): a thirteenth source, `guide` — the user guide embedded in the binary (`docs/guide`, `internal/kb/source_guide.go`, doc ids `guide:<path>`, cursor = `guide.Hash()` + "@" + the link base `guide.BaseURL(guide.Version)`, so a new release version relinks every page). KB-01 note: this source is rebuilt from the binary, not from database rows, so its rebuild-equivalence holds over the embedded files; it has no `Time` and is exempt from the recency floor (`hitRecency`, `TestSearchGuideNotPenalisedForAge`). `phaseKnowledgeIndex` indexes `guide` even when Knowledge search is off — that run writes no `pipeline_runs` row, and the switch never deletes guide rows (`TestPhaseKnowledgeIndex_DisabledWritesNothing` is narrowed to owner-data sources, `TestPhaseKnowledgeIndexGuideRunsWhenKnowledgeOff`). The empty-index note ignores guide rows. KB-03's fixture covers the source and requires every guide page reachable. KB-01..03 otherwise unchanged.
 - 2026-10-18 (source deletions, board #640, ask #342 Q1): KB-01 amended — the limit "a Slack in-place edit/delete older than the 48h tail is caught only by `kb reindex`" is dropped. Migration 00139's triggers mark `kb_dirty` (Slack text/`is_deleted` change, Gmail and Jira-comment delete) and the indexer drains the marks after a source catches up, before the reconcile; a missing source document is a delete. Guard `TestKB01_IncrementalEqualsRebuild` gains an old-message edit in its incremental pass; no assertion weakened. New tests `internal/kb/dirty_test.go`.

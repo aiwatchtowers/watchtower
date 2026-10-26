@@ -135,8 +135,9 @@ func TestLinks_BackfillQueryPlan(t *testing.T) {
 }
 
 // TestEXT04_EngineImportsNoLinkOrAIPackages — the generic sync engine stays
-// free of Atlassian-, link- and AI-specific packages: the linker is
-// injected (Options.Relink), never imported. Checked on the real build graph.
+// free of Atlassian-, link-, media- and AI-specific packages: the linker and
+// the media recorder are injected (Options.Relink, Options.Media), never
+// imported. Checked on the real build graph.
 func TestEXT04_EngineImportsNoLinkOrAIPackages(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", "watchtower/internal/extsync").Output()
 	require.NoError(t, err)
@@ -145,6 +146,7 @@ func TestEXT04_EngineImportsNoLinkOrAIPackages(t *testing.T) {
 	for _, bad := range []string{
 		"watchtower/internal/jira", "watchtower/internal/ai", "watchtower/internal/kb",
 		"watchtower/internal/confluence", "watchtower/internal/doclinks", "watchtower/internal/digest",
+		"watchtower/internal/media",
 	} {
 		for _, dep := range deps {
 			assert.False(t, dep == bad || strings.HasPrefix(dep, bad+"/"), "internal/extsync depends on %s", dep)

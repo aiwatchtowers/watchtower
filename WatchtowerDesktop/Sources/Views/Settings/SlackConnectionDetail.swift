@@ -32,6 +32,9 @@ final class SlackAuthFlowState {
 /// list (`slack_accounts` table, migration 00048).
 struct SlackConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// The organization's policy forbids this source (#608): nothing new
+    /// connects; existing accounts keep their data.
+    private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("slack") }
     @Bindable var config: ConfigService
     var flow: SlackAuthFlowState
     @State private var slackAuth = SlackAuthService()
@@ -91,6 +94,7 @@ struct SlackConnectionDetail: View {
                     }
                 }
                 .disabled(flow.reconnecting || flow.disconnecting)
+                .managedByOrganization(sourceBlocked)
 
                 if flow.reconnecting {
                     Button("Cancel") {
@@ -243,6 +247,7 @@ struct SlackConnectionDetail: View {
                             Button(account.isOK ? "Reconnect" : "Re-login") {
                                 Task { await vm.relogin(account) }
                             }
+                            .managedByOrganization(sourceBlocked)
                             .help(
                                 reloginBlocked(account.id)
                                     ?? "Sign in to this workspace again (grants new permissions such as sending messages)"
@@ -272,6 +277,7 @@ struct SlackConnectionDetail: View {
                 Button("Add Slack Workspace") {
                     showAddSlackAccountSheet = true
                 }
+                .managedByOrganization(sourceBlocked)
                 .disabled(vm.isConnecting)
             } else {
                 Text("Loading...")

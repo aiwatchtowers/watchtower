@@ -131,3 +131,25 @@ echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\"
 	}
 	assert.Equal(t, folder+"|"+folder, text.String())
 }
+
+// SetNoMCPServers: the owner's servers are switched off and nothing is
+// mounted, whatever the database path (the spec reviewer's run).
+func TestClient_NoMCPServers(t *testing.T) {
+	home := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte("[mcp_servers.mine]\ncommand = \"npx\"\n"), 0o600))
+	t.Setenv("CODEX_HOME", home)
+	c := NewClient("gpt-5.4", "", "codex")
+	c.SetReadFolder(t.TempDir())
+	c.SetNoMCPServers()
+	args := c.ArgsForTest("sys", "hello")
+	require.NotNil(t, args)
+
+	var overrides []string
+	for _, v := range configValues(args) {
+		if strings.HasPrefix(v, "mcp_servers=") {
+			overrides = append(overrides, v)
+		}
+	}
+	require.Equal(t, []string{`mcp_servers={"mine"={enabled=false}}`}, overrides)
+	assert.NotContains(t, strings.Join(args, " "), "--db-path")
+}

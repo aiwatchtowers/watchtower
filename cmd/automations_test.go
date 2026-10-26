@@ -455,7 +455,7 @@ func TestAutomationsCLI_ShowJSONKeys(t *testing.T) {
 		"disabled_reason", "disabled_at",
 		"runnable", "needs_confirmation", "parse_error", "content_hash", "approval_hash", "confirmed_hash", "widening", "grants",
 		"changes", "changes_known", "changed_by", "changed_at", "auto_tools", "llm_auto_writes", "feeds_sources_to_llm",
-		"builtin", "watch")
+		"builtin", "watch", "policy_blocked")
 }
 
 func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
@@ -997,7 +997,7 @@ func (c *autoCLI) assistantSave(t *testing.T, slug, text string) {
 	t.Helper()
 	cfg, err := loadAutomationsConfig()
 	require.NoError(t, err)
-	deps := automationAuthoringDeps(cfg, c.d)
+	deps := automationAuthoringDeps(cfg, c.d, nil)
 	reg := tools.New(c.d)
 	require.NoError(t, reg.Register(authoring.NewSaveAutomation(deps)))
 	raw, err := json.Marshal(map[string]any{"recipe_text": text, "slug": slug, "reason": "the owner asked"})

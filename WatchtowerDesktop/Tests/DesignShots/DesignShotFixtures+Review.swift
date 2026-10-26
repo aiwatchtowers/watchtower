@@ -98,7 +98,8 @@ struct ReviewFixture {
             "diff": Self.diffJSON(files),
             "diff-since": Self.diffJSON(sinceFiles ?? files),
             "file": #"{"ok":true,"old":\#(Self.side("a")),"new":\#(Self.side("b"))}"#,
-            "overview": overview.map { #"{"ok":true,"overview":\#($0)}"# } ?? #"{"ok":true}"#
+            "overview": overview.map { #"{"ok":true,"overview":\#($0)}"# } ?? #"{"ok":true}"#,
+            "approve": #"{"ok":true,"sent":true,"line":"\#(ReviewDeliveryLine.approved(roundID: 2))"}"#
         ])
         model = ReviewChangesModel(projectID: projectID, sessionID: session.id, cli: WorkbenchCLI(runner: runner), db: pool,
                                    lineDelivery: ReviewNoSink()) { false }
@@ -226,14 +227,29 @@ enum ReviewShotFixtures {
                   status: WorkbenchGitStatus(branch: "feature/capsule-corners", dirty: true, changes: 2))
     }
 
-    private static func pane(_ key: String, make: () throws -> (ReviewFixture, ReviewSessionIdentity)) -> AnyView {
+    /// `chat` adds the agent chat panel (#962); the shots have no session
+    /// control, so it shows its "not running" line.
+    private static func pane(
+        _ key: String,
+        chat: Bool = false,
+        codeRoot: CodeRoot? = nil,
+        make: () throws -> (ReviewFixture, ReviewSessionIdentity)
+    ) -> AnyView {
         do {
             if built[key] == nil {
                 let (fixture, identity) = try make()
                 built[key] = (fixture, identity)
             }
             guard let entry = built[key] else { return AnyView(EmptyView()) }
-            return AnyView(ReviewChangesPaneView(model: entry.fixture.model, identity: entry.identity).detailBackground())
+            var agentChat: ReviewAgentChat?
+            if chat {
+                let defaults = try XCTUnwrap(UserDefaults(suiteName: DesignShotFixtures.defaultsSuite))
+                let vm = WorkbenchesViewModel(dbPool: entry.fixture.pool, cli: nil, defaults: defaults)
+                agentChat = ReviewAgentChat(vm: vm, projectID: entry.fixture.projectID, sessionID: entry.fixture.session.id)
+            }
+            return AnyView(ReviewChangesPaneView(model: entry.fixture.model, identity: entry.identity, chat: agentChat,
+                                                 codeRoot: codeRoot)
+                .detailBackground())
         } catch {
             XCTFail("review shot fixture failed: \(error)")
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
@@ -249,6 +265,97 @@ enum ReviewShotFixtures {
             return (fixture, fixture.identity(place: worktree()))
         }
     }
+
+    /// Approve's confirmation (#964, mockup 3): unviewed chapters and the
+    /// toolbar's popover, on its own (a popover does not render in a shot).
+    static func approvePopover() -> AnyView {
+        do {
+            if built["approve-popover"] == nil {
+                let fixture = try ReviewFixture(files: files, context: context, overview: overview)
+                fixture.openNow()
+                fixture.markViewedNow(Array(files[3...5].map(\.path)))
+                built["approve-popover"] = (fixture, fixture.identity(place: worktree()))
+            }
+            guard let entry = built["approve-popover"] else { return AnyView(EmptyView()) }
+            return AnyView(ReviewApprovePopover(model: entry.fixture.model, branch: "feature/capsule-corners") {}
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(Surface.window))
+        } catch {
+            XCTFail("review shot fixture failed: \(error)")
+            return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
+        }
+    }
+
+    /// After Approve (#964): the green banner, the outcome in the toolbar.
+    static func approved() -> AnyView {
+        pane("approved") {
+            let fixture = try ReviewFixture(files: files, context: context, overview: overview)
+            fixture.openNow()
+            var done = false
+            Task { @MainActor in
+                await fixture.model.approve(resolveOpen: false)
+                done = true
+            }
+            let deadline = Date().addingTimeInterval(10)
+            while !done, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            return (fixture, fixture.identity(place: worktree()))
+        }
+    }
+
+    /// Artboard A with the agent chat panel open (#962).
+    static func changesWithChat() -> AnyView {
+        pane("changes-chat", chat: true) {
+            let fixture = try ReviewFixture(files: files, context: context, drafts: 3, overview: overview)
+            fixture.openNow()
+            return (fixture, fixture.identity(place: worktree()))
+        }
+    }
+
+    /// A file outside the diff in the read-only preview (#960): the header
+    /// and ← Back to diff over the code viewer's page.
+    static func preview() -> AnyView {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("review-shot-preview", isDirectory: true)
+        let path = "Sources/Recording/CapsuleTheme.swift"
+        do {
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("Sources/Recording"),
+                                                    withIntermediateDirectories: true)
+            try "import SwiftUI\n\nenum CapsuleTheme {\n    static let corner: CGFloat = 12\n}\n"
+                .write(to: folder.appendingPathComponent(path), atomically: true, encoding: .utf8)
+        } catch {
+            XCTFail("review preview shot folder: \(error)")
+        }
+        return pane("preview", codeRoot: CodeRoot(workbenchID: 1, worktree: folder)) {
+            let fixture = try ReviewFixture(files: files, context: context, overview: overview)
+            fixture.openNow()
+            fixture.model.pathMap = ReviewPathMap(repoPrefix: "")
+            _ = fixture.model.showLocation(CodeNavLocation(path: path, line: 4, col: 5))
+            return (fixture, fixture.identity(place: worktree()))
+        }
+    }
+
+    /// Deep's Chapters (#961): the chapter's risks under the diff, most
+    /// serious first, each with Comment… and Ask agent.
+    static func chapterRisks() -> AnyView {
+        pane("chapter-risks", chat: true) {
+            let fixture = try ReviewFixture(files: files, context: context, mode: "deep", phase: "chapters",
+                                            overview: risksOverview)
+            fixture.openNow()
+            let deadline = Date().addingTimeInterval(5)
+            while fixture.model.overview == .loading || fixture.model.overview == .idle, Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            return (fixture, fixture.identity(place: worktree()))
+        }
+    }
+
+    static let risksOverview = """
+    {"summary":"Moves the capsule off the title bar and adds a corner preference.",
+     "coverage":[], "out_of_scope":[],
+     "risk":[{"path":"Sources/Recording/RecordCapsule.swift","level":"high","why":"Reads the window before it is attached"},
+             {"path":"Sources/Recording/CapsulePlacement.swift","level":"medium","why":"The corner is not clamped to the visible frame"},
+             {"path":"Sources/Recording/CapsuleCorner.swift","level":"low","why":"Two names for the same corner"}],
+     "chapters":[]}
+    """
 
     /// Artboard B: the main folder on main, no uncommitted edits.
     static func empty() -> AnyView {

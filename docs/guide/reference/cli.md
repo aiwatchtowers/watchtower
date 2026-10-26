@@ -10,6 +10,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower status` | Sync status and statistics |
 | `watchtower logs` | Sync log output |
 | `watchtower version` | Version |
+| `watchtower guide learn` | The Learn cards Home shows, read from this guide and checked; `--json` for scripts |
 | `watchtower workspace init` | Create the local workspace (data directory and database) |
 | `watchtower db migrate` | Apply database migrations |
 | `watchtower db compact` | Shrink the database file after an update freed space, first finishing a pending search index rebuild (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short (twice the file's size for compacting, 64 MiB for the rebuild) unless `--force` |
@@ -27,6 +28,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
 | `watchtower jira`, `linear`, `confluence` | Trackers and Confluence spaces |
 | `watchtower accounts purges` | Scheduled and finished deletions of a revoked or unreached account's data, newest first; `--json` for scripts. See [Revoked access](../concepts/revoked-access.md) |
+| `watchtower policy show` | The organization policy forced on this Mac; `--json` for scripts. See [Organization policy](organization-policy.md) |
 | `watchtower connections` | [Quick Connections](../features/quick-connections.md); `connections import` brings in your codex and Claude Code MCP servers |
 
 Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` exists on most (Outlook uses `logout`); `enable` / `disable` exist on Slack, Jira and Linear but not on Google, IMAP or CalDAV. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).
@@ -62,7 +64,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 
 ### Why the app asks you to confirm a command
 
-Some commands are yours alone: `actions approve`, `apply` and `propose --approve`, `actions trust … execute`, `tracks start`, `tracks instruction`, `automations confirm`, `enable`, `delete`, `reset`, `reply` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
+Some commands are yours alone: `actions approve`, `dismiss`, `apply` and `propose --approve`, `actions trust … execute`, `tracks start`, `tracks watch`, `tracks instruction` and `tracks enable` of a watch, `automations confirm`, `enable`, `delete`, `reset`, `reply`, `auto … on` and `dry-run` of a recipe not confirmed yet, review Undo, lessons, send and approve, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
 
 - The buttons in the app never ask: the app confirms its own commands.
 - With the app closed, the command is refused with **open Watchtower to confirm this**.

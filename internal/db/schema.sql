@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     ideas_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest digest_topics.id already consolidated (see 00050)
     ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest stream_digests.id already consolidated (see 00050)
     ideas_transcript_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest meeting_transcripts.id already consolidated (see 00050)
-    digest_fastforward_ts REAL NOT NULL DEFAULT 0  -- Slack-digest fast-forward floor: lastDigestTime returns max(MAX(digests.period_to), this); stamped to now on a slack-digests re-enable (FEAT-03, see 00057)
+    digest_fastforward_ts REAL NOT NULL DEFAULT 0,  -- Slack-digest fast-forward floor: lastDigestTime returns max(MAX(digests.period_to), this); stamped to now on a slack-digests re-enable (FEAT-03, see 00057)
+    ideas_chat_floor INTEGER NOT NULL DEFAULT 0  -- ideas registry floor: highest chat_messages.id already consumed by the consolidator (see 00154)
 );
 
 -- Users
@@ -1970,7 +1971,8 @@ CREATE TABLE IF NOT EXISTS ideas (
     last_mention_at TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    seen_at         TEXT
+    seen_at         TEXT,
+    chat_born       INTEGER NOT NULL DEFAULT 0  -- 1 = first proposed from chat material; hidden from knowledge readers until status 'active' (see 00154)
 );
 CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
@@ -1980,7 +1982,7 @@ CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
 CREATE TABLE IF NOT EXISTS idea_mentions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear')),
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear','chat')),  -- 'chat' ref = chat:<conversation>:<message> (see 00154)
     ref         TEXT NOT NULL DEFAULT '',
     quote       TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL DEFAULT '',
@@ -2362,7 +2364,7 @@ CREATE TABLE IF NOT EXISTS ext_users (
 );
 
 CREATE TABLE IF NOT EXISTS doc_links (
-  from_kind TEXT NOT NULL,   -- 'confluence' | 'slack' | 'gmail' | 'jira'
+  from_kind TEXT NOT NULL,   -- 'confluence' | 'slack' | 'gmail' | 'imap' | 'jira' (a described image's link: its parent document's source)
   from_ref  TEXT NOT NULL,   -- kb-style ref of the mentioning document
   to_kind   TEXT NOT NULL,   -- 'jira_issue' | 'confluence_page'
   to_ref    TEXT NOT NULL,   -- 'PROJ-123' | '<cloud_id>:<page_id>'
@@ -2372,8 +2374,8 @@ CREATE TABLE IF NOT EXISTS doc_links (
 CREATE INDEX IF NOT EXISTS idx_doc_links_to ON doc_links(to_kind, to_ref);
 
 CREATE TABLE IF NOT EXISTS ext_link_state (          -- doc_links detection watermark per scanned kind
-  from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'ext_relink'
-  cursor    TEXT NOT NULL DEFAULT ''   -- slack: messages.rowid; gmail/imap/jira_*: '<synced_at>|<rowid>' of the last row read; ext_relink: '<source_id>|<ext_id>' resume point, then 'done'
+  from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'media' | 'ext_relink'
+  cursor    TEXT NOT NULL DEFAULT ''   -- slack: messages.rowid; gmail/imap/jira_*: '<synced_at>|<rowid>' of the last row read; media: '<described_at>|<rowid>'; ext_relink: '<source_id>|<ext_id>' resume point, then 'done'
 );
 
 -- Chat (see 00076). Adopted from the Desktop app; conversations form a tree via
@@ -2491,6 +2493,16 @@ CREATE TABLE IF NOT EXISTS chat_artifact_comments (
     CHECK (status != 'sent' OR sent_at IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key);
+
+-- Artifacts the owner kept in the knowledge base (00154): one row per
+-- conversation artifact, the kept version and when; gone with the chat.
+CREATE TABLE IF NOT EXISTS chat_knowledge_artifacts (
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    artifact_key    TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    kept_at         TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, artifact_key)
+);
 
 CREATE TABLE IF NOT EXISTS chat_project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2723,11 +2735,51 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     chat_asked_at    TEXT NOT NULL DEFAULT '',   -- origin chat only: when it was asked in the terminal; '' otherwise
     withdrawn_at     TEXT NOT NULL DEFAULT '',   -- when it was withdrawn (00107); '' while not, and for asks withdrawn before 00107
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run the ask belongs to (00122); NULL = not an automation's
+    doc_type         TEXT NOT NULL DEFAULT '',   -- review asks: spec | plan | other (00158); '' for any other ask
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
 CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
+
+-- Spec review (00158): one reviewer-agent run per review ask. queued -> running
+-- (claimed by a pid) -> done | failed; skipped = no review runs (reason).
+-- result is the reviewer's JSON; a re-queue keeps the marks and counts attempt.
+CREATE TABLE IF NOT EXISTS spec_reviews (
+    ask_id      INTEGER PRIMARY KEY REFERENCES owner_asks(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL CHECK (status IN ('queued','running','done','failed','skipped')),
+    reason      TEXT NOT NULL DEFAULT '',
+    result      TEXT NOT NULL DEFAULT '',
+    provider    TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL DEFAULT '',
+    doc_sha     TEXT NOT NULL DEFAULT '',
+    dropped     INTEGER NOT NULL DEFAULT 0,
+    pid         INTEGER NOT NULL DEFAULT 0,
+    attempt     INTEGER NOT NULL DEFAULT 0,
+    queued_at   TEXT NOT NULL,
+    started_at  TEXT NOT NULL DEFAULT '',
+    finished_at TEXT NOT NULL DEFAULT ''
+);
+
+-- The owner's per-item marks on a spec review (00158); the Desktop writes them.
+CREATE TABLE IF NOT EXISTS spec_review_marks (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    state      TEXT NOT NULL CHECK (state IN ('ok','comment','viewed')),
+    body       TEXT NOT NULL DEFAULT '',
+    about      TEXT NOT NULL DEFAULT '',   -- a comment's finding text, kept when a re-run drops the finding
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
+);
+
+-- Home's Learn zone (00159): one row per guide card the owner has seen
+-- (got_it, its button, or the feature in use). Written once by the Desktop
+-- only; Show again deletes the row.
+CREATE TABLE IF NOT EXISTS learn_seen (
+    item_id TEXT PRIMARY KEY,
+    how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
+    seen_at TEXT NOT NULL -- UTC ISO-8601 seconds
+);
 
 -- The one session the owner is looking at (00107): a singleton written by the
 -- Desktop only (enter + 30 s heartbeat; NULL on leave, lock, sleep, quit),
@@ -3063,7 +3115,8 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   sent_at        TEXT,
-  delivered_at   TEXT
+  delivered_at   TEXT,
+  outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')) -- how the owner closed a sent round (00155)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
@@ -3178,14 +3231,14 @@ CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_request
 -- Agent instructions (00137): the owner's global session instructions / target procedure
 -- (one row per scope; an empty body deletes the row) and mined repeat suggestions.
 CREATE TABLE IF NOT EXISTS owner_instructions (
-    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
+    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure','chat')),
     body       TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS instruction_suggestions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     text            TEXT NOT NULL,
-    field           TEXT NOT NULL CHECK (field IN ('session','procedure')),
+    field           TEXT NOT NULL CHECK (field IN ('session','procedure','chat')),
     workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
     session_count   INTEGER NOT NULL DEFAULT 0,
     workbench_count INTEGER NOT NULL DEFAULT 0,
@@ -3196,6 +3249,17 @@ CREATE TABLE IF NOT EXISTS instruction_suggestions (
     decided_at      TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
+
+-- Chat owner instructions (00153): the 'chat' scope above is the text every AI chat reads; each
+-- line a "remember:" message appended is recorded here for Undo and the Settings link.
+CREATE TABLE IF NOT EXISTS instruction_chat_lines (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    line            TEXT NOT NULL,
+    conversation_id INTEGER NULL,   -- no foreign key: chat rows may be deleted
+    message_id      INTEGER NULL,
+    added_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_instruction_chat_lines_message ON instruction_chat_lines(message_id);
 
 -- Database maintenance (00145, #850): compaction state for `watchtower db compact`.
 -- Keys: last_compacted_version, compacted_at (RFC 3339 UTC), compact_failures,
@@ -3231,3 +3295,156 @@ CREATE TABLE IF NOT EXISTS account_purges (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
     ON account_purges(source, account_id) WHERE state IN ('scheduled','running');
+
+-- Media items (00155, media knowledge): images and web links found on synced
+-- content (Slack, Confluence, Gmail, IMAP) and the owner's own image uploads
+-- (chat attachments, workbench target images), described by the daemon's
+-- media pass. No bytes are stored. media_state.start_at (single row, the
+-- migration time): nothing older is recorded or described. Each item hangs
+-- off exactly one parent by a cascading foreign key; title/body/image_text
+-- hold the AI description (images) or summary (links); error holds only an
+-- error class. kb_source/kb_ref name the parent's knowledge document, marked
+-- in kb_dirty when an ok row changes or goes.
+CREATE TABLE IF NOT EXISTS media_state (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    start_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS media_items (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind               TEXT NOT NULL CHECK (kind IN ('image','link')),
+    parent_kind        TEXT NOT NULL CHECK (parent_kind IN ('slack','confluence','gmail','imap','chat','target')),
+    parent_key         TEXT NOT NULL,
+    slack_channel_id   TEXT,
+    slack_ts           TEXT,
+    ext_source_id      INTEGER,
+    ext_id             TEXT,
+    gmail_account_id   INTEGER,
+    gmail_message_id   TEXT,
+    imap_account_id    INTEGER,
+    imap_uidvalidity   INTEGER,
+    imap_uid           INTEGER,
+    chat_attachment_id INTEGER REFERENCES chat_attachments(id) ON DELETE CASCADE,
+    target_image_id    INTEGER REFERENCES project_target_images(id) ON DELETE CASCADE,
+    anchor             TEXT NOT NULL DEFAULT '',
+    locator            TEXT NOT NULL,
+    fetch_url          TEXT NOT NULL DEFAULT '',
+    name               TEXT NOT NULL DEFAULT '',
+    media_type         TEXT NOT NULL DEFAULT '',
+    size_bytes         INTEGER NOT NULL DEFAULT 0,
+    content_key        TEXT NOT NULL DEFAULT '',
+    scope              TEXT NOT NULL,
+    from_owner         INTEGER NOT NULL DEFAULT 0,
+    content_at         TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','ok','skipped_type','skipped_junk','too_large','unreachable','unavailable','failed')),
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    error              TEXT NOT NULL DEFAULT '',
+    title              TEXT NOT NULL DEFAULT '',
+    body               TEXT NOT NULL DEFAULT '',
+    image_text         TEXT NOT NULL DEFAULT '',
+    keys_json          TEXT NOT NULL DEFAULT '[]',
+    kb_source          TEXT NOT NULL DEFAULT '',
+    kb_ref             TEXT NOT NULL DEFAULT '',
+    discovered_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    described_at       TEXT NOT NULL DEFAULT '',
+    -- a row that could only wait (a source off, a reference not synced yet)
+    -- is not listed again before this time ('' = now)
+    next_try_at        TEXT NOT NULL DEFAULT '',
+    UNIQUE (parent_key, kind, locator),
+    FOREIGN KEY (slack_channel_id, slack_ts) REFERENCES messages(channel_id, ts) ON DELETE CASCADE,
+    FOREIGN KEY (ext_source_id, ext_id) REFERENCES ext_documents(source_id, ext_id) ON DELETE CASCADE,
+    FOREIGN KEY (gmail_account_id, gmail_message_id) REFERENCES gmail_messages(account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (imap_account_id, imap_uidvalidity, imap_uid) REFERENCES imap_messages(account_id, uidvalidity, uid) ON DELETE CASCADE,
+    -- exactly the parent kind's columns are set
+    CHECK ((slack_channel_id IS NOT NULL) = (parent_kind = 'slack')
+       AND (slack_ts IS NOT NULL) = (parent_kind = 'slack')
+       AND (ext_source_id IS NOT NULL) = (parent_kind = 'confluence')
+       AND (ext_id IS NOT NULL) = (parent_kind = 'confluence')
+       AND (gmail_account_id IS NOT NULL) = (parent_kind = 'gmail')
+       AND (gmail_message_id IS NOT NULL) = (parent_kind = 'gmail')
+       AND (imap_account_id IS NOT NULL) = (parent_kind = 'imap')
+       AND (imap_uidvalidity IS NOT NULL) = (parent_kind = 'imap')
+       AND (imap_uid IS NOT NULL) = (parent_kind = 'imap')
+       AND (chat_attachment_id IS NOT NULL) = (parent_kind = 'chat')
+       AND (target_image_id IS NOT NULL) = (parent_kind = 'target'))
+);
+CREATE INDEX IF NOT EXISTS idx_media_items_pending ON media_items(status, from_owner, content_at);
+CREATE INDEX IF NOT EXISTS idx_media_items_content ON media_items(content_key, scope);
+CREATE INDEX IF NOT EXISTS idx_media_items_slack ON media_items(slack_channel_id, slack_ts);
+CREATE INDEX IF NOT EXISTS idx_media_items_ext ON media_items(ext_source_id, ext_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_gmail ON media_items(gmail_account_id, gmail_message_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_imap ON media_items(imap_account_id, imap_uidvalidity, imap_uid);
+CREATE INDEX IF NOT EXISTS idx_media_items_chat ON media_items(chat_attachment_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_target ON media_items(target_image_id);
+CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at);
+
+CREATE TRIGGER IF NOT EXISTS media_items_kb_dirty_upd AFTER UPDATE OF status, body, kb_source, kb_ref ON media_items
+WHEN (OLD.status = 'ok' OR NEW.status = 'ok') AND (NEW.kb_ref != '' OR OLD.kb_ref != '')
+BEGIN
+    INSERT INTO kb_dirty (source, key) SELECT NEW.kb_source, NEW.kb_ref WHERE NEW.kb_ref != ''
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    -- an ok row moved to another document: the old one loses its section
+    INSERT INTO kb_dirty (source, key) SELECT OLD.kb_source, OLD.kb_ref
+        WHERE OLD.status = 'ok' AND OLD.kb_ref != ''
+          AND (OLD.kb_source != NEW.kb_source OR OLD.kb_ref != NEW.kb_ref)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS media_items_kb_dirty_del AFTER DELETE ON media_items
+WHEN OLD.status = 'ok' AND OLD.kb_ref != ''
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES (OLD.kb_source, OLD.kb_ref)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS chat_attachments_media AFTER INSERT ON chat_attachments
+WHEN NEW.conversation_id IS NOT NULL
+ AND NEW.mime IN ('image/png','image/jpeg','image/gif','image/webp')
+BEGIN
+    INSERT INTO media_items (kind, parent_kind, parent_key, chat_attachment_id, locator, name,
+                             media_type, size_bytes, scope, from_owner, content_at)
+    VALUES ('image', 'chat', 'chat:' || NEW.id, NEW.id, NEW.path, NEW.name,
+            NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END;
+CREATE TRIGGER IF NOT EXISTS project_target_images_media AFTER INSERT ON project_target_images
+BEGIN
+    INSERT INTO media_items (kind, parent_kind, parent_key, target_image_id, locator, name,
+                             media_type, size_bytes, scope, from_owner, content_at)
+    VALUES ('image', 'target', 'target:' || NEW.id, NEW.id, NEW.path, NEW.file_name,
+            NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END;
+
+-- Automation editor draft cache (00157, #604): the newest draft_automation
+-- results of an automation_editor conversation (the Draft panel's history),
+-- oldest first by seq, at most a handful kept (AppendDraftCache). entry_json
+-- is one DraftCacheEntry. Replaces <workspace>/automation-drafts/<id>.jsonl.
+-- Deleting the conversation (Go or the Desktop) drops its rows by cascade.
+CREATE TABLE IF NOT EXISTS automation_draft_cache (
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL,
+    entry_json      TEXT NOT NULL,
+    at              TEXT NOT NULL,                       -- RFC 3339 UTC
+    PRIMARY KEY (conversation_id, seq)
+);
+
+-- Recordings not yet saved as a transcript (00157, #604). Written by the
+-- Desktop only; Go never reads it. recording is the audio file's base name
+-- (rec_<ts>.caf); transcript and meta_json stay NULL until transcription
+-- succeeds. A row present = not saved yet (replaces the rec_* sidecars).
+CREATE TABLE IF NOT EXISTS pending_transcripts (
+    recording      TEXT PRIMARY KEY,
+    event_id       TEXT,
+    title          TEXT,
+    transcript     TEXT,
+    meta_json      TEXT,
+    started_at     REAL NOT NULL,
+    transcribed_at REAL
+);
+
+-- An embedded chat's owner message queued but not yet sent (00157, #604;
+-- CHAT-01: it survives a quit). Written by the Desktop only; Go never reads
+-- it. surface_key is EmbeddedChatKey.description.
+CREATE TABLE IF NOT EXISTS chat_queued_drafts (
+    surface_key TEXT PRIMARY KEY,
+    text        TEXT NOT NULL,
+    at          REAL NOT NULL
+);

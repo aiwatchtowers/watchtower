@@ -7,6 +7,16 @@ Workchat shows a workbench session's dialog as a chat, with markdown rendered, a
 A long agent turn scrolls past in the terminal as raw text. In Workchat you read the dialog as messages, write the next line, stop the agent or allow a command, all without the terminal.
 
 ## How it works
+<!-- learn
+id: workchat-chat-mode
+title: Read a session as a chat
+text: Switch a session to **Workchat** to read its dialog as messages and write, stop or allow from there.
+area: development
+level: next
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 Workchat is a session's second mode. It shows the same session in the same place as its terminal, and the terminal keeps running while hidden. It is available for Claude Code and Codex sessions in a workbench.
 
@@ -19,6 +29,16 @@ Once the session ends, the field gives way to **Session finished. The history st
 ## Using it
 
 ### Switch between Terminal and Workchat
+<!-- learn
+id: workchat-toggle
+title: Flip Terminal and Workchat with ⌃`
+text: Press ⌃` to swap the session on screen between its terminal and its Workchat.
+area: development
+level: next
+kind: shortcut
+since: 0.24.0
+action: hotkey:workchat
+-->
 
 - The toggle button on the session's strip, named for the mode it switches to (**Terminal** or **Workchat**), swaps the session in that pane between the two. It is greyed out when that mode already shows in the other pane. The session name with ▾ at the strip's left picks another session or starts a new one.
 - ⌃` does the same, as does View → **Show Terminal** / **Show Workchat**.
@@ -26,6 +46,16 @@ Once the session ends, the field gives way to **Session finished. The history st
 - A small glyph on each session row shows the mode it opens in. Right-click a row for **Open in Terminal** or **Open in Workchat**.
 
 ### Write to the agent
+<!-- learn
+id: workchat-send-while-busy
+title: Send while the agent works
+text: Write in Workchat while the agent is busy; your line queues and the agent reads it at its next step.
+area: development
+level: power
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 - Return in the field at the bottom sends your line. Shift-Return adds a line break; the message keeps its line breaks.
 - A line starting with `/` is typed as written, so `/clear` works.
@@ -36,6 +66,16 @@ Once the session ends, the field gives way to **Session finished. The history st
 - A line typed into the terminal but not sent says so, with **Show in Terminal**: press Return there.
 
 ### Answer a permission prompt
+<!-- learn
+id: workchat-permission-card
+title: Allow a command from Workchat
+text: When the agent asks for a permission, press **Allow** or **Deny** on the card instead of the terminal.
+area: development
+level: next
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 When the agent asks for a permission, a card such as **Claude wants to run a command** shows the request, with **Allow**, **Deny** and **Show in Terminal**. Your answer counts once, for this one call. Codex sessions get no card: answer them in the terminal.
 

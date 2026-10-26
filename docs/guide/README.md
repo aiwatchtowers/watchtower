@@ -18,6 +18,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [AI providers, models and cost](concepts/ai-providers-and-cost.md) — Claude, Codex or Ollama, light and strong models, what costs tokens, and your Claude plan limits
 - [Privacy](concepts/privacy.md) — what stays on your Mac, what goes to your AI provider, and what goes to iCloud
 - [Revoked access deletes an account's data](concepts/revoked-access.md) — when a revoked or long-unreached account's synced data is deleted, what is kept, and how to stop it
+- [Managed by your organization](concepts/managed-by-your-organization.md) — what a locked control means, what your company can decide, and that your data stays
 
 ## Troubleshooting
 
@@ -71,9 +72,10 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Code viewer](features/workbench/code-viewer.md) — read and edit the folder's files, jump to definitions with Open Quickly, and ask about code
 - [Switching branches](features/workbench/branches.md) — switch, create, fetch and check out branches from a workbench page without losing work
 - [Worktrees and cleanup](features/workbench/worktrees-and-cleanup.md) — an own git worktree per parallel session, and safe removal of what a session leaves behind
+- [Reviewing a spec or plan](features/workbench/spec-review.md) — an independent reviewer checks the document against your idea; mark its findings and send the round
 - [Branch review](features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
 - [Methodology](features/workbench/methodology.md) — the workflow file, **Agent Settings…** and the ask guard that shape how agents work
-- [Your instructions](features/workbench/instructions.md) — standing directions for every agent, a target procedure, and suggestions from what you repeat
+- [Your instructions](features/workbench/instructions.md) — standing directions for every agent and AI chat (`remember:` adds one from a chat), a target procedure, and suggestions from what you repeat
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench
 - [Agent analytics](features/agent-analytics.md) — tokens, cost and tool use of the agent sessions in a workbench, on the Analytics view or from the command line
 
@@ -112,3 +114,4 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Keyboard shortcuts](reference/keyboard-shortcuts.md) — every key equivalent, by area
 - [Command line](reference/cli.md) — the `watchtower` commands, grouped
 - [Glossary](reference/glossary.md) — the terms the guide uses, one line each
+- [Organization policy for admins](reference/organization-policy.md) — the configuration profile keys an MDM can force, what each does, and how to check a Mac

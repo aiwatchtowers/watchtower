@@ -20,13 +20,13 @@ enum HomeShotFixtures {
     private static let now = Date(timeIntervalSince1970: 1_792_406_400) // 2026-10-19 10:40 UTC
 
     /// `gettingReady`: a first run still preparing, as on a new install.
-    static func home(gettingReady: Bool = false, purges: [AccountPurge] = []) -> AnyView {
+    static func home(gettingReady: Bool = false, purges: [AccountPurge] = [], learn: LearnSelection? = nil) -> AnyView {
         do {
             return AnyView(HomeContent(
                 snapshot: try snapshot(gettingReady: gettingReady ? Self.gettingReady : .hidden),
                 today: now, calendar: calendar,
                 feedErrors: [.target(4): "The database is locked."],
-                onLink: { _ in }, onHideGettingReady: {}, purges: purges))
+                onLink: { _ in }, onHideGettingReady: {}, purges: purges, learn: learn))
         } catch {
             XCTFail("home shot fixture failed: \(error)")
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
@@ -190,5 +190,38 @@ extension HomeShotFixtures {
             }
         }
         .formStyle(.grouped))
+    }
+}
+
+extension HomeShotFixtures {
+    /// Settings → System → Privacy under a sample configuration profile.
+    static func organizationPolicy() -> AnyView {
+        let policy = ManagedPolicy.normalize([
+            "AllowedSources": ["slack", "jira"],
+            "MobileSync": "workbench_only",
+            "AllowedQuickConnections": ["https://mcp.example.com/"],
+            "AllowAutomationShell": false,
+            "AllowedAIProviders": ["claude"],
+            "PurgeRevokedData": true,
+            "RetentionDays": 90
+        ])
+        return AnyView(Form {
+            PrivacySettingsContent(
+                isOn: .constant(true), status: AccountPurgeStatus(enabled: true, enabledBy: "policy"), statusError: nil)
+            OrganizationPolicySection(policy: policy)
+        }
+        .formStyle(.grouped))
+    }
+}
+
+extension HomeShotFixtures {
+    /// Settings → Connections with Jira forbidden by a sample profile: the
+    /// row's lock, the notice and the locked Add button.
+    @MainActor static func connectionsBlocked() -> AnyView {
+        let appState = AppState { ["AllowedSources": ["slack", "google"]] }
+        appState.managedPolicy.refresh()
+        appState.settingsConnection = .jira
+        let config = ConfigService(configPath: NSTemporaryDirectory() + "watchtower-shots-config.yaml")
+        return AnyView(ConnectionsSettings(config: config).environment(appState))
     }
 }

@@ -62,6 +62,7 @@ var allowedStrongSources = []allowedStrongSource{
 	{"catchup.compose", "docs/features/catchup.md: 'One strong-tier catchup.compose call composes eight gathered window areas'"},
 	{"workbench.review_overview", "diff reviewer: judges an agent's change set against the owner's intent (coverage, risk, chapters); a judgment call, not a mechanical rollup"},
 	{"workbench.review_lessons", "diff reviewer: groups the owner's repeated comments into house rules; a judgment call over free text, not a mechanical rollup"},
+	{"workbench.spec_review", "spec reviewer: judges a spec or plan against what the owner agreed (agreements, decided alone, blind spots); spec 2026-10-25-spec-review-design §3 names the strong tier"},
 
 	// Newly tagged by fix-wave-4 task 6 (previously untagged, logged
 	// source:"unknown"): tag-only per decision 9 — attribution fixed, tier
@@ -78,12 +79,13 @@ var allowedStrongSources = []allowedStrongSource{
 
 // skipGenerateCallFiles are decorator implementations of digest.Generator
 // that forward whatever ctx they were handed unchanged (PooledGenerator,
-// timeoutGenerator) — the source tag, if any, was already applied by the
+// timeoutGenerator, cmd's policyCheckedGenerator) — the source tag, if any, was already applied by the
 // caller before it reached the decorator. They are not new AI-call
 // origination points, so the scan does not require them to re-tag.
 var skipGenerateCallFiles = map[string]bool{
 	filepath.Join("internal", "digest", "pooled.go"):            true,
 	filepath.Join("internal", "digest", "timeout_generator.go"): true,
+	filepath.Join("cmd", "provider_policy.go"):                  true,
 }
 
 // TestTierForSource_EveryGenerateCallIsTagged is a property scan, not an

@@ -112,6 +112,10 @@ type KnowledgeConfig struct {
 	// into ext_* for the index). Mechanical, no AI; does nothing until a
 	// space is selected.
 	Connectors KnowledgeConnectorsConfig `mapstructure:"connectors"`
+	// LinkFetchDenyHosts are hosts (subdomains included) whose links the
+	// media pass never fetches. They add to the build's seed list
+	// (media.BuildDenyHosts), never replace it.
+	LinkFetchDenyHosts []string `mapstructure:"link_fetch_deny_hosts"`
 }
 
 // KnowledgeConnectorsConfig holds the knowledge-connectors feature switch.
@@ -282,7 +286,7 @@ type TargetsConfig struct {
 // TranscriptsConfig holds settings for meeting transcript storage.
 type TranscriptsConfig struct {
 	AudioRetentionDays int    `mapstructure:"audio_retention_days"` // delete recording audio after N days (default 30); transcript text is kept forever
-	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the Desktop recorder writes rec_* files into; empty → the default computed by Config.RecordingsDir
+	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the daemon orphan cleanup scans for rec_* files; empty → the default computed by Config.RecordingsDir. The Desktop recorder does not read it (it always writes Application Support/Watchtower/recordings), so BACKUP-01 does not exclude it
 }
 
 // DayPlanConfig holds settings for the daily plan generation pipeline.
@@ -853,9 +857,20 @@ func (c *Config) RecordingsDir() string {
 	if c.Transcripts.RecordingsDir != "" {
 		return c.Transcripts.RecordingsDir
 	}
-	home, err := os.UserHomeDir()
+	as, err := AppSupportDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings")
+	return filepath.Join(as, "recordings")
+}
+
+// AppSupportDir returns the Desktop's Application Support folder
+// (~/Library/Application Support/Watchtower): recordings, MobileHub, the CLI
+// copy and the session host's log.
+func AppSupportDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine home directory: %w", err)
+	}
+	return filepath.Join(home, "Library", "Application Support", "Watchtower"), nil
 }

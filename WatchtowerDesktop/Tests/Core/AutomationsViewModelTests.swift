@@ -41,6 +41,12 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
         waiting?.resume()
     }
 
+    /// The texts that ride stdin (`--text-file -`, `validate -`, #604 S6)
+    /// change nothing here.
+    func run(args: [String], stdin _: Data) async throws -> Data {
+        try await run(args: args)
+    }
+
     func run(args: [String]) async throws -> Data {
         let sub = args.count > 1 ? args[1] : ""
         let (handler, held) = lock.withLock {
@@ -126,16 +132,22 @@ final class AutomationsViewModelTests: XCTestCase {
     private var pool: DatabasePool!
     private var path = ""
     private var runner: ScriptedRunner!
+    private var suiteName = ""
+    private var defaults: UserDefaults!
     private let now = Date(timeIntervalSince1970: 1_792_152_000) // 2026-10-16T12:00:00Z
 
     override func setUp() async throws {
         try await super.setUp()
         (pool, path) = try TestDatabase.createPool()
         runner = ScriptedRunner()
+        suiteName = "AutomationsViewModelTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
     }
 
     override func tearDown() async throws {
         runner.release()
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults = nil
         pool = nil
         TestDatabase.cleanup(path: path)
         try await super.tearDown()
@@ -144,7 +156,8 @@ final class AutomationsViewModelTests: XCTestCase {
     /// Tests that never call `start()` never sleep.
     private func makeViewModel(sleep: @escaping (Duration) async -> Void = { _ in }) -> AutomationsViewModel {
         let now = self.now
-        return AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), now: { now }, sleep: sleep)
+        return AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults,
+                                    now: { now }, sleep: sleep)
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
@@ -350,10 +363,93 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertNil(vm.composerPrefill)
     }
 
+    // MARK: - Group collapse
+
+    /// A row opened in a folded group (the Inbox, a notification,
+    /// auto-select) opens that group, and the opened state is stored.
+    func testSelectingInCollapsedSectionRevealsIt() throws {
+        let (personalID, workbenchID) = try pool.write { db -> (Int64, Int64) in
+            let workbench = try TestDatabase.insertWorkbench(db)
+            let personal = try TestDatabase.insertAutomation(db, slug: "mail", name: "Mail")
+            let inWorkbench = try TestDatabase.insertAutomation(db, slug: "ci", name: "CI", workbenchID: workbench)
+            return (personal, inWorkbench)
+        }
+        let vm = makeViewModel()
+        vm.refresh()
+        let workbench = try XCTUnwrap(vm.sectionID(forAutomation: workbenchID))
+        XCTAssertEqual(vm.sectionID(forAutomation: personalID), "personal")
+        XCTAssertTrue(workbench.hasPrefix("workbench-"))
+        XCTAssertNil(vm.sectionID(forAutomation: 999))
+
+        vm.toggleSection("personal")
+        vm.toggleSection(workbench)
+        vm.toggleSection("builtin")
+        XCTAssertEqual(vm.collapse.collapsed, ["personal", workbench, "builtin"])
+
+        vm.select(personalID)
+        XCTAssertEqual(vm.collapse.collapsed, [workbench, "builtin"])
+        vm.open(automationID: workbenchID, runID: nil)
+        XCTAssertEqual(vm.collapse.collapsed, ["builtin"])
+        XCTAssertEqual(defaults.stringArray(forKey: AutomationsViewModel.collapsedSectionsKey), ["builtin"])
+
+        // A new draft opens its scope's group.
+        vm.toggleSection("personal")
+        vm.showEditor(.newDraft(contextID: "d1", scope: .personal, startText: nil))
+        XCTAssertEqual(vm.collapse.collapsed, ["builtin"])
+        // Opening a row in an open group stores nothing new.
+        vm.select(personalID)
+        XCTAssertEqual(vm.collapse.collapsed, ["builtin"])
+    }
+
+    /// Selecting on a cold tab (the list not loaded yet) still opens the
+    /// row's folded group once the first refresh brings it in.
+    func testSelectOnColdTabRevealsAfterFirstRefresh() throws {
+        let id = try pool.write { db in try TestDatabase.insertAutomation(db, slug: "mail", name: "Mail") }
+        defaults.set(["personal"], forKey: AutomationsViewModel.collapsedSectionsKey)
+        let vm = makeViewModel()
+        XCTAssertEqual(vm.collapse.collapsed, ["personal"])
+        vm.select(id)
+        vm.refresh()
+        XCTAssertEqual(vm.collapse.collapsed, [])
+        XCTAssertEqual(defaults.stringArray(forKey: AutomationsViewModel.collapsedSectionsKey), [])
+        // The owner folds it again: later polls do not reopen it.
+        vm.toggleSection("personal")
+        vm.refresh()
+        XCTAssertEqual(vm.collapse.collapsed, ["personal"])
+    }
+
+    func testCollapsePersistsAcrossInit() {
+        let first = makeViewModel()
+        XCTAssertEqual(first.collapse.collapsed, [], "every group starts open")
+        first.toggleSection("builtin")
+        first.toggleSection("workbench-3")
+        first.toggleSection("workbench-3")
+        XCTAssertEqual(defaults.stringArray(forKey: AutomationsViewModel.collapsedSectionsKey), ["builtin"])
+
+        let second = makeViewModel()
+        XCTAssertEqual(second.collapse.collapsed, ["builtin"])
+    }
+
+    /// A search opens every group with a match on screen only: the stored
+    /// set stays, so clearing the search restores it.
+    func testSearchDoesNotWriteCollapse() throws {
+        try pool.write { db in _ = try TestDatabase.insertAutomation(db, slug: "mail", name: "Mail") }
+        let vm = makeViewModel()
+        vm.refresh()
+        vm.toggleSection("personal")
+        let section = try XCTUnwrap(
+            AutomationListSections.make(items: vm.items, drafts: [], workbenches: [], query: "mai").first
+        )
+        XCTAssertTrue(vm.isExpanded(section, query: "mai"))
+        XCTAssertFalse(vm.isExpanded(section, query: "  "))
+        XCTAssertEqual(vm.collapse.collapsed, ["personal"])
+        XCTAssertEqual(defaults.stringArray(forKey: AutomationsViewModel.collapsedSectionsKey), ["personal"])
+    }
+
     /// Draft rows come with the list read: workbench drafts only for
     /// workbenches that exist; Discard removes the cache file and its row.
-    func testRefreshReadsDraftRowsAndDiscardRemovesOne() throws {
-        let (personal, gone) = try pool.write { db -> (Int64, Int64) in
+    func testRefreshReadsDraftRowsAndDiscardRemovesOne() async throws {
+        let (personal, gone) = try await pool.write { db -> (Int64, Int64) in
             _ = try TestDatabase.insertWorkbench(db)
             for context in ["d1", "d2-wb9"] {
                 try db.execute(sql: """
@@ -364,22 +460,21 @@ final class AutomationsViewModelTests: XCTestCase {
             return (db.lastInsertedRowID - 1, db.lastInsertedRowID)
         }
         let line = #"{"recipe_text":"x","result":null,"error":"boom"}"# + "\n"
-        for id in [personal, gone] {
-            let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: id)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                    withIntermediateDirectories: true)
-            try line.write(to: url, atomically: true, encoding: .utf8)
+        try await pool.write { db in
+            for id in [personal, gone] {
+                try AutomationDraftCacheQueries.append(db, conversationID: id, entryJSON: line, at: Date())
+            }
         }
         let vm = makeViewModel()
         vm.refresh()
         XCTAssertEqual(vm.draftRows.map(\.conversationID), [personal])
 
         vm.showEditor(.newDraft(contextID: "d1", scope: .personal, startText: nil))
-        vm.discardDraft(contextID: "d1")
+        await vm.discardDraft(contextID: "d1")
         XCTAssertEqual(vm.draftRows, [])
         XCTAssertEqual(vm.panel, .empty)
-        let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: personal)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        let left = try await pool.read { try AutomationDraftCacheQueries.entries($0, conversationID: personal) }
+        XCTAssertEqual(left, [])
         vm.refresh()
         XCTAssertEqual(vm.draftRows, [])
     }
@@ -387,8 +482,8 @@ final class AutomationsViewModelTests: XCTestCase {
     /// A new draft open in the editor whose chat never drafted (Adjust in
     /// Chat, an Inbox proposal's Open Draft) has no cache file: it is a row
     /// while the editor holds it, so leaving the panel never loses it.
-    func testOpenNewDraftWithoutACacheIsARow() throws {
-        let (open, closed) = try pool.write { db -> (Int64, Int64) in
+    func testOpenNewDraftWithoutACacheIsARow() async throws {
+        let (open, closed) = try await pool.write { db -> (Int64, Int64) in
             for context in ["d1", "d2"] {
                 try db.execute(sql: """
                     INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
@@ -412,7 +507,7 @@ final class AutomationsViewModelTests: XCTestCase {
         vm.refresh()
         XCTAssertEqual(vm.draftRows.first?.name, AutomationDraftRows.untitled)
 
-        vm.discardDraft(contextID: "d1")
+        await vm.discardDraft(contextID: "d1")
         XCTAssertEqual(vm.draftRows, [])
         XCTAssertNil(vm.lastError, "a draft with no file discards quietly")
     }

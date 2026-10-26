@@ -3,7 +3,7 @@ import GRDB
 
 // MARK: - Draft rows
 
-/// A New automation chat with a draft on disk: listed at the top of its
+/// A New automation chat with a cached draft: listed at the top of its
 /// section until it is saved or abandoned.
 package struct AutomationDraftRow: Identifiable, Equatable, Sendable {
     package let conversationID: Int64
@@ -11,17 +11,28 @@ package struct AutomationDraftRow: Identifiable, Equatable, Sendable {
     package let contextID: String
     package let workbenchID: Int64?
     package let name: String
-    /// The cache file's modification date.
+    /// When its newest draft was cached.
     package let updatedAt: Date
+    /// The drafted recipe's one-line summary (`AutomationRowSummary`); nil
+    /// without a drafted recipe.
+    package let summary: String?
 
     package var id: Int64 { conversationID }
 
-    package init(conversationID: Int64, contextID: String, workbenchID: Int64?, name: String, updatedAt: Date) {
+    package init(
+        conversationID: Int64,
+        contextID: String,
+        workbenchID: Int64?,
+        name: String,
+        updatedAt: Date,
+        summary: String? = nil
+    ) {
         self.conversationID = conversationID
         self.contextID = contextID
         self.workbenchID = workbenchID
         self.name = name
         self.updatedAt = updatedAt
+        self.summary = summary
     }
 }
 
@@ -29,43 +40,47 @@ package enum AutomationDraftRows {
     package static let contextType = "automation_draft"
     package static let untitled = "New automation"
 
-    /// An `automation_draft` conversation, as `conversations` reads it.
+    /// An `automation_draft` conversation, as `conversations` reads it, with
+    /// its newest cached draft entry (nil without one) and when it was cached.
     package struct Conversation: Equatable, Sendable {
         package let id: Int64
         package let contextID: String
         package let updatedAt: Date
+        package var newestDraft: String?
+        package var draftAt: Date?
     }
 
-    /// Every `automation_draft` conversation whose cache file exists and
-    /// whose newest line decodes, newest first. A draft of a workbench not in
+    /// Every `automation_draft` conversation whose newest cached draft
+    /// decodes, newest first. A draft of a workbench not in
     /// `liveWorkbenchIDs` (deleted since) is dropped; an unreadable or
     /// undecodable cache is not a row — unless the editor holds the draft
     /// (`openDrafts`, conversation id → name, `AutomationEditorCenter.openNewDraftNames`):
     /// then it is a row named as the editor reads it, dated by its chat.
     package static func load(
-        _ db: Database, databasePath: String, liveWorkbenchIDs: Set<Int64>, openDrafts: [Int64: String] = [:]
+        _ db: Database, liveWorkbenchIDs: Set<Int64>, openDrafts: [Int64: String] = [:]
     ) throws -> [AutomationDraftRow] {
-        rows(try conversations(db), databasePath: databasePath, liveWorkbenchIDs: liveWorkbenchIDs,
-             openDrafts: openDrafts)
+        rows(try conversations(db), liveWorkbenchIDs: liveWorkbenchIDs, openDrafts: openDrafts)
     }
 
-    /// The database half of `load`: the draft conversations, no file read.
+    /// The database half of `load`: the draft conversations with their
+    /// newest cached draft.
     package static func conversations(_ db: Database) throws -> [Conversation] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, context_id, updated_at FROM chat_conversations
             WHERE context_type = ? AND context_id IS NOT NULL
             """, arguments: [contextType])
-        return rows.map { row in
-            Conversation(id: row["id"], contextID: row["context_id"],
-                         updatedAt: Date(timeIntervalSince1970: row["updated_at"] ?? 0))
+        return try rows.map { row in
+            let id: Int64 = row["id"]
+            let newest = try AutomationDraftCacheQueries.newest(db, conversationID: id)
+            return Conversation(id: id, contextID: row["context_id"],
+                                updatedAt: Date(timeIntervalSince1970: row["updated_at"] ?? 0),
+                                newestDraft: newest?.entry, draftAt: newest?.at)
         }
     }
 
-    /// The file half of `load`: reads each conversation's cache file, so it
-    /// runs outside a database read.
+    /// The pure half of `load`: the rows of the read conversations.
     package static func rows(
         _ conversations: [Conversation],
-        databasePath: String,
         liveWorkbenchIDs: Set<Int64>,
         openDrafts: [Int64: String] = [:]
     ) -> [AutomationDraftRow] {
@@ -73,14 +88,14 @@ package enum AutomationDraftRows {
         for conversation in conversations {
             let workbenchID = workbenchID(fromContextID: conversation.contextID)
             if let workbenchID, !liveWorkbenchIDs.contains(workbenchID) { continue }
-            let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: conversation.id)
             let name: String
             let updatedAt: Date
-            if let text = try? String(contentsOf: url, encoding: .utf8),
-               case let .entry(entry) = AutomationDraftEntry.newest(inCache: text),
-               let modified = try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date {
+            var summary: String?
+            if let json = conversation.newestDraft, let cachedAt = conversation.draftAt,
+               case let .entry(entry) = AutomationDraftEntry.decodeNewest(json) {
                 name = entry.result?.manifest.name ?? ""
-                updatedAt = modified
+                updatedAt = cachedAt
+                summary = AutomationRowSummary.summary(recipeText: entry.recipeText)
             } else if let open = openDrafts[conversation.id] {
                 name = open
                 updatedAt = conversation.updatedAt
@@ -89,7 +104,7 @@ package enum AutomationDraftRows {
             }
             drafts.append(AutomationDraftRow(conversationID: conversation.id, contextID: conversation.contextID,
                                              workbenchID: workbenchID, name: name.isEmpty ? untitled : name,
-                                             updatedAt: updatedAt))
+                                             updatedAt: updatedAt, summary: summary))
         }
         return drafts.sorted { ($0.updatedAt, $0.conversationID) > ($1.updatedAt, $1.conversationID) }
     }
@@ -119,6 +134,18 @@ package struct AutomationListSection: Identifiable, Equatable, Sendable {
     package var count: Int { drafts.count + items.count }
     package var isEmpty: Bool { drafts.isEmpty && items.isEmpty }
 
+    /// What a folded header still says, in order: "1 failed", "1 draft",
+    /// "1 needs confirmation" (plural: "2 drafts", "2 need confirmation"); empty when nothing needs the owner. Failed and
+    /// needs-confirmation parts are warnings, a draft is not.
+    package var attention: [AutomationAttentionPart] {
+        let failed = items.filter { AutomationRowPresentation.isFailed($0) }.count
+        let confirm = items.filter { $0.automation.needsConfirmation }.count
+        return [failed > 0 ? AutomationAttentionPart(text: "\(failed) failed", isWarning: true) : nil,
+                !drafts.isEmpty ? AutomationAttentionPart(text: "\(drafts.count) \(drafts.count == 1 ? "draft" : "drafts")", isWarning: false) : nil,
+                confirm > 0 ? AutomationAttentionPart(text: "\(confirm) \(confirm == 1 ? "needs" : "need") confirmation", isWarning: true) : nil]
+            .compactMap { $0 }
+    }
+
     package init(id: String, title: String, drafts: [AutomationDraftRow], items: [AutomationListItem]) {
         self.id = id
         self.title = title
@@ -127,9 +154,29 @@ package struct AutomationListSection: Identifiable, Equatable, Sendable {
     }
 }
 
+/// One part of a folded section header's attention suffix.
+package struct AutomationAttentionPart: Equatable, Sendable {
+    package let text: String
+    package let isWarning: Bool
+}
+
 package enum AutomationListSections {
     package static let personalTitle = "Personal"
     package static let builtinTitle = "Built in"
+    package static let builtinID = "builtin"
+    package static let personalID = "personal"
+
+    package static func workbenchID(_ id: Int64) -> String { "workbench-\(id)" }
+
+    /// The section an automation is listed in; nil for a workbench recipe
+    /// without a workbench.
+    package static func sectionID(of automation: Automation) -> String? {
+        if automation.isBuiltin { return builtinID }
+        switch automation.scope {
+        case .personal: return personalID
+        case .workbench: return automation.projectID.map(workbenchID)
+        }
+    }
 
     /// Built in first (every `isBuiltin` item, never in Personal; a built-in
     /// has no drafts), then Personal, then each workbench by name, drafts at the top of
@@ -151,11 +198,11 @@ package enum AutomationListSections {
 
         var sections: [AutomationListSection] = []
         let builtin = AutomationListSection(
-            id: "builtin", title: builtinTitle, drafts: [], items: shownItems.filter(\.automation.isBuiltin)
+            id: builtinID, title: builtinTitle, drafts: [], items: shownItems.filter(\.automation.isBuiltin)
         )
         if !builtin.isEmpty { sections.append(builtin) }
         let personal = AutomationListSection(
-            id: "personal", title: personalTitle,
+            id: personalID, title: personalTitle,
             drafts: shownDrafts.filter { $0.workbenchID == nil },
             items: shownItems.filter { $0.automation.scope == .personal && !$0.automation.isBuiltin }
         )
@@ -167,7 +214,7 @@ package enum AutomationListSections {
         }
         for workbench in ordered {
             let section = AutomationListSection(
-                id: "workbench-\(workbench.id)", title: workbench.name,
+                id: workbenchID(workbench.id), title: workbench.name,
                 drafts: shownDrafts.filter { $0.workbenchID == workbench.id },
                 items: shownItems.filter { $0.automation.scope == .workbench && $0.automation.projectID == workbench.id }
             )
@@ -181,10 +228,11 @@ package enum AutomationListSections {
 
 /// A row's chip. "Disabled" is none: the dot and the "Off · " line say it.
 package enum AutomationRowChip: Equatable, Sendable {
-    case needsConfirmation, paused, cantRead, draft
+    case needsConfirmation, paused, cantRead, draft, blockedByPolicy
 
     package var title: String {
         switch self {
+        case .blockedByPolicy: "Blocked by your organization's policy"
         case .needsConfirmation: "Needs confirmation"
         case .paused: "Paused"
         case .cantRead: "Can't read"
@@ -213,14 +261,62 @@ package enum AutomationRowPresentation {
         return chips
     }
 
-    /// The row's second line; an off recipe's starts "Off · ".
+    /// The row's third line: the trigger and its fact. A failed last run
+    /// leads with its error, so a cut line still shows it; when line 1 shows
+    /// the next run (`state` is `.next`), the next run is not said again. No
+    /// "Off · ": the dot and line 1 say it.
     package static func line(_ item: AutomationListItem, changes: [AutomationChange]?, now: Date) -> String {
-        let detail = AutomationCardPresentation.rowDetailLine(item, changes: changes, now: now)
-        return isOn(item) ? detail : "Off · " + detail
+        let automation = item.automation
+        if automation.parseError.isEmpty, item.activeRun == nil, let last = item.lastRun, isFailed(item) {
+            let reason = last.error.isEmpty
+                ? AutomationCardPresentation.statusText(last.status).lowercased()
+                : AutomationCardPresentation.firstLine(last.error)
+            return [reason, item.triggerText].filter { !$0.isEmpty }.joined(separator: " · ")
+        }
+        if case .next = state(item, now: now), automation.parseError.isEmpty, !automation.needsConfirmation,
+           item.activeRun == nil, automation.triggerKind != "event" {
+            let tokens = item.tokens7d > 0
+                ? ["\(AutomationCardPresentation.compactTokens(item.tokens7d)) tokens this week"] : []
+            return ([item.triggerText] + tokens).joined(separator: " · ")
+        }
+        return AutomationCardPresentation.rowDetailLine(item, changes: changes, now: now)
     }
 
     /// The row's on/off dot.
     package static func isOn(_ item: AutomationListItem) -> Bool {
         item.automation.enabled
     }
+
+    /// The recipe's one-line summary: the `summary:` key, else the first
+    /// sentence of the description.
+    package static func summary(_ item: AutomationListItem) -> String? {
+        item.automation.parseError.isEmpty ? AutomationRowSummary.summary(recipeText: item.automation.recipeText) : nil
+    }
+
+    /// The last run failed (red or orange badge): line 3 is in the warning tone.
+    package static func isFailed(_ item: AutomationListItem) -> Bool {
+        guard let last = item.lastRun else { return false }
+        return [.red, .orange].contains(last.status.badge)
+    }
+
+    /// The compact right-hand state: chip > failed > off > last run > next run > none.
+    package static func state(_ item: AutomationListItem, now: Date) -> AutomationRowState {
+        if let chip = chips(item).first { return .chip(chip) }
+        if isFailed(item) { return .failed }
+        if !isOn(item) { return .off }
+        if let last = item.lastRun, let at = last.finishedAt ?? last.startedAt {
+            let ago = AutomationCardPresentation.relative(now.timeIntervalSince(at)) + " ago"
+            return .lastRun(word: last.status == .succeeded ? "ok" : last.status.rawValue, ago: ago)
+        }
+        if let next = item.automation.nextRunAt {
+            let seconds = next.timeIntervalSince(now)
+            return .next(seconds > 0 ? "in " + AutomationCardPresentation.relative(seconds) : "now")
+        }
+        return .none
+    }
+}
+
+/// What a compact row shows at its right edge.
+package enum AutomationRowState: Equatable, Sendable {
+    case chip(AutomationRowChip), failed, off, lastRun(word: String, ago: String), next(String), none
 }

@@ -398,7 +398,7 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         let renamed = try insertTranscript(segmentsJSON: segmentsJSON([("Speaker 1", "Morning.", false)]))
         let unchanged = try insertTranscript(segmentsJSON: segmentsJSON([("Speaker 1", "Hi.", false)]))
         let transport = StubHubTransport()
-        let store = SliceAssetStore(directory: assetDir)
+        let store = SliceAssetStore(directory: assetDir, descriptors: try HubSyncState.inMemory())
         let publisher = SlicePublisher(
             dbPool: dbPool, state: try HubSyncState.inMemory(), transport: transport.sealing(), sources: [slice()], assets: store
         )
@@ -423,14 +423,15 @@ final class MeetingTranscriptSliceTests: XCTestCase {
     }
 
     /// Spec §2.5, §5: the staged file is the sealed asset, never the JSON; the store's digest index is of the
-    /// plaintext (from the `.desc` descriptor), so an unchanged transcript is neither rebuilt nor re-sealed, and a
-    /// missing descriptor restages.
+    /// plaintext (from the descriptor row in `hubstate.db`), so an unchanged transcript is neither rebuilt nor
+    /// re-sealed, and a missing descriptor restages.
     func testSegmentsAreStagedSealedAndTheDigestIndexIsOfThePlaintext() async throws {
         let id = try insertTranscript(segmentsJSON: segmentsJSON([("Colleague A", "Ship the acme release.", false)]))
         let name = SliceKind.meetingTranscript.recordName(id: String(id))
         let json = try XCTUnwrap(try records().first?.asset?.data)
         let transport = StubHubTransport()
-        let store = SliceAssetStore(directory: assetDir)
+        let sidecar = try HubSyncState.inMemory()
+        let store = SliceAssetStore(directory: assetDir, descriptors: sidecar)
         let publisher = SlicePublisher(
             dbPool: dbPool, state: try HubSyncState.inMemory(), transport: transport.sealing(), sources: [slice()], assets: store
         )
@@ -451,7 +452,8 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         XCTAssertEqual(second.pushed, 0)
         XCTAssertEqual(try Data(contentsOf: file), sealed, "an unchanged transcript is not re-sealed (a fresh key would differ)")
 
-        try FileManager.default.removeItem(at: file.appendingPathExtension("desc"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.appendingPathExtension("desc").path), "no .desc file")
+        try sidecar.removeDescriptor(forFile: "\(name)/segments.json")
         XCTAssertNil(store.stagedDigest(recordName: name, fileName: "segments.json"), "no descriptor, no digest")
         let restaged = try await publisher.publishOnce()
         XCTAssertEqual(restaged.pushed, 1, "a missing descriptor restages and republishes")
@@ -468,7 +470,7 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         let slice = slice()
         let publisher = SlicePublisher(
             dbPool: dbPool, state: try HubSyncState.inMemory(), transport: transport.sealing(), sources: [slice],
-            assets: SliceAssetStore(directory: assetDir)
+            assets: SliceAssetStore(directory: assetDir, descriptors: try HubSyncState.inMemory())
         )
         try await publisher.publishOnce()
         XCTAssertEqual(slice.assetBuilds, 2)
@@ -518,7 +520,7 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         }
         let publisher = SlicePublisher(
             dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport().sealing(), sources: [slice],
-            assets: SliceAssetStore(directory: assetDir)
+            assets: SliceAssetStore(directory: assetDir, descriptors: try HubSyncState.inMemory())
         )
         try await publisher.publishOnce()
         XCTAssertEqual(slice.fullReads, 3)

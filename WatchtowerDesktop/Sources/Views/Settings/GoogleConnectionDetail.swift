@@ -6,6 +6,9 @@ import WatchtowerCore
 /// toggles, which apply across every connected Google account.
 struct GoogleConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// The organization's policy forbids this source (#608): nothing new
+    /// connects; existing accounts keep their data.
+    private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("google") }
     @Bindable var config: ConfigService
     @State private var saveError: String?
     @State private var showAddGoogleAccountSheet = false
@@ -70,6 +73,7 @@ struct GoogleConnectionDetail: View {
                                 Button("Re-login") {
                                     vm.relogin(account, daemonPolicy: appState.accountDaemonPolicy)
                                 }
+                                .managedByOrganization(sourceBlocked)
                                 .help(reloginBlocked(account.id) ?? "")
                                 .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
                             }
@@ -97,6 +101,7 @@ struct GoogleConnectionDetail: View {
                 Button("Add Google Account") {
                     showAddGoogleAccountSheet = true
                 }
+                .managedByOrganization(sourceBlocked)
                 .disabled(vm.isConnecting)
             } else {
                 Text("Loading...")

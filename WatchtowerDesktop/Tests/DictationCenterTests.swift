@@ -166,6 +166,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(runner.invocations.isEmpty, "chat mode must never invoke the cleanup CLI")
         XCTAssertFalse(sawCleaning, "chat mode must never enter the cleaning phase")
         XCTAssertEqual(center.phase, .idle)
+        XCTAssertTrue(defaults.bool(forKey: LearnInputs.dictationUsedKey), "a finished dictation is real use (Learn)")
     }
 
     /// The cleanup CLI being unreachable is a failure for idea/note, but chat
@@ -304,6 +305,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(result, DictationCleanResult(title: nil, text: ""))
         XCTAssertEqual(center.phase, .idle)
         XCTAssertTrue(runner.invocations.isEmpty, "an empty raw transcript must never reach the cleanup CLI")
+        XCTAssertFalse(defaults.bool(forKey: LearnInputs.dictationUsedKey), "nothing said is not a use (Learn)")
     }
 
     // MARK: 5. Cleanup failure

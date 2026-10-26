@@ -12,6 +12,8 @@ import WatchtowerCore
 struct OwnerAskAnswerBar: View {
     let asks: OwnerAsksViewModel
     let ask: OwnerAsk
+    /// Off under the spec review screen, whose Send and Approve answer the ask.
+    var showsVerdicts = true
     let statusLine: String
 
     var body: some View {
@@ -24,10 +26,10 @@ struct OwnerAskAnswerBar: View {
             }
             // Why the primary button is off; a review's verdict comes with
             // its button, so only what else is missing shows.
-            if let primary = actions.last, let blocker = OwnerAskPresentation.blocker(ask, draft: draft, with: primary) {
+            if showsVerdicts, let primary = actions.last, let blocker = OwnerAskPresentation.blocker(ask, draft: draft, with: primary) {
                 Text(blocker).font(.caption).foregroundStyle(.secondary)
             }
-            if ask.isOpen, let notChecked = OwnerAskPresentation.notChecked(ask, draft: draft) {
+            if showsVerdicts, ask.isOpen, let notChecked = OwnerAskPresentation.notChecked(ask, draft: draft) {
                 Text(notChecked)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -41,7 +43,7 @@ struct OwnerAskAnswerBar: View {
                         .help("Close this ask without answering; the agent goes on without it. Your note goes with it")
                     Spacer()
                     if answering { ProgressView().controlSize(.small) }
-                    ForEach(actions, id: \.verdict) { action in
+                    ForEach(showsVerdicts ? actions : [], id: \.verdict) { action in
                         answerButton(action, enabled: OwnerAskPresentation.canAnswer(ask, draft: draft, with: action, answering: answering))
                     }
                 } else {

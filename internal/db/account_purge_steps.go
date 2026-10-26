@@ -207,6 +207,10 @@ func slackSteps(s *purgeSteps, id int64) {
 	lo, hi := prefixRange(fmt.Sprintf("%d:", id))
 	inRange := func(col string) string { return col + ` >= ? AND ` + col + ` < ?` }
 
+	// Image and link descriptions before their messages, so the chunk limit
+	// bounds them (the media_items cascade would delete them uncounted).
+	// Their kb_dirty marks go with the knowledge steps below.
+	s.del("media items", "media_items", inRange("slack_channel_id"), lo, hi)
 	// Raw rows, heaviest first; FTS follows messages via messages_ad.
 	s.del("messages", "messages", inRange("channel_id"), lo, hi)
 	s.del("reactions", "reactions", inRange("channel_id"), lo, hi)
@@ -267,6 +271,8 @@ func googleSteps(s *purgeSteps, id int64, digests []int64) {
 	gmailPrefix := GmailChannelPrefix(id) + ":"
 	gLo, gHi := prefixRange(gmailPrefix)
 
+	// Descriptions before their mail (see slackSteps).
+	s.del("media items", "media_items", `gmail_account_id = ?`, id)
 	s.del("gmail messages", "gmail_messages", `account_id = ?`, id)
 
 	// Inbox: the account's Gmail threads and the calendar items of the events
@@ -315,7 +321,9 @@ func jiraSteps(s *purgeSteps, id int64, digests []int64, spaces []extSpace) {
 	// The account's Confluence spaces: documents and comments, their
 	// knowledge documents, marks and links (a key range per space), then the
 	// source rows themselves.
-	extOfAccount := `source_id IN (SELECT id FROM ext_sources WHERE jira_account_id = ?)`
+	const accountSources = `(SELECT id FROM ext_sources WHERE jira_account_id = ?)`
+	extOfAccount := `source_id IN ` + accountSources
+	s.del("confluence media items", "media_items", `ext_source_id IN `+accountSources, id)
 	s.del("confluence comments", "ext_comments", extOfAccount, id)
 	s.del("confluence documents", "ext_documents", extOfAccount, id)
 	for _, sp := range spaces {

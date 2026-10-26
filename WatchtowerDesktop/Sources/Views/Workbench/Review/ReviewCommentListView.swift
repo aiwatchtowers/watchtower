@@ -74,7 +74,7 @@ private struct ReviewCommentRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text(lines).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                lineLabel
                 Text(comment.status.rawValue.capitalized)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -101,6 +101,19 @@ private struct ReviewCommentRow: View {
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
         .onAppear { text = comment.body }
         .onChange(of: comment.body) { _, body in text = body }
+    }
+
+    /// A comment on lines of the new side: a click puts them on screen in
+    /// the diff (board #960). A removed line's or an outdated one's is text.
+    @ViewBuilder private var lineLabel: some View {
+        let label = Text(lines).font(.caption.monospacedDigit())
+        if comment.side == "new", comment.status != .outdated {
+            Button { model.focusLine(comment.startLine) } label: { label }
+                .buttonStyle(.kitQuiet)
+                .help("Show in the diff")
+        } else {
+            label.foregroundStyle(.secondary)
+        }
     }
 
     private var lines: String {

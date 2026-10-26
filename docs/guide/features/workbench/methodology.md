@@ -7,6 +7,16 @@ The methodology is the set of working rules an agent follows in a workbench: how
 Different teams want different agents. One wants the full flow of features, specs, plans and reviews. Another wants the agent to follow the repository's own rules and nothing else. The methodology lets you choose, without editing skill files by hand.
 
 ## How it works
+<!-- learn
+id: methodology-finish-whole-target
+title: Agents finish the whole target
+text: With **Finish check** on, an agent finishes only when every sub-target is closed and checked against the AI overview.
+area: development
+level: next
+kind: tip
+since: 0.25.0
+action: nav:projects
+-->
 
 Three settings apply to every session of a workbench:
 
@@ -14,7 +24,7 @@ Three settings apply to every session of a workbench:
 |---|---|---|
 | **Methodology** | `watchtower-flow` (default), `none` | `watchtower-flow` installs a second skill: features, specs and plans become targets, and work goes to `in_review` for a reviewer. `none` leaves only the core workbench skill and your folder rules. |
 | **Ask guard** | `strict` (default), `soft`, `off` | What happens when the agent ends a turn with a request in plain text. `strict` sends it back until the agent files an [ask](asks.md). `soft` sends nothing back and raises the question as an ask for you; Claude Code's question dialog works while you are in the session. `off` checks nothing and allows the agent's own question tool. |
-| **Finish check** | `on` (default), `off` | `on` sends back a turn that reports the work complete without calling `finish_session`. `off` skips the reminder, and an unfinished session ends as **Stopped** with no summary. |
+| **Finish check** | `on` (default), `off` | `on` sends back a turn that reports the work complete without calling `finish_session`, and lets the agent finish only the whole target it was started for: every sub-target closed or blocked, and its changes checked against the reviewer's AI overview. What it leaves comes to you as one ask. `off` skips both, and an unfinished session ends as **Stopped** with no summary. |
 
 Each setting comes from the first of three places that has it:
 
@@ -29,6 +39,16 @@ The file is a short frontmatter, then free text. The text is the team's rules fo
 The agent never changes these settings. If anything about them cannot be read, the session runs as strict and on, never weaker.
 
 ## Using it
+<!-- learn
+id: methodology-agent-settings
+title: Choose how strict agents are
+text: Open **Agent Settings…** in a workbench's **…** menu to pick the methodology, ask guard and finish check.
+area: development
+level: power
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 1. Open the **…** menu in the workbench's title row and choose **Agent Settings…**.
 2. Pick a value for **Methodology**, **Ask guard** and **Finish check**. **From folder file** (for **Methodology**) and **Default** (for the checks) mean "do not override", and show the current value and where it comes from.

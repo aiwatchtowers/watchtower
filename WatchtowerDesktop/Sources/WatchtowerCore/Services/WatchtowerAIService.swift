@@ -17,9 +17,11 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath,
-               model: model, provider: provider, toolMode: toolMode, readFolder: nil)
+               model: model, provider: provider, toolMode: toolMode, readFolder: nil,
+               ownerInstructions: false)
     }
 
+    // swiftlint:disable:next function_parameter_count
     package func stream(
         prompt: String,
         systemPrompt: String?,
@@ -28,7 +30,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
-        readFolder: String?
+        readFolder: String?,
+        ownerInstructions: Bool
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let processHandle = WatchtowerProcessHandle()
         return AsyncThrowingStream { continuation in
@@ -40,12 +43,12 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                     try await self.run(
                         prompt: prompt,
                         systemPrompt: systemPrompt,
-                        sessionID: sessionID,
                         dbPath: dbPath,
                         model: model,
                         provider: provider,
                         toolMode: toolMode,
                         readFolder: readFolder,
+                        ownerInstructions: ownerInstructions,
                         processHandle: processHandle,
                         continuation: continuation
                     )
@@ -100,7 +103,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
 
     /// Build the `watchtower ai query` argument list. Pulled out of `run()` so
     /// the CLI-flag mapping (in particular `--provider`) can be unit tested
-    /// without spawning a process.
+    /// without spawning a process. It never carries `--session-id`: no turn
+    /// resumes a stored provider session (#604 G11), so a `sessionID` handed
+    /// to `stream` is not sent.
     ///
     /// The argv carries ids and flags only: `--prompt-stdin` makes the CLI
     /// read the owner's message and the chat's system prompt from stdin
@@ -111,20 +116,18 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     ///
     /// `readFolder` adds `--read-folder DIR` (a workbench folder the CLI
     /// resolves, or refuses with exit 2); it never comes with a tool mode —
-    /// the CLI refuses the pair.
+    /// the CLI refuses the pair. `ownerInstructions` adds the bare
+    /// `--owner-instructions` flag (no content: the CLI reads the texts).
     package static func buildArgs(
-        sessionID: String?,
         dbPath: String?,
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
-        readFolder: String? = nil
+        readFolder: String? = nil,
+        ownerInstructions: Bool = false
     ) -> [String] {
         var args = ["ai", "query", "--prompt-stdin"]
 
-        if let sessionID, !sessionID.isEmpty {
-            args += ["--session-id", sessionID]
-        }
         if let dbPath, !dbPath.isEmpty {
             args += ["--db-path", dbPath]
         }
@@ -139,6 +142,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
         if let readFolder, !readFolder.isEmpty {
             args += ["--read-folder", readFolder]
+        }
+        if ownerInstructions {
+            args.append("--owner-instructions")
         }
         return args
     }
@@ -183,24 +189,24 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     private func run(
         prompt: String,
         systemPrompt: String?,
-        sessionID: String?,
         dbPath: String?,
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?,
+        ownerInstructions: Bool,
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
         let cliPath = try Self.findCLI()
 
         let args = Self.buildArgs(
-            sessionID: sessionID,
             dbPath: dbPath,
             model: model,
             provider: provider,
             toolMode: toolMode,
-            readFolder: readFolder
+            readFolder: readFolder,
+            ownerInstructions: ownerInstructions
         )
 
         let process = Process()

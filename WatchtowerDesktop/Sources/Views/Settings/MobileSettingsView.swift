@@ -97,6 +97,7 @@ struct MobileSettingsView: View {
                 set: { enabled in Task { await model.setEnabled(enabled) } }
             ))
             .disabled(model.toggleDisabled)
+            .managedByOrganization(model.lockedByPolicy)
             if !model.entitlementPresent {
                 Text(MobileSettingsViewModel.needsSignedBuild)
                     .foregroundStyle(.secondary)

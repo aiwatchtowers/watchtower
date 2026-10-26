@@ -189,6 +189,10 @@ final class SlicePublisher: Sendable {
     let assets: SliceAssetStore?
     /// Whether a phone is linked (`HubSyncState.hasLinkedDevice`).
     let isLinked: @Sendable () -> Bool
+    /// The kinds the organization's policy lets the hub publish (#608,
+    /// `MobileSync`); nil = every kind. A kind outside it is published as an
+    /// empty slice, so its records are deleted from the phone.
+    let allowedKinds: @Sendable () -> Set<SliceKind>?
     /// A cycle saw no phone linked, and no full cycle has run to its end
     /// since one is (false before the first cycle).
     let unlinkedAtLastCycle = OSAllocatedUnfairLock(initialState: false)
@@ -203,8 +207,10 @@ final class SlicePublisher: Sendable {
         now: @escaping @Sendable () -> Date = { Date() },
         assets: SliceAssetStore? = nil,
         isLinked: @escaping @Sendable () -> Bool = { true },
+        allowedKinds: @escaping @Sendable () -> Set<SliceKind>? = { nil },
         sendNow: @escaping @Sendable () async -> Void = {}
     ) {
+        self.allowedKinds = allowedKinds
         self.dbPool = dbPool
         self.state = state
         self.transport = transport

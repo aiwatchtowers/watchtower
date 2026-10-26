@@ -94,6 +94,8 @@ struct QuickConnectionsDetail: View {
                     .help("Add the MCP servers of your codex config (CODEX_HOME/config.toml) and ~/.claude.json as Quick Connections")
                 }
                 .disabled(vm.isBusy)
+                // Nothing to add when the policy allows no connection (#608).
+                .managedByOrganization(appState.managedPolicy.policy.allowedQuickConnections?.isEmpty == true)
                 .sheet(isPresented: $showImportSheet) {
                     ImportExternalConnectionsView(vm: vm)
                 }
@@ -161,6 +163,11 @@ struct QuickConnectionsDetail: View {
                 Text(connection.kind)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if !connection.allowed(by: appState.managedPolicy.policy) {
+                    Label(SourceBlockedNotice.title, systemImage: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if connection.status == "error", !connection.error.isEmpty {
                     Text(Self.reason(connection.error))
                         .font(.caption)
@@ -191,6 +198,9 @@ struct QuickConnectionsDetail: View {
             .toggleStyle(.switch)
             .controlSize(.mini)
             .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
+            // A connection outside the policy's list cannot be turned on;
+            // one still on can be turned off.
+            .managedByOrganization(!connection.enabled && !connection.allowed(by: appState.managedPolicy.policy))
             Button("Remove") {
                 connectionPendingRemoval = connection
             }

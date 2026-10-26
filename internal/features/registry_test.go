@@ -201,3 +201,23 @@ func TestRegistry_KnowledgeConnectors(t *testing.T) {
 	off := loadConfig(t, "knowledge:\n  connectors:\n    enabled: false\n")
 	assert.False(t, f.Enabled(off))
 }
+
+// TestRegistry_KnowledgeSearchIsAIFeature pins the Knowledge search copy
+// since images and links became knowledge (ask #576): AI describes images
+// and summarizes fetched public pages, so the entry costs medium and no
+// longer promises "no AI".
+func TestRegistry_KnowledgeSearchIsAIFeature(t *testing.T) {
+	f, ok := ByID("knowledge-search")
+	require.True(t, ok)
+	assert.Equal(t, CostMedium, f.Cost)
+	assert.Equal(t, "Keeps a search index over Slack, mail, Jira, calendar, meeting transcripts and recaps, digests, decisions and ideas, so the chat finds what you ask about on the first try. Images are described by AI and public web links are fetched and summarized, so a screenshot, a diagram or a link is found by what it shows.", f.Description)
+	assert.Equal(t, []string{
+		"The chat finds the right thread, mail or ticket by topic",
+		"Understands Russian word forms and mixed-language questions",
+		"Screenshots, diagrams and links count like text — AI describes images; links to public pages are fetched",
+	}, f.Benefits)
+	assert.NotContains(t, f.Description, "no AI")
+	for _, b := range f.Benefits {
+		assert.NotContains(t, b, "no AI")
+	}
+}

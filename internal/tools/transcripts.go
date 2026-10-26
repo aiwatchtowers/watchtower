@@ -65,6 +65,7 @@ func NewListTranscripts() *Tool {
 			"text with get_transcript.",
 		InputSchema: mustSchema[listTranscriptsArgs]("list_transcripts"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listTranscriptsArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -117,6 +118,7 @@ func NewGetTranscript() *Tool {
 			"parsed recap (summary, key decisions, action items, open questions).",
 		InputSchema: mustSchema[getTranscriptArgs]("get_transcript"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getTranscriptArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {

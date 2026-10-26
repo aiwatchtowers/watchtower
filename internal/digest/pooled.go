@@ -65,6 +65,23 @@ func (pg *PooledGenerator) Generate(ctx context.Context, systemPrompt, userMessa
 	return result, usage, sessionID, nil
 }
 
+func (pg *PooledGenerator) wrappedGenerator() Generator { return pg.inner }
+
+// GenerateWithImage is the image call of the generator pg wraps (see
+// ImageCapable), run in a worker slot like Generate.
+func (pg *PooledGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, mediaType string) (string, *Usage, error) {
+	inner, ok := ImageCapable(pg.inner)
+	if !ok {
+		return "", nil, errNotImageCapable
+	}
+	worker, err := pg.pool.Acquire(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	defer pg.pool.Release(worker)
+	return inner.GenerateWithImage(ctx, systemPrompt, userMessage, imagePath, mediaType)
+}
+
 // sessionSourceKey is the context key for the caller source label.
 type sessionSourceKey struct{}
 

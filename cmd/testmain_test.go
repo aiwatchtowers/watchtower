@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"watchtower/internal/auditlog"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -15,6 +17,7 @@ import (
 	"watchtower/internal/extract"
 	"watchtower/internal/gittest"
 	"watchtower/internal/ownerconfirm"
+	"watchtower/internal/policy"
 )
 
 // TestMain installs the db schema template cache before running tests and
@@ -55,6 +58,8 @@ import (
 // binary, which would ignore the unknown arguments and run the whole suite
 // again — so a cmd test that syncs a PDF must be served the parse here.
 func TestMain(m *testing.M) {
+	// Read tests' audit lines stay out of the machine's unified log.
+	auditlog.SetSinkForTest(func(string) {})
 	if len(os.Args) == 3 && os.Args[1] == extractPDFTextCmd.Name() {
 		if err := extract.ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
 			os.Exit(1)
@@ -68,6 +73,16 @@ func TestMain(m *testing.M) {
 		// the signed app: its subprocess trusts the peer (test binary only).
 		if os.Getenv(trustTestPeerEnv) == "1" {
 			ownerconfirm.VerifyPeer = func(context.Context, int) error { return nil }
+		}
+		// The source-guard Execute test's policy (test binary only; the
+		// shipped CLI reads managed preferences alone).
+		if raw := os.Getenv(testPolicyEnv); raw != "" {
+			var forced map[string]any
+			if err := json.Unmarshal([]byte(raw), &forced); err != nil {
+				fmt.Fprintf(os.Stderr, "testmain: %s: %v\n", testPolicyEnv, err)
+				os.Exit(1)
+			}
+			policy.SetReaderForTesting(func() map[string]any { return forced })
 		}
 		os.Exit(Execute())
 	}
@@ -127,8 +142,14 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
+	// No cmd test writes a real Time Machine exclusion (BACKUP-01); the
+	// backup_exclude tests record the calls through this seam.
+	backupExcludeApply = func([]string) []error { return nil }
 	// No test runs the owner's login shell (connections import).
 	loginShellEnv = func() map[string]string { return nil }
+	// Tests calling a command's RunE directly see it guarded, as every
+	// Execute does through cobra's initializers (#608).
+	applySourceGuards()
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

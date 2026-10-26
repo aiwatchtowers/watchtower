@@ -408,6 +408,30 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: OnboardingStateMachineV2.stepKey), "complete")
     }
 
+    /// Learn's "finished before this launch" follows the profile a launch
+    /// restores onboarding from, not only the local step read at init.
+    func testLearnOnboardingFinishedRestoredFromProfile() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try await dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com")
+            try TestDatabase.insertProfile(db, slackUserID: "google:me@example.com", onboardingDone: true)
+        }
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertTrue(appState.learnOnboardingFinishedAtLaunch)
+    }
+
+    func testLearnOnboardingNotFinishedOnAFreshInstall() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertFalse(appState.learnOnboardingFinishedAtLaunch)
+    }
+
     func testFreshInstallOpensGoals() async throws {
         let (defaults, suiteName) = try onboardingSuite()
         defer { defaults.removePersistentDomain(forName: suiteName) }

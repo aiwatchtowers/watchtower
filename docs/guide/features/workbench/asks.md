@@ -12,7 +12,7 @@ The agent files an ask through a Watchtower tool. There are three kinds, and two
 
 | Kind | What you do |
 |---|---|
-| **Review** | Read a spec, plan or design the agent wrote. Comment in the margin, then **Request changes** or **Approve**. |
+| **Review** | Read a spec, plan or design the agent wrote. Comment in the margin, then **Request changes** or **Approve**. A spec or plan also gets an independent reviewer: see [Reviewing a spec or plan](spec-review.md). |
 | **Check** | Try something by hand. Mark each step **✓ Works**, **✕ Doesn't work** (say what happened) or **– Didn't check**. |
 | **Question** | Pick an option per question, or write your own. |
 
@@ -34,8 +34,17 @@ Watchtower is careful not to talk over you:
 A workbench automation can ask you something too: a yes/no check or a question. It joins **Waiting for you** labelled "⚙ <automation> · run #N" where an agent's ask names its session, and you answer it the same way. Your answer goes back to the automation, never into a terminal: **Answer saved — the automation goes on with it**. Answered ones are under "⚙ Automations · ▸ N closed".
 
 ### The ask guard
+<!-- learn
+id: asks-ask-guard
+title: Never miss a question in the terminal
+text: A question the agent types as plain text is sent back to it to file as an ask, so it lands in your list.
+area: development
+level: power
+kind: tip
+since: 0.24.0
+-->
 
-By default (ask guard **strict**, finish check **on**), Claude Code's own question dialog is turned off in a workbench session. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The finish check reminds an agent that says its work is done to mark the session **Finished** with a short summary.
+By default (ask guard **strict**, finish check **on**), Claude Code's own question dialog is turned off in a workbench session. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The finish check sends back a turn that reports the work done without marking the session **Finished**, and lets the agent finish only the whole target it was started for, its changes checked against the reviewer's AI overview; what it leaves comes to you as one ask.
 
 The methodology can change this; see [Methodology](methodology.md) and **Agent Settings…**. With **soft**, Claude Code's question dialog works while you are in the session, and plain-text questions are recorded instead of bounced back. With **off**, nothing is checked. The finish check can be switched off on its own.
 
@@ -50,6 +59,16 @@ While a half-typed reply sits in Claude Code's input, the question waits, for at
 ## Using it
 
 ### Find your asks
+<!-- learn
+id: asks-waiting-for-you
+title: Answer what the agent asks
+text: Open asks from every session wait in **Waiting for you** at the top of the sessions panel.
+area: development
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:projects
+-->
 
 Open asks wait, oldest first, in **Waiting for you (N)** at the top of the sessions panel. Each row shows the kind, the title, the ask number (`#145`), what to do next (**Review doc**, **Answer 2 questions**, **Run 3 checks**), the session and its age. Each session row shows its open count, and **▸ N closed** lists its past asks. Asks filed from your own terminal app are grouped as **Outside the app**.
 
@@ -65,10 +84,30 @@ When the agent writes `ask #145` in the terminal, that text is a link. Hover it 
 **Later** (or ×) closes the drawer and keeps everything you entered. It stays closed until the agent files another Full ask, and a banner over the terminal says **Agent asks: #N …** with **Open**.
 
 ### Answer a Quick ask
+<!-- learn
+id: asks-quick-answer
+title: Answer a Quick ask in one click
+text: A short question shows as buttons over the terminal; click one, or **Reply…** to write your own.
+area: development
+level: next
+kind: tip
+since: 0.24.0
+action: nav:projects
+-->
 
 Click one of the option buttons on the banner. The option the agent recommends comes first and is highlighted. **Reply…** swaps the buttons for a one-line field (at most 500 characters), and **Details** opens the ask in the drawer.
 
 ### Use the keyboard
+<!-- learn
+id: asks-keyboard
+title: Go to the oldest ask with ⌃⌘A
+text: Press ⌃⌘A in the workbench window, then J and K to move between asks and Return to open one.
+area: development
+level: next
+kind: shortcut
+since: 0.24.0
+action: hotkey:waiting-for-you
+-->
 
 Press **⌃⌘A** (Workbench › **Show Waiting for You**) anywhere in the workbench window to put the keyboard on the oldest ask. It is the only key that takes the keyboard from the terminal. After that:
 
