@@ -116,6 +116,28 @@ func TestGatherProjects_ListsOpenOwnerAsks(t *testing.T) {
 	assert.True(t, pipe.shown.workbenches[pid])
 }
 
+// A review ask hidden in the spec review author loop is the reviewer's and
+// the author's, not the owner's: the morning brief never lists it.
+func TestGatherProjects_SkipsSpecLoopAsks(t *testing.T) {
+	d := testDB(t)
+	pid := seedWorkbench(t, d, "acme")
+	res, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title, doc_path) VALUES (?, 'review', 'Hidden spec review', 'docs/spec.md')`, pid)
+	require.NoError(t, err)
+	hidden, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES (?, 'running', '2026-10-26T10:00:00Z', 'author')`, hidden)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'question', 'Visible question')`, pid)
+	require.NoError(t, err)
+
+	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
+	pipe.shown = newShownIDs()
+	ctx, _ := pipe.gatherWorkbenches(time.Now().Add(-24 * time.Hour))
+
+	assert.Contains(t, ctx, "Open asks waiting for the owner (1): Visible question")
+	assert.NotContains(t, ctx, "Hidden spec review")
+}
+
 func TestBriefingDailyV11_NamesOpenAsks(t *testing.T) {
 	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.BriefingDaily], 11, "the reworded rule must auto-upgrade stored v10 rows")
 	assert.Contains(t, prompts.Defaults[prompts.BriefingDaily], "open asks waiting for the owner")

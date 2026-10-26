@@ -547,7 +547,7 @@ final class FastLaneTests: XCTestCase {
     /// other table's writes publish on the full tick, which a nudge could
     /// not bring forward.
     func testTheDesktopsOwnAskWritesNudgeTheAskKinds() async throws {
-        XCTAssertEqual(FastLane.observedTables.map(\.table), ["owner_asks", "permission_requests"])
+        XCTAssertEqual(FastLane.observedTables.map(\.table), ["owner_asks", "spec_reviews", "permission_requests"])
         XCTAssertTrue(
             FastLane.observedTables.allSatisfy { $0.kinds.isSubset(of: SlicePublisher.urgentKinds) },
             "an observation nudges only kinds the fast lane keeps"
@@ -664,5 +664,10 @@ final class FastLaneTests: XCTestCase {
         XCTAssertTrue(lane.isRunning)
         companion.stop()
         XCTAssertFalse(lane.isRunning)
+    }
+
+    func testFastLaneObservesSpecReviews() {
+        let entry = FastLane.observedTables.first { $0.table == "spec_reviews" }
+        XCTAssertEqual(entry?.kinds, [.ownerAsk, .askAlert], "a loop flip hides or shows an ask without touching owner_asks")
     }
 }

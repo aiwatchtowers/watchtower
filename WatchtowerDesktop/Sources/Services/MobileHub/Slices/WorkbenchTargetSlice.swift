@@ -230,7 +230,7 @@ private struct TargetFacts {
         var facts = Self()
         for row in try Row.fetchAll(db, sql: """
             SELECT target_id, COUNT(*) AS n FROM owner_asks
-            WHERE status = 'open' AND target_id IS NOT NULL GROUP BY target_id
+            WHERE status = 'open' AND \(OwnerAskQueries.notInSpecLoop("owner_asks")) AND target_id IS NOT NULL GROUP BY target_id
             """) {
             facts.openAsks[row["target_id"]] = row["n"]
         }

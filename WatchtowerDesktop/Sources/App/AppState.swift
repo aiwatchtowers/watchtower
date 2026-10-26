@@ -376,6 +376,9 @@ final class AppState {
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
+    /// The spec review author loop (#1121): each finished round typed into
+    /// the author's session, and the session rows' round line.
+    private(set) var specReviewLoopCenter: SpecReviewLoopCenter?
     /// The Analytics pane's `agents report` runs and Turn On (#298).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
@@ -726,6 +729,7 @@ final class AppState {
                     self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    self?.specReviewLoopCenter?.stop()
                     // An agents report / enable child gets SIGTERM.
                     self?.agentAnalyticsCenter?.stop()
                     // The owner is in no session once the app is gone.
@@ -1807,6 +1811,10 @@ final class AppState {
         reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
         reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
         vm.sessionReports = reports
+        let specReviewLoop = SpecReviewLoopCenter(
+            dbPool: dbPool, delivery: lineDelivery, cli: WorkbenchCLI(runner: cliRunner ?? UnresolvedCLIRunner())
+        )
+        vm.specReviewLoop = specReviewLoop
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
         workbenchesViewModel?.stop()
         workbenchesViewModel = vm
@@ -1817,6 +1825,8 @@ final class AppState {
         sessionLineDelivery = lineDelivery
         sessionReportCenter?.stop()
         sessionReportCenter = reports
+        specReviewLoopCenter?.stop()
+        specReviewLoopCenter = specReviewLoop
         replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload; off screen, once a window shows).
         notices.start()
@@ -1824,6 +1834,7 @@ final class AppState {
         vm.asks.start()
         agentStates.start()
         reports.start()
+        specReviewLoop.start()
         ownerPresenceCenter?.start()
         ownerAwayCenter.start()
         chatQuestionEscalator?.start()

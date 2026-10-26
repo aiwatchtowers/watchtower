@@ -16,6 +16,18 @@ final class OwnerAskPromptTests: XCTestCase {
         }
     }
 
+    func testSpecReviewLineMatchesGoFixtures() throws {
+        let files = try OwnerAskFixtures.files("spec_review_lines")
+        XCTAssertGreaterThanOrEqual(files.count, 2)
+        for file in files {
+            let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: file.data) as? [String: Any], file.name)
+            let id = try XCTUnwrap((fixture["ask_id"] as? NSNumber)?.int64Value, file.name)
+            let round = try XCTUnwrap((fixture["round"] as? NSNumber)?.intValue, file.name)
+            let items = try XCTUnwrap((fixture["items"] as? NSNumber)?.intValue, file.name)
+            XCTAssertEqual(OwnerAskPrompt.specReviewLine(askID: id, round: round, items: items), fixture["line"] as? String, file.name)
+        }
+    }
+
     func testTheLineIsOneLineWithNoControlCharacters() {
         let line = OwnerAskPrompt.line(id: 1, kind: .check, answer: OwnerAskAnswer(checklist: [
             .init(id: "1", state: .broken, note: "a\nb"), .init(id: "2", state: .skipped)

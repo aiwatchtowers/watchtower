@@ -7,7 +7,7 @@ import GRDB
 /// links and numbers have their own reads.
 package enum HomeQueries {
     /// Tables the Workbench read uses, for HomeCenter's ValueObservation region.
-    package static let observedTables: [String] = ["owner_asks", "projects", "instruction_suggestions"]
+    package static let observedTables: [String] = ["owner_asks", "spec_reviews", "projects", "instruction_suggestions"]
 
     /// Both sources in one read. A read that throws is logged (NSLog, source
     /// + message) and marks the data failed; an unreadable ask does too, the

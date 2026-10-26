@@ -199,8 +199,8 @@ func (v *validator) unanchoredChapter(ref string) string {
 }
 
 // Parse validates a reviewer reply against what it may quote. A wrong enum, a
-// missing or unfound anchor, an unknown source ref, an unreadable evidence
-// path, a duplicate or an entry over the cap drops that entry (counted in
+// missing or unfound anchor, an unknown source ref or verdict key, an
+// unreadable evidence path, a duplicate or an entry over the cap drops that entry (counted in
 // Dropped); malformed JSON or an empty summary fails the whole call.
 func Parse(raw string, src Sources, t DocType) (Result, error) {
 	js, err := prompts.ExtractJSONObject(raw)
@@ -239,6 +239,7 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 		BlindSpots:   v.blindSpots(in.BlindSpots),
 		Checks:       v.checks(in.Checks),
 		Resolved:     v.resolved(in.Resolved),
+		Verdicts:     v.verdicts(in.Verdicts),
 		Idea:         v.idea(in.Idea),
 		Notes:        []string{},
 	}
@@ -381,6 +382,25 @@ func (v *validator) resolved(in []Resolved) []Resolved {
 			continue
 		}
 		out = append(out, r)
+	}
+	return out
+}
+
+// verdicts keeps one verdict per previous open item: a key that is not one
+// of PrevOpenKeys, a repeated key or a verdict outside resolved | disputed |
+// open is dropped.
+func (v *validator) verdicts(in []Verdict) []Verdict {
+	var out []Verdict
+	seen := map[string]bool{}
+	for _, x := range in {
+		x.Key, x.Note = strings.TrimSpace(x.Key), field(x.Note)
+		if !v.src.PrevOpenKeys[x.Key] || seen[x.Key] || len(out) >= maxVerdicts ||
+			!(x.Verdict == VerdictResolved || x.Verdict == VerdictDisputed || x.Verdict == VerdictOpen) {
+			v.drop()
+			continue
+		}
+		seen[x.Key] = true
+		out = append(out, x)
 	}
 	return out
 }

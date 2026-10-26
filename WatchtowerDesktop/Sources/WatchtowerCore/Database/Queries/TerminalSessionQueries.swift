@@ -139,6 +139,7 @@ package enum TerminalSessionQueries {
     package static func fetchAgentStates(_ db: Database, liveIDs: [Int64]) throws -> [SessionAgentStateRow] {
         let marks = liveIDs.isEmpty ? "NULL" : databaseQuestionMarks(count: liveIDs.count)
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
+        let open = OwnerAskQueries.notInSpecLoop("a")
         return try SessionAgentStateRow.fetchAll(
             db,
             sql: """
@@ -146,13 +147,13 @@ package enum TerminalSessionQueries {
                        s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
                        s.agent_background, s.agent_background_at, s.chat_question, s.chat_question_at,
                        \(cwdAt) AS agent_cwd_at,
-                       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open') AS open_asks,
-                       (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open')
+                       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open)) AS open_asks,
+                       (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open))
                            AS oldest_open_ask_id,
                        (SELECT COUNT(*) FROM owner_asks a
-                        WHERE a.session_id = s.id AND a.status = 'open' AND a.kind = 'question') AS open_question_asks,
+                        WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'question') AS open_question_asks,
                        (SELECT COUNT(*) FROM owner_asks a
-                        WHERE a.session_id = s.id AND a.status = 'open' AND a.kind = 'review') AS open_review_asks
+                        WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'review') AS open_review_asks
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
                 WHERE (s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks))

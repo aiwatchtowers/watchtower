@@ -107,12 +107,13 @@ final class WorkAlertSliceTests: XCTestCase {
         title: String = "Which way?",
         kind: String = "question",
         payload: String = "{}",
-        sessionID: Int64? = nil
+        sessionID: Int64? = nil,
+        docPath: String = ""
     ) throws -> Int64 {
         let created = dbStamp(createdAt ?? now)
         return try dbPool.write {
             try TestDatabase.insertOwnerAsk(
-                $0, projectID: project, sessionID: sessionID, kind: kind, title: title, payload: payload, createdAt: created
+                $0, projectID: project, sessionID: sessionID, kind: kind, title: title, payload: payload, docPath: docPath, createdAt: created
             )
         }
     }
@@ -662,5 +663,24 @@ final class WorkAlertSliceTests: XCTestCase {
         XCTAssertEqual(payload.title, "acme")
         XCTAssertFalse(payload.quick)
         XCTAssertNil(payload.sessionID)
+    }
+
+    func testAskAlertSkipsAuthorLoop() async throws {
+        setAway(false)
+        let project = try workbench()
+        let hidden = try ask(in: project, kind: "review", docPath: "docs/spec.md")
+        let shown = try ask(in: project)
+        try await dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES (?, 'running', '2026-10-26T10:00:00Z', 'author')
+                """, arguments: [hidden])
+        }
+        let transport = StubHubTransport()
+        let publisher = publisher(transport)
+        try await publisher.publishOnce()
+        advance(300)
+        setAway(true)
+        try await publisher.publishOnce()
+        XCTAssertEqual(try savedAlerts(transport), ["ask_alert-ask-\(shown)"])
     }
 }

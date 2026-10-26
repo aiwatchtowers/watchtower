@@ -29,6 +29,12 @@ extension WorkbenchesViewModel {
         Self.reportLine(sessionReports?.summaries[projectID], sessionID: sessionID)
     }
 
+    /// A session row's spec review author loop line, "Spec review: round 2
+    /// of 3" (#1121); nil when no open ask of the session is in the loop.
+    func specReviewLine(sessionID: Int64) -> String? {
+        specReviewLoop?.progress[sessionID].map(SpecReviewLoopCenter.progressLine(round:))
+    }
+
     /// The line from `snapshot`: the last good summary, marked stale when the
     /// run after it failed. Nil before any run succeeded, for a session the
     /// summary does not list, or when there is nothing to say.

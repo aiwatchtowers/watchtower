@@ -66,11 +66,23 @@ package struct WorkbenchAskRows: Equatable, Sendable {
 /// and `delivered`; the Desktop's only write is `open → answered` with the
 /// answer, guarded on `status = 'open'` (`answer`).
 package enum OwnerAskQueries {
+    /// SQL predicate that drops the hidden asks of the spec review author
+    /// loop (`spec_reviews.loop = 'author'`), which stay `open` but are the
+    /// reviewer/author's, never the owner's. Every owner-facing read of
+    /// `owner_asks` carries it with its own table alias.
+    package static func notInSpecLoop(_ alias: String) -> String {
+        "NOT EXISTS (SELECT 1 FROM spec_reviews sr WHERE sr.ask_id = \(alias).id AND sr.loop = 'author')"
+    }
+
     /// The workbench's open asks, oldest first, read row by row.
     package static func openAsks(_ db: Database, projectID: Int64) throws -> OwnerAskRows {
         try OwnerAskRows.fetch(
             db,
-            sql: "SELECT * FROM owner_asks WHERE project_id = ? AND status = 'open' ORDER BY created_at, id",
+            sql: """
+                SELECT * FROM owner_asks
+                WHERE project_id = ? AND status = 'open' AND \(Self.notInSpecLoop("owner_asks"))
+                ORDER BY created_at, id
+                """,
             arguments: [projectID]
         )
     }
@@ -83,7 +95,7 @@ package enum OwnerAskQueries {
         let rows = try Row.fetchAll(db, sql: """
             SELECT a.*, p.name AS workbench_name FROM owner_asks a
             JOIN projects p ON p.id = a.project_id
-            WHERE a.status = 'open'
+            WHERE a.status = 'open' AND \(Self.notInSpecLoop("a"))
             ORDER BY a.created_at, a.id
             """)
         for row in rows {
@@ -109,7 +121,7 @@ package enum OwnerAskQueries {
             db,
             sql: """
                 SELECT * FROM owner_asks
-                WHERE project_id = ? AND session_id IS ? AND status != 'open'
+                WHERE project_id = ? AND session_id IS ? AND status != 'open' AND \(Self.notInSpecLoop("owner_asks"))
                   AND (session_id IS NOT NULL OR (automation_run_id IS NOT NULL) = ?)
                 ORDER BY created_at DESC, id DESC
                 """,
@@ -126,6 +138,17 @@ package enum OwnerAskQueries {
         )
     }
 
+    /// `ask(_:id:projectID:)` for an owner surface (a terminal's `ask #N`
+    /// link, a stack row, a notice): nil for an ask hidden in the spec
+    /// review author loop, which is never the owner's to open.
+    package static func visibleAsk(_ db: Database, id: Int64, projectID: Int64) throws -> OwnerAsk? {
+        try OwnerAsk.fetchOne(
+            db,
+            sql: "SELECT * FROM owner_asks WHERE id = ? AND project_id = ? AND \(Self.notInSpecLoop("owner_asks"))",
+            arguments: [id, projectID]
+        )
+    }
+
     /// How many answered, delivered and withdrawn asks each session of the
     /// workbench has; the nil key counts the asks filed from outside the app.
     /// The session-less asks an automation run filed are counted by
@@ -135,7 +158,7 @@ package enum OwnerAskQueries {
             db,
             sql: """
                 SELECT session_id, COUNT(*) FROM owner_asks
-                WHERE project_id = ? AND status != 'open'
+                WHERE project_id = ? AND status != 'open' AND \(Self.notInSpecLoop("owner_asks"))
                   AND (session_id IS NOT NULL OR automation_run_id IS NULL)
                 GROUP BY session_id
                 """,
@@ -153,7 +176,7 @@ package enum OwnerAskQueries {
             db,
             sql: """
                 SELECT COUNT(*) FROM owner_asks
-                WHERE project_id = ? AND status != 'open'
+                WHERE project_id = ? AND status != 'open' AND \(Self.notInSpecLoop("owner_asks"))
                   AND session_id IS NULL AND automation_run_id IS NOT NULL
                 """,
             arguments: [projectID]
@@ -180,7 +203,7 @@ package enum OwnerAskQueries {
             db,
             sql: """
                 SELECT id, title, status, withdrawn_reason FROM owner_asks
-                WHERE project_id = ? AND target_id = ?
+                WHERE project_id = ? AND target_id = ? AND \(Self.notInSpecLoop("owner_asks"))
                 ORDER BY created_at DESC, id DESC
                 """,
             arguments: [projectID, targetID]
@@ -200,7 +223,7 @@ package enum OwnerAskQueries {
         try db.execute(
             sql: """
                 UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = ?
-                WHERE id = ? AND project_id = ? AND status = 'open'
+                WHERE id = ? AND project_id = ? AND status = 'open' AND \(Self.notInSpecLoop("owner_asks"))
                 """,
             arguments: [try answer.encoded(), timestamp(date), askID, projectID]
         )

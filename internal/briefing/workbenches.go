@@ -83,7 +83,7 @@ func (p *Pipeline) workbenchActivity(workbenchID int64, sinceTS string) (workben
 	if err != nil {
 		return a, fmt.Errorf("comments: %w", err)
 	}
-	open, err := p.db.ListOwnerAsks(workbenchID, db.OwnerAskFilter{Statuses: []string{"open"}})
+	open, err := p.db.ListOwnerAsks(workbenchID, db.OwnerAskFilter{Statuses: []string{"open"}, ExcludeSpecLoop: true})
 	if err != nil {
 		return a, fmt.Errorf("asks: %w", err)
 	}
