@@ -71,31 +71,12 @@ func (p *Proposer) logf(format string, args ...any) {
 // minDistinctSources sources, means no model call. A model or parse error
 // writes nothing and is returned. written counts the new proposals.
 func (p *Proposer) Run(ctx context.Context, in Inputs) (written int, usage *digest.Usage, err error) {
-	slots := maxOpen - len(in.Open)
-	if slots <= 0 || signalSources(in.Signals) < minDistinctSources {
-		return 0, nil, nil
-	}
-	tmpl, _, perr := prompts.Resolve(prompts.New(p.DB, nil), prompts.CoachPropose, "")
-	if perr != nil {
-		p.logf("coach: using the default prompt: %v", perr)
-	}
-	raw, usage, _, err := p.Gen.Generate(digest.WithSource(ctx, proposeSource), tmpl, buildUser(in, slots, p.Lang), "")
-	if err != nil {
-		return 0, usage, fmt.Errorf("coach proposals: generating: %w", err)
-	}
-	props, err := Validate(raw, in)
-	if err != nil {
-		return 0, usage, err
-	}
-	known, err := p.DB.CoachFingerprints()
+	props, usage, err := p.Preview(ctx, in)
 	if err != nil {
 		return 0, usage, err
 	}
 	now := p.Now()
 	for _, pr := range props {
-		if _, ok := known[pr.Fingerprint]; ok {
-			continue // superseded or otherwise known: never revived
-		}
 		id, err := p.DB.InsertCoachProposal(pr, now)
 		if err != nil {
 			return written, usage, err
@@ -106,6 +87,39 @@ func (p *Proposer) Run(ctx context.Context, in Inputs) (written int, usage *dige
 	}
 	p.logf("coach: %d proposal(s) valid, %d written", len(props), written)
 	return written, usage, nil
+}
+
+// Preview does everything Run does except writing: the model call and the
+// validation, minus proposals whose fingerprint is already known. It is the
+// CLI's dry run.
+func (p *Proposer) Preview(ctx context.Context, in Inputs) ([]db.CoachProposal, *digest.Usage, error) {
+	slots := maxOpen - len(in.Open)
+	if slots <= 0 || signalSources(in.Signals) < minDistinctSources {
+		return nil, nil, nil
+	}
+	tmpl, _, perr := prompts.Resolve(prompts.New(p.DB, nil), prompts.CoachPropose, "")
+	if perr != nil {
+		p.logf("coach: using the default prompt: %v", perr)
+	}
+	raw, usage, _, err := p.Gen.Generate(digest.WithSource(ctx, proposeSource), tmpl, buildUser(in, slots, p.Lang), "")
+	if err != nil {
+		return nil, usage, fmt.Errorf("coach proposals: generating: %w", err)
+	}
+	props, err := Validate(raw, in)
+	if err != nil {
+		return nil, usage, err
+	}
+	known, err := p.DB.CoachFingerprints()
+	if err != nil {
+		return nil, usage, err
+	}
+	var out []db.CoachProposal
+	for _, pr := range props {
+		if _, ok := known[pr.Fingerprint]; !ok { // superseded or otherwise known: never revived
+			out = append(out, pr)
+		}
+	}
+	return out, usage, nil
 }
 
 // reply is the model's JSON.

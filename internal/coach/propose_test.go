@@ -289,3 +289,16 @@ func TestProposer_RunWritesValidProposals(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, n)
 }
+
+func TestProposer_PreviewWritesNothing(t *testing.T) {
+	d := openDBs(t)
+	gen := &countingGen{out: fixture(t, "propose_slots.json")}
+	p := &Proposer{DB: d.DB, Gen: gen, Now: func() time.Time { return sigNow }, Logger: log.New(&bytes.Buffer{}, "", 0)}
+
+	props, _, err := p.Preview(context.Background(), proposeInputs())
+	require.NoError(t, err)
+	assert.Len(t, props, 3)
+	open, err := d.ListCoachProposals()
+	require.NoError(t, err)
+	assert.Empty(t, open, "a preview stores nothing")
+}
