@@ -16,14 +16,18 @@ final class OwnerAwayBox: @unchecked Sendable {
 /// Follows whether the owner is away from the Mac (`OwnerAwayPolicy`) and
 /// mirrors it into an `OwnerAwayBox` for the phone alert gate. Re-evaluates
 /// on the lock/unlock, display sleep/wake and session active/resign
-/// notifications (so lock and return are seen at once) and on a 15 s timer
-/// (idleness raises no notification). None of the inputs needs a permission.
+/// notifications (so lock and return are seen at once) and on a timer
+/// (idleness and input raise no notification): every 15 s while present,
+/// every second while away, so input brings the owner back at once.
+/// None of the inputs needs a permission.
 /// The box is written before `onChange` fires. Owned by `AppState`, one per
 /// app (`AppState.ownerAwayCenter`, never rebuilt).
 @MainActor
 @Observable
 final class OwnerAwayCenter {
     nonisolated static let pollInterval: TimeInterval = 15
+    /// While away: a return by input (no notification) is seen within a second.
+    nonisolated static let awayPollInterval: TimeInterval = 1
 
     struct Inputs {
         var screenLocked: () -> Bool
@@ -117,9 +121,11 @@ final class OwnerAwayCenter {
         cancelPoll = nil
     }
 
+    /// Replaces the pending poll: one is pending at a time, at the interval the current state wants.
     private func scheduleNextPoll() {
         guard following else { return }
-        cancelPoll = schedule(Self.pollInterval) { [weak self] in
+        cancelPoll?()
+        cancelPoll = schedule(isAway ? Self.awayPollInterval : Self.pollInterval) { [weak self] in
             guard let self, self.following else { return }
             self.screenLocked = self.inputs.screenLocked()
             self.evaluate()
@@ -140,6 +146,7 @@ final class OwnerAwayCenter {
         isAway = away
         box.write(away)
         onChange?(away)
+        scheduleNextPoll()
     }
 }
 

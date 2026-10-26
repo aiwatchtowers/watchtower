@@ -28,6 +28,7 @@ final class OwnerAwayCenterTests: XCTestCase {
     private var center: OwnerAwayCenter!
     private var changes: [Bool] = []
     private var timers: [(due: TimeInterval, fire: @MainActor () -> Void)] = []
+    private var requested: [TimeInterval] = []
     private var now: TimeInterval = 0
 
     override func setUp() async throws {
@@ -36,6 +37,7 @@ final class OwnerAwayCenterTests: XCTestCase {
         box = OwnerAwayBox()
         changes = []
         timers = []
+        requested = []
         now = 0
         let sources = OwnerPresenceCenter.NotificationSources(
             app: notifications, workspace: notifications, distributed: notifications
@@ -52,6 +54,7 @@ final class OwnerAwayCenterTests: XCTestCase {
 
     private func schedule(_ seconds: TimeInterval, _ fire: @escaping @MainActor () -> Void) -> () -> Void {
         let due = now + seconds
+        requested.append(seconds)
         timers.append((due, fire))
         return { [weak self] in self?.timers.removeAll { $0.due == due } }
     }
@@ -64,6 +67,29 @@ final class OwnerAwayCenterTests: XCTestCase {
             next.fire()
         }
         now = end
+    }
+
+    /// Input raises no notification, so while away the poll runs every second: the owner is back within a second.
+    func testInputWhileAwayIsSeenOnTheNextOneSecondTick() {
+        fake.idle = 200
+        center.start()
+        XCTAssertTrue(center.isAway)
+        XCTAssertEqual(requested.last, 1, "polls every second while away")
+
+        fake.idle = 0
+        advance(1)
+        XCTAssertFalse(center.isAway)
+        XCTAssertFalse(box.read())
+        XCTAssertEqual(requested.last, 15, "back to the 15 s poll once present")
+    }
+
+    func testTurningAwayByNotificationShortensThePoll() {
+        center.start()
+        XCTAssertEqual(requested.last, 15)
+        fake.locked = true
+        notifications.post(name: OwnerPresenceCenter.screenLockedNotification, object: nil)
+        XCTAssertEqual(requested.last, 1)
+        XCTAssertEqual(timers.count, 1, "one poll pending, never two")
     }
 
     func testLockNotificationTurnsAwayAtOnce() {
