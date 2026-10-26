@@ -34,7 +34,7 @@ struct CloudKitSubscriptionSaver: SubscriptionSaving {
 
 /// One hub's work-alert push subscription (D14): registered while the phone's "When work stops" switch is on, removed
 /// when it is off. A private-scope hub gets the `WatchtowerSignal` query subscription (saving by ID replaces, so a
-/// repeat is harmless); a shared-scope hub has none, its alerts ride the sync engine's own silent push.
+/// repeat is harmless); a shared-scope hub has none, so that phone gets no work alerts yet (ask #622).
 @MainActor
 final class AlertSubscriptionRegistrar {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AlertSubscription")

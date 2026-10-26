@@ -93,32 +93,70 @@ final class AlertSubscriptionTests: XCTestCase {
         XCTAssertTrue(settings.workAlerts)
     }
 
-    /// Calls finish in reverse order of their start; the last request still decides the end state.
-    private actor SlowSaver: SubscriptionSaving {
+    @MainActor
+    private final class IssuedCount {
+        var value = 0
+    }
+
+    /// Holds every CloudKit call until the test opens it, so later requests are issued while the first is in flight.
+    private actor GatedSaver: SubscriptionSaving {
+        private(set) var calls: [String] = []
         private(set) var live = false
-        private var calls = 0
+        private var open = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+
         func save(_ subscription: CKSubscription) async throws {
-            calls += 1
-            try? await Task.sleep(for: .milliseconds(calls.isMultiple(of: 2) ? 5 : 40))
+            calls.append("save")
+            await gate()
             live = true
         }
+
         func delete(id: CKSubscription.ID) async throws {
-            calls += 1
-            try? await Task.sleep(for: .milliseconds(calls.isMultiple(of: 2) ? 5 : 40))
+            calls.append("delete")
+            await gate()
             live = false
+        }
+
+        func openGate() {
+            open = true
+            waiting.forEach { $0.resume() }
+            waiting = []
+        }
+
+        private func gate() async {
+            guard !open else { return }
+            await withCheckedContinuation { waiting.append($0) }
         }
     }
 
-    func testRapidTogglesEndInTheLastRequestedState() async {
-        let saver = SlowSaver()
+    /// on, off, on, off, issued in that order while the first save is still in flight: the run that follows it
+    /// applies the newest request, the ones in between cost no CloudKit call, and the end state is the last request.
+    func testRapidTogglesEndInTheLastRequestedState() async throws {
+        let saver = GatedSaver()
         let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .private, saver: saver)
-        async let one: Void = registrar.apply(enabled: true)
-        async let two: Void = registrar.apply(enabled: false)
-        async let three: Void = registrar.apply(enabled: true)
-        async let four: Void = registrar.apply(enabled: false)
-        _ = await (one, two, three, four)
-        let live = await saver.live
-        XCTAssertFalse(live)
+        let issued = IssuedCount()
+        var calls: [Task<Void, Never>] = []
+        for enabled in [true, false, true, false] {
+            // The task's body and `apply`'s synchronous start (recording the request) run in one main-actor job,
+            // so once the count moves this request is recorded, after the ones before it.
+            calls.append(Task { @MainActor in
+                issued.value += 1
+                await registrar.apply(enabled: enabled)
+            })
+            try await poll({ issued.value == calls.count }, "request \(calls.count) was not issued")
+        }
+        while await saver.calls.isEmpty {
+            await Task.yield()
+        }
+        let inFlight = await saver.calls
+        XCTAssertEqual(inFlight, ["save"], "only the first request reached CloudKit so far")
+
+        await saver.openGate()
+        for call in calls { await call.value }
+
+        let (live, made) = await (saver.live, saver.calls)
+        XCTAssertFalse(live, "the last request (off) wins")
+        XCTAssertEqual(made, ["save", "delete"], "one run for the in-flight request, one for the newest")
     }
 
     func testForgettingAHubDeletesItsSubscription() async {
