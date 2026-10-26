@@ -184,6 +184,7 @@ type Daemon struct {
 	lastIdeas                  time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
 	lastInstructionSuggestions time.Time // when the instruction suggestion miner last ran (once per day)
 	lastCoach                  time.Time // when the agent coach last ran (weekly, no catch-up)
+	lastCoachFailed            time.Time // when the coach's last run failed (retried a day later)
 	lastIdeasLockSkip          time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
 	lastStreams                time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
 	lastStreamsLockSkip        time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)

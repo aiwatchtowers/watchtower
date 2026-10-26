@@ -59,25 +59,35 @@ func TestPhaseCoach_WeeklyStamp(t *testing.T) {
 	assert.Equal(t, coachCalls{2, 2}, *c)
 }
 
-func TestPhaseCoach_ModelErrorRetriesNextCycle(t *testing.T) {
+func TestPhaseCoach_ModelErrorRetriesTomorrow(t *testing.T) {
 	d, _ := coachDaemon(t)
 	c := stubCoach(t, errors.New("boom"))
 
 	d.phaseCoach(context.Background())
 	assert.True(t, d.lastCoach.IsZero(), "a failed propose does not burn the week")
 	assert.NoFileExists(t, d.lastCoachPath())
+	assert.FileExists(t, d.lastCoachFailedPath())
 	d.phaseCoach(context.Background())
-	assert.Equal(t, 2, c.propose, "the next cycle retries")
+	assert.Equal(t, 1, c.propose, "not retried in the next cycle")
+
+	// The failure stamp survives a restart.
+	d.lastCoachFailed = time.Time{}
+	d.loadLastCoach()
+	d.phaseCoach(context.Background())
+	assert.Equal(t, 1, c.propose, "nor after a restart the same day")
 
 	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
 		c.propose++
 		return 0, nil, nil
 	}
+	d.lastCoachFailed = time.Now().Add(-coachRetryAfter - time.Minute)
 	d.phaseCoach(context.Background())
-	assert.False(t, d.lastCoach.IsZero(), "a completed propose stamps")
+	assert.Equal(t, 2, c.propose, "retried a day later")
+	assert.False(t, d.lastCoach.IsZero(), "a completed propose stamps the week")
 	assert.FileExists(t, d.lastCoachPath())
+	assert.NoFileExists(t, d.lastCoachFailedPath(), "and clears the failure")
 	d.phaseCoach(context.Background())
-	assert.Equal(t, 3, c.propose)
+	assert.Equal(t, 2, c.propose)
 }
 
 func TestPhaseCoach_JudgeErrorStillStamps(t *testing.T) {
@@ -125,6 +135,8 @@ func TestPhaseCoach_CancelledRunDoesNotStamp(t *testing.T) {
 	d.phaseCoach(ctx)
 	assert.True(t, d.lastCoach.IsZero(), "a cancelled run keeps the week")
 	assert.NoFileExists(t, d.lastCoachPath())
+	assert.True(t, d.lastCoachFailed.IsZero(), "a cancelled run is not a failure")
+	assert.NoFileExists(t, d.lastCoachFailedPath())
 
 	d.phaseCoach(ctx) // entry on a cancelled ctx is a no-op
 	assert.Equal(t, 1, c.propose)

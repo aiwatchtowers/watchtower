@@ -485,12 +485,11 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	detail := "Judge the accepted proposals, read the last weeks' signals and ask the model for new proposals (nothing is applied)."
-	if coachFlagDryRun {
-		detail = "Ask the model for proposals and print them; nothing is written."
-	}
-	if err := confirmWithOwner("run the coach", detail); err != nil {
-		return nil, err
+	if !coachFlagDryRun { // a dry run writes nothing: the marker refusal is enough
+		detail := "Judge the accepted proposals, read the last weeks' signals and ask the model for new proposals (nothing is applied)."
+		if err := confirmWithOwner("run the coach", detail); err != nil {
+			return nil, err
+		}
 	}
 	now := time.Now()
 	res := coachRunJSON{OK: true, DryRun: coachFlagDryRun, Proposals: []coachProposalJSON{}}

@@ -110,6 +110,17 @@ func TestCoachOwnerVerbs_NeedTheDesktopsConfirmation(t *testing.T) {
 		})
 	}
 
+	t.Run("a dry run needs no Desktop", func(t *testing.T) {
+		coachSetup(t)
+		reqs := withOwnerDesktop(t, ownerconfirm.Reply{}, fmt.Errorf("%w: test", ownerconfirm.ErrNoDesktop))
+		prev := coachGeneratorFactory
+		coachGeneratorFactory = func(*config.Config) digest.Generator { return &scriptedGen{out: `{"proposals":[]}`} }
+		t.Cleanup(func() { coachGeneratorFactory = prev })
+		_, err := runCoach(t, "", "run", "--dry-run")
+		require.NoError(t, err)
+		assert.Empty(t, *reqs)
+	})
+
 	t.Run("the owner denies", func(t *testing.T) {
 		d := coachSetup(t)
 		id := insertCoachProposal(t, d, "fp1", "Be brief.")
