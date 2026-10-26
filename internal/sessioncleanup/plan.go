@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/gitbin"
+	"watchtower/internal/workbenchgit"
 )
 
 // sizeBudget bounds the size walk of one worktree (spec §8).
@@ -355,6 +356,14 @@ func (b *builder) evaluateWorktree(ctx context.Context, w worktree) Item {
 	if w.Prunable && it.Action == ActionRemove {
 		it.Detail, it.BytesKnown = detailGone, true
 	}
+	it.Origin = string(workbenchgit.WorktreeOrigin(b.repo.mainRoot(), w.Root, w.Branch))
+	if it.Owner != nil && !it.Owner.Unknown {
+		it.Origin = "session"
+	}
+	if head, err := b.repo.recordedHead(w); err == nil {
+		it.LastCommitAt = b.repo.commitDate(ctx, head)
+		it.Merged = b.repo.merged[head]
+	}
 	return it
 }
 
@@ -435,7 +444,7 @@ func sortedKeys(set map[string]bool) []string {
 
 func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
 	it := Item{Key: "branch:" + br.Name, Kind: KindBranch, Name: br.Name, Branch: br.Name, Action: ActionRemove,
-		BytesKnown: true}
+		BytesKnown: true, LastCommitAt: b.repo.commitDate(ctx, br.Sha), Merged: b.repo.merged[br.Sha]}
 	for _, c := range b.branchCatches() {
 		reason, detail, err := c(ctx, b, br)
 		if err != nil {
@@ -465,7 +474,8 @@ func (b *builder) extraItems(ctx context.Context, items []Item) []Item {
 			removed = append(removed, i)
 		}
 	}
-	b.measureAll(ctx, items, removed)
+	// Bundles and orphans are found before the slow size walks, so a
+	// listing can show them while the sizes are still coming in.
 	var extra []Item
 	for _, i := range removed {
 		root := items[i].Key[len("worktree:"):]
@@ -474,6 +484,7 @@ func (b *builder) extraItems(ctx context.Context, items []Item) []Item {
 		}
 		extra = append(extra, b.bundleItems(root)...)
 	}
+	b.measureAll(ctx, items, removed)
 	return append(extra, b.staleItems(ctx)...)
 }
 
@@ -513,7 +524,7 @@ func (b *builder) bundleItems(root string) []Item {
 	var items []Item
 	for _, bundle := range b.deps.LS.Bundles(root) {
 		items = append(items, Item{Key: "lsreg:" + bundle, Kind: KindLsreg, Name: filepath.Base(bundle),
-			Detail: bundle, Action: ActionRemove, BytesKnown: true})
+			Detail: bundle, Action: ActionRemove, BytesKnown: true, Worktree: root})
 	}
 	return items
 }

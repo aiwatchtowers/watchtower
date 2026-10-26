@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -695,4 +697,59 @@ func TestWorkbenchDelete_KeepsAWorktreeThePlanDoesNotList(t *testing.T) {
 	// workbench, so it is unregistered.
 	assert.Contains(t, strings.Join(calls, "\n"), root+" :: claude mcp remove --scope local watchtower-workbench",
 		"a kept worktree's MCP entry is unregistered")
+}
+
+// appLS lists one fixed bundle per worktree and has no stale entries.
+type appLS struct{}
+
+func (appLS) Bundles(root string) []string             { return []string{filepath.Join(root, "Build", "App.app")} }
+func (appLS) Unregister(context.Context, string) error { return nil }
+func (appLS) Register(context.Context, string) error   { return nil }
+func (appLS) Stale(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func TestCleanupCmd_JSONItemKeys(t *testing.T) {
+	f := newCleanupFixture(t)
+	root := f.pushedWorktree("wt", "feat/x")
+	_, err := f.database.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now()), f.session)
+	require.NoError(t, err)
+	prev := cleanupDeps
+	cleanupDeps = func(d *db.DB) sessioncleanup.Deps {
+		deps := prev(d)
+		deps.LS = appLS{}
+		return deps
+	}
+	t.Cleanup(func() { cleanupDeps = prev })
+
+	out, err := runCleanupCmd(t, "--workbench", strconv.FormatInt(f.wb, 10), "--sweep", "--json")
+	require.NoError(t, err, out)
+	var raw struct {
+		Items []map[string]any `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &raw), out)
+	keysOf := func(key string) []string {
+		for _, it := range raw.Items {
+			if it["key"] == key {
+				ks := make([]string, 0, len(it))
+				for k := range it {
+					ks = append(ks, k)
+				}
+				sort.Strings(ks)
+				return ks
+			}
+		}
+		t.Fatalf("no item %s in %s", key, out)
+		return nil
+	}
+	base := []string{"key", "kind", "name", "branch", "bytes", "bytes_known", "action", "reason", "detail",
+		"done", "error", "owner", "origin", "last_commit_at", "merged"}
+	sort.Strings(base)
+	assert.Equal(t, base, keysOf("worktree:"+root))
+	withWorktree := append(append([]string{}, base...), "worktree")
+	sort.Strings(withWorktree)
+	// The bundle item has no owner (omitempty) but names its worktree.
+	want := slices.DeleteFunc(withWorktree, func(k string) bool { return k == "owner" })
+	assert.Equal(t, want, keysOf("lsreg:"+filepath.Join(root, "Build", "App.app")))
 }
