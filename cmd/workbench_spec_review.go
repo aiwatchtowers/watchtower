@@ -228,8 +228,7 @@ func runSpecReviewStart(cmd *cobra.Command, _ []string) error {
 	if t := specreview.DocType(ask.DocType); ask.Kind != "review" || (t != specreview.Spec && t != specreview.Plan) {
 		return usageError("ask %d is not a spec or plan review", id)
 	}
-	// The owner pressed Run: no plan-limit gate here (only ask_owner's
-	// automatic start skips near the limit).
+	// The owner pressed Run.
 	if err := database.RequeueSpecReview(id, specReviewFlagForce, time.Now()); err != nil {
 		if errors.Is(err, db.ErrSpecReviewBusy) {
 			return &exitCodeError{code: 3, err: fmt.Errorf("spec review of ask %d: %w", id, err)}

@@ -40,10 +40,10 @@ folder; a write outside its row would let a spec steer the owner's data.
 **Status:** Enforced (Go).
 
 **Observable:** A review ask is filed and returned even when the reviewer cannot be
-launched, is refused (plan near limit), the surface has no launcher, or the
+launched, the surface has no launcher, or the
 `spec_reviews` queue write fails (it runs after the ask's own transaction has
 committed). The review row is then `skipped` with the reason ("launch failed: …",
-"plan near limit", "no reviewer on this surface", "could not queue: …"; a queue
+"no reviewer on this surface", "could not queue: …"; a queue
 failure may leave no row, and the reason is then only in `spec_review`); the ask
 itself is never failed or delayed by it.
 
@@ -92,3 +92,4 @@ all of them unreliable.
 - 2026-10-25 (spec review Plan 1): file created with SPECREVIEW-01, 02, 03.
 - 2026-10-25 (Plan 1 final review fixes): SPECREVIEW-02 covers a failed queue write (queued after the ask's commit); SPECREVIEW-03 checks the speaker of the owner's words and stores `speaker` on every source.
 - 2026-10-25 (PR #473 review fixes): wording only, no guard changed — SPECREVIEW-03's Observable names the chosen option labels among the owner's answer texts (as `ownerAnswerWords` always did). A plan's review header carries no `decisions_section`; a spec's Decisions section is a `## ` heading starting with "Decisions" (`isDecisionsHeading`, Swift `SpecReviewDecisions`); an empty idea is left out of the result (`idea` omitted).
+- 2026-10-26 (owner): wording only, no guard changed — the automatic start no longer skips on the Claude plan's limits, so SPECREVIEW-02's Observable drops "plan near limit" from its examples.

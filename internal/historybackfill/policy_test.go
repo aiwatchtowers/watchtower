@@ -17,7 +17,7 @@ import (
 // once the source is allowed.
 func TestPolicyBackfill_SkipKeepsRowState(t *testing.T) {
 	row := running(1, "gmail", 7, 30*day, 0)
-	row.Waiting = waitingPlanLimit
+	row.Waiting = "held"
 	st := &fakeStore{rows: []db.HistoryBackfill{row, running(2, "slack", 1, 30*day, 0)}}
 	gmail, slack := &fakeSource{kind: "gmail", id: 7}, &fakeSource{kind: "slack", id: 1}
 	r := newRunner(st, gmail, slack)
