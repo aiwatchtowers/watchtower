@@ -196,9 +196,10 @@ private struct WaveformBars: View {
                         .fill(
                             WaveformStyle.isSilent(padded[index])
                                 ? AnyShapeStyle(HierarchicalShapeStyle.quaternary)
-                                : AnyShapeStyle(PhoneTone.red.color.opacity(RecorderMetrics.barOpacity))
+                                : AnyShapeStyle(PhoneTone.red.color)
                         )
                         .frame(width: width, height: WaveformStyle.height(padded[index], in: proxy.size.height))
+                        .opacity(WaveformStyle.isSilent(padded[index]) ? 1 : PhoneOpacity.waveform)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -345,7 +346,6 @@ private enum RecorderMetrics {
     static let timer: CGFloat = 64
     static let waveformHeight: CGFloat = 64
     static let barGap: CGFloat = 3
-    static let barOpacity = 0.85
     /// Pause and Mark moment.
     static let round: CGFloat = 64
     /// Stop and its white square.

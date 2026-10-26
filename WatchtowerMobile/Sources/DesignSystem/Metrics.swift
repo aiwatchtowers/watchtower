@@ -46,6 +46,8 @@ enum PhoneOpacity {
     static let dimmed = 0.6
     /// An owner line still queued or waiting for the Mac (mockup `.queued`).
     static let pending = 0.75
+    /// A live bar of the recorder's waveform.
+    static let waveform = 0.85
     /// A button under the finger.
     static let pressed = 0.8
 }

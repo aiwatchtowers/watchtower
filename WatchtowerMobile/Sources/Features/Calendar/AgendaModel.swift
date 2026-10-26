@@ -10,8 +10,6 @@ struct EventCardModel: Identifiable, Equatable {
     let title: String
     /// The left column: "14:00", or "All day".
     let timeText: String
-    /// "14:00–14:45 · Google Meet".
-    let detailLine: String
     let pills: [EventPill]
     let isPast: Bool
     /// The current or next meeting of today: accent card with Record and
@@ -92,7 +90,6 @@ struct AgendaDayModel {
                 id: event.id,
                 title: event.title,
                 timeText: event.isAllDay ? "All day" : format.time(event.startDate),
-                detailLine: ([format.timeRange(event)] + [CalendarFormat.venue(event)].compactMap { $0 }).joined(separator: " · "),
                 pills: EventRecordingStatus(event: event, snapshot: snapshot, recordings: recordings, now: now).pills,
                 isPast: event.localEnd(in: calendar) <= now,
                 isHighlighted: event.id == highlightedID,

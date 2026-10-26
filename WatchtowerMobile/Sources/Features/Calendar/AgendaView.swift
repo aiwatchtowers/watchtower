@@ -130,12 +130,9 @@ struct AgendaView: View {
 private enum AgendaMetrics {
     /// The round voice-note button.
     static let voiceButton: CGFloat = 56
-    /// A day cell in the week strip: the selected day's plate.
-    static let dayPlate: CGFloat = 44
     /// The event dot under a day.
     static let eventDot: CGFloat = 4
-    /// The now line's dot and rule.
-    static let nowDot: CGFloat = 7
+    /// The now line's rule.
     static let nowRule: CGFloat = 1.5
 }
 
@@ -181,7 +178,7 @@ private struct WeekStripView: View {
                 .frame(width: AgendaMetrics.eventDot, height: AgendaMetrics.eventDot)
         }
         .foregroundStyle(day.isSelected ? Color.white : day.isToday ? PhoneTone.accent.color : Color.primary)
-        .frame(maxWidth: .infinity, minHeight: AgendaMetrics.dayPlate)
+        .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch)
         .background {
             if day.isSelected {
                 RoundedRectangle(cornerRadius: Radius.container, style: .continuous).fill(PhoneTone.accent.color)
@@ -280,7 +277,7 @@ private struct NowLineView: View {
                 .font(TypeScale.badge.monospacedDigit())
                 .foregroundStyle(PhoneTone.red.color)
                 .frame(minWidth: PhoneMetrics.minTouch, alignment: .trailing)
-            Circle().fill(PhoneTone.red.color).frame(width: AgendaMetrics.nowDot, height: AgendaMetrics.nowDot)
+            Circle().fill(PhoneTone.red.color).frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
             Rectangle().fill(PhoneTone.red.color).frame(height: AgendaMetrics.nowRule)
         }
         .padding(.horizontal, Spacing.medium)
