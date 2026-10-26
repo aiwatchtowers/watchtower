@@ -1,6 +1,6 @@
 # Clean Up — one screen for worktrees and branches instead of sheets (board #1107) — design
 
-**Status:** draft for the owner's review, round 4 (rounds 1–3: asks #629, #630, #631)
+**Status:** approved by the owner 2026-10-26 (ask #633; review rounds asks #629, #630, #631)
 **Builds on:** `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` (board #535) §8, §9, §12; PROJ-18 in
 `docs/inventory/workbench.md`.
 **Mockup:** `docs/design/mockups/worktree-cleanup/screen.html` (open with `#dark` for the dark appearance), rendered
@@ -257,7 +257,7 @@ No safety contract is weakened. PROJ-18's "the sweep ticks nothing by itself" ho
 or Select All). PROJ-17's Delete and Clean Up is unchanged apart from being disabled while another cleanup of the
 workbench runs.
 
-**Needs the owner's approval — a guard test changes.** The worktree + branch pairing (§4.2) is new behaviour, and the
+**Approved by the owner (ask #633) — a guard test changes.** The worktree + branch pairing (§4.2) is new behaviour, and the
 PROJ-18 guard `testSweepAppliesOnlyTickedKeys` (`WatchtowerDesktop/Tests/SessionCleanupSweepTests.swift`) asserts
 the opposite: ticking a worktree whose branch is also removable sends only the worktree's key. With approval,
 PROJ-18 gets an amendment ("on the Clean Up screen a worktree row is the worktree, its branch when that branch item
@@ -321,5 +321,5 @@ replaces the two sheets' paragraphs and adds at most ~2 KB. If it does not fit, 
 - `--stream` (one streamed call) over two calls — my call, explained in §6 at the owner's request (ask #629).
 - `merged` counts `origin/<default>` as well as the local default branch — my call (§6).
 - Plan speed-ups only where cheap, after measuring in plan Task 0 — my call (§6).
-- Worktree + branch + its LaunchServices entries in one row, with the PROJ-18 guard test rewritten — **open, needs
-  the owner's approval** (§8).
+- Worktree + branch + its LaunchServices entries in one row, with the PROJ-18 guard test rewritten and PROJ-18
+  amended — approved with the spec, ask #633 (§8).
