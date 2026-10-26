@@ -72,8 +72,8 @@ final class NotificationService: UNNotificationServiceExtension {
                   let payload = AlertOpener(material: material).open(wireName: reference.alertID.recordName, envelope: envelope)
             else { return nil }
             let filled = content.mutableCopy() as? UNMutableNotificationContent ?? UNMutableNotificationContent()
-            filled.title = payload.workbenchName
-            filled.body = payload.title
+            filled.title = payload.title
+            filled.body = payload.body
             return filled
         } catch {
             logger.notice("ask alert not filled: \(errorCode(error), privacy: .public)")

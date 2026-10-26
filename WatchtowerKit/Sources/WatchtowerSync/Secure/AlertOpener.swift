@@ -2,36 +2,74 @@ import CryptoKit
 import Foundation
 import os
 
-/// What an `ask_alert` record carries (`AskAlertSlice.Payload` on the hub): enough for the notification's title and
-/// body, nothing more. Keys are the hub's RelayCoder snake_case ones, spelled out so no key strategy is needed.
-public struct AskAlertPayload: Decodable, Equatable, Sendable {
-    public let askID: Int64
+/// What an `ask_alert` record carries (`work_alert` on the hub): one of four work events (ask, permission, session
+/// stopped, session failed), enough for the notification's title and body, nothing more. Keys are the hub's
+/// RelayCoder snake_case ones, spelled out so no key strategy is needed on either side. The wire kind stays
+/// `ask_alert`; an old ask-shaped payload has no `event` and does not decode (the extension shows the generic text).
+public struct WorkAlertPayload: Codable, Equatable, Sendable {
+    public enum Event: String, Codable, Sendable {
+        case ask, permission
+        case sessionStopped = "session_stopped"
+        case sessionFailed = "session_failed"
+    }
+
+    public let event: Event
+    /// Stable per occurrence (`WorkAlertKey`); the notification's thread/identifier.
+    public let key: String
     public let workbenchID: Int64
     public let workbenchName: String
     public let sessionID: Int64?
-    public let kind: String
+    public let askID: Int64?
+    public let requestID: Int64?
+    /// The notification's title: workbench name, then the session title when there is one.
     public let title: String
+    public let body: String
     /// The notification offers the one-tap answer (`ASK_QUICK`).
     public let quick: Bool
 
     public init(
-        askID: Int64, workbenchID: Int64, workbenchName: String, sessionID: Int64?, kind: String, title: String, quick: Bool
+        event: Event,
+        key: String,
+        workbenchID: Int64,
+        workbenchName: String,
+        sessionID: Int64?,
+        askID: Int64?,
+        requestID: Int64?,
+        title: String,
+        body: String,
+        quick: Bool
     ) {
-        self.askID = askID
+        self.event = event
+        self.key = key
         self.workbenchID = workbenchID
         self.workbenchName = workbenchName
         self.sessionID = sessionID
-        self.kind = kind
+        self.askID = askID
+        self.requestID = requestID
         self.title = title
+        self.body = body
         self.quick = quick
     }
 
     enum CodingKeys: String, CodingKey {
-        case askID = "ask_id"
+        case event, key, title, body, quick
         case workbenchID = "workbench_id"
         case workbenchName = "workbench_name"
         case sessionID = "session_id"
-        case kind, title, quick
+        case askID = "ask_id"
+        case requestID = "request_id"
+    }
+}
+
+/// The `WorkAlertPayload.key` formats.
+public enum WorkAlertKey {
+    public static func ask(_ id: Int64) -> String { "ask-\(id)" }
+
+    public static func permission(_ id: Int64) -> String { "perm-\(id)" }
+
+    /// One stop of work, one key: the session and the moment its state was entered (unix milliseconds).
+    public static func stop(session: Int64, stateAt: Date) -> String {
+        "stop-\(session)-\(Int64((stateAt.timeIntervalSince1970 * 1000).rounded(.down)))"
     }
 }
 
@@ -51,7 +89,7 @@ public struct AlertOpener: Sendable {
 
     /// The payload, or nil on any failure: the extension then delivers the content-free notification unchanged.
     /// Only the failure's code is logged, never key or payload bytes.
-    public func open(wireName: String, envelope: Data) -> AskAlertPayload? {
+    public func open(wireName: String, envelope: Data) -> WorkAlertPayload? {
         do {
             return try payload(wireName: wireName, envelope: envelope)
         } catch {
@@ -62,7 +100,7 @@ public struct AlertOpener: Sendable {
 
     /// Throws the envelope's `EnvelopeError`, `SecureTransportError.keysUnavailable` for an epoch the material does
     /// not hold, and `EnvelopeError.frameMalformed` for a frame of another kind or a payload that does not decode.
-    public func payload(wireName: String, envelope: Data) throws -> AskAlertPayload {
+    public func payload(wireName: String, envelope: Data) throws -> WorkAlertPayload {
         let header = try Envelope.parse(envelope).header
         // Every DataZone envelope is the hub's own: its id is both the hub and the sender id (D7).
         guard header.senderID == header.hubID else { throw EnvelopeError.wrongSender }
@@ -80,7 +118,7 @@ public struct AlertOpener: Sendable {
             return SymmetricKey(data: keys.alertKey)
         }.frame
         guard frame.kind == SliceKind.askAlert.rawValue else { throw EnvelopeError.frameMalformed }
-        do { return try JSONDecoder().decode(AskAlertPayload.self, from: frame.payload) } catch {
+        do { return try JSONDecoder().decode(WorkAlertPayload.self, from: frame.payload) } catch {
             // A DecodingError's description could quote the payload: it surfaces as a code only.
             throw EnvelopeError.frameMalformed
         }

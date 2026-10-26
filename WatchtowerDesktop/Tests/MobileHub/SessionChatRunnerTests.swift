@@ -60,18 +60,53 @@ final class SessionChatRunnerTests: XCTestCase {
         XCTAssertEqual(object["session_id"] as? Int, 7)
     }
 
-    func testLiveSessionRefreshesEvery10s() async throws {
+    func testLiveSessionRefreshesEvery3s() async throws {
         let calls = Calls()
         let clock = TestInstant()
         let chat = runner(calls: calls, clock: clock, live: [7])
         chat.request(sessionID: 7, agentID: nil)
         await chat.runDue()
-        clock.advance(by: .seconds(9))
+        clock.advance(by: .seconds(2))
         await chat.runDue()
-        XCTAssertEqual(calls.count, 1, "not due before 10 s")
+        XCTAssertEqual(calls.count, 1, "not due before 3 s")
         clock.advance(by: .seconds(1))
         await chat.runDue()
         XCTAssertEqual(calls.count, 2)
+    }
+
+    private final class Nudges: Sendable {
+        private let n = OSAllocatedUnfairLock(initialState: 0)
+        var count: Int { n.withLock { $0 } }
+        func hit() { n.withLock { $0 += 1 } }
+    }
+
+    func testAChangedFeedNudgesTheChatKind() async throws {
+        let text = OSAllocatedUnfairLock(initialState: "Hello")
+        let nudges = Nudges()
+        let clock = TestInstant()
+        let chat = runner(clock: clock, live: [7]) { id, _ in try Self.feed(id, text: text.withLock { $0 }) }
+        chat.onChange = { nudges.hit() }
+        chat.request(sessionID: 7, agentID: nil)
+        await chat.runDue()
+        XCTAssertEqual(nudges.count, 1, "the first payload is a change")
+        text.withLock { $0 = "Hello again" }
+        clock.advance(by: .seconds(3))
+        await chat.runDue()
+        XCTAssertEqual(nudges.count, 2)
+    }
+
+    func testAnUnchangedFeedDoesNotNudge() async throws {
+        let nudges = Nudges()
+        let clock = TestInstant()
+        let chat = runner(clock: clock, live: [7])
+        chat.onChange = { nudges.hit() }
+        chat.request(sessionID: 7, agentID: nil)
+        await chat.runDue()
+        clock.advance(by: .seconds(3))
+        await chat.runDue()
+        clock.advance(by: .seconds(3))
+        await chat.runDue()
+        XCTAssertEqual(nudges.count, 1, "only the first payload changed anything")
     }
 
     func testFinishedSessionRunsOncePerWatch() async throws {
@@ -202,8 +237,14 @@ final class SessionChatRunnerTests: XCTestCase {
         XCTAssertEqual(calls.count, 0)
     }
 
-    func testNotUrgent() {
-        XCTAssertFalse(SlicePublisher.urgentKinds.contains(.sessionChat))
+    func testUrgentAfterTheAskKinds() {
+        XCTAssertTrue(SlicePublisher.urgentKinds.contains(.sessionChat))
+        let order = SlicePublisher.publishOrder
+        let chat = order.firstIndex(of: .sessionChat)
+        for ask in [SliceKind.ownerAsk, .askAlert, .deviceGrant, .permissionRequest] {
+            XCTAssertLessThan(order.firstIndex(of: ask) ?? .max, chat ?? 0, "\(ask) publishes before the chat")
+        }
+        XCTAssertEqual(SessionChatRunner.Timing.standard.every, .seconds(3))
         XCTAssertFalse(RelayProcessor.nonIdempotentKinds.contains(.sessionChatRequest))
     }
 
