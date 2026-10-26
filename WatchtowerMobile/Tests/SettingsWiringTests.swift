@@ -381,6 +381,17 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: defaults, hubID: TestHub.acme).typingRequested)
     }
 
+    /// A removed link takes its shared-alert seen list along: a link made again starts with a silent first fetch.
+    func testRemovingAHubsChoicesDropsItsSharedAlertSeenList() throws {
+        let defaults = try makeDefaults()
+        let (acme, home) = (SharedAlertPoster.postedDefaultsKey(hubID: TestHub.acme), SharedAlertPoster.postedDefaultsKey(hubID: TestHub.home))
+        defaults.set(["wire-1": "ask-1"], forKey: acme)
+        defaults.set(["wire-2": "ask-2"], forKey: home)
+        DeviceSettings.removeChoices(of: TestHub.acme, defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: acme))
+        XCTAssertNotNil(defaults.object(forKey: home), "another hub keeps its own")
+    }
+
     /// A choice made while unlinked goes to the first hub with no value of
     /// its own once its link completes; a hub's own value wins, and either
     /// way the unlinked choice is used up. Ruling 5: a hub's settings read

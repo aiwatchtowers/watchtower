@@ -182,13 +182,15 @@ final class DeviceSettings {
         await write.value
     }
 
-    /// Deletes `hubID`'s Workbench choices (its link was removed).
+    /// Deletes `hubID`'s Workbench choices and its shared-alert seen list (its link was removed).
     static func removeChoices(of hubID: String, defaults: UserDefaults) {
         let keys = Keys(hubID: hubID)
         defaults.removeObject(forKey: keys.typingRequested)
         defaults.removeObject(forKey: keys.startSessions)
         defaults.removeObject(forKey: keys.permissionsRequested)
         defaults.removeObject(forKey: keys.lastDeviceWrite)
+        // A link made again starts with a silent first fetch.
+        defaults.removeObject(forKey: SharedAlertPoster.postedDefaultsKey(hubID: hubID))
     }
 
     func setTypingRequested(_ value: Bool) async {

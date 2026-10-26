@@ -65,14 +65,33 @@ final class SharedAlertWiringTests: XCTestCase {
         addTeardownBlock { @MainActor in settings.workAlerts = before }
     }
 
+    func testTheFirstFetchOfASharedHubIsSilent() async throws {
+        let transport = InMemoryCloudTransport()
+        try await publish(payload("ask-41", ask: 41), id: "41", into: transport)
+        try await publish(payload("stop-7-1700000000000"), id: "stop-7", into: transport)
+        let (posted, defaults) = (Posted(), try makeDefaults())
+        let env = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: posted, defaults: defaults)
+        keepWorkAlerts(env.deviceSettings)
+        env.deviceSettings.workAlerts = true
+
+        _ = await env.refresh(.pull)
+        _ = await env.refresh(.pull)
+        XCTAssertTrue(posted.requests.isEmpty, "what the Mac kept before the first fetch is history, not news")
+        let seen = try XCTUnwrap(defaults.dictionary(forKey: SharedAlertPoster.postedDefaultsKey(hubID: hubID)) as? [String: String])
+        XCTAssertEqual(Set(seen.values), ["ask-41", "stop-7-1700000000000"], "both count as seen")
+    }
+
     func testASharedHubPostsEachNewAlertOnce() async throws {
         let transport = InMemoryCloudTransport()
-        try await publish(payload("ask-42", ask: 42), id: "42", into: transport)
+        try await publish(payload("ask-41", ask: 41), id: "41", into: transport)
         let posted = Posted()
         let env = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: posted)
         keepWorkAlerts(env.deviceSettings)
         env.deviceSettings.workAlerts = true
 
+        _ = await env.refresh(.pull)
+        XCTAssertTrue(posted.requests.isEmpty, "the first fetch is silent")
+        try await publish(payload("ask-42", ask: 42), id: "42", into: transport)
         _ = await env.refresh(.pull)
         XCTAssertEqual(posted.requests.map(\.identifier), [SharedAlertPoster.identifier(hubID: hubID, key: "ask-42")])
         let content = try XCTUnwrap(posted.requests.first?.content)
@@ -95,12 +114,13 @@ final class SharedAlertWiringTests: XCTestCase {
 
     func testARelaunchDoesNotPostAgainAndAGoneRecordIsForgotten() async throws {
         let transport = InMemoryCloudTransport()
-        try await publish(payload("ask-42", ask: 42), id: "42", into: transport)
         let (path, defaults) = (try makeReplicaPath(), try makeDefaults())
         let first = Posted()
         let before = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: first, replicaPath: path, defaults: defaults)
         keepWorkAlerts(before.deviceSettings)
         before.deviceSettings.workAlerts = true
+        _ = await before.refresh(.pull)
+        try await publish(payload("ask-42", ask: 42), id: "42", into: transport)
         _ = await before.refresh(.pull)
         XCTAssertEqual(first.requests.count, 1)
         await before.shutDown()
@@ -146,14 +166,15 @@ final class SharedAlertWiringTests: XCTestCase {
 
     func testAnAlertThatDoesNotOpenIsSkipped() async throws {
         let transport = InMemoryCloudTransport()
-        // An old ask-shaped payload (no `event`) does not decode.
-        try await TestPhone.hub(over: transport).save([alertRecord(id: "41", payload: Data("{\"id\":41}".utf8))])
-        try await publish(payload("ask-42", ask: 42), id: "42", into: transport)
         let posted = Posted()
         let env = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: posted)
         keepWorkAlerts(env.deviceSettings)
         env.deviceSettings.workAlerts = true
+        _ = await env.refresh(.pull)
 
+        // An old ask-shaped payload (no `event`) does not decode.
+        try await TestPhone.hub(over: transport).save([alertRecord(id: "41", payload: Data("{\"id\":41}".utf8))])
+        try await publish(payload("ask-42", ask: 42), id: "42", into: transport)
         _ = await env.refresh(.pull)
         XCTAssertEqual(posted.requests.map(\.identifier), [SharedAlertPoster.identifier(hubID: hubID, key: "ask-42")])
     }

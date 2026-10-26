@@ -19,7 +19,9 @@ struct LocalAlertPosting {
 /// only while iOS lets the app fetch.
 ///
 /// What was seen is kept per hub in `defaults` (wire name → alert key), so a relaunch never posts again; an entry
-/// whose record left the replica (the Mac deleted the settled alert) is dropped. With the switch off nothing is
+/// whose record left the replica (the Mac deleted the settled alert) is dropped. The hub's first fetch (no stored
+/// list: a new link, an upgrade, a reinstall) posts nothing and takes every alert there as seen, so the up to 7 days
+/// of alerts the Mac keeps never arrive as a burst. With the switch off nothing is
 /// posted, and what arrived meanwhile counts as seen: turning it on alerts from then on, as the private scope's
 /// subscription does.
 @MainActor
@@ -72,19 +74,29 @@ final class SharedAlertPoster {
         }
         let key = Self.postedDefaultsKey(hubID: hubID)
         let present = Set(stored.map(\.wireName))
+        // No stored list: this hub's first fetch (a new link, an upgrade, a reinstall). The Mac keeps an alert up to
+        // 7 days, so what is there now is history, not news: all of it counts as seen and nothing is posted.
+        let firstFetch = defaults.dictionary(forKey: key) == nil
         var seen = (defaults.dictionary(forKey: key) as? [String: String] ?? [:]).filter { present.contains($0.key) }
         let fresh = stored.filter { seen[$0.wireName] == nil }
         var requests: [UNNotificationRequest] = []
-        if !fresh.isEmpty, let opener = opener() {
+        if !fresh.isEmpty {
+            // Without the alert material nothing is decided: a first fetch stays the first.
+            guard let opener = opener() else {
+                if !firstFetch { defaults.set(seen, forKey: key) }
+                return []
+            }
             for row in fresh {
-                // `AlertOpener.open` logs why (a code only); the row is tried again on the next fetch.
+                // `AlertOpener.open` logs why (a code only); the row is tried again on the next fetch, unless this
+                // is the first fetch, which takes it as seen.
                 guard let payload = opener.open(wireName: row.wireName, envelope: row.envelope) else {
                     Self.logger.notice("shared alert skipped: it does not open")
+                    if firstFetch { seen[row.wireName] = "" }
                     continue
                 }
                 let shown = seen.values.contains(payload.key)
                 seen[row.wireName] = payload.key
-                if enabled, !shown { requests.append(request(payload)) }
+                if enabled, !firstFetch, !shown { requests.append(request(payload)) }
             }
         }
         defaults.set(seen, forKey: key)
@@ -99,8 +111,17 @@ final class SharedAlertPoster {
             }
             return AlertOpener(material: material)
         } catch {
-            Self.logger.notice("shared alerts not opened: alert material unreadable")
+            Self.logger.notice("shared alerts not opened: alert material unreadable (\(Self.code(error), privacy: .public))")
             return nil
+        }
+    }
+
+    /// A code for the log, never key bytes.
+    private static func code(_ error: Error) -> String {
+        switch error {
+        case KeyStoreError.corrupt: "corrupt"
+        case let error as KeyStoreError: String(describing: error)
+        default: String(describing: type(of: error))
         }
     }
 
