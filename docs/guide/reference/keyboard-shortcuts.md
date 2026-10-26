@@ -88,8 +88,8 @@ action: hotkey:search-chats
 | **Esc** | Stop the answer |
 | **↑** | Edit your last message (in an empty field) |
 | **⌘Return** | Save & Send an edited message |
-| **⌘1–⌘9** | Open chat 1–9 of the chat list (**View** → **Go to Item**, shared with the Workbench) |
-| **⌘[** | Back to All chats from a project (**View** → **Back**, shared with the Workbench) |
+| **⌘1–⌘9** | Open chat 1–9 of the chat list |
+| **⌘[** | Back to All chats |
 
 ### Chats Panel
 
@@ -100,7 +100,7 @@ After a click on the panel's empty space, a section label or the older header.
 | **↑ / ↓** | Move the highlight |
 | **Return** | Open the highlighted chat |
 | **⌘⌫** | Delete the highlighted chat |
-| **⌘Z** | Undo the delete (for 5 seconds) |
+| **⌘Z** | Undo the delete |
 | **Esc** | Leave the chat list |
 
 ### Targets
@@ -134,7 +134,7 @@ since: 0.24.0
 action: hotkey:waiting-for-you
 -->
 
-The Workbench menu lists most of these; ⌘1–⌘9 and ⌘[ now live under **View**, shared with Chats.
+The Workbench menu lists most of these; ⌘1–⌘9 and ⌘[ are in the View menu.
 
 | Keys | Action |
 |---|---|
