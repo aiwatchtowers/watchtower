@@ -194,6 +194,15 @@ package enum ChatConversationQueries {
         """, arguments: [now, id])
     }
 
+    /// The owner saw this chat at `at` (Chats panel spec §5.2). Never moves
+    /// the mark back, and leaves `updated_at` alone: reading is not activity.
+    /// Unchecked — a chat deleted meanwhile needs no mark.
+    package static func markRead(_ db: Database, id: Int64, at: Date) throws {
+        try db.execute(sql: """
+            UPDATE chat_conversations SET read_at = MAX(COALESCE(read_at, 0), ?) WHERE id = ?
+            """, arguments: [at.timeIntervalSince1970, id])
+    }
+
     package static func delete(_ db: Database, id: Int64) throws {
         try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
     }

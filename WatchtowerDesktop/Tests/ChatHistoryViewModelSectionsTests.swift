@@ -38,10 +38,10 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
             (try Self.answered(d, title: "A"), try Self.answered(d, title: "B"))
         }
         let vm = await loaded()
-        XCTAssertEqual(vm.sections.map(\.kind), [.today])
+        XCTAssertEqual(vm.sections.map(\.kind), [.recent])
 
         await vm.togglePin(a)
-        XCTAssertEqual(vm.sections.map(\.kind), [.pinned, .today])
+        XCTAssertEqual(vm.sections.map(\.kind), [.pinned, .recent])
         await vm.rename(b, title: "  Renamed  ")
         XCTAssertEqual(vm.conversations.first { $0.id == b }?.title, "Renamed")
         XCTAssertEqual(vm.conversations.first { $0.id == b }?.titleSource, "user")
@@ -63,7 +63,7 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
         let vm = await loaded()
         XCTAssertFalse(vm.selectAdjacent(by: 0))
         await vm.togglePin(b)
-        let shown = vm.sections.flatMap(\.conversations).map(\.id)
+        let shown = vm.sections.flatMap(\.items).map(\.id)
         XCTAssertEqual(shown.first, b, "the pinned chat leads")
         XCTAssertEqual(Set(shown), [a, b, c])
 
@@ -96,9 +96,9 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
             (try Self.answered(d, title: "A"), try TestDatabase.insertChatConversation(d, title: ""))
         }
         let vm = await loaded()
-        XCTAssertEqual(vm.sections.flatMap(\.conversations).map(\.id), [answered])
+        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [answered])
         vm.selectedConversationID = empty
-        XCTAssertEqual(Set(vm.sections.flatMap(\.conversations).map(\.id)), [answered, empty])
+        XCTAssertEqual(Set(vm.sections.flatMap(\.items).map(\.id)), [answered, empty])
     }
 
     func testSearchFindsMessages() async throws {

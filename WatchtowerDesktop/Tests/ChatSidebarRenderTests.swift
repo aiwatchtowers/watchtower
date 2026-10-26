@@ -77,8 +77,8 @@ final class ChatSidebarRenderTests: XCTestCase {
         chatVM.reloadProjects()
         let history = await loadedHistory()
         // The middle row of three (the newest is listed first).
-        XCTAssertEqual(history.sections.flatMap(\.conversations).map(\.id).count, 3)
-        let selected = history.sections.flatMap(\.conversations)[1].id
+        XCTAssertEqual(history.sections.flatMap(\.items).map(\.id).count, 3)
+        let selected = history.sections.flatMap(\.items)[1].id
         XCTAssertEqual(selected, ids[1])
         history.selectedConversationID = selected
         chatVM.select(conversationID: selected)

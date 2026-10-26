@@ -23,7 +23,7 @@ struct ChatSidebarView: View {
     @State private var scroll = PanelSelectionScrollPolicy<Int64>()
 
     var body: some View {
-        let conversationIDs = historyVM.sections.flatMap { $0.conversations.map(\.id) }
+        let conversationIDs = historyVM.sections.flatMap { $0.items.map(\.id) }
         VStack(spacing: 0) {
             HStack {
                 Text("Chats").font(.headline)
@@ -44,7 +44,7 @@ struct ChatSidebarView: View {
                     projectsSection
                     ForEach(historyVM.sections) { section in
                         sectionLabel(Text(section.kind.title.uppercased()))
-                        ForEach(section.conversations) { conv in
+                        ForEach(section.items) { conv in
                             Text(conv.displayTitle)
                                 .lineLimit(1)
                                 .panelTab(isSelected: historyVM.selectedConversationID == conv.id)
