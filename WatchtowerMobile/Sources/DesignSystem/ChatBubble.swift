@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// One line of a session's chat, the Desktop's `SessionChatRow` at phone
-/// size (mockups 3, 4, 8): the owner's lines right on the accent fill
-/// (`Fill.selected`, `Radius.bubble`), the agent's text left with no
+/// size (mockups 3, 4, 8): the owner's lines right on a solid accent
+/// bubble in white (`Radius.bubble`, the Desktop's `UserMessageBubble`),
+/// the agent's text left with no
 /// bubble, Watchtower's lines as centred captions, a subagent as a quiet
 /// `Fill.rest` line that opens its chat. `caption` goes under an owner line
 /// ("Queued · the agent reads it at its next step", "Waiting for your
@@ -24,9 +25,17 @@ struct ChatBubble: View {
 
     static func fill(_ role: Role) -> Color? {
         switch role {
-        case .owner: Fill.selected
+        case .owner: .accentColor
         case .subagent: Fill.rest
         case .agent, .watchtower: nil
+        }
+    }
+
+    static func textColor(_ role: Role) -> Color {
+        switch role {
+        case .owner: .white
+        case .agent: .primary
+        case .watchtower, .subagent: .secondary
         }
     }
 
@@ -56,10 +65,11 @@ struct ChatBubble: View {
         case .owner:
             Text(Self.markdown(text))
                 .font(TypeScale.rowTitle)
+                .foregroundStyle(Self.textColor(.owner))
                 .textSelection(.enabled)
                 .padding(.horizontal, Spacing.medium)
                 .padding(.vertical, Spacing.regular)
-                .background(Fill.selected, in: RoundedRectangle(cornerRadius: Radius.bubble, style: .continuous))
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: Radius.bubble, style: .continuous))
                 .padding(.leading, Spacing.hero)
         case .agent:
             Text(Self.markdown(text))
@@ -69,7 +79,7 @@ struct ChatBubble: View {
         case .watchtower:
             Text(Self.markdown(text))
                 .font(TypeScale.meta)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Self.textColor(.watchtower))
                 .multilineTextAlignment(.center)
         case .subagent:
             Button {

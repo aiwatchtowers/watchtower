@@ -66,6 +66,7 @@ enum DesignSystemGallery {
                 } trailing: {
                     Text("3:14").font(TypeScale.time).foregroundStyle(.tertiary)
                 }
+                CardRowDivider()
                 FlatRow(icon: .session(tone: .green, isRing: false), title: "Archive closed targets", isSelected: true, insets: EdgeInsets()) {
                     Text("acme · Agents working · 2")
                 } trailing: {
@@ -206,12 +207,16 @@ enum DesignSystemGallery {
         Page(title: "Settings") {
             SettingsCard(title: "This Mac") {
                 SettingsRow(title: "MacBook Pro") { Text("Online") }
+                CardRowDivider()
                 SettingsRow(title: "Last sync") { Text("just now") }
+                CardRowDivider()
                 SettingsRow(title: "Macs") { Text("2 ›") }
             }
             SettingsCard(title: "Workbench") {
                 SettingsRow(title: "Type into sessions") { Toggle("", isOn: .constant(true)).toggleStyle(SmallSwitchStyle()) }
+                CardRowDivider()
                 SettingsRow(title: "Answer permission prompts") { Toggle("", isOn: .constant(true)).toggleStyle(SmallSwitchStyle()) }
+                CardRowDivider()
                 SettingsRow(title: "Start sessions") { Toggle("", isOn: .constant(false)).toggleStyle(SmallSwitchStyle()) }
             }
             SettingsCard(

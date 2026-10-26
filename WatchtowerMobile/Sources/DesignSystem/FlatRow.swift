@@ -144,6 +144,27 @@ extension FlatRow where Trailing == EmptyView {
     }
 }
 
+/// The hairline between rows grouped on one card (mockups 1, 2, 9, 16):
+/// `Stroke.hairline` in the separator colour, inset `inset` on both sides
+/// (the rows' own side padding when they pad themselves). Only inside a
+/// card: rows outside one are separated by space alone.
+///
+///     VStack(spacing: 0) { rowA; CardRowDivider(); rowB }.card()
+struct CardRowDivider: View {
+    static let lineWidth = Stroke.hairline
+    static let color = Stroke.hairlineColor
+
+    var inset: CGFloat = 0
+
+    var body: some View {
+        Rectangle()
+            .fill(Self.color)
+            .frame(height: Self.lineWidth)
+            .padding(.horizontal, inset)
+            .accessibilityHidden(true)
+    }
+}
+
 /// A section header of a scroll view (mockups' `.sec`, the Desktop Home's
 /// zone titles): the title in caps with `Tracking.caps`, in the tone, and an
 /// optional count trailing in secondary. It pads itself 20 on the sides (the

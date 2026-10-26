@@ -2,11 +2,14 @@ import SwiftUI
 
 /// A titled group of settings, the Desktop's `SettingsSection` at phone
 /// size (mockup 16): the caps header, the rows on one soft `Fill.card`
-/// card (`Radius.container`), spaced and with no dividers, and an optional
-/// footer note under it. For a `ScrollView` page padded 16 on the sides.
+/// card (`Radius.container`) with a `CardRowDivider` between each two, and
+/// an optional footer note under it. For a `ScrollView` page padded 16 on
+/// the sides.
 ///
-///     SettingsCard(title: "Notifications", footer: "Asks, approvals and …") {
-///         SettingsRow(title: "When work stops") { Toggle("", isOn: $on).toggleStyle(SmallSwitchStyle()) }
+///     SettingsCard(title: "Workbench") {
+///         SettingsRow(title: "Type into sessions") { Toggle("", isOn: $typing).toggleStyle(SmallSwitchStyle()) }
+///         CardRowDivider()
+///         SettingsRow(title: "Start sessions") { Toggle("", isOn: $start).toggleStyle(SmallSwitchStyle()) }
 ///     }
 struct SettingsCard<Content: View>: View {
     let title: String

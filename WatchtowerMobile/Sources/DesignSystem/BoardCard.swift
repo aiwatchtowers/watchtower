@@ -3,8 +3,9 @@ import WatchtowerKit
 
 /// What a board card shows, the Desktop's `WorkbenchBoardCardView` (mockup
 /// 5): the status glyph in its tone, the title (struck through when done),
-/// `#number`, a priority chip with a dot (`PriorityMark`: high red, low
-/// blue, medium none, since the phone's orange is waiting only), the status
+/// `#number`, a priority chip with a dot (high red and low blue from
+/// `PriorityMark`, medium gray, since the phone's orange is waiting only; a
+/// priority from a newer Mac draws no chip), the status
 /// chip in the status tone, a counter ("1/2"), a progress bar grey while
 /// partial and green when complete, and the live sessions.
 struct BoardCardModel: Equatable {
@@ -38,7 +39,7 @@ struct BoardCardModel: Equatable {
         glyph = style.glyph
         tone = style.tone
         var chips: [PillItem] = []
-        if let priorityTone = PriorityMark.tone(priority) {
+        if let priorityTone = PriorityMark.tone(priority) ?? (priority == .medium ? .gray : nil) {
             chips.append(PillItem(text: priority.rawValue.capitalized, tone: priorityTone, dot: true))
         }
         chips.append(PillItem(text: statusText, tone: style.tone))

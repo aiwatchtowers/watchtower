@@ -74,10 +74,14 @@ extension DesignSystemTests {
 
     // MARK: - ChatBubble (mockups 3, 4, 8)
 
-    /// The owner right on the accent fill, the agent left with no bubble,
-    /// Watchtower lines centred captions, a subagent on the rest fill.
+    /// The owner right on a solid accent bubble with white text (mockups 3,
+    /// 4, 8 and the Desktop `UserMessageBubble`), the agent left with no
+    /// bubble, Watchtower lines centred captions, a subagent on the rest
+    /// fill.
     func testTheChatBubbleRoles() {
-        XCTAssertEqual(ChatBubble.fill(.owner), Fill.selected)
+        XCTAssertEqual(ChatBubble.fill(.owner), .accentColor)
+        XCTAssertEqual(ChatBubble.textColor(.owner), .white)
+        XCTAssertEqual(ChatBubble.textColor(.agent), .primary)
         XCTAssertNil(ChatBubble.fill(.agent))
         XCTAssertNil(ChatBubble.fill(.watchtower))
         XCTAssertEqual(ChatBubble.fill(.subagent), Fill.rest)
@@ -126,7 +130,7 @@ extension DesignSystemTests {
     // MARK: - BoardCard (mockup 5)
 
     /// The Desktop board card: number, priority chip with a dot (high red,
-    /// low blue, medium none: the phone's orange is waiting only), status
+    /// low blue, medium gray: the phone's orange is waiting only), status
     /// chip in the status tone, a counter, a bar grey while partial and
     /// green when complete, and the live sessions.
     func testTheBoardCard() {
@@ -143,7 +147,9 @@ extension DesignSystemTests {
         XCTAssertEqual(card.sessionsText, "1 session")
 
         let medium = BoardCardModel(number: 343, title: "Session report", status: .todo, statusText: "To Do", priority: .medium, liveSessions: 2)
-        XCTAssertEqual(medium.chips, [PillItem(text: "To Do", tone: .secondary)])
+        XCTAssertEqual(medium.chips, [PillItem(text: "Medium", tone: .gray, dot: true), PillItem(text: "To Do", tone: .secondary)])
+        let unknown = BoardCardModel(number: 9, title: "x", status: .todo, statusText: "To Do", priority: WorkbenchTargetPriority(rawValue: "newer"))
+        XCTAssertEqual(unknown.chips, [PillItem(text: "To Do", tone: .secondary)], "a priority from a newer Mac draws no chip")
         XCTAssertEqual(medium.sessionsText, "2 sessions")
         XCTAssertNil(medium.progress)
 
@@ -193,6 +199,16 @@ extension DesignSystemTests {
         XCTAssertEqual(CalendarRowModel.plate(.now), PhoneTone.green.color.opacity(Fill.selectedOpacity))
         XCTAssertEqual(CalendarRowModel.plate(.next), PhoneTone.accent.color.opacity(Fill.selectedOpacity))
         XCTAssertEqual(CalendarRowModel.plate(.other), Fill.rest)
+    }
+
+    // MARK: - Rows inside a card (mockups 1, 2, 9, 16)
+
+    /// Rows grouped on one card are split by a hairline in the separator
+    /// colour; rows outside a card have none.
+    func testRowsInsideACardAreSplitByAHairline() {
+        XCTAssertEqual(CardRowDivider.lineWidth, Stroke.hairline)
+        XCTAssertEqual(CardRowDivider.color, Stroke.hairlineColor)
+        XCTAssertEqual(CardRowDivider().inset, 0)
     }
 
     // MARK: - Bars and Settings (mockups 9–12, 16)
