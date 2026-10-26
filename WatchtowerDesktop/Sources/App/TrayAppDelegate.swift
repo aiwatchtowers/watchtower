@@ -292,9 +292,10 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             },
             stopDaemon: { await Self.stopDaemonForQuit(app) },
             finishPendingDeletes: {
-                // The Chats panel's Undo bar too (spec 2026-10-26 §5.3): one write.
-                await app.chatHistoryViewModel?.commitPendingDelete()
-                await Self.finishPendingDeletes(app.workbenchesViewModel)
+                await Self.finishAllPendingDeletes(
+                    chats: { _ = await app.chatHistoryViewModel?.commitPendingDeleteForQuit() },
+                    sessions: { await Self.finishPendingDeletes(app.workbenchesViewModel) }
+                )
             },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
@@ -310,6 +311,20 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     ) async {
         await app.terminateDatabaseCompactionForQuit()
         await stop()
+    }
+
+    /// The quit's delete step: the Chats panel's Undo bar (spec 2026-10-26
+    /// §5.3, one write) runs beside PROJ-17's session commit, each inside
+    /// the same bound, so the chat never delays the sessions' commit or
+    /// their 0.5 s panel. Returns once both are done (or bounded).
+    @MainActor
+    static func finishAllPendingDeletes(
+        chats: @escaping @MainActor () async -> Void,
+        sessions: @MainActor () async -> Void
+    ) async {
+        let chatCommit = Task { @MainActor in await chats() }
+        await sessions()
+        await chatCommit.value
     }
 
     /// The quit's PROJ-17 step (board #588): the Undo batch is committed,

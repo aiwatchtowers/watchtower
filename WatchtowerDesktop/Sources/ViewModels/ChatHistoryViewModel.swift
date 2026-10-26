@@ -26,6 +26,8 @@ final class ChatHistoryViewModel {
     /// The Undo window's wait; a seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var deleteCommitTask: Task<Void, Never>?
+    /// The quit commit's bound wait; a seam for tests.
+    @ObservationIgnored var quitDeleteSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// The chat on screen (or nil: the landing, a project page). Selecting
     /// one marks it read (spec §5.2).
     var selectedConversationID: Int64? {
@@ -62,9 +64,18 @@ final class ChatHistoryViewModel {
     /// `chat_files/` root for post-delete cleanup; nil without an active
     /// workspace, matching `ChatAttachmentStore.defaultRootDir()`.
     private let attachmentsRoot: URL?
-    /// Bumped on every level change: a read started before it cannot send
-    /// the level back to All chats (it may predate the project's row).
-    @ObservationIgnored private var levelGeneration = 0
+    /// Stamps every read of the panel (the observation's too) with its
+    /// order and the level generation it started under: an older read never
+    /// overwrites a newer one, and one older than the last level change
+    /// never sends the level back to All chats (it may predate the
+    /// project's row).
+    @ObservationIgnored private let readClock = PanelReadClock()
+    /// The newest read applied (`PanelReadClock.Stamp.serial`).
+    @ObservationIgnored private var appliedReadSerial = 0
+    /// The level changed (`selectLevel`, the fallback included); the chat's
+    /// landing leaves a project the panel no longer shows (spec §4).
+    /// `AppState.wireChat` points it at `ChatViewModel.panelLevelChanged`.
+    @ObservationIgnored var onLevelChanged: (ChatPanelLevel) -> Void = { _ in }
     @ObservationIgnored private var observation: Task<Void, Never>?
 
     init(
@@ -85,11 +96,12 @@ final class ChatHistoryViewModel {
 
     /// Shows All chats or one project's chats, and remembers it.
     func selectLevel(_ newLevel: ChatPanelLevel) {
-        levelGeneration += 1
+        readClock.levelChanged()
         guard newLevel != level else { return }
         level = newLevel
         defaults.set(newLevel.storageValue, forKey: Self.levelKey(workspace))
         olderExpanded = defaults.bool(forKey: olderExpandedKey(newLevel))
+        onLevelChanged(newLevel)
     }
 
     private var workspace: String { dbManager.dbPool.path }
@@ -138,6 +150,12 @@ final class ChatHistoryViewModel {
     var allRows: [ChatPanelRow] {
         let hidden = hiddenChatIDs
         return hidden.isEmpty ? loadedRows : loadedRows.filter { !hidden.contains($0.id) }
+    }
+
+    /// A chat's row as last read, hidden or not (the delete's commit
+    /// re-checks its state).
+    func loadedRow(_ id: Int64) -> ChatPanelRow? {
+        loadedRows.first { $0.id == id }
     }
 
     /// The chats the quick delete hides: pending in the Undo window, or
@@ -191,25 +209,6 @@ final class ChatHistoryViewModel {
         ChatPanelRowState(row: row, isAnswering: isAnswering(row.id))
     }
 
-    /// ↑/↓ in the history column: the listed chat `offset` rows from the
-    /// selected one, in the order shown; with none selected (the landing, a
-    /// project page) ↓ picks the first and ↑ the last. It stops at either
-    /// end. Returns whether the selection moved.
-    @discardableResult
-    func selectAdjacent(by offset: Int) -> Bool {
-        let ids = visibleRowIDs
-        guard !ids.isEmpty, offset != 0 else { return false }
-        let target: Int
-        if let current = selectedConversationID, let index = ids.firstIndex(of: current) {
-            target = min(max(index + offset, 0), ids.count - 1)
-        } else {
-            target = offset > 0 ? 0 : ids.count - 1
-        }
-        guard ids[target] != selectedConversationID else { return false }
-        selectedConversationID = ids[target]
-        return true
-    }
-
     // MARK: - Read marks
 
     /// Marks the chat read through its newest complete answer (spec §5.2):
@@ -248,12 +247,14 @@ final class ChatHistoryViewModel {
         }
     }
 
-    /// The selection moves on only once the chat is archived.
+    /// The selection clears only once the chat is archived (the view then
+    /// shows the landing): no other chat is selected — and so marked read —
+    /// without being shown.
     /// - Returns: whether it was archived (`lastError` says why not).
     @discardableResult
     func archive(_ id: Int64) async -> Bool {
         guard await mutate({ db in try ChatConversationQueries.archive(db, id: id) }) else { return false }
-        if selectedConversationID == id { selectedConversationID = rows.first?.id }
+        if selectedConversationID == id { selectedConversationID = nil }
         return true
     }
 
@@ -301,17 +302,17 @@ final class ChatHistoryViewModel {
     /// by Go — `AppState.wireChatRefresh` calls it from the chat's
     /// turn-finished and action-awaited signals.
     func reloadRows(completion: (() -> Void)? = nil) {
-        let generation = levelGeneration
+        let read = PanelSnapshot.reader(readClock)
         Task.detached { [dbManager] in
             let snapshot: PanelSnapshot?
             do {
-                snapshot = try await dbManager.dbPool.read(PanelSnapshot.read)
+                snapshot = try await dbManager.dbPool.read(read)
             } catch {
                 NSLog("ChatHistoryViewModel: reading the chats failed: %@", error.localizedDescription)
                 snapshot = nil
             }
             await MainActor.run {
-                if let snapshot { self.apply(snapshot, readAtGeneration: generation) }
+                if let snapshot { self.apply(snapshot) }
                 completion?()
             }
         }
@@ -322,14 +323,14 @@ final class ChatHistoryViewModel {
     /// app's life (the view model lives on `AppState`).
     func startObserving() {
         guard observation == nil else { return }
-        let values = ValueObservation.tracking(PanelSnapshot.read).removeDuplicates().values(in: dbManager.dbPool)
+        // Every value is stamped, so none is a duplicate; `apply` leaves equal
+        // rows alone.
+        let values = ValueObservation.tracking(PanelSnapshot.reader(readClock)).values(in: dbManager.dbPool)
         observation = Task { [weak self] in
             do {
                 for try await snapshot in values {
                     guard let self else { return }
-                    // An observed value may predate a level change: it never
-                    // sends the level back to All chats.
-                    self.apply(snapshot, readAtGeneration: nil)
+                    self.apply(snapshot)
                 }
             } catch {
                 NSLog("ChatHistoryViewModel: observing the chats failed: %@", error.localizedDescription)
@@ -337,12 +338,16 @@ final class ChatHistoryViewModel {
         }
     }
 
-    /// A read started at `readAtGeneration` (nil = unknown) also checks the
-    /// level: a project gone since (deleted or archived) falls back to All
-    /// chats. A read older than the last level change does not.
-    private func apply(_ snapshot: PanelSnapshot, readAtGeneration: Int?) {
-        loadedRows = snapshot.rows
-        guard readAtGeneration == levelGeneration else { return }
+    /// A read older than the last one applied is dropped (the detached
+    /// reload and the observation race). One started under the current
+    /// level also checks it: a project gone since (deleted or archived)
+    /// falls back to All chats. A read older than the last level change
+    /// does not.
+    private func apply(_ snapshot: PanelSnapshot) {
+        guard snapshot.stamp.serial > appliedReadSerial else { return }
+        appliedReadSerial = snapshot.stamp.serial
+        if loadedRows != snapshot.rows { loadedRows = snapshot.rows }
+        guard readClock.isCurrent(snapshot.stamp) else { return }
         let resolved = level.resolved(activeProjectIDs: snapshot.activeProjectIDs)
         if resolved != level { selectLevel(resolved) }
     }
@@ -370,11 +375,13 @@ final class ChatHistoryViewModel {
                 ChatAttachmentStore.removeFiles(for: .conversation(id), rootDir: attachmentsRoot)
             }
             loadedRows.removeAll { $0.id == id }
-            if selectedConversationID == id {
-                selectedConversationID = rows.first?.id
-            }
+            // Nothing else is selected (and marked read) in its place.
+            if selectedConversationID == id { selectedConversationID = nil }
         } catch {
-            // silently ignore
+            // The chat is listed again (its delete's hiding ends with the
+            // caller); the panel says why it stayed.
+            NSLog("ChatHistoryViewModel: deleting chat %lld failed: %@", id, error.localizedDescription)
+            lastError = "Could not delete the chat: \(error.localizedDescription)"
         }
     }
 
@@ -414,7 +421,7 @@ final class ChatHistoryViewModel {
 
     private func reloadSynchronously() {
         do {
-            apply(try dbManager.dbPool.read(PanelSnapshot.read), readAtGeneration: levelGeneration)
+            apply(try dbManager.dbPool.read(PanelSnapshot.reader(readClock)))
         } catch {
             NSLog("ChatHistoryViewModel: reading the chats failed: %@", error.localizedDescription)
         }
@@ -428,16 +435,56 @@ final class ChatHistoryViewModel {
 }
 
 /// One read of the panel: its rows and which projects still exist (the
-/// level's fallback).
-private struct PanelSnapshot: Equatable, Sendable {
+/// level's fallback), stamped when it started.
+private struct PanelSnapshot: Sendable {
+    let stamp: PanelReadClock.Stamp
     let rows: [ChatPanelRow]
     let activeProjectIDs: Set<Int64>
 
-    @Sendable
-    static func read(_ db: Database) throws -> Self {
-        Self(
-            rows: try ChatHistoryQueries.panelRows(db, projectID: nil),
-            activeProjectIDs: Set(try ChatProjectQueries.fetchActive(db).map(\.id))
-        )
+    static func reader(_ clock: PanelReadClock) -> @Sendable (Database) throws -> Self {
+        { db in
+            let stamp = clock.stamp()
+            return Self(
+                stamp: stamp,
+                rows: try ChatHistoryQueries.panelRows(db, projectID: nil),
+                activeProjectIDs: Set(try ChatProjectQueries.fetchActive(db).map(\.id))
+            )
+        }
+    }
+}
+
+/// The panel's read order and level generation, shared by the main actor
+/// and the database's reader threads (`PanelSnapshot.reader` stamps on
+/// the reader at the read's start).
+final class PanelReadClock: @unchecked Sendable {
+    struct Stamp: Sendable, Equatable {
+        /// Increases with every read started.
+        let serial: Int
+        /// The level generation the read started under.
+        let levelGeneration: Int
+    }
+
+    private let lock = NSLock()
+    private var serial = 0
+    private var levelGeneration = 0
+
+    func stamp() -> Stamp {
+        lock.lock()
+        defer { lock.unlock() }
+        serial += 1
+        return Stamp(serial: serial, levelGeneration: levelGeneration)
+    }
+
+    func levelChanged() {
+        lock.lock()
+        levelGeneration += 1
+        lock.unlock()
+    }
+
+    /// The read started under the current level generation.
+    func isCurrent(_ stamp: Stamp) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stamp.levelGeneration == levelGeneration
     }
 }

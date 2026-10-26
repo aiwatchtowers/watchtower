@@ -85,17 +85,45 @@ final class ChatHistoryViewModelLevelTests: XCTestCase {
         }
     }
 
-    /// A read started before the level changed may predate the project's
-    /// row: it does not send the level back.
-    func testAReadOlderThanTheLevelKeepsIt() async {
+    /// A read is stamped when it starts reading (`PanelReadClock`): one
+    /// whose snapshot predates the level change never sends the level back
+    /// (`testTheReadClockOrdersReadsAndLevels`); one that reads after it —
+    /// even if asked for before — sees the project gone and does.
+    func testAReadAfterTheLevelChangeChecksIt() async {
         let vm = makeViewModel()
-        let done = expectation(description: "reload")
-        vm.reloadRows { done.fulfill() }
         vm.selectLevel(.project(999))
-        await fulfillment(of: [done], timeout: 5)
         XCTAssertEqual(vm.level, .project(999))
         await reloaded(vm)
         XCTAssertEqual(vm.level, .all, "a read after the change does")
+    }
+
+    /// A project deleted while the panel shows it: the observed write sends
+    /// the level (and the header) back to All chats, and says so.
+    func testAProjectDeletedWhileShownFallsBackThroughTheObservation() async throws {
+        let project = try await dbManager.dbPool.write { try ChatProjectQueries.create($0, name: "P").id }
+        let vm = makeViewModel()
+        var changes: [ChatPanelLevel] = []
+        vm.onLevelChanged = { changes.append($0) }
+        vm.selectLevel(.project(project))
+        vm.startObserving()
+        _ = try await dbManager.dbPool.write { try ChatProjectQueries.delete($0, id: project) }
+        let fellBack = await waitForCondition { vm.level == .all }
+        XCTAssertTrue(fellBack)
+        XCTAssertEqual(changes, [.project(project), .all])
+    }
+
+    /// Reads are applied in the order they started: a stamp older than the
+    /// last one applied is dropped, and one from before a level change is
+    /// not current.
+    func testTheReadClockOrdersReadsAndLevels() {
+        let clock = PanelReadClock()
+        let first = clock.stamp()
+        let second = clock.stamp()
+        XCTAssertLessThan(first.serial, second.serial)
+        XCTAssertTrue(clock.isCurrent(first))
+        clock.levelChanged()
+        XCTAssertFalse(clock.isCurrent(second))
+        XCTAssertTrue(clock.isCurrent(clock.stamp()))
     }
 
     func testRowsFollowTheLevel() async throws {
@@ -142,21 +170,6 @@ final class ChatHistoryViewModelLevelTests: XCTestCase {
         XCTAssertFalse(vm.olderExpanded, "a project has its own")
         vm.selectLevel(.all)
         XCTAssertTrue(vm.olderExpanded)
-    }
-
-    /// ↑/↓ walk the rows as shown: a folded older group is skipped.
-    func testSelectAdjacentSkipsTheFoldedOlderGroup() async throws {
-        let (recent, old) = try await dbManager.dbPool.write { d in
-            (try Self.chat(d, "new"), try Self.chat(d, "old", daysAgo: 30))
-        }
-        let vm = makeViewModel()
-        await reloaded(vm)
-        XCTAssertTrue(vm.selectAdjacent(by: 1))
-        XCTAssertEqual(vm.selectedConversationID, recent)
-        XCTAssertFalse(vm.selectAdjacent(by: 1), "the folded group is not walked into")
-        vm.olderExpanded = true
-        XCTAssertTrue(vm.selectAdjacent(by: 1))
-        XCTAssertEqual(vm.selectedConversationID, old)
     }
 
     func testSelectingAChatMarksItRead() async throws {

@@ -166,13 +166,107 @@ final class PendingChatDeletesViewModelTests: XCTestCase {
         XCTAssertEqual(forgotten, [a], "nothing pending: nothing more")
     }
 
-    /// The quit path awaits the chat's commit beside the session deletes.
+    /// The quit path runs the chat's bounded commit beside the session deletes.
     func testTheQuitCommitsTheWaitingChat() throws {
         let source = try String(contentsOfFile: Self.sources + "/App/TrayAppDelegate.swift", encoding: .utf8)
         let step = try XCTUnwrap(source.range(of: "finishPendingDeletes: {"))
         let body = source[step.upperBound...].prefix(400)
-        XCTAssertTrue(body.contains("await app.chatHistoryViewModel?.commitPendingDelete()"))
+        XCTAssertTrue(body.contains("Self.finishAllPendingDeletes("))
+        XCTAssertTrue(body.contains("app.chatHistoryViewModel?.commitPendingDeleteForQuit()"))
         XCTAssertTrue(body.contains("await Self.finishPendingDeletes(app.workbenchesViewModel)"))
+    }
+
+    /// The chat's quit commit never holds the session commit back: the
+    /// sessions' step starts while the chat's write is still running.
+    func testTheQuitRunsTheChatCommitBesideTheSessionCommit() async throws {
+        var events: [String] = []
+        let chatGate = ChatDeleteWindowGate()
+        await TrayAppDelegate.finishAllPendingDeletes(
+            chats: {
+                events.append("chat started")
+                await chatGate.wait(.zero)
+                events.append("chat done")
+            },
+            sessions: {
+                events.append("sessions started")
+                // The chat's write is under way while the sessions' runs.
+                while !events.contains("chat started") { await Task.yield() }
+                events.append("sessions done")
+                chatGate.open()
+            }
+        )
+        let sessionsDone = try XCTUnwrap(events.firstIndex(of: "sessions done"))
+        let chatDone = try XCTUnwrap(events.firstIndex(of: "chat done"))
+        XCTAssertLessThan(sessionsDone, chatDone, "the sessions' commit never waits for the chat's")
+    }
+
+    /// The quit waits for the chat's DELETE up to its bound, no longer.
+    func testTheQuitCommitIsBounded() async throws {
+        let (a, b) = try await dbManager.dbPool.write { d in (try Self.chat(d, "alpha"), try Self.chat(d, "beta")) }
+        let vm = await makeViewModel()
+        vm.deleteWithUndo(a)
+        vm.quitDeleteSleep = { _ in try? await Task.sleep(for: .seconds(60)) }
+        let finished = await vm.commitPendingDeleteForQuit(bound: .seconds(60))
+        XCTAssertTrue(finished)
+        let gone = try await exists(a)
+        XCTAssertFalse(gone)
+
+        vm.deleteWithUndo(b)
+        // The bound passes at once: the DELETE has not landed by then.
+        vm.quitDeleteSleep = { _ in }
+        let timedOut = await vm.commitPendingDeleteForQuit(bound: .zero)
+        XCTAssertFalse(timedOut, "the bound passed before the write")
+        await vm.writesSettled()
+    }
+
+    // MARK: - Failure and busy
+
+    /// A DELETE that fails is not silent: the panel says so and the chat
+    /// is listed again.
+    func testAFailedDeleteIsReportedAndTheChatComesBack() async throws {
+        let a = try await dbManager.dbPool.write { try Self.chat($0, "alpha") }
+        try await dbManager.dbPool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER refuse_chat_delete BEFORE DELETE ON chat_conversations
+                BEGIN SELECT RAISE(ABORT, 'refused'); END
+                """)
+        }
+        let vm = await makeViewModel()
+        vm.deleteWithUndo(a)
+        await vm.commitPendingDelete()
+        let stillThere = try await exists(a)
+        XCTAssertTrue(stillThere)
+        XCTAssertEqual(vm.lastError?.hasPrefix("Could not delete the chat"), true)
+        XCTAssertTrue(vm.hiddenChatIDs.isEmpty)
+        XCTAssertEqual(vm.rows.map(\.id), [a], "listed again")
+    }
+
+    /// A chat that started answering (or waiting) inside its Undo window is
+    /// listed again at the commit, never deleted without the alert (CHAT-01).
+    func testACommitOfAChatTurnedBusyRestoresIt() async throws {
+        let (a, w) = try await dbManager.dbPool.write { d in (try Self.chat(d, "alpha"), try Self.chat(d, "waits")) }
+        let vm = await makeViewModel()
+        vm.deleteWithUndo(a)
+        answering = [a]
+        await vm.commitPendingDelete()
+        var kept = try await exists(a)
+        XCTAssertTrue(kept)
+        XCTAssertTrue(forgotten.isEmpty, "its session is not retired")
+        XCTAssertTrue(vm.hiddenChatIDs.isEmpty)
+        XCTAssertTrue(vm.rows.contains { $0.id == a })
+
+        vm.deleteWithUndo(w)
+        try await dbManager.dbPool.write { d in
+            try d.execute(sql: """
+                INSERT INTO agent_actions (conversation_id, status, tool, args_json, created_at)
+                VALUES (?, 'pending', 't', '{}', 0)
+                """, arguments: [w])
+        }
+        await reloaded(vm)
+        await vm.commitPendingDelete()
+        kept = try await exists(w)
+        XCTAssertTrue(kept, "waiting for approval: kept too")
+        XCTAssertTrue(vm.rows.contains { $0.id == w })
     }
 
     private static var sources: String {

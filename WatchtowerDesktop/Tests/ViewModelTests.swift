@@ -535,7 +535,9 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testDeleteSelectedSwitchesToFirst() async throws {
+    /// Deleting the selected chat selects no other (none is marked read
+    /// without being shown; the view lands).
+    func testDeleteSelectedClearsTheSelection() async throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
         let conv1Row = await vm.createConversation()
         let conv1 = try XCTUnwrap(conv1Row)
@@ -545,8 +547,8 @@ final class ChatHistoryViewModelTests: XCTestCase {
 
         await vm.deleteConversation(conv2.id)
 
-        XCTAssertEqual(vm.conversations.count, 1)
-        XCTAssertEqual(vm.selectedConversationID, conv1.id)
+        XCTAssertEqual(vm.conversations.map(\.id), [conv1.id])
+        XCTAssertNil(vm.selectedConversationID)
     }
 
     @MainActor

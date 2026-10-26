@@ -56,8 +56,43 @@ extension ChatHistoryViewModel {
         await commitDelete(entry)
     }
 
+    /// The quit's commit (PROJ-17's quit step runs beside it): waits for
+    /// the chat's DELETE at most `bound`, the session deletes' own bound, so
+    /// the two together stay inside it. False when the bound passed first —
+    /// the write goes on, and an unfinished one leaves the chat listed at
+    /// the next launch.
+    func commitPendingDeleteForQuit(
+        bound: Duration = .seconds(WorkbenchesViewModel.defaultQuitDeleteWait)
+    ) async -> Bool {
+        let commit = Task { await commitPendingDelete() }
+        let sleep = quitDeleteSleep
+        let finished = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let once = QuitResumeOnce(continuation)
+            let timer = Task { @MainActor in
+                await sleep(bound)
+                once.resume(false)
+            }
+            Task { @MainActor in
+                await commit.value
+                timer.cancel()
+                once.resume(true)
+            }
+        }
+        if !finished {
+            NSLog("ChatHistoryViewModel: deleting the chat on quit timed out; it is listed again next launch")
+        }
+        return finished
+    }
+
+    /// The DELETE of a chat whose Undo window ended. A chat that answers or
+    /// waits for approval by now is never deleted without the alert
+    /// (CHAT-01): it is listed again instead.
     private func commitDelete(_ entry: PendingChatDeletes.Entry) async {
         let id = entry.conversationID
+        if let row = loadedRow(id), !isQuickDelete(row) {
+            committingDeletes.remove(id)
+            return
+        }
         committingDeletes.insert(id)
         forgetConversation(id)
         await deleteConversation(id)
@@ -139,5 +174,21 @@ extension ChatHistoryViewModel {
         let visible = visibleRowIDs
         guard panelCursor == id, visible.contains(id) else { return }
         panelCursor = SessionPanelSections.panelNeighbour(of: id, in: visible)
+    }
+}
+
+/// The first of the quit's two racers (the chat's commit, its bound)
+/// resumes; the other is a no-op.
+@MainActor
+private final class QuitResumeOnce {
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: Bool) {
+        continuation?.resume(returning: value)
+        continuation = nil
     }
 }
