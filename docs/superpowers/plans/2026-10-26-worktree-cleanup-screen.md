@@ -165,6 +165,7 @@ Go lane: Task 1 → 2 → 3 → 4 → 5. Swift lane: Task 6 (needs only the spec
 
 **Interfaces:**
 - Produces: on `SessionCleanupItem`: `origin: SessionCleanupOrigin` (`enum SessionCleanupOrigin: String { case session, subagent, placed, manual, none = "" }`, unknown raw → `.none`), `lastCommitAt: Date?`, `merged: Bool`, `worktree: String` (`""` when absent); all `decodeIfPresent` so old JSON still decodes.
+  `package enum CleanupStage: Equatable, Sendable { case listing; case checking(done: Int, of: Int); case sizing(done: Int, of: Int); case ready(at: Date); case applying; case done(SessionCleanupPlan); case failed(String) }` (the center's stage, Task 8; the progress text, Task 7).
   `enum SessionCleanupEvent: Equatable, Sendable { case listed([SessionCleanupItem]); case checked(SessionCleanupItem); case sized(key: String, bytes: Int64, known: Bool); case removing(String); case removed(SessionCleanupItem); case done(SessionCleanupPlan) }` with `static func decode(line: String) -> SessionCleanupEvent?` (nil for a bad line or an unknown event).
 
 - [ ] **Step 1: Failing tests:** `testNewItemKeysDecode` (each key and its absence), `testEachEventDecodes` (one line per event), `testUnknownEventAndBadLineAreSkipped` (`{"event":"later"}` and `not json` → nil).
@@ -199,6 +200,10 @@ Go lane: Task 1 → 2 → 3 → 4 → 5. Swift lane: Task 6 (needs only the spec
       package func applyKeys(for ticks: Set<String>) -> [String]   // known kinds only
       package func totalText(for ticks: Set<String>) -> String      // "3 worktrees, 3 branches · ~25 GB" / "Nothing selected"
       package func confirmationTitle(for ticks: Set<String>) -> String // "Remove 3 worktrees and 3 branches (~25 GB)?"
+      package static func resultText(_ plan: SessionCleanupPlan) -> (freed: String, kept: String?)
+      // from removed_bytes / removed_bytes_known and the items' done/keep: ("Freed ~15 GB · removed 2 worktrees, 2 branches", "kept 1 — changed since the check")
+      package static func progressText(_ stage: CleanupStage, worktrees: Int, branches: Int, now: Date) -> String
+      // "Listing worktrees…" / "Checking 23 of 69 worktrees…" / "Measuring sizes 4 of 53…" / "Checked just now · 69 worktrees, 130 branches" / "Checked 1 min ago · …" / "Removing…"
   }
   ```
 
@@ -214,6 +219,8 @@ Go lane: Task 1 → 2 → 3 → 4 → 5. Swift lane: Task 6 (needs only the spec
   - `testDefaultSortIsSizeDescendingUnmeasuredLast`.
   - `testOwnerText` — session owner → "“Billing retry” · finished 9 days ago"; origins → "Subagent" / "Session deleted" / "Made by hand"; branch-only → "—".
   - `testTotalsAndConfirmation` — exact copy from Global Constraints; "some sizes unknown" when any ticked worktree is unmeasured.
+  - `testResultLine` — a plan with 2 worktrees and 2 branches done, `removed_bytes` 15 000 000 000 known, one worktree kept `moved`/changed → `("Freed ~15 GB · removed 2 worktrees, 2 branches", "kept 1 — changed since the check")`; `removed_bytes_known == false` → freed text "Freed at least ~15 GB · …"; nothing removed → `("Nothing removed", "kept 2 — …")`; the kept reasons in words from `SessionCleanupPresentation`, grouped and counted.
+  - `testProgressLineCopy` — each `CleanupStage` gives the exact string above; `.ready(at:)` 30 s ago → "Checked just now · 69 worktrees, 130 branches", 70 s ago → "Checked 1 min ago · …", 2 h ago → "Checked 2 h ago · …"; singular "1 worktree, 1 branch".
 - [ ] **Step 2:** `make test-swift FILTER=CleanupScreenModelTests` → FAIL.
 - [ ] **Step 3: Implement** in `CleanupScreenModel.swift` (pairing by `item.branch` for worktrees, by `item.worktree` for bundles).
 - [ ] **Step 4:** same → PASS; `make lint-swift` clean.
@@ -231,7 +238,7 @@ Go lane: Task 1 → 2 → 3 → 4 → 5. Swift lane: Task 6 (needs only the spec
 - Consumes: `SessionCleanupEvent.decode(line:)`, `CodeCLIProcess.launch(executable:arguments:environment:)`, its stdout lines and `terminateGroup(grace:)`.
 - Produces:
   - `protocol SessionCleanupStreaming { func streamCleanup(args: [String], environment: [String: String]) throws -> SessionCleanupStream }` with `struct SessionCleanupStream { let lines: AsyncStream<String>; let exit: () async -> Int32; let stop: () -> Void }`; the production conformer wraps `CodeCLIProcess`; tests use a scripted fake.
-  - `struct SessionCleanupProgress: Equatable { var runID: Int; var items: [SessionCleanupItem]; var checking: Set<String>; var sizing: Set<String>; var stage: Stage /* .listing, .checking(done: Int, of: Int), .sizing(done: Int, of: Int), .ready(at: Date), .applying, .done(SessionCleanupPlan), .failed(String) */ }`
+  - `struct SessionCleanupProgress: Equatable { var runID: Int; var items: [SessionCleanupItem]; var checking: Set<String>; var sizing: Set<String>; var stage: CleanupStage /* Task 6 */ }`
   - `func progress(for scope: SessionCleanupScope) -> SessionCleanupProgress?`
   - `func startStreamedPlan(_ scope: SessionCleanupScope) -> Task<Void, Never>` (stops a running plan of the scope first), `func startStreamedApply(_ scope: SessionCleanupScope, items: [String]) -> Task<Bool, Never>`
   - `func isApplying(workbenchID: Int64) -> Bool` (any scope of the workbench, Delete and Clean Up included).
@@ -261,7 +268,8 @@ Go lane: Task 1 → 2 → 3 → 4 → 5. Swift lane: Task 6 (needs only the spec
 
 **Interfaces:**
 - Consumes: Task 7 model, Task 8 center API.
-- Produces: `struct CleanupScreenState: Equatable { var scope: SessionCleanupScope; var ticks: Set<String>; var filters: CleanupFilters; var sort: CleanupSort; var ascending: Bool; var lastClicked: String?; var resultDismissed: Bool }`; `var cleanupScreens: [Int64: CleanupScreenState]` (in memory only); `func openCleanupScreen(projectID: Int64, sessionID: Int64? = nil)`, `func closeCleanupScreen(projectID: Int64)`, `func widenCleanupScope(projectID: Int64)`, `func refreshCleanup(projectID: Int64)`, `func applyCleanupScreen(projectID: Int64) async -> Bool`, `func retryCleanup(projectID: Int64)`; `func deleteAndCleanUpBlocked(projectID: Int64) -> Bool`.
+- Produces: `struct CleanupScreenState: Equatable { var scope: SessionCleanupScope; var ticks: Set<String>; var filters: CleanupFilters; var sort: CleanupSort; var ascending: Bool; var lastClicked: String?; var resultDismissed: Bool }`; `var cleanupScreens: [Int64: CleanupScreenState]` (in memory only); `func openCleanupScreen(projectID: Int64, sessionID: Int64? = nil)`, `func closeCleanupScreen(projectID: Int64)`, `func widenCleanupScope(projectID: Int64)`, `func refreshCleanup(projectID: Int64)`, `func applyCleanupScreen(projectID: Int64) async -> Bool`, `func retryCleanup(projectID: Int64)`; `func deleteAndCleanUpBlocked(projectID: Int64) -> Bool`; `func canRefreshCleanup(projectID: Int64) -> Bool` (false while any cleanup apply of the workbench runs); `func cleanupScreenOpen(projectID: Int64) -> Bool` and `func cleanupScreenShows(sessionID: Int64) -> Bool` (computed from `cleanupScreens`).
+- Replaces: `openSweepSheets` and `openCleanupSheets` (`WorkbenchesViewModel.swift:161,170`) and `sweepSheetAppeared/Disappeared`, `cleanupSheetAppeared/Disappeared` are removed; every check that read them reads the screen state instead — the hint guards in `WorkbenchesViewModel+CleanupSweep.swift` (lines ~89, 165, 182, 220: no hint plan and no hint while the screen is open for the workbench), the apply finish in `+CleanupSweep.swift` and `+SessionCleanup.swift` (~186–190: a failure is "seen" when the screen is open on that scope, else it goes on the page), and the automatic placed-session cleanup in `+PlacedCleanup.swift` (~123: skipped while the screen shows that session). Opening the screen = what `…Appeared` did; closing = what `…Disappeared` did.
 
 - [ ] **Step 1: Failing / rewritten tests:**
   - `testSweepAppliesOnlyTickedKeys` (PROJ-18 guard, rewritten per spec §8, owner-approved ask #633): ticking the worktree row of `…/old` sends exactly `--item=worktree:…/old --item=branch:feat/old` (its removable branch) plus its bundle keys; a kept item, a stray key and an unknown kind are never sent.
@@ -271,6 +279,11 @@ Go lane: Task 1 → 2 → 3 → 4 → 5. Swift lane: Task 6 (needs only the spec
   - `testScreenStateIsNeverSaved` — after open, `WorkspaceLayout` for the workbench is unchanged and encodes no cleanup value.
   - `testDeleteAndCleanUpWaitsForTheScreensApply` — while the screen's apply runs, `deleteAndCleanUpBlocked` is true; Delete Only still works.
   - `testRetryAfterAFailedApplyReappliesTheTicks` / `testRetryAfterAFailedPlanPlansAgain`.
+  - `testRefreshAndCleanUpDisabledWhileApplying` — during an apply of either scope `canRefreshCleanup` is false and `applyCleanupScreen` returns false without launching.
+  - `testApplyIsNeverStoppedByRefreshOrScopeChange` — `refreshCleanup` and `widenCleanupScope` during an apply are no-ops: the apply stream's `stop` is never called and its `done` still lands.
+  - `testOpenScreenBlocksTheHint` (replaces the sheet-keyed hint checks; `testNoHintSweepOnceTheSheetWasOpened`, `testLeavingThePageStopsARunningHintPlan`, `testSheetOpenedMidHintKeepsTheSheetsPlan` keep their assertions against the screen).
+  - `testApplyFailureShowsOnTheScreenWhenOpenElseOnThePage` (replaces `testSweepFailureAfterTheSheetClosedShowsOnThePage`, `testSheetFailureAfterItClosedShowsOnThePage`, `testSheetFailureWhileOpenStaysInTheSheet` — same assertions, screen instead of sheet).
+  - `testOpenScreenOnASessionSkipsItsAutomaticCleanup` — a placed session's natural-exit cleanup does not run while the screen shows that session.
   - Hint tests that opened the sheet now open the screen (`testOpeningTheSweepAnswersTheHint`, `testSheetOpenedFromTheHintReusesItsPlan` renamed only where the word "Sheet" names the removed view — assertions unchanged).
 - [ ] **Step 2:** `make test-swift FILTER='SessionCleanupSweepTests|WorkbenchSessionDeleteTests'` → FAIL.
 - [ ] **Step 3: Implement**; remove `WorkbenchSweepSheet.swift` and `SessionCleanupSheet.swift` and their view-model entry points that only they used.
@@ -292,7 +305,7 @@ Go lane: Task 1 → 2 → 3 → 4 → 5. Swift lane: Task 6 (needs only the spec
 
 - [ ] **Step 1: Failing test** `testScreenCoversTheWorkspaceWithoutRecreatingIt` — host `WorkbenchPageView` on a fixture workbench with one terminal pane, open then close the screen: the pane's terminal view object identity (the `TerminalCenter` view for the session) is the same before and after, and the session was never detached.
 - [ ] **Step 2:** `make test-swift FILTER=CleanupScreenViewTests` → FAIL.
-- [ ] **Step 3: Implement** to match the mockup states A–G: `ZStack` over `WorkspaceAreaView` (the area stays in the tree, hidden from hit-testing and accessibility while covered); header title + subtitle; progress line / result bar; toolbar (session chip with ✕ in session scope, search `SearchField`, `KitSegmentedPicker` kind, age and owner menus with `MenuLabel`, Merged only toggle chip); column header of `.kitQuiet` sort buttons; `LazyVStack` of `.kitRow` rows under `SectionHeader` groups (Kept folded, its summary in the header); checkbox toggles; ⇧-click range, ⌘A, Esc; footer with Select All That Can Go / Clear / total / **Clean Up…** (`.kitDestructive`); confirmation sheet (`.kitSecondary` Cancel, `.kitDestructive` Remove); empty state from `TabEmptyState`. Colours only from `Tone`.
+- [ ] **Step 3: Implement** to match the mockup states A–G: `ZStack` over `WorkspaceAreaView` (the area stays in the tree, hidden from hit-testing and accessibility while covered); header title + subtitle; progress line from `CleanupScreenModel.progressText` and result bar from `resultText` (no copy in the view); toolbar (session chip with ✕ in session scope, search `SearchField`, `KitSegmentedPicker` kind, age and owner menus with `MenuLabel`, Merged only toggle chip); column header of `.kitQuiet` sort buttons; `LazyVStack` of `.kitRow` rows under `SectionHeader` groups (Kept folded, its summary in the header); checkbox toggles; ⇧-click range, ⌘A, Esc; footer with Select All That Can Go / Clear / total / **Clean Up…** (`.kitDestructive`); confirmation sheet (`.kitSecondary` Cancel, `.kitDestructive` Remove); empty state from `TabEmptyState`. Colours only from `Tone`.
 - [ ] **Step 4:** same → PASS; `make lint-swift` clean; `make test-swift FILTER='SessionCleanup|WorkbenchSessionDelete|CleanupScreen'` → PASS.
 - [ ] **Step 5: Commit** `feat(desktop): Clean Up screen (board #1107)`.
 
