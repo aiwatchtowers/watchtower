@@ -215,10 +215,11 @@ private struct MobilePhoneRow: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(device.name)
-                    Text(
-                        MobileSettingsViewModel.scopeLabel(device.scope)
-                            + " · Linked \(device.linkedAt.formatted(date: .abbreviated, time: .shortened))"
-                    )
+                    HStack(spacing: Spacing.small) {
+                        Text(MobileSettingsViewModel.scopeLabel(device.scope))
+                        Text("·")
+                        Text("Linked \(device.linkedAt.formatted(date: .abbreviated, time: .shortened))")
+                    }
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
