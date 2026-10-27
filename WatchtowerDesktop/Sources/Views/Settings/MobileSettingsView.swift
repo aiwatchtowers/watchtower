@@ -211,38 +211,45 @@ private struct MobilePhoneRow: View {
     let onRemove: () -> Void
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(device.name)
-                HStack(spacing: 6) {
-                    Text(MobileSettingsViewModel.scopeLabel(device.scope))
-                    Text("Linked \(device.linkedAt.formatted(date: .abbreviated, time: .shortened))")
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text(device.name)
+                    Text(
+                        MobileSettingsViewModel.scopeLabel(device.scope)
+                            + " · Linked \(device.linkedAt.formatted(date: .abbreviated, time: .shortened))"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                grantLine(
+                Spacer()
+                Button("Remove…", role: .destructive, action: onRemove)
+            }
+            // One column of labels, one of buttons, so the buttons line up
+            // whatever the label lengths.
+            Grid(alignment: .leading, horizontalSpacing: Spacing.medium, verticalSpacing: Spacing.small) {
+                grantRow(
                     MobileSettingsViewModel.typingLabel(device), requested: device.typingRequested,
                     allowed: device.typingAllowed, onAllow: onAllow, onRevoke: onRevoke
                 )
-                grantLine(
+                grantRow(
                     MobileSettingsViewModel.startSessionsLabel(device), requested: false,
                     // Allow… waits for typing; a Revoke always works.
                     allowed: device.startSessionsGranted, enabled: device.typingAllowed || device.startSessionsGranted,
                     onAllow: onAllowStartSessions, onRevoke: onRevokeStartSessions
                 )
-                grantLine(
+                grantRow(
                     MobileSettingsViewModel.permissionsLabel(device), requested: device.permissionsRequested,
                     allowed: device.permissionsAllowed, onAllow: onAllowPermissions, onRevoke: onRevokePermissions
                 )
             }
-            Spacer()
-            Button("Remove…", role: .destructive, action: onRemove)
         }
+        .padding(.vertical, Spacing.tight)
     }
 
     /// A grant's state (a pending request in the accent colour) and its
-    /// Allow… or Revoke.
-    private func grantLine(
+    /// Allow… or Revoke, right-aligned in the button column.
+    private func grantRow(
         _ label: String,
         requested: Bool,
         allowed: Bool,
@@ -250,17 +257,20 @@ private struct MobilePhoneRow: View {
         onAllow: @escaping () -> Void,
         onRevoke: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: 6) {
+        GridRow(alignment: .firstTextBaseline) {
             Text(label)
-                .font(.caption)
                 .foregroundStyle(requested && !allowed ? Color.accentColor : Color.secondary)
-            if allowed {
-                Button("Revoke", action: onRevoke)
-            } else {
-                Button("Allow…", action: onAllow)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if allowed {
+                    Button("Revoke", action: onRevoke)
+                } else {
+                    Button("Allow…", action: onAllow)
+                }
             }
+            .gridColumnAlignment(.trailing)
+            .disabled(!enabled)
         }
-        .disabled(!enabled)
         .controlSize(.small)
     }
 }
