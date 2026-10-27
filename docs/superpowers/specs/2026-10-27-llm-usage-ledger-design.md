@@ -51,11 +51,15 @@ The numbers must be trustworthy. Today they are not.
 
 ## Non-goals
 
-- No change to `pipeline_runs` storage. The existing **Usage** run-history tab stays the run
-  log (status, duration, items, errors), but it **stops showing tokens and cost**: its token
-  badges and summary numbers are removed and replaced by one line "Tokens and cost: see the
-  Watchtower tab" with a button that switches to it. Wrong numbers are not left on screen
-  next to right ones.
+- No change to `pipeline_runs` storage. Every screen that reads its token columns **stops
+  showing tokens and cost**, so wrong numbers are not left on screen next to right ones:
+  - the **Usage** run-history tab stays the run log (status, duration, items, errors); its
+    token badges and summary numbers are removed and replaced by one line "Tokens and cost:
+    see the Watchtower tab" with a button that switches to it;
+  - the **Progress** tab (`ProgressDetailView`) drops its per-run Input / Input (+ cache) /
+    Output rows and the per-step `in/out` token text, with the same one-line pointer under a
+    run's details.
+  Both changed screens are in the mockup and get `DesignShotCatalog` shots.
 - No budgets, alerts or limits on top of the ledger (later, if wanted).
 - No per-chat or per-workbench drill-down — one total line each is what was asked.
 - No Desktop-side (Swift) LLM calls: the Desktop does not call a model directly, it runs the CLI.
@@ -186,7 +190,8 @@ for the screen and the terminal):
   estimated-usage calls, cost-unknown calls, lost calls) and `by_purpose` rows (purpose,
   display group, calls, tokens, cost, avg tokens per call, models) for Watchtower's own work
   incl. built-in automations.
-- `own_automations`: totals + one row per owner automation (name, calls, tokens, cost).
+- `own_automations`: totals + one row per owner automation (name, runs, calls, tokens,
+  output, cost).
 - `chats`: one totals object (surface `chat`).
 - `workbenches`: one totals object = `sessions` (agent sessions from `agentlog.db` events in
   the period, workbenches with agent analytics on) + `helpers` (surface `workbench` ledger
@@ -228,7 +233,9 @@ The guide's Usage text (`docs/guide/concepts/ai-providers-and-cost.md` and
 
 - Ledger of every LLM call + Watchtower tab + one total for chats and workbenches; `pipeline_runs`
   untouched — ask #672.
-- Proposed by Claude, confirmed or changed by the owner in this review (ask #673):
+- Proposed by Claude, **not yet answered by the owner**; the owner's approval of this spec is
+  what confirms them, and each can be changed in the review comments (review asks #673/#674
+  and later rounds):
   - Watchtower's calls made for workbench features (review overview, spec review, terminal
     titles, workbench MCP tools) are counted under workbenches, not in the Watchtower table.
   - Workbench session totals come from agent analytics and cover only workbenches with

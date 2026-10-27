@@ -51,9 +51,9 @@
 <div class="card wrap">
   <h3>Your automations <span class="muted">— 1.1 M tokens · $22.40</span></h3>
   <table>
-    <tr><th>Automation</th><th>Runs</th><th>Tokens</th><th>Output</th><th>Cost</th></tr>
-    <tr><td>Triage new tracker issues</td><td>110</td><td>1.0 M</td><td>1.0 M</td><td>$21.90</td></tr>
-    <tr><td>Weekly to-do</td><td>6</td><td>40 K</td><td>3 K</td><td>$0.50</td></tr>
+    <tr><th>Automation</th><th>Runs</th><th>Calls</th><th>Tokens</th><th>Output</th><th>Cost</th></tr>
+    <tr><td>Triage new tracker issues</td><td>110</td><td>220</td><td>1.0 M</td><td>1.0 M</td><td>$21.90</td></tr>
+    <tr><td>Weekly to-do</td><td>6</td><td>6</td><td>40 K</td><td>3 K</td><td>$0.50</td></tr>
   </table>
 </div>
 
@@ -64,6 +64,29 @@
     <tr><td>Workbenches <span class="muted">sessions 410 M · Watchtower helpers 2.1 M</span></td><td>412 M tokens</td><td>$620.00</td></tr>
   </table>
   <div class="muted" style="margin-top:6px">Agent analytics is off for: demo-bench — its sessions are not counted.</div>
+</div>
+
+<h2 style="font-size:14px;margin-top:28px">Changed: Usage tab (run log)</h2>
+<div class="seg"><span>Claude plan</span><span>Watchtower</span><span>Progress</span><span class="on">Usage</span></div>
+<div class="card">
+  <div class="muted">Tokens and cost: see the Watchtower tab &nbsp;<span style="color:var(--accent)">Open Watchtower tab</span></div>
+</div>
+<div class="card wrap">
+  <table>
+    <tr><th>Pipeline</th><th>Source</th><th>Status</th><th>Items</th><th>Duration</th><th>Started</th></tr>
+    <tr><td>briefing</td><td>daemon</td><td>done</td><td>1</td><td>42 s</td><td>07:29</td></tr>
+    <tr><td>stream-digests</td><td>daemon</td><td>done</td><td>6</td><td>18 s</td><td>07:20</td></tr>
+  </table>
+</div>
+
+<h2 style="font-size:14px;margin-top:28px">Changed: Progress tab, run details</h2>
+<div class="card">
+  <table>
+    <tr><td>Status</td><td>done</td></tr>
+    <tr><td>Duration</td><td>42 s</td></tr>
+    <tr><td>Items</td><td>1</td></tr>
+  </table>
+  <div class="muted" style="margin-top:6px">Tokens and cost: see the Watchtower tab &nbsp;<span style="color:var(--accent)">Open</span></div>
 </div>
 </body>
 </html>
