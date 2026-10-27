@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Usage — Watchtower tab</title>
+<style>
+  :root { --bg:#f5f5f7; --card:#fff; --fg:#1d1d1f; --muted:#86868b; --line:#e5e5ea; --warn:#b25000; --accent:#0a84ff; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#1e1e1e; --card:#2a2a2c; --fg:#f5f5f7; --muted:#98989d; --line:#3a3a3c; --warn:#ff9f0a; } }
+  :root[data-theme="dark"] { --bg:#1e1e1e; --card:#2a2a2c; --fg:#f5f5f7; --muted:#98989d; --line:#3a3a3c; --warn:#ff9f0a; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:13px -apple-system, system-ui, sans-serif; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg span { padding:4px 12px; } .seg .on { background:var(--accent); color:#fff; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:12px 0; }
+  .totals { display:flex; flex-wrap:wrap; gap:24px; } .totals b { display:block; font-size:18px; }
+  .muted { color:var(--muted); } .warn { color:var(--warn); }
+  h3 { margin:0 0 8px; font-size:13px; }
+  table { width:100%; border-collapse:collapse; } td, th { padding:5px 4px; text-align:right; border-bottom:1px solid var(--line); }
+  td:first-child, th:first-child { text-align:left; } th { color:var(--muted); font-weight:500; }
+  .wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<div class="seg"><span>Claude plan</span><span class="on">Watchtower</span><span>Progress</span><span>Usage</span></div>
+&nbsp; <div class="seg"><span>Today</span><span class="on">7 days</span><span>30 days</span></div>
+
+<div class="card">
+  <div class="totals">
+    <div><span class="muted">Calls</span><b>1 284</b></div>
+    <div><span class="muted">Fresh input</span><b>212 K</b></div>
+    <div><span class="muted">Cache</span><b>9.4 M</b></div>
+    <div><span class="muted">Output</span><b>486 K</b></div>
+    <div><span class="muted">API-equivalent</span><b>≥ $41.20</b></div>
+  </div>
+  <div class="muted" style="margin-top:8px">12 calls with estimated usage · 30 calls without a price (Ollama) · <span class="warn">3 untagged calls</span></div>
+</div>
+
+<div class="card wrap">
+  <h3>Watchtower collecting and processing</h3>
+  <table>
+    <tr><th>Process</th><th>Calls</th><th>Tokens</th><th>Output</th><th>Cost</th><th>Per call</th></tr>
+    <tr><td>Slack digests</td><td>412</td><td>3.1 M</td><td>120 K</td><td>$14.10</td><td>7.5 K</td></tr>
+    <tr><td>Morning brief</td><td>7</td><td>1.2 M</td><td>40 K</td><td>$9.80</td><td>171 K</td></tr>
+    <tr><td>Agent instruction suggestions</td><td>7</td><td>960 K</td><td>17 K</td><td>$6.40</td><td>137 K</td></tr>
+    <tr><td>Idea finder</td><td>53</td><td>410 K</td><td>4 K</td><td>≈ $3.10</td><td>7.7 K</td></tr>
+    <tr><td>Image descriptions</td><td>120</td><td>380 K</td><td>22 K</td><td>$2.90</td><td>3.2 K</td></tr>
+    <tr class="warn"><td>Untagged (cli:jira boards)</td><td>3</td><td>18 K</td><td>1 K</td><td>$0.20</td><td>6 K</td></tr>
+  </table>
+</div>
+
+<div class="card wrap">
+  <h3>Your automations <span class="muted">— 1.1 M tokens · $22.40</span></h3>
+  <table>
+    <tr><th>Automation</th><th>Runs</th><th>Tokens</th><th>Output</th><th>Cost</th></tr>
+    <tr><td>Triage new tracker issues</td><td>110</td><td>1.0 M</td><td>1.0 M</td><td>$21.90</td></tr>
+    <tr><td>Weekly to-do</td><td>6</td><td>40 K</td><td>3 K</td><td>$0.50</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Chats and workbenches</h3>
+  <table>
+    <tr><td>Chats</td><td>38 M tokens</td><td>$61.00</td></tr>
+    <tr><td>Workbenches <span class="muted">sessions 410 M · Watchtower helpers 2.1 M</span></td><td>412 M tokens</td><td>$620.00</td></tr>
+  </table>
+  <div class="muted" style="margin-top:6px">Agent analytics is off for: demo-bench — its sessions are not counted.</div>
+</div>
+</body>
+</html>

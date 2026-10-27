@@ -51,8 +51,11 @@ The numbers must be trustworthy. Today they are not.
 
 ## Non-goals
 
-- No change to `pipeline_runs` or the existing **Usage** run-history tab (it stays the run
-  log; its token columns are not fixed in this work).
+- No change to `pipeline_runs` storage. The existing **Usage** run-history tab stays the run
+  log (status, duration, items, errors), but it **stops showing tokens and cost**: its token
+  badges and summary numbers are removed and replaced by one line "Tokens and cost: see the
+  Watchtower tab" with a button that switches to it. Wrong numbers are not left on screen
+  next to right ones.
 - No budgets, alerts or limits on top of the ledger (later, if wanted).
 - No per-chat or per-workbench drill-down — one total line each is what was asked.
 - No Desktop-side (Swift) LLM calls: the Desktop does not call a model directly, it runs the CLI.
@@ -80,7 +83,8 @@ One row per finished (or failed) model call:
 | `provider` | `claude` \| `codex` \| `ollama` \| `http` (runtime B) |
 | `model` | model id as the provider reported it, else the requested one |
 | `input_tokens` | fresh (uncached) input |
-| `cache_read_tokens`, `cache_write_tokens` | prompt cache |
+| `cache_read_tokens` | prompt-cache reads |
+| `cache_write_5m_tokens`, `cache_write_1h_tokens` | prompt-cache writes by TTL, as `agentlog.Cost` needs them. The Claude result's `usage.cache_creation.ephemeral_5m/1h_input_tokens` fill them; when only the total `cache_creation_input_tokens` is present it goes to `5m` (the CLI's default TTL) |
 | `output_tokens` | output |
 | `usage_estimated` | 1 when the provider reported no usage and the tokens are length/4 |
 | `reported_cost_usd` | the provider's own cost (Claude CLI `total_cost_usd`), NULL when none |
@@ -88,9 +92,11 @@ One row per finished (or failed) model call:
 | `duration_ms` | wall time of the call |
 | `ok` | 1 success, 0 error |
 | `automation_id` | the automation run's automation, NULL otherwise |
+| `automation_run_id` | the automation run, NULL otherwise (for the reconciliation check) |
+| `calls_lost` | 0, except on an `unrecorded` row: how many calls that process could not record |
 
 Indexes on `at` and `(surface, at)`. Rows older than 90 days are deleted once a day by the
-daemon. Mirrored into `schema.sql`, `TestAllTablesExist`, golden + Swift test schema (CLAUDE.md
+daemon (proposed retention; the screen's longest period is 30 days). Mirrored into `schema.sql`, `TestAllTablesExist`, golden + Swift test schema (CLAUDE.md
 migration rules).
 
 ### 2. Recording point: `internal/llmusage`
@@ -102,12 +108,19 @@ A leaf package (no imports of digest/ai/codex) with:
   `WithAutomation`/`AutomationFrom`. `digest.WithSource`/`SourceFromContext` become thin
   wrappers over `WithPurpose`/`PurposeFrom`, so the ~60 existing tagged call sites are tagged
   for the ledger without edits.
-- `Record(ctx, Call)` — hands the row to the process's installed `Sink`; with no sink it
-  counts the call in a process-wide "unrecorded" counter and writes one stderr line per
-  process (`llmusage: no sink, N calls not recorded`).
+- `Record(ctx, Call)` — hands the row to the process's installed `Sink`.
 - `SetSink(Sink)` — installed by `cmd` for every command that opens the database, with the
   process string. The DB sink writes one short `INSERT` (its own autocommit, never inside a
-  caller's transaction), logs and drops on error.
+  caller's transaction; measured by lockmetrics like every write).
+- **No call is lost.** When there is no DB sink (a process that never opened the database) or
+  the `INSERT` fails, the row is appended to the spool file `<workspace>/llm_calls.spool.jsonl`
+  (0600; numbers, purpose, process and model only — no prompt or response text, FILES-01).
+  The default sink, used before `cmd` installs one, is this spool. The daemon imports and
+  truncates the spool at the start of each cycle (under a sidecar flock, so a writer appending
+  meanwhile is not lost); `usage llm` imports it too before aggregating. If the spool itself
+  cannot be written, the process keeps a counter and the next successful ledger write of that
+  process adds one `purpose = 'unrecorded'` row carrying the count in `calls_lost`, so the
+  screen shows it as a warning row instead of losing it silently.
 
 `Record` is called from **each leaf implementation's usage funnel** — the place that already
 has the provider's numbers:
@@ -143,19 +156,26 @@ list or the known-wrapper list. A new leaf that does not record fails the test.
   - `workbench`: `mcp --workbench` server tools, `workbench spec-review run`,
     `workbench review …` (reviewai), terminal-title generation, and any other `workbench …`
     command.
-  - Automations stay `watchtower` (they are Watchtower working for the owner), with
-    `automation_id` set; workbench-scoped automations stay `watchtower` too in v1 *(builder's
-    call to revisit if the numbers look odd)*.
+  - Automations stay `watchtower` with `automation_id` set, but the screen splits them by
+    origin: **built-in** automations (Morning brief, Track my threads, Idea finder, Reactions)
+    are Watchtower's own information work and sit in the main table; **the owner's own
+    automations** (origin `owner`, incl. workbench-scoped ones) are a separate section "Your
+    automations" with its own subtotal, one row per automation. The main total ("Watchtower
+    collecting and processing") excludes them; the page total includes both.
 - `ai test` (provider ping) gets purpose `probe`.
 
 ### 4. Cost
 
 - `reported_cost_usd` = what the provider reported (Claude CLI). The Claude CLI reports an
   API-equivalent price even on a subscription; the screen labels the column "API-equivalent $".
-- `est_cost_usd` = `agentlog.Cost` (moved or re-exported to a shared place) at record time;
+- `est_cost_usd` = `agentlog.Cost(model, "", input, output, cacheRead, cw5m, cw1h)` (moved
+  or re-exported to a shared place) at record time;
   the price table gets alias resolution for the short names Watchtower passes (`opus`,
   `sonnet`, `haiku`). Codex/Ollama models have no price → NULL, shown as "—".
 - The screen shows reported cost when present, else the estimate prefixed with "≈".
+- When any call in a total has no cost (no price for the model), that total reads
+  "≥ $X" and the totals row says "N calls without a price (Codex/Ollama)"; such calls still
+  count fully in the token columns.
 
 ### 5. CLI: `watchtower usage llm`
 
@@ -163,12 +183,15 @@ list or the known-wrapper list. A new leaf that does not record fails the test.
 for the screen and the terminal):
 
 - `watchtower`: totals (calls, errors, input, cache read, cache write, output, cost,
-  estimated-usage calls, cost-unknown calls) and `by_purpose` rows (purpose, display group,
-  calls, tokens, cost, avg tokens per call, models), automations broken down by automation name.
+  estimated-usage calls, cost-unknown calls, lost calls) and `by_purpose` rows (purpose,
+  display group, calls, tokens, cost, avg tokens per call, models) for Watchtower's own work
+  incl. built-in automations.
+- `own_automations`: totals + one row per owner automation (name, calls, tokens, cost).
 - `chats`: one totals object (surface `chat`).
-- `workbenches`: `helpers` (surface `workbench` ledger rows) and `sessions` (agent sessions
-  from `agentlog.db` events in the period, workbenches with agent analytics on), plus
-  `analytics_off` = workbench names with analytics off (their sessions are not counted).
+- `workbenches`: one totals object = `sessions` (agent sessions from `agentlog.db` events in
+  the period, workbenches with agent analytics on) + `helpers` (surface `workbench` ledger
+  rows), each also given separately, plus `analytics_off` = workbench names with analytics off
+  (their sessions are not counted).
 - `unrecorded_note` when the ledger is younger than the period ("ledger started <date>").
 
 JSON keys are pinned by a test, like other `--json` commands.
@@ -176,17 +199,23 @@ JSON keys are pinned by a test, like other `--json` commands.
 ### 6. Desktop: Usage → **Watchtower** tab
 
 New segment in `UsageView` (`Claude plan | Watchtower | Progress | Usage`), built from the
-design kit:
+design kit (mockup: [docs/design/mockups/llm-usage/index.html](../../design/mockups/llm-usage/index.html)):
 
-- Period picker: Today / 7 days / 30 days (remembered in `@AppStorage`).
-- Totals row: calls, fresh input, cache, output, cost; small grey line for estimated / untagged
-  calls when non-zero.
-- Table by process, sorted by cost (tokens when cost unknown): display name, calls, total
-  tokens, output, cost, per call. Display names come from a purpose → name/group map in
-  WatchtowerCore with the raw purpose as fallback; automations show their names. Untagged is
-  always listed last, in a warning colour, when present.
-- **Chats and workbenches** block: one line for chats, one for workbench sessions, one for
-  Watchtower's workbench helpers; a note under it when some workbenches have analytics off.
+- Period picker: `KitSegmentedPicker` Today / 7 days / 30 days (remembered in `@AppStorage`).
+- Totals row (`Card`): calls, fresh input, cache, output, cost; one grey line under it naming
+  every gap that is non-zero — estimated-usage calls, calls without a price, untagged calls,
+  lost calls.
+- Table by process ("Watchtower collecting and processing", incl. built-in automations),
+  sorted by cost (tokens when cost unknown): display name, calls, total tokens, output, cost,
+  per call. Display names come from a purpose → name/group map in WatchtowerCore with the raw
+  purpose as fallback. Untagged and Unrecorded rows are always last, in the warning colour,
+  when present.
+- **Your automations** section: subtotal + one row per owner automation.
+- **Chats and workbenches** block: one line for chats, one line for workbenches (secondary
+  text: "sessions X · Watchtower helpers Y"); a note under it when some workbenches have
+  analytics off.
+- Screenshots: a `DesignShotCatalog` entry for the tab with fixture data (all gap lines on),
+  checked with `make desktop-shots` before review, per the style guide.
 - Data from `usage llm --json` through the CLI runner, refreshed on appear and every 60 s
   while visible.
 - Empty state: "Recording since <date>" until the first row exists.
@@ -199,11 +228,15 @@ The guide's Usage text (`docs/guide/concepts/ai-providers-and-cost.md` and
 
 - Ledger of every LLM call + Watchtower tab + one total for chats and workbenches; `pipeline_runs`
   untouched — ask #672.
-- Watchtower's calls made for workbench features (review overview, spec review, terminal titles,
-  workbench MCP tools) are counted under workbenches, not in the Watchtower table — conversation
-  (Claude's call, stated to the owner).
-- Workbench session totals come from agent analytics and cover only workbenches with analytics
-  on; the screen says so — conversation (Claude's call, stated to the owner).
+- Proposed by Claude, confirmed or changed by the owner in this review (ask #673):
+  - Watchtower's calls made for workbench features (review overview, spec review, terminal
+    titles, workbench MCP tools) are counted under workbenches, not in the Watchtower table.
+  - Workbench session totals come from agent analytics and cover only workbenches with
+    analytics on; the screen names the ones left out.
+  - Built-in automations count as Watchtower's own work; the owner's automations are a
+    separate "Your automations" section, outside the Watchtower subtotal.
+  - The old Usage tab stops showing tokens and cost and points to the Watchtower tab.
+  - Ledger retention 90 days.
 
 ## Calls left to the builder
 
@@ -211,14 +244,25 @@ The guide's Usage text (`docs/guide/concepts/ai-providers-and-cost.md` and
 - How the guard test recognises a leaf (AST over method sets vs. a curated list checked against
   `go/packages`), as long as a new non-recording leaf fails it.
 - Whether `agentlog.Cost` moves to a shared package or is imported.
-- Batching of ledger inserts if a hot path shows lock waits in `dblock.jsonl` (v1: one insert
-  per call).
 
 ## Verification
 
 - Unit tests per leaf: a fake CLI/HTTP response with known usage → exactly one row with the
   right split and cost; a failed call → one row with `ok = 0`; wrappers add no rows.
 - `TestLLMUsageLeaves` guard.
-- Manual cross-check on the owner's install after one day: the number of ledger rows with
-  `process = daemon` equals the generator calls in `sessions.log` for the same window, and the
-  Watchtower total moves the Claude plan meter in the same direction.
+- Spool tests: a process without a DB sink spools; the daemon import moves every line exactly
+  once, including lines appended during the import; an unwritable spool yields an
+  `unrecorded` row with the right count.
+- Automation reconciliation test: an automation run with `llm()` and `agent()` calls → the
+  ledger rows with its `automation_run_id` sum to the run's `automation_runs` tokens.
+- Lock cost: one ledger insert is an autocommit single-row write after a call that takes
+  seconds; acceptance = no `llm_calls` call site over the 200 ms threshold in `dblock.jsonl`
+  during the manual check below.
+- Manual cross-check on the owner's install after one day, per path:
+  - daemon: ledger rows with `process = daemon` vs the generator calls in `sessions.log` for
+    the same window;
+  - automations: per run, ledger sum vs `automation_runs` tokens;
+  - CLI: run `watchtower ask "…"` and one `jira` AI command → exactly one new row each, with
+    the right purpose;
+  - chat: one main-chat turn and one embedded-chat turn → one `chat` row each;
+  - the Watchtower total moves the Claude plan meter in the same direction.
