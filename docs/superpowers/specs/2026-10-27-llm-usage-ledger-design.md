@@ -293,7 +293,7 @@ The guide's Usage text (`docs/guide/concepts/ai-providers-and-cost.md` and
 - `TestLLMUsageLeaves` guard.
 - Spool tests: a non-daemon process spools; the daemon import moves every line exactly
   once, including lines appended during the import and after a crash mid-import; an unwritable
-  spool falls back to the direct insert, and with both failing writes the stderr line;
+  spool falls back to the direct insert, and with both failing writes the log + stderr line;
   `usage llm` writes nothing to the database (opened read-only) and still counts spooled
   calls once.
 - Automation reconciliation test: an automation run with `llm()` and `agent()` calls → the

@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Recording never changes a call's result or error; a spool failure falls back to a direct insert, then to a stderr line (Task 1).
+- Recording never changes a call's result or error; a spool failure falls back to a direct insert, then to a log + stderr line (Task 1).
 - The daemon is the only writer of `llm_calls` (plus the direct-insert fallback); `usage llm` is read-only.
 - No prompt or response text in `llm_calls` or the spool (FILES-01): numbers, purpose, process, provider, model only.
 - Wrappers (`PooledGenerator`, `timeoutGenerator`, `policyCheckedGenerator`, `policyCheckedProvider`, `refusedProvider`) never record — only leaves, so nothing counts twice.
