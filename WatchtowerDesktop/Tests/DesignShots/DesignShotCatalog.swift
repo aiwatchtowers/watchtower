@@ -268,8 +268,8 @@ enum DesignShotCatalog {
             DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
                 SpecReviewShotFixtures.screen(.meaning)
             },
-            // A narrow drawer: the three mark buttons (Fine as is / Comment /
-            // Not useful) stay inside the card. Below about 480 the Chapters
+            // A narrow drawer: the four mark buttons (Fix / Fine as is /
+            // Comment / Not useful) wrap to two rows inside the card. Below about 480 the Chapters
             // screen's two columns overflow on their own.
             DesignShot(name: "spec-review-chapters-narrow", size: NSSize(width: 480, height: 1100)) {
                 SpecReviewShotFixtures.screen(.chapters)

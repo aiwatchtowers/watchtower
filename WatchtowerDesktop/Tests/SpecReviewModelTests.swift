@@ -216,12 +216,18 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertTrue((stored?["answer"] as String?)?.contains("Mute lasts a day") == true)
     }
 
-    func testBlankCommentDoesNotEnableSend() async throws {
+    /// **Fix** (a comment with no body) alone is something to send: the
+    /// finding goes to the author as it is.
+    func testFixAloneEnablesSend() async throws {
         try setRow(status: "done", result: resultJSON())
         let model = try await makeModel()
         await model.load()
-        await model.mark("ag:1", .comment, body: "  \n")
-        XCTAssertFalse(model.canSend)
+        await model.mark("ag:1", .comment)
+        XCTAssertTrue(model.canSend)
+        let sent = await model.send()
+        guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
+        let answer = try await storedAnswer()
+        XCTAssertTrue(answer.contains("Mute lasts a day"))
     }
 
     func testRestartedPollingSurvivesTheOldTaskEnding() async throws {

@@ -48,7 +48,7 @@ watchtower coach run --dry-run
 
 `accept`, `decline`, `rollback` and `run` are your own decisions: an AI agent running them is refused, and from a terminal Watchtower must be open so you can confirm each one in its window (`run --dry-run` writes nothing and asks for no confirmation).
 
-On a spec review's findings screen, **Not useful** sits next to **Fine as is** and **Comment**. It is never sent to the author; it only teaches the coach.
+On a spec review's findings screen, **Not useful** sits next to **Fix**, **Fine as is** and **Comment**. It is never sent to the author; it only teaches the coach.
 
 ## When it's empty or wrong
 

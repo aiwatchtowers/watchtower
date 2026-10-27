@@ -44,7 +44,7 @@ Specs and plans from a session with no reviewer, other documents and asks that w
 <!-- learn
 id: spec-review-findings
 title: Go through the reviewer's findings
-text: Open the review ask and mark each finding **Fine as is** or **Comment**, then send the round or **Approve**.
+text: Open the review ask and mark each finding **Fix**, **Fine as is** or **Comment**, then send the round or **Approve**.
 area: development
 level: next
 kind: tip
@@ -63,7 +63,7 @@ You open one ask. **Disputed** comes first: each card shows the finding, the rev
 Open the review ask. The drawer shows three steps.
 
 1. **Meaning.** The ask's own summary, the points to look at, what changed since the last round and any questions the agent asked (answer them here). Then your idea next to the document's goal with a verdict, a spec's Decisions list (a plan has none: its agreements come from its spec), counts and a summary. On a later round it also shows which of your earlier comments are resolved.
-2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**. Press **Fine as is** on a card you accept, or **Comment** to tell the author what to change. When the reviewer ran checks on a chapter, its **Checklist** sits under the cards. Mark the chapter **Viewed** when you are done with it.
+2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**. Press **Fix** when the reviewer is right and the finding should go to the author as it is, **Fine as is** when the document is right as written, or **Comment** to tell the author what to change in your own words. When the reviewer ran checks on a chapter, its **Checklist** sits under the cards. Mark the chapter **Viewed** when you are done with it.
 3. **Wrap-up.** Everything you marked, **From the previous run** (with the finding each comment was about), and a note for the author. **Send round to the author** returns your comments; **Approve** accepts the document. Both send the margin comments you wrote under **Read the spec** too. If items are still unmarked, approving asks once before it goes ahead.
 
 **Read the spec** always opens the classic document view with margin comments, whatever state the reviewer is in. Its **Request changes** and **Approve** also send your comments on findings, so nothing you wrote on either screen is lost. An answer from your phone sends them too.

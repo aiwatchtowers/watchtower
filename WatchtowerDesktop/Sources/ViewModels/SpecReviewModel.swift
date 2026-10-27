@@ -333,10 +333,9 @@ final class SpecReviewModel {
 
     // MARK: - Send and approve
 
+    /// A **Fix** (a comment with no body) counts: it sends the finding.
     private var commentCount: Int {
-        marks.values.filter {
-            $0.state == .comment && !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }.count
+        marks.values.filter { $0.state == .comment }.count
     }
 
     /// The ask's draft: the margin comments made under **Read the spec**,
