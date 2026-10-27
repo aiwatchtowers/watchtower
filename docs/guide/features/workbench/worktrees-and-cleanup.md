@@ -63,16 +63,17 @@ Each item is either ticked for removal or greyed out with the reason it is kept.
 
 ## Using it
 <!-- learn
-id: worktrees-clean-up
+id: worktrees-clean-up-screen
 title: Free disk from old worktrees
-text: Choose **Clean Up Old Worktrees…** in the **…** menu; anything that still holds work is kept.
+text: Choose **Clean Up Old Worktrees…** in the **…** menu; the Clean Up screen keeps anything that holds work.
 area: development
 level: next
 kind: feature
-since: 0.24.0
+since: 0.26.0
+replaces: [worktrees-clean-up]
+changed: Clean Up is now a screen you can leave while it removes in the background.
 action: nav:projects
 -->
-
 - **Delete…** on a session row (just **Delete Session** when there is nothing to clean) asks "Checking what this session left…" first. **Delete and Clean Up** removes the session and the worktrees and branches that can go; **Delete Only** leaves them. The quick ✕ and ⌘⌫ never clean up.
 - **Clean Up…** in the row menu, or **Clean Up Old Worktrees…** in the title row's **…** menu, opens the **Clean Up** screen. It covers the workspace and is not a dialog: you can leave it, and a cleanup keeps working. From a row it shows that session's worktrees and branches, with a "Session: …" chip; click the ✕ on the chip to see the whole repository. From the menu it lists every worktree and branch of the repository, with an owner hint.
 - Nothing is ticked at first. Tick rows, **⇧-click** for a range, or choose **Select All That Can Go** (⌘A, except while the search box is focused); Esc clears the ticks. Narrow the list with search, **All / Worktrees / Branches**, an age (7, 30 or 90 days), an owner (a session, Subagent, Session deleted, Made by hand) and **Merged only**. A worktree's row includes its branch when that can go too.

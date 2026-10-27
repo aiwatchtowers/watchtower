@@ -10,6 +10,24 @@ You finish a call and the decisions are already written down: a summary, chapter
 
 ### Capture
 <!-- learn
+id: recording-mute-mic
+title: Mute yourself in a recording
+text: Click the microphone on the recording pill: your voice stays out, the call is still recorded.
+area: meetings
+level: next
+kind: tip
+since: 0.26.0
+-->
+<!-- learn
+id: recording-move-pill
+title: Move the recording pill
+text: Drag the recording pill anywhere in the window; it stays there and snaps to edges and corners.
+area: meetings
+level: power
+kind: tip
+since: 0.26.0
+-->
+<!-- learn
 id: recording-record
 title: Record a meeting
 text: Press **Record** on a Calendar event to capture your mic and the call; **Stop** in the pill ends it.
@@ -21,7 +39,7 @@ action: nav:calendar
 done_when: meeting.recorded
 -->
 
-**Record** captures the microphone and the system audio (the other participants). The first time, macOS asks for two permissions: microphone, and system audio recording. While you record, a pill at the bottom right of the window shows the elapsed time and **Stop**, whatever tab you are on. **Stop** is white on red, readable whether or not Watchtower is the active app.
+**Record** captures the microphone and the system audio (the other participants). The first time, macOS asks for two permissions: microphone, and system audio recording. While you record, a pill, at first at the bottom right of the window, shows the elapsed time and **Stop**, whatever tab you are on. **Stop** is white on red, readable whether or not Watchtower is the active app.
 
 The pill floats over the window. Drag it by its background anywhere in the window: it stays where you drop it, across launches, and snaps flush to an edge or into a corner when you drop it close to one. The live-transcript panel opens from it toward the middle of the window. Nothing on the screen moves to make room for it, so if it covers something, drag it aside.
 

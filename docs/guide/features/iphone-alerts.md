@@ -5,6 +5,15 @@ The Watchtower iPhone app can tell you when a Workbench session needs you or has
 ## Using it
 
 ### Get alerts when work stops
+<!-- learn
+id: iphone-alerts-work-stops
+title: Get an alert when work stops
+text: Away from the Mac, the phone alerts you when a session asks, needs approval, stops or fails.
+area: iphone
+level: next
+kind: feature
+since: 0.26.0
+-->
 
 Settings → **Notifications** → **When work stops** (on by default) alerts you when a session asks, needs a permission answer, stops or fails, but only while you are away from your Mac (locked, display asleep or idle for 3 minutes). A stop alerts once, after 20 seconds. A finished or stopped session that you left on the Mac alerts when you leave only if it stopped in the last 30 minutes. A phone on another Apple ID than the Mac gets its alerts when it next syncs, so they may come late, or only when you open the app; Settings says so. Unlinking a Mac removes its alerts.
 

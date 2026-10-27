@@ -25,6 +25,17 @@ A Claude Code session takes your line while it works and reads it at its next st
 A workbench opens on its sessions in the Mac's sessions panel order: **Waiting for you**, **Working**, **Ready to check**, **Not running**, then **N finished** folded. **N closed** at the end holds answered asks.
 
 ### Follow a session
+<!-- learn
+id: iphone-workchat
+title: Steer a session from your iPhone
+text: Tap a session on the phone to follow its chat, answer what waits and send it a line while it works.
+area: iphone
+level: next
+kind: feature
+since: 0.26.0
+replaces: [iphone-session-chat]
+changed: A session's chat on the phone now takes your lines and answers.
+-->
 
 Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start, and a subagent row opens that subagent's own chat, which is read-only.
 
@@ -46,6 +57,15 @@ Type into **Message the session…** and send. Your line shows under it:
 The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. The report shows the targets' progress, the pull requests and the session's milestones.
 
 ### Keep the Mac awake for the phone
+<!-- learn
+id: iphone-keep-mac-awake
+title: Keep the Mac awake for the phone
+text: While a session runs and the phone is in touch, the Mac stays awake; switch it in Settings → **Mobile**.
+area: iphone
+level: power
+kind: tip
+since: 0.26.0
+-->
 
 While a session runs and the phone has been in touch in the last 24 hours, the Mac does not sleep on its own. Turn this off under Settings → **Mobile** → **Keep this Mac awake for the iPhone**. A closed lid on battery still sleeps it.
 

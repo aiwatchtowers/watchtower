@@ -62,7 +62,7 @@ text: Ask **Chats** with every word you remember; the answer links straight to t
 area: assistant
 level: basics
 kind: feature
-since: next
+since: 0.26.0
 replaces: [search-slack-message]
 action: nav:chat
 -->

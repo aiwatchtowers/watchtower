@@ -40,16 +40,17 @@ The agent never changes these settings. If anything about them cannot be read, t
 
 ## Using it
 <!-- learn
-id: methodology-agent-settings
+id: methodology-agent-settings-page
 title: Choose how strict agents are
 text: Open **Agent Settings…** in a workbench's **…** menu to pick the methodology, ask guard and finish check.
 area: development
 level: power
 kind: feature
-since: 0.24.0
+since: 0.26.0
+replaces: [methodology-agent-settings]
+changed: Agent Settings now opens as a page over the workspace instead of a dialog.
 action: nav:projects
 -->
-
 1. Open the **…** menu in the workbench's title row and choose **Agent Settings…**. The settings open in place of the workspace, with **Agent Settings ✕** beside **Session | Board | Files**.
 2. Pick a value for **Methodology**, **Ask guard** and **Finish check**. **From folder file** (for **Methodology**) and **Default** (for the checks) mean "do not override", and show the current value and where it comes from.
 3. **Create workflow.md** writes a template with every key commented out. Edit it, and commit it. The button reads **Open workflow.md** once the file exists.

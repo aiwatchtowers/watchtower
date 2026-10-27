@@ -14,7 +14,7 @@ text: Each week the coach suggests edits to your instructions; see them with `wa
 area: development
 level: power
 kind: feature
-since: next
+since: 0.26.0
 -->
 
 Once a week the background daemon looks at the last four weeks: your marks on spec review findings (**Comment** counts as a real problem, **Not useful** as noise), the first round of your code reviews, the lines you sent to agents and chats, and the hints in **Analytics**. When a pattern shows up in at least three different sessions, specs or review rounds, it becomes a suggestion. At most three wait for you at once, and a suggestion you decline never comes back.

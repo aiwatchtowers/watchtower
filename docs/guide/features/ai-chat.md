@@ -97,6 +97,16 @@ action: hotkey:search-chats
 6. **New chat** is ⌘N (the **+** in the panel header); ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title is written after the first reply, and one you set is never replaced.
 
 ### The Chats panel
+<!-- learn
+id: chat-panel-read-state
+title: See which chats have new answers
+text: In **Chats**, a bold title and filled dot mark an unread answer; hover a chat and ✕ deletes it, with Undo.
+area: assistant
+level: next
+kind: tip
+since: 0.26.0
+action: nav:chat
+-->
 
 Each chat has a dot and two lines: its title and the start of the last answer with its age (in **All chats**, a project chat's line starts with the project name). The dot is orange for a proposal waiting for your approval, a pulsing accent while the answer is written, a filled accent with a bold title for an unread answer, and a grey ring once read. A chat is read when you open it or its answer finishes while it is on screen.
 

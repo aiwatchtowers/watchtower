@@ -4,8 +4,6 @@ Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows 
 
 ## By area
 
-**Help → Keyboard Shortcuts** opens this list in a window. On a workbench page the **Workbench** menu shows the workbench's chords and the **Navigate** menu the Files editor's; the menu-bar icon's **New Voice Idea** shows ⌃⌥D. Some chords mean different things on different tabs: ⌘K is **Search chats** in Chats and **Go to…** on the Workbench tab, ⌘N is **New chat** in Chats and **New target** in Targets.
-
 ### Global
 <!-- learn
 id: shortcuts-ask-watchtower

@@ -31,7 +31,7 @@ The texts are stored in Watchtower, never in your folder, and are not part of th
 <!-- learn
 id: instructions-in-chats
 title: Your instructions reach every chat
-text: The text in **For chats and agents** reaches every AI chat too;**Only in chats** is for chats alone.
+text: The text in **For chats and agents** reaches every AI chat too; **Only in chats** is for chats alone.
 area: assistant
 level: next
 kind: feature

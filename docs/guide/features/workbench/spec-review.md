@@ -23,6 +23,16 @@ The reviewer starts at once when the agent files a review ask for a spec or a pl
 It checks every claim against a quote. A finding whose quote it cannot show in the sources is dropped.
 
 ### The agent answers the reviewer first
+<!-- learn
+id: spec-review-author-loop
+title: Let the agent answer the reviewer
+text: For a session's spec or plan, the agent fixes the reviewer's findings first; you see only the disputes.
+area: development
+level: next
+kind: feature
+since: 0.26.0
+action: nav:projects
+-->
 
 For a spec or a plan the agent works on, the ask stays hidden while the reviewer and the agent go back and forth. The reviewer's findings go straight to the agent, which either fixes the document or disagrees with a reason. The reviewer then checks the new version. The loop runs at most three reviewer rounds. The session row shows **Spec review: round 2 of 3** meanwhile, and nothing reaches your notifications.
 
