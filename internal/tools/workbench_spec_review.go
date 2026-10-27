@@ -121,7 +121,7 @@ func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.
 	}
 	start := &db.SpecLoopStart{Round: 1}
 	switch {
-	case row != nil && row.Loop == "owner":
+	case row != nil && ownerHas(row):
 		return nil, nil
 	case row != nil && row.Loop == "author":
 		start.Round = row.Round + 1
@@ -147,6 +147,8 @@ func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.
 // round.
 func checkRepliesAgainst(replies []reviewReply, prev *db.OwnerAsk, row *db.SpecReview) error {
 	switch {
+	case row != nil && ownerHas(row):
+		return &ValidationError{Msg: errOwnerHasReview}
 	case prev == nil || row == nil || row.Loop == "":
 		return &ValidationError{Msg: "review_replies: previous_ask_id is not a spec review in the author loop — file without review_replies"}
 	case row.Loop == "owner":
@@ -168,6 +170,13 @@ func checkRepliesAgainst(replies []reviewReply, prev *db.OwnerAsk, row *db.SpecR
 		}
 	}
 	return nil
+}
+
+// ownerHas: the owner already has this review — its loop ended, or Show Now
+// turned a first round into a plain review (loop ”, loop_end owner). A
+// re-round after it is a classic visible review.
+func ownerHas(row *db.SpecReview) bool {
+	return row.Loop == "owner" || row.LoopEnd == specreview.EndOwner
 }
 
 func decodeAuthorItems(row *db.SpecReview) ([]specreview.AuthorItem, error) {
