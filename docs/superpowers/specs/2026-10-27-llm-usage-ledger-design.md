@@ -113,8 +113,9 @@ A leaf package (no imports of digest/ai/codex) with:
   wrappers over `WithPurpose`/`PurposeFrom`, so the ~60 existing tagged call sites are tagged
   for the ledger without edits.
 - `Record(ctx, Call)` — hands the row to the process's installed `Sink`.
-- `SetSink(Sink)` — installed by `cmd` for every command that opens the database, with the
-  process string. The DB sink writes one short `INSERT` (its own autocommit, never inside a
+- `SetSink(Sink)` — the daemon installs the DB sink; every other process writes through the
+  spool below (plan simplification: one write path for the 100+ CLI entry points, no extra
+  write-lock traffic from hooks and short commands). The DB sink writes one short `INSERT` (its own autocommit, never inside a
   caller's transaction; measured by lockmetrics like every write).
 - **No call is lost.** When there is no DB sink (a process that never opened the database) or
   the `INSERT` fails, the row is appended to the spool file `<workspace>/llm_calls.spool.jsonl`
