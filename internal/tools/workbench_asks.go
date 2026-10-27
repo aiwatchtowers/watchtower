@@ -233,7 +233,10 @@ func NewAskOwner(sessionEnv func() string, launch SpecReviewLauncher) *Tool {
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return &ValidationError{Msg: "invalid arguments"}
 			}
-			return scopeAskOwner(ctx, d, b, a)
+			if err := scopeAskOwner(ctx, d, b, a); err != nil {
+				return err
+			}
+			return planAfterSpec(ctx, d, b, a, sessionEnv)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a askOwnerArgs

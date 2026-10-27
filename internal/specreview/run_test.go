@@ -580,3 +580,62 @@ func TestReveal_NoOpOnOwnerRow(t *testing.T) {
 	assert.Equal(t, "", r.Loop)
 	assert.Equal(t, "", r.LoopEnd)
 }
+
+// Show Now on a finished round: its open items go to the owner as unsettled,
+// with the owner's note.
+func TestReveal_OwnerShowNow(t *testing.T) {
+	f := newFixture(t)
+	first, _ := loopRound2(t, f, nil)
+	require.NoError(t, Reveal(f.d, first, EndOwner, runNow))
+	row, _, ledger := loopColumns(t, f.d, first)
+	assert.Equal(t, "owner", row.Loop)
+	assert.Equal(t, EndOwner, row.LoopEnd)
+	require.NotEmpty(t, ledger)
+	for _, e := range ledger {
+		assert.Contains(t, []string{ownerEarlyNote, "kept on purpose"}, e.VerdictNote)
+	}
+
+	// A running round with fixes: the fixes were not checked.
+	f2 := newFixture(t)
+	_, second := loopRound2(t, f2, nil)
+	ok, err := f2.d.ClaimSpecReview(second, 7, runNow)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, Reveal(f2.d, second, EndOwner, runNow))
+	_, _, ledger2 := loopColumns(t, f2.d, second)
+	require.NotEmpty(t, ledger2)
+	assert.Equal(t, "The fix was not checked: you opened the review before it was", ledger2[0].VerdictNote)
+}
+
+// Show Now before round 1 finished: the ask becomes a plain review, and the
+// reviewer's result lands as one.
+func TestReveal_OwnerShowNowFirstRoundRunning(t *testing.T) {
+	f := newFixture(t)
+	var askID int64
+	require.NoError(t, f.d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		askID, _, err = f.d.InsertOwnerAsk(tx, db.OwnerAsk{
+			WorkbenchID: f.wb, SessionID: sql.NullInt64{Int64: f.session, Valid: true}, Kind: "review",
+			Title: "Review", DocPath: "docs/specs/x-design.md", DocSnapshot: runDoc, DocType: "spec",
+		})
+		if err != nil {
+			return err
+		}
+		return f.d.QueueSpecReview(tx, askID, runNow, &db.SpecLoopStart{Round: 1})
+	}))
+	ok, err := f.d.ClaimSpecReview(askID, 7, runNow)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, Reveal(f.d, askID, EndOwner, runNow))
+	row, err := f.d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "", row.Loop)
+	assert.Equal(t, EndOwner, row.LoopEnd)
+
+	require.NoError(t, f.d.FinishSpecReview(askID, 7, db.SpecReview{Result: `{}`, Loop: "author", LoopEnd: "", OpenItems: "[]"}, runNow))
+	row, err = f.d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, "done", row.Status)
+	assert.Equal(t, "", row.Loop, "the finished reviewer leaves it a plain review")
+	assert.Empty(t, row.OpenItems)
+}

@@ -45,6 +45,40 @@ package enum SpecReviewLoopQueries {
         }
     }
 
+    /// An open ask hidden in its author loop, for the stack's Show Now row.
+    package struct HiddenLoop: Equatable, Sendable, Identifiable {
+        package var askID: Int64
+        package var projectID: Int64
+        package var title: String
+        package var round: Int
+        /// `spec` or `plan`.
+        package var docType: String
+        package var id: Int64 { askID }
+
+        package init(askID: Int64, projectID: Int64, title: String, round: Int, docType: String) {
+            self.askID = askID
+            self.projectID = projectID
+            self.title = title
+            self.round = round
+            self.docType = docType
+        }
+    }
+
+    /// Every open ask in a `loop='author'` review, by ask id.
+    package static func hidden(_ db: Database) throws -> [HiddenLoop] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT sr.ask_id, a.project_id, a.title, sr.round, a.doc_type
+            FROM spec_reviews sr
+            JOIN owner_asks a ON a.id = sr.ask_id
+            WHERE sr.loop = 'author' AND a.status = 'open'
+            ORDER BY sr.ask_id
+            """)
+        return rows.map {
+            HiddenLoop(askID: $0["ask_id"], projectID: $0["project_id"], title: $0["title"],
+                       round: $0["round"], docType: $0["doc_type"])
+        }
+    }
+
     /// Session id → the round of its open asks' author loops (the highest
     /// when a session has more than one).
     package static func progress(_ db: Database) throws -> [Int64: Int] {

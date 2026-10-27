@@ -322,3 +322,42 @@ func TestGetAsk_SpecLoopKey(t *testing.T) {
 	assert.Equal(t, "owner", byID[float64(id)]["spec_loop"])
 	assert.NotContains(t, byID[float64(q)], "spec_loop")
 }
+
+// A plan is reviewed only after the owner answered the session's spec: an
+// open spec ask (hidden in its loop or not) refuses the plan.
+func TestAskOwner_PlanWaitsForTheSpec(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	const planPath = "docs/superpowers/plans/a.md"
+	writeWorkbenchFile(t, fx.d, fx.a, planPath, "# Plan\n")
+	spec := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+
+	_, err := proposeIn(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, planPath))
+	assert.Contains(t, refusal(t, err), fmt.Sprintf("the spec in ask #%d is not answered yet", spec))
+
+	_, err = fx.d.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{}', answered_at = '2026-10-27T10:00:00Z' WHERE id = ?`, spec)
+	require.NoError(t, err)
+	out := mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, planPath))
+	assert.Equal(t, "author_loop", out["spec_review"])
+
+	// Another session's open spec does not hold this plan back.
+	other := askRegistryWith(t, fx.d, "", okLauncher)
+	mustApply(t, other, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath))
+	mustApply(t, fx.reg, fx.a, "ask_owner", `{"kind":"review","title":"Plan 2","doc_path":"docs/superpowers/plans/a.md","reason":"r"}`)
+}
+
+// After Show Now turned round 1 into a plain review, the author's next
+// version is a visible review, not a new hidden loop; replies are refused.
+func TestAskOwner_ReRoundAfterShowNowIsVisible(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+	ok, err := fx.d.LeaveSpecLoop(first, specreview.EndOwner)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	_, err = proposeIn(t, fx.reg, fx.a, "ask_owner", reRound(first, `[{"key":"ag:1","reply":"fixed"}]`))
+	assert.Contains(t, refusal(t, err), "the owner has this review now")
+
+	out := mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(
+		`{"kind":"review","title":"Review","doc_path":%q,"previous_ask_id":%d,"changes":"v2","reason":"r"}`, loopSpecPath, first))
+	assert.Equal(t, "", specRow(t, fx.d, askID(t, out)).Loop)
+}

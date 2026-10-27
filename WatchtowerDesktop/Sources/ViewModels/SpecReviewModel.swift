@@ -210,18 +210,21 @@ final class SpecReviewModel {
     /// screen shows the disputes and the author's fixes instead of marks.
     var isLoop: Bool { row?.loop == .owner }
 
-    /// Disputed and unsettled findings, in ledger order.
+    /// Findings the two sides argued over, in ledger order.
     var disputes: [SpecReviewLedgerEntry] { row.map(SpecReviewLoop.disputed) ?? [] }
+
+    /// Findings the author never answered (or fixed unchecked), in ledger order.
+    var unanswered: [SpecReviewLedgerEntry] { row.map(SpecReviewLoop.unanswered) ?? [] }
 
     /// Findings the reviewer judged fixed by the author.
     var fixes: [SpecReviewLedgerEntry] { row.map(SpecReviewLoop.fixed) ?? [] }
 
     var endedEarly: Bool { row.map(SpecReviewLoop.endedEarly) ?? false }
 
-    /// Disputes the owner has not picked a side on; Approve counts them as
-    /// **Author is right**.
+    /// Disputed and unanswered findings the owner has not picked on; Approve
+    /// counts them as **Author is right** / **Skip**.
     var unpickedDisputeCount: Int {
-        disputes.filter { marks[$0.item.key] == nil }.count
+        (disputes + unanswered).filter { marks[$0.item.key] == nil }.count
     }
 
     /// **Reviewer is right** (a `comment` mark, the owner's words optional)

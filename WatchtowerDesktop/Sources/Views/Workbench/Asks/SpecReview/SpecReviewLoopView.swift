@@ -4,7 +4,8 @@ import WatchtowerCore
 /// A finished reviewer↔author loop, the owner's turn (spec 2026-10-26 §6):
 /// why the loop ended early when it did, **Disputed** on top — each card
 /// with **Reviewer is right** / **Author is right** and an optional
-/// comment —, **Fixed by the author** folded with **Reopen**, then the note
+/// comment —, **Not answered by the author** (findings the loop ended on:
+/// **Fix** / **Skip**), **Fixed by the author** folded with **Reopen**, then the note
 /// and a one-press **Approve** (it asks once only after an early end with
 /// a dispute nobody answered). The answer is always `approved`; the
 /// **Reviewer is right** and **Reopen** marks go with it as comments.
@@ -30,6 +31,7 @@ struct SpecReviewLoopView: View {
                         .foregroundStyle(Tone.error)
                 }
                 disputed
+                unanswered
                 fixed
                 CommentTextEditor(
                     text: Binding(get: { model.note }, set: { model.note = $0 }),
@@ -59,7 +61,9 @@ struct SpecReviewLoopView: View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             SectionHeader(title: "Disputed", systemImage: "exclamationmark.bubble", count: disputes.count)
             if disputes.isEmpty {
-                Text("Nothing is disputed: the reviewer and the author settled every finding.")
+                Text(model.unanswered.isEmpty
+                     ? "Nothing is disputed: the reviewer and the author settled every finding."
+                     : "Nothing is disputed.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
@@ -67,6 +71,22 @@ struct SpecReviewLoopView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(disputes, id: \.item.key) { SpecReviewDisputeCard(model: model, entry: $0) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var unanswered: some View {
+        let items = model.unanswered
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                SectionHeader(title: "Not answered by the author", systemImage: "questionmark.bubble", count: items.count)
+                Text("The loop ended before the author answered these (or before the reviewer checked the fix). " +
+                     "Nobody argued over them. One you leave counts as Skip.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(items, id: \.item.key) { SpecReviewDisputeCard(model: model, entry: $0, unanswered: true) }
             }
         }
     }
@@ -120,10 +140,12 @@ struct SpecReviewLoopView: View {
 }
 
 /// One dispute: the finding, where the document says it, the reviewer's
-/// position, the author's reason, then the owner's pick.
+/// argument, the author's reason, why it is still open, then the owner's
+/// pick. An unanswered one picks **Fix** / **Skip** (the same marks).
 private struct SpecReviewDisputeCard: View {
     let model: SpecReviewModel
     let entry: SpecReviewLedgerEntry
+    var unanswered = false
     @State private var comment = ""
 
     var body: some View {
@@ -143,6 +165,9 @@ private struct SpecReviewDisputeCard: View {
             if let reason = SpecReviewPresentation.authorReason(entry) {
                 SpecReviewQuote(label: "Author", quote: reason, quoted: false)
             }
+            if let status = SpecReviewPresentation.loopStatus(entry) {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+            }
             pick
         }
         .padding(Spacing.medium)
@@ -158,7 +183,8 @@ private struct SpecReviewDisputeCard: View {
             case .comment:
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     HStack(spacing: Spacing.regular) {
-                        Label("Reviewer is right — the author fixes it", systemImage: "text.bubble.fill")
+                        Label(unanswered ? "Fix — the author fixes it" : "Reviewer is right — the author fixes it",
+                              systemImage: "text.bubble.fill")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Color.accentColor)
                         Spacer()
@@ -170,7 +196,8 @@ private struct SpecReviewDisputeCard: View {
                 }
             case .ok:
                 HStack(spacing: Spacing.regular) {
-                    Label("Author is right — the document stays", systemImage: "checkmark.circle.fill")
+                    Label(unanswered ? "Skip — the document stays" : "Author is right — the document stays",
+                          systemImage: "checkmark.circle.fill")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Tone.success)
                     Spacer()
@@ -190,17 +217,18 @@ private struct SpecReviewDisputeCard: View {
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     CommentTextEditor(
                         text: $comment,
-                        placeholder: "Comment for the author (optional, goes with Reviewer is right)",
+                        placeholder: unanswered ? "Comment for the author (optional, goes with Fix)"
+                            : "Comment for the author (optional, goes with Reviewer is right)",
                         minHeight: CommentTextEditor.formMinHeight,
                         maxHeight: CommentTextEditor.formMaxHeight
                     )
                     HStack(spacing: Spacing.regular) {
-                        Button("Reviewer is right") {
+                        Button(unanswered ? "Fix" : "Reviewer is right") {
                             Task { await model.pick(key, reviewerRight: true, body: comment) }
                         }
                         .buttonStyle(.kitSecondary)
                         .help("The author must fix it")
-                        Button("Author is right") {
+                        Button(unanswered ? "Skip" : "Author is right") {
                             Task { await model.pick(key, reviewerRight: false) }
                         }
                         .buttonStyle(.kitSecondary)
