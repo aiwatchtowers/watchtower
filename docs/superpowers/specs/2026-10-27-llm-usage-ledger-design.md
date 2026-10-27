@@ -59,7 +59,12 @@ The numbers must be trustworthy. Today they are not.
   - the **Progress** tab (`ProgressDetailView`) drops its per-run Input / Input (+ cache) /
     Output rows and the per-step `in/out` token text, with the same one-line pointer under a
     run's details.
-  Both changed screens are in the mockup and get `DesignShotCatalog` shots.
+  - **Home → Numbers "AI spend"** (`HomeNumbersQueries` → `TokenUsageQueries.fetchUsage`,
+    today's `pipeline_runs.cost_usd`, always $0 today) reads today's `llm_calls` instead: the
+    sum over all surfaces (reported cost, else the estimate; "≈"/"≥" as on the tab), and opens
+    Usage → Watchtower. Rows still in the spool are not on Home until the daemon's next cycle
+    (≤ one sync interval).
+  The changed screens are in the mockup and get `DesignShotCatalog` shots.
 - No budgets, alerts or limits on top of the ledger (later, if wanted).
 - No per-chat or per-workbench drill-down — one total line each is what was asked.
 - No Desktop-side (Swift) LLM calls: the Desktop does not call a model directly, it runs the CLI.
@@ -80,6 +85,7 @@ One row per finished (or failed) model call:
 | column | meaning |
 |---|---|
 | `id` | rowid |
+| `call_id` | 16 random hex chars, UNIQUE — makes spool imports idempotent |
 | `at` | RFC 3339 UTC finish time |
 | `surface` | `watchtower` \| `chat` \| `workbench` |
 | `purpose` | the ctx source tag (`digest.channel`, `automation.llm`, …), `''` = untagged |
@@ -97,7 +103,6 @@ One row per finished (or failed) model call:
 | `ok` | 1 success, 0 error |
 | `automation_id` | the automation run's automation, NULL otherwise |
 | `automation_run_id` | the automation run, NULL otherwise (for the reconciliation check) |
-| `calls_lost` | 0, except on an `unrecorded` row: how many calls that process could not record |
 
 Indexes on `at` and `(surface, at)`. Rows older than 90 days are deleted once a day by the
 daemon (proposed retention; the screen's longest period is 30 days). Mirrored into `schema.sql`, `TestAllTablesExist`, golden + Swift test schema (CLAUDE.md
@@ -117,15 +122,22 @@ A leaf package (no imports of digest/ai/codex) with:
   spool below (plan simplification: one write path for the 100+ CLI entry points, no extra
   write-lock traffic from hooks and short commands). The DB sink writes one short `INSERT` (its own autocommit, never inside a
   caller's transaction; measured by lockmetrics like every write).
-- **No call is lost.** When there is no DB sink (a process that never opened the database) or
-  the `INSERT` fails, the row is appended to the spool file `<workspace>/llm_calls.spool.jsonl`
-  (0600; numbers, purpose, process and model only — no prompt or response text, FILES-01).
-  The default sink, used before `cmd` installs one, is this spool. The daemon imports and
-  truncates the spool at the start of each cycle (under a sidecar flock, so a writer appending
-  meanwhile is not lost); `usage llm` imports it too before aggregating. If the spool itself
-  cannot be written, the process keeps a counter and the next successful ledger write of that
-  process adds one `purpose = 'unrecorded'` row carrying the count in `calls_lost`, so the
-  screen shows it as a warning row instead of losing it silently.
+- **No call is lost.** Every process except the daemon appends its rows to the spool file
+  `<workspace>/llm_calls.spool.jsonl` (0600; numbers, purpose, process and model only — no
+  prompt or response text, FILES-01). The daemon writes its own rows straight to the table and
+  imports the spool at the start of each cycle (rename to `.importing` under a sidecar flock,
+  so a writer appending meanwhile is not lost; `call_id` UNIQUE + `INSERT OR IGNORE`, so a
+  crash between insert and delete imports nothing twice). The daemon is the **only** writer
+  of `llm_calls`.
+- **When the spool cannot be written** (disk full, permissions), there is no later write in a
+  short-lived process to carry a counter, so the fallback is immediate, in order:
+  1. a direct `INSERT` into `llm_calls` of the workspace database (opened lazily by path;
+     the only exception to "the daemon is the only writer", taken only on this failure);
+  2. if that fails too, one stderr line per lost call, `llmusage: call not recorded
+     (<purpose>, <process>): <error class>` — stderr of daemon children and of Desktop-run
+     commands lands in `watchtower.log`, so the loss is at least in the log.
+  The screen cannot count calls lost on both paths; the feature note lists this as the v1
+  limit.
 
 `Record` is called from **each leaf implementation's usage funnel** — the place that already
 has the provider's numbers:
@@ -188,7 +200,7 @@ list or the known-wrapper list. A new leaf that does not record fails the test.
 for the screen and the terminal):
 
 - `watchtower`: totals (calls, errors, input, cache read, cache write, output, cost,
-  estimated-usage calls, cost-unknown calls, lost calls) and `by_purpose` rows (purpose,
+  estimated-usage calls, cost-unknown calls) and `by_purpose` rows (purpose,
   display group, calls, tokens, cost, avg tokens per call, models) for Watchtower's own work
   incl. built-in automations.
 - `own_automations`: totals + one row per owner automation (name, runs, calls, tokens,
@@ -198,7 +210,11 @@ for the screen and the terminal):
   the period, workbenches with agent analytics on) + `helpers` (surface `workbench` ledger
   rows), each also given separately, plus `analytics_off` = workbench names with analytics off
   (their sessions are not counted).
-- `unrecorded_note` when the ledger is younger than the period ("ledger started <date>").
+- `ledger_since` (first row's time) so the screen can say when recording started.
+
+The command is **read-only**: it never imports the spool. It aggregates the table and adds
+the spool's not-yet-imported lines (and a leftover `.importing` file) in memory, de-duplicated
+by `call_id`, so the numbers are current without a second writer.
 
 JSON keys are pinned by a test, like other `--json` commands.
 
@@ -209,12 +225,11 @@ design kit (mockup: [docs/design/mockups/llm-usage/index.html](../../design/mock
 
 - Period picker: `KitSegmentedPicker` Today / 7 days / 30 days (remembered in `@AppStorage`).
 - Totals row (`Card`): calls, fresh input, cache, output, cost; one grey line under it naming
-  every gap that is non-zero — estimated-usage calls, calls without a price, untagged calls,
-  lost calls.
+  every gap that is non-zero — estimated-usage calls, calls without a price, untagged calls.
 - Table by process ("Watchtower collecting and processing", incl. built-in automations),
   sorted by cost (tokens when cost unknown): display name, calls, total tokens, output, cost,
   per call. Display names come from a purpose → name/group map in WatchtowerCore with the raw
-  purpose as fallback. Untagged and Unrecorded rows are always last, in the warning colour,
+  purpose as fallback. Untagged rows are always last, in the warning colour,
   when present.
 - **Your automations** section: subtotal + one row per owner automation.
 - **Chats and workbenches** block: one line for chats, one line for workbenches (secondary
@@ -245,6 +260,9 @@ The guide's Usage text (`docs/guide/concepts/ai-providers-and-cost.md` and
     separate "Your automations" section, outside the Watchtower subtotal.
   - The old Usage tab stops showing tokens and cost and points to the Watchtower tab.
   - Ledger retention 90 days.
+- `usage llm` is read-only (merges the spool in memory); the daemon is the only ledger writer;
+  a failed spool write falls back to a direct insert, then to stderr — owner review, ask #677.
+- Home's "AI spend" moves to the ledger — owner review, ask #677.
 
 ## Calls left to the builder
 
@@ -258,9 +276,11 @@ The guide's Usage text (`docs/guide/concepts/ai-providers-and-cost.md` and
 - Unit tests per leaf: a fake CLI/HTTP response with known usage → exactly one row with the
   right split and cost; a failed call → one row with `ok = 0`; wrappers add no rows.
 - `TestLLMUsageLeaves` guard.
-- Spool tests: a process without a DB sink spools; the daemon import moves every line exactly
-  once, including lines appended during the import; an unwritable spool yields an
-  `unrecorded` row with the right count.
+- Spool tests: a non-daemon process spools; the daemon import moves every line exactly
+  once, including lines appended during the import and after a crash mid-import; an unwritable
+  spool falls back to the direct insert, and with both failing writes the stderr line;
+  `usage llm` writes nothing to the database (opened read-only) and still counts spooled
+  calls once.
 - Automation reconciliation test: an automation run with `llm()` and `agent()` calls → the
   ledger rows with its `automation_run_id` sum to the run's `automation_runs` tokens.
 - Lock cost: one ledger insert is an autocommit single-row write after a call that takes

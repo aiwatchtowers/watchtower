@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- Recording never changes a call's result or error; any ledger/spool failure is swallowed (counted, see Task 1).
+- Recording never changes a call's result or error; a spool failure falls back to a direct insert, then to a stderr line (Task 1).
+- The daemon is the only writer of `llm_calls` (plus the direct-insert fallback); `usage llm` is read-only.
 - No prompt or response text in `llm_calls` or the spool (FILES-01): numbers, purpose, process, provider, model only.
 - Wrappers (`PooledGenerator`, `timeoutGenerator`, `policyCheckedGenerator`, `policyCheckedProvider`, `refusedProvider`) never record — only leaves, so nothing counts twice.
 - `surface` ∈ `watchtower` | `chat` | `workbench`; `provider` ∈ `claude` | `codex` | `ollama` | `http`.
@@ -30,6 +31,7 @@
 - A CLI process with no workspace config (fresh install, `--config` missing) calls an LLM → the row still lands (spool under `config.DataRoot()`), never panics. Test in Task 6.
 - Two processes appending to the spool while the daemon imports → no line lost, none imported twice. Test in Task 2.
 - Crash between ledger insert and spool deletion → re-import inserts nothing new (`call_id` UNIQUE, `INSERT OR IGNORE`). Test in Task 2.
+- `usage llm` run from the Desktop every 60 s must not write the database or race the daemon's import → read-only merge, de-duplicated by `call_id`. Test in Task 7.
 - Claude result with no `usage` object or an error envelope → one row `ok = 0`, estimated tokens, no panic. Test in Task 3.
 - A period with no rows at all / ledger younger than the period → CLI returns zeros and `ledger_since`, Desktop shows "Recording since …". Tests in Tasks 7 and 8.
 
@@ -48,16 +50,17 @@
 **Interfaces:**
 - Produces:
   - `pricing.Cost(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)`; `pricing.Resolve(model string) string` — maps short names `opus`/`sonnet`/`haiku`/`fable` to the current ids (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1`), else returns the input.
-  - `type llmusage.Call struct { CallID, At, Surface, Purpose, Process, Provider, Model string; Input, CacheRead, CacheWrite5m, CacheWrite1h, Output int64; Estimated bool; ReportedCostUSD, EstCostUSD *float64; DurationMS int64; OK bool; AutomationID, AutomationRunID *int64; CallsLost int64 }` with JSON tags = the column names.
+  - `type llmusage.Call struct { CallID, At, Surface, Purpose, Process, Provider, Model string; Input, CacheRead, CacheWrite5m, CacheWrite1h, Output int64; Estimated bool; ReportedCostUSD, EstCostUSD *float64; DurationMS int64; OK bool; AutomationID, AutomationRunID *int64 }` with JSON tags = the column names.
   - `llmusage.WithPurpose(ctx, string) ctx`, `PurposeFrom(ctx) (string, bool)`; `WithSurface(ctx, string) ctx`; `WithAutomation(ctx, automationID, runID int64) ctx`.
   - `llmusage.Record(ctx context.Context, c Call)` — fills `CallID` (16 random hex), `At` (RFC 3339 UTC now), `Surface` (ctx, else process default), `Purpose` (ctx), `Process`, automation ids (ctx), `EstCostUSD` via `pricing.Cost(pricing.Resolve(model), "", …)` when known; hands to the sink.
   - `llmusage.SetProcess(role, defaultSurface string)`; `llmusage.SetSpoolPath(path string)`; `type Sink interface { Write(Call) error }`; `llmusage.SetSink(Sink)` (nil = spool).
   - `llmusage.EstimateTokens(s string) int64` = `len(s)/4` (min 1 for non-empty).
   - `llmusage.SpoolPath(dir string) string` = `filepath.Join(dir, "llm_calls.spool.jsonl")`; spool lock = same path + `.lock` (flock).
-- Lost-call rule: if the sink and the spool both fail, increment a process counter; the next successful write first writes one extra `Call{Purpose: "unrecorded", CallsLost: n}`.
+- Fallback rule: spool write fails → `fallback(Call) error` (a func var set by `cmd`: lazy direct insert into the workspace DB) → on its failure one stderr line `llmusage: call not recorded (<purpose>, <process>): <error class>` per call. No counters.
+- `llmusage.SetFallback(func(Call) error)`.
 
-- [ ] **Step 1: Write failing tests** in `internal/llmusage/llmusage_test.go`: `TestRecordFillsDefaults` (purpose/surface/process from ctx and SetProcess; `CallID` 16 hex; `EstCostUSD` set for `claude-haiku-5-5`, nil for `gpt-5.6-sol`), `TestRecordSpoolsWithoutSink` (temp spool path, two Records → two JSON lines, mode 0600, no field other than the Call's tags), `TestLostCallsBecomeUnrecordedRow` (failing sink + unwritable spool, then a working sink → first written Call has `Purpose "unrecorded"`, `CallsLost 2`), `TestDigestSourceIsPurpose` (in `internal/digest`: `digest.WithSource(ctx,"x")` → `llmusage.PurposeFrom` = `"x"`). `TestResolveAliases` in `internal/pricing`.
-- [ ] **Step 2: Run** `go test ./internal/llmusage ./internal/pricing ./internal/digest -run 'TestRecord|TestLost|TestDigestSource|TestResolve'` — expect FAIL (undefined).
+- [ ] **Step 1: Write failing tests** in `internal/llmusage/llmusage_test.go`: `TestRecordFillsDefaults` (purpose/surface/process from ctx and SetProcess; `CallID` 16 hex; `EstCostUSD` set for `claude-haiku-5-5`, nil for `gpt-5.6-sol`), `TestRecordSpoolsWithoutSink` (temp spool path, two Records → two JSON lines, mode 0600, no field other than the Call's tags), `TestUnwritableSpoolFallsBack` (unwritable spool → fallback called once with the Call; failing fallback too → one stderr line naming purpose and process, captured via an `io.Writer` seam), `TestDigestSourceIsPurpose` (in `internal/digest`: `digest.WithSource(ctx,"x")` → `llmusage.PurposeFrom` = `"x"`). `TestResolveAliases` in `internal/pricing`.
+- [ ] **Step 2: Run** `go test ./internal/llmusage ./internal/pricing ./internal/digest -run 'TestRecord|TestUnwritableSpool|TestDigestSource|TestResolve'` — expect FAIL (undefined).
 - [ ] **Step 3: Implement** the packages above. `llmusage` imports only stdlib + `internal/pricing`. Spool append: open `O_APPEND|O_CREATE|O_WRONLY` 0600 under the `.lock` flock, one `json.Marshal` line.
 - [ ] **Step 4: Run** the Step 2 command plus `go test ./internal/agentlog ./internal/agentreport` — expect PASS.
 - [ ] **Step 5: Commit** `feat(llmusage): call ledger core, spool and shared pricing`.
@@ -71,13 +74,14 @@
 - Modify: `internal/db/schema.sql`, `internal/db/db_test.go` (`TestAllTablesExist`), regenerate golden + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`)
 
 **Interfaces:**
-- Table `llm_calls`: `id INTEGER PRIMARY KEY`, `call_id TEXT NOT NULL UNIQUE`, `at TEXT NOT NULL`, `surface TEXT NOT NULL CHECK (surface IN ('watchtower','chat','workbench'))`, `purpose TEXT NOT NULL DEFAULT ''`, `process TEXT NOT NULL DEFAULT ''`, `provider TEXT NOT NULL DEFAULT ''`, `model TEXT NOT NULL DEFAULT ''`, `input_tokens`, `cache_read_tokens`, `cache_write_5m_tokens`, `cache_write_1h_tokens`, `output_tokens` (`INTEGER NOT NULL DEFAULT 0`), `usage_estimated INTEGER NOT NULL DEFAULT 0`, `reported_cost_usd REAL`, `est_cost_usd REAL`, `duration_ms INTEGER NOT NULL DEFAULT 0`, `ok INTEGER NOT NULL DEFAULT 1`, `automation_id INTEGER`, `automation_run_id INTEGER`, `calls_lost INTEGER NOT NULL DEFAULT 0`. No FKs (rows outlive deleted automations). Indexes `idx_llm_calls_at(at)`, `idx_llm_calls_surface_at(surface, at)`.
+- Table `llm_calls`: `id INTEGER PRIMARY KEY`, `call_id TEXT NOT NULL UNIQUE`, `at TEXT NOT NULL`, `surface TEXT NOT NULL CHECK (surface IN ('watchtower','chat','workbench'))`, `purpose TEXT NOT NULL DEFAULT ''`, `process TEXT NOT NULL DEFAULT ''`, `provider TEXT NOT NULL DEFAULT ''`, `model TEXT NOT NULL DEFAULT ''`, `input_tokens`, `cache_read_tokens`, `cache_write_5m_tokens`, `cache_write_1h_tokens`, `output_tokens` (`INTEGER NOT NULL DEFAULT 0`), `usage_estimated INTEGER NOT NULL DEFAULT 0`, `reported_cost_usd REAL`, `est_cost_usd REAL`, `duration_ms INTEGER NOT NULL DEFAULT 0`, `ok INTEGER NOT NULL DEFAULT 1`, `automation_id INTEGER`, `automation_run_id INTEGER`. No FKs (rows outlive deleted automations). Indexes `idx_llm_calls_at(at)`, `idx_llm_calls_surface_at(surface, at)`.
 - Produces:
   - `(db *DB) InsertLLMCalls(calls []llmusage.Call) error` — one tx, `INSERT OR IGNORE`.
   - `type LLMCallSink struct{ DB *DB }` implementing `llmusage.Sink`.
   - `(db *DB) ImportLLMSpool(path string) (int, error)` — under the `.lock` flock: if `path+".importing"` exists, use it; else rename `path` → `path+".importing"`; release lock; parse lines (skip malformed, count them in the log), `InsertLLMCalls`, then remove `.importing`. Returns rows read.
+  - `llmusage.ReadSpool(path string) ([]Call, error)` (in `internal/llmusage/spool.go`) — reads `path+".importing"` and `path` without moving or locking them; used read-only by `usage llm`.
   - `(db *DB) PruneLLMCalls(before time.Time) (int64, error)`.
-  - `(db *DB) LLMUsageRows(since time.Time) ([]LLMUsageGroup, error)` where `LLMUsageGroup{Surface, Purpose, Process, Model string; AutomationID *int64; AutomationName, AutomationOrigin string; Calls, Runs, Errors, Estimated, NoPrice, Lost, Input, CacheRead, CacheWrite, Output int64; ReportedUSD, EstUSD float64}` grouped by `surface, purpose, model, automation_id` (LEFT JOIN `automations` for name/origin; Runs = distinct `automation_run_id`).
+  - `(db *DB) LLMUsageRows(since time.Time) ([]LLMUsageGroup, error)` where `LLMUsageGroup{Surface, Purpose, Process, Model string; AutomationID *int64; AutomationName, AutomationOrigin string; Calls, Runs, Errors, Estimated, NoPrice, Input, CacheRead, CacheWrite, Output int64; ReportedUSD, EstUSD float64}` grouped by `surface, purpose, model, automation_id` (LEFT JOIN `automations` for name/origin; Runs = distinct `automation_run_id`).
   - `(db *DB) LLMLedgerSince() (time.Time, bool, error)` — `MIN(at)`.
 
 - [ ] **Step 1: Write failing tests**: `TestImportLLMSpool_ExactlyOnce` (spool 3 lines → 3 rows; run again → 0 new), `TestImportLLMSpool_ResumesImporting` (pre-existing `.importing` file with 2 lines + spool with 1 → first import takes `.importing`, second takes the spool, total 3), `TestImportLLMSpool_ConcurrentAppend` (append goroutine writing 200 lines via `llmusage` spool sink while importing in a loop → exactly 200 rows), `TestLLMUsageRows_Groups` (fixture rows across surfaces, an owner automation with 2 runs → Runs=2, origin `owner`), `TestPruneLLMCalls`.
@@ -154,10 +158,11 @@
 
 **Interfaces:**
 - `surfaceFor(role string, args []string) string`: `cli:ai session`, `cli:ai query` → `chat`; `mcp` with `--workbench` → `workbench`; `mcp` with `--chat` and `--surface automation` → `watchtower`; other `mcp --chat` → `chat`; roles starting `cli:workbench` or `cli:terminal`, and `hook:*` → `workbench`; else `watchtower`.
+- Fallback: `llmusage.SetFallback` with a func that lazily opens `cfg.DBPath()` (only on first use) and calls `InsertLLMCalls`; not set when there is no config.
 - Spool path: with a config, `llmusage.SpoolPath(cfg.WorkspaceDir())` after applying `flagWorkspace`; without one, `llmusage.SpoolPath(config.DataRoot())`.
 - `phaseLLMLedger`: `ImportLLMSpool` for the workspace spool and the `DataRoot` spool; once per 24 h (in-memory last-run time) `PruneLLMCalls(now - 90 days)`; errors logged, never fatal.
 
-- [ ] **Step 1: Write failing tests**: `TestSurfaceFor` (table over the rules above), `TestSpoolPathWithoutConfig` (temp HOME, no config → spool under DataRoot, Record does not panic), `TestPhaseLLMLedgerImportsBothSpools`, `TestPhaseLLMLedgerPrunesDaily`.
+- [ ] **Step 1: Write failing tests**: `TestSurfaceFor` (table over the rules above), `TestSpoolPathWithoutConfig` (temp HOME, no config → spool under DataRoot, Record does not panic), `TestFallbackInsertsWhenSpoolUnwritable` (read-only spool dir → row lands in the temp workspace DB), `TestPhaseLLMLedgerImportsBothSpools`, `TestPhaseLLMLedgerPrunesDaily`.
 - [ ] **Step 2: Run** `go test ./cmd -run 'TestSurfaceFor|TestSpoolPath' && go test ./internal/daemon -run 'LLMLedger'` — expect FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the Step 2 commands — expect PASS.
@@ -173,16 +178,16 @@
 
 **Interfaces:**
 - Flags: `--since today|7d|30d` (default `7d`; `today` = local midnight), `--json`.
-- Before aggregating: import both spools (`ImportLLMSpool`).
+- Read-only: open the DB with `SetReadOnly`; never call `ImportLLMSpool`. Aggregate `LLMUsageRows(since)` plus the in-memory rows from `llmusage.ReadSpool` for both spool paths, dropping spool rows whose `call_id` already exists in the table (`SELECT call_id … WHERE call_id IN (…)`) and rows before `since`.
 - JSON (pinned top-level keys, sorted): `chats`, `ledger_since`, `own_automations`, `period`, `watchtower`, `workbenches`.
-  - `watchtower`: `{totals, rows}`; `totals` keys `calls, errors, estimated_calls, no_price_calls, lost_calls, untagged_calls, input, cache_read, cache_write, output, cost_usd, cost_is_lower_bound`; `rows[]` keys `purpose, models, calls, input, cache_read, cache_write, output, cost_usd, cost_is_estimate, cost_is_lower_bound, per_call_tokens` — surface `watchtower`, excluding owner automations, built-in automations grouped per purpose; untagged rows carry `purpose ""` and `process`; `unrecorded` rows carry `lost_calls`.
+  - `watchtower`: `{totals, rows}`; `totals` keys `calls, errors, estimated_calls, no_price_calls, untagged_calls, input, cache_read, cache_write, output, cost_usd, cost_is_lower_bound`; `rows[]` keys `purpose, models, calls, input, cache_read, cache_write, output, cost_usd, cost_is_estimate, cost_is_lower_bound, per_call_tokens` — surface `watchtower`, excluding owner automations, built-in automations grouped per purpose; untagged rows carry `purpose ""` and `process`.
   - `own_automations`: `{totals, rows[]}` rows keys `automation_id, name, runs, calls, input, output, cost_usd, cost_is_estimate`.
   - `chats`: `totals` shape.
   - `workbenches`: `{totals, sessions, helpers, analytics_off[]}` (names of workbenches with analytics off).
   - Cost per row = sum of `reported_cost_usd` where present else `est_cost_usd`; `cost_is_estimate` when any row used the estimate; `cost_is_lower_bound` when any call had neither.
 - Text output: one line per section + the rows table.
 
-- [ ] **Step 1: Write failing tests**: `TestUsageLLM_JSONKeysPinned`, `TestUsageLLM_SplitsOwnAutomations` (owner automation rows absent from `watchtower.rows`, present in `own_automations`; built-in present in `watchtower.rows`), `TestUsageLLM_LowerBoundWhenNoPrice`, `TestUsageLLM_EmptyLedger` (zeros, `ledger_since` empty string), `TestUsageLLM_WorkbenchAnalyticsOff`.
+- [ ] **Step 1: Write failing tests**: `TestUsageLLM_JSONKeysPinned`, `TestUsageLLM_SplitsOwnAutomations` (owner automation rows absent from `watchtower.rows`, present in `own_automations`; built-in present in `watchtower.rows`), `TestUsageLLM_LowerBoundWhenNoPrice`, `TestUsageLLM_EmptyLedger` (zeros, `ledger_since` empty string), `TestUsageLLM_WorkbenchAnalyticsOff`, `TestUsageLLM_ReadOnlyCountsSpoolOnce` (one call in the table, the same `call_id` plus one new call in the spool → calls = 2; DB file mtime and `llm_calls` row count unchanged; spool files untouched).
 - [ ] **Step 2: Run** `go test ./cmd -run TestUsageLLM` — expect FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** `go test ./cmd -run TestUsageLLM && go test ./internal/agentlogdb` — expect PASS.
@@ -198,7 +203,7 @@
 - Test: `WatchtowerDesktop/Tests/Core/LLMUsageReportTests.swift` (decode fixture, purpose names), `WatchtowerDesktop/Tests/LLMUsageViewModelTests.swift` (fake runner, period → args), DesignShot entry in `WatchtowerDesktop/Tests/DesignShots/DesignShotCatalog.swift`
 
 **Interfaces:**
-- Layout per `docs/design/mockups/llm-usage/index.html`: `KitSegmentedPicker` period (`@AppStorage("usage.watchtower.period")`), totals `Card` + grey gaps line (estimated, no price, untagged, lost — only non-zero parts), "Watchtower collecting and processing" table sorted by cost (tokens when no cost), Untagged/Unrecorded rows last in the warning colour, "Your automations" section with subtotal, "Chats and workbenches" card (workbench secondary text "sessions X · Watchtower helpers Y", analytics-off note). Cost text: `$x.xx`, `≈ $x.xx` when estimate, `≥ $x.xx` when lower bound, `—` when none. Empty ledger: "Recording since <date>" / "Recording starts with the next AI call".
+- Layout per `docs/design/mockups/llm-usage/index.html`: `KitSegmentedPicker` period (`@AppStorage("usage.watchtower.period")`), totals `Card` + grey gaps line (estimated, no price, untagged — only non-zero parts), "Watchtower collecting and processing" table sorted by cost (tokens when no cost), Untagged rows last in the warning colour, "Your automations" section with subtotal, "Chats and workbenches" card (workbench secondary text "sessions X · Watchtower helpers Y", analytics-off note). Cost text: `$x.xx`, `≈ $x.xx` when estimate, `≥ $x.xx` when lower bound, `—` when none. Empty ledger: "Recording since <date>" / "Recording starts with the next AI call".
 
 - [ ] **Step 1: Write failing tests** (decode, display names, VM args `["usage","llm","--since","7d","--json"]`, empty state flag).
 - [ ] **Step 2: Run** `make test-swift FILTER='LLMUsageReportTests|LLMUsageViewModelTests'` — expect FAIL.
@@ -206,16 +211,17 @@
 - [ ] **Step 4: Run** the Step 2 command, `make lint-swift`, and `make desktop-shots DESKTOP_SHOTS=<scratch dir>`; look at the shot (all gap lines on in the fixture) — expect PASS and a screen matching the mockup.
 - [ ] **Step 5: Commit** `feat(desktop): Usage → Watchtower tab`.
 
-### Task 9: Old Usage and Progress tabs stop showing tokens
+### Task 9: Old Usage and Progress tabs stop showing tokens; Home AI spend from the ledger
 
 **Depends on:** Task 8 (the tab to switch to)
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/Views/Usage/UsageView.swift` (remove token badges/summary token and cost items; add the "Tokens and cost: see the Watchtower tab" line with a button setting `selectedTab = .watchtower`), `WatchtowerDesktop/Sources/Views/Sidebar/ProgressDetailView.swift:101-107,157-159` (remove Input / Input (+ cache) / Output rows and per-step token text; add the same pointer line, the button opens Usage → Watchtower through `AppState` navigation)
-- Test: DesignShot entries for both screens; `rg 'formatTokens' WatchtowerDesktop/Sources/Views/Usage/UsageView.swift WatchtowerDesktop/Sources/Views/Sidebar/ProgressDetailView.swift` returns nothing
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeNumbersQueries.swift:53-55` — `aiSpendUSD` from new `LLMCallQueries.todayCost(db, now:calendar:) -> (usd: Double, isEstimate: Bool, isLowerBound: Bool)` over `llm_calls` (all surfaces, local day, `COALESCE(reported_cost_usd, est_cost_usd)`; guarded by `db.tableExists("llm_calls")`); the Home number shows "≈"/"≥" from the flags and opens Usage → Watchtower. Delete `TokenUsageQueries` if nothing else uses it.
+- Test: `WatchtowerDesktop/Tests/Core/LLMCallQueriesTests.swift` (`testTodayCostSumsAllSurfaces`, `testTodayCostLowerBoundWhenNoPrice`, `testMissingTableIsNil`); DesignShot entries for the changed screens; `rg 'formatTokens' WatchtowerDesktop/Sources/Views/Usage/UsageView.swift WatchtowerDesktop/Sources/Views/Sidebar/ProgressDetailView.swift` returns nothing
 
 - [ ] **Step 1: Edit** both views; delete now-unused helpers.
-- [ ] **Step 2: Run** `make test-swift FILTER='Usage|Progress'`, `make lint-swift`, `make desktop-shots DESKTOP_SHOTS=<scratch dir>` — expect PASS, shots match the mockup's "Changed" sections.
+- [ ] **Step 2: Run** `make test-swift FILTER='Usage|Progress|LLMCallQueries|HomeNumbers'`, `make lint-swift`, `make desktop-shots DESKTOP_SHOTS=<scratch dir>` — expect PASS, shots match the mockup's "Changed" sections.
 - [ ] **Step 3: Commit** `feat(desktop): run log and Progress point to the Watchtower tab for tokens`.
 
 ### Task 10: Docs and contract
