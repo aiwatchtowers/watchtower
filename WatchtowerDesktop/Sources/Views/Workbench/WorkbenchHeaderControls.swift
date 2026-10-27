@@ -23,7 +23,6 @@ struct WorkbenchHeaderControls: View {
     /// The tab under the pointer.
     @State private var hoveredTab: String?
     @State private var showsWorktreeSetup = false
-    @State private var showsAgentSettings = false
 
     var body: some View {
         HStack(spacing: Spacing.regular) {
@@ -40,8 +39,8 @@ struct WorkbenchHeaderControls: View {
                 // The tabs never truncate; the name before them does.
                 .fixedSize()
                 .layoutPriority(1)
-            if vm.cleanupScreenOpen(projectID: project.id) {
-                cleanupCrumb
+            if let screen = vm.pageScreen(projectID: project.id) {
+                screenCrumb(screen)
             }
             Spacer(minLength: Spacing.regular)
             if let automations { automations }
@@ -52,9 +51,6 @@ struct WorkbenchHeaderControls: View {
         .sheet(isPresented: $showsWorktreeSetup) {
             WorktreeSetupSheet(vm: vm, project: project)
         }
-        .sheet(isPresented: $showsAgentSettings) {
-            AgentSettingsSheet(vm: vm, project: project)
-        }
     }
 
     /// Session / Board / Files: on = on screen (call 7). On a single pane
@@ -63,16 +59,16 @@ struct WorkbenchHeaderControls: View {
     /// toggle: on shows the view beside the other pane, off closes its pane.
     /// Session stands for every view of a session (terminal, Workchat,
     /// report, Changes) and comes back in the mode it was last shown in.
-    /// While the Clean Up screen covers the workspace no tab is on, and
-    /// clicking one closes the screen and shows that view (spec 2026-10-26
-    /// §3.1).
+    /// While a page screen (Clean Up, Agent Settings) covers the workspace
+    /// no tab is on, and clicking one closes the screen and shows that view
+    /// (spec 2026-10-26 §3.1).
     private var tabs: some View {
         let layout = vm.layout(projectID: project.id)
-        let covered = vm.cleanupScreenOpen(projectID: project.id)
+        let covered = vm.pageCovered(projectID: project.id)
         return HStack(spacing: Spacing.tight) {
             tab("Session", systemImage: WorkspaceView.terminal.icon, isOn: !covered && layout.isShowingSessionView,
                 help: "Show the session — its terminal or Workchat, as last shown; in a split, beside the other pane") { on in
-                if covered { vm.closeCleanupScreen(projectID: project.id) }
+                if covered { vm.closePageScreen(projectID: project.id) }
                 if on {
                     Task { await vm.showSessionTab(project: project) }
                 } else {
@@ -81,7 +77,7 @@ struct WorkbenchHeaderControls: View {
             }
             ForEach([WorkspaceView.board, .files], id: \.self) { view in
                 tab(view.title, systemImage: view.icon, isOn: !covered && layout.isShowing(view), help: view.help) { on in
-                    if covered { vm.closeCleanupScreen(projectID: project.id) }
+                    if covered { vm.closePageScreen(projectID: project.id) }
                     if on {
                         Task { await vm.showView(view, project: project) }
                     } else {
@@ -105,27 +101,27 @@ struct WorkbenchHeaderControls: View {
         .help(help)
     }
 
-    /// **Clean Up ✕** beside the tabs while the Clean Up screen is open: ✕
-    /// closes it and the workspace shows as it was.
-    private var cleanupCrumb: some View {
-        Toggle(isOn: Binding(get: { true }, set: { if !$0 { vm.closeCleanupScreen(projectID: project.id) } })) {
-            Label { Text("Clean Up ✕") } icon: { EmptyView() }
+    /// **Clean Up ✕** / **Agent Settings ✕** beside the tabs while that
+    /// page screen is open: ✕ closes it and the workspace shows as it was.
+    private func screenCrumb(_ screen: WorkbenchPageScreen) -> some View {
+        Toggle(isOn: Binding(get: { true }, set: { if !$0 { vm.closePageScreen(projectID: project.id) } })) {
+            Label { Text("\(screen.title) ✕") } icon: { EmptyView() }
         }
-        .toggleStyle(SegmentedToggleStyle(showsIcon: false, isHovered: hoveredTab == "Clean Up") { inside in
-            if inside { hoveredTab = "Clean Up" } else if hoveredTab == "Clean Up" { hoveredTab = nil }
+        .toggleStyle(SegmentedToggleStyle(showsIcon: false, isHovered: hoveredTab == screen.title) { inside in
+            if inside { hoveredTab = screen.title } else if hoveredTab == screen.title { hoveredTab = nil }
         })
         .fixedSize()
-        .help("Close Clean Up and show the workspace")
+        .help("Close \(screen.title) and show the workspace")
     }
 
     /// Analytics as a quiet icon (spec §1): on while the
     /// Analytics view is on screen; the same show / hide as a tab. Off
-    /// while the Clean Up screen covers the workspace; a click closes it.
+    /// while a page screen covers the workspace; a click closes it.
     private var analyticsToggle: some View {
-        let covered = vm.cleanupScreenOpen(projectID: project.id)
+        let covered = vm.pageCovered(projectID: project.id)
         let isOn = !covered && vm.layout(projectID: project.id).isShowing(.analytics)
         return Button {
-            if covered { vm.closeCleanupScreen(projectID: project.id) }
+            if covered { vm.closePageScreen(projectID: project.id) }
             if isOn {
                 vm.hideView(.analytics, projectID: project.id)
             } else {
@@ -199,7 +195,7 @@ struct WorkbenchHeaderControls: View {
             }
             .help("A command a new session's worktree runs before the agent starts")
             Button {
-                showsAgentSettings = true
+                vm.openAgentSettingsScreen(projectID: project.id)
             } label: {
                 Label("Agent Settings…", systemImage: "slider.horizontal.3")
             }

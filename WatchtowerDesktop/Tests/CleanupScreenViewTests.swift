@@ -79,7 +79,7 @@ final class CleanupScreenViewTests: XCTestCase {
         let project = try XCTUnwrap(vm.selectedWorkbench)
         let process = try XCTUnwrap(appState.terminalCenter.process(for: session.id) as? FakeTerminalSession)
 
-        let host = NSHostingView(rootView: CleanupCoveredWorkspace(vm: vm, project: project).environment(appState))
+        let host = NSHostingView(rootView: WorkbenchCoveredWorkspace(vm: vm, project: project).environment(appState))
         host.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -133,6 +133,61 @@ final class CleanupScreenViewTests: XCTestCase {
 
         XCTAssertFalse(vm.cleanupScreenOpen(projectID: projectID))
         XCTAssertEqual(vm.layout(projectID: projectID).visiblePanes.first, .session(second.id))
+    }
+
+    /// Agent Settings is a page screen like Clean Up (board #1150): it
+    /// covers the terminal, one page screen at a time replaces the other,
+    /// and a session put on screen closes it.
+    func testAgentSettingsIsAPageScreen() async throws {
+        let first = try await insertSession("first")
+        let second = try await insertSession("second")
+        let vm = try await page(showing: first)
+        let layout = vm.layout(projectID: projectID)
+        XCTAssertNil(vm.pageScreen(projectID: projectID))
+
+        vm.openAgentSettingsScreen(projectID: projectID)
+        XCTAssertEqual(vm.pageScreen(projectID: projectID), .agentSettings)
+        XCTAssertTrue(vm.isObscured(sessionID: first.id, projectID: projectID))
+        XCTAssertEqual(vm.layout(projectID: projectID), layout, "the screen is not a layout value")
+
+        await vm.openCleanupScreen(projectID: projectID).value
+        XCTAssertEqual(vm.pageScreen(projectID: projectID), .cleanUp, "Clean Up takes its place")
+        vm.openAgentSettingsScreen(projectID: projectID)
+        XCTAssertEqual(vm.pageScreen(projectID: projectID), .agentSettings, "and gives it back")
+        XCTAssertFalse(vm.cleanupScreenOpen(projectID: projectID))
+
+        await vm.showSession(id: second.id)
+        XCTAssertNil(vm.pageScreen(projectID: projectID))
+        XCTAssertFalse(vm.isObscured(sessionID: second.id, projectID: projectID))
+
+        vm.openAgentSettingsScreen(projectID: projectID)
+        vm.closePageScreen(projectID: projectID)
+        XCTAssertNil(vm.pageScreen(projectID: projectID))
+    }
+
+    /// Agent Settings across a workbench switch (board #1150, review F1):
+    /// the screen stays open on its workbench, an unsaved instruction draft
+    /// stays that workbench's — never shown in another's field — and
+    /// closing the screen keeps it until Save.
+    func testAgentSettingsDraftsStayWithTheirWorkbench() async throws {
+        let session = try await insertSession("Login redirect")
+        let vm = try await page(showing: session)
+        let projectID = projectID
+        let other = try await pool.write { try TestDatabase.insertWorkbench($0, name: "gizmo", folder: "/tmp/example-gizmo") }
+        await vm.reload()
+        vm.openAgentSettingsScreen(projectID: projectID)
+        vm.agentSettingsDrafts[projectID, default: [:]][.session] = "Use make"
+
+        await vm.switchTo(workbenchID: other)
+        XCTAssertNil(vm.pageScreen(projectID: other), "the other workbench has no screen open")
+        XCTAssertNil(vm.agentSettingsDrafts[other]?[.session], "the draft is not the other workbench's")
+        await vm.switchTo(workbenchID: projectID)
+
+        XCTAssertEqual(vm.pageScreen(projectID: projectID), .agentSettings, "the screen is still open")
+        XCTAssertTrue(vm.isObscured(sessionID: session.id, projectID: projectID))
+        XCTAssertEqual(vm.agentSettingsDrafts[projectID]?[.session], "Use make")
+        vm.closePageScreen(projectID: projectID)
+        XCTAssertEqual(vm.agentSettingsDrafts[projectID]?[.session], "Use make", "closing keeps the unsaved text")
     }
 
     /// Leaving for another workbench and coming back is not an owner pick:

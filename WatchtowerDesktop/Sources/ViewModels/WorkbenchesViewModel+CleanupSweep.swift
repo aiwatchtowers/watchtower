@@ -74,6 +74,8 @@ extension WorkbenchesViewModel {
             // Leaving the old scope is closing it: its result goes.
             closeCleanupScreen(projectID: projectID)
         }
+        // One page screen at a time: Clean Up takes Agent Settings' place.
+        agentSettingsScreens.remove(projectID)
         if cleanupScreens[projectID] == nil {
             cleanupScreens[projectID] = CleanupScreenState(scope: scope)
         }

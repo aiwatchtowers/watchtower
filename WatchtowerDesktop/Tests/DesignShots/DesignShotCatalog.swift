@@ -302,6 +302,10 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "branch-review-chapter-risks", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.chapterRisks()
+            },
+            // Agent Settings as a page screen (#1150).
+            DesignShot(name: "workbench-agent-settings", size: NSSize(width: 1040, height: 900)) {
+                AgentSettingsShotFixtures.screen()
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
@@ -350,6 +354,7 @@ enum DesignShotFixtures {
         AutomationShotFixtures.cleanUp()
         BuiltinShotFixtures.cleanUp()
         CleanupShotFixtures.cleanUp()
+        AgentSettingsShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil

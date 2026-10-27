@@ -1,35 +1,6 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The workbench's workspace area with the Clean Up screen over it while it
-/// is open (board #1107, spec 2026-10-26-worktree-cleanup-screen §3.1). The
-/// screen covers the area rather than replacing it: the panes stay in the
-/// view tree — hidden, out of hit-testing and accessibility — so a
-/// session's terminal is never detached or re-created, and closing the
-/// screen shows the workspace exactly as it was.
-struct CleanupCoveredWorkspace: View {
-    @Bindable var vm: WorkbenchesViewModel
-    let project: Workbench
-
-    var body: some View {
-        let covered = vm.cleanupScreenOpen(projectID: project.id)
-        ZStack {
-            // An ask filed outside the app has no terminal to sit beside:
-            // its drawer takes the page's trailing edge.
-            OwnerAskDrawerHost(vm: vm, ask: vm.asks.drawerAsk(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil }) {
-                WorkspaceAreaView(vm: vm, project: project)
-            }
-            .opacity(covered ? 0 : 1)
-            .allowsHitTesting(!covered)
-            .accessibilityHidden(covered)
-            if covered {
-                CleanupScreenView(vm: vm, project: project)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 /// The Clean Up screen (spec §4, §5; mockup
 /// `docs/design/mockups/worktree-cleanup/`): header, progress line or
 /// result bar, toolbar, the list in two groups, footer, and the one

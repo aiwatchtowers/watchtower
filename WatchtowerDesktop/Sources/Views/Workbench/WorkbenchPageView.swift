@@ -42,8 +42,8 @@ struct WorkbenchPageView: View {
                 cleanupHint(hint)
                 Divider()
             }
-            // The workspace, with the Clean Up screen over it while open.
-            CleanupCoveredWorkspace(vm: vm, project: project)
+            // The workspace, with a page screen (Clean Up, Agent Settings) over it while open.
+            WorkbenchCoveredWorkspace(vm: vm, project: project)
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
         .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project, root: activeRoot))
