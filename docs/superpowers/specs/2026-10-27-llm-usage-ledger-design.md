@@ -60,10 +60,13 @@ The numbers must be trustworthy. Today they are not.
     Output rows and the per-step `in/out` token text, with the same one-line pointer under a
     run's details.
   - **Home → Numbers "AI spend"** (`HomeNumbersQueries` → `TokenUsageQueries.fetchUsage`,
-    today's `pipeline_runs.cost_usd`, always $0 today) reads today's `llm_calls` instead: the
-    sum over all surfaces (reported cost, else the estimate; "≈"/"≥" as on the tab), and opens
-    Usage → Watchtower. Rows still in the spool are not on Home until the daemon's next cycle
-    (≤ one sync interval).
+    today's `pipeline_runs.cost_usd`, always $0 today) takes its number from the same
+    `usage llm --since today --json` the tab uses — no second implementation in Swift. It shows
+    `page_total` (Watchtower + your automations + chats; workbenches are not in it), labelled
+    "AI spend today", with the tooltip "Watchtower, your automations and chats — workbenches
+    are on Usage → Watchtower", the same "≈"/"≥" marks, and opens Usage → Watchtower. It
+    includes spooled rows exactly like the tab, so the two never disagree. Refreshed when Home
+    appears and every 5 minutes while it is visible.
   The changed screens are in the mockup and get `DesignShotCatalog` shots.
 - No budgets, alerts or limits on top of the ledger (later, if wanted).
 - No per-chat or per-workbench drill-down — one total line each is what was asked.
@@ -133,11 +136,13 @@ A leaf package (no imports of digest/ai/codex) with:
   short-lived process to carry a counter, so the fallback is immediate, in order:
   1. a direct `INSERT` into `llm_calls` of the workspace database (opened lazily by path;
      the only exception to "the daemon is the only writer", taken only on this failure);
-  2. if that fails too, one stderr line per lost call, `llmusage: call not recorded
-     (<purpose>, <process>): <error class>` — stderr of daemon children and of Desktop-run
-     commands lands in `watchtower.log`, so the loss is at least in the log.
-  The screen cannot count calls lost on both paths; the feature note lists this as the v1
-  limit.
+  2. if that fails too, one line per lost call, `llmusage: call not recorded (<purpose>,
+     <process>): <error class>`, appended to `<workspace>/watchtower.log` and written to
+     stderr. A command run from a terminal or a hook therefore leaves the line in the log as
+     well as on the terminal.
+  The screen cannot count calls lost on both paths, and when even the log append fails (the
+  disk is the usual cause of all three) the loss is only on stderr; the feature note lists
+  this as the v1 limit.
 
 `Record` is called from **each leaf implementation's usage funnel** — the place that already
 has the provider's numbers:
@@ -210,9 +215,14 @@ for the screen and the terminal):
   the period, workbenches with agent analytics on) + `helpers` (surface `workbench` ledger
   rows), each also given separately, plus `analytics_off` = workbench names with analytics off
   (their sessions are not counted).
+- `page_total`: Watchtower + own automations + chats (what Home shows).
 - `ledger_since` (first row's time) so the screen can say when recording started.
 
-The command is **read-only**: it never imports the spool. It aggregates the table and adds
+The command is **read-only**: it opens the database with `db.OpenExisting` (no migrations, no
+writes) and never imports the spool. A missing database file or a missing `llm_calls` table
+(checked in `sqlite_master` before querying — the app not yet migrated) is not an error: the
+ledger part is empty and `ledger_since` is `""`, so the tab shows "Recording starts with the
+next AI call" instead of an error. It aggregates the table and adds
 the spool's not-yet-imported lines (and a leftover `.importing` file) in memory, de-duplicated
 by `call_id`, so the numbers are current without a second writer.
 
@@ -258,11 +268,16 @@ The guide's Usage text (`docs/guide/concepts/ai-providers-and-cost.md` and
     analytics on; the screen names the ones left out.
   - Built-in automations count as Watchtower's own work; the owner's automations are a
     separate "Your automations" section, outside the Watchtower subtotal.
-  - The old Usage tab stops showing tokens and cost and points to the Watchtower tab.
   - Ledger retention 90 days.
-- `usage llm` is read-only (merges the spool in memory); the daemon is the only ledger writer;
-  a failed spool write falls back to a direct insert, then to stderr — owner review, ask #677.
-- Home's "AI spend" moves to the ledger — owner review, ask #677.
+  - The old Usage tab **and the Progress tab** stop showing tokens and cost and point to the
+    Watchtower tab.
+  - Every non-daemon process writes through the spool; the daemon is the only ledger writer;
+    `usage llm` is read-only and merges the spool in memory; a failed spool write falls back to
+    a direct insert, then to the log line. (Written in answer to the owner's comments in
+    ask #677, which pointed at the problems; the choice itself is confirmed by approving this
+    spec.)
+  - Home's "AI spend" = `page_total` from `usage llm` (Watchtower + your automations + chats).
+- Home's "AI spend" must come from the ledger, not `pipeline_runs` — owner comment, ask #677.
 
 ## Calls left to the builder
 
@@ -286,6 +301,11 @@ The guide's Usage text (`docs/guide/concepts/ai-providers-and-cost.md` and
 - Lock cost: one ledger insert is an autocommit single-row write after a call that takes
   seconds; acceptance = no `llm_calls` call site over the 200 ms threshold in `dblock.jsonl`
   during the manual check below.
+- UI checks (shots + tests): the run-log tab and Progress show no token or cost numbers and
+  carry the pointer line; Home's AI spend equals `page_total` of `usage llm --since today`
+  (fake CLI runner in the test, and once by hand on the installed build).
+- `usage llm` on a database without `llm_calls` and with no database file → exit 0, empty
+  ledger part, `ledger_since: ""`.
 - Manual cross-check on the owner's install after one day, per path:
   - daemon: ledger rows with `process = daemon` vs the generator calls in `sessions.log` for
     the same window;

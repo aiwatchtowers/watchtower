@@ -56,10 +56,11 @@
   - `llmusage.SetProcess(role, defaultSurface string)`; `llmusage.SetSpoolPath(path string)`; `type Sink interface { Write(Call) error }`; `llmusage.SetSink(Sink)` (nil = spool).
   - `llmusage.EstimateTokens(s string) int64` = `len(s)/4` (min 1 for non-empty).
   - `llmusage.SpoolPath(dir string) string` = `filepath.Join(dir, "llm_calls.spool.jsonl")`; spool lock = same path + `.lock` (flock).
-- Fallback rule: spool write fails → `fallback(Call) error` (a func var set by `cmd`: lazy direct insert into the workspace DB) → on its failure one stderr line `llmusage: call not recorded (<purpose>, <process>): <error class>` per call. No counters.
+- Fallback rule: spool write fails → `fallback(Call) error` (a func var set by `cmd`: lazy direct insert into the workspace DB) → on its failure one line `llmusage: call not recorded (<purpose>, <process>): <error class>` per call, appended to the log path (`llmusage.SetLogPath`, set by `cmd` to `<workspace>/watchtower.log`) and written to stderr. No counters.
+- `llmusage.SetLogPath(path string)`.
 - `llmusage.SetFallback(func(Call) error)`.
 
-- [ ] **Step 1: Write failing tests** in `internal/llmusage/llmusage_test.go`: `TestRecordFillsDefaults` (purpose/surface/process from ctx and SetProcess; `CallID` 16 hex; `EstCostUSD` set for `claude-haiku-5-5`, nil for `gpt-5.6-sol`), `TestRecordSpoolsWithoutSink` (temp spool path, two Records → two JSON lines, mode 0600, no field other than the Call's tags), `TestUnwritableSpoolFallsBack` (unwritable spool → fallback called once with the Call; failing fallback too → one stderr line naming purpose and process, captured via an `io.Writer` seam), `TestDigestSourceIsPurpose` (in `internal/digest`: `digest.WithSource(ctx,"x")` → `llmusage.PurposeFrom` = `"x"`). `TestResolveAliases` in `internal/pricing`.
+- [ ] **Step 1: Write failing tests** in `internal/llmusage/llmusage_test.go`: `TestRecordFillsDefaults` (purpose/surface/process from ctx and SetProcess; `CallID` 16 hex; `EstCostUSD` set for `claude-haiku-5-5`, nil for `gpt-5.6-sol`), `TestRecordSpoolsWithoutSink` (temp spool path, two Records → two JSON lines, mode 0600, no field other than the Call's tags), `TestUnwritableSpoolFallsBack` (unwritable spool → fallback called once with the Call; failing fallback too → one line naming purpose and process in the log file and on stderr, captured via an `io.Writer` seam), `TestDigestSourceIsPurpose` (in `internal/digest`: `digest.WithSource(ctx,"x")` → `llmusage.PurposeFrom` = `"x"`). `TestResolveAliases` in `internal/pricing`.
 - [ ] **Step 2: Run** `go test ./internal/llmusage ./internal/pricing ./internal/digest -run 'TestRecord|TestUnwritableSpool|TestDigestSource|TestResolve'` — expect FAIL (undefined).
 - [ ] **Step 3: Implement** the packages above. `llmusage` imports only stdlib + `internal/pricing`. Spool append: open `O_APPEND|O_CREATE|O_WRONLY` 0600 under the `.lock` flock, one `json.Marshal` line.
 - [ ] **Step 4: Run** the Step 2 command plus `go test ./internal/agentlog ./internal/agentreport` — expect PASS.
@@ -178,8 +179,8 @@
 
 **Interfaces:**
 - Flags: `--since today|7d|30d` (default `7d`; `today` = local midnight), `--json`.
-- Read-only: open the DB with `SetReadOnly`; never call `ImportLLMSpool`. Aggregate `LLMUsageRows(since)` plus the in-memory rows from `llmusage.ReadSpool` for both spool paths, dropping spool rows whose `call_id` already exists in the table (`SELECT call_id … WHERE call_id IN (…)`) and rows before `since`.
-- JSON (pinned top-level keys, sorted): `chats`, `ledger_since`, `own_automations`, `period`, `watchtower`, `workbenches`.
+- Read-only: open the DB with `db.OpenExisting(cfg.DBPath(), 2*time.Second)`; never call `ImportLLMSpool`. Missing DB file or no `llm_calls` in `sqlite_master` → empty ledger part, `ledger_since: ""`, exit 0. Aggregate `LLMUsageRows(since)` plus the in-memory rows from `llmusage.ReadSpool` for both spool paths, dropping spool rows whose `call_id` already exists in the table (`SELECT call_id … WHERE call_id IN (…)`) and rows before `since`.
+- JSON (pinned top-level keys, sorted): `chats`, `ledger_since`, `own_automations`, `page_total`, `period`, `watchtower`, `workbenches`. `page_total` = `totals` shape summed over watchtower + own automations + chats.
   - `watchtower`: `{totals, rows}`; `totals` keys `calls, errors, estimated_calls, no_price_calls, untagged_calls, input, cache_read, cache_write, output, cost_usd, cost_is_lower_bound`; `rows[]` keys `purpose, models, calls, input, cache_read, cache_write, output, cost_usd, cost_is_estimate, cost_is_lower_bound, per_call_tokens` — surface `watchtower`, excluding owner automations, built-in automations grouped per purpose; untagged rows carry `purpose ""` and `process`.
   - `own_automations`: `{totals, rows[]}` rows keys `automation_id, name, runs, calls, input, output, cost_usd, cost_is_estimate`.
   - `chats`: `totals` shape.
@@ -187,7 +188,7 @@
   - Cost per row = sum of `reported_cost_usd` where present else `est_cost_usd`; `cost_is_estimate` when any row used the estimate; `cost_is_lower_bound` when any call had neither.
 - Text output: one line per section + the rows table.
 
-- [ ] **Step 1: Write failing tests**: `TestUsageLLM_JSONKeysPinned`, `TestUsageLLM_SplitsOwnAutomations` (owner automation rows absent from `watchtower.rows`, present in `own_automations`; built-in present in `watchtower.rows`), `TestUsageLLM_LowerBoundWhenNoPrice`, `TestUsageLLM_EmptyLedger` (zeros, `ledger_since` empty string), `TestUsageLLM_WorkbenchAnalyticsOff`, `TestUsageLLM_ReadOnlyCountsSpoolOnce` (one call in the table, the same `call_id` plus one new call in the spool → calls = 2; DB file mtime and `llm_calls` row count unchanged; spool files untouched).
+- [ ] **Step 1: Write failing tests**: `TestUsageLLM_JSONKeysPinned`, `TestUsageLLM_SplitsOwnAutomations` (owner automation rows absent from `watchtower.rows`, present in `own_automations`; built-in present in `watchtower.rows`), `TestUsageLLM_LowerBoundWhenNoPrice`, `TestUsageLLM_EmptyLedger` (zeros, `ledger_since` empty string), `TestUsageLLM_NoTableNoFile` (DB without `llm_calls`, and no DB file → exit 0, empty ledger part), `TestUsageLLM_PageTotal`, `TestUsageLLM_WorkbenchAnalyticsOff`, `TestUsageLLM_ReadOnlyCountsSpoolOnce` (one call in the table, the same `call_id` plus one new call in the spool → calls = 2; DB file mtime and `llm_calls` row count unchanged; spool files untouched).
 - [ ] **Step 2: Run** `go test ./cmd -run TestUsageLLM` — expect FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** `go test ./cmd -run TestUsageLLM && go test ./internal/agentlogdb` — expect PASS.
@@ -217,11 +218,11 @@
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/Views/Usage/UsageView.swift` (remove token badges/summary token and cost items; add the "Tokens and cost: see the Watchtower tab" line with a button setting `selectedTab = .watchtower`), `WatchtowerDesktop/Sources/Views/Sidebar/ProgressDetailView.swift:101-107,157-159` (remove Input / Input (+ cache) / Output rows and per-step token text; add the same pointer line, the button opens Usage → Watchtower through `AppState` navigation)
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeNumbersQueries.swift:53-55` — `aiSpendUSD` from new `LLMCallQueries.todayCost(db, now:calendar:) -> (usd: Double, isEstimate: Bool, isLowerBound: Bool)` over `llm_calls` (all surfaces, local day, `COALESCE(reported_cost_usd, est_cost_usd)`; guarded by `db.tableExists("llm_calls")`); the Home number shows "≈"/"≥" from the flags and opens Usage → Watchtower. Delete `TokenUsageQueries` if nothing else uses it.
-- Test: `WatchtowerDesktop/Tests/Core/LLMCallQueriesTests.swift` (`testTodayCostSumsAllSurfaces`, `testTodayCostLowerBoundWhenNoPrice`, `testMissingTableIsNil`); DesignShot entries for the changed screens; `rg 'formatTokens' WatchtowerDesktop/Sources/Views/Usage/UsageView.swift WatchtowerDesktop/Sources/Views/Sidebar/ProgressDetailView.swift` returns nothing
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeNumbersQueries.swift:53-55` — drop the `aiSpendUSD` read (and `TokenUsageQueries` if nothing else uses it); Home's AI spend comes from `LLMUsageViewModel` (Task 8) run with period `today`, owned by `HomeCenter` (load on Home appear, refresh every 5 min while visible), value = `page_total` with "≈"/"≥" from its flags, tooltip "Watchtower, your automations and chats — workbenches are on Usage → Watchtower", click opens Usage → Watchtower.
+- Test: `WatchtowerDesktop/Tests/HomeAISpendTests.swift` (`testAISpendIsPageTotal` with a fake runner returning a fixture; `testLowerBoundMark`; `testCLIErrorHidesNumber`); DesignShot entries for the changed screens; `rg 'formatTokens' WatchtowerDesktop/Sources/Views/Usage/UsageView.swift WatchtowerDesktop/Sources/Views/Sidebar/ProgressDetailView.swift` returns nothing
 
 - [ ] **Step 1: Edit** both views; delete now-unused helpers.
-- [ ] **Step 2: Run** `make test-swift FILTER='Usage|Progress|LLMCallQueries|HomeNumbers'`, `make lint-swift`, `make desktop-shots DESKTOP_SHOTS=<scratch dir>` — expect PASS, shots match the mockup's "Changed" sections.
+- [ ] **Step 2: Run** `make test-swift FILTER='Usage|Progress|HomeAISpend|HomeNumbers'`, `make lint-swift`, `make desktop-shots DESKTOP_SHOTS=<scratch dir>` — expect PASS, shots match the mockup's "Changed" sections.
 - [ ] **Step 3: Commit** `feat(desktop): run log and Progress point to the Watchtower tab for tokens`.
 
 ### Task 10: Docs and contract
@@ -237,4 +238,4 @@
 
 ## Execution order and lanes
 
-Task 1 → Task 2 ∥ Task 3 ∥ Task 4 → Task 5; Task 6 after 1+2; Task 7 after 2+6; Task 8 can start after Task 1 against the JSON fixture and finishes after 7; Task 9 after 8; Task 10 last. Phase gate (controller): `make test`, `make test-swift`, `make lint-all` once after Task 9, then the manual per-path cross-check from the spec on the owner's installed build after release.
+Task 1 → Task 2 ∥ Task 3 ∥ Task 4 → Task 5; Task 6 after 1+2; Task 7 after 2+6; Task 8 can start after Task 1 against the JSON fixture and finishes after 7; Task 9 after 8 (reuses `LLMUsageViewModel`); Task 10 last. Phase gate (controller): `make test`, `make test-swift`, `make lint-all` once after Task 9, then the manual per-path cross-check from the spec on the owner's installed build after release.
