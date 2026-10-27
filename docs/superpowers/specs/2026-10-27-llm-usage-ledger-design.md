@@ -208,7 +208,7 @@ list or the known-wrapper list. A new leaf that does not record fails the test.
 for the screen and the terminal):
 
 - `watchtower`: totals (calls, errors, input, cache read, cache write, output, cost,
-  estimated-usage calls, cost-unknown calls) and `by_purpose` rows (purpose,
+  estimated-usage calls, cost-unknown calls) and `rows` (purpose,
   display group, calls, tokens, cost, avg tokens per call, models) for Watchtower's own work
   incl. built-in automations.
 - `own_automations`: totals + one row per owner automation (name, runs, calls, tokens,
