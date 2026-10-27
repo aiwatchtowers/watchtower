@@ -3,7 +3,7 @@ import WatchtowerCore
 
 /// One finding of a chapter (spec §7): its badge and text, where it comes
 /// from (the owner's words only when the source is the owner's), what the
-/// document says, the reviewer's note, then **Fine as is** / **Comment**.
+/// document says, the reviewer's note, then the mark buttons.
 struct SpecReviewFindingCard: View {
     let model: SpecReviewModel
     let finding: SpecReviewChapterFinding
@@ -89,9 +89,11 @@ struct SpecReviewQuote: View {
     }
 }
 
-/// The owner's mark on one finding: **Fine as is**, **Comment** and **Not useful** while
-/// unmarked; the mark with Undo, or the comment with Edit and Remove, once
-/// marked. A comment is written in place (⌘↩ saves, Esc cancels).
+/// The owner's mark on one finding: **Fix**, **Fine as is**, **Comment** and
+/// **Not useful** while unmarked; the mark with Undo, or the comment with Edit
+/// and Remove, once marked. **Fix** is a comment with no words of the owner's:
+/// the finding goes to the author as it is (`SpecReviewAnswer`). A comment is
+/// written in place (⌘↩ saves, Esc cancels).
 struct SpecReviewMarkControls: View {
     let model: SpecReviewModel
     let key: String
@@ -120,6 +122,15 @@ struct SpecReviewMarkControls: View {
                         Spacer()
                         Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                     }
+                case .comment where model.marks[key]?.body.isEmpty ?? true:
+                    HStack(spacing: Spacing.regular) {
+                        Label("Fix", systemImage: "wrench.and.screwdriver.fill")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.accentColor)
+                        Spacer()
+                        Button("Add Comment") { startEditing() }.buttonStyle(.kitQuiet)
+                        Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
+                    }
                 case .comment:
                     VStack(alignment: .leading, spacing: Spacing.small) {
                         Label("Your comment", systemImage: "text.bubble.fill")
@@ -133,16 +144,45 @@ struct SpecReviewMarkControls: View {
                         }
                     }
                 case .viewed, nil:
-                    HStack(spacing: Spacing.regular) {
-                        Button("Fine as is") { Task { await model.mark(key, .ok) } }.buttonStyle(.kitSecondary)
-                        Button("Comment") { startEditing() }.buttonStyle(.kitSecondary)
-                        Button("Not useful") { Task { await model.mark(key, .notUseful) } }.buttonStyle(.kitSecondary)
+                    // A narrow drawer puts them on two rows.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: Spacing.regular) { markButtons }
+                        VStack(alignment: .leading, spacing: Spacing.small) {
+                            HStack(spacing: Spacing.regular) { fixButton; fineButton }
+                            HStack(spacing: Spacing.regular) { commentButton; notUsefulButton }
+                        }
                     }
                 }
             }
         }
         .controlSize(.small)
         .disabled(model.isAnswering)
+    }
+
+    @ViewBuilder
+    private var markButtons: some View {
+        fixButton
+        fineButton
+        commentButton
+        notUsefulButton
+    }
+
+    private var fixButton: some View {
+        Button("Fix") { Task { await model.mark(key, .comment) } }
+            .buttonStyle(.kitSecondary)
+            .help("The reviewer is right: send this finding to the author as it is")
+    }
+
+    private var fineButton: some View {
+        Button("Fine as is") { Task { await model.mark(key, .ok) } }.buttonStyle(.kitSecondary)
+    }
+
+    private var commentButton: some View {
+        Button("Comment") { startEditing() }.buttonStyle(.kitSecondary)
+    }
+
+    private var notUsefulButton: some View {
+        Button("Not useful") { Task { await model.mark(key, .notUseful) } }.buttonStyle(.kitSecondary)
     }
 
     private var editor: some View {

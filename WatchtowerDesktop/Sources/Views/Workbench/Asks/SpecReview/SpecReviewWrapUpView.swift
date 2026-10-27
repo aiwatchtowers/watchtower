@@ -50,7 +50,7 @@ struct SpecReviewWrapUpView: View {
             model.phase = .chapters
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                markGlyph(mark?.state)
+                markGlyph(mark)
                 VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(item.text).font(.callout).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
                     if mark?.state == .comment, let body = mark?.body, !body.isEmpty {
@@ -70,10 +70,12 @@ struct SpecReviewWrapUpView: View {
     }
 
     @ViewBuilder
-    private func markGlyph(_ state: SpecReviewMarkState?) -> some View {
-        switch state {
+    private func markGlyph(_ mark: SpecReviewMark?) -> some View {
+        switch mark?.state {
         case .ok:
             Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success).accessibilityLabel("Fine as is")
+        case .comment where mark?.body.isEmpty ?? true:
+            Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(Color.accentColor).accessibilityLabel("Fix")
         case .comment:
             Image(systemName: "text.bubble.fill").foregroundStyle(Color.accentColor).accessibilityLabel("Comment")
         case .notUseful:
@@ -91,15 +93,17 @@ struct SpecReviewWrapUpView: View {
                 .foregroundStyle(.secondary)
             ForEach(model.orphans, id: \.key) { mark in
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                    markGlyph(mark.state)
+                    markGlyph(mark)
                     VStack(alignment: .leading, spacing: Spacing.tight) {
                         if !mark.about.isEmpty {
                             Text(mark.about).font(.callout).fixedSize(horizontal: false, vertical: true)
                         }
-                        Text(mark.body)
-                            .font(mark.about.isEmpty ? .callout : .caption)
-                            .foregroundStyle(mark.about.isEmpty ? .primary : .secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        if !mark.body.isEmpty {
+                            Text(mark.body)
+                                .font(mark.about.isEmpty ? .callout : .caption)
+                                .foregroundStyle(mark.about.isEmpty ? .primary : .secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     Spacer(minLength: Spacing.regular)
                     Button("Remove") { Task { await model.unmark(mark.key) } }
