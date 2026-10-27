@@ -66,7 +66,10 @@ The numbers must be trustworthy. Today they are not.
     "AI spend today", with the tooltip "Watchtower, your automations and chats — workbenches
     are on Usage → Watchtower", the same "≈"/"≥" marks, and opens Usage → Watchtower. It
     includes spooled rows exactly like the tab, so the two never disagree. Refreshed when Home
-    appears and every 5 minutes while it is visible.
+    appears and every 5 minutes while it is visible. Failure rule, same as today's failed
+    read: if the command fails, times out (10 s) or the CLI is not found, the cell shows "—"
+    with the tooltip "AI spend unavailable" (never $0); a later success replaces it; while the
+    first load runs the cell shows "—" too.
   The changed screens are in the mockup and get `DesignShotCatalog` shots.
 - No budgets, alerts or limits on top of the ledger (later, if wanted).
 - No per-chat or per-workbench drill-down — one total line each is what was asked.
