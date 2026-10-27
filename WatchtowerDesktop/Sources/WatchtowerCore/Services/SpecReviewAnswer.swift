@@ -81,7 +81,9 @@ package enum SpecReviewAnswer {
         } else {
             let reason = entry.item.reply?.note.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             var note = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
-            if entry.verdict == "unsettled", !note.isEmpty, note == reason {
+            // An unsettled item's verdict note is a loop-end line or the
+            // author's reason, never the reviewer's: the finding's note is.
+            if entry.verdict == "unsettled", !note.isEmpty, note == reason || !SpecReviewLoop.isDisagree(entry) {
                 note = entry.item.note.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             head = note.isEmpty ? "Reviewer is right: \(text)" : "Reviewer is right: \(text) — \(note)"

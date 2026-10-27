@@ -1137,9 +1137,9 @@ struct WorkbenchCLI {
     /// Ends the author loop of review ask `askID` because its session is gone
     /// and shows the ask to the owner (#1121). Exit 0 also when the row is
     /// already the owner's.
-    func specReviewReveal(askID: Int64) async throws {
+    func specReviewReveal(askID: Int64, reason: String) async throws {
         _ = try await runner.run(args: ["workbench", "spec-review", "reveal", "--ask", String(askID),
-                                        "--reason", "session_gone"])
+                                        "--reason", reason])
     }
 
     /// Removes what was installed in the folder, then the workbench and every

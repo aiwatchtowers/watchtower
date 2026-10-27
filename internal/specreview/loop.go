@@ -29,6 +29,8 @@ const (
 	EndReviewerFailed = "reviewer_failed"
 	EndSessionGone    = "session_gone"
 	EndTimeout        = "timeout"
+	// EndOwner: the owner pressed Show Now before the loop finished.
+	EndOwner = "owner"
 )
 
 // Item kinds of an AuthorItem.
@@ -52,6 +54,10 @@ const (
 
 // noAnswerNote is an unsettled item's note when the author gave no reason.
 const noAnswerNote = "The author did not answer"
+
+// ownerEarlyNote is an unsettled item's note when the owner pressed Show Now
+// before the author answered it.
+const ownerEarlyNote = "You opened the review before the author answered"
 
 // Reply is the author's answer to one finding: fixed (Note: what changed,
 // optional) or disagree (Note: the reason).
@@ -222,6 +228,13 @@ func Reveal(d *db.DB, askID int64, end string, now time.Time) error {
 		if err != nil {
 			return err
 		}
+		if prev == nil && end == EndOwner {
+			// Show Now on a first round the reviewer has not finished: no
+			// loop to show yet, so the ask becomes a plain review and its
+			// findings land on the findings screen.
+			_, err = d.LeaveSpecLoop(askID, end)
+			return err
+		}
 		if prev != nil {
 			if ledger, open, err = decodeLoop(prev); err != nil {
 				return err
@@ -246,6 +259,9 @@ func Reveal(d *db.DB, askID int64, end string, now time.Time) error {
 			it.Reply = &rp
 		}
 		note := noAnswerNote
+		if end == EndOwner {
+			note = ownerEarlyNote
+		}
 		switch {
 		case it.Reply != nil && it.Reply.Reply == ReplyDisagree:
 			note = it.Reply.Note
@@ -269,6 +285,8 @@ func uncheckedNote(end string) string {
 		return "The fix was not checked: the reviewer failed"
 	case EndSessionGone:
 		return "The fix was not checked: the author's session ended"
+	case EndOwner:
+		return "The fix was not checked: you opened the review before it was"
 	}
 	return "The fix was not checked"
 }

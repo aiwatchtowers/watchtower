@@ -70,8 +70,21 @@ package struct SpecReviewLedgerEntry: Decodable, Equatable, Sendable {
 
 /// Pure reads over a row's author loop.
 package enum SpecReviewLoop {
+    /// Findings the two sides argued over: the reviewer kept one after the
+    /// author's fix, or the author disagreed and the loop ended first.
     package static func disputed(_ row: SpecReviewRow) -> [SpecReviewLedgerEntry] {
-        row.ledger.filter { $0.verdict == "disputed" || $0.verdict == "unsettled" }
+        row.ledger.filter { $0.verdict == "disputed" || ($0.verdict == "unsettled" && isDisagree($0)) }
+    }
+
+    /// Findings the author never answered, or answered with a fix nobody
+    /// checked: the loop ended first (a last round's new findings at the
+    /// cap, a timeout, Show Now). Nobody argued over them.
+    package static func unanswered(_ row: SpecReviewRow) -> [SpecReviewLedgerEntry] {
+        row.ledger.filter { $0.verdict == "unsettled" && !isDisagree($0) }
+    }
+
+    package static func isDisagree(_ entry: SpecReviewLedgerEntry) -> Bool {
+        entry.item.reply?.reply == "disagree"
     }
 
     /// Findings the author fixed and the reviewer confirmed: `resolved`
@@ -92,6 +105,7 @@ package enum SpecReviewLoop {
         case "reviewer_failed": return "The reviewer stopped before the loop finished."
         case "session_gone": return "The author's session ended before the loop finished."
         case "timeout": return "The author did not answer the reviewer within 30 minutes."
+        case "owner": return "You opened the review before the loop finished."
         default: return nil
         }
     }

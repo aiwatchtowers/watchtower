@@ -28,8 +28,9 @@ struct OwnerAskStackSection: View {
         let outsideClosed = asks.closedCounts[project.id]?[nil] ?? 0
         let automationClosed = asks.closedAutomationCounts[project.id] ?? 0
         let notices = asks.quickNotices(projectID: project.id)
+        let inReview = vm.specReviewLoop?.hidden.filter { $0.projectID == project.id } ?? []
         if !stack.asks.isEmpty || !notices.isEmpty || outsideClosed > 0 || automationClosed > 0
-            || asks.loadErrors[project.id] != nil {
+            || !inReview.isEmpty || asks.loadErrors[project.id] != nil {
             VStack(alignment: .leading, spacing: 2) {
                 if !stack.asks.isEmpty {
                     Text("Waiting for you (\(stack.count))")
@@ -54,6 +55,15 @@ struct OwnerAskStackSection: View {
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { rowsHeight = $0 })
                     }
                     .frame(height: min(rowsHeight, Self.maxRowsHeight))
+                }
+                // Spec and plan asks still between the reviewer and the author.
+                if !inReview.isEmpty {
+                    Text("Reviewer and author (\(inReview.count))")
+                        .sidebarSectionLabel()
+                        .padding(.horizontal, Spacing.medium)
+                        .padding(.top, stack.asks.isEmpty ? 0 : Spacing.small)
+                        .accessibilityAddTraits(.isHeader)
+                    ForEach(inReview) { SpecReviewLoopStackRow(vm: vm, loop: $0) }
                 }
                 // Quick answers' notices, where the owner tapped.
                 ForEach(notices) { notice in
@@ -192,5 +202,52 @@ struct OwnerAskCardFocus<Value: Hashable>: ViewModifier {
             .onKeyPress(phases: .down) { press in
                 keys.press(OwnerAskKeyMap.Press(press)) ? .handled : .ignored
             }
+    }
+}
+
+/// A spec or plan ask the reviewer and the author are still going over
+/// (hidden until the loop ends): its title, round, and **Show Now**, which
+/// ends the loop and puts the ask in the stack at once.
+private struct SpecReviewLoopStackRow: View {
+    let vm: WorkbenchesViewModel
+    let loop: SpecReviewLoopQueries.HiddenLoop
+    @State private var showing = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.secondary)
+                .frame(width: IconSize.composer)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(loop.title).lineLimit(1).truncationMode(.tail)
+                Text("ask #\(loop.askID) · \(loop.docType == "plan" ? "plan" : "spec") · round \(loop.round) of \(SpecReviewLoopCenter.maxRounds)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: Spacing.small)
+            if showing {
+                ProgressView().controlSize(.mini)
+            } else {
+                Button("Show Now", action: showNow)
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+                    .help("Stop the reviewer↔author loop and open this review now, with what is settled so far")
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.tight)
+    }
+
+    private func showNow() {
+        showing = true
+        Task {
+            if await vm.specReviewLoop?.showNow(askID: loop.askID) == true {
+                await vm.asks.load(projectID: loop.projectID)
+                await vm.showAsk(loop.askID, projectID: loop.projectID)
+            }
+            showing = false
+        }
     }
 }

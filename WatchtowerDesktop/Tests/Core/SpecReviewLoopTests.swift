@@ -36,7 +36,8 @@ final class SpecReviewLoopTests: XCTestCase {
 
     func testDisputedAndFixedSplit() throws {
         let r = try row(ledger: ledger)
-        XCTAssertEqual(SpecReviewLoop.disputed(r).map(\.item.key), ["bs:2", "ck:3"])
+        XCTAssertEqual(SpecReviewLoop.disputed(r).map(\.item.key), ["bs:2"])
+        XCTAssertEqual(SpecReviewLoop.unanswered(r).map(\.item.key), ["ck:3"], "unsettled with no reply: nobody argued")
         XCTAssertEqual(SpecReviewLoop.fixed(r).map(\.item.key), ["ag:1"])
     }
 

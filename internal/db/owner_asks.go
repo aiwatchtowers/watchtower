@@ -165,6 +165,22 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 	return id, superseded, nil
 }
 
+// OpenSpecAskOfSession returns the id of an open spec review ask of the
+// session, hidden in its author loop or not; 0 when there is none.
+func (db *DB) OpenSpecAskOfSession(sessionID int64) (int64, error) {
+	var id int64
+	err := db.QueryRow(`SELECT id FROM owner_asks
+		WHERE session_id = ? AND status = 'open' AND kind = 'review' AND doc_type = 'spec'
+		ORDER BY id LIMIT 1`, sessionID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("finding the session's open spec ask: %w", err)
+	}
+	return id, nil
+}
+
 // CountOpenOwnerAsks returns how many asks of workbench workbenchID are open —
 // for a refusal before anything is recorded; InsertOwnerAsk enforces the cap.
 func (db *DB) CountOpenOwnerAsks(workbenchID int64) (int, error) {

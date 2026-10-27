@@ -322,3 +322,25 @@ func TestGetAsk_SpecLoopKey(t *testing.T) {
 	assert.Equal(t, "owner", byID[float64(id)]["spec_loop"])
 	assert.NotContains(t, byID[float64(q)], "spec_loop")
 }
+
+// A plan is reviewed only after the owner answered the session's spec: an
+// open spec ask (hidden in its loop or not) refuses the plan.
+func TestAskOwner_PlanWaitsForTheSpec(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	const planPath = "docs/superpowers/plans/a.md"
+	writeWorkbenchFile(t, fx.d, fx.a, planPath, "# Plan\n")
+	spec := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+
+	_, err := proposeIn(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, planPath))
+	assert.Contains(t, refusal(t, err), fmt.Sprintf("the spec in ask #%d is not answered yet", spec))
+
+	_, err = fx.d.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{}', answered_at = '2026-10-27T10:00:00Z' WHERE id = ?`, spec)
+	require.NoError(t, err)
+	out := mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, planPath))
+	assert.Equal(t, "author_loop", out["spec_review"])
+
+	// Another session's open spec does not hold this plan back.
+	other := askRegistryWith(t, fx.d, "", okLauncher)
+	mustApply(t, other, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath))
+	mustApply(t, fx.reg, fx.a, "ask_owner", `{"kind":"review","title":"Plan 2","doc_path":"docs/superpowers/plans/a.md","reason":"r"}`)
+}

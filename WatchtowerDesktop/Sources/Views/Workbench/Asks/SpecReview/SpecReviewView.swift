@@ -354,26 +354,37 @@ enum SpecReviewPresentation {
         }
     }
 
-    /// A dispute card's badge: the reviewer kept it (Disputed) or the
-    /// loop ended before it settled (Not settled).
+    /// A loop card's badge: the reviewer kept it after the author's fix
+    /// (Disputed), the author disagreed and the loop ended (Not settled),
+    /// a fix nobody checked (Fix not checked), or a finding the author never
+    /// saw an answer for (New in round N).
     static func disputeBadge(_ entry: SpecReviewLedgerEntry) -> Badge {
-        entry.verdict == "unsettled"
-            ? Badge(title: "Not settled", tint: .warning)
-            : Badge(title: "Disputed", tint: .error)
+        if entry.verdict != "unsettled" { return Badge(title: "Disputed", tint: .error) }
+        switch entry.item.reply?.reply {
+        case "disagree": return Badge(title: "Not settled", tint: .warning)
+        case "fixed": return Badge(title: "Fix not checked", tint: .warning)
+        default: return Badge(title: "New in round \(max(entry.item.round, 1))", tint: .accent)
+        }
     }
 
-    /// The reviewer's position on a dispute: its verdict note (for an
-    /// unsettled item, the cap or no-answer note), else the finding's own
-    /// note. An unsettled item whose note is the author's reason, copied
-    /// there by an early end, shows the finding's note instead.
+    /// The reviewer's argument: on a dispute its answer to the author's
+    /// reply (the verdict note), else the finding's own note — never a
+    /// loop-end line such as "Not settled in 3 rounds".
     static func reviewerPosition(_ entry: SpecReviewLedgerEntry) -> String? {
         let verdict = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
         let own = entry.item.note.trimmingCharacters(in: .whitespacesAndNewlines)
-        if entry.verdict == "unsettled", !verdict.isEmpty, verdict == authorReason(entry) {
-            return own.isEmpty ? nil : own
-        }
-        if !verdict.isEmpty { return verdict }
+        if entry.verdict == "disputed", !verdict.isEmpty { return verdict }
         return own.isEmpty ? nil : own
+    }
+
+    /// Why an unsettled card is still open: the loop-end note (the cap, a
+    /// fix not checked, Show Now); nil on a dispute or when it only repeats
+    /// the author's reason or the reviewer's argument.
+    static func loopStatus(_ entry: SpecReviewLedgerEntry) -> String? {
+        guard entry.verdict == "unsettled" else { return nil }
+        let note = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        if note.isEmpty || note == authorReason(entry) || note == reviewerPosition(entry) { return nil }
+        return note
     }
 
     /// The author's reason (its last reply's note); nil when it gave none.

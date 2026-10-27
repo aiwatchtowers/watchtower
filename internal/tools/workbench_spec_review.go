@@ -65,6 +65,29 @@ func validateReviewReplies(a askOwnerArgs) error {
 const errRepliesNoLoop = "review_replies: this ask will not start a review loop (it needs a spec or plan document, " +
 	"a Watchtower session and a reviewer on this surface) — file it without review_replies"
 
+// planAfterSpec refuses a plan review while a spec review ask of the same
+// session is still open: the plan is written against the approved spec, so a
+// review of it before the owner's answer is wasted.
+func planAfterSpec(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEnv func() string) error {
+	if a.Kind != asks.KindReview || specreview.ClassifyDoc(a.DocType, a.DocPath) != specreview.Plan {
+		return nil
+	}
+	p, err := workbenchOf(ctx, d, b)
+	if err != nil {
+		return err
+	}
+	session, err := terminalSessionOf(d, p.ID, sessionEnv)
+	if err != nil || !session.Valid {
+		return err
+	}
+	spec, err := d.OpenSpecAskOfSession(session.Int64)
+	if err != nil || spec == 0 {
+		return err
+	}
+	return &ValidationError{Msg: fmt.Sprintf(
+		"doc_type: the spec in ask #%d is not answered yet — file the plan for review after the owner approves the spec", spec)}
+}
+
 // specLoopStart decides a filed spec/plan ask's loop: nil (no loop: no
 // session, or no reviewer launcher) or the round to queue with the author's
 // replies. With replies, the previous ask must be an open ask whose review is

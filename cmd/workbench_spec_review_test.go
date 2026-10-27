@@ -222,7 +222,7 @@ func TestSpecReviewReveal_CLI(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = runSpecReview(t, "reveal", "--ask", itoa(id), "--reason", "timeout")
-	require.Error(t, err, "only session_gone is accepted")
+	require.Error(t, err, "only session_gone and owner are accepted")
 	row, err := database.GetSpecReview(id)
 	require.NoError(t, err)
 	assert.Equal(t, "author", row.Loop)
@@ -244,4 +244,14 @@ func TestSpecReviewReveal_CLI(t *testing.T) {
 	assert.Equal(t, `"owner"`, string(m["loop"]))
 	assert.Equal(t, `"session_gone"`, string(m["loop_end"]))
 	assert.JSONEq(t, `[]`, string(m["open_items"]))
+
+	// Show Now: reason owner.
+	database2, id2, _ := specReviewAsk(t)
+	_, err = database2.Exec(`UPDATE spec_reviews SET loop = 'author', round = 1, status = 'done', open_items = '[]' WHERE ask_id = ?`, id2)
+	require.NoError(t, err)
+	_, err = runSpecReview(t, "reveal", "--ask", itoa(id2), "--reason", "owner")
+	require.NoError(t, err)
+	row, err = database2.GetSpecReview(id2)
+	require.NoError(t, err)
+	assert.Equal(t, "owner", row.LoopEnd)
 }

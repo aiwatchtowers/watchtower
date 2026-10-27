@@ -49,13 +49,18 @@ package enum SpecReviewSummary {
     }
 
     /// A finished author loop on the phone: "Reviewer and author disagree on
-    /// 2 · 3 fixed by the author", or "3 fixed by the author" when nothing
-    /// is disputed. Nil for a row that is not an owner-turn loop.
+    /// 2 · 1 not answered · 3 fixed by the author"; a part that is zero is
+    /// left out, the fixed count never. Nil for a row that is not an
+    /// owner-turn loop.
     package static func loopLine(_ row: SpecReviewRow) -> String? {
         guard row.loop == .owner else { return nil }
         let disputed = SpecReviewLoop.disputed(row).count
-        let fixed = "\(SpecReviewLoop.fixed(row).count) fixed by the author"
-        return disputed == 0 ? fixed : "Reviewer and author disagree on \(disputed) · \(fixed)"
+        let unanswered = SpecReviewLoop.unanswered(row).count
+        var parts: [String] = []
+        if disputed > 0 { parts.append("Reviewer and author disagree on \(disputed)") }
+        if unanswered > 0 { parts.append("\(unanswered) not answered") }
+        parts.append("\(SpecReviewLoop.fixed(row).count) fixed by the author")
+        return parts.joined(separator: " · ")
     }
 
     /// `result` is read only for a done review (a caller that keeps the

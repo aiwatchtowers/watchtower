@@ -452,7 +452,8 @@ final class SpecReviewModelTests: XCTestCase {
         await model.load()
         XCTAssertTrue(model.isLoop)
         XCTAssertEqual(model.phase, .wrapup, "a finished loop opens on Decide")
-        XCTAssertEqual(model.disputes.map(\.item.key), ["bs:2", "ck:1"])
+        XCTAssertEqual(model.disputes.map(\.item.key), ["bs:2"])
+        XCTAssertEqual(model.unanswered.map(\.item.key), ["ck:1"])
         XCTAssertEqual(model.fixes.map(\.item.key), ["ag:1"])
         await model.pick("bs:2", reviewerRight: true, body: " please add it ")
         XCTAssertEqual(model.marks["bs:2"]?.state, .comment)
@@ -463,6 +464,30 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertEqual(answer.verdict, .approved)
         XCTAssertEqual(answer.comments.map(\.body), ["Reviewer is right: No undo — still needed\n\nplease add it"])
         XCTAssertEqual(answer.comments.first?.heading, "Behaviour")
+    }
+
+    /// Fix on a finding the author never answered sends the reviewer's own
+    /// note, never the loop-end line.
+    func testFixOnUnansweredSendsTheReviewersNote() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let id = askID
+        let ledger = """
+        [{"key":"bs:9","kind":"blind_spot","text":"Spool follows the active workspace","note":"a switch moves pending calls",
+          "round":3,"verdict":"unsettled","verdict_note":"Not settled in 3 rounds","settled":3}]
+        """
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE spec_reviews SET loop = 'owner', round = 3, ledger = ?, loop_end = 'cap' WHERE ask_id = ?",
+                          arguments: [ledger, id])
+        }
+        let model = try await makeModel()
+        await model.load()
+        XCTAssertTrue(model.disputes.isEmpty)
+        XCTAssertEqual(model.unpickedDisputeCount, 1)
+        await model.pick("bs:9", reviewerRight: true)
+        let sent = await model.approve()
+        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.comments.map(\.body), ["Reviewer is right: Spool follows the active workspace — a switch moves pending calls"])
     }
 
     func testAnswerAuthorRightSendsNothing() async throws {

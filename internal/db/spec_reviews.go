@@ -300,6 +300,23 @@ func (db *DB) RevealSpecLoop(askID int64, end, ledger string, _ time.Time) (bool
 	return n == 1, nil
 }
 
+// LeaveSpecLoop turns an author-loop row into a plain review (loop=”) with
+// the end reason: the owner's Show Now before the first round finished. A
+// reviewer still running then finishes it as a plain review. False when the
+// row was not in the 'author' loop.
+func (db *DB) LeaveSpecLoop(askID int64, end string) (bool, error) {
+	res, err := db.Exec(`UPDATE spec_reviews SET loop = '', loop_end = ?, open_items = ''
+		WHERE ask_id = ? AND loop = 'author'`, end, askID)
+	if err != nil {
+		return false, fmt.Errorf("leaving spec loop: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("leaving spec loop: %w", err)
+	}
+	return n == 1, nil
+}
+
 // SpecLoopsToSweep lists the author-loop reviews whose ask is still open.
 func (db *DB) SpecLoopsToSweep() ([]SpecLoopRow, error) {
 	rows, err := db.Query(`SELECT r.ask_id, r.status, r.finished_at, a.session_id IS NOT NULL

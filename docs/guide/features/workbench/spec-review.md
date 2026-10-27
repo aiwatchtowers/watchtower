@@ -34,9 +34,11 @@ since: 0.26.0
 action: nav:projects
 -->
 
-For a spec or a plan the agent works on, the ask stays hidden while the reviewer and the agent go back and forth. The reviewer's findings go straight to the agent, which either fixes the document or disagrees with a reason. The reviewer then checks the new version. The loop runs at most three reviewer rounds. The session row shows **Spec review: round 2 of 3** meanwhile, and nothing reaches your notifications.
+For a spec or a plan the agent works on, the ask stays hidden while the reviewer and the agent go back and forth. The reviewer's findings go straight to the agent, which either fixes the document or disagrees with a reason. The reviewer then checks the new version. The loop runs at most three reviewer rounds. The session row shows **Spec review: round 2 of 3** meanwhile, and nothing reaches your notifications. At the top of the session panel, **Reviewer and author** lists these asks; press **Show Now** on one to stop the loop and open the review at once.
 
-The ask appears when nothing is left for the agent: every finding is fixed or disputed. It also appears at once if the reviewer fails or cannot start, the session is gone, or the agent does not answer a round within 30 minutes. In those cases the unanswered findings show as disputes, with the reason at the top.
+The ask appears when nothing is left for the agent: every finding is fixed or disputed. It also appears at once if the reviewer fails or cannot start, the session is gone, or the agent does not answer a round within 30 minutes. Findings the agent never answered (for example, new findings of the last round) are listed under **Not answered by the author** with the reviewer's reason: press **Fix** to send one to the agent, or **Skip**. **Disputed** keeps only the findings the two sides argued over, each with both arguments.
+
+The agent files a plan for review only after you answered its spec: a plan filed while the spec's ask is still open is refused.
 
 Specs and plans from a session with no reviewer, other documents and asks that were already open keep the plain review ask.
 

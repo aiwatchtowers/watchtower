@@ -440,7 +440,7 @@ final class OwnerAskSliceTests: XCTestCase {
             let payload = try SliceJSON.objects(records).first { ($0["id"] as? NSNumber)?.int64Value == id }
             return (payload?["spec_review"] as? [String: Any])?["line"] as? String
         }
-        XCTAssertEqual(try line(), "Reviewer and author disagree on 2 · 2 fixed by the author")
+        XCTAssertEqual(try line(), "Reviewer and author disagree on 1 · 1 not answered · 2 fixed by the author")
         try dbPool.write {
             try $0.execute(sql: """
                 UPDATE spec_reviews SET ledger = '[{"key":"a","kind":"agreement","text":"t","verdict":"resolved"}]',
