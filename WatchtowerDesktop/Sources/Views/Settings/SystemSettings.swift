@@ -362,23 +362,21 @@ struct SystemSettings: View {
                         .foregroundStyle(.secondary)
                 }
 
-            case let .available(version, notes, _):
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Label("Version \(version) available", systemImage: "arrow.down.circle.fill")
-                            .foregroundStyle(.blue)
-                        Spacer()
-                        Button("Download") {
-                            Task { await service.downloadUpdate() }
-                        }
-                        .buttonStyle(.borderedProminent)
+            case let .available(version, _, _):
+                // The notes open in the update window, rendered in full
+                // (ask #694), not cut down to a few lines here.
+                HStack {
+                    Label("Version \(version) available", systemImage: "arrow.down.circle.fill")
+                        .foregroundStyle(.blue)
+                    Spacer()
+                    Button("What's New…") {
+                        _ = service.presentUpdateWindow?()
                     }
-                    if !notes.isEmpty {
-                        Text(notes)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(4)
+                    .buttonStyle(.kitSecondary)
+                    Button("Download") {
+                        Task { await service.downloadUpdate() }
                     }
+                    .buttonStyle(.kitPrimary)
                 }
 
             case .downloading(let progress):
@@ -416,7 +414,7 @@ struct SystemSettings: View {
                     Button("Restart Now") {
                         Task { await service.relaunch() }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.kitPrimary)
                 }
 
             case .error(let message):
@@ -446,7 +444,7 @@ struct SystemSettings: View {
                 Button("Install & Restart") {
                     Task { await service.install() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.kitPrimary)
                 .disabled(busy)
             }
             if busy {
