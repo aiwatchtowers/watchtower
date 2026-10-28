@@ -151,7 +151,7 @@ func TestMeetPriv02_PrivateMeetingChatArtifactsLeaveIndex(t *testing.T) {
 	seedMeetPrivKB(t, d)
 	exec(t, d, `INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES
 		(5, 'Public sync chat', 'meeting', '1', 1, 1),
-		(6, 'Plain chat', NULL, NULL, 1, 1)`)
+		(6, 'Plain chat', '', '', 1, 1)`)
 	exec(t, d, `INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (1, 5, 'assistant', 'x', 1), (2, 6, 'assistant', 'y', 1)`)
 	exec(t, d, `INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, title, content, created_at) VALUES
 		(5, 1, 'plan', 1, 'document', 'Meeting plan', 'kiwi rollout from the meeting', 1),
