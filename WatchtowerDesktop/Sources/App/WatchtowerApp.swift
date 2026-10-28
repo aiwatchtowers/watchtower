@@ -194,12 +194,11 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
             appState?.selectedDestination = .usage
         case "update":
-            // An update push opens Settings → System, where it installs.
-            appState?.settingsTab = .system
-            if let openSettings = appState?.openSettingsWindow {
-                openSettings()
+            // An update push opens the Software Update window, where it installs.
+            if let present = appState?.updateService.presentUpdateWindow {
+                _ = present()
             } else {
-                NSLog("NotificationDelegate: update push clicked before the Settings opener was wired")
+                NSLog("NotificationDelegate: update push clicked before the update window opener was wired")
             }
         default:
             break

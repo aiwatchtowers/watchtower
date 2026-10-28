@@ -186,22 +186,26 @@ final class NotificationRouteTests: XCTestCase {
 
     // MARK: - Dispatch table
 
-    /// An update push opens Settings on the System tab (where the update
-    /// installs), self-received or forwarded alike: it is pure navigation.
-    func testUpdatePushOpensSettingsOnSystem() async {
+    /// An update push opens the Software Update window (where the update
+    /// downloads and installs), self-received or forwarded alike: it is pure
+    /// navigation, and Settings stays shut.
+    func testUpdatePushOpensTheUpdateWindow() async {
         for forwarded in [false, true] {
             let appState = AppState.isolated()
             appState.settingsTab = .connections
-            var opened = 0
-            appState.openSettingsWindow = { opened += 1 }
+            var presented = 0
+            var settingsOpened = 0
+            appState.updateService.presentUpdateWindow = { presented += 1; return true }
+            appState.openSettingsWindow = { settingsOpened += 1 }
             await NotificationDelegate.route(
                 actionID: UNNotificationDefaultActionIdentifier,
                 userInfo: ["type": "update"],
                 appState: appState,
                 forwarded: forwarded
             )
-            XCTAssertEqual(appState.settingsTab, .system, "forwarded: \(forwarded)")
-            XCTAssertEqual(opened, 1, "forwarded: \(forwarded)")
+            XCTAssertEqual(presented, 1, "forwarded: \(forwarded)")
+            XCTAssertEqual(settingsOpened, 0, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.settingsTab, .connections, "forwarded: \(forwarded)")
         }
     }
 
