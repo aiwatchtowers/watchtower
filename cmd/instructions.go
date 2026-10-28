@@ -409,6 +409,10 @@ func runInstructionsSuggestion(d *db.DB, arg string, add bool) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.MovedTo.Valid { // decided only through its coach proposal
+		return nil, fmt.Errorf("%w — decide it with `watchtower coach proposals` / `coach accept|decline`, or in Analytics",
+			db.SuggestionMovedError(s.ID, s.MovedTo.Int64))
+	}
 	if add {
 		err = addInstructionSuggestion(d, s, time.Now())
 	} else {

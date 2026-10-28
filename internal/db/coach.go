@@ -18,7 +18,9 @@ import (
 // no longer the one the caller saw.
 var ErrCoachStateChanged = errors.New("coach proposal state changed")
 
-// CoachEvidence is one source a proposal rests on. Kind is ask|session|chat|review_round|hint.
+// CoachEvidence is one source a proposal rests on. Kind is
+// ask|session|chat|review_round|hint|suggestion (a folded instruction
+// suggestion, ref sg:<id>).
 type CoachEvidence struct {
 	Kind string `json:"kind"`
 	Ref  string `json:"ref"`
@@ -106,6 +108,12 @@ func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, erro
 // InsertCoachProposal stores p as open and returns its id; 0 when a proposal
 // with the same fingerprint already exists (the existing row is untouched).
 func (db *DB) InsertCoachProposal(p CoachProposal, now time.Time) (int64, error) {
+	return insertCoachProposal(db, p, now)
+}
+
+func insertCoachProposal(x interface {
+	Exec(string, ...any) (sql.Result, error)
+}, p CoachProposal, now time.Time) (int64, error) {
 	evidence, err := json.Marshal(append([]CoachEvidence{}, p.Evidence...))
 	if err != nil {
 		return 0, fmt.Errorf("encoding coach evidence: %w", err)
@@ -117,7 +125,7 @@ func (db *DB) InsertCoachProposal(p CoachProposal, now time.Time) (int64, error)
 	if p.RevertsID != 0 {
 		reverts = p.RevertsID
 	}
-	res, err := db.Exec(`INSERT INTO coach_proposals (fingerprint, kind, destination, workbench_id, prompt_id,
+	res, err := x.Exec(`INSERT INTO coach_proposals (fingerprint, kind, destination, workbench_id, prompt_id,
 		title, why, metric, before_text, after_text, evidence, sources, reverts_id, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO NOTHING`,
@@ -151,7 +159,13 @@ func (db *DB) ListCoachProposals(statuses ...string) ([]CoachProposal, error) {
 			args = append(args, s)
 		}
 	}
-	rows, err := db.Query(q+` ORDER BY id DESC`, args...)
+	return queryCoachProposals(db, q+` ORDER BY id DESC`, args...)
+}
+
+func queryCoachProposals(x interface {
+	Query(string, ...any) (*sql.Rows, error)
+}, q string, args ...any) ([]CoachProposal, error) {
+	rows, err := x.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing coach proposals: %w", err)
 	}

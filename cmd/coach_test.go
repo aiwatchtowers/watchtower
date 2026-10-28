@@ -529,3 +529,35 @@ func TestCoachJSONFailure_ThroughExecute(t *testing.T) {
 	var last map[string]any
 	assert.Error(t, json.Unmarshal([]byte(lines[len(lines)-1]), &last), "Execute's prose line follows the JSON line")
 }
+
+// `coach run` folds the open instruction suggestions in before proposing;
+// --dry-run folds nothing.
+func TestCoachRun_ImportsSuggestions(t *testing.T) {
+	d := coachSetup(t)
+	require.NoError(t, d.UpsertInstructionSuggestion(db.InstructionSuggestion{Text: "Run the linter first",
+		Field: db.InstructionSession, SessionCount: 3, Fingerprint: "fp"}, time.Now()))
+	gen := &scriptedGen{out: `{"proposals":[]}`}
+	prev := coachGeneratorFactory
+	coachGeneratorFactory = func(*config.Config) digest.Generator { return gen }
+	t.Cleanup(func() { coachGeneratorFactory = prev })
+
+	_, err := runCoach(t, "", "run", "--dry-run", "--json")
+	require.NoError(t, err)
+	open, err := d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	assert.Len(t, open, 1, "a dry run folds nothing")
+
+	out, err := runCoach(t, "", "run", "--json")
+	require.NoError(t, err, out)
+	var res struct {
+		Proposals []struct {
+			Title string `json:"title"`
+		} `json:"proposals"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.Len(t, res.Proposals, 1)
+	assert.Equal(t, "Run the linter first", res.Proposals[0].Title)
+	open, err = d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	assert.Empty(t, open, "the row moved to the coach")
+}

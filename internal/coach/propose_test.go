@@ -353,3 +353,22 @@ func TestValidateAfter_AllowListMustGrow(t *testing.T) {
 	require.Error(t, ValidateAfter(cur, "Bash(ls:*)\nBash(go test:*)\nBash(ls:*)"), "an already-listed rule is no change")
 	require.NoError(t, ValidateAfter(cur, "Bash(ls:*)\nBash(go test:*)\nBash(cat:*)"))
 }
+
+// A suggestion the owner added or dismissed keeps blocking its text: a model
+// proposal adding it (trimmed, case-folded) is dropped.
+func TestPropose_AddedOrDismissedSuggestionTextBlocked(t *testing.T) {
+	for _, status := range []string{"added", "dismissed"} {
+		d := openDBs(t)
+		require.NoError(t, d.UpsertInstructionSuggestion(db.InstructionSuggestion{Text: "  answer in short BULLET points. ",
+			Field: db.InstructionSession, SessionCount: 3, Fingerprint: "fp"}, sigNow))
+		var id int64
+		require.NoError(t, d.QueryRow(`SELECT id FROM instruction_suggestions`).Scan(&id))
+		require.NoError(t, d.DecideInstructionSuggestion(id, status, sigNow))
+		gen := &countingGen{out: fixture(t, "propose_slots.json")}
+		p := &Proposer{DB: d.DB, Gen: gen, Now: func() time.Time { return sigNow }, Logger: log.New(&bytes.Buffer{}, "", 0)}
+
+		props, _, err := p.Preview(context.Background(), proposeInputs())
+		require.NoError(t, err)
+		assert.Equal(t, []string{"Three"}, titles(props), status)
+	}
+}

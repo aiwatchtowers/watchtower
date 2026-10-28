@@ -64,7 +64,7 @@ kind: tip
 since: 0.25.0
 -->
 
-Once a day Watchtower reads what you typed in your recent sessions, from both agents, and in your chats. When you gave the same standing direction in at least three sessions of the last 14 days and your texts don't hold it yet, it offers it as a suggestion. Nothing changes until you press **Add**, and once you dismiss a suggestion, that suggestion never comes back.
+The [agent coach](../agent-coach.md) reads what you typed in your recent sessions, from both agents, and in your chats. When you gave the same standing direction in at least three sessions, it suggests adding it to your instructions. Nothing changes until you accept it. Suggestions from before the coach moved there once: the newest become coach suggestions, and the others stop showing. A suggestion that moved is accepted or declined in the coach only. A suggestion you dismissed earlier is never suggested again.
 
 ## Using it
 
@@ -79,7 +79,8 @@ Once a day Watchtower reads what you typed in your recent sessions, from both ag
 - **A new session ignores a change.** The session began before you saved. Start a new one.
 - **Add says "adding this line would go over the 1000-character limit — shorten the text first".** The field plus the new line would pass 1,000 characters. Shorten the field's text, press **Save**, then press **Add** again.
 - **A suggestion's destination.** Chats only: **Only in chats**. Chats and sessions together: **For chats and agents**.
-- **No suggestions.** The direction has to appear in three sessions within 14 days, and the daemon must be running.
+- **No suggestions.** The coach runs about once a week and needs the direction in three sessions. The daemon must be running.
+- **`watchtower instructions suggestion add` says "moved to the coach".** That suggestion is now a coach suggestion. Use `watchtower coach proposals`, then `coach accept` or `coach decline`.
 - **A suggestion for one workbench.** When all its sessions were in one workbench, **Add** writes that workbench's text.
 
 ## Related

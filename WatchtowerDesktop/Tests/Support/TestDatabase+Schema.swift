@@ -2157,7 +2157,7 @@ CREATE TABLE IF NOT EXISTS "instruction_suggestions" (
     status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
     fingerprint     TEXT NOT NULL UNIQUE,
     decided_at      TEXT NULL
-);
+, moved_to INTEGER);
 CREATE TABLE IF NOT EXISTS instruction_chat_lines (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     line            TEXT NOT NULL,

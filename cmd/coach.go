@@ -65,6 +65,10 @@ var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
 // coachJudge is the verdict step of `coach run` (a seam for tests).
 var coachJudge = coach.Judge
 
+// coachImportSuggestions is the one-time suggestion fold of `coach run` (a
+// seam for tests).
+var coachImportSuggestions = coach.ImportSuggestions
+
 // coachHome is the home folder ~/.claude lives in (a seam for tests).
 var coachHome = os.UserHomeDir
 
@@ -501,10 +505,11 @@ func coachSessionDirs() sessionfeed.Dirs {
 	return sessionfeed.Dirs{ClaudeProjects: filepath.Join(agentsClaudeDir(), "projects"), CodexHome: terminalCodexHome()}
 }
 
-// runCoachNow is the weekly pass on demand: judge, collect, propose. It
-// ignores the daemon's stamp and does not write it. No plan-limit gate (ask
-// #655). --dry-run judges nothing and writes nothing: it prints what the
-// model would have proposed.
+// runCoachNow is the weekly pass on demand: fold the old instruction
+// suggestions in (once ever, coach.ImportSuggestions, under the lock), judge,
+// collect, propose. It ignores the daemon's stamp and does not write it. No
+// plan-limit gate (ask #655). --dry-run folds nothing, judges nothing and
+// writes nothing: it prints what the model would have proposed.
 func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -527,6 +532,9 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 	now := time.Now()
 	res := coachRunJSON{OK: true, DryRun: coachFlagDryRun, Proposals: []coachProposalJSON{}}
 	if !coachFlagDryRun {
+		if _, err := coachImportSuggestions(e.db, e.cfg.Digest.Language, now); err != nil {
+			return nil, err
+		}
 		judged, cuts, err := coachJudge(e.db, e.al, now)
 		if err != nil {
 			res.JudgeError = err.Error()

@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
-	"watchtower/internal/instructions"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -381,7 +381,7 @@ func TestRunLoop_SleepDuringSettleRestartsTheDelay(t *testing.T) {
 // A sleep detected while the cycle runs its pipelines never cuts them off
 // (they run on the daemon's context): the cycle finishes them, and a fresh
 // one follows the settle delay. The cycle here genuinely reaches its
-// pipelines — the instruction-suggestions miner, its last one, holds it
+// pipelines — the agent coach's proposing step, near the end, holds it
 // there. The backfill after the pipelines is skipped (the fetch context is
 // cancelled, TestOnSleep_Paths).
 func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
@@ -390,11 +390,10 @@ func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 	inPipeline := make(chan context.Context, 1)
 	finish := make(chan struct{})
 	var mined, calls atomic.Int32
-	prev := runInstructionMiner
-	runInstructionMiner = func(ctx context.Context, _ *instructions.Miner) (int, *digest.Usage, error) {
-		// Only the first call is the cycle under test. A later cycle reaches
-		// the miner again only when the run straddles local midnight (the
-		// phase's daily gate): it returns at once and is not counted.
+	prev := runCoachProposer
+	runCoachProposer = func(ctx context.Context, _ *coach.Proposer, _ coach.Inputs) (int, *digest.Usage, error) {
+		// Only the first call is the cycle under test; the coach's weekly
+		// stamp keeps later cycles out, and a stray call is not counted.
 		if calls.Add(1) > 1 {
 			return 0, nil, nil
 		}
@@ -406,7 +405,7 @@ func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 		}
 		return 0, nil, ctx.Err()
 	}
-	t.Cleanup(func() { runInstructionMiner = prev })
+	t.Cleanup(func() { runCoachProposer = prev })
 	h := startLoop(t, loopOpts{syncOnWake: true, withDB: true})
 
 	recv(t, h.probe.started, "the initial cycle")
@@ -429,7 +428,7 @@ func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 	assert.Zero(t, h.logs.count(logSkipsForSleep), "the slept cycle did not skip its pipelines")
 	var firstErr string
 	require.NoError(t, h.d.db.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs
-		WHERE pipeline = 'instruction-suggestions' ORDER BY id LIMIT 1`).Scan(&firstErr))
+		WHERE pipeline = 'coach' ORDER BY id LIMIT 1`).Scan(&firstErr))
 	assert.Empty(t, firstErr, "the pipeline's run is recorded without an error")
 }
 

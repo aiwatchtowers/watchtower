@@ -37,3 +37,4 @@
 
 - 2026-10-26 (agent coach Plan 1, board #1120): file created with COACH-01. Related amendments: SPECREVIEW (`not_useful` mark, `findings`) in `spec-review.md`, AGENT-07 in `agent-actions.md`, PROJ-22 in `workbench.md` (ask #659).
 - 2026-10-28 (Plan 2): `--days`, `busy`, stderr echo; nothing relaxed.
+- 2026-10-28 (Plan 2, ask #722): the one-time suggestion fold (`coach.ImportSuggestions`) only stores open proposals, like the weekly pass; COACH-01 unchanged. PROJ-22 amended in `workbench.md`.

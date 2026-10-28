@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/coach"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
@@ -157,4 +160,74 @@ func TestPhaseCoach_SkipsWhenLocked(t *testing.T) {
 	assert.Equal(t, coachCalls{}, *c, "no model call")
 	assert.NoFileExists(t, d.lastCoachPath())
 	assert.NoFileExists(t, d.lastCoachFailedPath())
+}
+
+// The suggestion fold runs inside the coach pass, under its lock, before
+// judging and proposing.
+func TestPhaseCoach_ImportsBeforeProposing(t *testing.T) {
+	d, database := coachDaemon(t)
+	var order []string
+	oi, oj, op := runCoachImport, runCoachJudge, runCoachProposer
+	t.Cleanup(func() { runCoachImport, runCoachJudge, runCoachProposer = oi, oj, op })
+	runCoachImport = func(main *db.DB, lang string, now time.Time) (int, error) {
+		assert.Same(t, database, main)
+		_, locked, err := fsutil.TryLockFile(coach.LockPath(d.config.WorkspaceDir()))
+		require.NoError(t, err)
+		assert.False(t, locked, "the fold runs under the coach lock")
+		order = append(order, "import")
+		return coach.ImportSuggestions(main, lang, now)
+	}
+	runCoachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) {
+		order = append(order, "judge")
+		return 0, 0, nil
+	}
+	runCoachProposer = func(_ context.Context, _ *coach.Proposer, in coach.Inputs) (int, *digest.Usage, error) {
+		order = append(order, "propose")
+		assert.Len(t, in.Open, 1, "the proposer sees the folded proposal")
+		return 0, nil, nil
+	}
+	require.NoError(t, database.UpsertInstructionSuggestion(db.InstructionSuggestion{Text: "Run the linter first",
+		Field: db.InstructionSession, SessionCount: 3, Fingerprint: "fp"}, time.Now()))
+
+	d.phaseCoach(context.Background())
+	assert.Equal(t, []string{"import", "judge", "propose"}, order)
+	open, err := database.ListCoachProposals("open")
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, "Run the linter first", open[0].AfterText)
+}
+
+// The daily miner phase is gone: a whole cycle records the coach's run but
+// no instruction-suggestions run, and writes no miner stamp.
+func TestDaemon_NoInstructionSuggestionPhase(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d, database := coachDaemon(t)
+	c := stubCoach(t, nil)
+	d.runSync(context.Background(), context.Background())
+	require.Equal(t, 1, c.propose, "the cycle reached the coach")
+	names := pipelineRunNames(t, database)
+	assert.Contains(t, names, "coach")
+	assert.NotContains(t, names, "instruction-suggestions")
+	assert.NoFileExists(t, filepath.Join(d.config.WorkspaceDir(), "last_instruction_suggestions.txt"))
+}
+
+// The owner's text must reach the model on stdin only: a fake claude records
+// its argv and stdin, and the secret must be absent from the former.
+func TestCoachGenerator_IsStdinOnly(t *testing.T) {
+	dir := t.TempDir()
+	argvFile, stdinFile := filepath.Join(dir, "argv"), filepath.Join(dir, "stdin")
+	script := filepath.Join(dir, "claude")
+	body := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argvFile + "'\ncat > '" + stdinFile + "'\necho '{}'\n"
+	require.NoError(t, os.WriteFile(script, []byte(body), 0o700))
+
+	gen := coachGeneratorFactory(&config.Config{ClaudePath: script})
+	const secret = "OWNER-SECRET-DIRECTION"
+	_, _, _, _ = gen.Generate(context.Background(), "system prompt", secret, "") // output shape is irrelevant
+
+	argv, err := os.ReadFile(argvFile)
+	require.NoError(t, err)
+	stdin, err := os.ReadFile(stdinFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(argv), secret, "owner text must never be on argv")
+	assert.Contains(t, string(stdin), secret, "owner text goes on stdin")
 }
