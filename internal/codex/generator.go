@@ -14,6 +14,7 @@ import (
 
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 )
 
@@ -56,7 +57,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	if err != nil {
 		return "", nil, "", err
 	}
-	result, usage, err := g.run(ctx, codexBin, model, args, stdin, os.TempDir(), promptFile)
+	result, usage, err := g.run(ctx, codexBin, model, args, stdin, os.TempDir(), promptFile, systemPrompt+userMessage)
 	return result, usage, "", err
 }
 
@@ -88,14 +89,16 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 	if err != nil {
 		return "", nil, err
 	}
-	result, usage, err := g.run(ctx, codexBin, g.modelStrong, args, stdin, dir, promptFile)
+	result, usage, err := g.run(ctx, codexBin, g.modelStrong, args, stdin, dir, promptFile, systemPrompt+userMessage)
 	return result, usage, err
 }
 
 // run starts codex with args in dir and parses its JSONL reply. promptFile
 // (the 0600 model_instructions_file, "" for none) is removed at codex's first
 // output, or when run returns: codex refuses a pipe there (see Client.Query).
-func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args []string, stdin, dir, promptFile string) (string, *digest.Usage, error) {
+// prompt is the call's prompt text, for the ledger's estimate when codex
+// reports no usage; every run is recorded (recordCodexCall), failures too.
+func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args []string, stdin, dir, promptFile, prompt string) (string, *digest.Usage, error) {
 	removePrompt := fsutil.RemoveOnce(promptFile)
 	defer removePrompt()
 	cmd := exec.CommandContext(ctx, codexBin, args...)
@@ -122,20 +125,25 @@ func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args [
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
+	start := time.Now()
 	output, err := outputRemovingPrompt(cmd, removePrompt)
 	if err != nil {
+		recordCodexCall(ctx, model, start, nil, prompt, "", false)
 		return "", nil, runError(model, output, err, stderrBuf.String(), codexBin)
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
 	result, usage, parseErr := parseJSONLOutput(output)
 	if parseErr != nil {
+		recordCodexCall(ctx, model, start, nil, prompt, "", false)
 		return "", nil, parseErr
 	}
 
 	if strings.TrimSpace(result) == "" {
+		recordCodexCall(ctx, model, start, usage, prompt, "", false)
 		return "", nil, fmt.Errorf("codex returned empty result")
 	}
+	recordCodexCall(ctx, model, start, usage, prompt, result, true)
 
 	digestUsage := &digest.Usage{
 		Model:        model,
@@ -258,8 +266,7 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 		}
 
 		if event.Usage != nil {
-			totalUsage.InputTokens += event.Usage.InputTokens
-			totalUsage.OutputTokens += event.Usage.OutputTokens
+			totalUsage.add(event.Usage)
 		}
 
 		if event.Type == "item.completed" && event.Item != nil && event.Item.Type == "agent_message" {
@@ -272,6 +279,20 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 	}
 
 	return lastContent, totalUsage, nil
+}
+
+// recordCodexCall records one codex run in the LLM ledger: the JSONL's
+// usage with the cached input split out as cache read, or — when the run
+// reported none — length/4 estimates of prompt and output.
+func recordCodexCall(ctx context.Context, model string, start time.Time, u *CodexUsage, prompt, output string, ok bool) {
+	c := llmusage.Call{Provider: "codex", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
+	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0) {
+		cached := int64(min(u.CachedInputTokens, u.InputTokens))
+		c.Input, c.CacheRead, c.Output = int64(u.InputTokens)-cached, cached, int64(u.OutputTokens)
+	} else {
+		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
+	}
+	llmusage.Record(ctx, c)
 }
 
 // limitedWriter wraps a writer and stops writing after limit bytes.

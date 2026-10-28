@@ -11,9 +11,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 )
 
@@ -44,9 +46,30 @@ func NewClient(model, baseURL string) *Client {
 
 // chatRequest is the OpenAI-compatible chat completion request body.
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model         string         `json:"model"`
+	Messages      []chatMessage  `json:"messages"`
+	Stream        bool           `json:"stream"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+// streamOptions asks a streaming server for a final chunk with the call's
+// usage (OpenAI's stream_options.include_usage, honoured by Ollama's
+// OpenAI-compatible endpoint); a server that ignores it reports none.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// recordOllamaCall records one chat-completions call in the LLM ledger: the
+// response's usage, or — when the server sent none — length/4 estimates of
+// prompt and output.
+func recordOllamaCall(ctx context.Context, model string, start time.Time, u *chatUsage, prompt, output string, ok bool) {
+	c := llmusage.Call{Provider: "ollama", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
+	if u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
+		c.Input, c.Output = int64(u.PromptTokens), int64(u.CompletionTokens)
+	} else {
+		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
+	}
+	llmusage.Record(ctx, c)
 }
 
 type chatMessage struct {
@@ -158,9 +181,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(sidCh)
 
 		body, err := json.Marshal(chatRequest{
-			Model:    c.model,
-			Messages: buildMessages(systemPrompt, userMessage),
-			Stream:   true,
+			Model:         c.model,
+			Messages:      buildMessages(systemPrompt, userMessage),
+			Stream:        true,
+			StreamOptions: &streamOptions{IncludeUsage: true},
 		})
 		if err != nil {
 			errCh <- fmt.Errorf("marshaling request: %w", err)
@@ -174,20 +198,24 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 		req.Header.Set("Content-Type", "application/json")
 
+		start := time.Now()
 		resp, err := c.http.Do(req)
 		if err != nil {
+			recordOllamaCall(ctx, c.model, start, nil, systemPrompt+userMessage, "", false)
 			errCh <- fmt.Errorf("ollama request failed: %w", err)
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			recordOllamaCall(ctx, c.model, start, nil, systemPrompt+userMessage, "", false)
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			errCh <- logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
 			return
 		}
 
-		streamSSE(ctx, resp.Body, textCh, errCh)
+		usage, text, ok := streamSSE(ctx, resp.Body, textCh, errCh)
+		recordOllamaCall(ctx, c.model, start, usage, systemPrompt+userMessage, text, ok)
 	}()
 
 	return textCh, errCh, sidCh
@@ -203,20 +231,25 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // clean, if short, end of stream: both would otherwise unmarshal to zero
 // choices and fall through to a normal return, leaving the caller with an
 // empty or truncated answer indistinguishable from a real (if terse) reply.
-func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk, errCh chan<- error) {
+//
+// It returns the usage of the chunk that carried one (the final chunk under
+// stream_options.include_usage; nil when the server sent none), the streamed
+// text, and whether the stream completed without an error on errCh.
+func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk, errCh chan<- error) (usage *chatUsage, text string, ok bool) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	sawTerminal := false
+	var out strings.Builder
 
 	for scanner.Scan() {
 		// SSE format: "data: {...}" or "data: [DONE]"
-		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
-		if !ok {
+		data, isData := strings.CutPrefix(scanner.Text(), "data: ")
+		if !isData {
 			continue
 		}
 		if data == "[DONE]" {
-			return
+			return usage, out.String(), true
 		}
 
 		var chunk chatResponse
@@ -225,7 +258,10 @@ func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk
 		}
 		if errObj := chunk.asError(); errObj != nil {
 			errCh <- fmt.Errorf("ollama stream error: %s", formatChatError(errObj))
-			return
+			return usage, out.String(), false
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -236,17 +272,18 @@ func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk
 		if chunk.Choices[0].Delta.Content == "" {
 			continue
 		}
+		out.WriteString(chunk.Choices[0].Delta.Content)
 		select {
 		case textCh <- ai.StreamChunk{Text: chunk.Choices[0].Delta.Content}:
 		case <-ctx.Done():
 			errCh <- ctx.Err()
-			return
+			return usage, out.String(), false
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		errCh <- fmt.Errorf("reading ollama stream: %w", err)
-		return
+		return usage, out.String(), false
 	}
 
 	// The scanner ended (EOF) with no [DONE] and no chunk ever carrying a
@@ -255,7 +292,9 @@ func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk
 	// that the stream was cut short rather than completed.
 	if !sawTerminal {
 		errCh <- fmt.Errorf("ollama stream ended without [DONE] or a finish_reason (connection closed early)")
+		return usage, out.String(), false
 	}
+	return usage, out.String(), true
 }
 
 // QuerySync sends a non-streaming request and returns the full response.
@@ -275,6 +314,15 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// One ledger row per request, recorded on every return below.
+	start := time.Now()
+	var result chatResponse
+	var text string
+	ok := false
+	defer func() {
+		recordOllamaCall(ctx, c.model, start, result.Usage, systemPrompt+userMessage, text, ok)
+	}()
+
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("ollama request failed: %w", err)
@@ -286,7 +334,6 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
 	}
 
-	var result chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", nil, fmt.Errorf("decoding ollama response: %w", err)
 	}
@@ -303,7 +350,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, fmt.Errorf("ollama returned no choices")
 	}
 
-	text := strings.TrimRight(result.Choices[0].Message.Content, "\n")
+	text = strings.TrimRight(result.Choices[0].Message.Content, "\n")
+	ok = true
 
 	var usage *ai.Usage
 	if result.Usage != nil {
