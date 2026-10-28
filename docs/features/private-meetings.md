@@ -7,7 +7,7 @@ Board #906. Two owner asks on meeting recordings:
 
 ## Data
 
-`meeting_transcripts.private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0,1))` (migration 00163). Existing rows stay non-private. The flag can be set at capture start, changed while the recording is still capturing or queued, and toggled later on the saved recording.
+`meeting_transcripts.private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0,1))` (migration 00163). Existing rows stay non-private. The flag can be set at capture start, changed while the recording is still capturing or queued, and toggled later on the saved recording. Migration 00164 adds a trigger that marks the recording's knowledge-index document and the recaps it owns in `kb_dirty` whenever the flag flips, so the index follows a Desktop write that moves no change cursor.
 
 ## Contract MEETPRIV
 
@@ -27,7 +27,7 @@ What stays out of reach of this contract: a workbench agent with a shell can sti
 
 - `watchtower meeting-prep transcript save … --private`
 - `watchtower meeting-prep transcript private <id> on|off` — sets the flag; prints `{"id":N,"private":true|false}`.
-- `watchtower meeting-prep transcript export <id> --format txt|md|srt|json [--output <file>]` — stdout when `--output` is absent; the file is written 0600. Formats:
+- `watchtower meeting-prep transcript export <id> --format txt|md|srt|json [--output <file>]` — stdout when `--output` is absent; the file is written 0600 (atomically) and stdout stays empty. Formats:
   - `txt` — the utterances as `[hh:mm:ss] Speaker: text` lines (the legacy flat `transcript_text` for a row without segments);
   - `md` — `# <title>`, a date / duration / event line, then `**Speaker** · hh:mm:ss` + text per utterance;
   - `srt` — numbered SubRip cues from the segments' start/end (`Speaker: text`); a row without segments exits 1 (`no timed segments`);
