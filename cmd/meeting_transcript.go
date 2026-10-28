@@ -351,9 +351,9 @@ func warnDroppedTranscriptEvent(errOut io.Writer, eventID string) {
 	fmt.Fprintf(errOut, "warning: calendar event %s no longer exists (saving the transcript as a plain recording)\n", eventID)
 }
 
-// saveSkip is why save generated no recap: the envelope's recap_skipped key
-// is true for a too-short transcript (the original, Bool-typed key) and
-// "private" for a private recording, which also skips the chapters.
+// saveSkip is why save generated no recap. The envelope's recap_skipped stays
+// a Bool for both; a private recording, which also skips the chapters, adds
+// recap_skipped_reason/chapters_skipped_reason "private" and chapters_skipped.
 type saveSkip int
 
 const (
@@ -658,7 +658,8 @@ func eventHasNoRecap(database *db.DB, eventID string, errOut io.Writer) bool {
 // (minRecapTranscriptChars); it adds the additive recap_skipped=true key —
 // the `transcript recap <id>` retry (never gated) always passes
 // saveSkipNone, so the key never appears in that envelope. A private save
-// (MEETPRIV-01) reports recap_skipped and chapters_skipped as "private".
+// (MEETPRIV-01) reports recap_skipped and chapters_skipped true with
+// recap_skipped_reason and chapters_skipped_reason "private".
 func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr, segmentsErr, speakersErr error, chaptersErr *error, skip saveSkip) error {
 	recapErrMsg := ""
 	if recapErr != nil {
@@ -686,8 +687,10 @@ func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, reca
 	case saveSkipTooShort:
 		envelope["recap_skipped"] = true
 	case saveSkipPrivate:
-		envelope["recap_skipped"] = "private"
-		envelope["chapters_skipped"] = "private"
+		envelope["recap_skipped"] = true
+		envelope["recap_skipped_reason"] = "private"
+		envelope["chapters_skipped"] = true
+		envelope["chapters_skipped_reason"] = "private"
 	}
 	if chaptersErr != nil {
 		chaptersErrMsg := ""

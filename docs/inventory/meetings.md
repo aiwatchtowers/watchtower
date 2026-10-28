@@ -21,7 +21,7 @@
 
 **Status:** Enforced (Go). Desktop half (AI actions hidden or disabled with "Private recording — not sent to AI") pending in the Desktop lane.
 
-**Observable:** `transcript save --private` stores the row with `private = 1` and calls no generator: the envelope reports `recap_ok: false`, `recap_skipped: "private"`, `chapters_ok: false`, `chapters_skipped: "private"` (the too-short skip keeps its Bool `recap_skipped: true` and has no `chapters_skipped`). `transcript recap|notes|chapters|followup <id>` on a private row exits 1 with `recording <id> is private` before any pipeline run, generator call or write; the same check (`loadTranscriptForAI`) guards the save path's generators.
+**Observable:** `transcript save --private` stores the row with `private = 1` and calls no generator: the envelope reports `recap_ok: false`, `recap_skipped: true` (a Bool, as for the too-short skip), `recap_skipped_reason: "private"`, `chapters_ok: false`, `chapters_skipped: true`, `chapters_skipped_reason: "private"` (the too-short skip has no reason key and no `chapters_skipped`). `transcript recap|notes|chapters|followup <id>` on a private row exits 1 with `recording <id> is private` before any pipeline run, generator call or write; the same check (`loadTranscriptForAI`) guards the save path's generators.
 
 **Why locked:** The owner marks a recording private so that its content never reaches an AI provider. One generator call is enough to break that promise.
 

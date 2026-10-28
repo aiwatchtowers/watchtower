@@ -36,9 +36,11 @@ func TestMeetPriv01_SavePrivateGeneratesNothing(t *testing.T) {
 
 	env := rawEnvelope(t, buf.Bytes())
 	assert.Equal(t, false, env["recap_ok"])
-	assert.Equal(t, "private", env["recap_skipped"])
+	assert.Equal(t, true, env["recap_skipped"], "recap_skipped stays a Bool (the Swift decoder's type)")
+	assert.Equal(t, "private", env["recap_skipped_reason"])
 	assert.Equal(t, false, env["chapters_ok"])
-	assert.Equal(t, "private", env["chapters_skipped"])
+	assert.Equal(t, true, env["chapters_skipped"])
+	assert.Equal(t, "private", env["chapters_skipped_reason"])
 	assert.Equal(t, true, env["segments_ok"])
 	assert.Zero(t, gen.calls, "a private save must never call the generator")
 
@@ -56,8 +58,7 @@ func TestMeetPriv01_SavePrivateGeneratesNothing(t *testing.T) {
 }
 
 // TestMeetPriv01_SaveTooShortKeepsBoolSkip pins that the too-short skip keeps
-// its original Bool recap_skipped (the Swift decoder's type) and gains no
-// chapters_skipped key.
+// its original envelope: Bool recap_skipped, no reason and no chapters keys.
 func TestMeetPriv01_SaveTooShortKeepsBoolSkip(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
@@ -70,7 +71,9 @@ func TestMeetPriv01_SaveTooShortKeepsBoolSkip(t *testing.T) {
 	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
 	env := rawEnvelope(t, buf.Bytes())
 	assert.Equal(t, true, env["recap_skipped"])
+	assert.NotContains(t, env, "recap_skipped_reason")
 	assert.NotContains(t, env, "chapters_skipped")
+	assert.NotContains(t, env, "chapters_skipped_reason")
 }
 
 func TestMeetPriv01_AICommandsRefusePrivate(t *testing.T) {
