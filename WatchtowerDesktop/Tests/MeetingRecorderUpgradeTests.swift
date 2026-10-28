@@ -167,6 +167,26 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
         XCTAssertEqual(try pendingStore.pending().count, 1)
     }
 
+    /// MEETPRIV: a lock flipped while the row is still being written is
+    /// re-applied once it lands, so a crash recovers the owner's choice.
+    func testMeetPriv01_ALockFlippedBeforeTheRowLandsReachesTheRow() async throws {
+        let store = GatedPendingStore(base: pendingStore)
+        let center = try center(store: store)
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+        let start = Task { await center.startRecording(eventID: nil, title: "Slow", config: config) }
+        let recording = await waitUntil("the capture to show") {
+            if case .recording = center.captureState { return true }
+            return false
+        }
+        XCTAssertTrue(recording)
+        await center.setCapturePrivate(true)
+        store.release()
+        await start.value
+
+        XCTAssertEqual(try pendingStore.pending().map(\.isPrivate), [true])
+    }
+
     func testAFailingStoreNeverStopsTheCapture() async throws {
         let center = try center(store: FailingPendingStore())
         var config = singleWindowConfig()
