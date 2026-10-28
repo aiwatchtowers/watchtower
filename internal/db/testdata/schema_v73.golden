@@ -2430,7 +2430,7 @@ transcript TEXT,
 meta_json TEXT,
 started_at REAL NOT NULL,
 transcribed_at REAL
-)
+, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)))
 
 table	people_card_summaries
 CREATE TABLE people_card_summaries (
@@ -5537,6 +5537,7 @@ GROUP BY up.ancestor
 4	meta_json	TEXT	notnull=0	dflt=NULL	pk=0
 5	started_at	REAL	notnull=1	dflt=NULL	pk=0
 6	transcribed_at	REAL	notnull=0	dflt=NULL	pk=0
+7	private	INTEGER	notnull=1	dflt=0	pk=0
 
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

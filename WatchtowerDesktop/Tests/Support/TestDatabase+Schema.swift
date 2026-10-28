@@ -2260,7 +2260,7 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     meta_json      TEXT,
     started_at     REAL NOT NULL,
     transcribed_at REAL
-);
+, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)));
 CREATE TABLE IF NOT EXISTS chat_queued_drafts (
     surface_key TEXT PRIMARY KEY,
     text        TEXT NOT NULL,

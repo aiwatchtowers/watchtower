@@ -3482,7 +3482,8 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     transcript     TEXT,
     meta_json      TEXT,
     started_at     REAL NOT NULL,
-    transcribed_at REAL
+    transcribed_at REAL,
+    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1))
 );
 
 -- An embedded chat's owner message queued but not yet sent (00157, #604;
