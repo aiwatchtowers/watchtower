@@ -159,4 +159,38 @@ a{color:var(--acc);text-decoration:none}
 
 <div class="fold">› Time, tasks, sessions, commands, tokens &amp; cost</div>
 
+<!-- Run Now states -->
+<h2>Run Now states</h2>
+<div class="small dim">Running: <span class="dim">The coach is looking at the last 28 days…</span> (Run Now disabled)</div>
+<div class="small" style="color:var(--warn);margin-top:4px">⚠ The coach run failed: model call timed out. Proposals above are unchanged.</div>
+<div class="small dim" style="margin-top:4px">Busy: The coach is already running — the section updates when it finishes.</div>
+
+<!-- Edit sheet -->
+<h2>Edit… sheet</h2>
+<div class="card" style="max-width:520px">
+  <b>Edit before accepting</b>
+  <div class="small dim" style="margin:2px 0 8px">Session instructions (global) · 905 of 1000</div>
+  <div class="diff" style="min-height:90px;background:rgba(0,0,0,.25)">Specs and plans in English.<br>Every spec has a Non-goals section: what the feature deliberately does not do.|</div>
+  <div class="row"><span class="small dim">The whole text is saved as you leave it.</span><div class="sp"></div><button class="btn">Cancel</button><button class="btn p">Accept</button></div>
+</div>
+
+<!-- Rollback changed-since sheet -->
+<h2>Roll Back — the text changed since</h2>
+<div class="card" style="max-width:520px">
+  <b>This text changed after the edit was accepted</b>
+  <div class="small dim" style="margin:2px 0 8px">Rolling back puts back the text from before Oct 12. Your later changes below would be lost:</div>
+  <div class="diff"><div class="d">− Answer in Russian in the terminal.</div><div class="a">+ Quick asks when there are 2–3 options.</div></div>
+  <div class="row"><div class="sp"></div><button class="btn">Cancel</button><button class="btn" style="color:var(--bad)">Roll Back Anyway</button></div>
+</div>
+
+<!-- Home row -->
+<h2>Home · Workbench zone row</h2>
+<div class="card" style="max-width:420px">
+  <div class="small dim">Coach suggests · Session instructions (global)</div>
+  <div class="title" style="font-size:13px">В спеках нет раздела «Non-goals»</div>
+  <div class="diff"><div class="a">+ Every spec has a Non-goals section: what the feature deliberately does not do.</div></div>
+  <div class="row"><button class="btn q">Open in Analytics</button><div class="sp"></div><button class="btn">Decline</button><button class="btn">Accept</button></div>
+</div>
+<div class="small dim">A change over 4 lines: first 4 lines and "…", only Open in Analytics and Decline.</div>
+
 </div></body></html>
