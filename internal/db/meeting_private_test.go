@@ -214,9 +214,10 @@ func TestMeetPriv02_GetMeetingRecapForAISkipsPrivate(t *testing.T) {
 	assert.NotNil(t, own)
 }
 
-// TestMeetPriv02_UpsertKeepsRecapOwnership pins that a rewrite with no
-// recording (the event-notes recap) never NULLs an existing owner: the link is
-// what hides a private recording's recap and deletes it with the recording.
+// TestMeetPriv02_UpsertKeepsRecapOwnership pins that a rewrite never strips a
+// PRIVATE recording's ownership (the link is what hides its recap and deletes
+// it with the recording), while a public owner's row follows the writer as
+// before: a pasted recap (no recording) unlinks it.
 func TestMeetPriv02_UpsertKeepsRecapOwnership(t *testing.T) {
 	d := openTestDB(t)
 	f := seedMeetPriv(t, d)
@@ -231,6 +232,22 @@ func TestMeetPriv02_UpsertKeepsRecapOwnership(t *testing.T) {
 	ai, err := d.GetMeetingRecapForAI("E-priv")
 	require.NoError(t, err)
 	assert.Nil(t, ai, "the rewritten recap is still the private recording's")
+	// Not even a writer naming another recording takes it over.
+	require.NoError(t, d.UpsertMeetingRecap("E-priv", "src", `{"summary":"other"}`, f.publicID))
+	got, err = d.GetMeetingRecap("E-priv")
+	require.NoError(t, err)
+	assert.Equal(t, f.privateID, got.TranscriptID.Int64)
+
+	// A public owner's recap replaced by a pasted one is unlinked.
+	require.NoError(t, d.UpsertMeetingRecap("E-pub", "pasted", `{"summary":"pasted"}`, 0))
+	got, err = d.GetMeetingRecap("E-pub")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, f.publicRecapID, got.ID)
+	assert.False(t, got.TranscriptID.Valid, "a pasted recap belongs to no recording")
+	own, err := d.GetMeetingRecapByTranscript(f.publicID)
+	require.NoError(t, err)
+	assert.Nil(t, own, "the public recording's Regenerate must not overwrite the pasted recap")
 
 	// A writer that names a recording still sets it.
 	require.NoError(t, d.UpsertMeetingRecap("E-paste", "src", `{"summary":"r"}`, f.publicID))

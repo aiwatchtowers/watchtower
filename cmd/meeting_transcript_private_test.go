@@ -304,7 +304,8 @@ func TestTranscriptExport_SRTWithoutSegmentsFails(t *testing.T) {
 // TestMeetPriv02_EventRecapOfPrivateRecordingNotRegenerated pins that
 // `meeting-prep recap` refuses an event whose recap a private recording owns:
 // no generator call and the row is left as it was. A public recording's event
-// recap still regenerates and keeps its owner.
+// recap still regenerates from the pasted text, which unlinks it (a paste
+// belongs to no recording).
 func TestMeetPriv02_EventRecapOfPrivateRecordingNotRegenerated(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
@@ -354,7 +355,7 @@ func TestMeetPriv02_EventRecapOfPrivateRecordingNotRegenerated(t *testing.T) {
 	got, err := database.GetMeetingRecap("E-pub")
 	require.NoError(t, err)
 	assert.Equal(t, "pasted notes", got.SourceText)
-	assert.Equal(t, pubID, got.TranscriptID.Int64, "a rewrite keeps the recording's ownership")
+	assert.False(t, got.TranscriptID.Valid, "a pasted recap leaves recording %d's ownership", pubID)
 }
 
 // TestTranscriptExport_MarkdownEventTitle pins the md header's Event line from
