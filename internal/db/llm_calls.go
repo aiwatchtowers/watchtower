@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"watchtower/internal/llmusage"
@@ -157,6 +158,28 @@ type LLMUsageGroup struct {
 	Input, CacheRead, CacheWrite     int64 // CacheWrite = 5m + 1h
 	Output                           int64
 	ReportedUSD, EstUSD              float64 // sums of the non-NULL costs
+	// CostUSD sums each call's cost: its reported cost when non-zero, else
+	// its estimate, else nothing (LLMCallCost).
+	CostUSD float64
+	// EstCostCalls counts the calls whose cost is their estimate (reported
+	// NULL or 0, estimate present).
+	EstCostCalls int64
+}
+
+// LLMCallCost is one call's cost in a usage total: the reported cost when
+// non-zero, else the estimate (estimated = true), else the reported zero;
+// known = false when the call has neither. LLMUsageRows applies the same
+// rule in SQL.
+func LLMCallCost(reported, est *float64) (usd float64, estimated, known bool) {
+	switch {
+	case reported != nil && *reported != 0:
+		return *reported, false, true
+	case est != nil:
+		return *est, true, true
+	case reported != nil:
+		return 0, false, true
+	}
+	return 0, false, false
 }
 
 // LLMUsageRows aggregates the calls that finished at or after since.
@@ -171,7 +194,9 @@ func (db *DB) LLMUsageRows(since time.Time) ([]LLMUsageGroup, error) {
 		       SUM(l.reported_cost_usd IS NULL AND l.est_cost_usd IS NULL),
 		       SUM(l.input_tokens), SUM(l.cache_read_tokens),
 		       SUM(l.cache_write_5m_tokens + l.cache_write_1h_tokens), SUM(l.output_tokens),
-		       COALESCE(SUM(l.reported_cost_usd), 0), COALESCE(SUM(l.est_cost_usd), 0)
+		       COALESCE(SUM(l.reported_cost_usd), 0), COALESCE(SUM(l.est_cost_usd), 0),
+		       SUM(COALESCE(NULLIF(l.reported_cost_usd, 0), l.est_cost_usd, 0)),
+		       SUM(COALESCE(l.reported_cost_usd, 0) = 0 AND l.est_cost_usd IS NOT NULL)
 		FROM llm_calls l
 		LEFT JOIN automations a ON a.id = l.automation_id
 		WHERE l.at >= ?
@@ -190,7 +215,7 @@ func (db *DB) LLMUsageRows(since time.Time) ([]LLMUsageGroup, error) {
 			&g.AutomationName, &g.AutomationOrigin,
 			&g.Calls, &g.Runs, &g.Errors, &g.Estimated, &g.NoPrice,
 			&g.Input, &g.CacheRead, &g.CacheWrite, &g.Output,
-			&g.ReportedUSD, &g.EstUSD); err != nil {
+			&g.ReportedUSD, &g.EstUSD, &g.CostUSD, &g.EstCostCalls); err != nil {
 			return nil, fmt.Errorf("scan llm usage: %w", err)
 		}
 		if aid.Valid {
@@ -200,6 +225,63 @@ func (db *DB) LLMUsageRows(since time.Time) ([]LLMUsageGroup, error) {
 		out = append(out, g)
 	}
 	return out, rows.Err()
+}
+
+// LLMAutomationRuns returns, per automation, the distinct run ids of its
+// calls that finished at or after since (a run's calls can span several
+// LLMUsageGroup rows, so their Runs do not add up).
+func (db *DB) LLMAutomationRuns(since time.Time) (map[int64][]int64, error) {
+	rows, err := db.Query(`SELECT DISTINCT automation_id, automation_run_id FROM llm_calls
+		WHERE at >= ? AND automation_id IS NOT NULL AND automation_run_id IS NOT NULL`,
+		since.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, fmt.Errorf("query llm automation runs: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64][]int64{}
+	for rows.Next() {
+		var aid, rid int64
+		if err := rows.Scan(&aid, &rid); err != nil {
+			return nil, fmt.Errorf("scan llm automation runs: %w", err)
+		}
+		out[aid] = append(out[aid], rid)
+	}
+	return out, rows.Err()
+}
+
+// LLMCallIDsPresent returns which of ids are already in llm_calls.
+func (db *DB) LLMCallIDsPresent(ids []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	const chunk = 500
+	for start := 0; start < len(ids); start += chunk {
+		part := ids[start:min(start+chunk, len(ids))]
+		if err := db.llmCallIDsIn(part, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// llmCallIDsIn marks in out which of ids are in llm_calls.
+func (db *DB) llmCallIDsIn(ids []string, out map[string]bool) error {
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := db.Query(`SELECT call_id FROM llm_calls WHERE call_id IN (?`+
+		strings.Repeat(",?", len(ids)-1)+`)`, args...)
+	if err != nil {
+		return fmt.Errorf("query llm call ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan llm call ids: %w", err)
+		}
+		out[id] = true
+	}
+	return rows.Err()
 }
 
 // LLMLedgerSince returns the earliest recorded call's time; false when the

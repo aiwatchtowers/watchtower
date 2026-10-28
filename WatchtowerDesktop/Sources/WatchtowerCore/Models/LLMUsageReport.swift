@@ -60,7 +60,7 @@ package struct LLMUsageTotals: Decodable, Equatable, Sendable {
     package var costUSD: Double?
     /// Some call in the total had no cost: the cost is at least this much.
     package var costIsLowerBound = false
-    /// Not a pinned totals key; false when absent.
+    /// Some cost in the total is an estimate, not a reported cost; false when absent.
     package var costIsEstimate = false
     /// Agent sessions (workbench `sessions` only).
     package var sessions: Int64 = 0

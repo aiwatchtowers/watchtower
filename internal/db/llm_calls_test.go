@@ -283,3 +283,73 @@ func TestPruneLLMCalls(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", got)
 	}
 }
+
+func TestLLMUsageRows_PerCallCost(t *testing.T) {
+	d := openTestDB(t)
+	f := func(v float64) *float64 { return &v }
+	call := func(id string, reported, est *float64) llmusage.Call {
+		c := llmCall(id, llmAt, "watchtower", "digest.channel", "daemon", "haiku")
+		c.ReportedCostUSD, c.EstCostUSD = reported, est
+		return c
+	}
+	if err := d.InsertLLMCalls([]llmusage.Call{
+		call("r", f(1), f(9)),   // reported wins
+		call("e", nil, f(0.25)), // estimate
+		call("z", f(0), f(0.5)), // reported 0: the estimate
+		call("rz", f(0), nil),   // reported 0, no estimate: priced at 0
+		call("none", nil, nil),  // no price
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.LLMUsageRows(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(got) != 1 {
+		t.Fatalf("rows = %v, %v", got, err)
+	}
+	g := got[0]
+	if g.CostUSD != 1.75 || g.EstCostCalls != 2 || g.NoPrice != 1 {
+		t.Fatalf("cost = %v, est calls = %d, no price = %d", g.CostUSD, g.EstCostCalls, g.NoPrice)
+	}
+	for _, tc := range []struct {
+		reported, est    *float64
+		usd              float64
+		estimated, known bool
+	}{
+		{f(1), f(9), 1, false, true},
+		{nil, f(0.25), 0.25, true, true},
+		{f(0), f(0.5), 0.5, true, true},
+		{f(0), nil, 0, false, true},
+		{nil, nil, 0, false, false},
+	} {
+		usd, estimated, known := LLMCallCost(tc.reported, tc.est)
+		if usd != tc.usd || estimated != tc.estimated || known != tc.known {
+			t.Errorf("LLMCallCost(%v, %v) = %v, %v, %v", tc.reported, tc.est, usd, estimated, known)
+		}
+	}
+}
+
+func TestLLMAutomationRunsAndCallIDsPresent(t *testing.T) {
+	d := openTestDB(t)
+	aid, run1, run2 := int64(5), int64(1), int64(2)
+	mk := func(id, at, model string, run *int64) llmusage.Call {
+		c := llmCall(id, at, "watchtower", "automation.llm", "daemon", model)
+		c.AutomationID, c.AutomationRunID = &aid, run
+		return c
+	}
+	if err := d.InsertLLMCalls([]llmusage.Call{
+		mk("a", llmAt, "haiku", &run1), mk("b", llmAt, "sonnet", &run1), mk("c", llmAt, "haiku", &run2),
+		mk("old", "2026-09-01T00:00:00Z", "haiku", &aid),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := d.LLMAutomationRuns(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	if err != nil || len(runs) != 1 || len(runs[aid]) != 2 {
+		t.Fatalf("runs = %v, %v", runs, err)
+	}
+	present, err := d.LLMCallIDsPresent([]string{"a", "old", "missing"})
+	if err != nil || !present["a"] || !present["old"] || present["missing"] || len(present) != 2 {
+		t.Fatalf("present = %v, %v", present, err)
+	}
+	if present, err := d.LLMCallIDsPresent(nil); err != nil || len(present) != 0 {
+		t.Fatalf("empty = %v, %v", present, err)
+	}
+}
