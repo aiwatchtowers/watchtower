@@ -306,6 +306,19 @@ enum DesignShotCatalog {
             // Agent Settings as a page screen (#1150).
             DesignShot(name: "workbench-agent-settings", size: NSSize(width: 1040, height: 900)) {
                 AgentSettingsShotFixtures.screen()
+            },
+            // Usage → Watchtower (LLM usage ledger): filled (every gap line on), empty ledger, failed read.
+            DesignShot(name: "usage-watchtower-filled", size: NSSize(width: 860, height: 760)) {
+                LLMUsageShotFixtures.filled()
+            },
+            DesignShot(name: "usage-watchtower-empty", size: NSSize(width: 860, height: 360)) {
+                LLMUsageShotFixtures.screen(.emptyLedger)
+            },
+            DesignShot(name: "usage-watchtower-error", size: NSSize(width: 860, height: 360)) {
+                LLMUsageShotFixtures.screen(.failed(.timedOut))
+            },
+            DesignShot(name: "usage-watchtower-loading", size: NSSize(width: 860, height: 560)) {
+                LLMUsageShotFixtures.screen(.loading)
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.

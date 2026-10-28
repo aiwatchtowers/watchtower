@@ -10,6 +10,7 @@ struct UsageView: View {
 
     enum Tab: String, CaseIterable {
         case plan = "Claude plan"
+        case watchtower = "Watchtower"
         case progress = "Progress"
         case usage = "Usage"
     }
@@ -29,6 +30,8 @@ struct UsageView: View {
             switch selectedTab {
             case .plan:
                 ClaudePlanView()
+            case .watchtower:
+                WatchtowerUsageView()
             case .progress:
                 ScrollView {
                     ProgressDetailContent()
