@@ -2,23 +2,32 @@ package chat
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
+
+	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // claudeLine is the union of the stream-json line shapes the translator reads.
 type claudeLine struct {
-	Type      string          `json:"type"`
-	Subtype   string          `json:"subtype"`
-	SessionID string          `json:"session_id"`
-	IsError   bool            `json:"is_error"`
-	Result    string          `json:"result"`
-	Usage     *claudeUsage    `json:"usage"`
-	Event     *claudeStreamEv `json:"event"`
+	Type      string       `json:"type"`
+	Subtype   string       `json:"subtype"`
+	SessionID string       `json:"session_id"`
+	IsError   bool         `json:"is_error"`
+	Result    string       `json:"result"`
+	Usage     *claudeUsage `json:"usage"`
+	// CostUSD and ModelUsage are a result line's reported cost and
+	// per-model usage (the LLM usage ledger's numbers).
+	CostUSD    float64                    `json:"total_cost_usd"`
+	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
+	Event      *claudeStreamEv            `json:"event"`
 	// Message is a user line's message object; other lines may carry a
 	// string "message" (system/permission_denied), so it is decoded only
 	// for "user".
@@ -35,6 +44,11 @@ type claudeUsage struct {
 	OutputTokens  int `json:"output_tokens"`
 	CacheRead     int `json:"cache_read_input_tokens"`
 	CacheCreation int `json:"cache_creation_input_tokens"`
+	// CacheCreationTTL splits CacheCreation by cache TTL.
+	CacheCreationTTL struct {
+		FiveMin int `json:"ephemeral_5m_input_tokens"`
+		OneHour int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 type claudeStreamEv struct {
@@ -134,6 +148,9 @@ type ClaudeTranslator struct {
 	model       string
 	sessionID   string
 	interrupted bool
+	// turnStart is when the first line after the previous result arrived:
+	// the start of the turn the next result ends, for the ledger's duration.
+	turnStart time.Time
 	// textTurn is the turn id that last emitted text; newMessage records that
 	// a new assistant message started since that text. Together they put a
 	// paragraph break between the text of separate assistant messages of one
@@ -174,16 +191,31 @@ func (t *ClaudeTranslator) Feed(line []byte) ([]Event, error) {
 // the backend learns a fresh child's id from its first line, long before the
 // turn's result reports it — and the line's tool results.
 func (t *ClaudeTranslator) feed(line []byte) (fedLine, error) {
+	f, call, err := t.translate(line)
+	if call != nil {
+		// Outside the lock: the record is a file append.
+		recordTurn(*call)
+	}
+	return f, err
+}
+
+// translate is feed under the lock; a result line also returns its ledger
+// call, which feed records.
+func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, error) {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
-		return fedLine{}, nil
+		return fedLine{}, nil, nil
 	}
 	var l claudeLine
 	if err := json.Unmarshal(line, &l); err != nil {
-		return fedLine{}, fmt.Errorf("decoding claude stream line: %w", err)
+		return fedLine{}, nil, fmt.Errorf("decoding claude stream line: %w", err)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.turnStart.IsZero() {
+		t.turnStart = time.Now()
+	}
+	var call *llmusage.Call
 	if l.SessionID != "" {
 		t.sessionID = l.SessionID
 	}
@@ -197,18 +229,56 @@ func (t *ClaudeTranslator) feed(line []byte) (fedLine, error) {
 		var m *claudeMessage
 		if l.Message != nil {
 			if err := json.Unmarshal(l.Message, &m); err != nil {
-				return f, fmt.Errorf("decoding claude user message: %w", err)
+				return f, nil, fmt.Errorf("decoding claude user message: %w", err)
 			}
 		}
 		f.events, f.results = t.toolResults(m)
 	case "result":
 		f.events = t.result(l)
+		c := t.usageCall(l)
+		call = &c
 	case "system":
 		if l.Subtype == "init" {
 			f.init, f.apiKeySource = true, l.APIKeySource
 		}
 	}
-	return f, nil
+	return f, call, nil
+}
+
+// usageCall is the ledger call a result line ends: the turn's usage with
+// the cache split and reported cost, estimated (from the result text) when
+// the line carries no usage. It starts the next turn's clock.
+func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
+	c := llmusage.Call{
+		Provider:   "claude",
+		Model:      digest.ModelFromUsage(l.ModelUsage, t.model),
+		DurationMS: time.Since(t.turnStart).Milliseconds(),
+		OK:         l.Subtype == "success" && !l.IsError,
+	}
+	t.turnStart = time.Time{}
+	if l.CostUSD > 0 {
+		cost := l.CostUSD
+		c.ReportedCostUSD = &cost
+	}
+	u := l.Usage
+	if u == nil || u.InputTokens+u.OutputTokens+u.CacheRead+u.CacheCreation == 0 {
+		c.Estimated = true
+		c.Output = llmusage.EstimateTokens(l.Result)
+		return c
+	}
+	c.Input, c.CacheRead, c.Output = int64(u.InputTokens), int64(u.CacheRead), int64(u.OutputTokens)
+	c.CacheWrite5m, c.CacheWrite1h = int64(u.CacheCreationTTL.FiveMin), int64(u.CacheCreationTTL.OneHour)
+	if rest := int64(u.CacheCreation) - c.CacheWrite5m - c.CacheWrite1h; rest > 0 {
+		// A total the CLI did not split counts at its default 5-minute TTL.
+		c.CacheWrite5m += rest
+	}
+	return c
+}
+
+// recordTurn records one chat turn's call in the LLM usage ledger; the
+// session's surface and purpose come from the process (ai session).
+func recordTurn(c llmusage.Call) {
+	llmusage.Record(context.Background(), c)
 }
 
 func (t *ClaudeTranslator) streamEvent(ev *claudeStreamEv) []Event {

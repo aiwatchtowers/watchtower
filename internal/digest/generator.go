@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 )
 
@@ -78,6 +79,9 @@ func (g *ClaudeGenerator) modelForContext(ctx context.Context) string {
 	return g.modelStrong
 }
 
+// validatePrompt is the model-validation request's whole prompt.
+const validatePrompt = "reply ok"
+
 // validateModelArgs builds the CLI args for a minimal model-validation request.
 // --setting-sources project,local skips the user-level ~/.claude/settings.json so
 // its plugins/hooks/CLAUDE.md auto-discovery don't probe ~/Desktop or ~/Documents
@@ -85,7 +89,7 @@ func (g *ClaudeGenerator) modelForContext(ctx context.Context) string {
 // Keychain-backed OAuth still works because CLAUDE_CONFIG_DIR is left untouched.
 func validateModelArgs(model string) []string {
 	return []string{
-		"-p", "reply ok",
+		"-p", validatePrompt,
 		"--output-format", "json",
 		"--model", model,
 		"--no-session-persistence",
@@ -119,9 +123,9 @@ func generateArgs(model, systemPromptFile, userMessage string) ([]string, string
 
 // ValidateModel sends a minimal request to verify the configured model is valid.
 // Returns nil if the model works, or an error describing the problem.
-func (g *ClaudeGenerator) ValidateModel() error {
+func (g *ClaudeGenerator) ValidateModel() (err error) {
 	claudeBin := claude.FindBinary(g.claudePath)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(llmusage.WithPurpose(context.Background(), "probe"), 30*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, claudeBin, validateModelArgs(g.modelStrong)...)
@@ -132,12 +136,17 @@ func (g *ClaudeGenerator) ValidateModel() error {
 		"PATH="+claude.RichPATH(),
 	)
 
+	start := time.Now()
+	var resp *cliResponse
+	defer func() { recordClaude(ctx, g.modelStrong, resp, start, err, validatePrompt, resultOf(resp)) }()
+
 	output, err := cmd.Output()
 	if err != nil {
+		resp, _ = parseCLIOutput(output)
 		return fmt.Errorf("model validation failed for %q: %w", g.modelStrong, err)
 	}
 
-	resp, err := parseCLIOutput(output)
+	resp, err = parseCLIOutput(output)
 	if err != nil {
 		return fmt.Errorf("model validation: unexpected response for %q: %w", g.modelStrong, err)
 	}
@@ -153,6 +162,11 @@ type cliUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	// CacheCreation splits CacheCreationInputTokens by cache TTL.
+	CacheCreation struct {
+		FiveMin int `json:"ephemeral_5m_input_tokens"`
+		OneHour int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 // cliResponse is the JSON structure returned by `claude --output-format json`.
@@ -167,6 +181,9 @@ type cliResponse struct {
 	Subtype    string   `json:"subtype"`
 	StopReason string   `json:"stop_reason"`
 	Usage      cliUsage `json:"usage"`
+	// ModelUsage is the per-model usage the CLI reports, keyed by the
+	// model's full name (ModelFromUsage).
+	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
 }
 
 // errorEnvelopeMessage returns the CLI's own message for a failed run, falling
@@ -239,7 +256,8 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	systemPromptFile, payloads := systemPromptPayload(systemPrompt)
 	args, stdin := generateArgs(model, systemPromptFile, userMessage)
 
-	resp, err := g.runClaude(ctx, args, strings.NewReader(stdin), generateDir(), parseCLIOutput, payloads...)
+	resp, err := g.runClaude(ctx, model, systemPrompt+userMessage, args, strings.NewReader(stdin), generateDir(),
+		parseCLIOutput, payloads...)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -287,9 +305,11 @@ func cliUsageOf(model string, resp *cliResponse) *Usage {
 // and stdin as given, from dir, with a clean environment, SIGINT then SIGKILL
 // on cancel (or the isolated child's group kill), bounded stderr — and
 // returns the result envelope parse finds in its stdout. A failed run, an
-// error envelope and an empty result are errors.
-func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io.Reader, dir string,
-	parse func([]byte) (*cliResponse, error), payloads ...string) (*cliResponse, error) {
+// error envelope and an empty result are errors. Every run of the child is
+// recorded in the LLM usage ledger under model, its usage estimated from
+// prompt (the text sent) when the envelope carries none.
+func (g *ClaudeGenerator) runClaude(ctx context.Context, model, prompt string, args []string, stdin io.Reader, dir string,
+	parse func([]byte) (*cliResponse, error), payloads ...string) (_ *cliResponse, err error) {
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
@@ -333,8 +353,13 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
+	start := time.Now()
+	var envelope *cliResponse // the parsed result envelope, failed runs included
+	defer func() { recordClaude(ctx, model, envelope, start, err, prompt, resultOf(envelope)) }()
+
 	output, err := cmd.Output()
 	if err != nil {
+		envelope, _ = parse(output)
 		if errors.Is(err, exec.ErrNotFound) {
 			return nil, WithCause(fmt.Errorf("claude CLI not found at %q (PATH=%s) — install Claude Code first", claudeBin, os.Getenv("PATH")), err)
 		}
@@ -344,7 +369,7 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io
 			// envelope on stdout and exits 1, with the human-readable message
 			// behind kilobytes of usage telemetry. Parse it so the error
 			// carries that message instead of the whole blob.
-			if resp, perr := parse(output); perr == nil && resp.IsError {
+			if resp := envelope; resp != nil && resp.IsError {
 				return nil, WithCause(logredact.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
 					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp)), exitErr)
 			}
@@ -369,6 +394,7 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io
 	if err != nil {
 		return nil, err
 	}
+	envelope = resp
 
 	if resp.IsError {
 		// Same envelope, same empty-result trap as the non-zero-exit branch
