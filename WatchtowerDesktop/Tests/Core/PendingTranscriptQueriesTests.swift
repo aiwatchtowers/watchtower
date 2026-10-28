@@ -13,11 +13,11 @@ final class PendingTranscriptQueriesTests: XCTestCase {
     func testBeginThenTranscriptThenRemove() async throws {
         let store = try store()
         let at = Date(timeIntervalSince1970: 1_800_000_000)
-        try await store.begin(recording: "rec_1.caf", eventID: "evt", title: "Standup", at: at)
+        try await store.begin(recording: "rec_1.caf", eventID: "evt", title: "Standup", isPrivate: false, at: at)
         try await store.saveTranscript(recording: "rec_1.caf", text: "hello", metaJSON: #"{"durationSec":5,"langStats":{}}"#,
                                        isPrivate: false, at: at.addingTimeInterval(60))
         // A later begin (a legacy pointer) keeps the kept transcript.
-        try await store.begin(recording: "rec_1.caf", eventID: "evt", title: "Standup", at: at)
+        try await store.begin(recording: "rec_1.caf", eventID: "evt", title: "Standup", isPrivate: false, at: at)
         let row = try XCTUnwrap(try store.transcript(recording: "rec_1.caf"))
         XCTAssertEqual(row.title, "Standup")
         XCTAssertEqual(row.transcript, "hello")
@@ -32,8 +32,8 @@ final class PendingTranscriptQueriesTests: XCTestCase {
 
     func testReserveIsExclusive() async throws {
         let store = try store()
-        let first = try await store.reserve(recording: "rec_2.m4a", eventID: nil, title: "A", at: Date())
-        let second = try await store.reserve(recording: "rec_2.m4a", eventID: nil, title: "B", at: Date())
+        let first = try await store.reserve(recording: "rec_2.m4a", eventID: nil, title: "A", isPrivate: false, at: Date())
+        let second = try await store.reserve(recording: "rec_2.m4a", eventID: nil, title: "B", isPrivate: false, at: Date())
         XCTAssertTrue(first)
         XCTAssertFalse(second)
         XCTAssertEqual(try store.transcript(recording: "rec_2.m4a")?.title, "A", "the first reservation stands")
@@ -59,7 +59,7 @@ final class PendingTranscriptQueriesTests: XCTestCase {
 
     func testRowsWithoutAChoiceAreNotPrivate() async throws {
         let store = try store()
-        try await store.begin(recording: "rec_7.caf", eventID: nil, title: nil, at: Date())
+        try await store.begin(recording: "rec_7.caf", eventID: nil, title: nil, isPrivate: false, at: Date())
         try await store.dismiss(recording: "rec_8.caf", at: Date())
         XCTAssertEqual(try store.pending().map(\.isPrivate), [false, false])
         // A row that is gone stays gone: setPrivate writes nothing, and says so.

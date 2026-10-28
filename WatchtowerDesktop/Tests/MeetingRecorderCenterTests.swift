@@ -1228,11 +1228,12 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         diarizer: FakeDiarizer,
         defaults: UserDefaults,
         rolesEnabled: Bool = true,
-        registry: VoiceRegistrySnapshot = .empty
+        registry: VoiceRegistrySnapshot = .empty,
+        envelope: Data? = nil
     ) async throws -> DiarizationFlowResult {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
-        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let runner = TranscriptCapturingRunner(stdout: envelope ?? recapOKEnvelope)
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
             pendingStore: pendingStore,
@@ -1491,6 +1492,25 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertNil(flow.savedSegments, "no roles → no segments file, the column stays NULL")
         XCTAssertEqual(flow.notifier.readyTitles, ["Roles — saved without speaker labels"],
                        "the notification must flag the missing labels")
+    }
+
+    /// The private notice does not hide the missing speaker labels.
+    func testPrivateSaveWithoutSpeakerLabelsSaysBoth() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.error = FakeDiarizer.FakeError()
+        let privateEnvelope = Data((#"{"transcript_id":7,"recap_ok":false,"recap_error":"private recording: recap skipped","#
+            + #""recap_skipped":true,"recap_skipped_reason":"private"}"#).utf8)
+
+        let flow = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(), envelope: privateEnvelope
+        )
+
+        XCTAssertEqual(flow.notifier.readyTitles, ["Roles — saved as private, no recap, without speaker labels"])
     }
 
     func testLivePathRendersRolesFromDecodedFile() async throws {

@@ -988,9 +988,13 @@ final class MeetingRecorderCenter {
             // recovered from the audio file alone.
             await beginPending(eventID: eventID, title: title, isPrivate: isPrivate, for: url)
             // A lock flipped before the row landed updated nothing: re-apply
-            // (also when Stop came first — the row is still this recording's).
-            if currentPrivate != isPrivate {
-                await persistPrivate(currentPrivate, for: url)
+            // the recording's current choice — its job's once Stop queued it
+            // (a new start may own `currentPrivate` by then), else the
+            // capture's.
+            let current = jobs.first { $0.audioURL == url }?.isPrivate
+                ?? (captureAudioURL == url ? currentPrivate : isPrivate)
+            if current != isPrivate {
+                await persistPrivate(current, for: url)
             }
         } catch {
             // Start failed before any audio was captured: nothing to keep.
@@ -1786,9 +1790,11 @@ final class MeetingRecorderCenter {
             let title = job.title ?? "Recording"
             // Recap/roles failures are non-fatal — the transcript row is saved;
             // flag them in the notification rather than reporting a failure.
-            if result.recapSkippedPrivate {
+            if result.recapNotGeneratedPrivate {
                 // MEETPRIV-01: the CLI says nothing was generated, on purpose.
-                notifier.sendTranscriptReadyNotification(title: "\(title) — saved as private, no recap")
+                // A roles failure still shows: it is not about privacy.
+                let roles = rolesError != nil ? ", without speaker labels" : ""
+                notifier.sendTranscriptReadyNotification(title: "\(title) — saved as private, no recap\(roles)")
             } else if !result.recapOK {
                 if result.recapSkipped {
                     notifier.sendTranscriptReadyNotification(

@@ -84,8 +84,8 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         return try PhoneRecordingJobs(
             sidecar: sidecar, dbPool: dbPool, events: nil, now: { [now] in now },
             enqueue: { [weak self] audio, eventID, title in
-                let url = try await MeetingRecorderCenter.reservePhoneRecording(eventID: eventID, title: title, in: dir,
-                                                                                store: store)
+                let url = try await MeetingRecorderCenter.reservePhoneRecording(eventID: eventID, title: title,
+                                                                                isPrivate: false, in: dir, store: store)
                 try await MeetingRecorderCenter.copyPhoneRecording(from: audio, to: url, store: store)
                 self?.enqueued.append((url, eventID, title))
                 return url

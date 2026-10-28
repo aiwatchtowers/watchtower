@@ -55,7 +55,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
             durationSec: 1800,
             eventID: "evt-1",
             title: "Weekly",
-            langStatsJSON: "{\"ru\":0.8}"
+            langStatsJSON: "{\"ru\":0.8}", isPrivate: false
         )
 
         // #604 S7: the transcript rides stdin (`--stdin`), never a temp file.
@@ -80,7 +80,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
             durationSec: 60,
             eventID: nil,
             title: nil,
-            langStatsJSON: "{}"
+            langStatsJSON: "{}", isPrivate: false
         )
 
         XCTAssertEqual(fake.invocations.first, [
@@ -106,7 +106,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
             durationSec: 5,
             eventID: nil,
             title: nil,
-            langStatsJSON: "{}"
+            langStatsJSON: "{}", isPrivate: false
         )
 
         let segments = try XCTUnwrap(try json(try payload(fake)["segments"]))
@@ -120,7 +120,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
             let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
             _ = try await TranscriptSaveService(runner: fake).save(
                 transcriptText: "plain", utterances: utterances, audioPath: "/tmp/a.wav", durationSec: 60,
-                eventID: nil, title: nil, langStatsJSON: "{}")
+                eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: false)
             XCTAssertNil(try json(try payload(fake)["segments"]))
         }
     }
@@ -140,7 +140,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
         }
         _ = try await TranscriptSaveService(runner: runner).save(
             transcriptText: "the full transcript body", audioPath: "/tmp/a.wav", durationSec: 5,
-            eventID: nil, title: nil, langStatsJSON: "{}")
+            eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: false)
         XCTAssertEqual(newDuringRun, [], "nothing of the transcript lands in the temp directory")
         let sent = try XCTUnwrap(runner.stdinInputs.first)
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: sent) as? [String: Any])
@@ -152,7 +152,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
         do {
             _ = try await TranscriptSaveService(runner: runner).save(
                 transcriptText: "x", audioPath: "/tmp/a.wav", durationSec: 1,
-                eventID: nil, title: nil, langStatsJSON: "{}")
+                eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: false)
             XCTFail("expected throw")
         } catch {
             // expected
@@ -170,7 +170,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         let result = try await svc.save(
             transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
-            eventID: nil, title: "Ad hoc", langStatsJSON: "{}"
+            eventID: nil, title: "Ad hoc", langStatsJSON: "{}", isPrivate: false
         )
 
         XCTAssertEqual(result.transcriptID, 7)
@@ -191,7 +191,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         let result = try await svc.save(
             transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
-            eventID: nil, title: "Ad hoc", langStatsJSON: "{}"
+            eventID: nil, title: "Ad hoc", langStatsJSON: "{}", isPrivate: false
         )
 
         XCTAssertFalse(result.recapOK)
@@ -208,7 +208,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         let result = try await svc.save(
             transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
-            eventID: nil, title: "Ad hoc", langStatsJSON: "{}"
+            eventID: nil, title: "Ad hoc", langStatsJSON: "{}", isPrivate: false
         )
 
         XCTAssertFalse(result.segmentsOK)
@@ -229,7 +229,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         let result = try await svc.save(
             transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
-            eventID: nil, title: "Ad hoc", langStatsJSON: "{}"
+            eventID: nil, title: "Ad hoc", langStatsJSON: "{}", isPrivate: false
         )
 
         XCTAssertTrue(result.recapOK)
@@ -246,7 +246,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
         do {
             _ = try await svc.save(
                 transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
-                eventID: nil, title: nil, langStatsJSON: "{}"
+                eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: false
             )
             XCTFail("expected throw")
         } catch CLIRunnerError.nonZeroExit(let code, _) {
@@ -405,7 +405,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
             durationSec: 5,
             eventID: nil,
             title: nil,
-            langStatsJSON: "{}"
+            langStatsJSON: "{}", isPrivate: false
         )
         let sent = try XCTUnwrap(try json(try payload(fake)["speakers"]))
         XCTAssertEqual(SpeakerEmbeddings.decode(sent), speakers, "the speakers round-trip the embeddings")
@@ -415,7 +415,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
         let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
         _ = try await TranscriptSaveService(runner: fake).save(
             transcriptText: "hello", audioPath: "/tmp/a.wav", durationSec: 1,
-            eventID: nil, title: nil, langStatsJSON: "{}")
+            eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: false)
         XCTAssertNil(try json(try payload(fake)["speakers"]), "nil speakers → null, legacy behavior")
     }
 
@@ -439,7 +439,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         _ = try await svc.save(
             transcriptText: "hello", audioPath: "/tmp/a.wav", durationSec: 60,
-            eventID: nil, title: nil, langStatsJSON: "{}")
+            eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: false)
 
         XCTAssertFalse(fake.invocations.first?.contains("--private") ?? true)
     }
@@ -469,7 +469,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         let result = try await svc.save(
             transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
-            eventID: nil, title: nil, langStatsJSON: "{}")
+            eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: false)
 
         XCTAssertTrue(result.recapSkipped)
         XCTAssertFalse(result.recapSkippedPrivate, "the too-short skip carries no reason")

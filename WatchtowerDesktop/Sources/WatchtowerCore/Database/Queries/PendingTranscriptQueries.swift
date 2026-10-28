@@ -31,7 +31,7 @@ package enum PendingTranscriptQueries {
     /// keeps its kept transcript (a legacy import may bring the transcript
     /// first).
     package static func begin(
-        _ db: Database, recording: String, eventID: String?, title: String?, isPrivate: Bool = false, at: Date
+        _ db: Database, recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date
     ) throws {
         try db.execute(sql: """
             INSERT INTO pending_transcripts (recording, event_id, title, private, started_at) VALUES (?, ?, ?, ?, ?)
@@ -52,7 +52,7 @@ package enum PendingTranscriptQueries {
     /// Reserves `recording` (a phone recording's name): false when a row
     /// already holds it, so the caller tries the next name.
     package static func reserve(
-        _ db: Database, recording: String, eventID: String?, title: String?, isPrivate: Bool = false, at: Date
+        _ db: Database, recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date
     ) throws -> Bool {
         try db.execute(sql: """
             INSERT INTO pending_transcripts (recording, event_id, title, private, started_at) VALUES (?, ?, ?, ?, ?)

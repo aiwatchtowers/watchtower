@@ -129,7 +129,7 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
     /// A failed `removePending` after a save must not bring the recording back.
     func testARowOfASavedRecordingIsNotOffered() async throws {
         let saved = try oldAudio("rec_20260801_140000.caf")
-        try await pendingStore.begin(recording: saved.lastPathComponent, eventID: nil, title: "Saved", at: Date())
+        try await pendingStore.begin(recording: saved.lastPathComponent, eventID: nil, title: "Saved", isPrivate: false, at: Date())
         try await pendingDB.write { try TestDatabase.insertMeetingTranscript($0, audioPath: saved.path) }
         let center = try center()
         await center.restorePendingOnLaunch()
@@ -138,10 +138,10 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
 
     func testLaunchPrunesRowsWhoseAudioIsGone() async throws {
         let old = Date().addingTimeInterval(-86_400)
-        try await pendingStore.begin(recording: "rec_20260801_150000.caf", eventID: nil, title: "Gone", at: old)
+        try await pendingStore.begin(recording: "rec_20260801_150000.caf", eventID: nil, title: "Gone", isPrivate: false, at: old)
         try await pendingStore.dismiss(recording: "rec_20260801_160000.caf", at: old)
         let kept = try oldAudio("rec_20260801_170000.caf")
-        try await pendingStore.begin(recording: kept.lastPathComponent, eventID: nil, title: "Kept", at: old)
+        try await pendingStore.begin(recording: kept.lastPathComponent, eventID: nil, title: "Kept", isPrivate: false, at: old)
         let center = try center()
         await center.restorePendingOnLaunch()
         XCTAssertEqual(try pendingStore.pending().map(\.recording), [kept.lastPathComponent])

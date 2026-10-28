@@ -22,7 +22,7 @@ extension MeetingRecorderCenter {
     nonisolated static func reservePhoneRecording(
         eventID: String?,
         title: String?,
-        isPrivate: Bool = false,
+        isPrivate: Bool,
         in directory: URL,
         store: PendingTranscriptStore,
         date: Date = Date()

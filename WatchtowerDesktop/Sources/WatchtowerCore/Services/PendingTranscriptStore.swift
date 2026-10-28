@@ -27,17 +27,6 @@ package protocol PendingTranscriptStore: Sendable {
     func savedAudioPaths() throws -> Set<String>
 }
 
-extension PendingTranscriptStore {
-    /// A non-private recording (legacy imports, tests).
-    package func begin(recording: String, eventID: String?, title: String?, at: Date) async throws {
-        try await begin(recording: recording, eventID: eventID, title: title, isPrivate: false, at: at)
-    }
-
-    package func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool {
-        try await reserve(recording: recording, eventID: eventID, title: title, isPrivate: false, at: at)
-    }
-}
-
 /// `PendingTranscriptStore` over the Desktop's database writer.
 package struct DatabasePendingTranscriptStore: PendingTranscriptStore {
     private let writer: any DatabaseWriter

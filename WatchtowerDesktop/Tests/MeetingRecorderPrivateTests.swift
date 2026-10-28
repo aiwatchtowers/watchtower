@@ -292,6 +292,46 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
     }
 
+    /// A row turned private while its save ran: the save's generators
+    /// refused it (`recording <id> is private`) — the private notice, not
+    /// "recap needs retry".
+    func testRowTurnedPrivateMidSaveGetsThePrivateNotice() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 12)
+        let refused = FakeCLIRunner(stdout: Data(
+            #"{"transcript_id":7,"recap_ok":false,"recap_error":"recording 7 is private","chapters_ok":false}"#.utf8))
+        let notifier = FakeNotifier()
+        let center = makeCenter(recorder: recorder, runner: refused, notifier: notifier, defaults: try isolatedDefaults())
+
+        await center.startRecording(eventID: nil, title: "Flipped", config: config(privateByDefault: false))
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        XCTAssertEqual(notifier.readyTitles, ["Flipped — saved as private, no recap"])
+    }
+
+    /// A failing Stop with the lock on, then the pill's dismiss: the
+    /// recovered entry stays private and its retry saves `--private`.
+    func testMeetPriv01_DismissedFailureStaysPrivate() async throws {
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        let runner = FakeCLIRunner(stdout: privateEnvelope)
+        let center = makeCenter(recorder: recorder, runner: runner, defaults: try isolatedDefaults())
+
+        await center.startRecording(eventID: nil, title: "Locked", isPrivate: true,
+                                    config: config(privateByDefault: false))
+        let started = try startedRecording()
+        defer { removeSidecars(started) }
+        await center.stopAndProcess(config: singleWindowConfig())
+        XCTAssertEqual(center.jobs.map(\.isPrivate), [true])
+
+        center.dismissFailure()
+        XCTAssertEqual(center.recoverable.map(\.isPrivate), [true])
+        await center.retryTranscription(config: singleWindowConfig())
+        XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
+    }
+
     /// MEETPRIV-01: a private recording whose start never wrote its row
     /// (`begin` failed) gets its row from the kept transcript, with the
     /// job's flag — so a failed save recovers private on relaunch.

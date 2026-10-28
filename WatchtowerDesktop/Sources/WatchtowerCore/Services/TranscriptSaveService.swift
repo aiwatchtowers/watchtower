@@ -54,6 +54,14 @@ package struct TranscriptSaveResult: Decodable, Equatable {
     /// `recap_skipped_reason` of a private save.
     package static let privateSkipReason = "private"
 
+    /// Nothing was generated because the recording is private: saved with
+    /// `--private`, or turned private while the save ran — then the save's
+    /// generators refused it with Go's `errRecordingPrivate` text
+    /// (cmd/meeting_transcript.go; keep the two in step).
+    package var recapNotGeneratedPrivate: Bool {
+        recapSkippedPrivate || (!recapOK && recapError == "recording \(transcriptID) is private")
+    }
+
     package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         transcriptID = try container.decode(Int64.self, forKey: .transcriptID)
@@ -196,7 +204,7 @@ package struct TranscriptSaveService {
                       eventID: String?,
                       title: String?,
                       langStatsJSON: String,
-                      isPrivate: Bool = false) async throws -> TranscriptSaveResult {
+                      isPrivate: Bool) async throws -> TranscriptSaveResult {
         var segmentsJSON: String?
         if let utterances, !utterances.isEmpty {
             segmentsJSON = TranscriptSegments.encode(utterances)

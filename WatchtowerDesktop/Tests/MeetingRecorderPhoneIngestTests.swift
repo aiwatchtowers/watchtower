@@ -313,7 +313,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
             for index in 0..<8 {
                 group.addTask {
                     try await MeetingRecorderCenter.reservePhoneRecording(
-                        eventID: nil, title: "title \(index)", in: directory, store: store, date: date)
+                        eventID: nil, title: "title \(index)", isPrivate: false, in: directory, store: store, date: date)
                 }
             }
             return try await group.reduce(into: [URL]()) { $0.append($1) }
@@ -355,7 +355,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         defer { try? FileManager.default.removeItem(at: source) }
         let fixed = Date()
         let desktop = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: fixed)
-        try await pendingStore.begin(recording: desktop.lastPathComponent, eventID: "evt-desk", title: "Desk", at: fixed)
+        try await pendingStore.begin(recording: desktop.lastPathComponent, eventID: "evt-desk", title: "Desk", isPrivate: false, at: fixed)
         let center = try makeCenter(runner: nil) { fixed }
 
         let ingested = try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Phone",
