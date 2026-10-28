@@ -2,7 +2,6 @@ package digest
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -182,15 +181,4 @@ func TestValidateModelRecordsProbe(t *testing.T) {
 	assert.Equal(t, "opus", calls[0].Model)
 	assert.Equal(t, int64(3), calls[0].Input)
 	assert.True(t, calls[0].OK)
-}
-
-func TestModelFromUsage(t *testing.T) {
-	assert.Equal(t, "req", ModelFromUsage(nil, "req"))
-	assert.Equal(t, "req", ModelFromUsage(map[string]json.RawMessage{"x": json.RawMessage(`"bad"`)}, "req"))
-	tie := map[string]json.RawMessage{
-		"claude-b": json.RawMessage(`{"outputTokens":5}`),
-		"claude-a": json.RawMessage(`{"outputTokens":5}`),
-		"claude-c": json.RawMessage(`{"outputTokens":1}`),
-	}
-	assert.Equal(t, "claude-a", ModelFromUsage(tie, "req"), "a tie goes to the first name")
 }

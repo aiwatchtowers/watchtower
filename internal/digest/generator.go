@@ -182,7 +182,7 @@ type cliResponse struct {
 	StopReason string   `json:"stop_reason"`
 	Usage      cliUsage `json:"usage"`
 	// ModelUsage is the per-model usage the CLI reports, keyed by the
-	// model's full name (ModelFromUsage).
+	// model's full name (llmusage.ModelFromUsage).
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
 }
 

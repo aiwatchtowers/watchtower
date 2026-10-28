@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"watchtower/internal/digest"
 	"watchtower/internal/llmusage"
 )
 
@@ -151,6 +150,11 @@ type ClaudeTranslator struct {
 	// turnStart is when the first line after the previous result arrived:
 	// the start of the turn the next result ends, for the ledger's duration.
 	turnStart time.Time
+	// childCost and childOutputs are the running child's total_cost_usd
+	// and modelUsage output tokens at its last result (cumulative over the
+	// child's life; reset by its system/init line).
+	childCost    float64
+	childOutputs map[string]int64
 	// textTurn is the turn id that last emitted text; newMessage records that
 	// a new assistant message started since that text. Together they put a
 	// paragraph break between the text of separate assistant messages of one
@@ -240,25 +244,47 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 	case "system":
 		if l.Subtype == "init" {
 			f.init, f.apiKeySource = true, l.APIKeySource
+			// A new child: its cumulative cost and model usage start over.
+			t.childCost, t.childOutputs = 0, nil
 		}
 	}
 	return f, call, nil
 }
 
 // usageCall is the ledger call a result line ends: the turn's usage with
-// the cache split and reported cost, estimated (from the result text) when
-// the line carries no usage. It starts the next turn's clock.
+// the cache split, estimated (from the result text) when the line carries
+// no usage. A warm child's total_cost_usd and modelUsage add up over its
+// life while usage is the turn's own, so the turn's cost is the growth of
+// the total since the previous result (none when it shrank), and its model
+// is the stream's, else the one whose output grew most. It starts the next
+// turn's clock.
 func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
+	outs := llmusage.ModelOutputs(l.ModelUsage)
+	grown := make(map[string]int64, len(outs))
+	for name, out := range outs {
+		if d := out - t.childOutputs[name]; d > 0 {
+			grown[name] = d
+		}
+	}
+	model := t.model
+	if model == "" {
+		model = llmusage.ModelFromOutputs(grown, "")
+	}
 	c := llmusage.Call{
 		Provider:   "claude",
-		Model:      digest.ModelFromUsage(l.ModelUsage, t.model),
+		Model:      model,
 		DurationMS: time.Since(t.turnStart).Milliseconds(),
 		OK:         l.Subtype == "success" && !l.IsError,
 	}
+	if cost := l.CostUSD - t.childCost; l.CostUSD > 0 && cost >= 0 {
+		c.ReportedCostUSD = &cost
+	}
 	t.turnStart = time.Time{}
 	if l.CostUSD > 0 {
-		cost := l.CostUSD
-		c.ReportedCostUSD = &cost
+		t.childCost = l.CostUSD
+	}
+	if len(outs) > 0 {
+		t.childOutputs = outs
 	}
 	u := l.Usage
 	if u == nil || u.InputTokens+u.OutputTokens+u.CacheRead+u.CacheCreation == 0 {
@@ -267,11 +293,8 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 		return c
 	}
 	c.Input, c.CacheRead, c.Output = int64(u.InputTokens), int64(u.CacheRead), int64(u.OutputTokens)
-	c.CacheWrite5m, c.CacheWrite1h = int64(u.CacheCreationTTL.FiveMin), int64(u.CacheCreationTTL.OneHour)
-	if rest := int64(u.CacheCreation) - c.CacheWrite5m - c.CacheWrite1h; rest > 0 {
-		// A total the CLI did not split counts at its default 5-minute TTL.
-		c.CacheWrite5m += rest
-	}
+	c.CacheWrite5m, c.CacheWrite1h = llmusage.SplitCacheWrites(int64(u.CacheCreation),
+		int64(u.CacheCreationTTL.FiveMin), int64(u.CacheCreationTTL.OneHour))
 	return c
 }
 
