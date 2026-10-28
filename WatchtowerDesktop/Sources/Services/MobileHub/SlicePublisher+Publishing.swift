@@ -10,11 +10,9 @@ extension SlicePublisher {
     /// One push cycle over `kinds` (nil: every kind), the urgent kinds
     /// first (`publishOrder`). Oversized records are skipped WITHOUT
     /// recording their hash, so a later smaller version publishes normally.
-    /// Without hub keys it reads and sends nothing. `urgentChanges` counts
-    /// the changes in `sendAtOnceKinds` (the urgent kinds, plus a fast
-    /// cycle's own).
+    /// Without hub keys it reads and sends nothing.
     @discardableResult
-    func publishOnce(kinds: Set<SliceKind>? = nil, sendAtOnceKinds: Set<SliceKind> = urgentKinds) async throws -> Outcome {
+    func publishOnce(kinds: Set<SliceKind>? = nil) async throws -> Outcome {
         var outcome = Outcome()
         guard let transport else {
             warnNoKeysOnce()
@@ -30,7 +28,7 @@ extension SlicePublisher {
             let pushed = try await pushKind(
                 kind, saveable, current: current, startGen: startGen, transport: transport, into: &outcome
             )
-            if sendAtOnceKinds.contains(kind) { outcome.urgentChanges += outcome.pushed + outcome.deleted - before }
+            if Self.urgentKinds.contains(kind) { outcome.urgentChanges += outcome.pushed + outcome.deleted - before }
             guard pushed else {
                 logger.warning("publish: generation changed mid-cycle; aborted to avoid recording stale hashes")
                 return outcome

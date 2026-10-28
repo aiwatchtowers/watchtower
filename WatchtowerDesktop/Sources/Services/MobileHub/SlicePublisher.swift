@@ -88,8 +88,7 @@ final class SlicePublisher: Sendable {
         var pushed = 0
         var deleted = 0
         var skipped: [String] = []
-        /// Records of `urgentKinds` (or a fast cycle's own kinds) saved or
-        /// deleted (the immediate send).
+        /// Records of `urgentKinds` saved or deleted (the immediate send).
         var urgentChanges = 0
         /// The cycle ran to its end (no mid-cycle account reset).
         var completed = false
@@ -160,6 +159,16 @@ final class SlicePublisher: Sendable {
         /// so a nudge can never land between "deadline computed" and
         /// "sleep stored".
         var sleep: Task<Void, Never>?
+        /// A phone write asked for the immediate send (`publishSoon`); the
+        /// next cycle diffing its kinds (fast or full) takes it.
+        var sendRequested = false
+        /// The cycle being run took that request.
+        var tookSendRequest = false
+
+        mutating func takeSendRequest() {
+            tookSendRequest = sendRequested
+            sendRequested = false
+        }
     }
 
     let dbPool: DatabasePool

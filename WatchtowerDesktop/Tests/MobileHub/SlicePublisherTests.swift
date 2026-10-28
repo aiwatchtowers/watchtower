@@ -517,6 +517,34 @@ final class SlicePublisherTests: XCTestCase {
         let outcome = try XCTUnwrap(result)
         XCTAssertEqual(outcome.pushed, 1)
         XCTAssertEqual(sends.count, 1, "the phone's own write is sent at once")
+        XCTAssertNil(publisher.takeDueCycle(now: clock.origin + .seconds(9)), "the request was taken")
+    }
+
+    /// A full tick due before the fast window takes the request and sends
+    /// at once; and a cycle that finds nothing new (a full cycle running
+    /// during the write saved it already) still sends what the engine holds.
+    func testAPhoneWritesSendSurvivesAFullTickAndAnEmptyDiff() async throws {
+        let clock = FakeClock()
+        let comments = StubSliceSource(kind: .workbenchComment)
+        comments.setPayload(Data(#"{"v":1}"#.utf8))
+        let sends = SendCounter()
+        let publisher = makeLanePublisher(clock, sources: [comments]) { await sends.bump() }
+        await publisher.run(try XCTUnwrap(publisher.takeDueCycle(now: clock.origin)))
+
+        comments.setPayload(Data(#"{"v":2}"#.utf8))
+        clock.set(.milliseconds(29_500))
+        publisher.publishSoon(kinds: [.workbenchComment])
+        let full = try XCTUnwrap(publisher.takeDueCycle(now: clock.origin + .seconds(30)))
+        XCTAssertEqual(full, .full, "the full tick comes first")
+        await publisher.run(full)
+        XCTAssertEqual(sends.count, 1, "the full tick sent the phone's write at once")
+
+        clock.set(.seconds(40))
+        publisher.publishSoon(kinds: [.workbenchComment])
+        let fast = try XCTUnwrap(publisher.takeDueCycle(now: clock.origin + .seconds(41)))
+        let result = await publisher.run(fast)
+        XCTAssertEqual(try XCTUnwrap(result).pushed, 0, "nothing new to diff")
+        XCTAssertEqual(sends.count, 2, "still sent at once")
     }
 
     /// A slow cycle: the ticks it took count from its end, and its

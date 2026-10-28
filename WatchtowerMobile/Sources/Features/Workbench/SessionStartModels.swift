@@ -82,12 +82,8 @@ enum StartStage: Equatable {
     /// The Mac refused, or it expired; the row offers Try again.
     case failed(message: String, row: PendingAction)
 
-    /// The stage of a target's start: this run's attempt, else (after a
-    /// relaunch) its newest overlay row; nil when nothing was sent.
-    static func of(targetID: Int64, attempt: StartAttempt?, snapshot: WorkbenchReplicaSnapshot) -> Self? {
-        of(.target(targetID), attempt: attempt, snapshot: snapshot)
-    }
-
+    /// The stage of a start: this run's attempt, else (after a relaunch)
+    /// its newest overlay row; nil when nothing was sent.
     static func of(_ subject: StartSubject, attempt: StartAttempt?, snapshot: WorkbenchReplicaSnapshot) -> Self? {
         let rows = snapshot.pending.filter { subject.matches($0.action, entityRecordName: $0.entityRecordName) }
         guard let attempt else { return rows.last.map(Self.init) }

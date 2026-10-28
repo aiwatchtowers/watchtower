@@ -296,6 +296,13 @@ final class BoardHandlersTests: XCTestCase {
 
         XCTAssertEqual(outcome.status, .applied)
         XCTAssertEqual(published, [BoardHandlers.publishedKinds])
+
+        // A refusal publishes too (a conflict shows the current value).
+        let refused = try await handlers.handle(
+            action(.boardCommentAdd, entity: t, ["workbench_id": .integer(p), "body": .string("  ")])
+        )
+        XCTAssertEqual(refused.reason, .invalidParams)
+        XCTAssertEqual(published.count, 2)
     }
 
     func testAnEmptyOrOverlongCommentIsInvalidParams() async throws {
