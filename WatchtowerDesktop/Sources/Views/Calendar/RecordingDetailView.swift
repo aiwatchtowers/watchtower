@@ -116,7 +116,7 @@ struct RecordingDetailView: View {
                     Label(notice, systemImage: "checkmark.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, Spacing.medium)
                 }
                 if let callAudioNote {
                     Label(callAudioNote, systemImage: "speaker.slash")

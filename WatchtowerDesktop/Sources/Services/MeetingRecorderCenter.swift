@@ -1929,50 +1929,6 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// The recordings to recover, oldest first: the rows (not dismissed) whose
-    /// audio is still in `directory`, then — merged in name order — every
-    /// `rec_*` audio file there with no row and no saved transcript (its
-    /// private flag unknown, so private: MEETPRIV fails closed, and the
-    /// recovered pill's lock lets the owner open it before transcribing).
-    private static func recoverable(in directory: URL, store: PendingTranscriptStore) -> [RecoverableRecording] {
-        let names: [String]
-        do {
-            names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
-        } catch {
-            print("[MeetingRecorder] cannot scan \(directory.path) for recoverable recordings: "
-                  + "\(error.localizedDescription)")
-            return []
-        }
-        let audio = Set(names.filter { $0.hasPrefix("rec_") && recordingAudioExtensions.contains(($0 as NSString).pathExtension) })
-        let rows: [PendingTranscript]
-        let saved: Set<String>
-        do {
-            rows = try store.pending()
-            saved = try store.savedAudioPaths()
-        } catch {
-            print("[MeetingRecorder] cannot read the pending recordings: \(error.localizedDescription)")
-            return []
-        }
-        var byName: [String: RecoverableRecording] = [:]
-        var withRow: Set<String> = []
-        for row in rows {
-            withRow.insert(row.recording)
-            // A row whose audio is gone (the daemon's orphan sweep took it)
-            // is not listed; `prunePendingRows` removes it at launch.
-            guard audio.contains(row.recording) else { continue }
-            // A saved recording whose row a failed removal left behind.
-            if row.dismissed || saved.contains(directory.appendingPathComponent(row.recording).path) { continue }
-            byName[row.recording] = RecoverableRecording(audioURL: directory.appendingPathComponent(row.recording),
-                                                         eventID: row.eventID, title: row.title, isPrivate: row.isPrivate)
-        }
-        for name in audio where !withRow.contains(name) {
-            let url = directory.appendingPathComponent(name)
-            if saved.contains(url.path) { continue }
-            byName[name] = RecoverableRecording(audioURL: url, eventID: nil, title: nil, isPrivate: true)
-        }
-        return byName.keys.sorted { recoverySortKey($0) < recoverySortKey($1) }.compactMap { byName[$0] }
-    }
-
     // MARK: - Transcript persistence (retry save without re-transcribing)
 
     /// Transcript + metadata kept in the recording's `pending_transcripts` row

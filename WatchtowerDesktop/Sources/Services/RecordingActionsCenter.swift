@@ -34,7 +34,9 @@ final class RecordingActionsCenter {
     /// `transcript private <id> on|off`. `onChanged` gets the flag the CLI
     /// reports, whether or not the recording is still on screen.
     func setPrivate(
-        transcriptID: Int64, _ isPrivate: Bool, service: TranscriptSaveService,
+        transcriptID: Int64,
+        _ isPrivate: Bool,
+        service: TranscriptSaveService,
         onChanged: @escaping @MainActor (Bool) -> Void
     ) {
         guard !changingPrivate.contains(transcriptID) else { return }

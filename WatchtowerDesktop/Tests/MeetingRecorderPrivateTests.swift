@@ -178,7 +178,8 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         await center.startRecording(eventID: nil, title: "Saving", config: config(privateByDefault: false))
         let started = try startedRecording()
         defer { removeSidecars(started) }
-        await center.stopAndProcess(config: singleWindowConfig())
+        // Stop awaits its job's save, which the runner holds.
+        let stop = Task { await center.stopAndProcess(config: singleWindowConfig()) }
         await waitUntil { runner.isHoldingASave }
         let job = try XCTUnwrap(center.jobs.first)
         XCTAssertEqual(job.phase, .summarizing)
@@ -188,7 +189,8 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         XCTAssertEqual(center.jobs.first?.isPrivate, false)
         XCTAssertEqual(pendingRow(started)?.isPrivate, false)
         runner.releaseAll()
-        await waitUntil { center.jobs.isEmpty }
+        await stop.value
+        XCTAssertTrue(center.jobs.isEmpty)
     }
 
     private func waitUntil(timeout: TimeInterval = 10, _ condition: @escaping @MainActor () -> Bool) async {
@@ -273,7 +275,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
 
         await center.restorePendingOnLaunch()
 
-        XCTAssertEqual(center.recoverable.first(where: { $0.audioURL == audio })?.isPrivate, true)
+        XCTAssertEqual(center.recoverable.first { $0.audioURL == audio }?.isPrivate, true)
         XCTAssertEqual(pendingRow(audio)?.isPrivate, true)
     }
 

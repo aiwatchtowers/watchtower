@@ -100,10 +100,10 @@ final class RecordingActionsCenterTests: XCTestCase {
         let center = makeCenter()
         let runner = FakeCLIRunner(stdout: Data(#"{"id":5,"private":true}"#.utf8))
         let done = expectation(description: "changed")
-        var reported: Bool?
+        var reported: [Bool] = []
 
         center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner)) {
-            reported = $0
+            reported.append($0)
             done.fulfill()
         }
         XCTAssertTrue(center.changingPrivate.contains(5))
@@ -113,7 +113,7 @@ final class RecordingActionsCenterTests: XCTestCase {
         await fulfillment(of: [done], timeout: 5)
         await waitUntil { !center.changingPrivate.contains(5) }
 
-        XCTAssertEqual(reported, true)
+        XCTAssertEqual(reported, [true])
         XCTAssertEqual(runner.invocations, [["meeting-prep", "transcript", "private", "5", "on"]])
         XCTAssertNil(center.lastError[5])
     }
