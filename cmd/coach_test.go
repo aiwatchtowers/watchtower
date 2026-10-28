@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -396,9 +397,18 @@ func runCoachSplit(t *testing.T, args ...string) (stdout, stderr string, err err
 	return out.String(), errb.String(), err
 }
 
-func lastLine(s string) string {
+// jsonObjectLine is the last stderr line that decodes as a JSON object.
+func jsonObjectLine(t *testing.T, s string) string {
+	t.Helper()
 	lines := strings.Split(strings.TrimSpace(s), "\n")
-	return lines[len(lines)-1]
+	for i := len(lines) - 1; i >= 0; i-- {
+		var m map[string]any
+		if json.Unmarshal([]byte(lines[i]), &m) == nil {
+			return lines[i]
+		}
+	}
+	t.Fatalf("no JSON object line in stderr: %q", s)
+	return ""
 }
 
 func TestCoachStatus_DaysWindow(t *testing.T) {
@@ -436,7 +446,7 @@ func TestCoachRun_BusyWhenLocked(t *testing.T) {
 	stdout, stderr, err := runCoachSplit(t, "run", "--json")
 	require.Error(t, err)
 	assert.JSONEq(t, `{"ok":false,"code":"busy","error":"the coach is already running"}`, stdout)
-	assert.JSONEq(t, stdout, lastLine(stderr))
+	assert.JSONEq(t, stdout, jsonObjectLine(t, stderr))
 }
 
 func TestCoachJSONFailure_EchoedOnStderr(t *testing.T) {
@@ -445,7 +455,7 @@ func TestCoachJSONFailure_EchoedOnStderr(t *testing.T) {
 	require.Error(t, err)
 	var a, b map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &a), stdout)
-	require.NoError(t, json.Unmarshal([]byte(lastLine(stderr)), &b), stderr)
+	require.NoError(t, json.Unmarshal([]byte(jsonObjectLine(t, stderr)), &b), stderr)
 	assert.Equal(t, false, a["ok"])
 	assert.Equal(t, a, b)
 }
@@ -488,4 +498,34 @@ func TestCoachProposals_BudgetPerDestination(t *testing.T) {
 		}
 		assert.Equal(t, c.want, got, "case %d %s", i, c.dest)
 	}
+}
+
+// Through the real Execute(): the JSON line is on stderr, followed by its prose line.
+func TestCoachJSONFailure_ThroughExecute(t *testing.T) {
+	coachSetup(t)
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	origErr, origArgs := os.Stderr, os.Args
+	os.Stderr, os.Args = w, []string{"watchtower", "coach", "accept", "999", "--json"}
+	t.Cleanup(func() {
+		os.Stderr, os.Args = origErr, origArgs
+		rootCmd.SetArgs(nil)
+		coachFlagJSON, coachFlagDays = false, coachDefaultDays
+	})
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(w)
+	rootCmd.SetArgs(os.Args[1:])
+	code := Execute()
+	require.NoError(t, w.Close())
+	raw, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, 1, code)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	require.GreaterOrEqual(t, len(lines), 2, string(raw))
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal([]byte(jsonObjectLine(t, string(raw))), &obj))
+	assert.Equal(t, false, obj["ok"])
+	var last map[string]any
+	assert.Error(t, json.Unmarshal([]byte(lines[len(lines)-1]), &last), "Execute's prose line follows the JSON line")
 }

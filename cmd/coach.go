@@ -126,8 +126,10 @@ func coachRefuseUnderAgent(cmd *cobra.Command, action string) error {
 }
 
 // coachWriteFailure prints a --json failure object on stdout and again as one
-// line on stderr (its last line), so a caller that only keeps stderr of a
-// failed run still reads the reason.
+// line on stderr, so a caller that only keeps stderr of a failed run still
+// reads the reason. Execute() prints the error as prose after it, so the object
+// is not necessarily the last line: a reader takes the last line that decodes
+// as a JSON object.
 func coachWriteFailure(cmd *cobra.Command, fail map[string]any) {
 	_ = writeJSON(cmd.OutOrStdout(), fail)
 	if b, err := json.Marshal(fail); err == nil {
