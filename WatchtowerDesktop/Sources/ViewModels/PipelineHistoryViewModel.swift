@@ -91,12 +91,4 @@ final class PipelineHistoryViewModel {
     var isToday: Bool {
         Calendar.current.isDateInToday(selectedDate)
     }
-
-    // MARK: - Aggregations
-
-    var totalInputTokens: Int { runs.reduce(0) { $0 + $1.inputTokens } }
-    var totalOutputTokens: Int { runs.reduce(0) { $0 + $1.outputTokens } }
-    var totalApiTokens: Int { runs.reduce(0) { $0 + $1.totalApiTokens } }
-    var totalCalls: Int { runs.reduce(0) { $0 + $1.aiCallCount } }
-
 }

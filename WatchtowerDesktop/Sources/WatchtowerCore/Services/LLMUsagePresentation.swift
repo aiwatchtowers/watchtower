@@ -169,4 +169,31 @@ package enum LLMUsagePresentation {
     package static func refreshFailedCaption(_ lastUpdated: Date) -> String {
         "Last updated \(lastUpdated.formatted(date: .omitted, time: .shortened)) — refresh failed"
     }
+
+    // MARK: - Home
+
+    package static let homeAISpendTooltip = "Watchtower, your automations and chats — workbenches are on Usage → Watchtower"
+    package static let homeAISpendUnavailable = "AI spend unavailable"
+
+    /// Home's "AI spend today": the report's `page_total` with the tab's
+    /// marks, or "—" with "AI spend unavailable" while the first read runs and
+    /// whenever the latest read failed (never $0, never a stale number).
+    package static func homeAISpend(report: LLMUsageReport?, error: LLMUsageLoadError?) -> HomeAISpend {
+        guard let report, error == nil else { return .unavailable }
+        return HomeAISpend(value: cost(report.pageTotal), tooltip: homeAISpendTooltip)
+    }
+}
+
+/// The text of Home's AI spend cell.
+package struct HomeAISpend: Equatable, Sendable {
+    package let value: String
+    package let tooltip: String
+
+    package init(value: String, tooltip: String) {
+        self.value = value
+        self.tooltip = tooltip
+    }
+
+    /// Before the first read: "—".
+    package static let unavailable = Self(value: "—", tooltip: LLMUsagePresentation.homeAISpendUnavailable)
 }

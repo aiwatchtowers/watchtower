@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// The Home tab: where the app opens. Binds `AppState.homeCenter`'s snapshot
 /// to `HomeContent`; it never reads on its own, so coming back to Home shows
-/// the snapshot the center already holds.
+/// the snapshot the center already holds. Only today's AI spend (a CLI read,
+/// not the DB) is read while Home is on screen.
 struct HomeView: View {
     @Environment(AppState.self) private var appState
 
@@ -24,9 +25,11 @@ struct HomeView: View {
                 onReconnect: { appState.openAccountConnection(source: $0) },
                 purges: appState.accountPurgeCenter?.openRows ?? [],
                 learn: appState.learnCenter.zone,
-                learnActions: appState.learnZoneActions
+                learnActions: appState.learnZoneActions,
+                aiSpend: appState.homeCenter.aiSpend
             )
         }
+        .task { await appState.homeCenter.refreshAISpend() }
     }
 }
 
@@ -56,6 +59,8 @@ struct HomeContent: View {
     /// The Learn zone; nil hides it (catalog failed or empty).
     let learn: LearnSelection?
     let learnActions: LearnZoneActions
+    /// The numbers' AI spend (`HomeCenter.aiSpend`).
+    let aiSpend: HomeAISpend
 
     init(
         snapshot: HomeSnapshot?,
@@ -72,8 +77,10 @@ struct HomeContent: View {
         onReconnect: @escaping (String) -> Void = { _ in },
         purges: [AccountPurge] = [],
         learn: LearnSelection? = nil,
-        learnActions: LearnZoneActions = .none
+        learnActions: LearnZoneActions = .none,
+        aiSpend: HomeAISpend = .unavailable
     ) {
+        self.aiSpend = aiSpend
         self.purges = purges
         self.learn = learn
         self.learnActions = learnActions
@@ -129,7 +136,7 @@ struct HomeContent: View {
                 calendar: calendar)
             HomeSideColumn(
                 snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion, learn: learn,
-                learnActions: learnActions)
+                learnActions: learnActions, aiSpend: aiSpend)
         }
     }
 
@@ -179,6 +186,7 @@ struct HomeSideColumn: View {
     let onDecideSuggestion: (Int64, Bool) async -> String?
     var learn: LearnSelection?
     var learnActions: LearnZoneActions = .none
+    var aiSpend: HomeAISpend = .unavailable
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
@@ -191,7 +199,7 @@ struct HomeSideColumn: View {
                 LinksZoneView(links: snapshot.links, failed: snapshot.linksFailed, onLink: onLink)
             }
             if let numbers = snapshot.numbers {
-                NumbersZoneView(numbers: numbers)
+                NumbersZoneView(numbers: numbers, aiSpend: aiSpend, onLink: onLink)
             }
             if let learn {
                 LearnZoneView(selection: learn, actions: learnActions)

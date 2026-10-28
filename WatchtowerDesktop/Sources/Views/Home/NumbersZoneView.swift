@@ -4,9 +4,12 @@ import WatchtowerCore
 /// Home's today in numbers: muted — secondary values over tertiary captions
 /// in a two-column grid, no colour, no charts. A number whose source is off
 /// or absent (nil) is left out; a failed read shows "—". The header always
-/// shows.
+/// shows. AI spend comes from `usage llm`, not the DB (`HomeCenter.aiSpend`),
+/// and opens Usage → Watchtower.
 struct NumbersZoneView: View {
     let numbers: HomeNumbers
+    var aiSpend: HomeAISpend = .unavailable
+    var onLink: (HomeLink) -> Void = { _ in }
 
     /// One grid cell.
     struct Cell: Equatable {
@@ -14,32 +17,55 @@ struct NumbersZoneView: View {
         let caption: String
         /// The Claude plan's 5 h percentage, drawn as a thin bar.
         var bar: Int?
+        var tooltip: String?
+        /// Where a click on the cell goes; nil: not clickable.
+        var link: HomeLink?
     }
 
     var body: some View {
         HomeZone(title: "Today in numbers") {
             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: Spacing.cozy) {
-                ForEach(Self.cells(numbers), id: \.caption) { cell in
-                    VStack(alignment: .leading, spacing: Spacing.tight) {
-                        Text(cell.value)
-                            .font(.callout.weight(.medium).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        Text(cell.caption)
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                        if let bar = cell.bar {
-                            ProgressView(value: Double(min(max(bar, 0), 100)), total: 100)
-                                .progressViewStyle(.linear)
-                                .controlSize(.mini)
-                                .tint(.secondary)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ForEach(Self.cells(numbers, aiSpend: aiSpend), id: \.caption) { cell in
+                    cellView(cell)
                 }
             }
             .homeZoneInset()
             .padding(.top, Spacing.small)
         }
+    }
+
+    /// A cell with a link is one plain button (the whole cell, no plate, so
+    /// it lines up with the others); every cell carries its tooltip.
+    @ViewBuilder
+    private func cellView(_ cell: Cell) -> some View {
+        if let link = cell.link {
+            Button { onLink(link) } label: { cellContent(cell) }
+                .buttonStyle(.plain)
+                .help(cell.tooltip ?? "")
+                .accessibilityHint("Opens Usage → Watchtower")
+        } else {
+            cellContent(cell)
+                .help(cell.tooltip ?? "")
+        }
+    }
+
+    private func cellContent(_ cell: Cell) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(cell.value)
+                .font(.callout.weight(.medium).monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text(cell.caption)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            if let bar = cell.bar {
+                ProgressView(value: Double(min(max(bar, 0), 100)), total: 100)
+                    .progressViewStyle(.linear)
+                    .controlSize(.mini)
+                    .tint(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private static let columns = [
@@ -49,7 +75,7 @@ struct NumbersZoneView: View {
 
     /// The cells in the mockup's order; a pair shows while either half has a
     /// value or failed.
-    static func cells(_ numbers: HomeNumbers) -> [Cell] {
+    static func cells(_ numbers: HomeNumbers, aiSpend: HomeAISpend) -> [Cell] {
         let failed = numbers.failed
         func part(_ value: Int?, _ field: String) -> String? {
             failed.contains(field) ? "—" : value.map(String.init)
@@ -63,11 +89,8 @@ struct NumbersZoneView: View {
             let value = numbers.meetings == 0 || hours == nil ? meetings : "\(meetings) · \(hours ?? "")"
             cells.append(Cell(value: value, caption: "meetings"))
         }
-        if failed.contains("aiSpendUSD") {
-            cells.append(Cell(value: "—", caption: "AI spend"))
-        } else if let spend = numbers.aiSpendUSD {
-            cells.append(Cell(value: String(format: "$%.2f", spend), caption: "AI spend"))
-        }
+        cells.append(Cell(value: aiSpend.value, caption: "AI spend today", tooltip: aiSpend.tooltip,
+                          link: .usageWatchtower))
         if let plan = planCell(numbers) {
             cells.append(plan)
         }

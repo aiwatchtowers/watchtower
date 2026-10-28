@@ -4,7 +4,7 @@ import WatchtowerCore
 
 /// Answers each call from a queue of results (the last one repeats) and
 /// records the argv and timeout. No process is spawned.
-private final class QueuedUsageRunner: CLIRunnerProtocol, @unchecked Sendable {
+final class QueuedUsageRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var results: [Result<Data, Error>]
     private var calls: [([String], TimeInterval?)] = []
