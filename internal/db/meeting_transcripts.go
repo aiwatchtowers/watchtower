@@ -48,9 +48,10 @@ type MeetingTranscriptFilter struct {
 	FromTime string // ISO8601 lower bound on created_at; "" = none
 	ToTime   string // ISO8601 upper bound on created_at; "" = none
 	Limit    int    // 0 = 50
-	// ExcludePrivate drops private recordings — set by every caller whose
-	// output can reach a model (MEETPRIV-02).
-	ExcludePrivate bool
+	// IncludePrivate keeps private recordings, which are left out by default
+	// (MEETPRIV-02). Set it only on an owner-only path whose output never
+	// reaches a model, such as the CLI's `transcript list`.
+	IncludePrivate bool
 }
 
 const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json, private, created_at, updated_at`
@@ -96,6 +97,7 @@ func (db *DB) GetMeetingTranscript(id int64) (*MeetingTranscript, error) {
 }
 
 // ListMeetingTranscripts returns transcripts matching the filter, newest first.
+// Private recordings are skipped unless f.IncludePrivate is set.
 func (db *DB) ListMeetingTranscripts(f MeetingTranscriptFilter) ([]MeetingTranscript, error) {
 	query := `SELECT ` + meetingTranscriptColumns + ` FROM meeting_transcripts WHERE 1=1`
 	var args []any
@@ -111,7 +113,7 @@ func (db *DB) ListMeetingTranscripts(f MeetingTranscriptFilter) ([]MeetingTransc
 		query += ` AND created_at <= ?`
 		args = append(args, f.ToTime)
 	}
-	if f.ExcludePrivate {
+	if !f.IncludePrivate {
 		query += ` AND private = 0`
 	}
 	limit := f.Limit

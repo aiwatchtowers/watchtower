@@ -191,7 +191,7 @@ func (db *DB) ListMeetingRecaps(ctx context.Context, since, until string, limit 
 		return nil, err
 	}
 	w := readWhere{}
-	w.add(recapNotPrivate)
+	w.add(RecapNotPrivate)
 	if since != "" {
 		w.add(meetingRecapWhen+" >= ?", since)
 	}
@@ -236,7 +236,7 @@ func (db *DB) getMeetingRecapRow(ctx context.Context, where string, key any) (*M
 	var r MeetingRecapRow
 	err := db.QueryRowContext(ctx, `SELECT r.id, COALESCE(r.event_id, ''), r.transcript_id, r.source_text, r.recap_json,
 		r.created_at, r.updated_at, COALESCE(e.title, ''), COALESCE(e.start_time, '')
-		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE `+where+` AND `+recapNotPrivate, key).
+		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE `+where+` AND `+RecapNotPrivate, key).
 		Scan(&r.ID, &r.EventID, &r.TranscriptID, &r.SourceText, &r.RecapJSON, &r.CreatedAt, &r.UpdatedAt,
 			&r.EventTitle, &r.EventStart)
 	if err == sql.ErrNoRows {

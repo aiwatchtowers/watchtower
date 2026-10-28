@@ -186,7 +186,7 @@ func (db *DB) listCatchupRecaps(fromISO, toISO string, limit int) ([]CatchupItem
 		FROM meeting_recaps r
 		LEFT JOIN calendar_events e ON e.id = r.event_id
 		LEFT JOIN meeting_transcripts t ON t.id = r.transcript_id
-		WHERE r.created_at > ? AND r.created_at <= ? AND `+recapNotPrivate+`
+		WHERE r.created_at > ? AND r.created_at <= ? AND `+RecapNotPrivate+`
 		ORDER BY r.created_at ASC LIMIT ?`, fromISO, toISO, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing catchup recaps: %w", err)

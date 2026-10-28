@@ -983,7 +983,7 @@ func (db *DB) ListTranscriptsForIdeasAfter(floor int64, toISO string) ([]Transcr
 	query := `SELECT mt.id, COALESCE(mt.event_id, ''), mt.title,
 			COALESCE(r.recap_json, mt.summary_json, ''), mt.created_at
 		FROM meeting_transcripts mt
-		LEFT JOIN meeting_recaps r ON r.event_id = mt.event_id AND ` + recapNotPrivate + `
+		LEFT JOIN meeting_recaps r ON r.event_id = mt.event_id AND ` + RecapNotPrivate + `
 		WHERE mt.id > ? AND mt.private = 0`
 	args := []any{floor}
 	if toISO != "" {

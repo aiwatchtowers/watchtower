@@ -11,7 +11,7 @@
 > first. A new reader whose output can reach a model must skip private
 > recordings (MEETPRIV-02) and gets a guard test here.
 
-**Module:** `cmd/meeting_transcript.go`, `cmd/meeting_transcript_export.go`, `internal/meeting/export.go`, `internal/db/meeting_transcripts.go`, `internal/db/meeting_recaps.go` (`recapNotPrivate`, `GetMeetingRecapForAI`), `internal/db/migrations/00163_meeting_transcript_private.sql`, `internal/db/migrations/00164_meeting_private_kb_dirty.sql`, and the readers listed under MEETPRIV-02
+**Module:** `cmd/meeting_transcript.go`, `cmd/meeting_transcript_export.go`, `internal/meeting/export.go`, `internal/db/meeting_transcripts.go`, `internal/db/meeting_recaps.go` (`RecapNotPrivate`, also used by `internal/kb`; `GetMeetingRecapForAI`), `internal/db/migrations/00163_meeting_transcript_private.sql`, `internal/db/migrations/00164_meeting_private_kb_dirty.sql`, and the readers listed under MEETPRIV-02
 **Last full audit:** 2026-10-28 (created)
 **Owner approval:** board #906; feature note `docs/features/private-meetings.md`.
 
@@ -39,13 +39,13 @@
 
 **Status:** Enforced (Go).
 
-**Observable:** A private recording, and the `meeting_recaps` row it owns (`transcript_id` = a private id; a recap with no recording is kept), is absent from: the knowledge index sources `transcript` and `recap` (`Build` renders nil, `Keys` leaves it out; migration 00164's trigger marks both in `kb_dirty` when the flag flips, so a recording turned private is deleted from the index on the next pass and one turned public comes back); deleting a private recording deletes the recaps it owns (00164's `BEFORE DELETE` trigger) instead of letting the `ON DELETE SET NULL` foreign key turn them into readable recaps with no recording — a public recording's recap still outlives it; `SearchTranscripts` and so `list_transcripts` with a query and both `get_task_context` meetings paths (Jira and Linear); `list_transcripts` without a query (`ExcludePrivate`); `get_transcript` (answers `recording <id> is private`); a transcript's event recap in the transcript tools, the memory calendar episode and the notes prompt (`GetMeetingRecapForAI`); ideas mining (`ListTranscriptsForIdeasAfter`, including the recap join); catch-up (`ListCatchupMeetings`, both sub-queries); the automation reads `list_meeting_recaps` / `get_meeting_recap` (`ListMeetingRecaps`, `GetMeetingRecapByID`, `GetMeetingRecapByEventID`).
+**Observable:** A private recording, and the `meeting_recaps` row it owns (`transcript_id` = a private id; a recap with no recording is kept), is absent from: the knowledge index sources `transcript` and `recap` (`Build` renders nil, `Keys` leaves it out; migration 00164's trigger marks both in `kb_dirty` when the flag flips, so a recording turned private is deleted from the index on the next pass and one turned public comes back); deleting a private recording deletes the recaps it owns (00164's `BEFORE DELETE` trigger) instead of letting the `ON DELETE SET NULL` foreign key turn them into readable recaps with no recording — a public recording's recap still outlives it; `SearchTranscripts` and so `list_transcripts` with a query and both `get_task_context` meetings paths (Jira and Linear); `list_transcripts` without a query (`ListMeetingTranscripts` skips private rows by default; only the owner's CLI `transcript list` sets `IncludePrivate`); `get_transcript` (answers `recording <id> is private`); a transcript's event recap in the transcript tools, the memory calendar episode and the notes prompt (`GetMeetingRecapForAI`); ideas mining (`ListTranscriptsForIdeasAfter`, including the recap join); catch-up (`ListCatchupMeetings`, both sub-queries); the automation reads `list_meeting_recaps` / `get_meeting_recap` (`ListMeetingRecaps`, `GetMeetingRecapByID`, `GetMeetingRecapByEventID`).
 
 **Why locked:** Each of these readers ends in a prompt. A reader that forgets the filter sends the recording to a provider without any visible sign.
 
 **Test guards:**
 - `internal/db/meeting_private_test.go::TestMeetPriv02_SearchTranscriptsSkipsPrivate`
-- `internal/db/meeting_private_test.go::TestMeetPriv02_ListMeetingTranscriptsExcludePrivate`
+- `internal/db/meeting_private_test.go::TestMeetPriv02_ListMeetingTranscriptsSkipsPrivateByDefault`
 - `internal/db/meeting_private_test.go::TestMeetPriv02_IdeasReaderSkipsPrivate`
 - `internal/db/meeting_private_test.go::TestMeetPriv02_CatchupSkipsPrivate`
 - `internal/db/meeting_private_test.go::TestMeetPriv02_AutomationRecapReadsSkipPrivate`
@@ -59,7 +59,7 @@
 - `internal/memory/calendar_private_test.go::TestMeetPriv02_CalendarIngestSkipsPrivateRecap`
 - `internal/meeting/meeting_private_test.go::TestMeetPriv02_NotesPromptSkipsPrivateRecap`
 
-**Known limits:** a workbench agent with a shell can read the database or the recordings folder directly; the chat system prompt carries `schema.sql` as reference only (no raw-SQL tool is exposed).
+**Known limits:** the plain `GetMeetingRecap` does not filter (writers and the owner's CLI need the row) and must never feed a prompt. A workbench agent with a shell can read the database or the recordings folder directly; the chat system prompt carries `schema.sql` as reference only (no raw-SQL tool is exposed).
 
 **Locked since:** 2026-10-28
 

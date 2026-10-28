@@ -728,7 +728,7 @@ func runTranscriptList(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	rows, err := database.ListMeetingTranscripts(db.MeetingTranscriptFilter{EventID: transcriptListFlagEventID})
+	rows, err := database.ListMeetingTranscripts(db.MeetingTranscriptFilter{EventID: transcriptListFlagEventID, IncludePrivate: true})
 	if err != nil {
 		return err
 	}

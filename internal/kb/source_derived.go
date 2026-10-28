@@ -135,10 +135,6 @@ func (transcriptSource) Build(ctx context.Context, q Queryer, key string) (*Doc,
 // transcript (MEETPRIV-02).
 type recapSource struct{}
 
-// recapNotPrivate keeps a recap whose owning recording is not private; the
-// same predicate as internal/db's for alias r.
-const recapNotPrivate = `NOT EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = r.transcript_id AND pt.private = 1)`
-
 func (recapSource) Name() string { return "recap" }
 
 func (recapSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
@@ -148,7 +144,7 @@ func (recapSource) Changed(ctx context.Context, q Queryer, cursor string, _ time
 }
 
 func (recapSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
-	return queryStrings(ctx, q, `SELECT 'recap:' || r.id FROM meeting_recaps r WHERE `+recapNotPrivate)
+	return queryStrings(ctx, q, `SELECT 'recap:' || r.id FROM meeting_recaps r WHERE `+db.RecapNotPrivate)
 }
 
 // Build joins the event title in at render time. Accepted v1 limit: a later
@@ -161,7 +157,7 @@ func (recapSource) Build(ctx context.Context, q Queryer, key string) (*Doc, erro
 	}
 	var recapJSON, createdAt, eventID, eventTitle string
 	err := q.QueryRowContext(ctx, `SELECT r.recap_json, r.created_at, COALESCE(r.event_id,''), COALESCE(e.title,'')
-		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE r.id = ? AND `+recapNotPrivate, id).
+		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE r.id = ? AND `+db.RecapNotPrivate, id).
 		Scan(&recapJSON, &createdAt, &eventID, &eventTitle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

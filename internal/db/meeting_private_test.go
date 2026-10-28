@@ -73,19 +73,19 @@ func TestMeetPriv02_SearchTranscriptsSkipsPrivate(t *testing.T) {
 	assert.Equal(t, []int64{f.publicID}, ids)
 }
 
-func TestMeetPriv02_ListMeetingTranscriptsExcludePrivate(t *testing.T) {
+func TestMeetPriv02_ListMeetingTranscriptsSkipsPrivateByDefault(t *testing.T) {
 	d := openTestDB(t)
 	f := seedMeetPriv(t, d)
 
-	all, err := d.ListMeetingTranscripts(MeetingTranscriptFilter{})
+	shared, err := d.ListMeetingTranscripts(MeetingTranscriptFilter{})
 	require.NoError(t, err)
-	assert.Len(t, all, 2, "without ExcludePrivate the owner's own list keeps every recording")
-
-	shared, err := d.ListMeetingTranscripts(MeetingTranscriptFilter{ExcludePrivate: true})
-	require.NoError(t, err)
-	require.Len(t, shared, 1)
+	require.Len(t, shared, 1, "the default filter must leave private recordings out")
 	assert.Equal(t, f.publicID, shared[0].ID)
 	assert.False(t, shared[0].Private)
+
+	all, err := d.ListMeetingTranscripts(MeetingTranscriptFilter{IncludePrivate: true})
+	require.NoError(t, err)
+	assert.Len(t, all, 2, "IncludePrivate (the owner's own list) keeps every recording")
 }
 
 func TestMeetPriv02_IdeasReaderSkipsPrivate(t *testing.T) {

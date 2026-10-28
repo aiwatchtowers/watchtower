@@ -16,7 +16,7 @@ Board #906. Two owner asks on meeting recordings:
   - knowledge index sources `transcript` and `recap` (`internal/kb/source_derived.go`) — a recording turned private leaves the index on the next indexer pass (deleted document, not just skipped);
   - `SearchTranscripts` / `transcripts_fts` callers, `list_transcripts`, `get_transcript` (a private id answers `recording <id> is private`), `get_task_context` meetings;
   - ideas mining (`ListTranscriptsForIdeasAfter`), catch-up (`ListCatchupMeetings`), memory calendar ingest of recaps, automation `list_meeting_recaps` / `get_meeting_recap`;
-  - any other reader found later follows the same rule;
+  - any other reader found later follows the same rule. The filters are safe by default: `ListMeetingTranscripts` leaves private rows out unless `IncludePrivate` is set (only the owner's CLI `transcript list` sets it), and `internal/kb` filters recaps with the same exported `db.RecapNotPrivate`; the plain `GetMeetingRecap` (writers, the owner's CLI) never feeds a prompt;
   - deleting a private recording deletes the recaps it owns (a public recording's recap still outlives it).
 - **MEETPRIV-03 — linking keeps it private.** Linking a private recording to a calendar event (`MeetingTranscriptQueries.linkToEvent`) does not copy its text into `meeting_recaps`.
 - **MEETPRIV-04 — turning private on later.** Already generated recap/notes/chapters stay visible in the app but every reader above now skips them. Ideas and memory already mined from the recording are not unmined (stated in the toggle's confirmation). Turning private off re-enables the AI actions; nothing is generated automatically. Deleting the recording while it is private deletes its recap too.

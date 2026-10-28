@@ -95,7 +95,7 @@ func NewListTranscripts() *Tool {
 				return nil, err
 			}
 			transcripts, err := d.ListMeetingTranscripts(db.MeetingTranscriptFilter{
-				EventID: a.EventID, FromTime: from, ToTime: to, Limit: listLimit(a.Limit), ExcludePrivate: true,
+				EventID: a.EventID, FromTime: from, ToTime: to, Limit: listLimit(a.Limit),
 			})
 			if err != nil {
 				return nil, fmt.Errorf("listing transcripts: %w", err)
