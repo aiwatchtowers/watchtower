@@ -16,17 +16,20 @@ import (
 // search_knowledge and get_knowledge_document the wait for that pass. It
 // returns how many documents were removed.
 func DropPrivateRecording(ctx context.Context, d *db.DB, transcriptID int64) (int, error) {
+	// The artifact keys come from internal/db, which owns the chat-table
+	// reads (the code-question guard keeps them out of this package).
+	artifacts, err := d.MeetingChatArtifactKeys(transcriptID)
+	if err != nil {
+		return 0, err
+	}
 	n := 0
-	err := withTx(ctx, d, func(tx *sql.Tx) error {
+	err = withTx(ctx, d, func(tx *sql.Tx) error {
 		ids, err := queryStrings(ctx, tx, `SELECT 'transcript:' || ?
-			UNION ALL SELECT 'recap:' || id FROM meeting_recaps WHERE transcript_id = ?
-			UNION ALL SELECT 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
-				FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
-				WHERE c.context_type = 'meeting' AND c.context_id = CAST(? AS TEXT)`, transcriptID, transcriptID, transcriptID)
+			UNION ALL SELECT 'recap:' || id FROM meeting_recaps WHERE transcript_id = ?`, transcriptID, transcriptID)
 		if err != nil {
 			return fmt.Errorf("kb: listing documents of recording %d: %w", transcriptID, err)
 		}
-		for _, id := range ids {
+		for _, id := range append(ids, artifacts...) {
 			removed, err := deleteDoc(ctx, tx, id)
 			if err != nil {
 				return err

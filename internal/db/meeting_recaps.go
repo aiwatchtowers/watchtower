@@ -133,6 +133,29 @@ const RecapNotPrivate = `NOT EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE 
 // MEETPRIV-02). Exported so the knowledge index filters with the same text.
 const ChatNotPrivateMeeting = `NOT (COALESCE(c.context_type, '') = 'meeting' AND EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = CAST(c.context_id AS INTEGER) AND pt.private = 1))`
 
+// MeetingChatArtifactKeys lists the knowledge-index keys
+// ("chat_artifact:<conversation>:<key>") of the artifacts kept from the
+// meeting chat of recording transcriptID — the keys migration 00164's flip
+// trigger marks — so kb.DropPrivateRecording can delete them at once.
+func (db *DB) MeetingChatArtifactKeys(transcriptID int64) ([]string, error) {
+	rows, err := db.Query(`SELECT 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+		FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+		WHERE c.context_type = 'meeting' AND c.context_id = CAST(? AS TEXT)`, transcriptID)
+	if err != nil {
+		return nil, fmt.Errorf("listing meeting chat artifacts of recording %d: %w", transcriptID, err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scanning meeting chat artifact key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 // GetMeetingRecapForAI is GetMeetingRecap for a reader whose output reaches a
 // model: a recap owned by a private recording reads as none (MEETPRIV-02).
 func (db *DB) GetMeetingRecapForAI(eventID string) (*MeetingRecap, error) {
