@@ -10,8 +10,10 @@ import WatchtowerTestSupport
 @MainActor
 final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
 
-    private let privateEnvelope = Data(
-        #"{"transcript_id":7,"recap_ok":false,"recap_error":"","recap_skipped":"private"}"#.utf8)
+    private let privateEnvelope = Data((
+        #"{"transcript_id":7,"recap_ok":false,"recap_error":"private recording: recap skipped","recap_skipped":true,"#
+        + #""recap_skipped_reason":"private","chapters_ok":false,"chapters_skipped":true,"#
+        + #""chapters_skipped_reason":"private"}"#).utf8)
 
     private func makeCenter(recorder: FakeRecorder = FakeRecorder(),
                             runner: FakeCLIRunner,

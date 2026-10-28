@@ -16,9 +16,10 @@ import Foundation
 /// `recapSkipped` means the CLI deliberately skipped recap generation for a
 /// too-short transcript (`recapOK` is also false in that case) — an older-CLI
 /// envelope omits the key, decoding as `false`. A private save (MEETPRIV-01)
-/// skips it on purpose: `recap_skipped: "private"`, decoded as
-/// `recapSkipped` plus `recapSkippedPrivate`; any other string reads as a
-/// plain skip.
+/// skips recap and chapters on purpose: `recap_skipped`/`chapters_skipped`
+/// true with `recap_skipped_reason`/`chapters_skipped_reason` = "private"
+/// (`recapSkippedPrivate`/`chaptersSkippedPrivate`); the too-short skip
+/// carries no reason and no chapters keys.
 package struct TranscriptSaveResult: Decodable, Equatable {
     /// Outcome of the auto-chapter generation the CLI attempts after save.
     package enum ChaptersOutcome: Equatable {
@@ -32,6 +33,8 @@ package struct TranscriptSaveResult: Decodable, Equatable {
     package let recapError: String
     package let recapSkipped: Bool
     package let recapSkippedPrivate: Bool
+    package let chaptersSkipped: Bool
+    package let chaptersSkippedPrivate: Bool
     package let segmentsOK: Bool
     package let segmentsError: String?
     package let chapters: ChaptersOutcome
@@ -42,13 +45,16 @@ package struct TranscriptSaveResult: Decodable, Equatable {
         case recapOK = "recap_ok"
         case recapError = "recap_error"
         case recapSkipped = "recap_skipped"
+        case recapSkippedReason = "recap_skipped_reason"
+        case chaptersSkipped = "chapters_skipped"
+        case chaptersSkippedReason = "chapters_skipped_reason"
         case segmentsOK = "segments_ok"
         case segmentsError = "segments_error"
         case chaptersOK = "chapters_ok"
         case chaptersError = "chapters_error"
     }
 
-    /// `recap_skipped`'s value for a private save.
+    /// `recap_skipped_reason`/`chapters_skipped_reason` of a private save.
     package static let privateSkipReason = "private"
 
     package init(from decoder: Decoder) throws {
@@ -56,13 +62,12 @@ package struct TranscriptSaveResult: Decodable, Equatable {
         transcriptID = try container.decode(Int64.self, forKey: .transcriptID)
         recapOK = try container.decode(Bool.self, forKey: .recapOK)
         recapError = try container.decode(String.self, forKey: .recapError)
-        if let reason = try? container.decodeIfPresent(String.self, forKey: .recapSkipped) {
-            recapSkipped = true
-            recapSkippedPrivate = reason == Self.privateSkipReason
-        } else {
-            recapSkipped = try container.decodeIfPresent(Bool.self, forKey: .recapSkipped) ?? false
-            recapSkippedPrivate = false
-        }
+        recapSkipped = try container.decodeIfPresent(Bool.self, forKey: .recapSkipped) ?? false
+        recapSkippedPrivate = try container.decodeIfPresent(String.self, forKey: .recapSkippedReason)
+            == Self.privateSkipReason
+        chaptersSkipped = try container.decodeIfPresent(Bool.self, forKey: .chaptersSkipped) ?? false
+        chaptersSkippedPrivate = try container.decodeIfPresent(String.self, forKey: .chaptersSkippedReason)
+            == Self.privateSkipReason
         segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
         segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)
         if let chaptersOK = try container.decodeIfPresent(Bool.self, forKey: .chaptersOK) {

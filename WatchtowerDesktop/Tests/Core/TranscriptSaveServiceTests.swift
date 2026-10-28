@@ -446,8 +446,10 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
     func test_saveDecodesPrivateSkipEnvelope() async throws {
         let payload = """
-        {"transcript_id":9,"recap_ok":false,"recap_error":"","recap_skipped":"private",\
-        "chapters_ok":false,"chapters_skipped":"private"}
+        {"transcript_id":9,"recap_ok":false,"recap_error":"private recording: recap skipped",\
+        "recap_skipped":true,"recap_skipped_reason":"private","chapters_ok":false,\
+        "chapters_error":"private recording: chapters skipped","chapters_skipped":true,\
+        "chapters_skipped_reason":"private"}
         """
         let svc = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data(payload.utf8)))
 
@@ -458,6 +460,9 @@ final class TranscriptSaveServiceTests: XCTestCase {
         XCTAssertEqual(result.transcriptID, 9)
         XCTAssertTrue(result.recapSkipped)
         XCTAssertTrue(result.recapSkippedPrivate)
+        XCTAssertTrue(result.chaptersSkipped)
+        XCTAssertTrue(result.chaptersSkippedPrivate)
+        XCTAssertEqual(result.chapters, .failed)
     }
 
     func test_saveBoolRecapSkippedIsNotPrivate() async throws {
@@ -469,7 +474,9 @@ final class TranscriptSaveServiceTests: XCTestCase {
             eventID: nil, title: nil, langStatsJSON: "{}")
 
         XCTAssertTrue(result.recapSkipped)
-        XCTAssertFalse(result.recapSkippedPrivate)
+        XCTAssertFalse(result.recapSkippedPrivate, "the too-short skip carries no reason")
+        XCTAssertFalse(result.chaptersSkipped)
+        XCTAssertFalse(result.chaptersSkippedPrivate)
     }
 
     func test_setPrivateArgsAndDecode() async throws {
