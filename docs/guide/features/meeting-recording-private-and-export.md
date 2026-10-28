@@ -24,7 +24,7 @@ A private recording is transcribed on your Mac like any other, and saved without
 
 The assistant never finds it either: chat search, knowledge search, ideas, Catch Up and Memory skip it. Linking it to a calendar event does not copy its text into the event's recap.
 
-You can still read the transcript, name speakers, play the audio, write your own notes and turn action items into targets.
+You can still read the transcript, name speakers, play the audio and write your own notes. An action item's **Target** button is off too: targets feed the briefing, the day plan and the chat.
 
 ### Turning private on or off later
 
@@ -41,7 +41,8 @@ A Workbench agent that can run shell commands can still read the database or the
 ### Make a recording private
 
 - **Before it starts:** open **Record**'s menu (the arrow beside it) and choose **Record Privately**.
-- **While it records or waits in the queue:** click the lock on its pill. A closed lock means private. The lock disappears once the recording is being saved.
+- **While it records or waits in the queue:** click the lock on its pill. A closed lock means private. Once the recording is being saved the lock can't be clicked: a private recording keeps a closed lock, a regular one shows none.
+- **After a crash:** a recovered recording shows a lock on its pill too. A recording whose choice Watchtower can't tell (an older build's, or one whose start was never written down) comes back private; open its lock before **Transcribe** if it should get a recap.
 - **After it is saved:** press **Private** in the recording's header.
 - **Every time:** turn on **Record meetings privately by default** in **Settings → Meetings**. **Record**, Join's auto-record and iPhone recordings then start private.
 
@@ -67,13 +68,14 @@ Open the recording and choose from **Export** in its header:
 - **Save as Subtitles (SRT)…**: numbered cues for a video player.
 - **Save as JSON…**: the segments with times and speakers, for your own scripts.
 
-Deleted utterances are never exported. Saved files are readable only by your user. Export runs on your Mac, so private recordings export too.
+Deleted utterances are never exported. A short line under the header confirms the copy or the saved file's name. Export runs on your Mac, so private recordings export too.
 
 ## When it's empty or wrong
 
 - **Save as Subtitles (SRT)… is greyed out:** the recording has no timed utterances (an older recording). Use **Re-transcribe** under its transcript in the event, or export as text.
 - **"Private recording — not sent to AI" where you expected a recap:** the recording is private. Turn **Private** off in its header, then press **Generate recap**.
-- **A lock does nothing on a pill:** the recording is already being saved; change it with **Private** in the recording's header instead.
+- **The lock on a pill can't be clicked:** the recording is already being saved; once it's saved, change it with **Private** in the recording's header.
+- **A recovered recording saved without a recap:** it came back private because its choice was unknown. Turn **Private** off in its header, then press **Generate recap**.
 
 ## Related
 

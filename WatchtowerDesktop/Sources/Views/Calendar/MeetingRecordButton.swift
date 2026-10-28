@@ -9,7 +9,7 @@ import WatchtowerCore
 /// capturing or system-audio capture is unsupported. A previous recording
 /// still being transcribed does NOT disable it — post-processing is queued,
 /// not exclusive. Record's menu holds **Record Privately** (MEETPRIV); the
-/// plain click follows Settings → Transcription's private default.
+/// plain click follows Settings → Meetings' private default.
 struct MeetingRecordButton: View {
     let eventID: String?
     let title: String?

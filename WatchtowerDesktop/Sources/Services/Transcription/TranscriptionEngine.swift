@@ -126,7 +126,7 @@ struct TranscriptionConfig: Equatable {
     var speechGate: Bool = true
     /// A recording started without an explicit choice (the plain Record
     /// button, Join's auto-record, a phone recording) is private: never sent
-    /// to an AI provider (MEETPRIV). Settings → Transcription, default off.
+    /// to an AI provider (MEETPRIV). Settings → Meetings, default off.
     var privateByDefault: Bool = false
     static let sampleRate = 16_000
     static let privateByDefaultKey = "transcription.privateByDefault"

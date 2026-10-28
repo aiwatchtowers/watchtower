@@ -125,7 +125,7 @@ struct MeetingsSettings: View {
                 .help("Pressing Join on a calendar event also starts an event-linked recording (unless one is already running)")
 
             Toggle("Record meetings privately by default", isOn: $recordPrivatelyByDefault)
-                .help("Record and Join's auto-record start private recordings: saved without a recap "
+                .help("Record, Join's auto-record and iPhone recordings start private: saved without a recap "
                     + "and never sent to AI. Record's menu always offers Record Privately; "
                     + "the lock while recording changes it for one recording.")
 
