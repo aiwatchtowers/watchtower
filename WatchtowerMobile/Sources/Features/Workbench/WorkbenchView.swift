@@ -51,17 +51,20 @@ struct WorkbenchView: View {
         .onChange(of: segments) { if !segments.contains(segment) { segment = .sessions } }
         .toolbar {
             ToolbarItem(placement: .principal) { switcher }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    if segment == .board {
-                        addingTarget = true
-                    } else {
-                        startingSession = true
+            // Automations only runs what the Mac has: nothing to add there.
+            if segment != .automations {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        if segment == .board {
+                            addingTarget = true
+                        } else {
+                            startingSession = true
+                        }
+                    } label: {
+                        Label(segment == .board ? "New target" : "New session", systemImage: "plus")
                     }
-                } label: {
-                    Label(segment == .board ? "New target" : "New session", systemImage: "plus")
+                    .disabled(replica.snapshot.workbench(workbenchID) == nil)
                 }
-                .disabled(replica.snapshot.workbench(workbenchID) == nil)
             }
         }
         .sheet(isPresented: $addingTarget) {
