@@ -138,7 +138,9 @@ func (g *ClaudeGenerator) ValidateModel() (err error) {
 
 	start := time.Now()
 	var resp *cliResponse
-	defer func() { recordClaude(ctx, g.modelStrong, resp, start, err, validatePrompt, resultOf(resp)) }()
+	defer func() {
+		recordClaude(ctx, g.modelStrong, resp, cmd.Process != nil, start, err, validatePrompt, resultOf(resp))
+	}()
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -355,7 +357,7 @@ func (g *ClaudeGenerator) runClaude(ctx context.Context, model, prompt string, a
 
 	start := time.Now()
 	var envelope *cliResponse // the parsed result envelope, failed runs included
-	defer func() { recordClaude(ctx, model, envelope, start, err, prompt, resultOf(envelope)) }()
+	defer func() { recordClaude(ctx, model, envelope, cmd.Process != nil, start, err, prompt, resultOf(envelope)) }()
 
 	output, err := cmd.Output()
 	if err != nil {

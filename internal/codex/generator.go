@@ -127,23 +127,25 @@ func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args [
 
 	start := time.Now()
 	output, err := outputRemovingPrompt(cmd, removePrompt)
+	// The usage events codex printed count on every path, failures too.
+	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	if err != nil {
-		recordCodexCall(ctx, model, start, nil, prompt, "", false)
+		recordCodexCall(ctx, model, start, reported, ran, prompt, "", false)
 		return "", nil, runError(model, output, err, stderrBuf.String(), codexBin)
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
 	result, usage, parseErr := parseJSONLOutput(output)
 	if parseErr != nil {
-		recordCodexCall(ctx, model, start, nil, prompt, "", false)
+		recordCodexCall(ctx, model, start, reported, ran, prompt, "", false)
 		return "", nil, parseErr
 	}
 
 	if strings.TrimSpace(result) == "" {
-		recordCodexCall(ctx, model, start, usage, prompt, "", false)
+		recordCodexCall(ctx, model, start, reported, ran, prompt, "", false)
 		return "", nil, fmt.Errorf("codex returned empty result")
 	}
-	recordCodexCall(ctx, model, start, usage, prompt, result, true)
+	recordCodexCall(ctx, model, start, reported, ran, prompt, result, true)
 
 	digestUsage := &digest.Usage{
 		Model:        model,
@@ -281,15 +283,35 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 	return lastContent, totalUsage, nil
 }
 
-// recordCodexCall records one codex run in the LLM ledger: the JSONL's
-// usage with the cached input split out as cache read, or — when the run
-// reported none — length/4 estimates of prompt and output.
-func recordCodexCall(ctx context.Context, model string, start time.Time, u *CodexUsage, prompt, output string, ok bool) {
-	c := llmusage.Call{Provider: "codex", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
-	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0) {
+// jsonlUsage sums the usage events in codex's JSONL output; nil when it
+// printed none (the ledger then estimates a run that happened).
+func jsonlUsage(output []byte) *CodexUsage {
+	var total *CodexUsage
+	for line := range bytes.SplitSeq(output, []byte("\n")) {
+		var event CodexEvent
+		if json.Unmarshal(bytes.TrimSpace(line), &event) != nil || event.Usage == nil {
+			continue
+		}
+		if total == nil {
+			total = &CodexUsage{}
+		}
+		total.add(event.Usage)
+	}
+	return total
+}
+
+// recordCodexCall records one codex run in the LLM ledger: the reported
+// usage (u, summed from the JSONL) as it is, zeros included, with the cached
+// input split out as cache read; a run that never started (ran false) as a
+// failed call with no tokens; and only a run that ran and reported no usage
+// with length/4 estimates of prompt and output.
+func recordCodexCall(ctx context.Context, model string, start time.Time, u *CodexUsage, ran bool, prompt, output string, ok bool) {
+	c := llmusage.Call{Provider: "codex", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok && ran}
+	switch {
+	case u != nil:
 		cached := int64(min(u.CachedInputTokens, u.InputTokens))
 		c.Input, c.CacheRead, c.Output = int64(u.InputTokens)-cached, cached, int64(u.OutputTokens)
-	} else {
+	case ran:
 		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
 	}
 	llmusage.Record(ctx, c)

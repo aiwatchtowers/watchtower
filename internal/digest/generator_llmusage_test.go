@@ -121,10 +121,60 @@ func TestClaudeGeneratorErrorEnvelopeRecordsFailed(t *testing.T) {
 	require.Len(t, calls, 1)
 	c := calls[0]
 	assert.False(t, c.OK)
-	assert.True(t, c.Estimated)
+	assert.False(t, c.Estimated, "a parsed envelope is recorded as it is")
 	assert.Equal(t, "opus", c.Model, "no modelUsage: the requested model")
-	assert.Equal(t, llmusage.EstimateTokens("a system prompt"+"a user message"), c.Input)
+	assert.Zero(t, c.Input+c.Output+c.CacheRead+c.CacheWrite5m+c.CacheWrite1h)
 	assert.Nil(t, c.ReportedCostUSD)
+}
+
+func TestClaudeGeneratorZeroUsageEnvelopeIsNotEstimated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sink := collectCalls(t)
+	envelope := `{"type":"result","subtype":"success","result":"cached answer","total_cost_usd":0,` +
+		`"usage":{"input_tokens":0,"output_tokens":0}}`
+	gen := NewClaudeGenerator("haiku", "opus", ledgerStub(t, envelope, 0))
+	gen.SetIsolatedChild()
+
+	_, _, _, err := gen.Generate(context.Background(), "a system prompt", "a user message", "")
+	require.NoError(t, err)
+	calls := sink.recorded()
+	require.Len(t, calls, 1)
+	assert.True(t, calls[0].OK)
+	assert.False(t, calls[0].Estimated, "reported zeros stay zeros")
+	assert.Zero(t, calls[0].Input+calls[0].Output)
+	assert.Nil(t, calls[0].ReportedCostUSD)
+}
+
+func TestClaudeGeneratorBinaryNotFoundRecordsNoTokens(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sink := collectCalls(t)
+	gen := NewClaudeGenerator("haiku", "opus", unrunnableCLI(t, "claude"))
+	gen.SetIsolatedChild()
+
+	_, _, _, err := gen.Generate(context.Background(), "a system prompt", "a user message", "")
+	require.Error(t, err)
+	calls := sink.recorded()
+	require.Len(t, calls, 1)
+	c := calls[0]
+	assert.False(t, c.OK)
+	assert.False(t, c.Estimated, "a child that never started sent nothing")
+	assert.Zero(t, c.Input+c.Output)
+	assert.Nil(t, c.ReportedCostUSD)
+}
+
+func TestClaudeGeneratorNoEnvelopeIsEstimated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	sink := collectCalls(t)
+	gen := NewClaudeGenerator("haiku", "opus", ledgerStub(t, "not json", 1))
+	gen.SetIsolatedChild()
+
+	_, _, _, err := gen.Generate(context.Background(), "a system prompt", "a user message", "")
+	require.Error(t, err)
+	calls := sink.recorded()
+	require.Len(t, calls, 1)
+	assert.False(t, calls[0].OK)
+	assert.True(t, calls[0].Estimated, "the child ran and reported nothing")
+	assert.Equal(t, llmusage.EstimateTokens("a system prompt"+"a user message"), calls[0].Input)
 }
 
 func TestClaudeGeneratorUnsplitCacheWriteIsFiveMinute(t *testing.T) {
@@ -181,4 +231,14 @@ func TestValidateModelRecordsProbe(t *testing.T) {
 	assert.Equal(t, "opus", calls[0].Model)
 	assert.Equal(t, int64(3), calls[0].Input)
 	assert.True(t, calls[0].OK)
+}
+
+// unrunnableCLI is an existing, non-executable file: the binary resolver
+// keeps it (a missing path would fall back to a real claude on PATH) and the
+// start fails before any child runs.
+func unrunnableCLI(t *testing.T, name string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(p, []byte("not a program"), 0o600))
+	return p
 }

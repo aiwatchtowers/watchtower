@@ -110,9 +110,29 @@ func TestAIClientQuerySyncErrorEnvelopeRecordsFailed(t *testing.T) {
 	calls := sink.recorded()
 	require.Len(t, calls, 1)
 	assert.False(t, calls[0].OK)
-	assert.True(t, calls[0].Estimated)
+	assert.False(t, calls[0].Estimated, "a parsed envelope is recorded as it is, zeros included")
 	assert.Equal(t, "sonnet", calls[0].Model)
-	assert.Equal(t, llmusage.EstimateTokens("sys"+"question"), calls[0].Input)
+	assert.Zero(t, calls[0].Input+calls[0].Output)
+}
+
+func TestAIClientNeverStartedRecordsNoTokens(t *testing.T) {
+	sink := collectCalls(t)
+	c := NewClient("sonnet", "", "")
+	c.claudeCmd = unrunnableCLI(t, "claude")
+
+	_, _, err := c.QuerySync(context.Background(), "sys", "question", "")
+	require.Error(t, err)
+	_, err = drain(c.Query(context.Background(), "sys", "question", ""))
+	require.Error(t, err)
+
+	calls := sink.recorded()
+	require.Len(t, calls, 2, "QuerySync and Query each record the failed start")
+	for _, call := range calls {
+		assert.False(t, call.OK)
+		assert.False(t, call.Estimated, "a child that never started sent nothing")
+		assert.Zero(t, call.Input+call.Output)
+		assert.Nil(t, call.ReportedCostUSD)
+	}
 }
 
 // drain reads a Query's channels to the end and returns the text and the
@@ -167,4 +187,14 @@ func TestAIClientQueryCancelledRecordsEstimated(t *testing.T) {
 	assert.True(t, c0.Estimated)
 	assert.Equal(t, llmusage.EstimateTokens("sys"+"question"), c0.Input)
 	assert.Equal(t, llmusage.EstimateTokens("partial answer"), c0.Output)
+}
+
+// unrunnableCLI is an existing, non-executable file: the binary resolver
+// keeps it (a missing path would fall back to a real claude on PATH) and the
+// start fails before any child runs.
+func unrunnableCLI(t *testing.T, name string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(p, []byte("not a program"), 0o600))
+	return p
 }

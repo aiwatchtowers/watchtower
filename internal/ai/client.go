@@ -716,7 +716,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			if lastResult != nil {
 				u = &lastResult.resultUsage
 			}
-			recordClaude(ctx, c.model, u, start, runErr, systemPrompt+userMessage, streamed.String())
+			recordClaude(ctx, c.model, u, cmd.Process != nil, start, runErr, systemPrompt+userMessage, streamed.String())
 		}()
 		fail := func(err error) {
 			runErr = err
@@ -861,7 +861,9 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	// Every run is recorded in the LLM usage ledger, failed ones included.
 	start := time.Now()
 	var envelope *resultUsage
-	defer func() { recordClaude(ctx, c.model, envelope, start, err, systemPrompt+userMessage, text) }()
+	defer func() {
+		recordClaude(ctx, c.model, envelope, cmd.Process != nil, start, err, systemPrompt+userMessage, text)
+	}()
 
 	output, err := cmd.Output()
 	if err != nil {

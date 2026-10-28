@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -156,4 +158,69 @@ func TestCodexClientQuerySyncRecords(t *testing.T) {
 	require.Equal(t, int64(42), got[0].Input)
 	require.Equal(t, int64(17), got[0].Output)
 	require.True(t, got[0].OK)
+}
+
+func TestCodexGeneratorFailureKeepsReportedUsage(t *testing.T) {
+	calls := captureCalls(t)
+	// The turn ran and reported usage, then codex exited non-zero.
+	stdout := `{"type":"turn.completed","usage":{"input_tokens":50,"cached_input_tokens":20,"output_tokens":9}}`
+	bin := fakeCodexScript(t, stdout, "boom", 3)
+
+	_, _, _, err := NewCodexGenerator("gpt-light", "gpt-strong", bin).Generate(context.Background(), "sys", "msg", "")
+	require.Error(t, err)
+	got := calls.all()
+	require.Len(t, got, 1)
+	require.False(t, got[0].OK)
+	require.False(t, got[0].Estimated, "the JSONL's usage is the call's, not an estimate")
+	require.Equal(t, int64(30), got[0].Input)
+	require.Equal(t, int64(20), got[0].CacheRead)
+	require.Equal(t, int64(9), got[0].Output)
+}
+
+func TestCodexZeroUsageIsNotEstimated(t *testing.T) {
+	calls := captureCalls(t)
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"Hello"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0}}`,
+	}, "\n")
+	bin := fakeCodexScript(t, stdout, "", 0)
+
+	_, _, err := NewClient("gpt-x", "", bin).QuerySync(context.Background(), "system", "user", "")
+	require.NoError(t, err)
+	got := calls.all()
+	require.Len(t, got, 1)
+	require.False(t, got[0].Estimated, "reported zeros stay zeros")
+	require.Zero(t, got[0].Input+got[0].Output)
+}
+
+func TestCodexNeverStartedRecordsNoTokens(t *testing.T) {
+	calls := captureCalls(t)
+	missing := unrunnableCLI(t, "codex")
+
+	_, _, _, err := NewCodexGenerator("gpt-light", "gpt-strong", missing).Generate(context.Background(), "sys", "msg", "")
+	require.Error(t, err)
+	_, _, err = NewClient("gpt-x", "", missing).QuerySync(context.Background(), "system", "user", "")
+	require.Error(t, err)
+	textCh, errCh, sidCh := NewClient("gpt-x", "", missing).Query(context.Background(), "s", "u", "")
+	drain(textCh)
+	drain(errCh)
+	drain(sidCh)
+
+	got := calls.all()
+	require.Len(t, got, 3, "Generate, QuerySync and Query each record the failed start")
+	for _, c := range got {
+		require.False(t, c.OK)
+		require.False(t, c.Estimated, "a run that never started sent nothing")
+		require.Zero(t, c.Input+c.Output)
+	}
+}
+
+// unrunnableCLI is an existing, non-executable file: the binary resolver
+// keeps it (a missing path would fall back to a real codex on PATH) and the
+// start fails before any child runs.
+func unrunnableCLI(t *testing.T, name string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(p, []byte("not a program"), 0o600))
+	return p
 }

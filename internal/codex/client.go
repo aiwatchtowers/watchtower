@@ -294,25 +294,26 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		var stderrBuf strings.Builder
 		cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
+		start := time.Now()
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
+			recordCodexCall(ctx, c.model, start, nil, false, systemPrompt+userMessage, "", false)
 			errCh <- fmt.Errorf("creating stdout pipe: %w", err)
 			return
 		}
-
 		if err := cmd.Start(); err != nil {
+			recordCodexCall(ctx, c.model, start, nil, false, systemPrompt+userMessage, "", false)
 			errCh <- classifyError(err, "", c.codexCmd)
 			return
 		}
 		// One ledger row per run, recorded on every return below: the
-		// turn's usage events summed, else estimates of the prompt and the
-		// streamed text.
-		start := time.Now()
-		var usage CodexUsage
+		// turn's usage events summed (usage stays nil without one), else
+		// estimates of the prompt and the streamed text.
+		var usage *CodexUsage
 		var answer strings.Builder
 		ok := false
 		defer func() {
-			recordCodexCall(ctx, c.model, start, &usage, systemPrompt+userMessage, answer.String(), ok)
+			recordCodexCall(ctx, c.model, start, usage, true, systemPrompt+userMessage, answer.String(), ok)
 		}()
 
 		scanner := bufio.NewScanner(stdout)
@@ -343,6 +344,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				errLines = append(append(errLines, line...), '\n')
 			}
 			if event.Usage != nil {
+				if usage == nil {
+					usage = &CodexUsage{}
+				}
 				usage.add(event.Usage)
 			}
 
@@ -421,17 +425,19 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 	start := time.Now()
 	output, err := outputRemovingPrompt(cmd, removePrompt)
+	// The usage events codex printed count on every path, failures too.
+	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	if err != nil {
-		recordCodexCall(ctx, c.model, start, nil, systemPrompt+userMessage, "", false)
+		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
 		return "", nil, runError(c.model, output, err, stderrBuf.String(), c.codexCmd)
 	}
 
 	result, codexUsage, parseErr := parseJSONLOutput(output)
 	if parseErr != nil {
-		recordCodexCall(ctx, c.model, start, nil, systemPrompt+userMessage, "", false)
+		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
 		return "", nil, parseErr
 	}
-	recordCodexCall(ctx, c.model, start, codexUsage, systemPrompt+userMessage, result, true)
+	recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, result, true)
 
 	usage := &ai.Usage{
 		InputTokens:  codexUsage.InputTokens,
