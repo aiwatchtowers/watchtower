@@ -2453,3 +2453,12 @@ Entry format:
 - weak-dimension: 7. The new fast-lane tests take cycles at clean times; none places a `publishSoon` at a full-tick boundary or a write inside a running cycle.
 - rule-gap (candidate, dim 7): *a change to a coalescing scheduler is tested at each boundary where two triggers meet (fast request vs due full tick, request during a running cycle), not only with each trigger on its own.*
 - outcome: TBD
+
+## 2026-10-28 — feature/mobile-run-automations (ask #692: run a workbench's automations from the iPhone — `automation_run` relay kind under the start-sessions grant, `AutomationRunHandler`, `QuickRunCenter.runFromPhone`, `workbench` slice `automations`, phone Automations segment with an asks-first dialog; 24 files; panel: prosecutor (9) + codex (0), 3 specialists DOWN (not installed); judge verified against 2006e45d7 by reading and grep, no runs) — verdict: changes-needed
+
+- contested (F1, held major): the owner approved the phone-side "Run X?" dialog in ask #692, so the behaviour is not in question, but AUTO-06's inventory text still says a `confirm: true` quick run happens only after **Run** in its sheet or alert on the Mac, and the code now says "no sheet on the Mac". An owner-approved change to an inventory contract still has to amend the inventory entry, citing the ask, in the same PR; the approval does not replace the amendment. [2]
+- false-positive (dismissed): F2 "the wire carries no proof of the phone's confirmation". A `confirmed: true` flag would be set by the same authenticated, granted phone code that shows the dialog. It proves nothing the grant and the E2E sender check don't already prove, and older phones don't know the kind at all. [5]
+- miss: codex reported "consistent" again. The inventory text and the `lastError` sharing (F3) were found only by the prosecutor. A fix for F3 was already uncommitted in the worktree while the judge ran.
+- weak-dimension: 7. The refusal test's name promises "with the CLI message" but it asserts only the reason. Nil-center, invalid-params, parse_error and timeout paths have no test.
+- rule-gap (candidate, dim 2): *when a change is approved by an owner ask and touches an inventory sentence, the PR amends that sentence and cites the ask. A reviewer greps `docs/inventory/` for the behaviour's key phrase (here "confirm: true") whenever a new caller bypasses a guard.*
+- outcome: TBD

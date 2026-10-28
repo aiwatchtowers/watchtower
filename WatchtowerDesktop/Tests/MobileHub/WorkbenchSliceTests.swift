@@ -55,7 +55,7 @@ final class WorkbenchSliceTests: XCTestCase {
         assertWireShape(
             payload, matches: try SliceJSON.kitFixture("workbench/workbench.json"),
             optionalKeys: ["name_clipped", "description_clipped", "folder_display_clipped", "branch_clipped",
-                           "last_session_activity", "targets_more"]
+                           "last_session_activity", "targets_more", "automations"]
         )
         XCTAssertEqual(payload["description_clipped"] as? Bool, true)
         XCTAssertEqual((payload["description"] as? String)?.count, 1000)
@@ -63,6 +63,42 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertNil(payload["targets_more"], "a board inside its window carries no targets_more")
         XCTAssertEqual(payload["branch"] as? String, "feature/acme-export")
         XCTAssertEqual(payload["changes"] as? Int, 3)
+    }
+
+    /// Ask #692: each workbench carries its own recipes in quick run's order
+    /// (manual and button first), resolved and in the Kit's shape; personal
+    /// and removed recipes are left out, and a workbench with none has no key.
+    func testAutomationsArePublishedPerWorkbench() throws {
+        let (acme, notes) = try dbPool.write { db in
+            let acme = try TestDatabase.insertWorkbench(db, name: "Acme", folder: home + "/Projects/acme")
+            let notes = try TestDatabase.insertWorkbench(db, name: "Notes", folder: home + "/Projects/notes")
+            _ = try TestDatabase.insertAutomation(db, slug: "nightly", name: "Nightly triage", triggerKind: "schedule",
+                                                  triggerSpec: #"{"schedule":"0 3 * * *"}"#, workbenchID: acme)
+            let release = try TestDatabase.insertAutomation(
+                db, slug: "release", name: "Release notes", triggerKind: "button",
+                triggerSpec: #"{"button":{"label":"Release","confirm":true}}"#, workbenchID: acme
+            )
+            try TestDatabase.insertAutomationRun(db, automationID: release, trigger: "button",
+                                                 finishedAt: "2023-11-14T22:13:20Z")
+            _ = try TestDatabase.insertAutomation(db, slug: "off", name: "Old", removedAt: "2026-01-01T00:00:00Z",
+                                                  workbenchID: acme)
+            _ = try TestDatabase.insertAutomation(db, slug: "mine", name: "Personal")
+            return (acme, notes)
+        }
+        let payloads = try payloads(slice())
+        let byID = Dictionary(uniqueKeysWithValues: payloads.map { ($0["id"] as? Int64 ?? -1, $0) })
+        XCTAssertNil(byID[notes]?["automations"], "a workbench with no recipe has no automations key")
+        let list = try XCTUnwrap(byID[acme]?["automations"] as? [[String: Any]])
+        XCTAssertEqual(list.map { $0["name"] as? String }, ["Release notes", "Nightly triage"])
+        let fixture = try XCTUnwrap(try SliceJSON.kitFixture("workbench/workbench.json")["automations"] as? [[String: Any]])
+        assertWireShape(list[0], matches: fixture[0])
+        XCTAssertEqual(list[0]["kind"] as? String, "button")
+        XCTAssertEqual(list[0]["asks_first"] as? Bool, true)
+        XCTAssertEqual(list[0]["state"] as? String, "runnable")
+        XCTAssertEqual(list[0]["last_run_status"] as? String, "succeeded")
+        XCTAssertEqual(list[0]["last_run_at"] as? Int, 1_700_000_000)
+        XCTAssertEqual(list[1]["kind"] as? String, "scheduled")
+        XCTAssertNil(list[1]["last_run_status"], "no run yet: no key")
     }
 
     /// Board #399, D6: every record names the Mac's default agent, the
