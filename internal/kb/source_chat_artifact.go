@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/net/html"
+
+	"watchtower/internal/db"
 )
 
 // chatArtifactSource renders the artifacts the owner kept from AI chats
@@ -22,14 +24,17 @@ func (chatArtifactSource) Name() string { return "chat_artifact" }
 const chatArtifactPrefix = "chat_artifact:"
 
 // keptJoin selects only rows whose kept version still exists, outside
-// workbench code questions: a `code_question` conversation never surfaces
+// workbench code questions — a `code_question` conversation never surfaces
 // outside its Questions tab (spec 2026-10-02 §9.4; the code-question guard in
-// internal/tools pins this filter).
+// internal/tools pins this filter) — and outside the meeting chat of a
+// private recording (MEETPRIV-02; the flip marks these keys in kb_dirty,
+// migration 00164).
 const keptJoin = `FROM chat_knowledge_artifacts k
 	JOIN chat_artifacts a ON a.conversation_id = k.conversation_id
 		AND a.artifact_key = k.artifact_key AND a.version = k.version
 	JOIN chat_conversations c ON c.id = k.conversation_id
-		AND COALESCE(c.context_type, '') != 'code_question'`
+		AND COALESCE(c.context_type, '') != 'code_question'
+		AND ` + db.ChatNotPrivateMeeting
 
 func (chatArtifactSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
 	keys, next, err := changedByColumn(ctx, q, cursor,

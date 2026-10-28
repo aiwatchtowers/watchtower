@@ -2285,14 +2285,20 @@ BEGIN
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END;
 
--- A recording turned private (or back) re-renders its document and the recaps
--- it owns; a private one renders as nil and leaves the index (see 00164).
+-- A recording turned private (or back) re-renders its document, the recaps it
+-- owns and the artifacts kept from its meeting chat; a private one renders as
+-- nil and leaves the index (see 00164).
 CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
 WHEN OLD.private != NEW.private
 BEGIN
     INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
     INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key)
+        SELECT 'chat_artifact', 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+        FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+        WHERE c.context_type = 'meeting' AND c.context_id = CAST(NEW.id AS TEXT)
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END;
 

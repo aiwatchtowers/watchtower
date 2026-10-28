@@ -9,16 +9,20 @@ import (
 )
 
 // DropPrivateRecording deletes, now, the indexed documents of a recording just
-// turned private: its transcript and every recap it owns (MEETPRIV-04). The
-// kb_dirty marks of the flip stay, so the indexer's next pass re-renders the
-// same keys — as nothing while the recording is private, back again once it
-// is not; this only spares search_knowledge and get_knowledge_document the
-// wait for that pass. It returns how many documents were removed.
+// turned private: its transcript, every recap it owns and the artifacts kept
+// from its meeting chat (MEETPRIV-04). The kb_dirty marks of the flip stay, so
+// the indexer's next pass re-renders the same keys — as nothing while the
+// recording is private, back again once it is not; this only spares
+// search_knowledge and get_knowledge_document the wait for that pass. It
+// returns how many documents were removed.
 func DropPrivateRecording(ctx context.Context, d *db.DB, transcriptID int64) (int, error) {
 	n := 0
 	err := withTx(ctx, d, func(tx *sql.Tx) error {
 		ids, err := queryStrings(ctx, tx, `SELECT 'transcript:' || ?
-			UNION ALL SELECT 'recap:' || id FROM meeting_recaps WHERE transcript_id = ?`, transcriptID, transcriptID)
+			UNION ALL SELECT 'recap:' || id FROM meeting_recaps WHERE transcript_id = ?
+			UNION ALL SELECT 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+				FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+				WHERE c.context_type = 'meeting' AND c.context_id = CAST(? AS TEXT)`, transcriptID, transcriptID, transcriptID)
 		if err != nil {
 			return fmt.Errorf("kb: listing documents of recording %d: %w", transcriptID, err)
 		}

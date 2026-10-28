@@ -139,3 +139,59 @@ func TestMeetPriv04_DropPrivateRecordingLeavesSearchNow(t *testing.T) {
 	assert.False(t, docExists(t, d, "transcript:1"))
 	assertReindexMatches(t, d)
 }
+
+// TestMeetPriv02_PrivateMeetingChatArtifactsLeaveIndex pins that an artifact
+// kept from the meeting chat of a recording turned private leaves the index on
+// the next pass (the flip's kb_dirty mark, no cursor moves) and right away
+// through DropPrivateRecording, comes back once private is off, and that a
+// plain chat's artifact is untouched.
+func TestMeetPriv02_PrivateMeetingChatArtifactsLeaveIndex(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedMeetPrivKB(t, d)
+	exec(t, d, `INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES
+		(5, 'Public sync chat', 'meeting', '1', 1, 1),
+		(6, 'Plain chat', NULL, NULL, 1, 1)`)
+	exec(t, d, `INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (1, 5, 'assistant', 'x', 1), (2, 6, 'assistant', 'y', 1)`)
+	exec(t, d, `INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, title, content, created_at) VALUES
+		(5, 1, 'plan', 1, 'document', 'Meeting plan', 'kiwi rollout from the meeting', 1),
+		(6, 2, 'plan', 1, 'document', 'Plain plan', 'kiwi rollout from a plain chat', 1)`)
+	exec(t, d, `INSERT INTO chat_knowledge_artifacts (conversation_id, artifact_key, version, kept_at) VALUES
+		(5, 'plan', 1, '2026-10-24T09:00:00Z'), (6, 'plan', 1, '2026-10-24T10:00:00Z')`)
+	// The plain artifact is kept later, so the change cursor moves past the
+	// meeting one: only the flip's kb_dirty mark can bring it back.
+	sources := []string{"transcript", "recap", "chat_artifact"}
+	run := func() {
+		t.Helper()
+		_, err := Run(ctx, d, Options{Now: testNow(), Sources: sources})
+		require.NoError(t, err)
+	}
+	run()
+	require.True(t, docExists(t, d, "chat_artifact:5:plan"))
+
+	// The Desktop path: a bare flag write, then the next pass.
+	exec(t, d, `UPDATE meeting_transcripts SET private = 1 WHERE id = 1`)
+	run()
+	assert.False(t, docExists(t, d, "chat_artifact:5:plan"))
+	assert.True(t, docExists(t, d, "chat_artifact:6:plan"))
+	keys, err := chatArtifactSource{}.Keys(ctx, d)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"chat_artifact:6:plan"}, keys)
+	doc, err := chatArtifactSource{}.Build(ctx, d, "chat_artifact:5:plan")
+	require.NoError(t, err)
+	assert.Nil(t, doc)
+
+	exec(t, d, `UPDATE meeting_transcripts SET private = 0 WHERE id = 1`)
+	run()
+	assert.True(t, docExists(t, d, "chat_artifact:5:plan"))
+
+	// The CLI path: dropped at once, with no pass in between.
+	exec(t, d, `UPDATE meeting_transcripts SET private = 1 WHERE id = 1`)
+	n, err := DropPrivateRecording(ctx, d, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n, "transcript, recap and the kept artifact")
+	assert.False(t, docExists(t, d, "chat_artifact:5:plan"))
+	assert.True(t, docExists(t, d, "chat_artifact:6:plan"))
+	run()
+	assert.Zero(t, dirtyCount(t, d))
+}
