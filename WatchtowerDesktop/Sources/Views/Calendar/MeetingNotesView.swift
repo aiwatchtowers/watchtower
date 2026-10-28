@@ -273,7 +273,7 @@ struct MeetingNotesView: View {
                             Label("Re-generate", systemImage: "arrow.triangle.2.circlepath")
                                 .font(.caption)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.kitSecondary)
                         .controlSize(.small)
                     } else {
                         PrivateRecordingNotice()

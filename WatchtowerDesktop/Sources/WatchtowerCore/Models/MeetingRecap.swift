@@ -77,8 +77,8 @@ package struct EventRecapGate: Equatable {
         self.ownedByPrivateRecording = ownedByPrivateRecording
     }
 
-    package static func load(_ db: Database, eventID: String) throws -> EventRecapGate {
-        EventRecapGate(ownedByPrivateRecording: try MeetingRecapQueries.isOwnedByPrivateRecording(db, eventID: eventID))
+    package static func load(_ db: Database, eventID: String) throws -> Self {
+        Self(ownedByPrivateRecording: try MeetingRecapQueries.isOwnedByPrivateRecording(db, eventID: eventID))
     }
 
     /// Re-generate, "Recap from text" and "+ to notes".

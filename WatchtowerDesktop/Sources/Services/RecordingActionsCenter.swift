@@ -113,7 +113,7 @@ final class RecordingActionsCenter {
 
     /// A txt rendering of a recording whose utterances are all deleted is
     /// empty: reported, never a "Saved"/"Copied" of nothing.
-    private nonisolated static func isBlank(_ data: Data) -> Bool {
+    nonisolated private static func isBlank(_ data: Data) -> Bool {
         String(bytes: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? false
     }
 
