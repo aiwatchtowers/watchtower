@@ -13,6 +13,8 @@ struct RecordingHeaderActions: View {
     let transcript: MeetingTranscript
     /// Whether the row has timed segments; SRT needs them.
     let hasSegments: Bool
+    /// False once every utterance is deleted: there is nothing to export.
+    let hasContent: Bool
     let center: RecordingActionsCenter
     /// The flag landed (the CLI answered), even after the owner moved on.
     let onPrivateChanged: (Bool) -> Void
@@ -68,8 +70,9 @@ struct RecordingHeaderActions: View {
             .buttonStyle(.kitSecondary)
             .controlSize(.small)
             .fixedSize()
-            .disabled(transcriptID.map { center.exporting.contains($0) } ?? true)
-            .help(hasSegments ? "Copy or save the transcript" : "Copy or save the transcript (subtitles need timings)")
+            .disabled(!hasContent || (transcriptID.map { center.exporting.contains($0) } ?? true))
+            .help(!hasContent ? "Nothing to export: every utterance is deleted"
+                  : hasSegments ? "Copy or save the transcript" : "Copy or save the transcript (subtitles need timings)")
         }
     }
 

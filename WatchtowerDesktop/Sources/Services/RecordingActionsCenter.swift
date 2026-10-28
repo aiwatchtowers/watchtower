@@ -60,6 +60,7 @@ final class RecordingActionsCenter {
             guard let text = String(bytes: data, encoding: .utf8) else {
                 throw ExportError.notText
             }
+            guard !Self.isBlank(data) else { throw ExportError.empty }
             self.copyToPasteboard(text)
             return "Copied the transcript"
         } failure: { "Couldn't copy the transcript: \($0)" }
@@ -71,6 +72,7 @@ final class RecordingActionsCenter {
     func save(transcriptID: Int64, format: TranscriptExportFormat, to url: URL, service: TranscriptSaveService) {
         runExport(transcriptID) {
             let data = try await service.export(transcriptID: transcriptID, format: format)
+            guard !Self.isBlank(data) else { throw ExportError.empty }
             try await Task.detached(priority: .userInitiated) {
                 try Self.writeOwnerOnly(data, to: url)
             }.value
@@ -100,7 +102,19 @@ final class RecordingActionsCenter {
 
     private enum ExportError: LocalizedError {
         case notText
-        var errorDescription: String? { "the export was not text" }
+        case empty
+        var errorDescription: String? {
+            switch self {
+            case .notText: "the export was not text"
+            case .empty: "nothing to export — every utterance is deleted"
+            }
+        }
+    }
+
+    /// A txt rendering of a recording whose utterances are all deleted is
+    /// empty: reported, never a "Saved"/"Copied" of nothing.
+    private nonisolated static func isBlank(_ data: Data) -> Bool {
+        String(bytes: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? false
     }
 
     private func runExport(

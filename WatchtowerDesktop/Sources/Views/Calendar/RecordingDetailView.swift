@@ -91,6 +91,12 @@ struct RecordingDetailView: View {
         var isLoading = true
     }
 
+    /// The pane's own error and the header action's, each once.
+    private var errorLines: [String] {
+        let lines = [errorMessage, appState.recordingActionsCenter.lastError[transcriptID]].compactMap { $0 }
+        return lines.count == 2 && lines[0] == lines[1] ? [lines[0]] : lines
+    }
+
     private var notesService: TranscriptSaveService? {
         guard let runner = ProcessCLIRunner.makeDefault() else { return nil }
         return TranscriptSaveService(runner: runner)
@@ -110,7 +116,9 @@ struct RecordingDetailView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 6)
 
-                if let error = errorMessage ?? appState.recordingActionsCenter.lastError[transcriptID] {
+                // Both lines: a stale load error must not hide a fresh
+                // header-action failure, nor the other way round.
+                ForEach(errorLines, id: \.self) { error in
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -272,6 +280,8 @@ struct RecordingDetailView: View {
                 RecordingHeaderActions(
                     transcript: transcript,
                     hasSegments: utterances != nil,
+                    hasContent: utterances.map { $0.contains { !$0.deleted } }
+                        ?? !transcript.transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     center: appState.recordingActionsCenter,
                     onPrivateChanged: privateChanged
                 ) { message in

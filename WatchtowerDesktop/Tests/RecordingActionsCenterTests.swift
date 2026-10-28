@@ -120,6 +120,24 @@ final class RecordingActionsCenterTests: XCTestCase {
         XCTAssertEqual(center.lastError[5], "Couldn't copy the transcript: the export was not text")
     }
 
+    /// Every utterance deleted: the rendering is empty, which is reported —
+    /// never "Copied"/"Saved" of nothing, and no file is written.
+    func testEmptyExportIsReportedNotSaved() async throws {
+        let center = makeCenter()
+        let empty = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data("\n".utf8)))
+        center.copyTranscript(transcriptID: 5, service: empty)
+        await waitUntil { !center.exporting.contains(5) }
+        XCTAssertEqual(copied, [])
+        XCTAssertEqual(center.lastError[5], "Couldn't copy the transcript: nothing to export — every utterance is deleted")
+        XCTAssertNil(center.notice[5])
+
+        let url = try tempURL("empty.txt")
+        center.save(transcriptID: 5, format: .txt, to: url, service: empty)
+        await waitUntil { !center.exporting.contains(5) }
+        XCTAssertEqual(center.lastError[5], "Export failed: nothing to export — every utterance is deleted")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
     func testNoticeExpires() async {
         let center = makeCenter(noticeLifetime: .milliseconds(20))
         let service = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data("x".utf8)))

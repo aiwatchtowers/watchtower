@@ -319,9 +319,11 @@ enum MeetingTranscriptQueries {
     }
 
     /// Deletes a recording with all its content: the transcript row and its
-    /// "meeting" chat conversation (+ messages). The event's `meeting_recaps`
-    /// row is deliberately NOT touched — a recap can exist independently of
-    /// the recording (safe delete scope). Returns the audio_path (if any) so
+    /// "meeting" chat conversation (+ messages). This code leaves
+    /// `meeting_recaps` alone — a public recording's recap outlives it (the
+    /// foreign key only clears `transcript_id`) — but migration 00164's
+    /// `BEFORE DELETE` trigger deletes the recaps a PRIVATE recording owns
+    /// (MEETPRIV-02: no readable recap without its recording). Returns the audio_path (if any) so
     /// the caller can remove the file AFTER the transaction commits;
     /// callers must treat a missing file as success (daemon retention may
     /// have swept it already).
