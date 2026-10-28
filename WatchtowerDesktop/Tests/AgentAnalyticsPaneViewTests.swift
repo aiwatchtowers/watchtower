@@ -224,7 +224,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
         json["since"] = ""
         let ov = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
-        XCTAssertEqual(AgentAnalyticsFormat.period(of: ov), .all)
+        XCTAssertNil(AgentAnalyticsFormat.period(of: ov))
         let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
         XCTAssertEqual(AgentAnalyticsFormat.periodLabel(ov, timeZone: utc), "All history to Oct 8")
     }

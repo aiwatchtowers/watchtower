@@ -142,9 +142,9 @@ struct AgentAnalyticsOverviewView: View {
             }
             Spacer(minLength: 8)
             Picker("Period", selection: $period) {
+                Text("1 day").tag(AgentAnalyticsCenter.Period.day)
                 Text("7 days").tag(AgentAnalyticsCenter.Period.week)
                 Text("30 days").tag(AgentAnalyticsCenter.Period.month)
-                Text("All").tag(AgentAnalyticsCenter.Period.all)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
