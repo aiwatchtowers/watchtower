@@ -291,6 +291,8 @@ package struct AgentSessionDetail: Decodable, Equatable, Sendable {
 // MARK: - Context (`internal/agentreport/context.go`)
 
 package struct AgentContextReport: Decodable, Equatable, Sendable {
+    /// One-sentence summary of the block; absent in older output.
+    package let lead: String?
     package let factsSessions: Int?
     package let sessions: Int?
     package let baseline: AgentBaselineSplit?
@@ -302,7 +304,7 @@ package struct AgentContextReport: Decodable, Equatable, Sendable {
     package let disk: AgentDiskSizes?
 
     enum CodingKeys: String, CodingKey {
-        case sessions, baseline, growth, compactions, disk
+        case lead, sessions, baseline, growth, compactions, disk
         case factsSessions = "facts_sessions", subagentBaseline = "subagent_baseline"
         case topSources = "top_sources", repeatedReads = "repeated_reads"
     }
@@ -371,6 +373,7 @@ package struct AgentDiskSizes: Decodable, Equatable, Sendable {
 // MARK: - Skills (`internal/agentreport/skills.go`)
 
 package struct AgentSkillsReport: Decodable, Equatable, Sendable {
+    package let lead: String?
     package let factsSessions: Int?
     package let listed: Int?
     package let used: Int?
@@ -379,7 +382,7 @@ package struct AgentSkillsReport: Decodable, Equatable, Sendable {
     package let neverUsed: [AgentUnusedSkill]?
 
     enum CodingKeys: String, CodingKey {
-        case listed, used, rows
+        case lead, listed, used, rows
         case factsSessions = "facts_sessions", listingTokens = "listing_tokens"
         case neverUsed = "never_used"
     }
@@ -412,6 +415,7 @@ package struct AgentUnusedSkill: Decodable, Equatable, Sendable {
 // MARK: - Trouble (`internal/agentreport/trouble.go`)
 
 package struct AgentTroubleReport: Decodable, Equatable, Sendable {
+    package let lead: String?
     package let classes: [AgentErrorClassRow]?
     package let denials: [AgentDenialRow]?
     package let interrupts: Int?
@@ -422,7 +426,7 @@ package struct AgentTroubleReport: Decodable, Equatable, Sendable {
     package let factsSessions: Int?
 
     enum CodingKeys: String, CodingKey {
-        case classes, denials, interrupts, rejections
+        case lead, classes, denials, interrupts, rejections
         case interruptSessions = "interrupt_sessions", unfinishedSubagents = "unfinished_subagents"
         case rateLimited = "rate_limited", factsSessions = "facts_sessions"
     }

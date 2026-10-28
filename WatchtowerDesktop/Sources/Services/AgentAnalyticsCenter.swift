@@ -21,11 +21,15 @@ import WatchtowerCore
 final class AgentAnalyticsCenter {
     nonisolated static let interval: Duration = .seconds(60)
 
-    /// The report window; the raw value is the CLI's `--days` (0 = all).
+    /// The report window; the raw value is the CLI's `--days`.
     enum Period: Int, CaseIterable {
+        case day = 1
         case week = 7
         case month = 30
-        case all = 0
+
+        /// A stored raw value read back: the retired "all history" (0) and
+        /// anything unknown mean the default, 7 days.
+        static func stored(_ raw: Int) -> Self { Self(rawValue: raw) ?? .week }
     }
 
     private(set) var overviews: [Int64: SessionReportCenter.Snapshot<AgentReportOverview>] = [:]

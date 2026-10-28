@@ -122,7 +122,7 @@ enum AgentAnalyticsFormat {
     /// The period the report covers, from its own `since`/`until`; nil
     /// when it matches none of the picker's.
     static func period(of overview: AgentReportOverview) -> AgentAnalyticsCenter.Period? {
-        if overview.since.isEmpty { return .all }
+        if overview.since.isEmpty { return nil }
         guard let since = reportDate(overview.since), let until = reportDate(overview.until) else { return nil }
         return AgentAnalyticsCenter.Period(rawValue: Int((until.timeIntervalSince(since) / 86400).rounded()))
     }

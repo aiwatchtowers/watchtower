@@ -381,6 +381,7 @@ final class AppState {
     private(set) var specReviewLoopCenter: SpecReviewLoopCenter?
     /// The Analytics pane's `agents report` runs and Turn On (#298).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
+    private(set) var coachCenter: CoachCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
@@ -733,6 +734,7 @@ final class AppState {
                     self?.specReviewLoopCenter?.stop()
                     // An agents report / enable child gets SIGTERM.
                     self?.agentAnalyticsCenter?.stop()
+                    self?.coachCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
                     self?.ownerAwayCenter.stop()
@@ -1858,6 +1860,9 @@ final class AppState {
         analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
         agentAnalyticsCenter?.stop()
         (agentAnalyticsCenter, vm.agentAnalytics) = (analytics, analytics)
+        let coach = CoachCenter(runner: cliRunner ?? UnresolvedCLIRunner())
+        coach.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
+        (coachCenter, vm.coach) = (coach, coach)
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.
