@@ -28,7 +28,10 @@ type recapExecer interface {
 
 // UpsertMeetingRecap inserts a new recap or updates the existing row for the
 // given event_id. transcriptID (0 = none) links the recap to its transcript so
-// it survives event deletion. updated_at is bumped to "now" on every call.
+// it survives event deletion; 0 keeps an existing row's link, so a rewrite
+// never strips a recording's ownership (MEETPRIV-02 hides and deletes a
+// private recording's recap by it). updated_at is bumped to "now" on every
+// call.
 func (db *DB) UpsertMeetingRecap(eventID, sourceText, recapJSON string, transcriptID int64) error {
 	return upsertMeetingRecap(db, eventID, sourceText, recapJSON, transcriptID)
 }
@@ -44,7 +47,7 @@ func upsertMeetingRecap(q recapExecer, eventID, sourceText, recapJSON string, tr
 		ON CONFLICT(event_id) DO UPDATE SET
 			source_text   = excluded.source_text,
 			recap_json    = excluded.recap_json,
-			transcript_id = excluded.transcript_id,
+			transcript_id = COALESCE(excluded.transcript_id, meeting_recaps.transcript_id),
 			updated_at    = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 	`, eventID, sourceText, recapJSON, tid)
 	if err != nil {

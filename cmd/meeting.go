@@ -230,8 +230,11 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	gen := cliGenerator(cfg)
-	pipe := meeting.New(database, cfg, gen, nil)
+	if err := refusePrivateEventRecap(database, meetingRecapFlagEventID); err != nil {
+		return err
+	}
+
+	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg), nil)
 	pipe.SetPromptStore(prompts.New(database, nil))
 
 	result, err := pipe.GenerateRecap(cmd.Context(), meetingRecapFlagEventID, text)
@@ -266,6 +269,24 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
 	return enc.Encode(envelope)
+}
+
+// refusePrivateEventRecap refuses to regenerate an event recap that a private
+// recording owns (MEETPRIV-01/02): its source_text is that recording's
+// transcript, and the rewrite would reach the model.
+func refusePrivateEventRecap(database *db.DB, eventID string) error {
+	own, err := database.GetMeetingRecap(eventID)
+	if err != nil || own == nil || !own.TranscriptID.Valid {
+		return err
+	}
+	forAI, err := database.GetMeetingRecapForAI(eventID)
+	if err != nil {
+		return err
+	}
+	if forAI == nil {
+		return fmt.Errorf("event %s's recap belongs to private recording %d", eventID, own.TranscriptID.Int64)
+	}
+	return nil
 }
 
 func runMeetingExtractTopics(cmd *cobra.Command, args []string) error {

@@ -181,6 +181,31 @@ func TestMeetPriv02_GetMeetingRecapForAISkipsPrivate(t *testing.T) {
 	assert.NotNil(t, own)
 }
 
+// TestMeetPriv02_UpsertKeepsRecapOwnership pins that a rewrite with no
+// recording (the event-notes recap) never NULLs an existing owner: the link is
+// what hides a private recording's recap and deletes it with the recording.
+func TestMeetPriv02_UpsertKeepsRecapOwnership(t *testing.T) {
+	d := openTestDB(t)
+	f := seedMeetPriv(t, d)
+
+	require.NoError(t, d.UpsertMeetingRecap("E-priv", "pasted", `{"summary":"new"}`, 0))
+	got, err := d.GetMeetingRecap("E-priv")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, f.privateRecapID, got.ID)
+	assert.True(t, got.TranscriptID.Valid)
+	assert.Equal(t, f.privateID, got.TranscriptID.Int64)
+	ai, err := d.GetMeetingRecapForAI("E-priv")
+	require.NoError(t, err)
+	assert.Nil(t, ai, "the rewritten recap is still the private recording's")
+
+	// A writer that names a recording still sets it.
+	require.NoError(t, d.UpsertMeetingRecap("E-paste", "src", `{"summary":"r"}`, f.publicID))
+	got, err = d.GetMeetingRecap("E-paste")
+	require.NoError(t, err)
+	assert.Equal(t, f.publicID, got.TranscriptID.Int64)
+}
+
 func TestMeetPriv02_DeletingPrivateRecordingDeletesItsRecap(t *testing.T) {
 	d := openTestDB(t)
 	f := seedMeetPriv(t, d)

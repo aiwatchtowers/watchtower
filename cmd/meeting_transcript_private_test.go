@@ -266,3 +266,59 @@ func TestTranscriptExport_SRTWithoutSegmentsFails(t *testing.T) {
 	err = transcriptExportCmd.RunE(transcriptExportCmd, []string{"999999"})
 	assert.EqualError(t, err, "transcript 999999 not found")
 }
+
+// TestMeetPriv02_EventRecapOfPrivateRecordingNotRegenerated pins that
+// `meeting-prep recap` refuses an event whose recap a private recording owns:
+// no generator call and the row is left as it was. A public recording's event
+// recap still regenerates and keeps its owner.
+func TestMeetPriv02_EventRecapOfPrivateRecordingNotRegenerated(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	gen := &transcriptMockGen{response: transcriptMockRecapJSON}
+	stubTranscriptGenerator(t, gen)
+	t.Cleanup(func() { meetingRecapFlagEventID, meetingRecapFlagText = "", "" })
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	_, err = database.Exec(`INSERT INTO calendar_calendars (id, name) VALUES ('cal1', 'Primary')`)
+	require.NoError(t, err)
+	seed := func(eventID string, private bool) int64 {
+		_, err := database.Exec(`INSERT INTO calendar_events (id, calendar_id, title, start_time, end_time)
+			VALUES (?, 'cal1', 'Sync', '2026-01-01T10:00:00Z', '2026-01-01T11:00:00Z')`, eventID)
+		require.NoError(t, err)
+		id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+			EventID: sql.NullString{String: eventID, Valid: true}, Title: "Sync", TranscriptText: "the transcript",
+		})
+		require.NoError(t, err)
+		require.NoError(t, database.UpsertMeetingRecap(eventID, "the transcript", `{"summary":"old"}`, id))
+		_, err = database.SetMeetingTranscriptPrivate(id, private)
+		require.NoError(t, err)
+		return id
+	}
+	privID := seed("E-priv", true)
+	pubID := seed("E-pub", false)
+
+	before, err := database.GetMeetingRecap("E-priv")
+	require.NoError(t, err)
+	meetingRecapFlagEventID, meetingRecapFlagText = "E-priv", "pasted notes"
+	var out bytes.Buffer
+	meetingRecapCmd.SetOut(&out)
+	meetingRecapCmd.SetContext(context.Background())
+	err = runMeetingRecap(meetingRecapCmd, nil)
+	assert.EqualError(t, err, fmt.Sprintf("event E-priv's recap belongs to private recording %d", privID))
+	assert.Empty(t, out.String())
+	assert.Zero(t, gen.calls, "a refused recap must never call the generator")
+	after, err := database.GetMeetingRecap("E-priv")
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "a refused recap writes nothing")
+
+	meetingRecapFlagEventID = "E-pub"
+	out.Reset()
+	require.NoError(t, runMeetingRecap(meetingRecapCmd, nil))
+	assert.Equal(t, 1, gen.calls)
+	got, err := database.GetMeetingRecap("E-pub")
+	require.NoError(t, err)
+	assert.Equal(t, "pasted notes", got.SourceText)
+	assert.Equal(t, pubID, got.TranscriptID.Int64, "a rewrite keeps the recording's ownership")
+}
