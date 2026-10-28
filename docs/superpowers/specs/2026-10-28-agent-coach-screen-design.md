@@ -120,12 +120,12 @@ Plan 1 already reads the miner's input (owner lines of sessions and chats, signa
 - Settings → System → Workbench's suggestion section is replaced by one line pointing to Analytics.
 - `remember:` / `запомни:` (`instructions remember`) stays as it is.
 
-This touches PROJ-22 (`docs/inventory/`): its suggestion half is amended, not weakened — suggestions still need the owner's Accept, now through the coach. The amendment needs the owner's approval (asked in this spec's review).
+This touches PROJ-22 (`docs/inventory/`): its suggestion half is amended, not weakened — suggestions still need the owner's Accept, now through the coach. The owner approved the amendment (ask #722).
 
 ## 7. Contracts and tests
 
 - **COACH-01** (`docs/inventory/coach.md`): unchanged in substance (every edit still needs the owner's Accept, now also from the Desktop, where the press is the confirmation); the entry's CLI line gains `status --days` and `run`'s `busy` code; Plan 1's guard tests are not relaxed.
-- **PROJ-22** (`docs/inventory/workbench.md`): the suggestion half amended — the owner's approval is asked in this review.
+- **PROJ-22** (`docs/inventory/workbench.md`): the suggestion half amended, approved by the owner (ask #722).
 - **AGENTLOG-01** (no transcript text): the new `lead` sentences are built from counts and names already in the report, never from transcript text; a guard test asserts a lead holds no event text.
 - Tests: Go — `coach status --days` windows (1, 7, 30, default 14), the lock (`busy` for a second run, the phase skips), the miner import (open rows carried, added/dismissed fingerprints blocking), `lead` per block in both languages. Swift (WatchtowerCore) — decoding of the pinned keys from fixture JSON; the trend rule (better-when-lower tone, the 5 % "about the same" band, `known: false` and `n < 3` → "few data", missing `previous`); the proposal filter (this workbench + global, other workbenches out); the accepted-log verdict lines; the Home row's 4-line rule. Design shots of the pane, the Edit sheet, the rollback sheet and the Home row in light and dark.
 
@@ -144,5 +144,8 @@ This touches PROJ-22 (`docs/inventory/`): its suggestion half is amended, not we
 | D3 | Periods 1 day, 7 days, 30 days for the pane | conversation 2026-10-28 |
 | D4 | The screen is the mix: metrics on top, proposals, the accepted-edit log; the statistics stay, redesigned | ask #645 (parent spec D4) |
 | D5 | Every edit needs the owner's Accept | ask #637 (parent spec D3) |
+| D6 | Metric tiles follow the picked period against the one before it (few-data tiles greyed, verdicts stay 14 days) | ask #722 (approved) |
+| D7 | The main thing and the other hints stay as today under Statistics | ask #722 (approved) |
+| D8 | PROJ-22 amended: instruction suggestions go through the coach | ask #722 (approved) |
 
-My calls, open to the owner in review: the metric tiles follow the picked period against the one before it (not a fixed 14 days; few-data tiles greyed, verdicts stay 14 days); a saved "All" reads as 7 days; Decline stays for good with a confirmation; "The main thing" stays a card under Statistics rather than becoming a proposal; no sparklines and no tile drill-down in v1; the miner fold and Home's row are in this plan; the Settings → Prompts additions view is out.
+My calls, approved with the spec (ask #722): the metric tiles follow the picked period against the one before it (not a fixed 14 days; few-data tiles greyed, verdicts stay 14 days); a saved "All" reads as 7 days; Decline stays for good with a confirmation; "The main thing" stays a card under Statistics rather than becoming a proposal; no sparklines and no tile drill-down in v1; the miner fold and Home's row are in this plan; the Settings → Prompts additions view is out.
