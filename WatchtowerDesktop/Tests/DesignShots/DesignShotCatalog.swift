@@ -283,6 +283,14 @@ enum DesignShotCatalog {
             DesignShot(name: "spec-review-loop", size: NSSize(width: 760, height: 1180)) {
                 SpecReviewShotFixtures.loop()
             },
+            // Spec review polish (spec 2026-10-28): a loop's chapter with
+            // Fix / Comment, and the footer's verdicts with and without comments.
+            DesignShot(name: "spec-review-loop-chapters", size: NSSize(width: 760, height: 1000)) {
+                SpecReviewShotFixtures.loopChapters()
+            },
+            DesignShot(name: "spec-review-footer", size: NSSize(width: 760, height: 110)) {
+                SpecReviewShotFixtures.footers()
+            },
             DesignShot(name: "spec-review-running", size: NSSize(width: 760, height: 360)) {
                 SpecReviewShotFixtures.running()
             },
