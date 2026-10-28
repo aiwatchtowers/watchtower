@@ -115,25 +115,58 @@ extension AppState {
         }
     }
 
-    /// Add / Dismiss from Home's suggestion row; the CLI's refusal (an
-    /// over-limit Add) comes back as text for the row to show. A success
-    /// re-reads Home at once: the CLI writes from another process, which the
-    /// GRDB observation never sees. `decide` replaces the CLI call in tests.
-    func decideInstructionSuggestion(
-        id: Int64, add: Bool, decide: ((Int64, Bool) async throws -> Void)? = nil
-    ) async -> String? {
+    /// Accept / Decline from Home's coach row, through `coach accept|decline
+    /// <id> --json`. A success re-reads Home at once (the CLI writes from
+    /// another process, which the GRDB observation never sees); a proposal
+    /// that changed under the row reloads Home and says so; any other
+    /// failure comes back as text for the row to show. `runner` replaces
+    /// the CLI in tests.
+    func decideCoachProposal(id: Int64, accept: Bool, runner: (any CLIRunnerProtocol)? = nil) async -> String? {
+        guard let runner = runner ?? ProcessCLIRunner.makeDefault() else { return "The command line is not available." }
         do {
-            if let decide {
-                try await decide(id, add)
-            } else {
-                guard let cli = workbenchesViewModel?.cli else { return "The command line is not available." }
-                _ = try await cli.decideSuggestion(id: id, add: add)
-            }
+            _ = try await runner.run(args: ["coach", accept ? "accept" : "decline", String(id), "--json"])
         } catch {
+            if case let CLIRunnerError.nonZeroExit(_, stderr) = error, let failure = CoachFailure.parse(stderr: stderr) {
+                if failure.code == "stale" || failure.code == "state_changed" {
+                    await homeCenter.rereadNow()
+                    homeCenter.showCoachNote(Self.coachChangedLine)
+                    return Self.coachChangedLine
+                }
+                return failure.error
+            }
             return error.localizedDescription
         }
         await homeCenter.rereadNow()
         return nil
+    }
+
+    static let coachChangedLine = "That proposal changed — showing the next one"
+
+    /// Opens workbench `workbench`'s Analytics pane (Home's coach row, the
+    /// Settings pointer, Agent Settings): its Agent Settings screen is
+    /// closed and the pane goes on screen.
+    func openCoachInAnalytics(workbench id: Int64) {
+        guard let vm = workbenchesViewModel, let project = vm.summaries.first(where: { $0.project.id == id })?.project else {
+            selectedDestination = .workbench
+            return
+        }
+        selectedDestination = .workbench
+        vm.selectedWorkbenchID = id
+        vm.closePageScreen(projectID: id)
+        Task { await vm.showView(.analytics, project: project) }
+    }
+
+    /// Settings' **Open Analytics**: the last-opened workbench with Analytics
+    /// on, else the lowest such id (as Home's global proposal); the plain
+    /// Workbench tab when none is on.
+    func openCoachInAnalyticsFromSettings() async {
+        let last = workbenchesViewModel?.selectedWorkbenchID
+        let on = (try? await workbenchesViewModel?.dbPool.read { try HomeQueries.analyticsOnWorkbenches($0) }) ?? []
+        if let target = CoachHomeRow.targetWorkbench(proposalWorkbench: 0, analyticsOn: on, lastOpened: last) {
+            openCoachInAnalytics(workbench: target)
+        } else {
+            selectedDestination = .workbench
+        }
     }
 
     /// The tab a Getting ready card's Open lands on; nil for the four

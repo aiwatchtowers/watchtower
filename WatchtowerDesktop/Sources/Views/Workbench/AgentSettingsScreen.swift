@@ -16,6 +16,9 @@ struct AgentSettingsScreen: View {
     @Environment(AppState.self) private var appState
     @State private var busy = false
     @State private var showPreview = false
+    /// `projects.agent_analytics` of this workbench; read on appear.
+    @State private var analyticsOn = false
+    @State private var analyticsKnown = false
     @FocusState private var focused: Bool
 
     static let title = "Agent settings"
@@ -44,6 +47,11 @@ struct AgentSettingsScreen: View {
             async let methodology: Void = vm.loadMethodology(projectID: project.id)
             async let instructions: Void = vm.loadInstructions(projectID: project.id)
             _ = await (methodology, instructions)
+        }
+        .task(id: project.id) {
+            let id = project.id
+            analyticsOn = (try? await vm.dbPool.read { try HomeQueries.analyticsOnWorkbenches($0) })?.contains(id) ?? false
+            analyticsKnown = true
         }
         .sheet(isPresented: $showPreview) { InstructionsPreviewSheet(workbenchID: project.id) }
     }
@@ -158,8 +166,6 @@ struct AgentSettingsScreen: View {
     private func instructionField(_ field: InstructionField, title: String, caption: String, state: OwnerInstructionsState) -> some View {
         InstructionFieldBlock(
             title: title, caption: caption, stored: state.workbench?.text(field) ?? "", limit: state.limit,
-            suggestions: state.suggestions(for: field, workbenchID: project.id),
-            detail: { "\($0.sessionCount) sessions in this workbench" },
             error: vm.instructionErrors[project.id]?[field], busy: busy,
             draft: Binding(
                 get: { vm.agentSettingsDrafts[project.id]?[field] },
@@ -172,12 +178,23 @@ struct AgentSettingsScreen: View {
                     }
                 }
             },
-            onDecide: { row, add in
-                run { await vm.decideSuggestion(projectID: project.id, field: field, id: row.id, add: add) }
-            },
+            coachPointer: coachPointer,
             globalText: state.global.text(field),
             onEditGlobal: openGlobalSettings
         )
+    }
+
+    static func coachPointerText(analyticsOn: Bool) -> String {
+        analyticsOn ? "Suggestions for this workbench come from the coach." : "Turn on Analytics to get the coach's suggestions."
+    }
+
+    /// Nothing until the Analytics state is read, so an off workbench never
+    /// flashes the "come from the coach" line.
+    private var coachPointer: CoachPointer? {
+        guard analyticsKnown else { return nil }
+        return CoachPointer(text: Self.coachPointerText(analyticsOn: analyticsOn)) {
+            appState.openCoachInAnalytics(workbench: project.id)
+        }
     }
 
     private func caption(_ text: String, color: Color = .secondary) -> some View {

@@ -66,7 +66,7 @@ final class LearnZoneViewTests: XCTestCase {
             feed: HomeFeedBuilder.feed(HomeFeedData(), now: Date(), calendar: .current, hidden: []),
             workbench: [], links: [], numbers: nil)
         return HomeSideColumn(
-            snapshot: snapshot, onLink: { _ in }, onDecideSuggestion: { _, _ in nil }, learn: learn,
+            snapshot: snapshot, onLink: { _ in }, onDecideCoach: { _, _ in nil }, onOpenCoach: { _ in }, learn: learn,
             learnActions: actions)
     }
 

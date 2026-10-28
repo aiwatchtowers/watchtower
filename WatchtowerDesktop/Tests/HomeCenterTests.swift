@@ -19,6 +19,7 @@ final class FakeHomeEnvironment: HomeEnvironment {
     var feedSourcesAllowed = Set(FeedSource.allCases)
     var managedPolicy = ManagedPolicy.none
     var workbenchSessions: [SessionAgentStatus] = []
+    var lastOpenedWorkbench: Int64?
 }
 
 @MainActor
@@ -160,7 +161,7 @@ final class HomeCenterTests: XCTestCase {
         defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
         XCTAssertEqual(center.snapshot?.workbench, [])
-        XCTAssertNil(center.snapshot?.suggestion)
+        XCTAssertNil(center.snapshot?.coach)
         XCTAssertEqual(center.snapshot?.workbenchFailed, false)
         XCTAssertEqual(center.snapshot?.links.map(\.kind), HomeLinkKind.allCases)
         XCTAssertEqual(center.snapshot?.linksFailed, false)
@@ -227,38 +228,76 @@ final class HomeCenterTests: XCTestCase {
         await waitUntil(center) { $0?.feed.failed.isEmpty == true }
     }
 
-    /// The daemon writes from another process, which the ValueObservation
-    /// never sees: a second pool on the same file stands in for it.
-    func testASuggestionDecisionRereadsHomeAtOnce() async throws {
+    /// The coach CLI writes from another process, which the ValueObservation
+    /// never sees: a success re-reads Home at once.
+    func testHomeDecideRereadsAndCallsTheCoach() async throws {
         let appState = AppState.isolated()
         appState.homeEnvironmentOverride = FakeHomeEnvironment()
-        var decided: [(Int64, Bool)] = []
         appState.homeCenter.beginReading(pool: try makePool())
         defer { appState.homeCenter.endReading() }
         await waitUntil(appState.homeCenter) { $0 != nil }
         let reads = appState.homeCenter.todayReads
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true}"#.utf8))
 
-        let error = await appState.decideInstructionSuggestion(id: 7, add: true) { decided.append(($0, $1)) }
+        let accepted = await appState.decideCoachProposal(id: 7, accept: true, runner: runner)
+        let declined = await appState.decideCoachProposal(id: 8, accept: false, runner: runner)
 
-        XCTAssertNil(error)
-        XCTAssertEqual(decided.map(\.0), [7])
-        XCTAssertEqual(appState.homeCenter.todayReads, reads + 1, "a success re-reads Home")
+        XCTAssertNil(accepted)
+        XCTAssertNil(declined)
+        XCTAssertEqual(runner.invocations, [["coach", "accept", "7", "--json"], ["coach", "decline", "8", "--json"]])
+        XCTAssertEqual(appState.homeCenter.todayReads, reads + 2, "a success re-reads Home")
     }
 
-    func testAFailedSuggestionDecisionDoesNotReread() async throws {
+    func testHomeDecideStaleReloads() async throws {
         let appState = AppState.isolated()
         appState.homeEnvironmentOverride = FakeHomeEnvironment()
         appState.homeCenter.beginReading(pool: try makePool())
         defer { appState.homeCenter.endReading() }
         await waitUntil(appState.homeCenter) { $0 != nil }
         let reads = appState.homeCenter.todayReads
-
-        let error = await appState.decideInstructionSuggestion(id: 7, add: true) { _, _ in
-            throw OwnerInstructionsError(message: "session instructions: over")
+        for code in ["stale", "state_changed"] {
+            let stderr = #"{"ok":false,"error":"x","code":"\#(code)"}"# + "\ncoach: x\n"
+            let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
+            let line = await appState.decideCoachProposal(id: 7, accept: true, runner: runner)
+            XCTAssertEqual(line, "That proposal changed — showing the next one")
         }
+        XCTAssertEqual(appState.homeCenter.todayReads, reads + 2)
+    }
 
-        XCTAssertEqual(error, "session instructions: over")
-        XCTAssertEqual(appState.homeCenter.todayReads, reads)
+    /// The note outlives the row the re-read removed, and is cleared on its clock.
+    func testStaleDecideLeavesTheNoteOnTheCenter() async throws {
+        let appState = AppState.isolated()
+        appState.homeEnvironmentOverride = FakeHomeEnvironment()
+        appState.homeCenter.beginReading(pool: try makePool())
+        defer { appState.homeCenter.endReading() }
+        await waitUntil(appState.homeCenter) { $0 != nil }
+        let stderr = #"{"ok":false,"error":"x","code":"stale"}"# + "\ncoach: x\n"
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
+
+        _ = await appState.decideCoachProposal(id: 7, accept: true, runner: runner)
+
+        XCTAssertEqual(appState.homeCenter.coachNote, "That proposal changed — showing the next one")
+        appState.homeCenter.showCoachNote("short", seconds: 0.05)
+        XCTAssertEqual(appState.homeCenter.coachNote, "short", "a newer note replaces it")
+        let deadline = Date().addingTimeInterval(2)
+        while appState.homeCenter.coachNote != nil, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertNil(appState.homeCenter.coachNote)
+    }
+
+    func testHomeDecideErrorKeepsRow() async throws {
+        let appState = AppState.isolated()
+        appState.homeEnvironmentOverride = FakeHomeEnvironment()
+        appState.homeCenter.beginReading(pool: try makePool())
+        defer { appState.homeCenter.endReading() }
+        await waitUntil(appState.homeCenter) { $0 != nil }
+        let reads = appState.homeCenter.todayReads
+        let stderr = #"{"ok":false,"error":"destination is over its limit","code":"over_budget"}"# + "\ncoach: over\n"
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
+
+        let line = await appState.decideCoachProposal(id: 7, accept: true, runner: runner)
+
+        XCTAssertEqual(line, "destination is over its limit")
+        XCTAssertEqual(appState.homeCenter.todayReads, reads, "the row stays: no re-read")
     }
 
     func testTickPicksUpWritesTheObservationMisses() async throws {
@@ -336,15 +375,16 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(center.todayReads, reads)
     }
 
-    func testSuggestionAndRecapReachTheirZones() async throws {
+    func testCoachProposalAndRecapReachTheirZones() async throws {
         let pool = try makePool()
         let now = Date()
         try await pool.write { db in
-            let seen = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3600))
+            let id = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/tmp/acme")
+            try db.execute(sql: "UPDATE projects SET agent_analytics = 1 WHERE id = ?", arguments: [id])
             try db.execute(sql: """
-                INSERT INTO instruction_suggestions (text, field, first_seen_at, last_seen_at, status, fingerprint)
-                VALUES ('run the linter', 'session', ?, ?, 'open', 'lint')
-                """, arguments: [seen, seen])
+                INSERT INTO coach_proposals (fingerprint, kind, destination, title, why, metric, after_text, sources, created_at)
+                VALUES ('lint', 'add', 'session', 'run the linter', 'why', 'corrections', 'Run the linter.', 3, '2026-10-20T10:00:00Z')
+                """)
             try db.execute(
                 sql: "INSERT INTO catchup_recaps (period_from, period_to, status, tldr) VALUES (?, ?, 'ready', 'All quiet')",
                 arguments: [now.timeIntervalSince1970 - 3600, now.timeIntervalSince1970])
@@ -353,7 +393,7 @@ final class HomeCenterTests: XCTestCase {
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
-        XCTAssertEqual(center.snapshot?.suggestion?.text, "run the linter")
+        XCTAssertEqual(center.snapshot?.coach?.proposal.title, "run the linter")
         let catchUp = center.snapshot?.links.first { $0.kind == .catchUp }
         XCTAssertEqual(catchUp?.status, "new recap")
         XCTAssertEqual(catchUp?.highlighted, true)

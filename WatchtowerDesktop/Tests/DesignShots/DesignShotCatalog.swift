@@ -327,6 +327,16 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "analytics-coach-rollback-sheet", size: NSSize(width: 520, height: 300)) {
                 CoachShotFixtures.screen(.rollbackSheet)
+            },
+            // The coach's entry points outside the Analytics pane (#1120).
+            DesignShot(name: "home-coach-row", size: NSSize(width: 440, height: 360)) {
+                CoachPointerShotFixtures.homeRow()
+            },
+            DesignShot(name: "settings-instructions-coach-pointer", size: NSSize(width: 560, height: 220)) {
+                CoachPointerShotFixtures.pointer(settings: true)
+            },
+            DesignShot(name: "agent-settings-coach-pointer", size: NSSize(width: 560, height: 420)) {
+                CoachPointerShotFixtures.pointer(settings: false)
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.

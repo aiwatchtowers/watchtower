@@ -3,14 +3,18 @@ import WatchtowerCore
 
 /// Home's Workbench zone: per workbench, the live sessions to look at (state
 /// dot and caption from `SessionStatePresentation`) and the open asks, then
-/// the instruction suggestion as the last row. A failed read says so.
+/// the coach's newest open proposal as the last row. A failed read says so.
 struct WorkbenchZoneView: View {
     let blocks: [HomeWorkbenchBlock]
-    let suggestion: HomeInstructionSuggestion?
+    let coach: HomeCoachProposal?
     let failed: Bool
     let onLink: (HomeLink) -> Void
-    /// Add (true) / Dismiss (false) the suggestion; the error to show, nil on success.
-    let onDecideSuggestion: (Int64, Bool) async -> String?
+    /// Accept (true) / Decline (false) the proposal; the line to show, nil on success.
+    let onDecideCoach: (Int64, Bool) async -> String?
+    /// Open the proposal in this workbench's Analytics pane.
+    let onOpenCoach: (Int64) -> Void
+    /// `HomeCenter.coachNote`: shown where the row sits, with or without one.
+    var coachNote: String?
 
     var body: some View {
         HomeZone(title: "Workbench") {
@@ -19,14 +23,17 @@ struct WorkbenchZoneView: View {
             if failed {
                 HomeZoneErrorLine(zone: "Workbench")
             }
-            // Space, not dividers, separates the blocks and the suggestion.
+            // Space, not dividers, separates the blocks and the coach row.
             VStack(alignment: .leading, spacing: Spacing.medium) {
                 ForEach(blocks, id: \.workbenchID) { block in
                     WorkbenchBlockView(block: block, onLink: onLink)
                 }
-                if let suggestion {
-                    HomeSuggestionRow(suggestion: suggestion, onDecide: onDecideSuggestion)
-                        .id(suggestion.id)
+                if let coach {
+                    HomeCoachRow(coach: coach, onDecide: onDecideCoach, onOpen: onOpenCoach)
+                        .id(coach.proposal.id)
+                }
+                if let coachNote {
+                    Text(coachNote).font(.caption).foregroundStyle(Tone.warning).homeZoneInset()
                 }
             }
         }
@@ -106,50 +113,84 @@ private struct WorkbenchBlockView: View {
     }
 }
 
-/// The instruction suggestion: what the owner keeps telling agents, with
-/// Add (Home's one prominent action) / Dismiss through the CLI.
-private struct HomeSuggestionRow: View {
-    let suggestion: HomeInstructionSuggestion
+/// The coach's newest open proposal: where it goes, the title, the changed
+/// lines (at most 4), and Open in Analytics / Decline / Accept through the
+/// coach CLI. A change over 4 lines shows its first 4 and "…", and only
+/// Open in Analytics and Decline: it is read in full in the pane first.
+private struct HomeCoachRow: View {
+    let coach: HomeCoachProposal
     let onDecide: (Int64, Bool) async -> String?
+    let onOpen: (Int64) -> Void
     @State private var busy = false
-    @State private var errorText: String?
+    @State private var note: String?
 
     var body: some View {
+        let proposal = coach.proposal
+        let preview = CoachHomeRow.lines(proposal)
         VStack(alignment: .leading, spacing: Spacing.compact) {
-            Text(Self.line(suggestion))
+            Text(Self.header(proposal))
+                .font(.caption)
                 .foregroundStyle(.secondary)
+            Text(proposal.title)
+                .fontWeight(.semibold)
                 .fixedSize(horizontal: false, vertical: true)
-            if let errorText {
-                Text(errorText).font(.caption).foregroundStyle(Tone.error)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                ForEach(Array(preview.shown.enumerated()), id: \.offset) { _, line in
+                    diffLine(line)
+                }
+                if preview.truncated {
+                    Text("…").font(.callout.monospaced()).foregroundStyle(.secondary)
+                }
+            }
+            if let note {
+                Text(note).font(.caption).foregroundStyle(Tone.warning)
             }
             HStack(spacing: Spacing.small) {
-                Button("Add") { decide(add: true) }
-                    .buttonStyle(.kitPrimary)
-                Button("Dismiss") { decide(add: false) }
+                Button("Open in Analytics") { onOpen(coach.targetWorkbench) }
                     .buttonStyle(.kitQuiet)
+                Spacer(minLength: Spacing.regular)
+                Button("Decline") { decide(accept: false) }
+                    .buttonStyle(.kitQuiet)
+                    .disabled(busy)
+                if !preview.truncated {
+                    Button("Accept") { decide(accept: true) }
+                        .buttonStyle(.kitPrimary)
+                        .disabled(busy)
+                }
             }
             .controlSize(.small)
-            .disabled(busy)
         }
         .homeZoneInset()
     }
 
-    /// "You keep telling agents: “…”. Add to your instructions?"; a chat-only
-    /// suggestion names the chat and the chat instructions it is added to.
-    static func line(_ suggestion: HomeInstructionSuggestion) -> String {
-        let quoted = "\u{201C}\(suggestion.text)\u{201D}"
-        return suggestion.field == "chat"
-            ? "You keep telling the chat: \(quoted). Add to your chat instructions?"
-            : "You keep telling agents: \(quoted). Add to your instructions?"
+    /// "Coach suggests · Session instructions · all workbenches".
+    static func header(_ proposal: CoachProposal) -> String {
+        "Coach suggests · \(proposal.destinationLabel)"
     }
 
-    private func decide(add: Bool) {
+    @ViewBuilder private func diffLine(_ line: CoachDiffLine) -> some View {
+        switch line {
+        case let .added(text): diffText("+ \(text)", Tone.success)
+        case let .removed(text): diffText("\u{2212} \(text)", Tone.error)
+        case .kept: EmptyView()
+        }
+    }
+
+    private func diffText(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.callout.monospaced())
+            .foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func decide(accept: Bool) {
         busy = true
+        note = nil
         Task {
-            let failure = await onDecide(suggestion.id, add)
-            errorText = failure
-            // A decision stays disabled until the re-read replaces or removes the row.
-            busy = failure == nil
+            let line = await onDecide(coach.proposal.id, accept)
+            note = line
+            // The re-read replaces or removes the row; a failure keeps it usable.
+            busy = false
         }
     }
 }
