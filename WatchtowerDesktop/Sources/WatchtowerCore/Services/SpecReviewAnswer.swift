@@ -37,6 +37,13 @@ package enum SpecReviewAnswer {
             answer.comments += loopComments(
                 ledger: loop, result: result, marks: marks, snapshot: snapshot, rendered: rendered
             )
+            // A Fix or Comment on a chapter finding the loop never carried
+            // (an As agreed one, spec 2026-10-28 §4) goes out as on a review
+            // without a loop.
+            let inLedger = Set(loop.map(\.item.key))
+            answer.comments += comments(
+                result: result, marks: marks.filter { !inLedger.contains($0.key) }, snapshot: snapshot, rendered: rendered
+            )
             return answer
         }
         answer.comments += comments(result: result, marks: marks, snapshot: snapshot, rendered: rendered)

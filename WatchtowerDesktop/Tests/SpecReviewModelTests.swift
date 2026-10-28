@@ -500,6 +500,22 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertEqual(answer.comments.first?.heading, "Behaviour")
     }
 
+    /// A Comment on a chapter finding the loop never carried (spec
+    /// 2026-10-28 §4) goes with Request changes, as on a review without a loop.
+    func testLoopCommentOnAFindingOutsideTheLedgerIsSent() async throws {
+        try setLoopRow(end: "settled")
+        let model = try await makeModel()
+        await model.load()
+        XCTAssertFalse(model.disputes.contains { $0.item.key == "da:1" } || model.fixes.contains { $0.item.key == "da:1" })
+        await model.mark("da:1", .comment, body: "say why a local db")
+        XCTAssertEqual(model.requestCount, 1)
+        let sent = await model.send()
+        guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, .changes)
+        XCTAssertEqual(answer.comments.map(\.body), ["Local db — say why a local db"])
+    }
+
     /// Fix on a finding the author never answered sends the reviewer's own
     /// note, never the loop-end line.
     func testFixOnUnansweredSendsTheReviewersNote() async throws {
