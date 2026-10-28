@@ -4,7 +4,7 @@ Spec: `docs/superpowers/specs/2026-10-27-llm-usage-ledger-design.md`. Plan: `doc
 
 ## Summary
 
-Every model call made by a Watchtower Go process is one row in `llm_calls` (`watchtower.db`, migration 00163): who asked (`purpose`), for whom (`surface`), which process, provider and model, the full token split (fresh input, cache read, cache write 5 m / 1 h, output), the provider's own cost when it reports one and a price-table estimate otherwise. `pipeline_runs` is untouched; its token columns were wrong (uncached input only, cost always 0, only opt-in call sites) and the screens that read them stopped showing tokens and cost. Usage → **Watchtower** and `watchtower usage llm` read the ledger; Home's "AI spend" is the CLI's `page_total`.
+Every model call made by a Watchtower Go process is one row in `llm_calls` (`watchtower.db`, migration 00165): who asked (`purpose`), for whom (`surface`), which process, provider and model, the full token split (fresh input, cache read, cache write 5 m / 1 h, output), the provider's own cost when it reports one and a price-table estimate otherwise. `pipeline_runs` is untouched; its token columns were wrong (uncached input only, cost always 0, only opt-in call sites) and the screens that read them stopped showing tokens and cost. Usage → **Watchtower** and `watchtower usage llm` read the ledger; Home's "AI spend" is the CLI's `page_total`.
 
 ## Recording
 
