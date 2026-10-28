@@ -370,6 +370,7 @@ var cliNoContentCommands = map[string]bool{
 	"tracks start":                     true,
 	"tracks watch":                     true,
 	"tune":                             true,
+	"usage llm":                        true,
 	"usage plan":                       true,
 	"version":                          true,
 	"watch add":                        true,
