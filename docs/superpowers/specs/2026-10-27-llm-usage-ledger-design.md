@@ -165,10 +165,12 @@ has the provider's numbers:
 Wrappers (`PooledGenerator`, `timeoutGenerator`, `policyChecked*`) do not record — only leaves,
 so nothing is counted twice.
 
-**Guard test** (`TestLLMUsageLeaves`): parses the Go tree and lists every non-test type with a
-`Generate(ctx, …)`/`QuerySync`/`Query` method matching the provider interfaces, or that execs
-`claude`/`codex` or posts to a chat-completions URL; each must be either in the recording-leaf
-list or the known-wrapper list. A new leaf that does not record fails the test.
+**Guard test** (`TestLLMUsageLeaves`): parses the Go tree and checks every process start
+(`exec.Command*`, `os.StartProcess`, `syscall.Exec`, `pty.Start*`) and every HTTP request in a
+package that names an LLM endpoint: the enclosing function must record, or be on a written list
+of non-LLM sites with a reason (git, sips, the owner's PTY…). It does not guess the binary,
+because today's leaves run it from a struct field or a variable. A new process start or LLM
+request that does not record fails the test until it records or is listed with a reason.
 
 ### 3. Purpose and surface tagging
 
