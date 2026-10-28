@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 )
 
 // BoardConfig describes the configuration of a Jira board.
@@ -831,7 +832,7 @@ Guidelines:
 	dataJSON, _ := json.Marshal(rawData)
 	userMessage := fmt.Sprintf("Analyze this Jira board:\n\n%s", string(dataJSON))
 
-	response, usage, err := a.aiProvider.QuerySync(ctx, systemPrompt, userMessage, "")
+	response, usage, err := a.aiProvider.QuerySync(llmusage.WithPurpose(ctx, "jira.boards"), systemPrompt, userMessage, "")
 	a.addUsage(usage)
 	if err != nil {
 		return nil, fmt.Errorf("LLM query: %w", err)
