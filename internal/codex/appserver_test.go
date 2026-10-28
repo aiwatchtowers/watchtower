@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"watchtower/internal/llmusage"
 )
 
 // The fake app-server is this test binary re-run with fakeModeEnv set:
@@ -43,6 +45,7 @@ func TestMain(m *testing.M) {
 	}
 	_ = os.Setenv("CODEX_HOME", home)
 	systemConfigDir = home + "/no-system-config"
+	llmusage.SetSink(discardSink{}) // codex_llmusage_test.go
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

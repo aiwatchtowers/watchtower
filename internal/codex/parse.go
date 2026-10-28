@@ -29,10 +29,19 @@ func (i *CodexItem) MessageText() string {
 	return i.Content
 }
 
-// CodexUsage holds token usage metrics from a Codex CLI call.
+// CodexUsage holds token usage metrics from a Codex CLI call. InputTokens
+// includes CachedInputTokens (the OpenAI convention codex reports).
 type CodexUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens       int `json:"input_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+}
+
+// add sums u into the receiver.
+func (t *CodexUsage) add(u *CodexUsage) {
+	t.InputTokens += u.InputTokens
+	t.CachedInputTokens += u.CachedInputTokens
+	t.OutputTokens += u.OutputTokens
 }
 
 // CodexError holds error information from a Codex CLI call.
