@@ -152,9 +152,13 @@ type ClaudeTranslator struct {
 	turnStart time.Time
 	// childCost and childOutputs are the running child's total_cost_usd
 	// and modelUsage output tokens at its last result (cumulative over the
-	// child's life; reset by its system/init line).
+	// child's life). childSession is the session they belong to: a warm
+	// child prints system/init before every turn with the same session id,
+	// so only an init with another id (a respawned child, which resumes
+	// nothing) starts them over.
 	childCost    float64
 	childOutputs map[string]int64
+	childSession string
 	// textTurn is the turn id that last emitted text; newMessage records that
 	// a new assistant message started since that text. Together they put a
 	// paragraph break between the text of separate assistant messages of one
@@ -244,25 +248,35 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 	case "system":
 		if l.Subtype == "init" {
 			f.init, f.apiKeySource = true, l.APIKeySource
-			// A new child: its cumulative cost and model usage start over.
-			t.childCost, t.childOutputs = 0, nil
+			// A warm child repeats its init before every turn with the same
+			// session id; only a new session (a respawned child) starts
+			// the cumulative cost and model usage over.
+			if l.SessionID == "" || l.SessionID != t.childSession {
+				t.childCost, t.childOutputs = 0, nil
+				t.childSession = l.SessionID
+			}
 		}
 	}
 	return f, call, nil
 }
 
 // usageCall is the ledger call a result line ends: the turn's usage with
-// the cache split, estimated (from the result text) when the line carries
-// no usage. A warm child's total_cost_usd and modelUsage add up over its
-// life while usage is the turn's own, so the turn's cost is the growth of
-// the total since the previous result (none when it shrank), and its model
-// is the stream's, else the one whose output grew most. It starts the next
-// turn's clock.
+// the cache split, estimated (from the result text) only when the line
+// carries no usage object at all. A warm child's total_cost_usd and
+// modelUsage add up over its life while usage is the turn's own, so the
+// turn's cost is the growth of the total since the previous result; a total
+// that shrank belongs to a new child, whose whole total is this turn's. Its
+// model is the stream's, else the one whose output grew most. It starts the
+// next turn's clock.
 func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	outs := llmusage.ModelOutputs(l.ModelUsage)
 	grown := make(map[string]int64, len(outs))
 	for name, out := range outs {
-		if d := out - t.childOutputs[name]; d > 0 {
+		prev := t.childOutputs[name]
+		if out < prev {
+			prev = 0 // a new child's total
+		}
+		if d := out - prev; d > 0 {
 			grown[name] = d
 		}
 	}
@@ -276,7 +290,11 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 		DurationMS: time.Since(t.turnStart).Milliseconds(),
 		OK:         l.Subtype == "success" && !l.IsError,
 	}
-	if cost := l.CostUSD - t.childCost; l.CostUSD > 0 && cost >= 0 {
+	if l.CostUSD > 0 {
+		cost := l.CostUSD - t.childCost
+		if cost < 0 {
+			cost = l.CostUSD // the total shrank: a new child's whole total
+		}
 		c.ReportedCostUSD = &cost
 	}
 	t.turnStart = time.Time{}
@@ -287,7 +305,7 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 		t.childOutputs = outs
 	}
 	u := l.Usage
-	if u == nil || u.InputTokens+u.OutputTokens+u.CacheRead+u.CacheCreation == 0 {
+	if u == nil {
 		c.Estimated = true
 		c.Output = llmusage.EstimateTokens(l.Result)
 		return c

@@ -112,16 +112,78 @@ func TestClaudeTranslatorRecordsPerTurnCost(t *testing.T) {
 	assert.Equal(t, "claude-haiku-5-5", calls[1].Model, "no message_start: the model whose output grew")
 }
 
+// resultIn is resultWithTotals for the session sid.
+func resultIn(sid, cost string, turnOut, totalOut int) string {
+	return `{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"` + sid + `",` +
+		`"total_cost_usd":` + cost + `,"usage":{"input_tokens":3,"output_tokens":` + strconv.Itoa(turnOut) + `},` +
+		`"modelUsage":{"claude-haiku-5-5":{"outputTokens":` + strconv.Itoa(totalOut) + `}}}`
+}
+
+func initIn(sid string) string {
+	return `{"type":"system","subtype":"init","session_id":"` + sid + `","apiKeySource":"none"}`
+}
+
+func TestClaudeTranslatorSameSessionInitKeepsBaseline(t *testing.T) {
+	sink := collectLedger(t)
+	tr := NewClaudeTranslator(fixedTurn("t1"))
+	// The real warm child prints system/init before every turn with the
+	// same session id; its totals keep adding up.
+	feedAll(t, tr, initIn("s1"), resultIn("s1", "0.000939", 20, 20),
+		initIn("s1"), resultIn("s1", "0.001028", 5, 25))
+
+	calls := sink.recorded()
+	require.Len(t, calls, 2)
+	require.NotNil(t, calls[1].ReportedCostUSD)
+	assert.InDelta(t, 0.000089, *calls[1].ReportedCostUSD, 1e-12, "only the growth of the running total")
+	assert.Equal(t, "claude-haiku-5-5", calls[1].Model)
+	var sum float64
+	for _, c := range calls {
+		sum += *c.ReportedCostUSD
+	}
+	assert.InDelta(t, 0.001028, sum, 1e-12, "the turns add up to the child's total")
+}
+
 func TestClaudeTranslatorRespawnResetsCost(t *testing.T) {
 	sink := collectLedger(t)
 	tr := NewClaudeTranslator(fixedTurn("t1"))
-	feedAll(t, tr, lnInit, resultWithTotals("0.002", 10, 10),
-		lnInit, resultWithTotals("0.0005", 5, 5), // a new child starts its totals over
-		resultWithTotals("0.0001", 5, 10)) // a shrinking total has no turn cost
+	feedAll(t, tr, initIn("s1"), resultIn("s1", "0.002", 10, 10),
+		initIn("s2"), resultIn("s2", "0.0025", 5, 5), // a respawned child: new session, totals start over
+		resultIn("s2", "0.003", 5, 10))
 
 	calls := sink.recorded()
 	require.Len(t, calls, 3)
 	require.NotNil(t, calls[1].ReportedCostUSD)
-	assert.InDelta(t, 0.0005, *calls[1].ReportedCostUSD, 1e-12)
-	assert.Nil(t, calls[2].ReportedCostUSD)
+	assert.InDelta(t, 0.0025, *calls[1].ReportedCostUSD, 1e-12, "a new session's whole total")
+	require.NotNil(t, calls[2].ReportedCostUSD)
+	assert.InDelta(t, 0.0005, *calls[2].ReportedCostUSD, 1e-12)
+}
+
+func TestClaudeTranslatorShrinkingTotalIsANewChild(t *testing.T) {
+	sink := collectLedger(t)
+	tr := NewClaudeTranslator(fixedTurn("t1"))
+	// No init between: a total smaller than the baseline is a new child's.
+	feedAll(t, tr, initIn("s1"), resultIn("s1", "0.002", 10, 10), resultIn("s1", "0.0005", 4, 4))
+
+	calls := sink.recorded()
+	require.Len(t, calls, 2)
+	require.NotNil(t, calls[1].ReportedCostUSD)
+	assert.InDelta(t, 0.0005, *calls[1].ReportedCostUSD, 1e-12, "the new child's whole total, not nothing")
+	assert.Equal(t, "claude-haiku-5-5", calls[1].Model, "the shrunk model's output counts as grown")
+}
+
+func TestClaudeTranslatorInterruptFixtureCost(t *testing.T) {
+	sink := collectLedger(t)
+	tr := NewClaudeTranslator(fixedTurn("t1"))
+	for _, l := range readFixture(t, "claude_interrupt.jsonl") {
+		_, err := tr.Feed([]byte(l))
+		require.NoError(t, err)
+	}
+	calls := sink.recorded()
+	require.Len(t, calls, 2)
+	assert.False(t, calls[0].OK)
+	assert.False(t, calls[0].Estimated, "a zero usage object is reported as zero, not estimated")
+	assert.Nil(t, calls[0].ReportedCostUSD)
+	require.NotNil(t, calls[1].ReportedCostUSD)
+	assert.InDelta(t, 0.011648, *calls[1].ReportedCostUSD, 1e-9, "the same session's init keeps the baseline")
+	assert.Equal(t, int64(56), calls[1].Output)
 }
