@@ -31,6 +31,7 @@ const (
 // subagents that never finished and rate limits. Only the sessions with the
 // v2 facts (FactsSessions) are measured.
 type TroubleReport struct {
+	Lead                string          `json:"lead"` // one plain sentence; "" without failures or denials
 	Classes             []ErrorClassRow `json:"classes"`
 	Denials             []DenialRow     `json:"denials"`
 	Interrupts          int             `json:"interrupts"`

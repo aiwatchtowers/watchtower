@@ -197,7 +197,7 @@ func TestSkills_JSONKeys(t *testing.T) {
 	r := Skills(factsOf(s), s, nil, []agentlogdb.AgentSkillListed{listed("s1", "idle", 26), listed("s1", "review", 26)})
 	b, err := json.Marshal(r)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"facts_sessions":1,"listed":2,"used":1,"listing_tokens":20,
+	assert.JSONEq(t, `{"facts_sessions":1,"lead":"","listed":2,"used":1,"listing_tokens":20,
 		"rows":[{"name":"review","invocations":1,"by_trigger":{"proactive":0,"slash":1,"read":0},"cost_usd":0,"sessions":1}],
 		"never_used":[{"name":"idle","listing_tokens":10}]}`, string(b))
 }

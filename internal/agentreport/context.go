@@ -39,6 +39,7 @@ const (
 // compactions and the sizes on disk now. Only the sessions with the v2 facts
 // (FactsSessions of Sessions) are measured.
 type ContextReport struct {
+	Lead             string          `json:"lead"` // one plain sentence; "" without v2 facts
 	FactsSessions    int             `json:"facts_sessions"`
 	Sessions         int             `json:"sessions"`
 	Baseline         BaselineSplit   `json:"baseline"`

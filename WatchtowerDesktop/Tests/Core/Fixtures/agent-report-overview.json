@@ -161,6 +161,7 @@
     }
   ],
   "context": {
+    "lead": "Every session starts with 140 tokens; MCP instructions is 33%, the skill list 27%.",
     "facts_sessions": 1,
     "sessions": 2,
     "baseline": {
@@ -277,6 +278,7 @@
     }
   },
   "skills": {
+    "lead": "The skill list costs 9 tokens per session; 2 of 3 skills were not used in this period.",
     "facts_sessions": 1,
     "listed": 3,
     "used": 1,
@@ -306,6 +308,7 @@
     ]
   },
   "trouble": {
+    "lead": "2 failed calls and 0 permission denials; most of them exit_code.",
     "classes": [
       {
         "class": "exit_code",
