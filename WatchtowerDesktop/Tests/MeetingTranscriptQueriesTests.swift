@@ -129,7 +129,7 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
     /// MEETPRIV-03: a private recording's text never lands in
     /// `meeting_recaps` — Go's prompt readers would see it through the
     /// event's recap row. The link itself still lands.
-    func test_linkToEventPrivateRecordingCopiesNothingIntoRecaps() throws {
+    func testMeetPriv03_LinkToEventPrivateRecordingCopiesNothingIntoRecaps() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             try TestDatabase.insertCalendarEvent(db, id: "evt-1")

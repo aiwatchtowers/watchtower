@@ -37,7 +37,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         return config
     }
 
-    func testRecordPrivatelySavesWithPrivateFlagAndKeepsItInThePendingRow() async throws {
+    func testMeetPriv01_RecordPrivatelySavesWithPrivateFlagAndKeepsItInThePendingRow() async throws {
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
         let recorder = FakeRecorder()
@@ -84,7 +84,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
 
     /// The indicator's lock during capture: the flag in memory and in the
     /// pending row, and the job the Stop enqueues carries it.
-    func testLockDuringCaptureReachesTheRowAndTheSave() async throws {
+    func testMeetPriv01_LockDuringCaptureReachesTheRowAndTheSave() async throws {
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
         let recorder = FakeRecorder()
@@ -104,7 +104,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
 
     /// The lock stays live while Stop finalizes the file: a flip in that
     /// window reaches the saved job, on the success and the failure path.
-    func testLockFlippedWhileStopFinalizesReachesTheJob() async throws {
+    func testMeetPriv01_LockFlippedWhileStopFinalizesReachesTheJob() async throws {
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
         let recorder = FakeRecorder()
@@ -119,7 +119,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
     }
 
-    func testLockFlippedWhileAFailingStopFinalizesReachesTheFailedJob() async throws {
+    func testMeetPriv01_LockFlippedWhileAFailingStopFinalizesReachesTheFailedJob() async throws {
         let recorder = FakeRecorder()
         recorder.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
         let center = makeCenter(recorder: recorder, runner: FakeCLIRunner(stdout: privateEnvelope),
@@ -204,7 +204,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         }
     }
 
-    func testCrashRecoveryKeepsTheFlag() async throws {
+    func testMeetPriv01_CrashRecoveryKeepsTheFlag() async throws {
         let name = "rec_20261028_100000.caf"
         let audio = recordingsDir.appendingPathComponent(name)
         try Data([0x00]).write(to: audio)
@@ -225,7 +225,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
     /// the start's row write failed) has no recorded choice: it recovers
     /// private whatever the Settings default (MEETPRIV fails closed), and
     /// the recovered pill's lock opens it before Transcribe.
-    func testAudioOnlyRecoveryIsPrivateUntilTheOwnerOpensTheLock() async throws {
+    func testMeetPriv01_AudioOnlyRecoveryIsPrivateUntilTheOwnerOpensTheLock() async throws {
         let name = "rec_20261028_110000.caf"
         let audio = recordingsDir.appendingPathComponent(name)
         try Data([0x00]).write(to: audio)
@@ -266,7 +266,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
     }
 
     /// The pre-queue single-slot pointer recorded no private choice either.
-    func testLegacyPendingPointerRecoversPrivate() async throws {
+    func testMeetPriv01_LegacyPendingPointerRecoversPrivate() async throws {
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
         let defaults = try isolatedDefaults()

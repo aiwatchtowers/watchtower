@@ -152,7 +152,7 @@ final class MeetingChaptersTests: XCTestCase {
 
     /// MEETPRIV: a Target feeds AI prompts, so a private recording's action
     /// item makes none.
-    func testConvertActionItemOfAPrivateRecordingThrowsAndInsertsNoTarget() throws {
+    func testMeetPriv01_ConvertActionItemOfAPrivateRecordingThrowsAndInsertsNoTarget() throws {
         let db = try TestDatabase.create()
         try db.write { conn in
             try TestDatabase.insertMeetingTranscript(

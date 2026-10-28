@@ -40,7 +40,7 @@ final class MeetingChatSurfaceTests: XCTestCase {
     }
 
     /// MEETPRIV-01: a private recording never gets a chat surface.
-    func testNoSpecForAPrivateRecording() async throws {
+    func testMeetPriv01_NoSpecForAPrivateRecording() async throws {
         try await dbManager.dbPool.write { db in
             try TestDatabase.insertMeetingTranscript(db, id: 8, title: "Private 1:1", isPrivate: true)
         }

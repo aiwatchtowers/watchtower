@@ -11,7 +11,7 @@
 > first. A new reader whose output can reach a model must skip private
 > recordings (MEETPRIV-02) and gets a guard test here.
 
-**Module:** `cmd/meeting_transcript.go`, `cmd/meeting_transcript_export.go`, `internal/meeting/export.go`, `internal/db/meeting_transcripts.go`, `internal/db/meeting_recaps.go` (`RecapNotPrivate`, also used by `internal/kb`; `GetMeetingRecapForAI`), `internal/db/migrations/00163_meeting_transcript_private.sql`, `internal/db/migrations/00164_meeting_private_kb_dirty.sql`, and the readers listed under MEETPRIV-02
+**Module:** `cmd/meeting_transcript.go`, `cmd/meeting_transcript_export.go`, `internal/meeting/export.go`, `internal/db/meeting_transcripts.go`, `internal/db/meeting_recaps.go` (`RecapNotPrivate`, also used by `internal/kb`; `GetMeetingRecapForAI`), `internal/db/migrations/00163_meeting_transcript_private.sql`, `internal/db/migrations/00164_meeting_private_kb_dirty.sql`, the readers listed under MEETPRIV-02, and on the Desktop `MeetingRecorderCenter` (+`+Private`, `+Upgrade`), `RecordingActionsCenter`, `MeetingChatSurface`, `MeetingTranscriptQueries` (`linkToEvent`, `convertActionItemToTarget`) and the recording detail views
 **Last full audit:** 2026-10-28 (created)
 **Owner approval:** board #906; feature note `docs/features/private-meetings.md`.
 
@@ -19,9 +19,9 @@
 
 ## MEETPRIV-01 — nothing is generated for a private recording
 
-**Status:** Enforced (Go). Desktop half (AI actions hidden or disabled with "Private recording — not sent to AI") pending in the Desktop lane.
+**Status:** Enforced (Go and Desktop).
 
-**Observable:** `transcript save --private` stores the row with `private = 1` and calls no generator: the envelope reports `recap_ok: false`, `recap_skipped: true` (a Bool, as for the too-short skip), `recap_skipped_reason: "private"`, `chapters_ok: false`, `chapters_skipped: true`, `chapters_skipped_reason: "private"` (the too-short skip has no reason key and no `chapters_skipped`). `transcript recap|notes|chapters|followup <id>` on a private row exits 1 with `recording <id> is private` before any pipeline run, generator call or write; the same check (`loadTranscriptForAI`) guards the save path's generators.
+**Observable:** `transcript save --private` stores the row with `private = 1` and calls no generator: the envelope reports `recap_ok: false`, `recap_skipped: true` (a Bool, as for the too-short skip), `recap_skipped_reason: "private"`, `chapters_ok: false`, `chapters_skipped: true`, `chapters_skipped_reason: "private"` (the too-short skip has no reason key and no `chapters_skipped`). `transcript recap|notes|chapters|followup <id>` on a private row exits 1 with `recording <id> is private` before any pipeline run, generator call or write; the same check (`loadTranscriptForAI`) guards the save path's generators. Desktop: every AI action of a private recording (Generate recap/notes/chapters, follow-up draft, meeting chat) is hidden or disabled with "Private recording — not sent to AI", and no meeting chat spec is built for it; the action item → Target button is off and `convertActionItemToTarget` refuses (a Target feeds the briefing, day plan and chat prompts); the flag travels from the start (Record Privately, the Settings default) through the capture lock, the queue and the save's `--private`, a lock flipped while Stop finalizes the file or before the pending row lands is kept, and a recovered recording whose choice is unknown (no pending row, legacy imports) comes back private.
 
 **Why locked:** The owner marks a recording private so that its content never reaches an AI provider. One generator call is enough to break that promise.
 
@@ -31,6 +31,16 @@
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv01_SaveGeneratorsRefuseRowFlippedPrivate`
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv01_SaveTooShortKeepsBoolSkip`
 - `internal/db/meeting_private_test.go::TestMeetPriv01_InsertStoresPrivate`
+- `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_RecordPrivatelySavesWithPrivateFlagAndKeepsItInThePendingRow`
+- `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_LockDuringCaptureReachesTheRowAndTheSave`
+- `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_LockFlippedWhileStopFinalizesReachesTheJob`
+- `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_LockFlippedWhileAFailingStopFinalizesReachesTheFailedJob`
+- `WatchtowerDesktop/Tests/MeetingRecorderUpgradeTests.swift::testMeetPriv01_ALockFlippedBeforeTheRowLandsReachesTheRow`
+- `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_CrashRecoveryKeepsTheFlag`
+- `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_AudioOnlyRecoveryIsPrivateUntilTheOwnerOpensTheLock`
+- `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_LegacyPendingPointerRecoversPrivate`
+- `WatchtowerDesktop/Tests/MeetingChatSurfaceTests.swift::testMeetPriv01_NoSpecForAPrivateRecording`
+- `WatchtowerDesktop/Tests/MeetingChaptersTests.swift::testMeetPriv01_ConvertActionItemOfAPrivateRecordingThrowsAndInsertsNoTarget`
 
 **Locked since:** 2026-10-28
 
@@ -68,11 +78,14 @@
 
 ## MEETPRIV-03 — linking a private recording copies no text into `meeting_recaps`
 
-**Status:** Planned (Desktop lane: `MeetingTranscriptQueries.linkToEvent`).
+**Status:** Enforced (Desktop: `MeetingTranscriptQueries.linkToEvent`).
 
 **Observable:** Linking a private recording to a calendar event leaves `meeting_recaps` as it was.
 
 **Why locked:** A copied recap would be a second, unmarked copy of the recording's content. (Go readers already skip a recap whose `transcript_id` is private.)
+
+**Test guards:**
+- `WatchtowerDesktop/Tests/MeetingTranscriptQueriesTests.swift::testMeetPriv03_LinkToEventPrivateRecordingCopiesNothingIntoRecaps`
 
 **Locked since:** 2026-10-28
 
@@ -111,3 +124,4 @@
 ## Changelog
 
 - 2026-10-28 (board #906, private meetings Go lane): file created with MEETPRIV-01..05. Migration 00164 adds the `kb_dirty` trigger on `meeting_transcripts.private`. `TestMigration147_UpgradeKeepsLegacyAndMarksPending` reads its pre-upgrade hits with SearchTranscripts' query minus the private filter (the v146 database has no `private` column); its assertions are unchanged.
+- 2026-10-28 (board #906, private meetings Desktop lane): MEETPRIV-01's Desktop half and MEETPRIV-03 Enforced, with their Swift guards; the Desktop's action item → Target refusal and fail-closed recovery join MEETPRIV-01. No guard relaxed.
