@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -78,11 +79,12 @@ func runTranscriptExport(cmd *cobra.Command, args []string) error {
 		DurationSec: tr.DurationSec, Private: tr.Private, Text: tr.TranscriptText,
 	}
 	if tr.EventID.Valid {
+		// The event title only labels the md header: a failed lookup leaves
+		// it out instead of failing the export.
 		ev, err := database.GetCalendarEventByID(tr.EventID.String)
 		if err != nil {
-			return fmt.Errorf("looking up calendar event %s: %w", tr.EventID.String, err)
-		}
-		if ev != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: looking up calendar event %s (%v); exporting without its title\n", tr.EventID.String, err)
+		} else if ev != nil {
 			e.EventTitle = ev.Title
 		}
 	}
@@ -95,6 +97,9 @@ func runTranscriptExport(cmd *cobra.Command, args []string) error {
 		}
 	}
 	out, err := meeting.RenderTranscriptExport(e, transcriptExportFlagFormat)
+	if errors.Is(err, meeting.ErrNoTimedSegments) {
+		return fmt.Errorf("transcript %d: %w", id, err)
+	}
 	if err != nil {
 		return err
 	}
