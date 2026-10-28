@@ -1730,7 +1730,8 @@ final class MeetingRecorderCenter {
         // re-transcription — or a re-diarization (spec §7).
         await persistTranscript(text: rendered.text, utterances: rendered.utterances,
                                 speakers: rendered.speakers, durationSec: durationSec,
-                                langStats: output.langStats, audioURL: job.audioURL)
+                                langStats: output.langStats, audioURL: job.audioURL,
+                                isPrivate: self.job(jobID)?.isPrivate ?? job.isPrivate)
         await save(jobID: jobID, text: rendered.text, utterances: rendered.utterances,
                    speakers: rendered.speakers, durationSec: durationSec, langStats: output.langStats,
                    registry: rendered.registry, voiceNotifications: config.voiceNotifications)
@@ -1966,13 +1967,15 @@ final class MeetingRecorderCenter {
                                    speakers: [SpeakerEmbedding]?,
                                    durationSec: Int,
                                    langStats: [String: Int],
-                                   audioURL: URL) async {
+                                   audioURL: URL,
+                                   isPrivate: Bool) async {
         guard let store = pendingStore else { return }
         let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: langStats,
                                            utterances: utterances, speakers: speakers)
         do {
             let json = String(bytes: try JSONEncoder().encode(meta), encoding: .utf8) ?? "{}"
-            try await store.saveTranscript(recording: audioURL.lastPathComponent, text: text, metaJSON: json, at: clock())
+            try await store.saveTranscript(recording: audioURL.lastPathComponent, text: text, metaJSON: json,
+                                           isPrivate: isPrivate, at: clock())
         } catch {
             print("[MeetingRecorder] could not keep the transcript of \(audioURL.lastPathComponent) for a retry: "
                   + error.localizedDescription)

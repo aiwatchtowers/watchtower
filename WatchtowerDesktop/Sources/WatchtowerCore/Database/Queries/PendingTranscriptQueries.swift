@@ -41,9 +41,12 @@ package enum PendingTranscriptQueries {
     }
 
     /// The owner flipped the flag on a recording still capturing or queued.
-    package static func setPrivate(_ db: Database, recording: String, _ isPrivate: Bool) throws {
+    /// False when the recording has no row (nothing was written).
+    @discardableResult
+    package static func setPrivate(_ db: Database, recording: String, _ isPrivate: Bool) throws -> Bool {
         try db.execute(sql: "UPDATE pending_transcripts SET private = ? WHERE recording = ?",
                        arguments: [isPrivate, recording])
+        return db.changesCount > 0
     }
 
     /// Reserves `recording` (a phone recording's name): false when a row
@@ -59,14 +62,19 @@ package enum PendingTranscriptQueries {
     }
 
     /// Transcription succeeded: a failed save retries from this text.
-    package static func saveTranscript(_ db: Database, recording: String, text: String, metaJSON: String, at: Date)
-        throws {
+    /// `isPrivate` is the job's flag, written on insert and on conflict: a
+    /// recording whose `begin` (or a lock flip) never landed must not get a
+    /// public row here (MEETPRIV-01).
+    package static func saveTranscript(
+        _ db: Database, recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date
+    ) throws {
         try db.execute(sql: """
-            INSERT INTO pending_transcripts (recording, transcript, meta_json, started_at, transcribed_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO pending_transcripts (recording, transcript, meta_json, private, started_at, transcribed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(recording) DO UPDATE SET transcript = excluded.transcript, meta_json = excluded.meta_json,
-                transcribed_at = excluded.transcribed_at
-            """, arguments: [recording, text, metaJSON, at.timeIntervalSince1970, at.timeIntervalSince1970])
+                private = excluded.private, transcribed_at = excluded.transcribed_at
+            """, arguments: [recording, text, metaJSON, isPrivate, at.timeIntervalSince1970,
+                             at.timeIntervalSince1970])
     }
 
     /// Forgets a persisted transcript (an explicit re-transcribe), keeping

@@ -235,11 +235,11 @@ private final class GatedPendingStore: PendingTranscriptStore, @unchecked Sendab
     func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool {
         try await base.reserve(recording: recording, eventID: eventID, title: title, isPrivate: isPrivate, at: at)
     }
-    func setPrivate(recording: String, _ isPrivate: Bool) async throws {
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws -> Bool {
         try await base.setPrivate(recording: recording, isPrivate)
     }
-    func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws {
-        try await base.saveTranscript(recording: recording, text: text, metaJSON: metaJSON, at: at)
+    func saveTranscript(recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date) async throws {
+        try await base.saveTranscript(recording: recording, text: text, metaJSON: metaJSON, isPrivate: isPrivate, at: at)
     }
     func clearTranscript(recording: String) async throws { try await base.clearTranscript(recording: recording) }
     func dismiss(recording: String, at: Date) async throws { try await base.dismiss(recording: recording, at: at) }
@@ -256,8 +256,10 @@ private struct FailingPendingStore: PendingTranscriptStore {
     func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool {
         throw Failure()
     }
-    func setPrivate(recording: String, _ isPrivate: Bool) async throws { throw Failure() }
-    func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws { throw Failure() }
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws -> Bool { throw Failure() }
+    func saveTranscript(recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date) async throws {
+        throw Failure()
+    }
     func clearTranscript(recording: String) async throws { throw Failure() }
     func dismiss(recording: String, at: Date) async throws { throw Failure() }
     func pending() throws -> [PendingTranscript] { [] }

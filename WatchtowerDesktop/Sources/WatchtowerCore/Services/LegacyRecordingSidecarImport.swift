@@ -95,7 +95,7 @@ package enum LegacyRecordingSidecarImport {
                                   isPrivate: true, at: started)
             if let transcript {
                 try await store.saveTranscript(recording: audioName, text: transcript.text, metaJSON: transcript.metaJSON,
-                                               at: started)
+                                               isPrivate: true, at: started)
             }
         } catch {
             log.error("keeping the sidecars of \(stem, privacy: .public): \(error.localizedDescription, privacy: .public)")

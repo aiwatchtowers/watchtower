@@ -12,9 +12,11 @@ package protocol PendingTranscriptStore: Sendable {
     /// Exclusive: false when another recording already holds the name.
     func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool
     /// The owner flipped the private flag while the recording was capturing
-    /// or queued. No-op when the recording has no row.
-    func setPrivate(recording: String, _ isPrivate: Bool) async throws
-    func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws
+    /// or queued. False (nothing written) when the recording has no row.
+    @discardableResult
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws -> Bool
+    /// `isPrivate` is the job's flag, written on insert and on conflict.
+    func saveTranscript(recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date) async throws
     func clearTranscript(recording: String) async throws
     /// Marks the recording dismissed (a row is written when it had none).
     func dismiss(recording: String, at: Date) async throws
@@ -57,13 +59,16 @@ package struct DatabasePendingTranscriptStore: PendingTranscriptStore {
         }
     }
 
-    package func setPrivate(recording: String, _ isPrivate: Bool) async throws {
+    @discardableResult
+    package func setPrivate(recording: String, _ isPrivate: Bool) async throws -> Bool {
         try await writer.write { try PendingTranscriptQueries.setPrivate($0, recording: recording, isPrivate) }
     }
 
-    package func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws {
+    package func saveTranscript(recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date)
+        async throws {
         try await writer.write {
-            try PendingTranscriptQueries.saveTranscript($0, recording: recording, text: text, metaJSON: metaJSON, at: at)
+            try PendingTranscriptQueries.saveTranscript($0, recording: recording, text: text, metaJSON: metaJSON,
+                                                        isPrivate: isPrivate, at: at)
         }
     }
 

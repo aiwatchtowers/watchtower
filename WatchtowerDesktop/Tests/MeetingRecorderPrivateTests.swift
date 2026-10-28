@@ -18,9 +18,10 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
     private func makeCenter(recorder: FakeRecorder = FakeRecorder(),
                             runner: CLIRunnerProtocol,
                             notifier: FakeNotifier = FakeNotifier(),
-                            defaults: UserDefaults) -> MeetingRecorderCenter {
+                            defaults: UserDefaults,
+                            store: PendingTranscriptStore? = nil) -> MeetingRecorderCenter {
         MeetingRecorderCenter(
-            pendingStore: pendingStore,
+            pendingStore: store ?? pendingStore,
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["private talk"])) },
             decode: stubDecode(sampleCount: 1600),
@@ -290,4 +291,57 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
 
         XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
     }
+
+    /// MEETPRIV-01: a private recording whose start never wrote its row
+    /// (`begin` failed) gets its row from the kept transcript, with the
+    /// job's flag — so a failed save recovers private on relaunch.
+    func testMeetPriv01_KeptTranscriptOfARowlessPrivateRecordingIsPrivate() async throws {
+        let audio = recordingsDir.appendingPathComponent("rec_20261028_130000.caf")
+        try Data([0x00, 0x01, 0x02]).write(to: audio)
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 12)
+        let failingSave = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let center = makeCenter(recorder: recorder, runner: failingSave,
+                                defaults: try isolatedDefaults(), store: BeginFailingPendingStore(base: pendingStore))
+
+        await center.startRecording(eventID: nil, title: "No row", isPrivate: true,
+                                    config: config(privateByDefault: false))
+        XCTAssertEqual(try pendingStore.pending(), [], "the start wrote no row")
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        let row = try XCTUnwrap(pendingRow(audio))
+        XCTAssertNotNil(row.transcript)
+        XCTAssertTrue(row.isPrivate)
+        let relaunched = makeCenter(runner: FakeCLIRunner(stdout: privateEnvelope), defaults: try isolatedDefaults())
+        await relaunched.restorePendingOnLaunch()
+        XCTAssertEqual(relaunched.recoverable.first { $0.audioURL == audio }?.isPrivate, true)
+    }
+}
+
+/// `begin` fails; every other write reaches the real store.
+private final class BeginFailingPendingStore: PendingTranscriptStore, @unchecked Sendable {
+    struct Failure: Error {}
+    private let base: PendingTranscriptStore
+
+    init(base: PendingTranscriptStore) { self.base = base }
+
+    func begin(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws {
+        throw Failure()
+    }
+    func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool {
+        try await base.reserve(recording: recording, eventID: eventID, title: title, isPrivate: isPrivate, at: at)
+    }
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws -> Bool {
+        try await base.setPrivate(recording: recording, isPrivate)
+    }
+    func saveTranscript(recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date) async throws {
+        try await base.saveTranscript(recording: recording, text: text, metaJSON: metaJSON, isPrivate: isPrivate, at: at)
+    }
+    func clearTranscript(recording: String) async throws { try await base.clearTranscript(recording: recording) }
+    func dismiss(recording: String, at: Date) async throws { try await base.dismiss(recording: recording, at: at) }
+    func pending() throws -> [PendingTranscript] { try base.pending() }
+    func transcript(recording: String) throws -> PendingTranscript? { try base.transcript(recording: recording) }
+    func remove(recording: String) async throws { try await base.remove(recording: recording) }
+    func savedAudioPaths() throws -> Set<String> { try base.savedAudioPaths() }
 }

@@ -726,7 +726,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             removeSidecars(audio)
         }
         try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "STALE cached text",
-                                              metaJSON: #"{"durationSec":5,"langStats":{}}"#, at: Date())
+                                              metaJSON: #"{"durationSec":5,"langStats":{}}"#,
+                                              isPrivate: false, at: Date())
 
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         var engineLoads = 0
@@ -774,7 +775,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             try? FileManager.default.removeItem(at: audio)
             removeSidecars(audio)
         }
-        try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: txt, metaJSON: json, at: Date())
+        try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: txt, metaJSON: json,
+                                              isPrivate: false, at: Date())
 
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
@@ -1666,7 +1668,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         }
         // Exact old-format payload: durationSec + langStats only.
         try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "[Я] привет",
-                                              metaJSON: #"{"durationSec":42,"langStats":{"ru":42}}"#, at: Date())
+                                              metaJSON: #"{"durationSec":42,"langStats":{"ru":42}}"#,
+                                              isPrivate: false, at: Date())
 
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
