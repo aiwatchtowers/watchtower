@@ -16,6 +16,9 @@ struct RecordingHeaderActions: View {
     /// False once every utterance is deleted: there is nothing to export.
     let hasContent: Bool
     let center: RecordingActionsCenter
+    /// The row's flag as stored now (nil: no row), read back after a failed
+    /// change.
+    let readPrivate: @Sendable () async throws -> Bool?
     /// The flag landed (the CLI answered), even after the owner moved on.
     let onPrivateChanged: (Bool) -> Void
     /// No CLI to run.
@@ -89,7 +92,9 @@ struct RecordingHeaderActions: View {
 
     private func setPrivate(_ on: Bool) {
         guard let transcriptID, let service = cliService() else { return }
-        center.setPrivate(transcriptID: transcriptID, on, service: service) { onPrivateChanged($0) }
+        center.setPrivate(transcriptID: transcriptID, on, service: service, readPrivate: readPrivate) {
+            onPrivateChanged($0)
+        }
     }
 
     private func copyTranscript() {

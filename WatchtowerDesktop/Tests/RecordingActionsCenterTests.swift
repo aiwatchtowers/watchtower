@@ -152,12 +152,12 @@ final class RecordingActionsCenterTests: XCTestCase {
         let done = expectation(description: "changed")
         var reported: [Bool] = []
 
-        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner)) {
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner), readPrivate: { nil }) {
             reported.append($0)
             done.fulfill()
         }
         XCTAssertTrue(center.changingPrivate.contains(5))
-        center.setPrivate(transcriptID: 5, false, service: TranscriptSaveService(runner: runner)) { _ in
+        center.setPrivate(transcriptID: 5, false, service: TranscriptSaveService(runner: runner), readPrivate: { nil }) { _ in
             XCTFail("a second change of the same recording while one runs is ignored")
         }
         await fulfillment(of: [done], timeout: 5)
@@ -172,11 +172,83 @@ final class RecordingActionsCenterTests: XCTestCase {
         let center = makeCenter()
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
 
-        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner)) { _ in
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { false }) { _ in
             XCTFail("no change landed")
         }
         await waitUntil { !center.changingPrivate.contains(5) }
 
         XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
+    }
+
+    /// MEETPRIV-01: a failed `on` whose flag landed anyway (the row reads
+    /// private) still runs the private-turned path, so the meeting chat's
+    /// engine is dropped and the toggle shows the truth.
+    func testMeetPriv01_FailedOnThatLandedRunsThePrivatePath() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let done = expectation(description: "changed")
+        var reported: [Bool] = []
+
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { true }) {
+            reported.append($0)
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: 5)
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertEqual(reported, [true])
+        XCTAssertTrue(center.lastError[5]?.hasPrefix("Private is on, but the change reported an error: ") == true)
+    }
+
+    /// A failed `on` whose read-back fails too reports the failure as it is
+    /// and claims no change.
+    func testSetPrivateFailureWithUnreadableRowReportsNoChange() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { throw CLIRunnerError.nonZeroExit(code: 1, stderr: "db") }) { _ in
+            XCTFail("the flag is not known to have landed")
+        }
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
+    }
+
+    /// A failed `off` is never turned into a private change by the read-back.
+    func testSetPrivateOffFailureIgnoresReadBack() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+
+        center.setPrivate(transcriptID: 5, false, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { true }) { _ in
+            XCTFail("no change landed")
+        }
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
+    }
+
+    /// MEETPRIV-04: the CLI's `kb_drop_error` (flag set, knowledge drop
+    /// failed) reports the flag and the failure.
+    func testMeetPriv04_KBDropErrorIsReportedWithTheFlag() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(stdout: Data(#"{"id":5,"private":true,"kb_drop_error":"kb: begin: locked"}"#.utf8))
+        let done = expectation(description: "changed")
+        var reported: [Bool] = []
+
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { nil }) {
+            reported.append($0)
+            done.fulfill()
+        }
+        await fulfillment(of: [done], timeout: 5)
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertEqual(reported, [true])
+        XCTAssertEqual(center.lastError[5],
+                       "Private is on, but removing it from knowledge search failed (the next index pass retries): kb: begin: locked")
     }
 }

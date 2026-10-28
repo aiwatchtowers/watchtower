@@ -234,6 +234,53 @@ func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
 	assert.Equal(t, 1, gen.calls, "chapters must reach the generator once private is off")
 }
 
+// TestMeetPriv04_PrivateOnSucceedsWhenKBDropFails pins that a failed
+// knowledge-index drop never fails `private on` once the flag is written: exit
+// 0, `kb_drop_error` in the JSON and a stderr warning, the row private — so
+// the Desktop runs its private-turned path instead of showing the recording as
+// public. The indexer's next pass still drops the document.
+func TestMeetPriv04_PrivateOnSucceedsWhenKBDropFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	id := insertChapterTestTranscript(t, database)
+	kbSources := []string{"transcript", "recap"}
+	_, err = kb.Run(context.Background(), database, kb.Options{Sources: kbSources})
+	require.NoError(t, err)
+
+	// A cancelled context fails the drop's transaction after the flag write,
+	// which does not take the context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	transcriptPrivateCmd.SetContext(ctx)
+	t.Cleanup(func() { transcriptPrivateCmd.SetContext(context.Background()) })
+	var stdout, stderr bytes.Buffer
+	transcriptPrivateCmd.SetOut(&stdout)
+	transcriptPrivateCmd.SetErr(&stderr)
+	t.Cleanup(func() { transcriptPrivateCmd.SetErr(nil) })
+	require.NoError(t, transcriptPrivateCmd.RunE(transcriptPrivateCmd, []string{fmt.Sprint(id), "on"}))
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &got))
+	assert.Equal(t, float64(id), got["id"])
+	assert.Equal(t, true, got["private"])
+	assert.Contains(t, got["kb_drop_error"], "context canceled")
+	assert.Contains(t, stderr.String(), fmt.Sprintf("warning: recording %d is private, but removing it from the knowledge index failed", id))
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	assert.True(t, tr.Private)
+
+	_, err = kb.Run(context.Background(), database, kb.Options{Sources: kbSources})
+	require.NoError(t, err)
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE id = ?`, fmt.Sprintf("transcript:%d", id)).Scan(&n))
+	assert.Zero(t, n, "the next index pass drops what the failed drop left")
+}
+
 func TestMeetPriv05_ExportPrivateToFile0600(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()

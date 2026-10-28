@@ -17,6 +17,12 @@ import (
 // it on also drops the recording's knowledge documents now, so search stops
 // serving them at once; the indexer's next pass restores them once it is
 // off. Nothing is generated or unmined.
+//
+// The flag is the primary effect: once it is written the command exits 0
+// even if the drop fails (the flip's kb_dirty marks and the indexer's next
+// pass are the backstop), reporting the failure as `kb_drop_error` plus a
+// stderr warning — so a caller never takes a recording that is private for a
+// public one.
 func runTranscriptPrivate(cmd *cobra.Command, args []string) error {
 	id, err := strconv.ParseInt(args[0], 10, 64)
 	if err != nil {
@@ -44,12 +50,14 @@ func runTranscriptPrivate(cmd *cobra.Command, args []string) error {
 	if !found {
 		return fmt.Errorf("transcript %d not found", id)
 	}
+	out := map[string]any{"id": id, "private": private}
 	if private {
 		if _, err := kb.DropPrivateRecording(cmd.Context(), database, id); err != nil {
-			return fmt.Errorf("recording %d is private, but removing it from the knowledge index failed (the next index pass retries): %w", id, err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: recording %d is private, but removing it from the knowledge index failed (the next index pass retries): %v\n", id, err)
+			out["kb_drop_error"] = err.Error()
 		}
 	}
-	return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"id": id, "private": private})
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
 }
 
 // runTranscriptExport renders one recording through

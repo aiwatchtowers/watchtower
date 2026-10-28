@@ -283,6 +283,7 @@ struct RecordingDetailView: View {
                     hasContent: utterances.map { $0.contains { !$0.deleted } }
                         ?? !transcript.transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     center: appState.recordingActionsCenter,
+                    readPrivate: readStoredPrivate,
                     onPrivateChanged: privateChanged
                 ) { message in
                     if isShowing(transcript.id ?? -1) { errorMessage = message }
@@ -504,6 +505,21 @@ struct RecordingDetailView: View {
     private func chatOpenFailed(_ error: Error, transcriptID id: Int64) {
         NSLog("RecordingDetailView: opening the chat of recording %lld failed: %@", id, String(describing: error))
         chatError = "Couldn't open the chat: \(error.localizedDescription)"
+    }
+
+    /// The row's stored flag, for `RecordingActionsCenter.setPrivate`'s
+    /// read-back after a failed change.
+    private var readStoredPrivate: @Sendable () async throws -> Bool? {
+        let db = appState.databaseManager
+        let transcriptID = transcriptID
+        return {
+            guard let db else { throw DatabaseNotOpen() }
+            return try await db.dbPool.read { try MeetingTranscriptQueries.fetch($0, id: transcriptID)?.isPrivate }
+        }
+    }
+
+    private struct DatabaseNotOpen: LocalizedError {
+        var errorDescription: String? { "the database isn't open" }
     }
 
     /// The CLI set the flag. Turning it on stops this recording's chat

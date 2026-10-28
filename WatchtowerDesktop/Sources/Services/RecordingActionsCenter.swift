@@ -33,10 +33,18 @@ final class RecordingActionsCenter {
 
     /// `transcript private <id> on|off`. `onChanged` gets the flag the CLI
     /// reports, whether or not the recording is still on screen.
+    ///
+    /// Turning it on fails toward private: on any error the row is read back
+    /// (`readPrivate`), and a row that is private gets `onChanged(true)` all
+    /// the same — the flag may have landed before the failure, and the
+    /// private-turned path must still drop the meeting chat's engine and show
+    /// the toggle as it is. A drop from knowledge search that failed after the
+    /// flag landed (the CLI's `kb_drop_error`) is reported, not hidden.
     func setPrivate(
         transcriptID: Int64,
         _ isPrivate: Bool,
         service: TranscriptSaveService,
+        readPrivate: @escaping @Sendable () async throws -> Bool?,
         onChanged: @escaping @MainActor (Bool) -> Void
     ) {
         guard !changingPrivate.contains(transcriptID) else { return }
@@ -47,9 +55,36 @@ final class RecordingActionsCenter {
             do {
                 let result = try await service.setPrivate(transcriptID: transcriptID, isPrivate)
                 onChanged(result.isPrivate)
+                if let dropError = result.kbDropError {
+                    lastError[transcriptID] = Self.privateOnButDropFailed(dropError)
+                }
             } catch {
-                lastError[transcriptID] = "Couldn't change Private: \(error.localizedDescription)"
+                guard isPrivate, await Self.landedPrivate(transcriptID, readPrivate) else {
+                    lastError[transcriptID] = "Couldn't change Private: \(error.localizedDescription)"
+                    return
+                }
+                onChanged(true)
+                lastError[transcriptID] = "Private is on, but the change reported an error: \(error.localizedDescription)"
             }
+        }
+    }
+
+    private static func privateOnButDropFailed(_ reason: String) -> String {
+        "Private is on, but removing it from knowledge search failed (the next index pass retries): \(reason)"
+    }
+
+    /// Whether the row reads private after a failed `on`; a failed read
+    /// (logged) counts as not known, so the failure is shown as it is.
+    private static func landedPrivate(
+        _ transcriptID: Int64,
+        _ readPrivate: @Sendable () async throws -> Bool?
+    ) async -> Bool {
+        do {
+            return try await readPrivate() == true
+        } catch {
+            NSLog("RecordingActionsCenter: re-reading recording %lld after a failed Private change failed: %@",
+                  transcriptID, String(describing: error))
+            return false
         }
     }
 

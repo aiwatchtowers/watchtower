@@ -481,7 +481,14 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         let on = try await svc.setPrivate(transcriptID: 12, true)
         XCTAssertEqual(fake.invocations.last, ["meeting-prep", "transcript", "private", "12", "on"])
-        XCTAssertEqual(on, TranscriptPrivateResult(transcriptID: 12, isPrivate: true))
+        XCTAssertEqual(on.transcriptID, 12)
+        XCTAssertTrue(on.isPrivate)
+        XCTAssertNil(on.kbDropError)
+
+        let dropFake = FakeCLIRunner(stdout: Data(#"{"id":12,"private":true,"kb_drop_error":"kb: begin: locked"}"#.utf8))
+        let dropped = try await TranscriptSaveService(runner: dropFake).setPrivate(transcriptID: 12, true)
+        XCTAssertTrue(dropped.isPrivate)
+        XCTAssertEqual(dropped.kbDropError, "kb: begin: locked")
 
         let offFake = FakeCLIRunner(stdout: Data(#"{"id":12,"private":false}"#.utf8))
         let off = try await TranscriptSaveService(runner: offFake).setPrivate(transcriptID: 12, false)

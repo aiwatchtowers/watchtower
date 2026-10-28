@@ -34,6 +34,7 @@
 - `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_RecordPrivatelySavesWithPrivateFlagAndKeepsItInThePendingRow`
 - `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_LockDuringCaptureReachesTheRowAndTheSave`
 - `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_LockFlippedWhileStopFinalizesReachesTheJob`
+- `WatchtowerDesktop/Tests/RecordingActionsCenterTests.swift::testMeetPriv01_FailedOnThatLandedRunsThePrivatePath`
 - `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_LockFlippedWhileAFailingStopFinalizesReachesTheFailedJob`
 - `WatchtowerDesktop/Tests/MeetingRecorderUpgradeTests.swift::testMeetPriv01_ALockFlippedBeforeTheRowLandsReachesTheRow`
 - `WatchtowerDesktop/Tests/MeetingRecorderPrivateTests.swift::testMeetPriv01_CrashRecoveryKeepsTheFlag`
@@ -102,14 +103,16 @@
 
 ## MEETPRIV-04 — turning private on later hides, turning it off generates nothing
 
-**Status:** Enforced (Go).
+**Status:** Enforced (Go and Desktop).
 
-**Observable:** `transcript private <id> on|off` sets the flag and prints `{"id":N,"private":true|false}`; `show` reports `private`; `transcript list` (the owner's own) still lists the row. Turning private on also deletes the recording's transcript document, the recap documents it owns and the documents of the artifacts kept from its meeting chat from the knowledge index in the same process (`kb.DropPrivateRecording`), so `search_knowledge` and `get_knowledge_document` stop serving them at once; a failure there exits 1 after the flag is set, and the next index pass removes them anyway. Already generated recap, notes and chapters stay on the row, and every MEETPRIV-02 reader skips them from then on. Turning private off re-enables the AI commands and generates nothing by itself. Deleting a recording while it is private deletes its recap with it (MEETPRIV-02); turn private off first to keep the recap. Ideas and memory already mined are not unmined.
+**Observable:** `transcript private <id> on|off` sets the flag and prints `{"id":N,"private":true|false}`; `show` reports `private`; `transcript list` (the owner's own) still lists the row. Turning private on also deletes the recording's transcript document, the recap documents it owns and the documents of the artifacts kept from its meeting chat from the knowledge index in the same process (`kb.DropPrivateRecording`), so `search_knowledge` and `get_knowledge_document` stop serving them at once; a failure there, once the flag is set, still exits 0 with `kb_drop_error` in the JSON and a stderr warning, and the next index pass removes them anyway; the Desktop treats any failed `on` whose row reads back private as turned private (the meeting chat's engine dropped, the toggle on). Already generated recap, notes and chapters stay on the row, and every MEETPRIV-02 reader skips them from then on. Turning private off re-enables the AI commands and generates nothing by itself. Deleting a recording while it is private deletes its recap with it (MEETPRIV-02); turn private off first to keep the recap. Ideas and memory already mined are not unmined.
 
 **Test guards:**
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv04_PrivateCommandTogglesAndShowReports`
 - `internal/db/meeting_private_test.go::TestMeetPriv04_FlagRoundTripAndKBDirtyMarks`
 - `internal/kb/meeting_private_test.go::TestMeetPriv04_DropPrivateRecordingLeavesSearchNow`
+- `cmd/meeting_transcript_private_test.go::TestMeetPriv04_PrivateOnSucceedsWhenKBDropFails`
+- `WatchtowerDesktop/Tests/RecordingActionsCenterTests.swift::testMeetPriv04_KBDropErrorIsReportedWithTheFlag`
 
 **Locked since:** 2026-10-28
 

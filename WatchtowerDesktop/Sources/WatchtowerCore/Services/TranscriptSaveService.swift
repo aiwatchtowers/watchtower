@@ -134,10 +134,14 @@ package struct TranscriptFollowupResult: Decodable, Equatable {
 package struct TranscriptPrivateResult: Decodable, Equatable {
     package let transcriptID: Int64
     package let isPrivate: Bool
+    /// Set when `on` wrote the flag but dropping the recording's knowledge
+    /// documents failed (the next index pass removes them).
+    package let kbDropError: String?
 
     enum CodingKeys: String, CodingKey {
         case transcriptID = "id"
         case isPrivate = "private"
+        case kbDropError = "kb_drop_error"
     }
 }
 
