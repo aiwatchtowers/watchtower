@@ -20,11 +20,14 @@ struct BoardTargetDetailView: View {
     @State private var openSession: SessionRoute?
     @State private var sendError: String?
     @FocusState private var composerFocused: Bool
+    /// The board's Show done switch (#1191): one remembered choice.
+    @AppStorage(ShowDoneButton.storageKey) private var showDone = false
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             if let detail = BoardTargetDetailModel(
-                targetID: targetID, snapshot: replica.snapshot, now: context.date, inFlight: writer.inFlight
+                targetID: targetID, snapshot: replica.snapshot, now: context.date, inFlight: writer.inFlight,
+                showDone: showDone
             ) {
                 content(detail)
             } else {
@@ -262,9 +265,10 @@ struct BoardTargetDetailView: View {
 
     @ViewBuilder
     private func subTargets(_ detail: BoardTargetDetailModel) -> some View {
-        if !detail.children.isEmpty || !detail.isReadOnly {
-            SectionHeader(detail.children.isEmpty ? "Sub-targets" : detail.childrenHeader)
+        if !detail.children.isEmpty || detail.doneChildCount > 0 || !detail.isReadOnly {
+            SectionHeader(detail.childrenHeader)
             VStack(alignment: .leading, spacing: Spacing.regular) {
+                ShowDoneButton(doneCount: detail.doneChildCount, showDone: $showDone)
                 ForEach(detail.children) { child in
                     NavigationLink(value: BoardTargetRoute(id: child.id)) {
                         BoardCard(model: child.card, isDimmed: child.isDimmed)
