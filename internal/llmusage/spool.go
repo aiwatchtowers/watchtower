@@ -1,9 +1,13 @@
 package llmusage
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -57,4 +61,54 @@ func appendSpool(path string, c Call) error {
 		return err
 	}
 	return f.Close()
+}
+
+// ImportingSuffix marks the spool file the daemon has claimed for import.
+const ImportingSuffix = ".importing"
+
+// ReadSpool returns the calls in path+ImportingSuffix and path, in that
+// order, without moving or locking either (the read-only `usage llm` view).
+// Missing files are empty; malformed lines are skipped.
+func ReadSpool(path string) ([]Call, error) {
+	var out []Call
+	for _, p := range []string{path + ImportingSuffix, path} {
+		calls, _, err := ParseSpoolFile(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, calls...)
+	}
+	return out, nil
+}
+
+// ParseSpoolFile reads one spool file: the calls of its well-formed lines
+// and the number of malformed lines skipped (a torn last line included). A
+// missing file is empty, not an error.
+func ParseSpoolFile(path string) (calls []Call, skipped int, err error) {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("opening spool: %w", err)
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	for {
+		line, rerr := r.ReadBytes('\n')
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			var c Call
+			if json.Unmarshal(line, &c) == nil && c.CallID != "" {
+				calls = append(calls, c)
+			} else {
+				skipped++
+			}
+		}
+		if errors.Is(rerr, io.EOF) {
+			return calls, skipped, nil
+		}
+		if rerr != nil {
+			return nil, 0, fmt.Errorf("reading spool: %w", rerr)
+		}
+	}
 }
