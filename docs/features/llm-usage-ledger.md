@@ -60,7 +60,7 @@ Sections, each call in exactly one: **Watchtower** (surface `watchtower`, built-
 `TestLLMUSAGE01_LeavesRecord` checks that code records, not that it is wired:
 - **HTTP residual risk.** An HTTP leaf in a package with none of the endpoint literals in `llmEndpoints` (`/chat/completions`, `/v1/messages`, `/api/chat`, `/api/generate`, `/responses`) is not checked.
 - **Process starts it cannot see.** `&exec.Cmd{…}` struct literals, starts through a function-typed parameter or field, and a *new* start added to a function already on a list or already recording (the function passes, the new start is unrecorded).
-- **Wiring.** `wireLLMUsage` runs in the root `PersistentPreRunE`. A future command that defines its own no-op `PersistentPreRunE` leaves the process unwired (its calls go nowhere but stderr); the guard checks recording, not wiring.
+- **Wiring.** `Execute` wires every process to the setup spool (and the data root's `watchtower.log`) before cobra runs; `wireLLMUsage` in the root `PersistentPreRunE` then points it at the resolved workspace. A command with its own no-op `PersistentPreRunE` (hooks, `session-host`, `guide`, …) keeps the setup spool, which the first daemon cycle of any workspace claims, so its calls are never lost to "no spool"; the guard checks recording, not wiring.
 - `record*` helpers are matched by bare name inside the package; the lists are keyed by package name, not import path.
 - `usage llm` "never writes" depends on the root pre-run's `ensureSchemaFormat`, which may rewrite the config on an old `schema_format` (true of every command).
 

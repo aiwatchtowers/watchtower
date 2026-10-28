@@ -135,3 +135,19 @@ func TestNoConfigLostCallLogsUnderDataRoot(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(string(log), "llmusage: call not recorded (probe,"))
 }
+
+// TestSpoolPathDefaultBeforeAnyPreRun is what Execute wires before cobra
+// runs: a command whose PersistentPreRunE is a no-op (never resolving the
+// workspace) still records its calls, in the setup spool.
+func TestSpoolPathDefaultBeforeAnyPreRun(t *testing.T) {
+	root := llmWiringHome(t)
+	writeWiringConfig(t, "ws")
+	wireLLMUsage(nil) // Execute's default; no pre-run follows
+
+	llmusage.Record(context.Background(), llmusage.Call{Purpose: "probe", Model: "m", OK: true})
+
+	calls, err := llmusage.ReadSpool(llmusage.SpoolPath(root))
+	require.NoError(t, err)
+	require.Len(t, calls, 1, "the setup spool holds the call, not \"no spool\"")
+	assert.NoFileExists(t, llmusage.SpoolPath(filepath.Join(root, "ws")))
+}

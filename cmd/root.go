@@ -86,6 +86,9 @@ func Execute() int {
 	lockmetrics.SetProcessRole(role)
 	llmusage.SetProcess(role, surfaceFor(role, os.Args[1:]))
 	auditlog.SetProcess(auditPath(role))
+	// Calls land in the setup spool until the root pre-run resolves the
+	// workspace; a command with its own no-op PersistentPreRunE keeps it.
+	wireLLMUsage(nil)
 	go sweepStaleTemp()
 	wrapContentCommands()
 	contentRan.Store(nil)
