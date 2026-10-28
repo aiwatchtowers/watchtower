@@ -372,9 +372,14 @@ struct MeetingNotesView: View {
     // list reloads once the write lands.
 
     private func addActionItemToNotes(idx: Int, text: String) {
-        guard recapGate.offersAIActions else { return }
+        guard recapGate.offersAIActions, let db = appState.databaseManager else { return }
         let nextSort = (freeformNotes.last?.sortOrder ?? -1) + 1
         Task {
+            // Checked again now: the recording may have turned private since
+            // the page loaded, and "+ to notes" has no CLI backstop.
+            let gate = await EventRecapGate.current(db.dbPool, eventID: eventID)
+            recapGate = gate
+            guard gate.offersAIActions else { return }
             guard await saveMeetingNote(asQuestion: false, text: text, sortOrder: nextSort) else { return }
             addedActionItems.insert(idx)
             loadNotes()

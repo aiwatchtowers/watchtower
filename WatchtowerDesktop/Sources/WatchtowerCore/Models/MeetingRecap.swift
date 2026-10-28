@@ -81,6 +81,18 @@ package struct EventRecapGate: Equatable {
         Self(ownedByPrivateRecording: try MeetingRecapQueries.isOwnedByPrivateRecording(db, eventID: eventID))
     }
 
+    /// The gate as stored now, for a check at action time (the recording may
+    /// have turned private since the page loaded). A failed read (logged)
+    /// closes it: no AI action on a recap whose owner could not be checked.
+    package static func current(_ reader: some DatabaseReader, eventID: String) async -> Self {
+        do {
+            return try await reader.read { try load($0, eventID: eventID) }
+        } catch {
+            NSLog("EventRecapGate: checking event %@'s recap owner failed: %@", eventID, String(describing: error))
+            return Self(ownedByPrivateRecording: true)
+        }
+    }
+
     /// Re-generate, "Recap from text" and "+ to notes".
     package var offersAIActions: Bool { !ownedByPrivateRecording }
 

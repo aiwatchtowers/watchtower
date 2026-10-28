@@ -104,4 +104,25 @@ final class MeetingRecapTests: XCTestCase {
         XCTAssertFalse(flipped.offersAIActions)
         XCTAssertEqual(flipped.prefilledText(flippedRecap), "")
     }
+
+    /// MEETPRIV-02: "+ to notes" re-checks the gate at action time
+    /// (`EventRecapGate.current`): a recording turned private after the page
+    /// loaded closes it, and a failed read closes it too.
+    func testMeetPriv02_EventRecapGateAtActionTimeFailsClosed() async throws {
+        let db = try TestDatabase.create()
+        try await db.write { conn in
+            try TestDatabase.insertCalendarEvent(conn, id: "evt-pub")
+            try TestDatabase.insertMeetingTranscript(conn, id: 2, eventID: "evt-pub")
+            try TestDatabase.insertMeetingRecap(conn, eventID: "evt-pub", transcriptID: 2, sourceText: "public words")
+        }
+        let open = await EventRecapGate.current(db, eventID: "evt-pub")
+        XCTAssertTrue(open.offersAIActions)
+
+        try await db.write { try $0.execute(sql: "UPDATE meeting_transcripts SET private = 1 WHERE id = 2") }
+        let flipped = await EventRecapGate.current(db, eventID: "evt-pub")
+        XCTAssertFalse(flipped.offersAIActions)
+
+        let unreadable = await EventRecapGate.current(try DatabaseQueue(), eventID: "evt-pub")
+        XCTAssertFalse(unreadable.offersAIActions, "no meeting_recaps table: the read fails and the gate stays closed")
+    }
 }
