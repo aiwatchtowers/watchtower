@@ -19,6 +19,7 @@ The owner opened a finished author loop (v0.26.1) and hit four problems:
 - D4 (conversation): a comment can be left on every finding in a loop: on the chapters and on a finding marked **Fix**.
 - D5 (conversation): **Request changes (N)** next to **Approve**, in the footer beside Dismiss.
 - D6 (ask #686): all of it in one branch, the Go and prompt part included.
+- D7 (conversation): **Approve** is for "nothing to send back": with a comment mark or a margin comment on the ask it is off, and **Request changes** is the way.
 
 ## Goals
 
@@ -42,14 +43,14 @@ The owner opened a finished author loop (v0.26.1) and hit four problems:
   - `blocker` — building as written ships something wrong: a broken promise to the owner, lost data, a missing contract, a path that fails silently;
   - `major` — a real gap to fix before building: a missing case, an unclear behaviour, a task with no test;
   - `minor` — wording, a nit, a nice-to-have.
-- `internal/specreview`: `Severity string \`json:"severity,omitempty"\`` on `Agreement`, `DecidedAlone`, `BlindSpot`, `Check` and `AuthorItem`. `Parse` keeps only the three values (lower-cased, trimmed); anything else, and any severity on an `as_agreed` agreement or a non-`concern` check, becomes empty. `Findings` copies it into the author items, so `get_spec_review` and the ledger carry it. Keys (`ag:` …) do not include it: a re-round that changes only the severity is the same finding.
+- `internal/specreview`: `Severity string \`json:"severity,omitempty"\`` on `Agreement`, `DecidedAlone`, `BlindSpot`, `Check` and `AuthorItem`. `Parse` keeps only the three values (lower-cased, trimmed); anything else, and any severity on an `as_agreed` agreement or a non-`concern` check, becomes empty. `Findings` copies it into the author items, so `get_spec_review` and the ledger carry it. Keys (`ag:` …) do not include it. Severity is set when the finding is raised and kept through the loop: a later round gives the item a verdict, never a new severity (the reviewer never re-raises a carried item, `NextRound` keeps the item as it was).
 - `testdata/result_keys.golden` and the `get_spec_review` pinned keys gain `severity`. An owner-customised `review.spec` (prompt store) that never asks for severity yields empty severities — the fallback below covers it.
 
 ### 2. Chips (Desktop)
 
 - `SpecReviewPresentation.severityBadge(_:)`: `blocker` → **Blocker**, `Tone.error`; `major` → **Major**, `Tone.warning`; `minor` → **Minor**, grey. Empty (an old review, a customised prompt) → no severity chip.
 - A finding card's head is: the severity chip (coloured), then the kind and, in a loop, its loop status as one grey chip — "Differs", "Blind spot · New in round 3", "Missing · Not settled". Only severity is coloured. The `Tint.accent` (blue) chip goes away from the spec review screen.
-- Without a severity the kind chip keeps today's kind colour, except **Decided alone**, which becomes grey (it is never blue again).
+- Without a severity (an old review, a customised prompt) every chip is grey: colour on this screen means severity and nothing else.
 - In every list of findings — a chapter, **Disputed**, **Not answered by the author**, **Fixed by the author** — the cards sort by severity (blocker, major, minor, none), stable within a level.
 - The counts line on Meaning leads with severity when any is set: "2 blockers · 3 major · 4 minor — 7 as agreed · 1 differs …".
 - Picked states ("Fix — the author fixes it", "Reviewer is right …", "Reopened", "Your comment") lose the accent colour: primary text, the icon in secondary.
@@ -58,7 +59,7 @@ The owner opened a finished author loop (v0.26.1) and hit four problems:
 
 - `SpecReviewQuote`: the quote is upright `.callout` in primary colour, rendered as inline Markdown (code spans monospaced, emphasis applied, no raw backticks or asterisks), with a 2-pt bar in secondary colour on its left instead of quotation marks; the label is `.caption.weight(.semibold)` in primary at reduced opacity rather than `.secondary`. The same applies to the idea card and the "Your comments from the last round" list.
 - Notes on Meaning: `.callout` in secondary, not `.caption`.
-- "Changes since #N" (`OwnerAskHeaderCard`): a single-paragraph `changes` with three or more `; `-separated parts is shown as a bullet list, one part per line; text that already has line breaks or Markdown lists is shown as today.
+- "Changes since #N" (`OwnerAskHeaderCard`): a `changes` text with no line break, longer than 200 characters and with three or more `; `-separated parts is shown as a bullet list, one part per line. Anything else — a short line, prose with one or two semicolons, text with line breaks or a Markdown list — is shown as today.
 
 ### 4. Comments everywhere
 
@@ -69,10 +70,21 @@ The owner opened a finished author loop (v0.26.1) and hit four problems:
 ### 5. Verdicts in the footer
 
 - While the spec review screen is up (any step: Decide, Meaning, Chapters, Wrap-up), the drawer's answer bar shows **Request changes (N)** and **Approve** beside Dismiss. N counts the `comment` marks (each **Fix**, **Reviewer is right**, **Reopen** and **Comment**) plus the margin comments made under **Read the spec**.
-- **Request changes (N)** answers with verdict `changes` (today's `SpecReviewModel.send`), disabled at N = 0 with the help "Mark a finding Fix or comment on one first". In a loop this is new: the author fixes and files a re-round, which is a classic visible review (`specLoopStart` already starts no hidden loop after the owner had the ask), so the reviewer checks the fixes and the owner sees the result.
-- **Approve** answers `approved` as today, with today's confirmations (unmarked findings outside a loop; an unanswered dispute after an early end). When N > 0 Approve stays allowed: the comments go with it as fixes to make (author-loop spec §7, unchanged); its help says so.
-- The buttons inside the scroll — the loop's **Approve** and Wrap-up's **Send round to the author** / **Approve** — are removed; Wrap-up keeps its summary and note. The answer blocker line (unanswered questions, a too-long note) moves into the bar beside the buttons.
-- Keys: ⌘↩ Approve, ⌘⇧↩ Request changes, as in the code review toolbar and the classic review footer.
+- **Request changes (N)** answers with verdict `changes` (today's `SpecReviewModel.send`), disabled at N = 0 with the help "Mark a finding Fix or comment on one first". In a loop this is new: the author fixes and files a re-round, which is a classic visible review (`specLoopStart` already starts no hidden loop after the owner had the ask), so the reviewer checks the fixes and the owner sees the result, with the "Your comments from the last round" resolved/open list.
+- The answer reaches the author like any answered ask: typed into the live session, or — when the session has ended — through the brief fallback of the next session on the target (`owner_asks` delivery, unchanged). Nothing new can be lost here.
+- **Approve** answers `approved` as today, with today's confirmations (unmarked findings outside a loop; an unanswered dispute after an early end). It is off while N > 0 (D7), with the help "You have N comments for the author — Request changes, or remove them to approve". This replaces author-loop spec §7's "Approve with Reviewer is right is approved with fixes": a Fix is now always a Request changes.
+- The buttons inside the scroll — the loop's **Approve** and Wrap-up's **Send round to the author** / **Approve** — are removed, outside a loop too: one screen keeps its verdicts in one place. Wrap-up keeps its summary and note. The answer blocker line (unanswered questions, a too-long note) moves into the bar beside the buttons.
+- Keys: ⌘↩ Approve, ⌘⇧↩ Request changes, as in the code review toolbar and the classic review footer — only while no text field has focus. In a comment editor ⌘↩ saves the comment (today's `CommentTextEditor.onSubmit`) and never answers the ask.
+
+## Screens
+
+No mockup was agreed; the screens follow the design kit. Before review the builder adds the changed states to `DesignShotCatalog` and attaches the shots (`make desktop-shots`): a Decide card with each severity and a comment under **Fix**, a chapter finding with **Comment** in a loop, the footer with **Request changes (N)** on and **Approve** off, the footer at N = 0, and "Changes since" as a list.
+
+## Tests and acceptance
+
+- Go `internal/specreview`: `Parse` keeps `blocker`/`major`/`minor` (any case, trimmed), empties anything else, and empties severity on an `as_agreed` agreement and a non-`concern` check; `Findings` copies severity into author items; a carried item keeps its severity through `NextRound`; `result_keys.golden` and the `get_spec_review` key pin include `severity`. Prompt: version 3 and the three level names in the text (`internal/prompts` tests).
+- Swift (`Tests/Core` where pure): severity badge mapping and the grey fallback; the severity sort (stable within a level); the counts line with and without severities; the `changes` split rule (short line, prose with two semicolons, text with a line break stay as they are; a long three-part line splits); N counts Fix, Reviewer is right, Reopen, Comment and margin comments; Request changes off at N = 0, Approve off at N > 0; the decoder accepts a result and a ledger without `severity`.
+- Acceptance: on a finished loop with mixed severities the owner sees red/orange/grey chips and no blue; can comment on a chapter finding and under a Fix; sees Request changes and Approve at every step without scrolling; Request changes sends `changes` and the author gets it.
 
 ## Contracts
 
