@@ -38,14 +38,17 @@ enum MeetingChatSurface {
 
     /// Built per render from the latest transcript and recap, so an edited
     /// transcript reaches the next first-turn prompt without a new engine.
+    /// nil for a private recording (MEETPRIV-01): no chat is ever built that
+    /// would send it to the provider.
     static func spec(
         transcript: MeetingTranscript,
         transcriptID: Int64,
         recapContent: MeetingRecap.Content?,
         conversationID: Int64,
         dbPool: DatabasePool
-    ) -> ChatSurfaceSpec {
-        ChatSurfaceSpec(
+    ) -> ChatSurfaceSpec? {
+        guard !transcript.isPrivate else { return nil }
+        return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType, contextID: String(transcriptID), conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,

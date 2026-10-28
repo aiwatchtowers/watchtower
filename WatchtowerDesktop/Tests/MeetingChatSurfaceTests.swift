@@ -34,9 +34,20 @@ final class MeetingChatSurfaceTests: XCTestCase {
 
     private func engine(for transcript: MeetingTranscript, ai: any AIServiceProtocol) async throws -> EmbeddedChatEngine {
         let conv = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
-        return makeSurfaceEngine(MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
-                                                         conversationID: conv, dbPool: dbManager.dbPool),
-                                 dbPool: dbManager.dbPool, ai: ai)
+        let spec = try XCTUnwrap(MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
+                                                         conversationID: conv, dbPool: dbManager.dbPool))
+        return makeSurfaceEngine(spec, dbPool: dbManager.dbPool, ai: ai)
+    }
+
+    /// MEETPRIV-01: a private recording never gets a chat surface.
+    func testNoSpecForAPrivateRecording() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertMeetingTranscript(db, id: 8, title: "Private 1:1", isPrivate: true)
+        }
+        let row = try await dbManager.dbPool.read { db in try MeetingTranscriptQueries.fetch(db, id: 8) }
+        let transcript = try XCTUnwrap(row)
+        XCTAssertNil(MeetingChatSurface.spec(transcript: transcript, transcriptID: 8, recapContent: nil,
+                                             conversationID: 1, dbPool: dbManager.dbPool))
     }
 
     func testCreatesConversationWithMeetingContext() async throws {
@@ -133,8 +144,8 @@ final class MeetingChatSurfaceTests: XCTestCase {
         let pool = dbManager.dbPool
         let center = EmbeddedChatCenter { spec, _ in makeSurfaceEngine(spec, dbPool: pool, ai: mock) }
         let conv = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: pool)
-        let engine = center.engine(for: MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
-                                                                conversationID: conv, dbPool: pool))
+        let engine = center.engine(for: try XCTUnwrap(MeetingChatSurface.spec(
+            transcript: transcript, transcriptID: 7, recapContent: nil, conversationID: conv, dbPool: pool)))
         center.markShown(engine.spec.key)
         engine.send("q")
         await engine.finished()

@@ -15,7 +15,8 @@ enum RecordingDetailTab: String, CaseIterable {
 }
 
 /// Single-view screen for one recording: header (title/date/duration/badges,
-/// link-to-event, delete) + four tabs. The full transcript row is fetched
+/// Private toggle, Export menu, link-to-event, delete) + four tabs. A private
+/// recording (MEETPRIV) shows no AI action and no chat. The full transcript row is fetched
 /// asynchronously on selection; the chat VM is created lazily on first
 /// opening of the Chat tab (perf: opening a recording must not pay for the
 /// heavy tabs).
@@ -184,6 +185,7 @@ struct RecordingDetailView: View {
                 recapFromOtherSource: recapFromOtherSource,
                 chapters: chapters,
                 hasSegments: utterances != nil,
+                isPrivate: transcript.isPrivate,
                 onRetryRecap: retryRecap,
                 isRetrying: isRetryingRecap,
                 onGenerateChapters: generateChapters,
@@ -196,6 +198,7 @@ struct RecordingDetailView: View {
             RecordingNotesTab(
                 transcript: transcript,
                 notesMD: transcript.notesMD,
+                isPrivate: transcript.isPrivate,
                 onGenerate: generateNotes,
                 isGenerating: center.generating.contains(transcriptID),
                 generationError: center.lastError[transcriptID],
@@ -205,7 +208,8 @@ struct RecordingDetailView: View {
                 transcriptText: transcript.transcriptText,
                 utterances: utterances,
                 scrollTarget: $transcriptScrollTarget,
-                showRecapRefreshHint: showRecapRefreshHint,
+                // A private recording has no recap to regenerate (MEETPRIV-01).
+                showRecapRefreshHint: showRecapRefreshHint && !transcript.isPrivate,
                 onSetUtteranceDeleted: setUtteranceDeleted,
                 onListenToSamples: { speaker in
                     Task { await appState.voiceRegistryCenter.relabel(transcriptID: transcriptID, clusterLabel: speaker) }
@@ -213,10 +217,15 @@ struct RecordingDetailView: View {
                 onRegenerateRecap: retryRecap
             )
         case .chat:
-            if let chatConversationID, let db = appState.databaseManager {
-                let engine = appState.embeddedChatCenter.engine(for: MeetingChatSurface.spec(
-                    transcript: transcript, transcriptID: transcriptID, recapContent: recapContent,
-                    conversationID: chatConversationID, dbPool: db.dbPool))
+            if transcript.isPrivate {
+                // MEETPRIV-01: no chat engine is ever built for it.
+                PrivateRecordingNotice()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let chatConversationID, let db = appState.databaseManager,
+                      let spec = MeetingChatSurface.spec(
+                        transcript: transcript, transcriptID: transcriptID, recapContent: recapContent,
+                        conversationID: chatConversationID, dbPool: db.dbPool) {
+                let engine = appState.embeddedChatCenter.engine(for: spec)
                 RecordingChatTab(engine: engine, transcriptID: transcriptID)
                     .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
             } else if let chatError {
@@ -242,11 +251,21 @@ struct RecordingDetailView: View {
     private func header(_ transcript: MeetingTranscript) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
+                if transcript.isPrivate {
+                    PrivateRecordingBadge()
+                }
                 Text(transcript.title)
                     .font(.title3)
                     .fontWeight(.semibold)
                     .lineLimit(2)
                 Spacer()
+                RecordingHeaderActions(
+                    transcript: transcript,
+                    hasSegments: utterances != nil,
+                    onPrivateChanged: privateChanged
+                ) { message in
+                    if isShowing(transcript.id ?? -1) { errorMessage = message }
+                }
                 if transcript.eventID == nil {
                     Button {
                         linkTarget = transcript
@@ -455,7 +474,27 @@ struct RecordingDetailView: View {
         chatError = "Couldn't open the chat: \(error.localizedDescription)"
     }
 
+    /// The CLI set the flag. Turning it on stops this recording's chat
+    /// (MEETPRIV-01: nothing more reaches the provider); then the row
+    /// reloads so every tab follows the flag.
+    private func privateChanged(_ isPrivate: Bool) {
+        let id = transcriptID
+        if isPrivate {
+            appState.embeddedChatCenter.dropContext(type: MeetingChatSurface.contextType, id: String(id))
+        }
+        onChanged()
+        guard isShowing(id) else { return }
+        Task { await load() }
+    }
+
+    /// MEETPRIV-01: the AI actions are hidden for a private recording; this
+    /// guard keeps a stale button from reaching the CLI (which refuses too).
+    private var aiActionsAllowed: Bool {
+        transcript?.isPrivate == false
+    }
+
     private func retryRecap() {
+        guard aiActionsAllowed else { return }
         guard let service = notesService else {
             errorMessage = "watchtower CLI not found"
             return
@@ -474,6 +513,7 @@ struct RecordingDetailView: View {
     }
 
     private func generateChapters() {
+        guard aiActionsAllowed else { return }
         guard let service = notesService else {
             errorMessage = "watchtower CLI not found"
             return
@@ -528,6 +568,7 @@ struct RecordingDetailView: View {
     /// opens the sheet in its loading state and fills it when the CLI
     /// returns. The draft is shown copyable only — never auto-sent.
     private func generateFollowup(chapterIdx: Int?) {
+        guard aiActionsAllowed else { return }
         guard let service = notesService else {
             errorMessage = "watchtower CLI not found"
             return
@@ -553,6 +594,7 @@ struct RecordingDetailView: View {
     }
 
     private func generateNotes() {
+        guard aiActionsAllowed else { return }
         guard let service = notesService else {
             errorMessage = "watchtower CLI not found"
             return

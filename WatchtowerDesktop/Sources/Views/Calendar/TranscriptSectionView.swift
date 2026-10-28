@@ -78,8 +78,13 @@ struct TranscriptSectionView: View {
 
                 TranscriptAudioControl(transcript: transcript, center: appState.audioPlaybackCenter)
 
+                if transcript.isPrivate {
+                    PrivateRecordingNotice()
+                }
+
                 HStack(spacing: 8) {
-                    if !hasRecap {
+                    // MEETPRIV-01: no AI action on a private recording.
+                    if !hasRecap && !transcript.isPrivate {
                         Button {
                             retryRecap(transcript)
                         } label: {
@@ -107,6 +112,9 @@ struct TranscriptSectionView: View {
             .padding(.top, 6)
         } label: {
             HStack(spacing: 8) {
+                if transcript.isPrivate {
+                    PrivateRecordingBadge()
+                }
                 Text(TranscriptFormatting.formatDuration(transcript.durationSec))
                     .font(.callout)
                 Text(TranscriptFormatting.formattedDate(transcript.createdAt))
@@ -141,7 +149,8 @@ struct TranscriptSectionView: View {
             await center.prepareRetry(
                 audioURL: URL(fileURLWithPath: audioPath),
                 eventID: transcript.eventID,
-                title: transcript.title
+                title: transcript.title,
+                isPrivate: transcript.isPrivate
             )
             await center.retryTranscription(config: .fromDefaults())
             load()

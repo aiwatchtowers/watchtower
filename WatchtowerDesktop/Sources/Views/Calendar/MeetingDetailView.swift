@@ -295,6 +295,9 @@ struct MeetingDetailView: View {
                 Text(TranscriptFormatting.formattedDate(item.createdAt))
                     .font(.caption2)
                 HStack(spacing: 4) {
+                    if item.isPrivate {
+                        PrivateRecordingBadge()
+                    }
                     Text(TranscriptFormatting.formatDuration(item.durationSec))
                     TranscriptLangBadges(langStatsJSON: item.langStats)
                 }

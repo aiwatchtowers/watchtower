@@ -20,6 +20,9 @@ struct RecordingRecapTab: View {
     let recapFromOtherSource: Bool
     let chapters: MeetingChapters?
     let hasSegments: Bool
+    /// MEETPRIV-01: every AI action (recap, chapters, follow-up) gives way to
+    /// `PrivateRecordingNotice`; what was generated before stays readable.
+    let isPrivate: Bool
     let onRetryRecap: () -> Void
     let isRetrying: Bool
     let onGenerateChapters: () -> Void
@@ -134,7 +137,7 @@ struct RecordingRecapTab: View {
                         Button("Target") {
                             onConvertActionItem(chapterIdx, itemIdx)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.kitSecondary)
                         .controlSize(.mini)
                         .help("Create a Target from this action item")
                     }
@@ -143,19 +146,31 @@ struct RecordingRecapTab: View {
         }
     }
 
+    @ViewBuilder
     private func followupButton(chapterIdx: Int?, label: String) -> some View {
-        Button {
-            onFollowup(chapterIdx)
-        } label: {
-            Label(label, systemImage: "paperplane")
-                .font(.caption)
+        if !isPrivate {
+            Button {
+                onFollowup(chapterIdx)
+            } label: {
+                Label(label, systemImage: "paperplane")
+                    .font(.caption)
+            }
+            .buttonStyle(.kitSecondary)
+            .controlSize(.small)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
     }
 
     @ViewBuilder
     private var chaptersFooter: some View {
+        if isPrivate {
+            PrivateRecordingNotice()
+        } else {
+            chaptersActions
+        }
+    }
+
+    @ViewBuilder
+    private var chaptersActions: some View {
         if let error = chaptersError {
             Label(error, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
@@ -173,7 +188,7 @@ struct RecordingRecapTab: View {
                       systemImage: isGeneratingChapters ? "hourglass" : "arrow.triangle.2.circlepath")
                     .font(.caption)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.kitSecondary)
             .controlSize(.small)
             .disabled(isGeneratingChapters)
             .confirmationDialog(
@@ -200,7 +215,7 @@ struct RecordingRecapTab: View {
                       systemImage: isRetrying ? "hourglass" : "arrow.triangle.2.circlepath")
                     .font(.caption)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.kitSecondary)
             .controlSize(.small)
             .disabled(isRetrying)
         }
@@ -242,6 +257,15 @@ struct RecordingRecapTab: View {
             .padding(.top, 24)
         }
 
+        if isPrivate {
+            PrivateRecordingNotice()
+        } else {
+            legacyRecapActions
+        }
+    }
+
+    @ViewBuilder
+    private var legacyRecapActions: some View {
         HStack(spacing: 8) {
             Button {
                 onRetryRecap()
@@ -250,7 +274,7 @@ struct RecordingRecapTab: View {
                       systemImage: isRetrying ? "hourglass" : "arrow.triangle.2.circlepath")
                     .font(.caption)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.kitSecondary)
             .controlSize(.small)
             .disabled(isRetrying)
 
@@ -264,7 +288,7 @@ struct RecordingRecapTab: View {
                           systemImage: isGeneratingChapters ? "hourglass" : "sparkles")
                         .font(.caption)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.kitSecondary)
                 .controlSize(.small)
                 .disabled(isGeneratingChapters)
             }
@@ -373,6 +397,9 @@ struct FollowupDraftSheet: View {
 struct RecordingNotesTab: View {
     let transcript: MeetingTranscript
     let notesMD: String?
+    /// MEETPRIV-01: Generate gives way to `PrivateRecordingNotice`; the
+    /// owner's own notes stay editable.
+    let isPrivate: Bool
     let onGenerate: () -> Void
     let isGenerating: Bool
     let generationError: String?
@@ -387,16 +414,20 @@ struct RecordingNotesTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Button {
-                    onGenerate()
-                } label: {
-                    Label(notesMD == nil ? "Generate" : "Re-generate",
-                          systemImage: "sparkles")
-                        .font(.caption)
+                if isPrivate {
+                    PrivateRecordingNotice()
+                } else {
+                    Button {
+                        onGenerate()
+                    } label: {
+                        Label(notesMD == nil ? "Generate" : "Re-generate",
+                              systemImage: "sparkles")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
+                    .disabled(isGenerating)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(isGenerating)
 
                 // Appending into `draft` rides the existing debounced autosave for
                 // free; isDisabled honors the same lock as the editor below so
@@ -419,7 +450,7 @@ struct RecordingNotesTab: View {
                         Label(isEditing ? "Done" : "Edit", systemImage: isEditing ? "checkmark" : "pencil")
                             .font(.caption)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.kitSecondary)
                     .controlSize(.small)
                     .disabled(isGenerating)
 
@@ -438,7 +469,7 @@ struct RecordingNotesTab: View {
                         Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(.caption)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.kitSecondary)
                     .controlSize(.small)
                 }
             }
@@ -616,7 +647,7 @@ struct RecordingTranscriptTab: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Regenerate", action: onRegenerateRecap)
-                .buttonStyle(.bordered)
+                .buttonStyle(.kitSecondary)
                 .controlSize(.small)
         }
     }
