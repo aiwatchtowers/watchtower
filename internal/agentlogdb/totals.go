@@ -20,10 +20,12 @@ func OpenExisting(path string, busy time.Duration) (*DB, error) {
 }
 
 // Totals is the agent sessions' API usage in a period: Sessions counts the
-// sessions with at least one API call in it.
+// sessions with at least one API call in it; Unpriced counts the calls whose
+// model had no price (cost_estimated: their cost_usd is 0, so CostUSD is a
+// lower bound when it is above zero).
 type Totals struct {
-	Sessions, Calls, Input, CacheRead, CacheWrite, Output int64
-	CostUSD                                               float64
+	Sessions, Calls, Unpriced, Input, CacheRead, CacheWrite, Output int64
+	CostUSD                                                         float64
 }
 
 // eventTSLayout formats a bound for agent_log_events.ts, which keeps Claude
@@ -42,14 +44,14 @@ func (d *DB) TotalsSince(since time.Time, projectIDs []int64) (Totals, error) {
 	for _, id := range projectIDs {
 		args = append(args, id)
 	}
-	q := `SELECT COUNT(DISTINCT e.session_uuid), COUNT(*),
+	q := `SELECT COUNT(DISTINCT e.session_uuid), COUNT(*), COALESCE(SUM(e.cost_estimated), 0),
 		COALESCE(SUM(e.input_tokens), 0), COALESCE(SUM(e.cache_read_tokens), 0),
 		COALESCE(SUM(e.cache_write_5m_tokens + e.cache_write_1h_tokens), 0),
 		COALESCE(SUM(e.output_tokens), 0), COALESCE(SUM(e.cost_usd), 0)
 		FROM agent_log_events e JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
 		WHERE e.kind = 'api_call' AND e.ts >= ?
 		AND s.project_id IN (?` + strings.Repeat(",?", len(projectIDs)-1) + `)`
-	if err := d.QueryRow(q, args...).Scan(&t.Sessions, &t.Calls, &t.Input, &t.CacheRead,
+	if err := d.QueryRow(q, args...).Scan(&t.Sessions, &t.Calls, &t.Unpriced, &t.Input, &t.CacheRead,
 		&t.CacheWrite, &t.Output, &t.CostUSD); err != nil {
 		return Totals{}, fmt.Errorf("agent log totals: %w", err)
 	}

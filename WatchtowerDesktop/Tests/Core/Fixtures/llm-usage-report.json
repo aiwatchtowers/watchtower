@@ -15,7 +15,8 @@
       { "automation_id": 7, "name": "Weekly to-do", "runs": 6, "calls": 6,
         "input": 37000, "output": 3000, "cost_usd": 0.5, "cost_is_estimate": true },
       { "automation_id": 3, "name": "Triage new tracker issues", "runs": 110, "calls": 220,
-        "input": 23000, "output": 1000000, "cost_usd": 21.9, "cost_is_estimate": false }
+        "input": 23000, "output": 1000000, "cost_usd": 21.9, "cost_is_estimate": false,
+        "cost_is_lower_bound": true }
     ]
   },
   "page_total": {

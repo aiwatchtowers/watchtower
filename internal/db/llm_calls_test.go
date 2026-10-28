@@ -218,10 +218,12 @@ func TestLLMUsageRows_Groups(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := d.LLMUsageRows(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	snap, err := d.ReadLLMUsage(context.Background(), time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC),
+		[]string{"t1", "c1", "not-stored"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := snap.Groups
 	key := func(g LLMUsageGroup) string {
 		return fmt.Sprintf("%s|%s|%s|%s", g.Surface, g.Purpose, g.Process, g.Model)
 	}
@@ -253,16 +255,22 @@ func TestLLMUsageRows_Groups(t *testing.T) {
 		t.Fatalf("chat group = %+v", g)
 	}
 
-	since, ok, err := d.LLMLedgerSince()
-	if err != nil || !ok || !since.Equal(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)) {
-		t.Fatalf("LLMLedgerSince = %v, %v, %v", since, ok, err)
+	if !snap.SinceFound || !snap.Since.Equal(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("ledger since = %v, %v", snap.Since, snap.SinceFound)
+	}
+	if runs := snap.Runs[aid]; len(runs) != 2 {
+		t.Fatalf("automation runs = %v, want 2 distinct", snap.Runs)
+	}
+	if len(snap.Present) != 2 || !snap.Present["t1"] || !snap.Present["c1"] {
+		t.Fatalf("present = %v, want t1 and c1", snap.Present)
 	}
 }
 
-func TestLLMLedgerSince_Empty(t *testing.T) {
+func TestReadLLMUsage_Empty(t *testing.T) {
 	d := openTestDB(t)
-	if _, ok, err := d.LLMLedgerSince(); err != nil || ok {
-		t.Fatalf("empty ledger = %v, %v", ok, err)
+	snap, err := d.ReadLLMUsage(context.Background(), time.Time{}, nil)
+	if err != nil || snap.SinceFound || len(snap.Groups) != 0 || len(snap.Present) != 0 {
+		t.Fatalf("empty ledger = %+v, %v", snap, err)
 	}
 }
 
@@ -301,7 +309,8 @@ func TestLLMUsageRows_PerCallCost(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := d.LLMUsageRows(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	snap, err := d.ReadLLMUsage(context.Background(), time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC), nil)
+	got := snap.Groups
 	if err != nil || len(got) != 1 {
 		t.Fatalf("rows = %v, %v", got, err)
 	}
@@ -341,15 +350,13 @@ func TestLLMAutomationRunsAndCallIDsPresent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runs, err := d.LLMAutomationRuns(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
-	if err != nil || len(runs) != 1 || len(runs[aid]) != 2 {
-		t.Fatalf("runs = %v, %v", runs, err)
+	snap, err := d.ReadLLMUsage(context.Background(), time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC),
+		[]string{"a", "old", "missing"})
+	if err != nil || len(snap.Runs) != 1 || len(snap.Runs[aid]) != 2 {
+		t.Fatalf("runs = %v, %v", snap.Runs, err)
 	}
-	present, err := d.LLMCallIDsPresent([]string{"a", "old", "missing"})
-	if err != nil || !present["a"] || !present["old"] || present["missing"] || len(present) != 2 {
-		t.Fatalf("present = %v, %v", present, err)
-	}
-	if present, err := d.LLMCallIDsPresent(nil); err != nil || len(present) != 0 {
-		t.Fatalf("empty = %v, %v", present, err)
+	present := snap.Present
+	if !present["a"] || !present["old"] || present["missing"] || len(present) != 2 {
+		t.Fatalf("present = %v", present)
 	}
 }

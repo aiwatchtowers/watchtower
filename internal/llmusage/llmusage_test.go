@@ -210,3 +210,20 @@ func TestEstimateTokens(t *testing.T) {
 	assert.Equal(t, int64(1), EstimateTokens("abc"))
 	assert.Equal(t, int64(2), EstimateTokens("abcdefgh"))
 }
+
+func TestReadSpoolReadsLiveFileFirst(t *testing.T) {
+	path := SpoolPath(t.TempDir())
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte(`{"call_id":"live"}`+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(path+ImportingSuffix, []byte(`{"call_id":"claimed"}`+"\n"), 0o600))
+
+	calls, err := ReadSpool(path)
+	require.NoError(t, err)
+	ids := make([]string, len(calls))
+	for i, c := range calls {
+		ids[i] = c.CallID
+	}
+	// The live file first: a rename to the importing file between the two
+	// reads then shows its lines twice (de-duped), never not at all.
+	assert.Equal(t, []string{"live", "claimed"}, ids)
+}

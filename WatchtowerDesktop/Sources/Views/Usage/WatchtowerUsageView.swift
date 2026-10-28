@@ -206,7 +206,7 @@ private struct UsageReportBody: View {
                     LLMUsagePresentation.calls(row.calls),
                     LLMUsagePresentation.tokens(row.tokens),
                     LLMUsagePresentation.tokens(row.output),
-                    LLMUsagePresentation.cost(row.costUSD, isEstimate: row.costIsEstimate, isLowerBound: false)
+                    LLMUsagePresentation.cost(row.costUSD, isEstimate: row.costIsEstimate, isLowerBound: row.costIsLowerBound)
                 ])
             }
         }

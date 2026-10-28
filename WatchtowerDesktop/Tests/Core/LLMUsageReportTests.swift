@@ -48,6 +48,8 @@ final class LLMUsageReportTests: XCTestCase {
         XCTAssertEqual(rep.ownAutomations.rows[1].automationID, 3)
         XCTAssertEqual(rep.ownAutomations.rows[1].runs, 110)
         XCTAssertTrue(rep.ownAutomations.rows[0].costIsEstimate)
+        XCTAssertFalse(rep.ownAutomations.rows[0].costIsLowerBound, "absent key: not a lower bound")
+        XCTAssertTrue(rep.ownAutomations.rows[1].costIsLowerBound)
         XCTAssertEqual(rep.chats.costUSD, 61.0)
         XCTAssertEqual(rep.pageTotal.calls, 1606)
         XCTAssertEqual(rep.workbenches.sessions.sessions, 41)

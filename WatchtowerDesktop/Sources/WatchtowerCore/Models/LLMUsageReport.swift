@@ -223,6 +223,8 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
     package var output: Int64
     package var costUSD: Double?
     package var costIsEstimate: Bool
+    /// Some call of the automation had no price: the cost is "at least".
+    package var costIsLowerBound: Bool
 
     package var id: Int64 { automationID }
 
@@ -234,7 +236,8 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
         input: Int64 = 0,
         output: Int64 = 0,
         costUSD: Double? = nil,
-        costIsEstimate: Bool = false
+        costIsEstimate: Bool = false,
+        costIsLowerBound: Bool = false
     ) {
         self.automationID = automationID
         self.name = name
@@ -244,12 +247,14 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
         self.output = output
         self.costUSD = costUSD
         self.costIsEstimate = costIsEstimate
+        self.costIsLowerBound = costIsLowerBound
     }
     package var tokens: Int64 { input + output }
 
     enum CodingKeys: String, CodingKey {
         case name, runs, calls, input, output
         case automationID = "automation_id", costUSD = "cost_usd", costIsEstimate = "cost_is_estimate"
+        case costIsLowerBound = "cost_is_lower_bound"
     }
 
     package init(from decoder: Decoder) throws {
@@ -262,6 +267,7 @@ package struct LLMUsageAutomationRow: Decodable, Equatable, Sendable, Identifiab
         output = try c.decode(Int64.self, forKey: .output)
         costUSD = try c.decodeIfPresent(Double.self, forKey: .costUSD)
         costIsEstimate = try c.decodeIfPresent(Bool.self, forKey: .costIsEstimate) ?? false
+        costIsLowerBound = try c.decodeIfPresent(Bool.self, forKey: .costIsLowerBound) ?? false
     }
 }
 

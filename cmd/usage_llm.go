@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,14 +85,15 @@ type usageLLMPurposeRow struct {
 }
 
 type usageLLMAutomationRow struct {
-	AutomationID   int64    `json:"automation_id"`
-	Name           string   `json:"name"`
-	Runs           int64    `json:"runs"`
-	Calls          int64    `json:"calls"`
-	Input          int64    `json:"input"`
-	Output         int64    `json:"output"`
-	CostUSD        *float64 `json:"cost_usd"`
-	CostIsEstimate bool     `json:"cost_is_estimate"`
+	AutomationID     int64    `json:"automation_id"`
+	Name             string   `json:"name"`
+	Runs             int64    `json:"runs"`
+	Calls            int64    `json:"calls"`
+	Input            int64    `json:"input"`
+	Output           int64    `json:"output"`
+	CostUSD          *float64 `json:"cost_usd"`
+	CostIsEstimate   bool     `json:"cost_is_estimate"`
+	CostIsLowerBound bool     `json:"cost_is_lower_bound"`
 }
 
 // usageLLMReport is the pinned --json shape (TestUsageLLM_JSONKeysPinned);
@@ -298,36 +300,28 @@ func readUsageLedger(d *db.DB, since time.Time, spool []llmusage.Call, src *usag
 	if err != nil || !ok {
 		return spool, err
 	}
-	if src.groups, err = d.LLMUsageRows(since); err != nil {
-		return nil, err
-	}
-	runs, err := d.LLMAutomationRuns(since)
-	if err != nil {
-		return nil, err
-	}
-	for aid, ids := range runs {
-		for _, rid := range ids {
-			addUsageRun(src.runs, aid, rid)
-		}
-	}
-	first, found, err := d.LLMLedgerSince()
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		src.ledgerSince = first.UTC().Format(time.RFC3339)
-	}
 	ids := make([]string, len(spool))
 	for i, c := range spool {
 		ids[i] = c.CallID
 	}
-	present, err := d.LLMCallIDsPresent(ids)
+	// One read snapshot: an import committing between separate reads would
+	// count its calls twice or not at all.
+	snap, err := d.ReadLLMUsage(context.Background(), since, ids)
 	if err != nil {
 		return nil, err
 	}
+	src.groups = snap.Groups
+	for aid, runIDs := range snap.Runs {
+		for _, rid := range runIDs {
+			addUsageRun(src.runs, aid, rid)
+		}
+	}
+	if snap.SinceFound {
+		src.ledgerSince = snap.Since.UTC().Format(time.RFC3339)
+	}
 	fresh := spool[:0]
 	for _, c := range spool {
-		if !present[c.CallID] {
+		if !snap.Present[c.CallID] {
 			fresh = append(fresh, c)
 		}
 	}
@@ -568,9 +562,11 @@ func assembleUsageLLMReport(period string, src usageLLMSources) usageLLMReport {
 	page.add(chats)
 	rep.PageTotal = page.totals()
 
-	sessions := usageAcc{calls: src.sessions.Calls, input: src.sessions.Input, cacheRead: src.sessions.CacheRead,
-		cacheWrite: src.sessions.CacheWrite, output: src.sessions.Output, cost: src.sessions.CostUSD,
-		estCost: src.sessions.Calls} // agent analytics prices every call from the table
+	// Agent analytics prices every call from the table (an estimate); a call
+	// whose model has no price adds nothing, so the cost is a lower bound.
+	sessions := usageAcc{calls: src.sessions.Calls, noPrice: src.sessions.Unpriced, input: src.sessions.Input,
+		cacheRead: src.sessions.CacheRead, cacheWrite: src.sessions.CacheWrite, output: src.sessions.Output,
+		cost: src.sessions.CostUSD, estCost: src.sessions.Calls - src.sessions.Unpriced}
 	rep.Workbenches.Sessions = usageLLMSessionTotals{usageLLMTotals: sessions.totals(), Sessions: src.sessions.Sessions}
 	rep.Workbenches.Helpers = helpers.totals()
 	bench := sessions
@@ -641,6 +637,7 @@ func usageAutomationRows(autos map[int64]*usageAutomationAcc, runs map[int64]map
 		rows = append(rows, usageLLMAutomationRow{
 			AutomationID: a.id, Name: name, Runs: int64(len(runs[a.id])), Calls: a.acc.calls,
 			Input: a.acc.input, Output: a.acc.output, CostUSD: a.acc.costPtr(), CostIsEstimate: a.acc.estCost > 0,
+			CostIsLowerBound: a.acc.noPrice > 0,
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -724,7 +721,7 @@ func printUsageLLM(w io.Writer, rep usageLLMReport) error {
 		fmt.Fprintln(tw, "AUTOMATION\tRUNS\tCALLS\tINPUT\tOUTPUT\tCOST")
 		for _, r := range rep.OwnAutomations.Rows {
 			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\n", r.Name, r.Runs, r.Calls, r.Input, r.Output,
-				usageCostText(r.CostUSD, r.CostIsEstimate, false))
+				usageCostText(r.CostUSD, r.CostIsEstimate, r.CostIsLowerBound))
 		}
 		return tw.Flush()
 	}

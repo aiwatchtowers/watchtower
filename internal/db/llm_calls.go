@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -182,9 +183,53 @@ func LLMCallCost(reported, est *float64) (usd float64, estimated, known bool) {
 	return 0, false, false
 }
 
-// LLMUsageRows aggregates the calls that finished at or after since.
-func (db *DB) LLMUsageRows(since time.Time) ([]LLMUsageGroup, error) {
-	rows, err := db.Query(`
+// llmQueryer is the read transaction ReadLLMUsage runs the ledger reads on.
+type llmQueryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// LLMUsageSnapshot is everything `usage llm` reads from llm_calls, taken
+// in one read transaction so the parts agree with each other.
+type LLMUsageSnapshot struct {
+	Groups []LLMUsageGroup
+	// Runs is, per automation, the distinct run ids (llmAutomationRuns).
+	Runs map[int64][]int64
+	// Since is the earliest call's time; SinceFound is false while empty.
+	Since      time.Time
+	SinceFound bool
+	// Present marks which of the asked call ids are already stored.
+	Present map[string]bool
+}
+
+// ReadLLMUsage reads the groups and runs since since, the ledger start and
+// which of ids are stored, in one read-only transaction (it never blocks a
+// writer, and an import committing meanwhile is seen by none of the parts).
+func (db *DB) ReadLLMUsage(ctx context.Context, since time.Time, ids []string) (LLMUsageSnapshot, error) {
+	var s LLMUsageSnapshot
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return s, fmt.Errorf("begin llm usage read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if s.Groups, err = llmUsageRows(tx, since); err != nil {
+		return s, err
+	}
+	if s.Runs, err = llmAutomationRuns(tx, since); err != nil {
+		return s, err
+	}
+	if s.Since, s.SinceFound, err = llmLedgerSince(tx); err != nil {
+		return s, err
+	}
+	if s.Present, err = llmCallIDsPresent(tx, ids); err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+// llmUsageRows aggregates the calls that finished at or after since.
+func llmUsageRows(q llmQueryer, since time.Time) ([]LLMUsageGroup, error) {
+	rows, err := q.Query(`
 		SELECT l.surface, l.purpose,
 		       CASE WHEN l.purpose = '' THEN l.process ELSE '' END AS proc_key,
 		       l.model, l.automation_id,
@@ -227,11 +272,11 @@ func (db *DB) LLMUsageRows(since time.Time) ([]LLMUsageGroup, error) {
 	return out, rows.Err()
 }
 
-// LLMAutomationRuns returns, per automation, the distinct run ids of its
+// llmAutomationRuns returns, per automation, the distinct run ids of its
 // calls that finished at or after since (a run's calls can span several
 // LLMUsageGroup rows, so their Runs do not add up).
-func (db *DB) LLMAutomationRuns(since time.Time) (map[int64][]int64, error) {
-	rows, err := db.Query(`SELECT DISTINCT automation_id, automation_run_id FROM llm_calls
+func llmAutomationRuns(q llmQueryer, since time.Time) (map[int64][]int64, error) {
+	rows, err := q.Query(`SELECT DISTINCT automation_id, automation_run_id FROM llm_calls
 		WHERE at >= ? AND automation_id IS NOT NULL AND automation_run_id IS NOT NULL`,
 		since.UTC().Format(time.RFC3339))
 	if err != nil {
@@ -249,13 +294,13 @@ func (db *DB) LLMAutomationRuns(since time.Time) (map[int64][]int64, error) {
 	return out, rows.Err()
 }
 
-// LLMCallIDsPresent returns which of ids are already in llm_calls.
-func (db *DB) LLMCallIDsPresent(ids []string) (map[string]bool, error) {
+// llmCallIDsPresent returns which of ids are already in llm_calls.
+func llmCallIDsPresent(q llmQueryer, ids []string) (map[string]bool, error) {
 	out := map[string]bool{}
 	const chunk = 500
 	for start := 0; start < len(ids); start += chunk {
 		part := ids[start:min(start+chunk, len(ids))]
-		if err := db.llmCallIDsIn(part, out); err != nil {
+		if err := llmCallIDsIn(q, part, out); err != nil {
 			return nil, err
 		}
 	}
@@ -263,12 +308,12 @@ func (db *DB) LLMCallIDsPresent(ids []string) (map[string]bool, error) {
 }
 
 // llmCallIDsIn marks in out which of ids are in llm_calls.
-func (db *DB) llmCallIDsIn(ids []string, out map[string]bool) error {
+func llmCallIDsIn(q llmQueryer, ids []string, out map[string]bool) error {
 	args := make([]any, len(ids))
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := db.Query(`SELECT call_id FROM llm_calls WHERE call_id IN (?`+
+	rows, err := q.Query(`SELECT call_id FROM llm_calls WHERE call_id IN (?`+
 		strings.Repeat(",?", len(ids)-1)+`)`, args...)
 	if err != nil {
 		return fmt.Errorf("query llm call ids: %w", err)
@@ -284,11 +329,11 @@ func (db *DB) llmCallIDsIn(ids []string, out map[string]bool) error {
 	return rows.Err()
 }
 
-// LLMLedgerSince returns the earliest recorded call's time; false when the
+// llmLedgerSince returns the earliest recorded call's time; false when the
 // ledger is empty.
-func (db *DB) LLMLedgerSince() (time.Time, bool, error) {
+func llmLedgerSince(q llmQueryer) (time.Time, bool, error) {
 	var at sql.NullString
-	if err := db.QueryRow(`SELECT MIN(at) FROM llm_calls`).Scan(&at); err != nil {
+	if err := q.QueryRow(`SELECT MIN(at) FROM llm_calls`).Scan(&at); err != nil {
 		return time.Time{}, false, fmt.Errorf("query llm ledger start: %w", err)
 	}
 	if !at.Valid {

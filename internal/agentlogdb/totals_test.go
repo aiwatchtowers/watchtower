@@ -16,6 +16,8 @@ func TestTotalsSince_PeriodAndWorkbenches(t *testing.T) {
 		e.TS, e.CacheReadTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.CostUSD = ts, 100, 20, 3, usd
 		return e
 	}
+	unpriced := call("s3", "m5:r5", "2026-10-10T14:30:00Z", 1, 0)
+	unpriced.CostEstimated = true // a model with no price
 	tool := apiCall("s1", "tool:x", 0)
 	tool.Kind, tool.TS = "tool", "2026-10-10T12:00:00.500Z"
 	b := AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 100}, ExpectOffset: -1,
@@ -26,6 +28,7 @@ func TestTotalsSince_PeriodAndWorkbenches(t *testing.T) {
 			call("s1", "m2:r2", "2026-10-10T13:00:00.123Z", 7, 0.25),
 			call("s2", "m3:r3", "2026-10-10T11:59:59.999Z", 9, 1), // before the period
 			call("s3", "m4:r4", "2026-10-10T14:00:00Z", 11, 2),    // workbench 2
+			unpriced,
 			tool,
 		}}
 	ok, err := d.ApplyAgentLogBatch(b)
@@ -40,7 +43,8 @@ func TestTotalsSince_PeriodAndWorkbenches(t *testing.T) {
 	got, err = d.TotalsSince(since, []int64{1, 2})
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), got.Sessions)
-	assert.Equal(t, int64(3), got.Calls)
+	assert.Equal(t, int64(4), got.Calls)
+	assert.Equal(t, int64(1), got.Unpriced, "the call without a price is counted")
 
 	got, err = d.TotalsSince(since, nil)
 	require.NoError(t, err)

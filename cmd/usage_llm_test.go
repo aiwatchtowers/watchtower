@@ -166,7 +166,8 @@ func TestUsageLLM_JSONKeysPinned(t *testing.T) {
 	var autoRows []json.RawMessage
 	require.NoError(t, json.Unmarshal(own["rows"], &autoRows))
 	require.Len(t, autoRows, 1)
-	assert.Equal(t, []string{"automation_id", "calls", "cost_is_estimate", "cost_usd", "input", "name", "output", "runs"},
+	assert.Equal(t, []string{"automation_id", "calls", "cost_is_estimate", "cost_is_lower_bound", "cost_usd", "input",
+		"name", "output", "runs"},
 		usageKeys(t, autoRows[0]))
 	var ledgerSince string
 	require.NoError(t, json.Unmarshal(top["ledger_since"], &ledgerSince))
@@ -185,6 +186,7 @@ func TestUsageLLM_SplitsOwnAutomations(t *testing.T) {
 		withAutomation(usageCall("b1", "watchtower", "briefing.daily", "daemon", "opus", 1), builtin, 7),
 		withAutomation(usageCall("b2", "watchtower", "briefing.daily", "daemon", "sonnet", 1), builtin, 8),
 		withAutomation(usageCall("gone", "watchtower", "automation.llm", "daemon", "haiku", 0.1), 999, 3),
+		withAutomation(usageCall("gone2", "watchtower", "automation.llm", "daemon", "no-price-model", -1), 999, 3),
 	}))
 	rep := usageLLMJSON(t)
 
@@ -204,7 +206,13 @@ func TestUsageLLM_SplitsOwnAutomations(t *testing.T) {
 	assert.Equal(t, int64(3), byID[owner].Calls)
 	assert.Equal(t, int64(2), byID[owner].Runs, "a run spanning two models counts once")
 	assert.Equal(t, "#999", byID[999].Name, "a deleted automation is an owner one named by its id")
-	assert.Equal(t, int64(4), rep.OwnAutomations.Totals.Calls)
+	assert.False(t, byID[owner].CostIsLowerBound)
+	assert.True(t, byID[999].CostIsLowerBound, "a call without a price makes the row's cost a lower bound")
+	assert.Equal(t, int64(5), rep.OwnAutomations.Totals.Calls)
+
+	var text bytes.Buffer
+	require.NoError(t, printUsageLLM(&text, rep))
+	assert.Regexp(t, `#999\s.*≥ \$0\.10`, text.String(), "the text row shows the lower bound")
 }
 
 func TestUsageLLM_LowerBoundWhenNoPrice(t *testing.T) {
@@ -340,10 +348,13 @@ func TestUsageLLM_WorkbenchAnalyticsOff(t *testing.T) {
 		return agentlogdb.AgentLogEvent{SessionUUID: uuid, Key: key, Kind: "api_call", TS: ts, Name: "claude-opus-5-5",
 			InputTokens: 10, OutputTokens: 20, CacheReadTokens: 300, CostUSD: 1.5, SrcPath: "/x/a.jsonl"}
 	}
+	unpriced := call("on2", "k5")
+	unpriced.Name, unpriced.CostUSD, unpriced.CostEstimated = "a-model-without-a-price", 0, true
 	ok, err := al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
 		File: agentlogdb.AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
 		Sessions: []agentlogdb.AgentLogSession{session("on1", onID), session("on2", onID), session("off1", offID)},
-		Events:   []agentlogdb.AgentLogEvent{call("on1", "k1"), call("on1", "k2"), call("on2", "k3"), call("off1", "k4")},
+		Events: []agentlogdb.AgentLogEvent{call("on1", "k1"), call("on1", "k2"), call("on2", "k3"), call("off1", "k4"),
+			unpriced},
 	})
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -353,11 +364,14 @@ func TestUsageLLM_WorkbenchAnalyticsOff(t *testing.T) {
 	wb := rep.Workbenches
 	assert.Equal(t, []string{"demo-bench"}, wb.AnalyticsOff)
 	assert.Equal(t, int64(2), wb.Sessions.Sessions, "the off workbench's session is not counted")
-	assert.Equal(t, int64(3), wb.Sessions.Calls)
-	assert.Equal(t, int64(900), wb.Sessions.CacheRead)
+	assert.Equal(t, int64(4), wb.Sessions.Calls)
+	assert.Equal(t, int64(1200), wb.Sessions.CacheRead)
 	require.NotNil(t, wb.Sessions.CostUSD)
 	assert.InDelta(t, 4.5, *wb.Sessions.CostUSD, 1e-9)
-	assert.Equal(t, int64(4), wb.Totals.Calls, "sessions + helpers")
+	assert.Equal(t, int64(1), wb.Sessions.NoPriceCalls)
+	assert.True(t, wb.Sessions.CostIsLowerBound, "an unpriced session call makes the cost a lower bound")
+	assert.True(t, wb.Totals.CostIsLowerBound)
+	assert.Equal(t, int64(5), wb.Totals.Calls, "sessions + helpers")
 	require.NotNil(t, wb.Totals.CostUSD)
 	assert.InDelta(t, 5.5, *wb.Totals.CostUSD, 1e-9)
 	assert.Equal(t, int64(0), rep.PageTotal.Calls, "workbenches stay out of the page total")

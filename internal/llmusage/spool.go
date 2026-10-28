@@ -70,12 +70,15 @@ func appendSpool(path string, c Call) error {
 // ImportingSuffix marks the spool file the daemon has claimed for import.
 const ImportingSuffix = ".importing"
 
-// ReadSpool returns the calls in path+ImportingSuffix and path, in that
+// ReadSpool returns the calls in path and path+ImportingSuffix, in that
 // order, without moving or locking either (the read-only `usage llm` view).
-// Missing files are empty; malformed lines are skipped.
+// path is read first: an import that renames it to the importing file in
+// between leaves its lines in both reads (the caller de-dupes by call_id),
+// where the other order would miss them. Missing files are empty; malformed
+// lines are skipped.
 func ReadSpool(path string) ([]Call, error) {
 	var out []Call
-	for _, p := range []string{path + ImportingSuffix, path} {
+	for _, p := range []string{path, path + ImportingSuffix} {
 		calls, _, err := ParseSpoolFile(p)
 		if err != nil {
 			return nil, err
