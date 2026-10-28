@@ -503,8 +503,10 @@ struct RecordingDetailView: View {
         Task { await load() }
     }
 
-    /// MEETPRIV-01: the AI actions are hidden for a private recording; this
-    /// guard keeps a stale button from reaching the CLI (which refuses too).
+    /// MEETPRIV-01: the AI actions (and the action item → Target button,
+    /// whose Target feeds AI prompts) are off for a private recording; this
+    /// guard keeps a stale button from reaching the CLI or the query, which
+    /// refuse too.
     private var aiActionsAllowed: Bool {
         transcript?.isPrivate == false
     }
@@ -559,7 +561,7 @@ struct RecordingDetailView: View {
     /// failure rolls the Target insert back), then reloads so the recap tab
     /// shows the converted state.
     private func convertActionItem(chapterIdx: Int, itemIdx: Int) {
-        guard let db = appState.databaseManager else { return }
+        guard aiActionsAllowed, let db = appState.databaseManager else { return }
         let transcriptID = transcriptID
         Task {
             do {

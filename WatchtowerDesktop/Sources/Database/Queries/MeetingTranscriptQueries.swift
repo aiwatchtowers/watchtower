@@ -224,6 +224,9 @@ enum MeetingTranscriptQueries {
         case alreadyConverted(targetID: Int64)
         /// chapters_json re-encode failed — nothing may be written.
         case encodeFailed
+        /// The recording is private (MEETPRIV): a Target feeds the briefing,
+        /// day plan and chat prompts, so none is made from it.
+        case privateRecording
 
         var errorDescription: String? {
             switch self {
@@ -233,6 +236,8 @@ enum MeetingTranscriptQueries {
                 return "Already converted to Target #\(targetID)"
             case .encodeFailed:
                 return "Could not update chapters after creating the Target"
+            case .privateRecording:
+                return "Private recording — not sent to AI, so no Target is made from it"
             }
         }
     }
@@ -258,6 +263,9 @@ enum MeetingTranscriptQueries {
               chapters.chapters.indices.contains(chapterIdx),
               chapters.chapters[chapterIdx].actionItems.indices.contains(itemIdx) else {
             throw ActionItemConversionError.staleChapters
+        }
+        if transcript.isPrivate {
+            throw ActionItemConversionError.privateRecording
         }
         let chapter = chapters.chapters[chapterIdx]
         let item = chapter.actionItems[itemIdx]

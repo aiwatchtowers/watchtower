@@ -127,7 +127,11 @@ struct TranscriptSectionView: View {
     // MARK: - Actions
 
     private func retryRecap(_ transcript: MeetingTranscript) {
-        guard let id = transcript.id, let runner = ProcessCLIRunner.makeDefault() else { return }
+        // MEETPRIV-01: the button is hidden for a private recording; this
+        // keeps a stale one from reaching the CLI (which refuses too).
+        guard !transcript.isPrivate, let id = transcript.id, let runner = ProcessCLIRunner.makeDefault() else {
+            return
+        }
         retryingRecapID = id
         Task {
             defer { retryingRecapID = nil }

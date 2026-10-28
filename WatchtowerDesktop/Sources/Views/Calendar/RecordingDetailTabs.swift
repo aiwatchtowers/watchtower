@@ -138,12 +138,17 @@ struct RecordingRecapTab: View {
                             .foregroundStyle(.secondary)
                             .help("Already converted to a Target")
                     } else {
+                        // MEETPRIV: a Target feeds the briefing, day plan and
+                        // chat prompts, so a private recording makes none.
                         Button("Target") {
                             onConvertActionItem(chapterIdx, itemIdx)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
-                        .help("Create a Target from this action item")
+                        .disabled(isPrivate)
+                        .help(isPrivate
+                              ? "\(PrivateRecordingCopy.notSentToAI): no Target is made from it"
+                              : "Create a Target from this action item")
                     }
                 }
             }
