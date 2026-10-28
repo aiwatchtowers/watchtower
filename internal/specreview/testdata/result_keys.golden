@@ -42,7 +42,8 @@
         "quote": "nothing more",
         "speaker": "owner"
       },
-      "where": null
+      "where": null,
+      "severity": "major"
     }
   ],
   "decided_alone": [
@@ -54,7 +55,8 @@
       "where": {
         "heading": "Decisions",
         "quote": "Mute state lives in the local database"
-      }
+      },
+      "severity": "minor"
     }
   ],
   "blind_spots": [
@@ -70,7 +72,8 @@
       "evidence": {
         "path": "internal/notify/mute.go",
         "line": 42
-      }
+      },
+      "severity": "blocker"
     }
   ],
   "checks": [
@@ -80,7 +83,8 @@
       "lens": "promises",
       "question": "Does every promise have a task?",
       "answer": "concern",
-      "note": "Expiry has none."
+      "note": "Expiry has none.",
+      "severity": "major"
     }
   ],
   "resolved": [

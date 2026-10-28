@@ -270,6 +270,10 @@ func (v *validator) agreements(in []Agreement) []Agreement {
 			continue
 		}
 		a.Source.Speaker = speaker
+		a.Severity = normSeverity(a.Severity)
+		if a.Status == "as_agreed" {
+			a.Severity = ""
+		}
 		anchorQuote := ""
 		if a.Where != nil {
 			ch, h, ok := v.anchor(*a.Where)
@@ -303,6 +307,7 @@ func (v *validator) decidedAlone(in []DecidedAlone) []DecidedAlone {
 			continue
 		}
 		d.Chapter, d.Where.Heading = ch, h
+		d.Severity = normSeverity(d.Severity)
 		d.Key = itemKey("da:", d.Text, d.Where.Quote)
 		if seen[d.Key] {
 			v.drop()
@@ -319,6 +324,7 @@ func (v *validator) blindSpots(in []BlindSpot) []BlindSpot {
 	seen := map[string]bool{}
 	for _, b := range in {
 		b.Text, b.Why = field(b.Text), field(b.Why)
+		b.Severity = normSeverity(b.Severity)
 		if b.Text == "" || len(out) >= maxBlindSpots {
 			v.drop()
 			continue
@@ -355,6 +361,10 @@ func (v *validator) checks(in []Check) []Check {
 			continue
 		}
 		c.Chapter = key
+		c.Severity = normSeverity(c.Severity)
+		if c.Answer != "concern" {
+			c.Severity = ""
+		}
 		c.Key = itemKey("ck:", c.Lens+"\x00"+c.Question, key)
 		if seen[c.Key] {
 			v.drop()

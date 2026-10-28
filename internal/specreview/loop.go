@@ -86,6 +86,9 @@ type AuthorItem struct {
 	Where *Anchor `json:"where,omitempty"`
 	Round int     `json:"round"`
 	Reply *Reply  `json:"reply,omitempty"`
+	// Severity is the level the reviewer gave when it raised the finding;
+	// a carried item keeps it.
+	Severity string `json:"severity,omitempty"`
 }
 
 // LedgerEntry is a finding that left the author's list: resolved, disputed
@@ -105,18 +108,18 @@ func Findings(r Result, round int) []AuthorItem {
 	out := []AuthorItem{}
 	for _, a := range r.Agreements {
 		if a.Status != "as_agreed" {
-			out = append(out, AuthorItem{Key: a.Key, Kind: KindAgreement, Text: a.Text, Note: a.Note, Where: copyAnchor(a.Where), Round: round})
+			out = append(out, AuthorItem{Key: a.Key, Kind: KindAgreement, Text: a.Text, Note: a.Note, Where: copyAnchor(a.Where), Round: round, Severity: a.Severity})
 		}
 	}
 	for _, d := range r.DecidedAlone {
-		out = append(out, AuthorItem{Key: d.Key, Kind: KindDecidedAlone, Text: d.Text, Note: d.Note, Where: copyAnchor(&d.Where), Round: round})
+		out = append(out, AuthorItem{Key: d.Key, Kind: KindDecidedAlone, Text: d.Text, Note: d.Note, Where: copyAnchor(&d.Where), Round: round, Severity: d.Severity})
 	}
 	for _, b := range r.BlindSpots {
-		out = append(out, AuthorItem{Key: b.Key, Kind: KindBlindSpot, Text: b.Text, Note: b.Why, Where: copyAnchor(b.Where), Round: round})
+		out = append(out, AuthorItem{Key: b.Key, Kind: KindBlindSpot, Text: b.Text, Note: b.Why, Where: copyAnchor(b.Where), Round: round, Severity: b.Severity})
 	}
 	for _, c := range r.Checks {
 		if c.Answer == "concern" {
-			out = append(out, AuthorItem{Key: c.Key, Kind: KindCheck, Text: c.Question, Note: c.Note, Round: round})
+			out = append(out, AuthorItem{Key: c.Key, Kind: KindCheck, Text: c.Question, Note: c.Note, Round: round, Severity: c.Severity})
 		}
 	}
 	return out

@@ -331,21 +331,21 @@ func TestResult_JSONKeysPinned(t *testing.T) {
 			Where:  &Anchor{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours"},
 		}, {
 			// A missing agreement has no where; its chapter is the one the reviewer named.
-			Key: "ag:ba9876543210", Text: "Threads stay unmuted", Status: "missing", Note: "Not in the document.", Chapter: "ch:1",
+			Key: "ag:ba9876543210", Text: "Threads stay unmuted", Status: "missing", Note: "Not in the document.", Chapter: "ch:1", Severity: "major",
 			Source: Source{Kind: "conversation", Ref: "entry:1", Quote: "nothing more", Speaker: SpeakerOwner},
 		}},
 		DecidedAlone: []DecidedAlone{{
 			Key: "da:0123456789ab", Text: "State is kept in the local database", Note: "Nobody asked for it.", Chapter: "ch:2",
-			Where: Anchor{Heading: "Decisions", Quote: "Mute state lives in the local database"},
+			Where: Anchor{Heading: "Decisions", Quote: "Mute state lives in the local database"}, Severity: "minor",
 		}},
 		BlindSpots: []BlindSpot{{
 			Key: "bs:0123456789ab", Text: "No word on muted threads", Why: "A mention would stay silent.", Chapter: "ch:1",
 			Where:    &Anchor{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours"},
-			Evidence: &Evidence{Path: "internal/notify/mute.go", Line: 42},
+			Evidence: &Evidence{Path: "internal/notify/mute.go", Line: 42}, Severity: "blocker",
 		}},
 		Checks: []Check{{
 			Key: "ck:0123456789ab", Chapter: "ch:1", Lens: "promises", Question: "Does every promise have a task?",
-			Answer: "concern", Note: "Expiry has none.",
+			Answer: "concern", Note: "Expiry has none.", Severity: "major",
 		}},
 		Resolved: []Resolved{{CommentQuote: "name the retention period", Status: "resolved", Note: "Now stated."}},
 		Verdicts: []Verdict{{Key: "bs:0123456789ab", Verdict: "disputed", Note: "The threads are still not named."}},
