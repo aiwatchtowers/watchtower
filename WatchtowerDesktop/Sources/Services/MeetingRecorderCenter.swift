@@ -987,8 +987,9 @@ final class MeetingRecorderCenter {
             // delays or stops it, and a crash before the row lands is
             // recovered from the audio file alone.
             await beginPending(eventID: eventID, title: title, isPrivate: isPrivate, for: url)
-            // A lock flipped before the row landed updated nothing: re-apply.
-            if captureAudioURL == url, currentPrivate != isPrivate {
+            // A lock flipped before the row landed updated nothing: re-apply
+            // (also when Stop came first — the row is still this recording's).
+            if currentPrivate != isPrivate {
                 await persistPrivate(currentPrivate, for: url)
             }
         } catch {

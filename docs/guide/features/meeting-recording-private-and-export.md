@@ -68,7 +68,7 @@ Open the recording and choose from **Export** in its header:
 - **Save as Subtitles (SRT)…**: numbered cues for a video player.
 - **Save as JSON…**: the segments with times and speakers, for your own scripts.
 
-Deleted utterances are never exported. A short line under the header confirms the copy or the saved file's name. Export runs on your Mac, so private recordings export too.
+Deleted utterances are never exported. Saved files are readable only by your user. A short line under the header confirms the copy or the saved file's name. Export runs on your Mac, so private recordings export too.
 
 ## When it's empty or wrong
 

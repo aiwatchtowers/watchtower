@@ -110,7 +110,7 @@ struct RecordingDetailView: View {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.red)
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, Spacing.medium)
                 }
                 if let notice = appState.recordingActionsCenter.notice[transcriptID] {
                     Label(notice, systemImage: "checkmark.circle")

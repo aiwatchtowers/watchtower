@@ -66,13 +66,15 @@ final class RecordingActionsCenter {
     }
 
     /// The rendering, from the CLI's stdout, written by the app to the URL the
-    /// owner picked in the save panel (atomically). The app writes it, not
+    /// owner picked in the save panel (atomically, 0600). The app writes it, not
     /// the CLI child, so the save panel's grant covers the destination.
     func save(transcriptID: Int64, format: TranscriptExportFormat, to url: URL, service: TranscriptSaveService) {
         runExport(transcriptID) {
             let data = try await service.export(transcriptID: transcriptID, format: format)
             try await Task.detached(priority: .userInitiated) {
                 try data.write(to: url, options: .atomic)
+                // A transcript is the owner's alone: readable by this user only.
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             }.value
             return "Saved to \(url.lastPathComponent)"
         } failure: { "Export failed: \($0)" }

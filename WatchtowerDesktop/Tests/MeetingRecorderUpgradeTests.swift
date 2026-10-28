@@ -187,6 +187,28 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
         XCTAssertEqual(try pendingStore.pending().map(\.isPrivate), [true])
     }
 
+    /// The same, when the capture is stopped before the row lands.
+    func testMeetPriv01_ALockFlippedThenStoppedBeforeTheRowLandsReachesTheRow() async throws {
+        let store = GatedPendingStore(base: pendingStore)
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        let center = try center(store: store, recorder: recorder)
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+        let start = Task { await center.startRecording(eventID: nil, title: "Slow", config: config) }
+        let recording = await waitUntil("the capture to show") {
+            if case .recording = center.captureState { return true }
+            return false
+        }
+        XCTAssertTrue(recording)
+        await center.setCapturePrivate(true)
+        await center.stopAndProcess(config: config)
+        store.release()
+        await start.value
+
+        XCTAssertEqual(try pendingStore.pending().map(\.isPrivate), [true])
+    }
+
     func testAFailingStoreNeverStopsTheCapture() async throws {
         let center = try center(store: FailingPendingStore())
         var config = singleWindowConfig()

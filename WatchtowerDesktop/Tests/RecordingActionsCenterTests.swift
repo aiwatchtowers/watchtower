@@ -47,6 +47,8 @@ final class RecordingActionsCenterTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["meeting-prep", "transcript", "export", "5", "--format", "md"]],
                        "the CLI renders to stdout; it is never handed the destination")
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "# Weekly sync\n")
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.int16Value, 0o600, "readable by the owner only")
         XCTAssertEqual(center.notice[5], "Saved to Weekly sync.md")
         XCTAssertNil(center.lastError[5])
     }
