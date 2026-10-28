@@ -2296,6 +2296,14 @@ BEGIN
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END;
 
+-- Deleting a private recording deletes the recaps it owns instead of letting
+-- the foreign key orphan them into a readable recap (see 00164).
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_delete_recaps BEFORE DELETE ON meeting_transcripts
+WHEN OLD.private = 1
+BEGIN
+    DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
+END;
+
 -- External knowledge sources (see 00074)
 CREATE TABLE IF NOT EXISTS ext_sources (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,

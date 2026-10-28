@@ -39,7 +39,7 @@
 
 **Status:** Enforced (Go).
 
-**Observable:** A private recording, and the `meeting_recaps` row it owns (`transcript_id` = a private id; a recap with no recording is kept), is absent from: the knowledge index sources `transcript` and `recap` (`Build` renders nil, `Keys` leaves it out; migration 00164's trigger marks both in `kb_dirty` when the flag flips, so a recording turned private is deleted from the index on the next pass and one turned public comes back); `SearchTranscripts` and so `list_transcripts` with a query and both `get_task_context` meetings paths (Jira and Linear); `list_transcripts` without a query (`ExcludePrivate`); `get_transcript` (answers `recording <id> is private`); a transcript's event recap in the transcript tools, the memory calendar episode and the notes prompt (`GetMeetingRecapForAI`); ideas mining (`ListTranscriptsForIdeasAfter`, including the recap join); catch-up (`ListCatchupMeetings`, both sub-queries); the automation reads `list_meeting_recaps` / `get_meeting_recap` (`ListMeetingRecaps`, `GetMeetingRecapByID`, `GetMeetingRecapByEventID`).
+**Observable:** A private recording, and the `meeting_recaps` row it owns (`transcript_id` = a private id; a recap with no recording is kept), is absent from: the knowledge index sources `transcript` and `recap` (`Build` renders nil, `Keys` leaves it out; migration 00164's trigger marks both in `kb_dirty` when the flag flips, so a recording turned private is deleted from the index on the next pass and one turned public comes back); deleting a private recording deletes the recaps it owns (00164's `BEFORE DELETE` trigger) instead of letting the `ON DELETE SET NULL` foreign key turn them into readable recaps with no recording — a public recording's recap still outlives it; `SearchTranscripts` and so `list_transcripts` with a query and both `get_task_context` meetings paths (Jira and Linear); `list_transcripts` without a query (`ExcludePrivate`); `get_transcript` (answers `recording <id> is private`); a transcript's event recap in the transcript tools, the memory calendar episode and the notes prompt (`GetMeetingRecapForAI`); ideas mining (`ListTranscriptsForIdeasAfter`, including the recap join); catch-up (`ListCatchupMeetings`, both sub-queries); the automation reads `list_meeting_recaps` / `get_meeting_recap` (`ListMeetingRecaps`, `GetMeetingRecapByID`, `GetMeetingRecapByEventID`).
 
 **Why locked:** Each of these readers ends in a prompt. A reader that forgets the filter sends the recording to a provider without any visible sign.
 
@@ -50,6 +50,7 @@
 - `internal/db/meeting_private_test.go::TestMeetPriv02_CatchupSkipsPrivate`
 - `internal/db/meeting_private_test.go::TestMeetPriv02_AutomationRecapReadsSkipPrivate`
 - `internal/db/meeting_private_test.go::TestMeetPriv02_GetMeetingRecapForAISkipsPrivate`
+- `internal/db/meeting_private_test.go::TestMeetPriv02_DeletingPrivateRecordingDeletesItsRecap`
 - `internal/kb/meeting_private_test.go::TestMeetPriv02_PrivateRecordingNeverIndexed`
 - `internal/kb/meeting_private_test.go::TestMeetPriv02_TurnedPrivateLeavesIndexNextPass` (also checks incremental = rebuild, KB-01)
 - `internal/tools/transcripts_private_test.go::TestMeetPriv02_ListTranscriptsSkipsPrivate`
@@ -80,7 +81,7 @@
 
 **Status:** Enforced (Go).
 
-**Observable:** `transcript private <id> on|off` sets the flag and prints `{"id":N,"private":true|false}`; `show` reports `private`. Already generated recap, notes and chapters stay on the row, and every MEETPRIV-02 reader skips them from then on. Turning private off re-enables the AI commands and generates nothing by itself. Ideas and memory already mined are not unmined.
+**Observable:** `transcript private <id> on|off` sets the flag and prints `{"id":N,"private":true|false}`; `show` reports `private`. Already generated recap, notes and chapters stay on the row, and every MEETPRIV-02 reader skips them from then on. Turning private off re-enables the AI commands and generates nothing by itself. Deleting a recording while it is private deletes its recap with it (MEETPRIV-02); turn private off first to keep the recap. Ideas and memory already mined are not unmined.
 
 **Test guards:**
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv04_PrivateCommandTogglesAndShowReports`

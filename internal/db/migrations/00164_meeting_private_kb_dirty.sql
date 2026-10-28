@@ -5,6 +5,11 @@
 -- recording's document and every recap it owns in kb_dirty, so the indexer
 -- re-renders them on its next pass — a private one renders as nil and leaves
 -- the index, one made public again comes back.
+--
+-- Deleting a private recording deletes the recaps it owns: the foreign key
+-- would otherwise null their transcript_id (ON DELETE SET NULL), and a recap
+-- with no recording — source_text = the full transcript — is one every
+-- MEETPRIV-02 reader serves. A public recording's recap still outlives it.
 -- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
 WHEN OLD.private != NEW.private
@@ -16,5 +21,14 @@ BEGIN
 END;
 -- +goose StatementEnd
 
+-- +goose StatementBegin
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_delete_recaps BEFORE DELETE ON meeting_transcripts
+WHEN OLD.private = 1
+BEGIN
+    DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
+END;
+-- +goose StatementEnd
+
 -- +goose Down
+DROP TRIGGER IF EXISTS meeting_transcripts_private_delete_recaps;
 DROP TRIGGER IF EXISTS meeting_transcripts_private_kb_dirty;

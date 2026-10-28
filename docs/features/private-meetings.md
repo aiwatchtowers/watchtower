@@ -7,7 +7,7 @@ Board #906. Two owner asks on meeting recordings:
 
 ## Data
 
-`meeting_transcripts.private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0,1))` (migration 00163). Existing rows stay non-private. The flag can be set at capture start, changed while the recording is still capturing or queued, and toggled later on the saved recording. Migration 00164 adds a trigger that marks the recording's knowledge-index document and the recaps it owns in `kb_dirty` whenever the flag flips, so the index follows a Desktop write that moves no change cursor.
+`meeting_transcripts.private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0,1))` (migration 00163). Existing rows stay non-private. The flag can be set at capture start, changed while the recording is still capturing or queued, and toggled later on the saved recording. Migration 00164 adds a trigger that marks the recording's knowledge-index document and the recaps it owns in `kb_dirty` whenever the flag flips, so the index follows a Desktop write that moves no change cursor, and a second trigger that deletes the recaps a private recording owns when the recording is deleted — the `meeting_recaps.transcript_id` foreign key is `ON DELETE SET NULL`, and a recap with no recording (its `source_text` is the full transcript) is one every reader serves.
 
 ## Contract MEETPRIV
 
@@ -16,9 +16,10 @@ Board #906. Two owner asks on meeting recordings:
   - knowledge index sources `transcript` and `recap` (`internal/kb/source_derived.go`) — a recording turned private leaves the index on the next indexer pass (deleted document, not just skipped);
   - `SearchTranscripts` / `transcripts_fts` callers, `list_transcripts`, `get_transcript` (a private id answers `recording <id> is private`), `get_task_context` meetings;
   - ideas mining (`ListTranscriptsForIdeasAfter`), catch-up (`ListCatchupMeetings`), memory calendar ingest of recaps, automation `list_meeting_recaps` / `get_meeting_recap`;
-  - any other reader found later follows the same rule.
+  - any other reader found later follows the same rule;
+  - deleting a private recording deletes the recaps it owns (a public recording's recap still outlives it).
 - **MEETPRIV-03 — linking keeps it private.** Linking a private recording to a calendar event (`MeetingTranscriptQueries.linkToEvent`) does not copy its text into `meeting_recaps`.
-- **MEETPRIV-04 — turning private on later.** Already generated recap/notes/chapters stay visible in the app but every reader above now skips them. Ideas and memory already mined from the recording are not unmined (stated in the toggle's confirmation). Turning private off re-enables the AI actions; nothing is generated automatically.
+- **MEETPRIV-04 — turning private on later.** Already generated recap/notes/chapters stay visible in the app but every reader above now skips them. Ideas and memory already mined from the recording are not unmined (stated in the toggle's confirmation). Turning private off re-enables the AI actions; nothing is generated automatically. Deleting the recording while it is private deletes its recap too.
 - **MEETPRIV-05 — export is local and always allowed**, private or not.
 
 What stays out of reach of this contract: a workbench agent with a shell can still read the database or the recordings folder directly; the phone (E2E, the owner's own device) still receives the recording, but the phone chat goes through the same tools and so sees nothing.

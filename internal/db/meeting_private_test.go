@@ -181,6 +181,47 @@ func TestMeetPriv02_GetMeetingRecapForAISkipsPrivate(t *testing.T) {
 	assert.NotNil(t, own)
 }
 
+func TestMeetPriv02_DeletingPrivateRecordingDeletesItsRecap(t *testing.T) {
+	d := openTestDB(t)
+	f := seedMeetPriv(t, d)
+	ctx := context.Background()
+
+	_, err := d.Exec(`DELETE FROM meeting_transcripts WHERE id = ?`, f.privateID)
+	require.NoError(t, err)
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM meeting_recaps WHERE id = ?`, f.privateRecapID).Scan(&n))
+	assert.Zero(t, n, "the private recording's recap must not outlive it as a recap with no recording")
+	got, err := d.GetMeetingRecap("E-priv")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	got, err = d.GetMeetingRecapForAI("E-priv")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	rows, err := d.ListMeetingRecaps(ctx, "", "", 10)
+	require.NoError(t, err)
+	ids := map[int64]bool{}
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	assert.Equal(t, map[int64]bool{f.publicRecapID: true, f.pastedRecapID: true}, ids)
+	items, err := d.ListCatchupMeetings(1000, 2000, 10)
+	require.NoError(t, err)
+	for _, it := range items {
+		assert.False(t, it.Area == "recaps" && int64(it.ID) == f.privateRecapID)
+	}
+
+	// A public recording's recap still outlives it, unlinked (existing behaviour).
+	_, err = d.Exec(`DELETE FROM meeting_transcripts WHERE id = ?`, f.publicID)
+	require.NoError(t, err)
+	var tid any
+	require.NoError(t, d.QueryRow(`SELECT transcript_id FROM meeting_recaps WHERE id = ?`, f.publicRecapID).Scan(&tid))
+	assert.Nil(t, tid)
+	got, err = d.GetMeetingRecapForAI("E-pub")
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+}
+
 func TestMeetPriv04_FlagRoundTripAndKBDirtyMarks(t *testing.T) {
 	d := openTestDB(t)
 	f := seedMeetPriv(t, d)
