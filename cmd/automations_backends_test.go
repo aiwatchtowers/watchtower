@@ -19,8 +19,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/llmusage"
+	"watchtower/internal/tools"
 )
 
 // fakeMCPServerEnv makes the cmd test binary act as a stdio MCP server
@@ -290,4 +293,40 @@ func TestMCPCaller_ReservedNameNotCalled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "error", conn.Status)
 	assert.Equal(t, reservedReasonPrefix+reservedNameReason(conn), conn.Error)
+}
+
+// ledgerSink collects the LLM ledger rows a test records.
+type ledgerSink struct {
+	mu    sync.Mutex
+	calls []llmusage.Call
+}
+
+func (s *ledgerSink) Write(c llmusage.Call) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, c)
+	return nil
+}
+
+// An agent() child's model calls are recorded under automation.agent.
+func TestAutomationAgent_LedgerPurpose(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"done"}}],` +
+			`"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`))
+	}))
+	t.Cleanup(srv.Close)
+	sink := &ledgerSink{}
+	llmusage.SetSink(sink)
+	t.Cleanup(func() { llmusage.SetSink(nil) })
+
+	cfg := &config.Config{}
+	cfg.AI.Provider, cfg.AI.OllamaURL = "ollama", srv.URL
+	runner := &runtimeBAgentRunner{cfg: cfg, reg: tools.NewReadRegistry(db.OpenTestDB(t))}
+	req := automations.AgentRequest{Instruction: "triage", Tools: []string{}, Deadline: time.Now().Add(time.Minute),
+		BeforeModelCall: func() error { return nil }, AfterModelCall: func(int, int) {}}
+	res, err := runner.Run(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, "done", res.Text)
+	require.Len(t, sink.calls, 1)
+	assert.Equal(t, automationAgentSource, sink.calls[0].Purpose)
 }

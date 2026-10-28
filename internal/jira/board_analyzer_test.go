@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,15 +19,17 @@ import (
 // failingAIProvider is an ai.Provider whose QuerySync always errors, so
 // AnalyzeBoard's LLM call fails deterministically without a network call.
 type failingAIProvider struct {
-	calls int
+	calls   int
+	purpose string // the last call's LLM ledger purpose
 }
 
 func (f *failingAIProvider) Query(context.Context, string, string, string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
 	panic("failingAIProvider.Query: not used by CheckAndRefreshProfiles")
 }
 
-func (f *failingAIProvider) QuerySync(context.Context, string, string, string) (string, *ai.Usage, error) {
+func (f *failingAIProvider) QuerySync(ctx context.Context, _, _, _ string) (string, *ai.Usage, error) {
 	f.calls++
+	f.purpose, _ = llmusage.PurposeFrom(ctx)
 	return "", nil, fmt.Errorf("simulated LLM failure")
 }
 
@@ -183,6 +186,7 @@ func TestCheckAndRefreshProfiles_GivesUpAfterDailyBudgetThenResumesNextDay(t *te
 		assert.Error(t, results[0].Error, "attempt %d must fail (fake provider always errors)", i)
 		assert.Equal(t, i, provider.calls, "attempt %d must reach the LLM", i)
 	}
+	assert.Equal(t, "jira.boards", provider.purpose, "the call is tagged for the LLM ledger")
 
 	// Budget spent: a further same-day pass must not call the LLM again.
 	results, err := a.CheckAndRefreshProfiles(context.Background(), true)
