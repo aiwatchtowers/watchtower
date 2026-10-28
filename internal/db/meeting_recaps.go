@@ -127,6 +127,12 @@ func (db *DB) GetMeetingRecap(eventID string) (*MeetingRecap, error) {
 // Exported so the knowledge index (internal/kb) filters with the same text.
 const RecapNotPrivate = `NOT EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = r.transcript_id AND pt.private = 1)`
 
+// ChatNotPrivateMeeting is the SQL predicate, over the chat_conversations
+// alias c, that keeps a conversation unless it is the meeting chat of a
+// private recording (context_type 'meeting', context_id = the recording id;
+// MEETPRIV-02). Exported so the knowledge index filters with the same text.
+const ChatNotPrivateMeeting = `NOT (COALESCE(c.context_type, '') = 'meeting' AND EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = CAST(c.context_id AS INTEGER) AND pt.private = 1))`
+
 // GetMeetingRecapForAI is GetMeetingRecap for a reader whose output reaches a
 // model: a recap owned by a private recording reads as none (MEETPRIV-02).
 func (db *DB) GetMeetingRecapForAI(eventID string) (*MeetingRecap, error) {

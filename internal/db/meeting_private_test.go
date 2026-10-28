@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,6 +111,38 @@ func TestMeetPriv02_IdeasReaderSkipsPrivate(t *testing.T) {
 	assert.NotContains(t, got, f.privateID)
 	assert.Contains(t, got, secondID)
 	assert.Empty(t, got[secondID], "the private recording's recap must not ride along with another recording")
+}
+
+// TestMeetPriv02_IdeasChatTurnsSkipPrivateMeetingChat pins that the ideas
+// miner never reads the meeting chat of a private recording, while a public
+// recording's meeting chat and a plain chat stay mined.
+func TestMeetPriv02_IdeasChatTurnsSkipPrivateMeetingChat(t *testing.T) {
+	d := openTestDB(t)
+	f := seedMeetPriv(t, d)
+	cutoff := time.Now().UTC().Add(time.Hour)
+
+	privConv := insertChatConversation(t, d, "meeting", fmt.Sprint(f.privateID))
+	pubConv := insertChatConversation(t, d, "meeting", fmt.Sprint(f.publicID))
+	plain := insertChatConversation(t, d, "", "")
+	insertChatMessage(t, d, privConv, "user", "secret plan", 1)
+	pub := insertChatMessage(t, d, pubConv, "user", "public plan", 2)
+	other := insertChatMessage(t, d, plain, "assistant", "plain chat", 3)
+
+	got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 100)
+	require.NoError(t, err)
+	var ids []int64
+	for _, turn := range got {
+		ids = append(ids, turn.ID)
+	}
+	assert.Equal(t, []int64{pub, other}, ids)
+
+	// Turning it private later stops the mining of what is left too.
+	_, err = d.SetMeetingTranscriptPrivate(f.publicID, true)
+	require.NoError(t, err)
+	got, err = d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 100)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, other, got[0].ID)
 }
 
 func TestMeetPriv02_CatchupSkipsPrivate(t *testing.T) {
