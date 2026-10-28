@@ -114,7 +114,8 @@ func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
 	resetTranscriptFlags(t)
-	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+	gen := &transcriptMockGen{response: transcriptMockRecapJSON}
+	stubTranscriptGenerator(t, gen)
 
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
@@ -145,13 +146,19 @@ func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
 	err = transcriptPrivateCmd.RunE(transcriptPrivateCmd, []string{"999999", "on"})
 	assert.EqualError(t, err, "transcript 999999 not found")
 
-	// Turning private off re-enables the AI commands (and generates nothing
-	// by itself — the toggle above made no generator call).
+	// Turning private on and off generates nothing by itself.
+	assert.Zero(t, gen.calls, "the private toggle must never call the generator")
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	assert.False(t, tr.SummaryJSON.Valid)
+	assert.False(t, tr.ChaptersJSON.Valid)
+
+	// Turning private off re-enables the AI commands: chapters reaches the
+	// generator instead of being refused.
 	var out bytes.Buffer
 	transcriptChaptersCmd.SetOut(&out)
-	if err := transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{fmt.Sprint(id)}); err != nil {
-		assert.NotContains(t, err.Error(), "is private")
-	}
+	_ = transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{fmt.Sprint(id)})
+	assert.Equal(t, 1, gen.calls, "chapters must reach the generator once private is off")
 }
 
 func TestMeetPriv05_ExportPrivateToFile0600(t *testing.T) {
