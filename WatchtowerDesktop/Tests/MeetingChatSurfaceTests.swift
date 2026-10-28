@@ -50,6 +50,47 @@ final class MeetingChatSurfaceTests: XCTestCase {
                                              conversationID: 1, dbPool: dbManager.dbPool))
     }
 
+    /// MEETPRIV-01: a recording turned private (header toggle or a reload
+    /// that finds it private) loses its chat engine, and the row on screen is
+    /// private by then, so the Chat tab's next render builds no new engine.
+    /// Another recording's engine and a pane showing another recording are
+    /// left alone.
+    func testMeetPriv01_TurnedPrivateDropsTheChatAndNoSpecIsBuiltAgain() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertMeetingTranscript(db, id: 9, title: "Other")
+        }
+        let pool = dbManager.dbPool
+        let chats = EmbeddedChatCenter { spec, gate in
+            makeSurfaceEngine(spec, dbPool: pool, ai: MockClaudeService(), gate: gate)
+        }
+        let transcript = try loadTranscript()
+        let conv = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: pool)
+        let spec = try XCTUnwrap(MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
+                                                         conversationID: conv, dbPool: pool))
+        _ = chats.engine(for: spec)
+        let fetched = try await pool.read { db in try MeetingTranscriptQueries.fetch(db, id: 9) }
+        let other = try XCTUnwrap(fetched)
+        let otherConv = try await MeetingChatSurface.conversationID(transcriptID: 9, title: "Other", dbPool: pool)
+        let otherSpec = try XCTUnwrap(MeetingChatSurface.spec(transcript: other, transcriptID: 9, recapContent: nil,
+                                                              conversationID: otherConv, dbPool: pool))
+        _ = chats.engine(for: otherSpec)
+
+        var shown: MeetingTranscript? = transcript
+        MeetingChatSurface.recordingTurnedPrivate(7, shownRow: &shown, chats: chats)
+
+        XCTAssertNil(chats.loaded(spec.key))
+        XCTAssertNotNil(chats.loaded(otherSpec.key), "another recording keeps its chat")
+        let row = try XCTUnwrap(shown)
+        XCTAssertTrue(row.isPrivate)
+        XCTAssertNil(MeetingChatSurface.spec(transcript: row, transcriptID: 7, recapContent: nil,
+                                             conversationID: conv, dbPool: pool))
+
+        // A pane already showing recording 9 keeps its row as it is.
+        var paneOnOther: MeetingTranscript? = other
+        MeetingChatSurface.recordingTurnedPrivate(7, shownRow: &paneOnOther, chats: chats)
+        XCTAssertEqual(paneOnOther?.isPrivate, false)
+    }
+
     /// MEETPRIV-02: a public recording B on event E never sends the recap
     /// a private recording A owns on E (Go's `GetMeetingRecapForAI`); a
     /// pasted recap (no owning recording) still reaches the prompt.

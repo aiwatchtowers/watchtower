@@ -36,6 +36,18 @@ enum MeetingChatSurface {
             title: "Meeting: \(String(title.prefix(60)))")
     }
 
+    /// MEETPRIV-01: the recording turned private (the header toggle, or a
+    /// reload that finds it private): its chat engines stop, so nothing more
+    /// reaches the provider. The row on screen turns private FIRST: dropping
+    /// an engine re-renders the Chat tab, which must not build a new engine
+    /// from a non-private row (`spec` is nil only for a private one).
+    @MainActor
+    static func recordingTurnedPrivate(_ transcriptID: Int64, shownRow: inout MeetingTranscript?,
+                                       chats: EmbeddedChatCenter) {
+        if shownRow?.id == transcriptID { shownRow?.isPrivate = true }
+        chats.dropContext(type: contextType, id: String(transcriptID))
+    }
+
     /// Built per render from the latest transcript and recap, so an edited
     /// transcript reaches the next first-turn prompt without a new engine.
     /// nil for a private recording (MEETPRIV-01): no chat is ever built that
