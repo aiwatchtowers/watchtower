@@ -106,10 +106,16 @@ struct RecordingDetailView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 6)
 
-                if let error = errorMessage {
+                if let error = errorMessage ?? appState.recordingActionsCenter.lastError[transcriptID] {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.red)
+                        .padding(.horizontal, 12)
+                }
+                if let notice = appState.recordingActionsCenter.notice[transcriptID] {
+                    Label(notice, systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .padding(.horizontal, 12)
                 }
                 if let callAudioNote {
@@ -262,6 +268,7 @@ struct RecordingDetailView: View {
                 RecordingHeaderActions(
                     transcript: transcript,
                     hasSegments: utterances != nil,
+                    center: appState.recordingActionsCenter,
                     onPrivateChanged: privateChanged
                 ) { message in
                     if isShowing(transcript.id ?? -1) { errorMessage = message }

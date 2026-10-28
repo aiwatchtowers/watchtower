@@ -5,19 +5,21 @@ import WatchtowerCore
 
 /// The recording detail header's **Private** toggle and **Export** menu
 /// (docs/features/private-meetings.md). Both go through the CLI: `transcript
-/// private <id> on|off` and `transcript export` — the renderers live in Go
-/// only. Failures reach the owner through `onError`, never swallowed.
+/// private <id> on|off` and `transcript export` to stdout — the renderers live
+/// in Go only; the app writes a saved file itself. The runs, their failures
+/// and the success line live in `RecordingActionsCenter`, so they survive
+/// navigation; the host shows them.
 struct RecordingHeaderActions: View {
     let transcript: MeetingTranscript
     /// Whether the row has timed segments; SRT needs them.
     let hasSegments: Bool
-    /// The flag landed (the CLI answered); the host reloads.
+    let center: RecordingActionsCenter
+    /// The flag landed (the CLI answered), even after the owner moved on.
     let onPrivateChanged: (Bool) -> Void
+    /// No CLI to run.
     let onError: (String) -> Void
 
     @State private var confirmPrivate = false
-    @State private var isChangingPrivate = false
-    @State private var isExporting = false
 
     private var transcriptID: Int64? { transcript.id }
 
@@ -37,7 +39,7 @@ struct RecordingHeaderActions: View {
             .toggleStyle(.button)
             .buttonStyle(.kitSecondary)
             .controlSize(.small)
-            .disabled(isChangingPrivate || transcriptID == nil)
+            .disabled(transcriptID.map { center.changingPrivate.contains($0) } ?? true)
             .help(transcript.isPrivate
                   ? "Private: never sent to AI. Turn off to allow recap, notes, chapters and chat again."
                   : "Make this recording private: never sent to AI")
@@ -66,67 +68,36 @@ struct RecordingHeaderActions: View {
             .buttonStyle(.kitSecondary)
             .controlSize(.small)
             .fixedSize()
-            .disabled(isExporting || transcriptID == nil)
+            .disabled(transcriptID.map { center.exporting.contains($0) } ?? true)
             .help(hasSegments ? "Copy or save the transcript" : "Copy or save the transcript (subtitles need timings)")
         }
     }
 
     // MARK: - Actions
 
-    private var service: TranscriptSaveService? {
-        ProcessCLIRunner.makeDefault().map { TranscriptSaveService(runner: $0) }
+    /// nil (after telling the owner) when the CLI is missing.
+    private func cliService() -> TranscriptSaveService? {
+        guard let runner = ProcessCLIRunner.makeDefault() else {
+            onError("watchtower CLI not found")
+            return nil
+        }
+        return TranscriptSaveService(runner: runner)
     }
 
     private func setPrivate(_ on: Bool) {
-        guard let transcriptID else { return }
-        guard let service else {
-            onError("watchtower CLI not found")
-            return
-        }
-        isChangingPrivate = true
-        Task {
-            defer { isChangingPrivate = false }
-            do {
-                let result = try await service.setPrivate(transcriptID: transcriptID, on)
-                onPrivateChanged(result.isPrivate)
-            } catch {
-                onError("Couldn't change Private: \(error.localizedDescription)")
-            }
-        }
+        guard let transcriptID, let service = cliService() else { return }
+        center.setPrivate(transcriptID: transcriptID, on, service: service) { onPrivateChanged($0) }
     }
 
-    /// The txt rendering, from the CLI's stdout, onto the pasteboard.
     private func copyTranscript() {
-        guard let transcriptID else { return }
-        guard let service else {
-            onError("watchtower CLI not found")
-            return
-        }
-        isExporting = true
-        Task {
-            defer { isExporting = false }
-            do {
-                let data = try await service.export(transcriptID: transcriptID, format: .txt)
-                guard let text = String(bytes: data, encoding: .utf8) else {
-                    onError("Couldn't copy the transcript: the export was not text")
-                    return
-                }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-            } catch {
-                onError("Couldn't copy the transcript: \(error.localizedDescription)")
-            }
-        }
+        guard let transcriptID, let service = cliService() else { return }
+        center.copyTranscript(transcriptID: transcriptID, service: service)
     }
 
-    /// The owner picks the destination (the consent, no TCC prompt); the CLI
-    /// writes the file there (0600).
+    /// The owner picks the destination; the center writes the CLI's rendering
+    /// there from the app process.
     private func save(_ format: TranscriptExportFormat) {
-        guard let transcriptID else { return }
-        guard let service else {
-            onError("watchtower CLI not found")
-            return
-        }
+        guard let transcriptID, let service = cliService() else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = format.suggestedFileName(title: transcript.title)
         panel.canCreateDirectories = true
@@ -135,15 +106,7 @@ struct RecordingHeaderActions: View {
         }
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            isExporting = true
-            Task {
-                defer { isExporting = false }
-                do {
-                    try await service.export(transcriptID: transcriptID, format: format, outputPath: url.path)
-                } catch {
-                    onError("Export failed: \(error.localizedDescription)")
-                }
-            }
+            center.save(transcriptID: transcriptID, format: format, to: url, service: service)
         }
     }
 }

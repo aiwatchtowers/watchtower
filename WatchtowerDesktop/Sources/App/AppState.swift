@@ -205,6 +205,9 @@ final class AppState {
     /// Same pattern for "generate chapters" runs (Recap tab).
     let transcriptChaptersCenter = TranscriptChaptersCenter()
 
+    /// Same pattern for a recording's Private toggle and Export runs.
+    let recordingActionsCenter = RecordingActionsCenter()
+
     /// App-wide, single-slot registry for the Voices window: the owner's
     /// voice-labeling queue, confirm/dismiss/relabel transactions, and the
     /// automatic catch-up pass. Attached to the DB pool in

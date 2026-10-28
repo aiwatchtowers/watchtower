@@ -505,15 +505,13 @@ final class TranscriptSaveServiceTests: XCTestCase {
         }
     }
 
-    func test_exportToFileArgs() async throws {
+    func test_exportArgsPerFormat() async throws {
         for format in TranscriptExportFormat.allCases {
             let fake = FakeCLIRunner(stdout: Data())
-            try await TranscriptSaveService(runner: fake).export(
-                transcriptID: 5, format: format, outputPath: "/tmp/out.\(format.fileExtension)")
+            _ = try await TranscriptSaveService(runner: fake).export(transcriptID: 5, format: format)
             XCTAssertEqual(fake.invocations.first, [
-                "meeting-prep", "transcript", "export", "5", "--format", format.rawValue,
-                "--output", "/tmp/out.\(format.fileExtension)"
-            ])
+                "meeting-prep", "transcript", "export", "5", "--format", format.rawValue
+            ], "the CLI renders to stdout; the app writes the file")
         }
     }
 
@@ -528,7 +526,7 @@ final class TranscriptSaveServiceTests: XCTestCase {
     func test_exportPropagatesRunnerError() async {
         let svc = TranscriptSaveService(runner: FakeCLIRunner(error: CLIRunnerError.binaryNotFound))
         do {
-            try await svc.export(transcriptID: 5, format: .srt, outputPath: "/tmp/x.srt")
+            _ = try await svc.export(transcriptID: 5, format: .srt)
             XCTFail("expected throw")
         } catch CLIRunnerError.binaryNotFound {
             // expected

@@ -288,17 +288,12 @@ package struct TranscriptSaveService {
         return try JSONDecoder().decode(TranscriptPrivateResult.self, from: data)
     }
 
-    /// `meeting-prep transcript export <id> --format <f> [--output <file>]`.
-    /// With `outputPath` the CLI writes the file (0600) and the returned data
-    /// is not meaningful; without it the rendering comes back on stdout.
-    @discardableResult
-    package func export(
-        transcriptID: Int64, format: TranscriptExportFormat, outputPath: String? = nil
-    ) async throws -> Data {
-        var args = ["meeting-prep", "transcript", "export", String(transcriptID), "--format", format.rawValue]
-        if let outputPath {
-            args += ["--output", outputPath]
-        }
-        return try await runner.run(args: args)
+    /// `meeting-prep transcript export <id> --format <f>`: the rendering, from
+    /// stdout. The app writes any file itself — a file written by the CLI
+    /// child into a folder TCC guards would be checked against Watchtower.app
+    /// without the save panel's grant.
+    package func export(transcriptID: Int64, format: TranscriptExportFormat) async throws -> Data {
+        try await runner.run(args: ["meeting-prep", "transcript", "export", String(transcriptID),
+                                    "--format", format.rawValue])
     }
 }
