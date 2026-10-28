@@ -334,6 +334,9 @@ final class UpdateService {
     }
 
     private func runBackgroundCheck() async {
+        // A What's New the last pass could not show (offline, busy recorder,
+        // no window yet) is retried here; once seen this is a memo read.
+        await showWhatsNewIfUpdated()
         guard Self.shouldAutoCheck(state: state) else { return }
         await checkForUpdates(background: true)
     }
@@ -401,6 +404,18 @@ final class UpdateService {
     /// network fetch; tests inject.
     var fetchInstalledNotes: ((String) async -> String?)?
 
+    nonisolated static func newer(_ a: String?, _ b: String?) -> String? {
+        guard let a, let b else { return a ?? b }
+        return isNewer(b, than: a) ? b : a
+    }
+
+    /// Notes of the gated manifest for the running version: the manifest
+    /// holds only the latest release, so once it moved on they are gone ("").
+    nonisolated static func gatedNotes(manifestVersion: String, notes: String?, running: String) -> String {
+        let same = !isNewer(manifestVersion, than: running) && !isNewer(running, than: manifestVersion)
+        return same ? notes ?? "" : ""
+    }
+
     /// Whether this launch is the first of a newer version. Before this memo
     /// existed (`lastLaunched` nil) only an update this app offered counts —
     /// a fresh install shows nothing.
@@ -417,8 +432,8 @@ final class UpdateService {
     func showWhatsNewIfUpdated(currentVersion: String = Constants.appVersion) async {
         guard updatesSupported else { return }
         let lastLaunched = defaults.string(forKey: Self.lastLaunchedVersionKey)
-        let lastOffered = defaults.string(forKey: Self.lastPresentedVersionKey)
-            ?? defaults.string(forKey: Self.lastAnnouncedVersionKey)
+        let lastOffered = Self.newer(defaults.string(forKey: Self.lastPresentedVersionKey),
+                                     defaults.string(forKey: Self.lastAnnouncedVersionKey))
         let markSeen = { self.defaults.set(currentVersion, forKey: Self.lastLaunchedVersionKey) }
         guard Self.shouldShowWhatsNew(current: currentVersion, lastLaunched: lastLaunched, lastOffered: lastOffered) else {
             markSeen()
@@ -434,8 +449,12 @@ final class UpdateService {
             markSeen()
             return
         }
+        guard let present = presentUpdateWindow, !isBusy() else { return }
         installedRelease = InstalledRelease(version: currentVersion, notes: notes)
-        guard let present = presentUpdateWindow, !isBusy(), present() else { return }
+        guard present() else {
+            installedRelease = nil
+            return
+        }
         markSeen()
     }
 
@@ -451,13 +470,10 @@ final class UpdateService {
             case .publicGitHub:
                 return try await fetchReleaseNotes(tag: "v" + version)
             case let .gated(feedURL, clientID, clientSecret):
-                // The manifest holds only the latest release: once it moved
-                // on, the running version's notes are gone.
                 let manifestURL = feedURL.appendingPathComponent("dl/manifest/\(buildFlavor).json")
                 let data = try await gatedGET(manifestURL, clientID: clientID, clientSecret: clientSecret)
                 let manifest = try JSONDecoder().decode(GatedManifest.self, from: data)
-                let same = !Self.isNewer(manifest.version, than: version) && !Self.isNewer(version, than: manifest.version)
-                return same ? manifest.notes ?? "" : ""
+                return Self.gatedNotes(manifestVersion: manifest.version, notes: manifest.notes, running: version)
             }
         } catch {
             NSLog("UpdateService: release notes fetch failed: %@", error.localizedDescription)
@@ -979,18 +995,20 @@ final class UpdateService {
         CLIBinaryStore.runningTeamIdentifier()
     }
 
-    private func fetchLatestRelease() async throws -> GitHubRelease {
-        let urlString = "https://api.github.com/repos/\(Self.repo)/releases/latest"
-        guard let url = URL(string: urlString) else {
+    /// A GET on the public repository's releases API (`releases/<path>`).
+    private func releasesRequest(_ path: String) throws -> URLRequest {
+        guard let url = URL(string: "https://api.github.com/repos/\(Self.repo)/releases/\(path)") else {
             throw URLError(.badURL)
         }
-
         var request = URLRequest(url: url)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("Watchtower/\(Constants.appVersion)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
+        return request
+    }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+    private func fetchLatestRelease() async throws -> GitHubRelease {
+        let (data, response) = try await URLSession.shared.data(for: releasesRequest("latest"))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             throw UpdateError.httpError(code)
@@ -1001,15 +1019,7 @@ final class UpdateService {
 
     /// The body of the public release `tag`; "" when there is no such release.
     private func fetchReleaseNotes(tag: String) async throws -> String {
-        guard let url = URL(string: "https://api.github.com/repos/\(Self.repo)/releases/tags/\(tag)") else {
-            throw URLError(.badURL)
-        }
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("Watchtower/\(Constants.appVersion)", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 15
-
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: releasesRequest("tags/\(tag)"))
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 404 { return "" }
         guard status == 200 else { throw UpdateError.httpError(status) }

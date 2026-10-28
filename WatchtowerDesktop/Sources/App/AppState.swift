@@ -855,10 +855,9 @@ final class AppState {
             }
         }
         // Check for updates now and every UpdateService.checkInterval while
-        // running (a no-op for builds without an update channel).
+        // running (a no-op for builds without an update channel); each pass
+        // first shows a new version's release notes once (What's New).
         updateService.startPeriodicChecks()
-        // The first launch of a new version shows its release notes once.
-        Task { await updateService.showWhatsNewIfUpdated() }
         // No DB dependency, so this does not wait on the DB-open Task above
         // (Settings → Features may be reached before that Task resolves).
         // Every successful service load (launch, post-apply, failure-path
