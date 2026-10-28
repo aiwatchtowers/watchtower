@@ -165,6 +165,10 @@ struct RecordingIndicatorView: View {
                 canDismiss: job.id == dismissable,
                 retry: { retry(center) },
                 dismiss: { center.dismissFailure() },
+                isPrivate: job.isPrivate,
+                togglePrivate: job.canChangePrivate
+                    ? { Task { await center.setJobPrivate(job.id, !job.isPrivate) } }
+                    : nil,
                 moveGesture: moveGesture)
         }
         if split.overflow > 0 {
@@ -234,9 +238,17 @@ struct RecordingIndicatorView: View {
         }
     }
 
+    /// The capture's lock: flips whether it saves private (MEETPRIV).
+    private func capturePrivateToggle(_ center: MeetingRecorderCenter) -> some View {
+        PrivateRecordingToggle(isPrivate: center.currentPrivate) {
+            Task { await center.setCapturePrivate(!center.currentPrivate) }
+        }
+    }
+
     private func recordingCapsule(_ center: MeetingRecorderCenter, startedAt: Date) -> some View {
         indicatorCapsule(moveGesture: moveGesture) {
             Circle().fill(.red).frame(width: 10, height: 10)
+            capturePrivateToggle(center)
             captureLevelIndicators(center)
             TimelineView(.periodic(from: startedAt, by: 1)) { context in
                 Text(Self.elapsed(from: startedAt, to: context.date))
@@ -282,6 +294,7 @@ struct RecordingIndicatorView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Circle().fill(.red).frame(width: 10, height: 10)
+                capturePrivateToggle(center)
                 captureLevelIndicators(center)
                 TimelineView(.periodic(from: startedAt, by: 1)) { context in
                     Text(Self.elapsed(from: startedAt, to: context.date)).font(.callout.monospacedDigit())
@@ -500,11 +513,20 @@ struct RecordingJobPill: View {
     let canDismiss: Bool
     let retry: () -> Void
     let dismiss: () -> Void
+    /// Whether the recording saves private (MEETPRIV).
+    var isPrivate = false
+    /// Flips `isPrivate`; nil once the save started, when the lock only shows.
+    var togglePrivate: (() -> Void)?
     /// Moves the stack when dragged by the pill's background.
     var moveGesture: AnyGesture<Void>?
 
     var body: some View {
         indicatorCapsule(moveGesture: moveGesture) {
+            if let togglePrivate {
+                PrivateRecordingToggle(isPrivate: isPrivate, toggle: togglePrivate)
+            } else if isPrivate {
+                PrivateRecordingBadge()
+            }
             switch phase {
             case let .failed(message):
                 Image(systemName: "exclamationmark.triangle.fill")
