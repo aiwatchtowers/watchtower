@@ -466,6 +466,9 @@ struct WatchtowerApp: App {
         // app delegate is consulted, leaving the app unquittable until the
         // popup is dismissed by hand (see TrayAppDelegate.requestQuit).
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Watchtower") { AboutPanel.show() }
+            }
             CommandGroup(replacing: .appTermination) {
                 Button("Quit Watchtower") {
                     TrayAppDelegate.requestQuit()

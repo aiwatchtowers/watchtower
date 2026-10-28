@@ -6,7 +6,9 @@ import WatchtowerCore
 /// does not hide a release behind a tray item nobody opens. Shows the
 /// release notes and drives the same download → install → restart flow as
 /// Settings → System; the state lives in `UpdateService`, so closing the
-/// window mid-download loses nothing.
+/// window mid-download loses nothing. After an update, the first launch of
+/// the new version opens it once on that version's notes
+/// (`UpdateService.installedRelease`) when no newer update is on offer.
 struct UpdateAvailableView: View {
     static let sceneID = "update-available"
 
@@ -14,6 +16,19 @@ struct UpdateAvailableView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var service: UpdateService { appState.updateService }
+
+    /// The just-installed release, unless a newer update is on offer.
+    private var installed: UpdateService.InstalledRelease? {
+        service.availableVersion == nil ? service.installedRelease : nil
+    }
+
+    private var title: String {
+        if let version = service.availableVersion { return "Watchtower \(version) is available" }
+        if let installed { return "What's New in Watchtower \(installed.version)" }
+        return "Watchtower is up to date"
+    }
+
+    private var releaseNotes: String { installed?.notes ?? service.availableNotes }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -26,6 +41,7 @@ struct UpdateAvailableView: View {
         .padding(20)
         .frame(width: 520)
         .frame(minHeight: 320, maxHeight: 560)
+        .onDisappear { service.dismissInstalledRelease() }
     }
 
     private var header: some View {
@@ -34,9 +50,9 @@ struct UpdateAvailableView: View {
                 .resizable()
                 .frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 2) {
-                Text(service.availableVersion.map { "Watchtower \($0) is available" } ?? "Watchtower is up to date")
+                Text(title)
                     .font(.headline)
-                Text("You have \(Constants.appVersion).")
+                Text(installed == nil ? "You have \(Constants.appVersion)." : "Watchtower was updated.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -47,13 +63,13 @@ struct UpdateAvailableView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("What's New")
                 .font(.subheadline.weight(.semibold))
-            if service.availableNotes.isEmpty {
+            if releaseNotes.isEmpty {
                 Text("No release notes for this version.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 ScrollView {
-                    MarkdownView(text: service.availableNotes)
+                    MarkdownView(text: releaseNotes)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
