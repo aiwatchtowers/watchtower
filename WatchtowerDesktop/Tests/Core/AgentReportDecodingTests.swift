@@ -39,6 +39,15 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertEqual(ov.importState?.filesStored, 2)
     }
 
+    func testLeadDecodesAndToleratesAbsence() throws {
+        let ov = try JSONDecoder().decode(AgentReportOverview.self, from: fixture("agent-report-overview"))
+        XCTAssertNotNil(ov.context?.lead)
+        XCTAssertNotNil(ov.skills?.lead)
+        XCTAssertNotNil(ov.trouble?.lead)
+        let old = try JSONDecoder().decode(AgentSkillsReport.self, from: Data(#"{"listed":1,"used":0}"#.utf8))
+        XCTAssertNil(old.lead)
+    }
+
     /// The fixture with `import` set to `value`, or without the key for nil.
     private func overview(import value: String?) throws -> AgentReportOverview {
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
