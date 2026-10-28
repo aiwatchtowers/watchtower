@@ -99,6 +99,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [Calendar and meeting prep](features/calendar-and-meeting-prep.md) — one timeline of meetings and recordings, plus an AI brief on the people before you join
 - [Meeting recording](features/meeting-recording.md) — record a call locally and get a transcript, recap, action items and named speakers
+- [Private recordings and transcript export](features/meeting-recording-private-and-export.md) — keep a recording away from AI, and copy or save any transcript as a file
 - [Voice dictation](features/voice-dictation.md) — speak instead of typing in chats, ideas and notes, or capture an idea from anywhere
 
 ## Apps & integration
