@@ -358,6 +358,48 @@ extension WorkbenchesViewModel {
         )
     }
 
+    /// A new session of the workbench with no target (the phone's "No
+    /// target", #1189): New Session's start — the default agent (D6), a
+    /// provisional title the AI title replaces, placed in the folder or its
+    /// own worktree — with `prompt` as its first message, followed by
+    /// `TerminalLaunch.planFirstSuffix` when `planFirst`. As
+    /// `startForTarget`, a launch that did not run throws, and with
+    /// `.background` a failure is only logged.
+    @discardableResult
+    func startUntargeted(
+        projectID: Int64, prompt: String, placement: Placement, planFirst: Bool
+    ) async throws -> TerminalSession {
+        let ticket = placement == .background ? nil : beginSwitch(projectID: projectID)
+        if terminalCenter == nil {
+            let message = "No terminal is available to start the session in."
+            reportStartError(message, projectID: projectID, ticket: ticket)
+            throw TargetStartError.failed(message)
+        }
+        let project: Workbench
+        do {
+            guard let fetched = try await dbPool.read({ try WorkbenchQueries.fetch($0, id: projectID) }) else {
+                throw TargetStartError.failed("Workbench #\(projectID) is gone.")
+            }
+            project = fetched
+        } catch let error as TargetStartError {
+            throw error
+        } catch {
+            let message = "Could not read the workbench: \(error.localizedDescription)"
+            reportStartError(message, projectID: projectID, ticket: ticket)
+            throw TargetStartError.failed(message)
+        }
+        let agent = currentDefaultAgent()
+        return try await createAndActivate(
+            .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: TerminalSessionNaming.provisional(now: now()),
+                  folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
+            prompt: planFirst ? "\(prompt) \(TerminalLaunch.planFirstSuffix)" : prompt,
+            placement: placement,
+            ticket: ticket,
+            checkLaunch: true,
+            placing: (project, .auto, nil)
+        )
+    }
+
     /// A `session()` step's session (automations spec §13.1): a new session
     /// of the step's workbench named `r.title`, running `r.agent` with
     /// `r.prompt` as its first message and the run marker on every launch

@@ -293,6 +293,12 @@ final class MobileHubService {
         publisher.nudge(kinds: kinds)
     }
 
+    /// The owner's phone write changed `kinds`: published in the fast lane
+    /// whatever their kind, and sent at once (#1192).
+    func publishSoon(kinds: Set<SliceKind>) {
+        publisher.publishSoon(kinds: kinds)
+    }
+
     /// Turns the hub on and reports where it landed: `.running`, or
     /// `.unavailable` when iCloud can't be used or the heartbeat write failed.
     @discardableResult

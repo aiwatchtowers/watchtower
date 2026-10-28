@@ -32,7 +32,8 @@ extension SliceSource {
 ///   30 s, sent when CKSyncEngine schedules it;
 /// - the urgent kinds (`urgentKinds`: asks, ask alerts, link grants,
 ///   permission requests, and the watched session chat) are also diffed every 10 s on their own (Go's
-///   writes, which no nudge sees), and the fast lane: `nudge(kinds:)` keeps only urgent kinds,
+///   writes, which no nudge sees), and the fast lane: `nudge(kinds:)` keeps only urgent kinds
+///   (`publishSoon(kinds:)`, the owner's own phone write, keeps any kind),
 ///   coalesces them for 1 s, then diffs only them, with at least 2 s
 ///   between two fast sends. Any cycle that saved or deleted an urgent
 ///   record asks the transport to send at once (`sendNow`, spec §4.5);
@@ -87,7 +88,8 @@ final class SlicePublisher: Sendable {
         var pushed = 0
         var deleted = 0
         var skipped: [String] = []
-        /// Records of `urgentKinds` saved or deleted (the immediate send).
+        /// Records of `urgentKinds` (or a fast cycle's own kinds) saved or
+        /// deleted (the immediate send).
         var urgentChanges = 0
         /// The cycle ran to its end (no mid-cycle account reset).
         var completed = false
@@ -115,7 +117,7 @@ final class SlicePublisher: Sendable {
     /// What is published while no phone is linked: the link flow's answer.
     static let unlinkedKinds: Set<SliceKind> = [.deviceGrant]
 
-    /// One loop cycle: every kind, or the urgent kinds named.
+    /// One loop cycle: every kind, or the fast lane's kinds named.
     enum Cycle: Equatable {
         case full
         case urgent(Set<SliceKind>)
@@ -140,7 +142,8 @@ final class SlicePublisher: Sendable {
     static let sliceSQL: [SliceKind: String] = [:]
 
     struct Lane {
-        /// Nudged urgent kinds.
+        /// Nudged urgent kinds, and the kinds of the owner's phone writes
+        /// (`publishSoon`).
         var pendingKinds: Set<SliceKind> = []
         var firstNudgeAt: ContinuousClock.Instant?
         var lastFastSendAt: ContinuousClock.Instant?

@@ -134,9 +134,10 @@ final class SessionStartHandlerTests: XCTestCase {
         return params
     }
 
-    private func start(_ target: Int64, _ params: [String: JSONValue]) -> ActionRequestPayload {
+    /// `target` nil: a start with no target (#1189).
+    private func start(_ target: Int64?, _ params: [String: JSONValue]) -> ActionRequestPayload {
         ActionRequestPayload(
-            id: UUID().uuidString, kind: .sessionStart, entityID: String(target), params: params,
+            id: UUID().uuidString, kind: .sessionStart, entityID: target.map(String.init), params: params,
             createdAt: Date(), deviceID: "device-a"
         )
     }
@@ -204,6 +205,52 @@ final class SessionStartHandlerTests: XCTestCase {
         XCTAssertEqual(launch.args.last,
                        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
         XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT= --dangerously-skip-permissions please")
+    }
+
+    // MARK: - No target (#1189)
+
+    /// New Session on the Mac: no target written, the phone's description
+    /// is the first message, plan first follows it.
+    func testAStartWithoutATargetIsANewSessionWithTheDescription() async throws {
+        let p = try await workbench()
+        grant = .init(typingAllowed: true, startSessionsAllowed: true)
+
+        let outcome = try await makeHandlers(makeVM())
+            .handle(start(nil, startParams(p, planFirst: true, brief: "  Add a dark mode toggle  ")))
+
+        XCTAssertEqual(outcome.status, .applied)
+        guard case let .integer(id)? = outcome.result?["session_id"] else { return XCTFail("no session id: \(outcome)") }
+        let stored = try await rows(p)
+        XCTAssertEqual(stored.map(\.id), [id])
+        XCTAssertNil(stored.first?.targetID, "no target")
+        XCTAssertEqual(launches.map { $0.environment.last },
+                       ["WATCHTOWER_FIRST_PROMPT=Add a dark mode toggle \(TerminalLaunch.planFirstSuffix)"])
+        XCTAssertTrue(broughtForward.isEmpty)
+        let targets = try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM targets") }
+        XCTAssertEqual(targets, 0, "nothing is put on the board")
+    }
+
+    /// The description is the phone's own text: a phone that may start but
+    /// not type is refused, and so are a blank or missing description, an
+    /// open_existing mode and a workbench that is gone.
+    func testAStartWithoutATargetRefusals() async throws {
+        let p = try await workbench()
+        let handlers = makeHandlers(makeVM())
+
+        let noTyping = try await handlers.handle(start(nil, startParams(p, brief: "Fix it")))
+        grant = .init(typingAllowed: true, startSessionsAllowed: true)
+        let blank = try await handlers.handle(start(nil, startParams(p, brief: "  \n ")))
+        let missing = try await handlers.handle(start(nil, startParams(p)))
+        let overlong = try await handlers.handle(start(nil, startParams(p, brief: String(repeating: "a", count: 4001))))
+        let reopen = try await handlers.handle(start(nil, startParams(p, mode: "open_existing", brief: "Fix it")))
+        let gone = try await handlers.handle(start(nil, startParams(p + 99, brief: "Fix it")))
+
+        XCTAssertEqual(noTyping.reason, .deviceNotAllowed)
+        XCTAssertEqual([blank, missing, overlong, reopen].map(\.reason), Array(repeating: .invalidParams, count: 4))
+        XCTAssertEqual(gone.reason, .notFound)
+        XCTAssertTrue(launches.isEmpty)
+        let stored = try await rows(p)
+        XCTAssertTrue(stored.isEmpty, "nothing is written")
     }
 
     // MARK: - Refusals

@@ -496,6 +496,29 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(publisher.takeDueCycle(now: clock.origin + .seconds(30)), .full)
     }
 
+    /// #1192: the owner's phone write publishes its normal kinds in the
+    /// fast lane and sends at once, unlike a normal nudge.
+    func testAPhoneWritesKindsGoOutInTheFastLaneAndSendAtOnce() async throws {
+        let clock = FakeClock()
+        let comments = StubSliceSource(kind: .workbenchComment)
+        comments.setPayload(Data(#"{"v":1}"#.utf8))
+        let sends = SendCounter()
+        let publisher = makeLanePublisher(clock, sources: [comments]) { await sends.bump() }
+        await publisher.run(try XCTUnwrap(publisher.takeDueCycle(now: clock.origin)))
+        XCTAssertEqual(sends.count, 0, "a normal record on the full tick waits for CKSyncEngine")
+
+        comments.setPayload(Data(#"{"v":2}"#.utf8))
+        clock.set(.seconds(3))
+        publisher.publishSoon(kinds: [.workbenchComment])
+        XCTAssertEqual(publisher.fastDeadline, clock.origin + .seconds(4), "the fast lane's window")
+        let cycle = try XCTUnwrap(publisher.takeDueCycle(now: clock.origin + .seconds(4)))
+        XCTAssertEqual(cycle, .urgent([.workbenchComment]))
+        let result = await publisher.run(cycle)
+        let outcome = try XCTUnwrap(result)
+        XCTAssertEqual(outcome.pushed, 1)
+        XCTAssertEqual(sends.count, 1, "the phone's own write is sent at once")
+    }
+
     /// A slow cycle: the ticks it took count from its end, and its
     /// immediate send holds the fast lane's 2 s spacing like a fast send.
     func testTicksCountFromACyclesEndAndAnySendSpacesTheFastLane() async throws {

@@ -12,11 +12,24 @@ extension SlicePublisher {
     /// send. The other kinds ride the next full tick (≤ 30 s), which diffs
     /// every kind anyway.
     func nudge(kinds: Set<SliceKind>) {
-        let urgent = kinds.intersection(Self.urgentKinds)
-        guard !urgent.isEmpty else { return }
+        enqueueFast(kinds.intersection(Self.urgentKinds))
+    }
+
+    /// The owner's own phone write (a comment, a status, a new target)
+    /// changed `kinds`: they go out in the fast lane like an urgent nudge,
+    /// any kind kept, and the cycle sends at once, so the phone sees its
+    /// write within seconds instead of on the next full tick (#1192). Rare
+    /// by nature — one per phone action — so the 30 s battery rule for
+    /// the normal kinds' own changes still holds.
+    func publishSoon(kinds: Set<SliceKind>) {
+        enqueueFast(kinds)
+    }
+
+    private func enqueueFast(_ kinds: Set<SliceKind>) {
+        guard !kinds.isEmpty else { return }
         lane.withLock { lane in
             if lane.pendingKinds.isEmpty { lane.firstNudgeAt = clock() }
-            lane.pendingKinds.formUnion(urgent)
+            lane.pendingKinds.formUnion(kinds)
             lane.sleep?.cancel()
         }
     }
@@ -161,7 +174,16 @@ extension SlicePublisher {
             first = await runCycle(kinds: Self.urgentKinds)
             if let first, first.urgentChanges > 0 { await sendAtOnce() }
         }
-        var outcome = await runCycle(kinds: scope(of: cycle, linked: linked, newlyLinked: newlyLinked))
+        // A fast cycle's kinds were all asked for at once: an urgent nudge,
+        // or the owner's phone write (`publishSoon`), so any change in them
+        // is sent at once.
+        let sendAtOnceKinds: Set<SliceKind> = {
+            if case .urgent(let kinds) = cycle { return Self.urgentKinds.union(kinds) }
+            return Self.urgentKinds
+        }()
+        var outcome = await runCycle(
+            kinds: scope(of: cycle, linked: linked, newlyLinked: newlyLinked), sendAtOnceKinds: sendAtOnceKinds
+        )
         if newlyLinked, outcome?.completed == true {
             unlinkedAtLastCycle.withLock { $0 = false }
         }
@@ -194,9 +216,9 @@ extension SlicePublisher {
     }
 
     /// One cycle; nil when it failed.
-    private func runCycle(kinds: Set<SliceKind>?) async -> Outcome? {
+    private func runCycle(kinds: Set<SliceKind>?, sendAtOnceKinds: Set<SliceKind> = urgentKinds) async -> Outcome? {
         do {
-            let outcome = try await publishOnce(kinds: kinds)
+            let outcome = try await publishOnce(kinds: kinds, sendAtOnceKinds: sendAtOnceKinds)
             if !outcome.skipped.isEmpty {
                 logger.debug("publish cycle skipped \(outcome.skipped.count) records")
             }
