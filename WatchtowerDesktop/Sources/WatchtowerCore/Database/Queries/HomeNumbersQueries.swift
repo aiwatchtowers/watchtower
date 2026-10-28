@@ -9,7 +9,6 @@ package struct HomeNumbers: Equatable, Sendable {
     package var messagesSent: Int?
     package var meetings: Int?
     package var meetingHours: Double?
-    package var aiSpendUSD: Double?
     package var plan5h: Int?
     package var planWeek: Int?
     package var workbenchCreated: Int?
@@ -24,7 +23,7 @@ package struct HomeNumbers: Equatable, Sendable {
 /// its own fields failed and never blanks the rest. Reads only; no AI.
 package enum HomeNumbersQueries {
     package static let observedTables = [
-        "messages", "calendar_events", "pipeline_runs", "plan_usage_status",
+        "messages", "calendar_events", "plan_usage_status",
         "target_status_history", "meeting_transcripts", "slack_accounts"
     ]
 
@@ -49,9 +48,6 @@ package enum HomeNumbersQueries {
             numbers.meetings = events.count
             let seconds = events.reduce(0.0) { $0 + max(0, $1.endDate.timeIntervalSince($1.startDate)) }
             numbers.meetingHours = (seconds / 3600 * 2).rounded() / 2
-        }
-        group(&failed, ["aiSpendUSD"]) {
-            numbers.aiSpendUSD = try TokenUsageQueries.fetchUsage(db, on: now).totalCost
         }
         group(&failed, ["plan5h", "planWeek"]) {
             guard let status = try PlanUsageQueries.status(db), status.state == "ok" else { return }

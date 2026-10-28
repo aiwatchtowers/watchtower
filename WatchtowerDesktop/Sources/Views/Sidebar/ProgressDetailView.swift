@@ -4,8 +4,14 @@ import WatchtowerCore
 /// The daemon's pipeline run history, embedded in the Usage view.
 struct ProgressDetailContent: View {
     @Environment(AppState.self) private var appState
-    @State private var historyVM = PipelineHistoryViewModel()
-    @State private var expandedRuns: Set<Int64> = []
+    @State private var historyVM: PipelineHistoryViewModel
+    @State private var expandedRuns: Set<Int64>
+
+    /// The defaults read the DB on appear; the design shots pass filled-in runs.
+    init(historyVM: PipelineHistoryViewModel? = nil, expandedRuns: Set<Int64> = []) {
+        _historyVM = State(initialValue: historyVM ?? PipelineHistoryViewModel())
+        _expandedRuns = State(initialValue: expandedRuns)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -98,17 +104,6 @@ struct ProgressDetailContent: View {
                 }
             }
 
-            if run.inputTokens > 0 || run.outputTokens > 0 {
-                HStack(spacing: 16) {
-                    detailRow(label: "Input", value: formatTokens(run.inputTokens))
-                    if run.totalApiTokens > 0 {
-                        detailRow(label: "Input (+ cache)", value: formatTokens(run.totalApiTokens))
-                    }
-                    detailRow(label: "Output", value: formatTokens(run.outputTokens))
-
-                }
-            }
-
             if !run.errorMsg.isEmpty {
                 Text(run.errorMsg)
                     .font(.caption)
@@ -128,6 +123,9 @@ struct ProgressDetailContent: View {
                     dbStepRow(step)
                 }
             }
+
+            UsageTokensPointer(buttonTitle: "Open") { appState.openUsageWatchtower() }
+                .font(.caption)
         }
         .padding(.leading, 8)
     }
@@ -153,14 +151,6 @@ struct ProgressDetailContent: View {
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
-
-            let stepTokens = step.inputTokens + step.outputTokens
-            if stepTokens > 0 {
-                Text("\(formatTokens(step.inputTokens))/\(formatTokens(step.outputTokens))")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-
         }
     }
 
@@ -210,14 +200,5 @@ struct ProgressDetailContent: View {
         let min = s / 60
         let rem = s % 60
         return "\(min)m \(rem)s"
-    }
-
-    private func formatTokens(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.1fM", Double(count) / 1_000_000)
-        } else if count >= 1_000 {
-            return String(format: "%.1fK", Double(count) / 1_000)
-        }
-        return "\(count)"
     }
 }

@@ -67,7 +67,7 @@ The **Links** zone has up to four shortcuts, each shown while its tab (for the b
 
 - **messages to me / sent**: Slack DMs and mentions from others, and your sent messages, in every workspace.
 - **meetings**: count and hours; all-day, cancelled and declined events don't count.
-- **AI spend**: today's AI cost; opens **Usage → Watchtower**.
+- **AI spend today**: Watchtower, automations, chats; opens Usage → Watchtower.
 - **Claude 5 h · week**: your Claude plan limits used.
 - **workbench targets new / done**: created and finished today.
 - **meetings recorded**: recordings made today.
