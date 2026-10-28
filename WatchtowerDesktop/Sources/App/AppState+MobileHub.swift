@@ -227,6 +227,7 @@ extension AppState {
         BoardHandlers(
             dbPool: dbPool, cli: workbenchesViewModel?.cli,
             isReporting: { [weak vm = workbenchesViewModel] in vm?.onOwnerWrite != nil },
+            publishSoon: { [weak self] in self?.mobileHub?.publishSoon(kinds: $0) },
             onOwnerWrite: { [weak vm = workbenchesViewModel] projectID, subject in
                 vm?.onOwnerWrite?(projectID, subject)
             }

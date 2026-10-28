@@ -40,10 +40,18 @@ extension BoardTargetDetailModel {
 
     /// The comment rows and the thread as drawn: each root's thread with
     /// the phone's replies under it, then orphaned replies, then the phone's
-    /// own new comments.
+    /// own new comments. A comment or reply the Mac applied but whose record
+    /// has not arrived (`posted`, #1192) is drawn as posted where its record
+    /// will go: a reply at the end of its root's thread, a comment after the
+    /// threads.
     static func commentThread(
-        of target: WorkbenchTarget, entity: String, in snapshot: WorkbenchReplicaSnapshot, now: Date
+        of target: WorkbenchTarget,
+        entity: String,
+        in snapshot: WorkbenchReplicaSnapshot,
+        now: Date,
+        posted: [PostedComment] = []
     ) -> (comments: [CommentRow], thread: [ThreadItem]) {
+        let waiting = posted.filter { $0.isWaiting(in: snapshot.comments, now: now) }
         let threads = Self.threads(Self.comments(of: target, in: snapshot), canReply: !target.archived, now: now)
         let comments = threads.flatMap(\.rows)
         let replies = BoardWriteRow.rows(in: snapshot, now: now) {
@@ -55,13 +63,26 @@ extension BoardTargetDetailModel {
         for group in threads {
             let rootName = SliceKind.workbenchComment.recordName(id: String(group.rootID))
             items += group.rows.map(ThreadItem.comment)
+            items += waiting.filter { $0.rootID == group.rootID }
+                .map { ThreadItem.comment(Self.postedRow($0, rootID: group.rootID, now: now)) }
             items += replies.filter { $0.pending.entityRecordName == rootName }.map { ThreadItem.write($0, isReply: true) }
         }
         // A reply whose root is not a shown thread's (pruned from the
         // replica, say) still shows, so a failure can be dismissed.
         items += replies.filter { !rootNames.contains($0.pending.entityRecordName ?? "") }.map { ThreadItem.write($0, isReply: true) }
+        items += waiting.filter { $0.targetID == target.id }
+            .map { ThreadItem.comment(Self.postedRow($0, rootID: $0.commentID, now: now)) }
         items += added.map { ThreadItem.write($0, isReply: false) }
         return (comments, items)
+    }
+
+    /// The owner's applied comment, drawn as posted. No Reply on it until
+    /// its record arrives.
+    private static func postedRow(_ posted: PostedComment, rootID: Int64, now: Date) -> CommentRow {
+        CommentRow(
+            id: posted.commentID, author: "You", body: posted.body, age: CompactAge.string(from: posted.postedAt, now: now),
+            isReply: posted.rootID != nil, isResolved: false, rootID: rootID, canReply: false
+        )
     }
 
     /// The target a reply belongs to: its root's, or else a sibling reply's

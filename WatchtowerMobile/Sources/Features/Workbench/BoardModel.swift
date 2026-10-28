@@ -158,12 +158,15 @@ struct BoardNode: Equatable, Identifiable {
 /// The board tree under one filter: the matching targets plus, for
 /// context, their ancestors from the same pool (archived or not), so a
 /// filter never mixes archived and live records. Under Open, a shown
-/// parent also keeps its done children (greyed), so a group reads whole;
-/// the chip counts stay open-only.
+/// parent's done children (greyed) show only while `showDone` is on (the
+/// owner's Show done button, #1191); the chip counts stay open-only.
 struct BoardModel {
     let filter: BoardFilter
     let roots: [BoardNode]
     let visibleIDs: Set<Int64>
+    /// The done children of shown parents under Open, shown or hidden by
+    /// `showDone`: the Show done button's count (0 = no button).
+    let doneChildCount: Int
     /// New targets the phone asked this workbench's Mac to add, until
     /// hydration delivers them (or the Mac refuses).
     let pendingCreates: [BoardWriteRow]
@@ -172,7 +175,9 @@ struct BoardModel {
     let unplacedReplies: [BoardWriteRow]
     private let counts: [BoardFilter: Int]
 
-    init(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, filter: BoardFilter, now: Date = Date()) {
+    init(
+        workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, filter: BoardFilter, showDone: Bool = false, now: Date = Date()
+    ) {
         self.filter = filter
         pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
             $0.action.kind == .boardTargetCreate
@@ -194,12 +199,15 @@ struct BoardModel {
                 cursor = current.parentID.flatMap { byID[$0] }
             }
         }
+        var doneChildren = 0
         if filter == .open {
             let shownParents = visible
             for target in pool where target.status == .done && target.parentID.map(shownParents.contains) == true {
-                visible.insert(target.id)
+                doneChildren += 1
+                if showDone { visible.insert(target.id) }
             }
         }
+        doneChildCount = doneChildren
         visibleIDs = visible
 
         let shown = pool.filter { visible.contains($0.id) }.sorted(by: Self.boardOrder)

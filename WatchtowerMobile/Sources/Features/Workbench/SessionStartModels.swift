@@ -21,6 +21,10 @@ enum SessionStartText {
     /// The phone's own "Start sessions from this phone" is off.
     static let turnedOff = "Start sessions from this phone is off in Settings."
     static let chooseTarget = "Choose a target to start"
+    /// The picker's choice for a session with no target (#1189).
+    static let noTarget = "No target — describe the task"
+    static let taskLabel = "Task for the session"
+    static let describeTask = "Describe the task to start"
     static let briefReadOnly = "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac."
     static let stopConfirm = "Stop this session on the Mac?"
     static let stopping = "Stopping…"
@@ -78,11 +82,10 @@ enum StartStage: Equatable {
     /// The Mac refused, or it expired; the row offers Try again.
     case failed(message: String, row: PendingAction)
 
-    /// The stage of a target's start: this run's attempt, else (after a
-    /// relaunch) its newest overlay row; nil when nothing was sent.
-    static func of(targetID: Int64, attempt: StartAttempt?, snapshot: WorkbenchReplicaSnapshot) -> Self? {
-        let entity = SessionStarter.targetRecordName(targetID)
-        let rows = snapshot.pending.filter { $0.action.kind == .sessionStart && $0.entityRecordName == entity }
+    /// The stage of a start: this run's attempt, else (after a relaunch)
+    /// its newest overlay row; nil when nothing was sent.
+    static func of(_ subject: StartSubject, attempt: StartAttempt?, snapshot: WorkbenchReplicaSnapshot) -> Self? {
+        let rows = snapshot.pending.filter { subject.matches($0.action, entityRecordName: $0.entityRecordName) }
         guard let attempt else { return rows.last.map(Self.init) }
         if attempt.applied {
             guard let sessionID = attempt.sessionID else { return .starting(sessionID: nil) }
@@ -169,9 +172,16 @@ struct StartProgressModel: Equatable {
 
     /// A target's start progress; nil when nothing was sent.
     static func of(targetID: Int64, attempt: StartAttempt?, snapshot: WorkbenchReplicaSnapshot, now: Date) -> Self? {
-        let workbenchID = snapshot.targets.first { $0.id == targetID }?.workbenchID
+        of(.target(targetID), attempt: attempt, snapshot: snapshot, now: now)
+    }
+
+    static func of(_ subject: StartSubject, attempt: StartAttempt?, snapshot: WorkbenchReplicaSnapshot, now: Date) -> Self? {
+        let workbenchID = switch subject {
+        case let .target(id): snapshot.targets.first { $0.id == id }?.workbenchID
+        case let .untargeted(workbenchID): Optional(workbenchID)
+        }
         let agentName = SessionStartText.agentName(workbenchID.flatMap(snapshot.workbench))
-        return StartStage.of(targetID: targetID, attempt: attempt, snapshot: snapshot).map {
+        return StartStage.of(subject, attempt: attempt, snapshot: snapshot).map {
             Self(stage: $0, macOnline: MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline, agentName: agentName)
         }
     }

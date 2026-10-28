@@ -89,3 +89,34 @@ extension WaitingStack where Header == EmptyView {
         self.init(asks: asks) { EmptyView() }
     }
 }
+
+/// The one Show done / Hide done switch of the board and a target's
+/// sub-targets (#1191): done targets stay hidden until the owner shows
+/// them, and the choice is remembered on the phone (`storageKey`).
+struct ShowDoneButton: View {
+    static let storageKey = "board.showDone"
+
+    /// The done targets this switch shows or hides; 0 draws nothing.
+    let doneCount: Int
+    @Binding var showDone: Bool
+
+    static func title(doneCount: Int, showDone: Bool) -> String {
+        showDone ? "Hide done" : "Show done (\(doneCount))"
+    }
+
+    var body: some View {
+        if doneCount > 0 {
+            Button {
+                withAnimation(Motion.toggle) { showDone.toggle() }
+            } label: {
+                Label(Self.title(doneCount: doneCount, showDone: showDone), systemImage: showDone ? "eye.slash" : "eye")
+                    .font(TypeScale.meta)
+                    .frame(minHeight: PhoneMetrics.minTouch, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, Spacing.small)
+        }
+    }
+}

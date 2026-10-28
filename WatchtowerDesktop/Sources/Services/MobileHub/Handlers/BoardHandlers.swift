@@ -18,12 +18,20 @@ import WatchtowerSync
 /// `result.current`, one already equal to the request is `applied` with no
 /// write (rule 2). The checks and the write share one transaction.
 ///
+/// Every write asks for the board's records to go out at once
+/// (`publishSoon`, #1192): the phone drops its pending row at the applied
+/// echo, so the comment or target must not wait for the 30 s full tick.
+///
 /// The relay marks the non-idempotent kinds `begun` before they reach here
 /// (rule 1). Every handler owns its timeout and never calls back into the
 /// relay processor.
 @MainActor
 final class BoardHandlers {
     typealias OwnerWrite = @MainActor (Int64, WorkbenchSubject) -> Void
+
+    /// The records a board write changes: its targets and comments, and the
+    /// workbench's counts.
+    nonisolated static let publishedKinds: Set<SliceKind> = [.workbench, .workbenchTarget, .workbenchComment]
 
     /// Ample for a write waiting on the database lock or a CLI run.
     nonisolated static let defaultTimeout: Duration = .seconds(30)
@@ -43,6 +51,7 @@ final class BoardHandlers {
     private let sleep: @Sendable (Duration) async -> Void
     private let onOwnerWrite: OwnerWrite
     private let isReporting: @MainActor () -> Bool
+    private let publishSoon: @MainActor (Set<SliceKind>) -> Void
 
     init(
         dbPool: DatabasePool,
@@ -50,9 +59,11 @@ final class BoardHandlers {
         timeout: Duration = BoardHandlers.defaultTimeout,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         isReporting: @escaping @MainActor () -> Bool = { true },
+        publishSoon: @escaping @MainActor (Set<SliceKind>) -> Void = { _ in },
         onOwnerWrite: @escaping OwnerWrite
     ) {
         self.isReporting = isReporting
+        self.publishSoon = publishSoon
         self.dbPool = dbPool
         self.cli = cli
         self.timeout = timeout
@@ -77,6 +88,9 @@ final class BoardHandlers {
             return .failed(.writeFailed, message: "The Mac's board is not ready — try again in a moment")
         }
         return try await withHandlerTimeout(timeout, sleep: sleep, message: Self.timeoutMessage) {
+            // Also after a refusal or a throw: a conflict shows the current
+            // value, and a write may have landed before a failure.
+            defer { self.publishSoon(Self.publishedKinds) }
             do {
                 return try await self.apply(action)
             } catch let refusal as Refusal {

@@ -358,6 +358,27 @@ extension WorkbenchesViewModel {
         )
     }
 
+    /// A new session of the workbench with no target (the phone's "No
+    /// target", #1189): New Session's start — the default agent (D6), a
+    /// provisional title the AI title replaces, placed in the folder or its
+    /// own worktree — with `prompt` as its first message, followed by
+    /// `TerminalLaunch.planFirstSuffix` when `planFirst`. As
+    /// `startForTarget`, a launch that did not run throws, and with
+    /// `.background` a failure is only logged.
+    @discardableResult
+    func startUntargeted(
+        projectID: Int64, prompt: String, placement: Placement, planFirst: Bool
+    ) async throws -> TerminalSession {
+        let agent = currentDefaultAgent()
+        return try await startInWorkbench(
+            projectID, prompt: planFirst ? "\(prompt) \(TerminalLaunch.planFirstSuffix)" : prompt, placement: placement,
+            ticket: placement == .background ? nil : beginSwitch(projectID: projectID)
+        ) { project in
+            .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: TerminalSessionNaming.provisional(now: self.now()),
+                  folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil)
+        }
+    }
+
     /// A `session()` step's session (automations spec §13.1): a new session
     /// of the step's workbench named `r.title`, running `r.agent` with
     /// `r.prompt` as its first message and the run marker on every launch
@@ -366,24 +387,40 @@ extension WorkbenchesViewModel {
     /// the page from the owner. Throws when the workbench is gone, the row
     /// could not be written, or the launch did not run (`launchCheck`).
     func startAutomationSession(_ r: PendingSessionRequest) async throws -> TerminalSession {
-        if terminalCenter == nil {
-            let message = "No terminal is available to start the session in."
-            reportStartError(message, projectID: r.projectID, ticket: nil)
-            throw TargetStartError.failed(message)
-        }
-        // Read here, not through `project(id:)`: a failure is the caller's,
-        // never put on the owner's page.
-        let projectID = r.projectID
-        let fetched = try await dbPool.read { try WorkbenchQueries.fetch($0, id: projectID) }
-        guard let project = fetched else { throw TargetStartError.failed("Workbench #\(projectID) is gone.") }
-        return try await createAndActivate(
+        // No ticket: a failure is the caller's, never put on the owner's page.
+        try await startInWorkbench(r.projectID, prompt: r.prompt, placement: .background, ticket: nil) { project in
             .init(projectID: project.id, kind: TerminalSession.Kind(r.agent), title: r.title,
                   folderPath: project.folderPath, claudeSessionID: r.agent == .claude ? Self.newClaudeSessionID() : nil,
-                  automationRunID: r.runID),
-            prompt: r.prompt,
-            placement: .background,
-            ticket: nil,
-            checkLaunch: true,
+                  automationRunID: r.runID)
+        }
+    }
+
+    /// A new session of workbench `projectID` with no target, in the folder
+    /// or its own worktree (`.auto`): the row `makeRow` builds from the
+    /// workbench read here, started with `prompt`. Every failure — no
+    /// terminal, the workbench gone or unreadable, a launch that did not
+    /// run — throws and is reported for `ticket` (nil: logged only).
+    private func startInWorkbench(
+        _ projectID: Int64,
+        prompt: String,
+        placement: Placement,
+        ticket: Int?,
+        makeRow: (Workbench) -> TerminalSessionQueries.NewSession
+    ) async throws -> TerminalSession {
+        func fail(_ message: String) -> TargetStartError {
+            reportStartError(message, projectID: projectID, ticket: ticket)
+            return .failed(message)
+        }
+        if terminalCenter == nil { throw fail("No terminal is available to start the session in.") }
+        let fetched: Workbench?
+        do {
+            fetched = try await dbPool.read { try WorkbenchQueries.fetch($0, id: projectID) }
+        } catch {
+            throw fail("Could not read the workbench: \(error.localizedDescription)")
+        }
+        guard let project = fetched else { throw fail("Workbench #\(projectID) is gone.") }
+        return try await createAndActivate(
+            makeRow(project), prompt: prompt, placement: placement, ticket: ticket, checkLaunch: true,
             placing: (project, .auto, nil)
         )
     }

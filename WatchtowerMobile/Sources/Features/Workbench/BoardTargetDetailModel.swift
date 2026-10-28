@@ -28,8 +28,14 @@ struct BoardTargetDetailModel {
     let intent: String
     let branch: String
     let pr: String
+    /// The sub-targets shown: done ones only while `showDone` is on (an
+    /// archived target shows all, as Archive does).
     let children: [BoardRowModel]
-    /// "Sub-targets · 1 / 3".
+    /// The done sub-targets, shown or hidden: the Show done button's count
+    /// (0 = no button; always 0 on an archived target).
+    let doneChildCount: Int
+    /// "Sub-targets · 1 / 3", counting every sub-target, hidden ones too;
+    /// "Sub-targets" when there are none.
     let childrenHeader: String
     let sessions: [SessionRowModel]
     let asks: [WaitingCardModel]
@@ -41,7 +47,15 @@ struct BoardTargetDetailModel {
 
     /// `inFlight` is `BoardWriter.inFlight`: a field or composer whose send
     /// is still on its way to the outbox is locked like a pending one.
-    init?(targetID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, inFlight: Set<String> = []) {
+    /// `posted`: `BoardWriter.postedComments`, shown until their records arrive.
+    init?(
+        targetID: Int64,
+        snapshot: WorkbenchReplicaSnapshot,
+        now: Date,
+        inFlight: Set<String> = [],
+        showDone: Bool = false,
+        posted: [PostedComment] = []
+    ) {
         guard let target = snapshot.targets.first(where: { $0.id == targetID }) else { return nil }
         id = target.id
         self.target = target
@@ -85,14 +99,17 @@ struct BoardTargetDetailModel {
         let childTargets = snapshot.targets
             .filter { $0.parentID == target.id && $0.archived == target.archived }
             .sorted(by: BoardModel.boardOrder)
-        children = childTargets.map { BoardRowModel($0, snapshot: snapshot) }
-        childrenHeader = "Sub-targets · \(childTargets.filter { $0.status == .done }.count) / \(childTargets.count)"
+        let doneCount = childTargets.filter { $0.status == .done }.count
+        let keepsDone = showDone || target.archived
+        doneChildCount = target.archived ? 0 : doneCount
+        children = childTargets.filter { keepsDone || $0.status != .done }.map { BoardRowModel($0, snapshot: snapshot) }
+        childrenHeader = childTargets.isEmpty ? "Sub-targets" : "Sub-targets · \(doneCount) / \(childTargets.count)"
         sessions = target.sessionIDs.compactMap(snapshot.session).map { SessionRowModel($0, now: now) }
         asks = snapshot.openAsks(in: target.workbenchID)
             .filter { $0.targetID == target.id }
             .map { WaitingCardModel($0, snapshot: snapshot, now: now) }
 
-        let commentThread = Self.commentThread(of: target, entity: entity, in: snapshot, now: now)
+        let commentThread = Self.commentThread(of: target, entity: entity, in: snapshot, now: now, posted: posted)
         comments = commentThread.comments
         thread = commentThread.thread
     }
