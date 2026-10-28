@@ -53,6 +53,36 @@ final class RecordingActionsCenterTests: XCTestCase {
         XCTAssertNil(center.lastError[5])
     }
 
+    /// A replaced 0644 file comes out 0600 with the new text, and no temp
+    /// file is left beside it.
+    func testWriteOwnerOnlyReplacesAWorldReadableFileWith0600() throws {
+        let url = try tempURL("old.txt")
+        try Data("old".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+
+        try RecordingActionsCenter.writeOwnerOnly(Data("new".utf8), to: url)
+
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.int16Value, 0o600)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "new")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path),
+                       ["old.txt"])
+    }
+
+    /// A rename that fails (the destination is a non-empty folder) throws,
+    /// leaves the destination as it was and removes the temp file.
+    func testWriteOwnerOnlyFailureCleansUp() throws {
+        let url = try tempURL("taken")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: url.appendingPathComponent("inside"))
+
+        XCTAssertThrowsError(try RecordingActionsCenter.writeOwnerOnly(Data("new".utf8), to: url))
+
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path),
+                       ["taken"])
+        XCTAssertEqual(try String(contentsOf: url.appendingPathComponent("inside"), encoding: .utf8), "keep")
+    }
+
     func testSaveFailureIsKeptForTheRecordingAndWritesNothing() async throws {
         let center = makeCenter()
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "no timed segments"))

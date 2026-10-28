@@ -66,18 +66,36 @@ final class RecordingActionsCenter {
     }
 
     /// The rendering, from the CLI's stdout, written by the app to the URL the
-    /// owner picked in the save panel (atomically, 0600). The app writes it, not
+    /// owner picked in the save panel (`writeOwnerOnly`). The app writes it, not
     /// the CLI child, so the save panel's grant covers the destination.
     func save(transcriptID: Int64, format: TranscriptExportFormat, to url: URL, service: TranscriptSaveService) {
         runExport(transcriptID) {
             let data = try await service.export(transcriptID: transcriptID, format: format)
             try await Task.detached(priority: .userInitiated) {
-                try data.write(to: url, options: .atomic)
-                // A transcript is the owner's alone: readable by this user only.
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                try Self.writeOwnerOnly(data, to: url)
             }.value
             return "Saved to \(url.lastPathComponent)"
         } failure: { "Export failed: \($0)" }
+    }
+
+    /// A transcript is the owner's alone: the file is created 0600 (a temp
+    /// file beside the destination, opened `O_EXCL` with that mode), written,
+    /// then renamed over the destination — so no reader ever sees it with a
+    /// wider mode, a replaced file included (Go's `fsutil.WriteFileAtomic`).
+    /// On failure the temp file is removed and the destination is untouched.
+    nonisolated static func writeOwnerOnly(_ data: Data, to url: URL) throws {
+        let temp = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        var renamed = false
+        defer { if !renamed { unlink(temp.path) } }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
+        try handle.close()
+        guard rename(temp.path, url.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        renamed = true
     }
 
     private enum ExportError: LocalizedError {
