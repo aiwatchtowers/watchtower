@@ -278,6 +278,11 @@ final class SpecReviewModelTests: XCTestCase {
         await model.mark("da:1", .notUseful)
         XCTAssertEqual(model.requestCount, 2)
         XCTAssertTrue(model.canSend)
+        let anchor = CommentAnchor(quote: "Intro text", prefix: "Title\n", suffix: "\nBehaviour", heading: "Title")
+        asks.editDraft(askID) { $0.comments = [OwnerAskCommentDraft(anchor: anchor, body: "say who")] }
+        XCTAssertEqual(model.requestCount, 3, "a margin comment counts too")
+        XCTAssertFalse(model.canApprove)
+        asks.editDraft(askID) { $0.comments = [] }
         await model.unmark("ag:1")
         await model.unmark("bs:1")
         XCTAssertEqual(model.requestCount, 0)

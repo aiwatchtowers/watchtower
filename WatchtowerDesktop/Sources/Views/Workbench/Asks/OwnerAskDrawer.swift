@@ -241,7 +241,10 @@ struct OwnerAskDrawer: View {
                 onAnswer: nil,
                 draftPicks: picksBinding,
                 editable: editable,
-                onKey: pressAnswerKey,
+                // Under the spec review screen a field's ⌘↩ never answers
+                // the ask (spec 2026-10-28 §5): only the key catcher does,
+                // with no field focused.
+                onKey: SpecReviewPresentation.fieldAnswersAsk(screenUp: showsSpecReview) ? pressAnswerKey : nil,
                 keyboardStop: keys.shownStop,
                 fieldFocus: fieldFocus,
                 onLeaveField: leaveField

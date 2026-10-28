@@ -398,12 +398,10 @@ enum SpecReviewPresentation {
         }
     }
 
-    /// A quote with its inline Markdown applied (code spans, emphasis,
-    /// links as text); the raw text when it does not parse.
-    static func inlineMarkdown(_ text: String) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
-    }
+    /// Whether a drawer field's own ⌘↩ / ⌘⇧↩ answers the ask: never while
+    /// the spec review screen is up, where the verdicts go by the key
+    /// catcher alone (no field focused) and a comment editor keeps ⌘↩.
+    static func fieldAnswersAsk(screenUp: Bool) -> Bool { !screenUp }
 
     /// The verdict a key names: ⌘⇧↩ Request changes, ⌘↩ Approve; nil
     /// when that button is off.

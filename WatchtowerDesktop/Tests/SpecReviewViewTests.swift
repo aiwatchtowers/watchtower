@@ -326,6 +326,8 @@ final class SpecReviewViewTests: XCTestCase {
     /// the editor's own ⌘↩ saves the comment.
     func testKeyVerdicts() {
         typealias Pres = SpecReviewPresentation
+        XCTAssertFalse(Pres.fieldAnswersAsk(screenUp: true), "a field's ⌘↩ never answers under the screen")
+        XCTAssertTrue(Pres.fieldAnswersAsk(screenUp: false), "the classic view keeps the fields' keys")
         XCTAssertEqual(Pres.keyVerdict(shift: false, canSend: false, canApprove: true), .approved)
         XCTAssertNil(Pres.keyVerdict(shift: false, canSend: true, canApprove: false))
         XCTAssertEqual(Pres.keyVerdict(shift: true, canSend: true, canApprove: false), .changes)

@@ -70,7 +70,7 @@ struct SpecReviewFindingCard: View {
 }
 
 /// A label over a quote: upright text in the primary colour with a bar on
-/// its left, inline Markdown rendered (code spans, emphasis), so it reads
+/// its left, inline Markdown rendered (code spans, emphasis; links as text), so it reads
 /// at a glance in dark mode (spec 2026-10-28 §3). `quoted` marks words
 /// copied from a source (the bar is drawn); the reviewer's and the author's
 /// own lines go without it.
@@ -86,7 +86,7 @@ struct SpecReviewQuote: View {
                 if quoted {
                     Rectangle().fill(.secondary).frame(width: Spacing.tight)
                 }
-                Text(SpecReviewPresentation.inlineMarkdown(quote))
+                Text(MarkdownView.inlineLabel(quote))
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
@@ -201,7 +201,8 @@ struct SpecReviewMarkControls: View {
                 switch model.marks[key]?.state {
                 case .ok:
                     HStack(spacing: Spacing.regular) {
-                        Label("Fine as is", systemImage: "checkmark.circle.fill")
+                        // In a loop the mark comes from Decide's Author is right / Skip.
+                        Label(commentOnly ? "Kept as is" : "Fine as is", systemImage: "checkmark.circle.fill")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Tone.success)
                         Spacer()

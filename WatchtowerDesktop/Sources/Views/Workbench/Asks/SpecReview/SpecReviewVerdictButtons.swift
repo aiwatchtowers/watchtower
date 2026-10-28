@@ -19,10 +19,12 @@ struct SpecReviewVerdictButtons: View {
                 }
             }
             if model.isAnswering { ProgressView().controlSize(.small) }
-            requestChanges
-            approve
+            HStack(spacing: Spacing.regular) {
+                requestChanges
+                approve
+            }
+            .disabled(blocker != nil || model.isAnswering)
         }
-        .disabled(blocker != nil || model.isAnswering)
         .controlSize(.small)
         .confirmationDialog(
             model.approveConfirmMessage,
