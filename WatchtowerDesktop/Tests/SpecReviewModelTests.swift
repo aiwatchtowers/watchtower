@@ -255,10 +255,10 @@ final class SpecReviewModelTests: XCTestCase {
         model.stopPolling()
     }
 
-    /// Approve is for "nothing to send back" (spec 2026-10-28 D7): a
-    /// comment mark turns it off, and Request changes carries only the
-    /// comment marks.
-    func testApproveIsOffWhileACommentWouldGoBack() async throws {
+    /// Approve is never off (ask #690): with a comment it goes as
+    /// `approved` with the comment, a fix to make; Request changes carries
+    /// only the comment marks.
+    func testApproveStaysOnWithCommentsAndRequestChangesSendsThem() async throws {
         try setRow(status: "done", result: resultJSON())
         let model = try await makeModel()
         await model.load()
@@ -266,10 +266,8 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertEqual(model.requestCount, 0)
         await model.mark("ag:1", .comment, body: "name the period")
         await model.mark("da:1", .ok)
-        XCTAssertFalse(model.canApprove)
+        XCTAssertTrue(model.canApprove)
         XCTAssertEqual(model.requestCount, 1, "an ok mark is nothing to send")
-        let refused = await model.approve()
-        guard case .invalid = refused else { return XCTFail("approve with a comment is refused: \(refused)") }
         model.note = "ship it"
         let sent = await model.send()
         guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
@@ -293,13 +291,27 @@ final class SpecReviewModelTests: XCTestCase {
         let anchor = CommentAnchor(quote: "Intro text", prefix: "Title\n", suffix: "\nBehaviour", heading: "Title")
         asks.editDraft(askID) { $0.comments = [OwnerAskCommentDraft(anchor: anchor, body: "say who")] }
         XCTAssertEqual(model.requestCount, 3, "a margin comment counts too")
-        XCTAssertFalse(model.canApprove)
         asks.editDraft(askID) { $0.comments = [] }
         await model.unmark("ag:1")
         await model.unmark("bs:1")
         XCTAssertEqual(model.requestCount, 0)
         XCTAssertFalse(model.canSend)
+        model.note = "tighten the goal"
+        XCTAssertTrue(model.canSend, "a note alone is something to change (ask #690)")
         XCTAssertTrue(model.canApprove)
+    }
+
+    /// Approve with a comment sends it as a fix to make (ask #690).
+    func testApproveWithACommentSendsItAsAFix() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let model = try await makeModel()
+        await model.load()
+        await model.mark("ag:1", .comment, body: "name the period")
+        let sent = await model.approve()
+        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        let answer = try await storedAnswer()
+        XCTAssertTrue(answer.contains("\"approved\""), answer)
+        XCTAssertTrue(answer.contains("Mute lasts a day"))
     }
 
     func testApproveWithoutResultStillAnswers() async throws {
@@ -508,7 +520,6 @@ final class SpecReviewModelTests: XCTestCase {
         await model.pick("bs:2", reviewerRight: true, body: " please add it ")
         XCTAssertEqual(model.marks["bs:2"]?.state, .comment)
         XCTAssertEqual(model.marks["bs:2"]?.about, "No undo")
-        XCTAssertFalse(model.canApprove, "a Reviewer is right goes back through Request changes")
         let sent = await model.send()
         guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
         let answer = try OwnerAskAnswer.decode(try await storedAnswer())

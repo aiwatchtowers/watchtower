@@ -2,10 +2,11 @@ import SwiftUI
 import WatchtowerCore
 
 /// The spec review screen's verdicts in the drawer's footer, beside Dismiss,
-/// on every step (spec 2026-10-28 §5): **Request changes (N)** — the
-/// comment marks and margin comments go to the author — and **Approve**,
-/// which is off while anything would go back (D7). Why both are off (an
-/// ask question not answered, a long note) sits to their left.
+/// on every step (spec 2026-10-28 §5, ask #690): **Request changes (N)** —
+/// a new review round, on when there is a comment or a note — and
+/// **Approve**, always on: with comments the author applies them and goes
+/// on. Why both are off (an ask question not answered, a long note) sits
+/// to their left.
 struct SpecReviewVerdictButtons: View {
     let model: SpecReviewModel
 
@@ -35,8 +36,8 @@ struct SpecReviewVerdictButtons: View {
         }
     }
 
-    /// The prominent one is the verdict that can go: Request changes while
-    /// a comment would go back, else Approve.
+    /// The prominent one is the verdict the owner is heading for: Request
+    /// changes while there is something to change, else Approve.
     @ViewBuilder
     private var requestChanges: some View {
         let count = model.requestCount
@@ -44,26 +45,26 @@ struct SpecReviewVerdictButtons: View {
         if model.canSend {
             button
                 .buttonStyle(.kitPrimary)
-                .help("Send your comments to the author; it fixes the document and files it again. Shortcut: ⌘⇧↩")
+                .help("Send your comments for a new review round: the author fixes the document and files it again. Shortcut: ⌘⇧↩")
         } else {
             button
                 .buttonStyle(.kitSecondary)
                 .disabled(true)
-                .help("Mark a finding Fix or comment on one first")
+                .help("Mark a finding Fix, comment on one, or write a note first")
         }
     }
 
     @ViewBuilder
     private var approve: some View {
+        let count = model.requestCount
         let button = Button("Approve") { model.pressApprove() }
-        if model.canApprove {
-            button.buttonStyle(.kitPrimary).help("Approve the document as it is. Shortcut: ⌘↩")
+            .help(count > 0
+                ? "Approve: your \(count) comment\(count == 1 ? "" : "s") go to the author as fixes to make, with no new review. Shortcut: ⌘↩"
+                : "Approve the document as it is. Shortcut: ⌘↩")
+        if model.canSend {
+            button.buttonStyle(.kitSecondary)
         } else {
-            let count = model.requestCount
-            button
-                .buttonStyle(.kitSecondary)
-                .disabled(true)
-                .help("You have \(count) comment\(count == 1 ? "" : "s") for the author — Request changes, or remove them to approve")
+            button.buttonStyle(.kitPrimary)
         }
     }
 }

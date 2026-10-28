@@ -369,13 +369,15 @@ final class SpecReviewModel {
     /// right, Reopen, Comment) and every margin comment under Read the spec.
     var requestCount: Int { commentCount + draftCommentCount }
 
-    /// Request changes needs at least one comment, on a finding or in the
-    /// margin.
-    var canSend: Bool { row != nil && requestCount > 0 }
+    /// Request changes — a new review round — needs something to change: a
+    /// comment on a finding or in the margin, or the note (ask #690).
+    var canSend: Bool {
+        row != nil && (requestCount > 0 || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
 
-    /// Approve is for "nothing to send back" (spec 2026-10-28 D7): off
-    /// while a comment would go to the author.
-    var canApprove: Bool { requestCount == 0 }
+    /// Approve is never off (ask #690): with comments the author applies
+    /// them and goes on, with no new review round.
+    var canApprove: Bool { true }
 
     /// Approve asks once when findings are still unmarked. A finished
     /// author loop's Approve is one press, except after an early end with
@@ -427,16 +429,13 @@ final class SpecReviewModel {
 
     func send() async -> OwnerAsksViewModel.AnswerResult {
         guard canSend else {
-            return .invalid("Comment on at least one finding before sending the round.")
+            return .invalid("Comment on a finding, or write a note, before requesting changes.")
         }
         return await asks.answer(ask, with: answer(verdict: .changes))
     }
 
     func approve() async -> OwnerAsksViewModel.AnswerResult {
-        guard canApprove else {
-            return .invalid("Remove your comments for the author to approve, or Request changes.")
-        }
-        return await asks.answer(ask, with: answer(verdict: .approved))
+        await asks.answer(ask, with: answer(verdict: .approved))
     }
 
     /// The footer's Approve: asks first when `needsApproveConfirm`.

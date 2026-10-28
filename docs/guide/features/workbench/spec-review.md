@@ -74,7 +74,7 @@ action: nav:projects
 
 You open one ask. **Disputed** comes first: each card shows the finding, the reviewer's position and the agent's reason. Press **Reviewer is right** to make the agent fix it, or **Author is right** to keep the document; a comment is optional. Below it, **Fixed by the author** is folded: every finding the agent fixed on its own, with its note and round, so you can see what changed. **Reopen** turns one into a dispute. Findings the agent never answered sit under **Not answered by the author**, each with **Fix** or **Skip**.
 
-In **Chapters** you can also press **Fix** or **Comment** on any finding. Press **Request changes** at the bottom of the drawer to send your picks and comments to the agent: it fixes the document and files it again for review. **Approve** is for a document you accept as it is, so it is off while you have something to send back. A dispute you left open counts as **Author is right**. After an early end, approving with unanswered findings asks once. On the iPhone the one-line summary reads, for example, "Reviewer and author disagree on 2 · 1 not answered · 5 fixed by the author".
+In **Chapters** you can also press **Fix** or **Comment** on any finding. Press **Request changes** at the bottom of the drawer for a new review round: the agent fixes your picks, comments and note and files the document again. **Approve** with comments means "fix these and go on": the agent applies them without another review. A dispute you left open counts as **Author is right**. After an early end, approving with unanswered findings asks once. On the iPhone the one-line summary reads, for example, "Reviewer and author disagree on 2 · 1 not answered · 5 fixed by the author".
 
 ### The review without a loop
 

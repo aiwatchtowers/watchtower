@@ -292,9 +292,9 @@ final class SpecReviewViewTests: XCTestCase {
         }
     }
 
-    /// The footer's verdicts (spec 2026-10-28 §5): Request changes needs a
-    /// comment and shows N; Approve is off while one would go back; the
-    /// body of Wrap-up carries no verdict button any more.
+    /// The footer's verdicts (spec 2026-10-28 §5, ask #690): Request
+    /// changes needs a comment and shows N; Approve is always on; the body
+    /// of Wrap-up carries no verdict button any more.
     func testFooterVerdictsRequestChangesAndApprove() async throws {
         let model = try await makeModel(
             status: "done",
@@ -311,7 +311,7 @@ final class SpecReviewViewTests: XCTestCase {
 
         await model.mark("ag:1", .comment, body: "Keep it as agreed.")
         XCTAssertFalse(try button("Request changes (1)").isDisabled())
-        XCTAssertTrue(try button("Approve").isDisabled())
+        XCTAssertFalse(try button("Approve").isDisabled(), "Approve is never off (ask #690)")
         await model.mark("ag:2", .ok)
         XCTAssertFalse(model.needsApproveConfirm, "every finding marked: Approve goes straight through")
 

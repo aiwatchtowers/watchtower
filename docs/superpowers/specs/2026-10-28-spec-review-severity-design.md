@@ -19,7 +19,7 @@ The owner opened a finished author loop (v0.26.1) and hit four problems:
 - D4 (conversation): a comment can be left on every finding in a loop: on the chapters and on a finding marked **Fix**.
 - D5 (conversation): **Request changes (N)** next to **Approve**, in the footer beside Dismiss.
 - D6 (ask #686): all of it in one branch, the Go and prompt part included.
-- D7 (conversation): **Approve** is for "nothing to send back": with a comment mark or a margin comment on the ask it is off, and **Request changes** is the way.
+- D7 (ask #690, replaces the conversation's "Approve only when nothing goes back"): **Approve** is never off. With comments it is "fix these and go on" — the comments go with `approved`, no new review round. **Request changes** is a new review round, on whenever there is a Fix, a comment or a note.
 
 ## Goals
 
@@ -70,9 +70,9 @@ The owner opened a finished author loop (v0.26.1) and hit four problems:
 ### 5. Verdicts in the footer
 
 - While the spec review screen is up (any step: Decide, Meaning, Chapters, Wrap-up), the drawer's answer bar shows **Request changes (N)** and **Approve** beside Dismiss. N counts the `comment` marks (each **Fix**, **Reviewer is right**, **Reopen** and **Comment**) plus the margin comments made under **Read the spec**.
-- **Request changes (N)** answers with verdict `changes` (today's `SpecReviewModel.send`), disabled at N = 0 with the help "Mark a finding Fix or comment on one first". In a loop this is new: the author fixes and files a re-round, which is a classic visible review (`specLoopStart` already starts no hidden loop after the owner had the ask), so the reviewer checks the fixes and the owner sees the result, with the "Your comments from the last round" resolved/open list.
+- **Request changes (N)** answers with verdict `changes` (today's `SpecReviewModel.send`), on when N > 0 or the note is not empty (D7), else disabled with the help "Mark a finding Fix, comment on one, or write a note first". In a loop this is new: the author fixes and files a re-round, which is a classic visible review (`specLoopStart` already starts no hidden loop after the owner had the ask), so the reviewer checks the fixes and the owner sees the result, with the "Your comments from the last round" resolved/open list.
 - The answer reaches the author like any answered ask: typed into the live session, or — when the session has ended — through the brief fallback of the next session on the target (`owner_asks` delivery, unchanged). Nothing new can be lost here.
-- **Approve** answers `approved` as today, with today's confirmations (unmarked findings outside a loop; an unanswered dispute after an early end). It is off while N > 0 (D7), with the help "You have N comments for the author — Request changes, or remove them to approve". This replaces author-loop spec §7's "Approve with Reviewer is right is approved with fixes": a Fix is now always a Request changes.
+- **Approve** answers `approved` as today and is never off (D7): with N > 0 the comments go with it as fixes to make and the author goes on without another review (author-loop spec §7, kept). Today's confirmations stay (unmarked findings outside a loop; an unanswered dispute after an early end), plus one on the reviewer's status page ("The reviewer has not finished — approve anyway?").
 - The buttons inside the scroll — the loop's **Approve** and Wrap-up's **Send round to the author** / **Approve** — are removed, outside a loop too: one screen keeps its verdicts in one place. Wrap-up keeps its summary and note. The answer blocker line (unanswered questions, a too-long note) moves into the bar beside the buttons.
 - Keys: ⌘↩ Approve, ⌘⇧↩ Request changes, as in the code review toolbar and the classic review footer — only while no text field has focus. In a comment editor ⌘↩ saves the comment (today's `CommentTextEditor.onSubmit`) and never answers the ask.
 
