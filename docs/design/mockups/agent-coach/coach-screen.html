@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>Коуч — мокап</title>
+<style>
+:root{--bg:#1c1c1e;--card:#2a2a2d;--line:#3a3a3e;--text:#ececee;--dim:#9a9aa2;--good:#4cc38a;--bad:#e5655b;--acc:#5b9cf5;--add:#173d2a;--del:#4a1f1f}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:24px 20px 60px}
+.note{color:var(--dim);font-size:12px;margin-bottom:18px}
+h1{font-size:20px;margin:0 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:28px 0 10px;font-weight:600}
+.sub{color:var(--dim)}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.tile{background:var(--card);border-radius:10px;padding:12px 14px;cursor:pointer;border:1px solid transparent}.tile:hover{border-color:var(--line)}
+.tile .k{color:var(--dim);font-size:12px}.tile .v{font-size:24px;font-weight:600;margin:4px 0 2px}
+.up{color:var(--bad)}.down{color:var(--good)}.flat{color:var(--dim)}
+.spark{height:22px;margin-top:6px}
+.card{background:var(--card);border-radius:10px;padding:14px 16px;margin-bottom:10px}
+.row{display:flex;align-items:center;gap:8px}.sp{flex:1}
+.tag{font-size:11px;padding:2px 8px;border-radius:99px;background:#34343a;color:var(--dim)}
+.tag.cut{background:#3d2f17;color:#e8b65a}
+.title{font-size:15px;font-weight:600;margin:6px 0 4px}
+.why{color:var(--dim)}
+.diff{font:12px/1.5 ui-monospace,Menlo,monospace;background:#1f1f22;border-radius:8px;padding:8px 10px;margin:10px 0;border:1px solid var(--line)}
+.diff .f{color:var(--dim);margin-bottom:4px}.diff .a{background:var(--add)}.diff .d{background:var(--del);text-decoration:line-through;opacity:.8}
+.ev{font-size:12px;color:var(--dim)}.ev a{color:var(--acc);text-decoration:none;margin-right:8px}
+.btn{font:inherit;font-size:12px;border-radius:6px;padding:4px 12px;border:1px solid var(--line);background:#36363b;color:var(--text);cursor:pointer}
+.btn.p{background:var(--acc);border-color:var(--acc);color:#fff}
+.log{background:var(--card);border-radius:10px}
+.log .it{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--line)}.log .it:first-child{border-top:0}
+.dot{width:8px;height:8px;border-radius:50%}
+.tabs{display:flex;gap:4px;margin-bottom:10px}.tab{padding:5px 12px;border-radius:6px;color:var(--dim);cursor:pointer}.tab.on{background:#36363b;color:var(--text)}
+.stat .lead{font-size:14px;margin-bottom:10px}
+.bars .b{display:flex;align-items:center;gap:10px;margin:5px 0}.bars .l{width:170px;color:var(--dim)}.bars .t{flex:1;height:8px;background:#34343a;border-radius:4px;overflow:hidden}.bars .t i{display:block;height:100%;background:var(--acc)}.bars .n{width:90px;text-align:right}
+.more{color:var(--acc);cursor:pointer;font-size:12px}
+.side{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.find{background:var(--card);border-radius:10px;padding:12px 14px;margin-bottom:8px}
+.find q{display:block;border-left:3px solid var(--line);padding-left:8px;color:var(--dim);margin:6px 0}
+.marks{display:flex;gap:6px;margin-top:8px}
+.btn.noise{border-color:#5a4a2a;color:#e8b65a}
+hr{border:0;border-top:1px solid var(--line);margin:40px 0 20px}
+</style></head><body><div class="wrap">
+
+<div class="note">Мокап по спеке #1120 · цифры и тексты выдуманы · тёмная тема как в приложении</div>
+
+<div class="row"><div><h1>Аналитика · watchtower</h1><div class="sub">Последние 14 дней против предыдущих 14 · 38 сессий · 21 задача</div></div><div class="sp"></div><button class="btn">14 дней ▾</button></div>
+
+<h2>Как идут дела</h2>
+<div class="grid4">
+  <div class="tile"><div class="k">Поправки на задачу</div><div class="v">2.1</div><div class="down">↓ 30% · было 3.0</div>
+    <svg class="spark" viewBox="0 0 100 22" width="100%"><polyline fill="none" stroke="#4cc38a" stroke-width="2" points="0,6 15,8 30,5 45,10 60,12 75,14 100,17"/></svg></div>
+  <div class="tile"><div class="k">Задача: часы · $</div><div class="v">1ч 40м · $14</div><div class="up">↑ 8% · было 1ч 32м</div>
+    <svg class="spark" viewBox="0 0 100 22" width="100%"><polyline fill="none" stroke="#e5655b" stroke-width="2" points="0,15 15,14 30,16 45,12 60,11 75,9 100,8"/></svg></div>
+  <div class="tile"><div class="k">Ты в петле</div><div class="v">22%</div><div class="down">↓ 9 п.п. · было 31%</div>
+    <svg class="spark" viewBox="0 0 100 22" width="100%"><polyline fill="none" stroke="#4cc38a" stroke-width="2" points="0,5 15,6 30,9 45,8 60,12 75,13 100,15"/></svg></div>
+  <div class="tile"><div class="k">Находки ревью на спеку</div><div class="v">7.4</div><div class="flat">→ было 7.6</div>
+    <svg class="spark" viewBox="0 0 100 22" width="100%"><polyline fill="none" stroke="#9a9aa2" stroke-width="2" points="0,11 15,10 30,12 45,11 60,11 75,12 100,11"/></svg></div>
+</div>
+
+<h2>Предложенные правки · 3 из 3</h2>
+
+<div class="card">
+  <div class="row"><span class="tag">тянет: находки ревью</span><span class="tag">Текст сессии · все воркбенчи</span><div class="sp"></div><span class="ev">новое · пн</span></div>
+  <div class="title">В спеках нет раздела «Не цели»</div>
+  <div class="why">Ревью спек нашло это 6 раз в 5 спеках за 14 дней. Ты согласился с 5 из 6.</div>
+  <div class="diff"><div class="f">Текст сессии (глобальный) · 812 → 905 из 1000 символов</div>
+    <div>Спеки и планы пишешь по-английски.</div>
+    <div class="a">+ В каждой спеке есть раздел Non-goals: что фича сознательно не делает.</div></div>
+  <div class="row"><div class="ev">Откуда: <a href="#">ask #581</a><a href="#">#594</a><a href="#">#610</a><a href="#">+3</a></div><div class="sp"></div>
+    <button class="btn">Отклонить</button><button class="btn">Поправить…</button><button class="btn p">Принять</button></div>
+</div>
+
+<div class="card">
+  <div class="row"><span class="tag">тянет: часы и $</span><span class="tag">Настройки Claude Code · пользователь</span></div>
+  <div class="title">Агент 41 раз ждал твоего разрешения на <code>go test</code></div>
+  <div class="why">В 11 сессиях, в среднем 38 с ожидания на каждый запуск.</div>
+  <div class="diff"><div class="f">~/.claude/settings.json → permissions.allow</div>
+    <div class="a">+ "Bash(go test:*)"</div></div>
+  <div class="row"><div class="ev">Откуда: <a href="#">11 сессий</a></div><div class="sp"></div>
+    <button class="btn">Отклонить</button><button class="btn p">Принять</button></div>
+</div>
+
+<div class="card">
+  <div class="row"><span class="tag cut">сокращение</span><span class="tag">тянет: часы и $ (контекст)</span><span class="tag">Текст сессии · watchtower</span></div>
+  <div class="title">Два правила говорят одно и то же — слить в одно</div>
+  <div class="why">Минус 140 символов в каждой сессии. И ещё одна моя правка от 18 окт не дала эффекта — убираю.</div>
+  <div class="diff"><div class="f">Текст сессии (watchtower) · 960 → 702 из 1000</div>
+    <div class="d">− Не запускай полный go test ./... при итерациях.</div>
+    <div class="d">− Тесты гоняй только по тронутому пакету.</div>
+    <div class="a">+ Пока итерируешь — go test только по тронутому пакету.</div>
+    <div class="d">− Не перечитывай файлы, которые уже читал.</div></div>
+  <div class="row"><div class="sp"></div><button class="btn">Отклонить</button><button class="btn">Поправить…</button><button class="btn p">Принять</button></div>
+</div>
+
+<h2>Принятые правки</h2>
+<div class="log">
+  <div class="it"><span class="dot" style="background:var(--good)"></span><b>12 окт</b> «Quick-вопросы, когда вариантов 2–3»<div class="sp"></div><span class="down">работает · ожидание тебя 31% → 22%</span><button class="btn">Откатить</button></div>
+  <div class="it"><span class="dot" style="background:var(--dim)"></span><b>18 окт</b> «Не перечитывай файлы»<div class="sp"></div><span class="flat">эффекта нет · 40k → 37k ток.</span><span class="tag cut">предложено убрать</span></div>
+  <div class="it"><span class="dot" style="background:#e8b65a"></span><b>24 окт</b> Промпт ревьюера спек: «не придирайся к именам»<div class="sp"></div><span class="flat">мало данных · 2 спеки из 5 · ещё 9 дней</span><button class="btn">Откатить</button></div>
+</div>
+
+<h2>Статистика</h2>
+<div class="tabs"><span class="tab on">Время</span><span class="tab">Деньги</span><span class="tab">Контекст</span><span class="tab">Ошибки и отказы</span></div>
+<div class="card stat">
+  <div class="lead">Из 351 ч работы агентов <b>21 ч ушло на ожидание тебя</b>, а 14 ч — на повторные прогоны тестов.</div>
+  <div class="bars">
+    <div class="b"><span class="l">Агент работает</span><span class="t"><i style="width:72%"></i></span><span class="n">253 ч</span></div>
+    <div class="b"><span class="l">Ждёт тебя</span><span class="t"><i style="width:6%;background:#e8b65a"></i></span><span class="n">21 ч</span></div>
+    <div class="b"><span class="l">Повторные билды/тесты</span><span class="t"><i style="width:4%;background:var(--bad)"></i></span><span class="n">14 ч</span></div>
+    <div class="b"><span class="l">Субагенты параллельно</span><span class="t"><i style="width:18%"></i></span><span class="n">2.3 в среднем</span></div>
+  </div>
+  <div class="more" style="margin-top:8px">Где именно → 10 сессий, 17 задач</div>
+</div>
+<div class="card stat">
+  <div class="lead"><span class="sub">Вкладка «Контекст», для сравнения с текущим экраном:</span><br>Каждая сессия стартует с <b>74k токенов</b>; треть — твои инструкции и правила. Растёт контекст в основном от вывода Bash.</div>
+  <div class="bars">
+    <div class="b"><span class="l">Схемы инструментов</span><span class="t"><i style="width:37%"></i></span><span class="n">27k</span></div>
+    <div class="b"><span class="l">CLAUDE.md и правила</span><span class="t"><i style="width:29%;background:#e8b65a"></i></span><span class="n">21k</span></div>
+    <div class="b"><span class="l">Список скиллов</span><span class="t"><i style="width:13%"></i></span><span class="n">10k</span></div>
+    <div class="b"><span class="l">Остальное</span><span class="t"><i style="width:21%"></i></span><span class="n">16k</span></div>
+  </div>
+  <div class="more" style="margin-top:8px">Все источники роста (32) →</div>
+</div>
+
+<hr>
+<h1 style="font-size:16px">Ревью спеки: новая отметка «Не полезно»</h1>
+<div class="sub" style="margin-bottom:12px">Экран находок в ask — у каждой находки теперь три кнопки. «Не полезно» не уходит агенту, а учит ревьюера.</div>
+<div class="side">
+  <div class="find"><span class="tag">Слепое пятно</span><div class="title" style="font-size:14px">Не сказано, что будет при выключенном демоне</div>
+    <q>Weekly cadence, in the daemon…</q>
+    <div class="marks"><button class="btn">Ок</button><button class="btn">Комментарий…</button><button class="btn noise">Не полезно</button></div></div>
+  <div class="find"><span class="tag">Решено без тебя</span><div class="title" style="font-size:14px">Имя поля «verdict» лучше «outcome»</div>
+    <q>the edit gets a verdict</q>
+    <div class="marks"><button class="btn">Ок</button><button class="btn">Комментарий…</button><button class="btn noise" style="background:#3d2f17">✓ Не полезно</button></div></div>
+</div>
+
+</div></body></html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Analytics pane — Plan 2 mockup</title>
+<style>
+/* Mockup only: sample numbers, no live data. Dark theme close to the app's detail surface. */
+:root{--bg:#1e1e1e;--card:rgba(255,255,255,.06);--rest:rgba(255,255,255,.04);--hair:rgba(255,255,255,.1);--text:#ececec;--dim:#9b9b9f;--ter:#6e6e73;--acc:#0a84ff;--good:#30d158;--bad:#ff6961;--warn:#ffb340;--add:rgba(48,209,88,.16);--del:rgba(255,105,97,.16)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}
+.col{max-width:760px;margin:0 auto;padding:20px 16px 60px}
+.note{color:var(--ter);font-size:11px;margin-bottom:16px}
+.row{display:flex;align-items:center;gap:8px}.sp{flex:1}
+.range{font-weight:600}
+.seg{display:flex;background:var(--rest);border-radius:18px;padding:2px}.seg span{padding:3px 12px;border-radius:16px;color:var(--dim);font-size:12px}.seg .on{background:rgba(10,132,255,.2);color:var(--text)}
+.btn{font:inherit;font-size:12px;border-radius:6px;padding:3px 10px;border:0;background:var(--card);color:var(--text)}
+.btn.p{background:var(--acc);color:#fff}.btn.q{background:none;color:var(--acc);padding:3px 4px}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+h2{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--dim);font-weight:600;margin:24px 0 8px;display:flex;gap:6px;align-items:baseline}
+h2 .c{color:var(--ter);font-weight:500;letter-spacing:0;text-transform:none}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.tile{background:var(--card);border-radius:8px;padding:10px 12px}
+.tile .k{color:var(--dim);font-size:11px}.tile .v{font-size:20px;font-weight:600;margin:2px 0;font-variant-numeric:tabular-nums}
+.tile .t{font-size:11px}.good{color:var(--good)}.bad{color:var(--bad)}.flat{color:var(--dim)}
+.card{background:var(--card);border-radius:8px;padding:12px 14px;margin-bottom:8px}
+.chip{font-size:11px;padding:1px 8px;border-radius:99px;background:var(--rest);color:var(--dim);border:.5px solid var(--hair)}
+.chip.cut{color:var(--warn)}
+.title{font-size:14px;font-weight:600;margin:6px 0 2px}
+.dim{color:var(--dim)}.small{font-size:11px}
+.diff{font:12px/1.5 ui-monospace,Menlo,monospace;background:var(--rest);border-radius:6px;padding:6px 8px;margin:8px 0}
+.diff .f{color:var(--ter);margin-bottom:2px}.diff .a{background:var(--add)}.diff .d{background:var(--del);text-decoration:line-through}
+a{color:var(--acc);text-decoration:none}
+.log .it{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px}.log .it:hover{background:var(--rest)}
+.empty{color:var(--dim);padding:10px 12px;background:var(--rest);border-radius:8px}
+/* statistics */
+.lead{font-size:13px;margin:0 0 10px}
+.totals{display:flex;gap:28px;flex-wrap:wrap}.totals .k{color:var(--dim);font-size:11px}.totals .v{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+.stack{display:flex;height:8px;border-radius:4px;overflow:hidden;gap:2px;margin:6px 0 10px}.stack i{display:block;height:100%}
+.legend{display:grid;grid-template-columns:1fr 1fr;column-gap:24px;row-gap:3px}
+.legend div{display:flex;align-items:center;gap:6px}.legend .n{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--dim)}
+.bars .b{display:grid;grid-template-columns:200px 1fr 70px 40px;align-items:center;gap:10px;padding:3px 0}
+.bars .t{height:6px;background:var(--rest);border-radius:3px;overflow:hidden}.bars .t i{display:block;height:100%;background:var(--acc)}
+.bars .n,.bars .p{text-align:right;font-variant-numeric:tabular-nums}.bars .p{color:var(--dim)}
+.more{font-size:12px;color:var(--acc);margin-top:6px;display:inline-block}
+.main{border-left:3px solid var(--warn)}
+.fold{color:var(--dim);font-size:12px;font-weight:600;margin-top:16px}
+</style></head><body><div class="col">
+
+<div class="note">Mockup for Plan 2 of #1120 · sample numbers · hint sentences in the owner's language (digest.language), UI in English as the app</div>
+
+<!-- Header: period, analytics state, Discuss in Chat -->
+<div class="row">
+  <span class="range">Oct 21 – Oct 28</span>
+  <span class="dim small">against Oct 14 – Oct 21</span>
+  <div class="sp"></div>
+  <div class="seg"><span>1 day</span><span class="on">7 days</span><span>30 days</span></div>
+  <span class="dot" style="background:var(--good)" title="Analytics on"></span>
+  <button class="btn">Discuss in Chat</button>
+</div>
+
+<!-- 1. How it's going -->
+<h2>How it's going</h2>
+<div class="grid">
+  <div class="tile"><div class="k">Corrections per task</div><div class="v">2.1</div><div class="t good">↓ 30% · was 3.0</div></div>
+  <div class="tile"><div class="k">Per task</div><div class="v">1h 40m · $14</div><div class="t bad">↑ 8% · was 1h 32m</div></div>
+  <div class="tile"><div class="k">You in the loop</div><div class="v">22%</div><div class="t good">↓ 9 pts · was 31%</div></div>
+  <div class="tile"><div class="k">Review findings</div><div class="v">7.4</div><div class="t flat">≈ was 7.6</div></div>
+</div>
+<div class="small dim" style="margin-top:6px">Review findings: per spec's first round 7.4 · per code review's first round 2.0.</div>
+
+<!-- 2. Proposed edits -->
+<h2>Proposed edits <span class="c">2 of 3</span><span class="sp"></span></h2>
+<div class="card">
+  <div class="row"><span class="chip">moves: review findings</span><span class="chip">Session instructions · all workbenches</span><div class="sp"></div><span class="small dim">Mon</span></div>
+  <div class="title">В спеках нет раздела «Non-goals»</div>
+  <div class="dim">Ревью спек нашло это 6 раз в 5 спеках за 28 дней. Ты согласился с 5 из 6.</div>
+  <div class="diff"><div class="f">Session instructions (global) · 812 → 905 of 1000</div>
+    <div>Specs and plans in English.</div>
+    <div class="a">+ Every spec has a Non-goals section: what the feature deliberately does not do.</div></div>
+  <div class="row"><span class="small dim">From <a href="#">ask #581</a> · <a href="#">#594</a> · <a href="#">#610</a> · <a href="#">+3</a></span><div class="sp"></div>
+    <button class="btn">Decline</button><button class="btn">Edit…</button><button class="btn p">Accept</button></div>
+</div>
+<div class="card">
+  <div class="row"><span class="chip">moves: per task</span><span class="chip">Claude Code settings · you</span></div>
+  <div class="title">Агент 41 раз ждал разрешения на <code>go test</code></div>
+  <div class="dim">В 11 сессиях, в среднем 38 с на запуск.</div>
+  <div class="diff"><div class="f">~/.claude/settings.json → permissions.allow</div><div class="a">+ "Bash(go test:*)"</div></div>
+  <div class="row"><span class="small dim">From <a href="#">11 sessions</a></span><div class="sp"></div><button class="btn">Decline</button><button class="btn">Accept</button></div>
+</div>
+<div class="small dim">The coach looks once a week · last run Mon 09:10 · next after Mon Nov 2. <a href="#">Run now</a></div>
+
+<!-- 3. Accepted edits -->
+<h2>Accepted edits</h2>
+<div class="log">
+  <div class="it"><span class="dot" style="background:var(--good)"></span><b>Oct 12</b> Quick asks when there are 2–3 options<div class="sp"></div><span class="small good">works · you in the loop 31% → 22% since this edit</span><button class="btn q">Roll Back</button></div>
+  <div class="it"><span class="dot" style="background:var(--dim)"></span><b>Oct 18</b> Do not re-read files<div class="sp"></div><span class="small dim">no effect · a cut is proposed</span></div>
+  <div class="it"><span class="dot" style="background:var(--warn)"></span><b>Oct 24</b> Spec reviewer: skip naming nits<div class="sp"></div><span class="small dim">measuring · verdict on Nov 7</span><button class="btn q">Roll Back</button></div>
+</div>
+
+<!-- 4. Statistics: the existing screen, kept, redesigned -->
+<h2>Statistics</h2>
+
+<div class="card">
+  <div class="totals">
+    <div><div class="k">Cost</div><div class="v">$3,042</div></div>
+    <div><div class="k">Sessions</div><div class="v">42</div></div>
+    <div><div class="k">Active</div><div class="v">377h 8m</div></div>
+    <div><div class="k">Cache hit</div><div class="v">97%</div></div>
+    <div><div class="k">Subagents</div><div class="v">2.2 <span class="small dim">avg · peak 20</span></div></div>
+  </div>
+</div>
+
+<div class="card main">
+  <div class="row"><b>The main thing</b><div class="sp"></div><span class="dim small">28h 43m</span></div>
+  <div class="title">Ожидание тебя заняло больше 30% активного времени в 18 сессиях и 17 задачах</div>
+  <div class="row"><span class="dim">Отвечай быстрее: включи уведомления об asks или разреши агентам Quick-вопросы.</span><div class="sp"></div><button class="btn">Open Waiting for You</button></div>
+  <a class="more" href="#">› Where</a>
+</div>
+
+<div class="card">
+  <b>Context</b>
+  <p class="lead dim">Каждая сессия стартует с 80.4k токенов; треть — схемы инструментов, ещё треть — твои CLAUDE.md и правила.</p>
+  <div class="small dim">At session start · 80.4k</div>
+  <div class="stack"><i style="width:36%;background:#0a84ff"></i><i style="width:32%;background:#bf5af2"></i><i style="width:13%;background:#64d2ff"></i><i style="width:6%;background:#30d158"></i><i style="width:4%;background:#ff9f0a"></i><i style="width:9%;background:#8e8e93"></i></div>
+  <div class="legend">
+    <div><span class="dot" style="background:#0a84ff"></span>Tool schemas<span class="n">28.6k · 36%</span></div>
+    <div><span class="dot" style="background:#bf5af2"></span>CLAUDE.md &amp; rules<span class="n">25.6k · 32%</span></div>
+    <div><span class="dot" style="background:#64d2ff"></span>Skill list<span class="n">10.1k · 13%</span></div>
+    <div><span class="dot" style="background:#30d158"></span>System prompt<span class="n">5.0k · 6%</span></div>
+    <div><span class="dot" style="background:#ff9f0a"></span>Hooks<span class="n">3.4k · 4%</span></div>
+    <div><span class="dot" style="background:#8e8e93"></span>4 more<span class="n">7.6k · 9%</span></div>
+  </div>
+
+  <div class="small dim" style="margin-top:14px">Growth during sessions · 98.6M</div>
+  <div class="bars">
+    <div class="b"><span>Bash output</span><span class="t"><i style="width:100%"></i></span><span class="n">45.6M</span><span class="p">46%</span></div>
+    <div class="b"><span>System reminders &amp; other</span><span class="t"><i style="width:74%"></i></span><span class="n">33.7M</span><span class="p">34%</span></div>
+    <div class="b"><span>Model output</span><span class="t"><i style="width:25%"></i></span><span class="n">11.2M</span><span class="p">11%</span></div>
+    <div class="b"><span>Read</span><span class="t"><i style="width:16%"></i></span><span class="n">7.2M</span><span class="p">7%</span></div>
+    <div class="b"><span>Agent</span><span class="t"><i style="width:1%"></i></span><span class="n">494k</span><span class="p">&lt;1%</span></div>
+    <div class="b"><span>Watchtower: get_ask</span><span class="t"><i style="width:.3%"></i></span><span class="n">94.8k</span><span class="p">&lt;1%</span></div>
+  </div>
+  <a class="more" href="#">› 22 more sources · 1.5M</a>
+</div>
+
+<div class="card">
+  <b>Skills</b>
+  <p class="lead dim">Список скиллов — 10.1k токенов в каждой сессии; 14 из 38 скиллов не вызывались за период.</p>
+  <a class="more" href="#">› Never used (14)</a>
+</div>
+
+<div class="card">
+  <b>Trouble</b>
+  <p class="lead dim">63 упавших вызова и 12 отказов в разрешении; чаще всего — go test.</p>
+  <a class="more" href="#">› By tool</a>
+</div>
+
+<div class="card">
+  <b>What else would save</b>
+  <div class="dim" style="margin-top:6px">· Повторные прогоны тестов: 14 ч в 9 сессиях <button class="btn q">Open Session</button></div>
+  <div class="dim">· CLAUDE.md — 32% старта каждой сессии <button class="btn q">Open File</button></div>
+</div>
+
+<div class="fold">› Time, tasks, sessions, commands, tokens &amp; cost</div>
+
+</div></body></html>
