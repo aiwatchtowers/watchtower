@@ -47,8 +47,14 @@ struct BoardTargetDetailModel {
 
     /// `inFlight` is `BoardWriter.inFlight`: a field or composer whose send
     /// is still on its way to the outbox is locked like a pending one.
+    /// `posted`: `BoardWriter.postedComments`, shown until their records arrive.
     init?(
-        targetID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, inFlight: Set<String> = [], showDone: Bool = false
+        targetID: Int64,
+        snapshot: WorkbenchReplicaSnapshot,
+        now: Date,
+        inFlight: Set<String> = [],
+        showDone: Bool = false,
+        posted: [PostedComment] = []
     ) {
         guard let target = snapshot.targets.first(where: { $0.id == targetID }) else { return nil }
         id = target.id
@@ -103,7 +109,7 @@ struct BoardTargetDetailModel {
             .filter { $0.targetID == target.id }
             .map { WaitingCardModel($0, snapshot: snapshot, now: now) }
 
-        let commentThread = Self.commentThread(of: target, entity: entity, in: snapshot, now: now)
+        let commentThread = Self.commentThread(of: target, entity: entity, in: snapshot, now: now, posted: posted)
         comments = commentThread.comments
         thread = commentThread.thread
     }

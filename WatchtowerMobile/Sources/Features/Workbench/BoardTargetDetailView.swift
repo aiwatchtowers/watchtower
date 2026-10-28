@@ -27,7 +27,7 @@ struct BoardTargetDetailView: View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             if let detail = BoardTargetDetailModel(
                 targetID: targetID, snapshot: replica.snapshot, now: context.date, inFlight: writer.inFlight,
-                showDone: showDone
+                showDone: showDone, posted: writer.postedComments
             ) {
                 content(detail)
             } else {

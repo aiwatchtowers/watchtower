@@ -6,10 +6,15 @@ import WatchtowerSync
 /// prompt; it goes on the wire only from a phone allowed to type, and only
 /// when edited (an unedited, possibly clipped prompt would replace the
 /// Mac's full one).
+///
+/// Without a target (#1189) the brief is the owner's task description: it
+/// starts empty and always goes on the wire.
 struct StartSessionDraft: Equatable {
     static let briefLimit = 4_000
 
     var targetID: Int64?
+    /// "No target — describe the task".
+    private(set) var isUntargeted = false
     /// The work-on prompt the brief was filled from.
     private(set) var prefill = ""
     var brief = "" {
@@ -22,22 +27,48 @@ struct StartSessionDraft: Equatable {
     /// "Plan first, then ask me": on.
     var planFirst = true
 
-    init(target: WorkbenchTarget?) {
+    /// `untargeted`: a start with no target (the Workbench header's New
+    /// session opens on it, as New Session on the Mac).
+    init(target: WorkbenchTarget?, untargeted: Bool = false) {
         targetID = target?.id
         prefill = target?.workOnPrompt ?? ""
         brief = prefill
+        isUntargeted = target == nil && untargeted
     }
 
     /// A newly picked target: the brief is its work-on prompt again.
     mutating func pick(_ target: WorkbenchTarget) {
+        isUntargeted = false
         targetID = target.id
         prefill = target.workOnPrompt
         brief = prefill
     }
 
+    /// "No target": the brief becomes the task, kept when it was already one.
+    mutating func pickUntargeted() {
+        guard !isUntargeted else { return }
+        isUntargeted = true
+        targetID = nil
+        prefill = ""
+        brief = ""
+    }
+
+    /// Neither a target nor "No target".
+    mutating func clearPick() {
+        isUntargeted = false
+        targetID = nil
+        prefill = ""
+        brief = ""
+    }
+
+    /// A task description that can be sent (not just whitespace).
+    var hasTask: Bool {
+        !brief.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     func params(workbenchID: Int64, mode: SessionStartParams.Mode, grant: StartGrant) -> SessionStartParams {
         let edited = brief.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sendsBrief = grant.typingAllowed && !edited.isEmpty && brief != prefill
+        let sendsBrief = isUntargeted || (grant.typingAllowed && !edited.isEmpty && brief != prefill)
         return SessionStartParams(
             workbenchID: workbenchID, mode: mode, planFirst: planFirst, bringForward: bringForward,
             brief: sendsBrief ? brief : nil
@@ -67,6 +98,8 @@ struct StartSessionFormModel {
     let workbenchID: Int64
     let workbenchName: String
     let target: WorkbenchTarget?
+    /// A start with no target (#1189).
+    let isUntargeted: Bool
     /// "#415 Archive Closed Targets Now".
     let targetLabel: String?
     /// The live targets the header's New session can start, in board order.
@@ -81,12 +114,22 @@ struct StartSessionFormModel {
     /// Start (and Open it, Start a new one) can send.
     let canStart: Bool
     /// Why starting is off: the phone's own toggle, then the Mac's grant,
-    /// then a missing target; nil when it is on.
+    /// then a missing target (or task); nil when it is on.
     let startCaption: String?
 
+    /// What the start is on; nil while neither a target nor "No target" is
+    /// picked.
+    var subject: StartSubject? {
+        if isUntargeted { return .untargeted(workbenchID: workbenchID) }
+        return target.map { .target($0.id) }
+    }
+
+    /// `untargetedTask`: the task of a start with no target; nil for a
+    /// target's start.
     init?(
         workbenchID: Int64,
         targetID: Int64?,
+        untargetedTask: String? = nil,
         snapshot: WorkbenchReplicaSnapshot,
         grant: DeviceGrant?,
         attempt: StartAttempt?,
@@ -98,7 +141,9 @@ struct StartSessionFormModel {
         self.workbenchID = workbenchID
         workbenchName = workbench.name
         agent = SessionStartText.agentName(workbench)
-        let target = targetID.flatMap { id in snapshot.targets.first { $0.id == id && $0.workbenchID == workbenchID } }
+        let isUntargeted = untargetedTask != nil
+        self.isUntargeted = isUntargeted
+        let target = isUntargeted ? nil : targetID.flatMap { id in snapshot.targets.first { $0.id == id && $0.workbenchID == workbenchID } }
         self.target = target
         targetLabel = target.map { "#\($0.id) \($0.text)" }
         targetOptions = NewBoardTargetDraft.parentOptions(workbenchID: workbenchID, snapshot: snapshot)
@@ -111,14 +156,19 @@ struct StartSessionFormModel {
             briefCaption = target?.workOnPromptClipped == true ? SessionStartText.clippedBrief : nil
         }
         existing = target.flatMap { Self.existingSession(of: $0, in: snapshot, now: now) }
-        progress = target.flatMap { StartProgressModel.of(targetID: $0.id, attempt: attempt, snapshot: snapshot, now: now) }
-        let sending = target.map { inFlight.contains(SessionStarter.startKey($0.id)) } ?? false
-        canStart = target.map { !$0.archived } == true && startsTurnedOn && grant.startSessionsAllowed && !sending
+        let subject: StartSubject? = isUntargeted ? .untargeted(workbenchID: workbenchID) : target.map { .target($0.id) }
+        progress = subject.flatMap { StartProgressModel.of($0, attempt: attempt, snapshot: snapshot, now: now) }
+        let sending = subject.map { inFlight.contains(SessionStarter.startKey($0)) } ?? false
+        let hasTask = untargetedTask.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
+        let ready = isUntargeted ? hasTask : target.map { !$0.archived } == true
+        canStart = ready && startsTurnedOn && grant.startSessionsAllowed && !sending
         startCaption = if !startsTurnedOn {
             SessionStartText.turnedOff
         } else if !grant.startSessionsAllowed {
             SessionStartText.notAllowed
-        } else if target == nil {
+        } else if isUntargeted, !hasTask {
+            SessionStartText.describeTask
+        } else if !isUntargeted, target == nil {
             SessionStartText.chooseTarget
         } else {
             nil

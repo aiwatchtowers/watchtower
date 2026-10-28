@@ -8,6 +8,10 @@ import WatchtowerSync
 /// conflict. `from_status`/`from_priority` are always the replica's value
 /// the phone shows, never an optimistic one. Owned by `AppEnvironment`.
 ///
+/// A comment or reply the Mac applied stays in its thread
+/// (`postedComments`) until the Mac's comment record reaches the replica:
+/// the applied echo drops the pending row first (#1192).
+///
 /// One write per field (or per comment target) is in flight at a time
 /// (`SendGuard`): a double tap never posts a non-idempotent comment twice
 /// and two picks never stack on one field.
@@ -18,6 +22,8 @@ final class BoardWriter {
 
     /// Keys (`BoardWriter.key`) of the sends still waiting for the outbox.
     var inFlight: Set<String> { sendGuard.inFlight }
+    /// The comments and replies the Mac applied this run, newest last.
+    private(set) var postedComments: [PostedComment] = []
 
     @ObservationIgnored private let sendGuard = SendGuard()
     @ObservationIgnored private let enqueue: Enqueue
@@ -48,6 +54,27 @@ final class BoardWriter {
                     .map(\.id)
             }
         )
+    }
+
+    /// An `applied` echo of a comment or reply: kept with the Mac's
+    /// comment id until the record arrives. Other kinds are not ours.
+    func receiveApplied(_ action: ActionRequestPayload, now: Date = Date()) {
+        guard case let .integer(commentID)? = action.result?["comment_id"],
+              let entity = action.entityID.flatMap(Int64.init),
+              !postedComments.contains(where: { $0.commentID == commentID }) else { return }
+        let posted: PostedComment
+        switch action.kind {
+        case .boardCommentAdd:
+            guard let params = try? BoardCommentAddParams(wireParams: action.params) else { return }
+            posted = PostedComment(commentID: commentID, targetID: entity, rootID: nil, body: params.body, postedAt: now)
+        case .boardCommentReply:
+            guard let params = try? BoardCommentReplyParams(wireParams: action.params) else { return }
+            posted = PostedComment(commentID: commentID, targetID: nil, rootID: entity, body: params.body, postedAt: now)
+        default:
+            return
+        }
+        postedComments.removeAll { now.timeIntervalSince($0.postedAt) > PostedComment.keepFor }
+        postedComments.append(posted)
     }
 
     /// The in-flight key of a kind on an entity (nil for a new target).

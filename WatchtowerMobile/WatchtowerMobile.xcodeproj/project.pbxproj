@@ -44,6 +44,7 @@
 		2356080241E92BE3213EDD38 /* SessionStarter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 632B2CCD45974D7A72711DA9 /* SessionStarter.swift */; };
 		23AB93367D5B6F57B4BC3EA2 /* MacStatusRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE8A630A5D409247C5E01A5C /* MacStatusRow.swift */; };
 		27584DAE11AFC12EC9AB005B /* DeviceSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED010731D72C66201D5B0A4C /* DeviceSettings.swift */; };
+		27E330B016FAED5FB8975BF3 /* PostedComment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DD47AEA1BD729C8109778C1 /* PostedComment.swift */; };
 		2845132B2A7150A900A1A0F2 /* RecapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB27E8159B7BFF1EF9ED5A1C /* RecapView.swift */; };
 		28A8E1AED929497941884440 /* KeychainKeyStoreDeviceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE23C9A9206CA7B4CFEC3857 /* KeychainKeyStoreDeviceTests.swift */; };
 		2B1B961486EF6E3A1061D8DA /* AccountStatusStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B82508B1B88A4C9672D4000 /* AccountStatusStyle.swift */; };
@@ -322,6 +323,7 @@
 		4A19A75AFD15E6FBEE8798CB /* CalendarWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarWiringTests.swift; sourceTree = "<group>"; };
 		4A3DDEA22A6A8A679FAAE964 /* SharedAlertWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedAlertWiringTests.swift; sourceTree = "<group>"; };
 		4CED16A10567DDD56CD668EE /* QuestionAskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAskView.swift; sourceTree = "<group>"; };
+		4DD47AEA1BD729C8109778C1 /* PostedComment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostedComment.swift; sourceTree = "<group>"; };
 		4EF0E3D3509281E6EB30B918 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4F002CAE331C61F2C2A8FB21 /* AppRoot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRoot.swift; sourceTree = "<group>"; };
 		51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFilterTests.swift; sourceTree = "<group>"; };
@@ -708,6 +710,7 @@
 				30368F9308E6A9844739763B /* ConflictPrompt.swift */,
 				1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */,
 				235E649016A78F0B50BAC758 /* PermissionCardModel.swift */,
+				4DD47AEA1BD729C8109778C1 /* PostedComment.swift */,
 				33A9A8CE46252B64C968083D /* SendGuard.swift */,
 				3FAEEAE6D35911B35EC2C4BF /* SessionActionsModel.swift */,
 				D9B86AC0DDCAB04B7FE9713D /* SessionChatView.swift */,
@@ -1146,6 +1149,7 @@
 				D702907EE7D2F154351AF83B /* PhoneRecordingsModel.swift in Sources */,
 				9EB2B0C11F51971D49AF4FE1 /* PhoneTone.swift in Sources */,
 				8EE51E7A85C5FE1C582B4761 /* Pill.swift in Sources */,
+				27E330B016FAED5FB8975BF3 /* PostedComment.swift in Sources */,
 				0C39756A17F727F6090C782D /* PriorityMark.swift in Sources */,
 				2F47C10DBB0A5DCFEB6B5474 /* QuestionAskView.swift in Sources */,
 				F7B8E24A6579D709545DD78A /* RecapModel.swift in Sources */,

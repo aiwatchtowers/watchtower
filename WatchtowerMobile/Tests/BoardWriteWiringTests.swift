@@ -233,6 +233,55 @@ final class BoardWriteWiringTests: XCTestCase {
         XCTAssertEqual(thread.map(\.isReply), [false, true, true, false])
     }
 
+    /// #1192: the applied echo drops the pending rows, but the comment and
+    /// the reply stay in the thread as posted until the Mac's records
+    /// arrive; then the records replace them.
+    func testAnAppliedCommentStaysInTheThreadUntilItsRecordArrives() async throws {
+        let fixture = try makeFixture()
+        await fixture.outbox.setAppliedObserver(HubSession.appliedObserver(
+            askAnswerer: AskAnswerer.sending(through: fixture.outbox, store: fixture.store, drafts: AskDraftStore()),
+            sessionStarts: SessionStarter.sending(through: fixture.outbox, store: fixture.store),
+            boardWriter: fixture.writer
+        ))
+        _ = try await fixture.writer.addComment("Looks good.", on: try target(415))
+        _ = try await fixture.writer.reply("Thanks", toRoot: 80, workbenchID: DemoSeed.acmeID)
+        for (row, id) in zip(try fixture.store.pendingActions(), [900, 901] as [Int64]) {
+            var echo = row.action
+            echo.status = .applied
+            echo.result = ["comment_id": .integer(id)]
+            try await fixture.outbox.applyEcho(echo)
+        }
+        try await poll(timeout: 2) { fixture.writer.postedComments.count == 2 }
+
+        var replica = try snapshot(fixture.store)
+        XCTAssertTrue(replica.pending.isEmpty, "applied removed the rows")
+        let thread = try XCTUnwrap(BoardTargetDetailModel(
+            targetID: 415, snapshot: replica, now: now, posted: fixture.writer.postedComments
+        )).thread
+        XCTAssertEqual(thread.map(\.id), ["comment-80", "comment-81", "comment-901", "comment-900"])
+        XCTAssertEqual(thread.map(\.isReply), [false, true, true, false])
+
+        // The Mac's records arrive: each id is drawn once, from its record.
+        replica.comments += [
+            try mirror(WorkbenchComment.self, DemoSeed.JSON.comment(
+                900, workbench: DemoSeed.acmeID, target: 415, ["author": "owner", "body": "Looks good."]
+            )),
+            try mirror(WorkbenchComment.self, DemoSeed.JSON.comment(
+                901, workbench: DemoSeed.acmeID, target: 415, ["author": "owner", "parent_id": 80, "body": "Thanks"]
+            ))
+        ]
+        let arrived = try XCTUnwrap(BoardTargetDetailModel(
+            targetID: 415, snapshot: replica, now: now, posted: fixture.writer.postedComments
+        )).thread
+        XCTAssertEqual(arrived.map(\.id).filter { $0 == "comment-900" || $0 == "comment-901" }.count, 2)
+
+        let stale = try XCTUnwrap(BoardTargetDetailModel(
+            targetID: 415, snapshot: try snapshot(fixture.store), now: now.addingTimeInterval(PostedComment.keepFor + 1),
+            posted: fixture.writer.postedComments
+        )).thread
+        XCTAssertFalse(stale.contains { $0.id == "comment-900" }, "a posted comment is not kept forever")
+    }
+
     func testEveryRootOffersReplyEvenAResolvedOne() throws {
         let thread = try detail(421, try snapshot(try TestPhone.replica())).thread
         guard case let .comment(root)? = thread.first else { return XCTFail("no root comment on #421") }
