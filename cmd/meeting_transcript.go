@@ -682,6 +682,7 @@ func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, reca
 		"speakers_error": speakersErrMsg,
 	}
 	switch skip {
+	case saveSkipNone:
 	case saveSkipTooShort:
 		envelope["recap_skipped"] = true
 	case saveSkipPrivate:
