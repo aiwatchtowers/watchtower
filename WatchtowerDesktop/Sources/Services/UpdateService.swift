@@ -434,7 +434,12 @@ final class UpdateService {
         let lastLaunched = defaults.string(forKey: Self.lastLaunchedVersionKey)
         let lastOffered = Self.newer(defaults.string(forKey: Self.lastPresentedVersionKey),
                                      defaults.string(forKey: Self.lastAnnouncedVersionKey))
-        let markSeen = { self.defaults.set(currentVersion, forKey: Self.lastLaunchedVersionKey) }
+        // Only forward: a rollback launch must not make the newer build's
+        // next launch look like a fresh update.
+        let markSeen = {
+            guard Self.newer(lastLaunched, currentVersion) == currentVersion else { return }
+            self.defaults.set(currentVersion, forKey: Self.lastLaunchedVersionKey)
+        }
         guard Self.shouldShowWhatsNew(current: currentVersion, lastLaunched: lastLaunched, lastOffered: lastOffered) else {
             markSeen()
             return

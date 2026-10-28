@@ -1103,6 +1103,19 @@ struct UpdateServicePeriodicTests {
         #expect(defaults.string(forKey: "lastLaunchedAppVersion") == "1.1.0")
     }
 
+    @Test("a rollback launch does not move the memo back")
+    func whatsNewRollbackKeepsMemo() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("1.1.0", forKey: "lastLaunchedAppVersion")
+        var presented: [String] = []
+        let svc = whatsNewService(defaults, notes: "## New") { presented.append($0) }
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.0.0")
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(presented.isEmpty)
+        #expect(defaults.string(forKey: "lastLaunchedAppVersion") == "1.1.0")
+    }
+
     @Test("the periodic loop retries a What's New the launch could not show")
     func whatsNewRetriedByTheLoop() async throws {
         let (defaults, suite) = try isolatedDefaults()
