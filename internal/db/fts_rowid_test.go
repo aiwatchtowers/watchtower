@@ -258,6 +258,29 @@ func TestMessagesFTS_WriteCostDoesNotGrowWithIndex(t *testing.T) {
 	assert.Less(t, ratio, 2.83, "a message write must not scan the whole index")
 }
 
+// legacyTranscriptHits is SearchTranscripts' query without the private filter,
+// for a database migrated to a version before meeting_transcripts.private.
+func legacyTranscriptHits(t *testing.T, d *DB, query string) []TranscriptHit {
+	t.Helper()
+	rows, err := d.Query(`
+		SELECT mt.id, mt.title, COALESCE(mt.event_id, ''), mt.created_at,
+		       snippet(transcripts_fts, 0, '', '', '…', 40)
+		FROM transcripts_fts
+		JOIN meeting_transcripts mt ON mt.id = transcripts_fts.transcript_id
+		WHERE transcripts_fts MATCH ?
+		ORDER BY mt.created_at DESC`, sanitizeFTS5Query(query))
+	require.NoError(t, err)
+	defer rows.Close()
+	var out []TranscriptHit
+	for rows.Next() {
+		var h TranscriptHit
+		require.NoError(t, rows.Scan(&h.ID, &h.Title, &h.EventID, &h.CreatedAt, &h.Snippet))
+		out = append(out, h)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
 // rawFileDBAt opens a new database file migrated to version with goose alone.
 func rawFileDBAt(t *testing.T, version int64) *DB {
 	t.Helper()
@@ -286,8 +309,9 @@ func TestMigration147_UpgradeKeepsLegacyAndMarksPending(t *testing.T) {
 		_, err := d.Exec(`INSERT INTO meeting_transcripts (title, transcript_text) VALUES (?, 'payments roadmap talk')`, title)
 		require.NoError(t, err)
 	}
-	hitsBefore, err := d.SearchTranscripts("payments", 10)
-	require.NoError(t, err)
+	// SearchTranscripts itself needs the private column (00163), so the
+	// pre-upgrade hits are read with its query minus that filter.
+	hitsBefore := legacyTranscriptHits(t, d, "payments")
 	require.Len(t, hitsBefore, 2)
 
 	require.NoError(t, d.migrate())

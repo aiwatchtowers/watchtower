@@ -111,8 +111,24 @@ func (db *DB) WriteTranscriptRecap(r TranscriptRecapRow) (err error) {
 const meetingRecapSelectCols = `SELECT id, event_id, transcript_id, source_text, recap_json, created_at, updated_at FROM meeting_recaps`
 
 // GetMeetingRecap returns the recap for the given event, or (nil, nil) if none.
+// It does not skip a recap owned by a private recording, so it serves writers
+// and the owner's own CLI only and must never feed a prompt — a reader whose
+// output reaches a model uses GetMeetingRecapForAI (MEETPRIV-02).
 func (db *DB) GetMeetingRecap(eventID string) (*MeetingRecap, error) {
 	return scanMeetingRecapRow(db.QueryRow(meetingRecapSelectCols+` WHERE event_id = ?`, eventID))
+}
+
+// RecapNotPrivate is the SQL predicate, over the meeting_recaps alias r, that
+// keeps a recap unless the recording owning it (transcript_id) is private
+// (MEETPRIV-02). A recap with no owning recording (pasted text) is kept.
+// Exported so the knowledge index (internal/kb) filters with the same text.
+const RecapNotPrivate = `NOT EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = r.transcript_id AND pt.private = 1)`
+
+// GetMeetingRecapForAI is GetMeetingRecap for a reader whose output reaches a
+// model: a recap owned by a private recording reads as none (MEETPRIV-02).
+func (db *DB) GetMeetingRecapForAI(eventID string) (*MeetingRecap, error) {
+	return scanMeetingRecapRow(db.QueryRow(`SELECT r.id, r.event_id, r.transcript_id, r.source_text, r.recap_json, r.created_at, r.updated_at
+		FROM meeting_recaps r WHERE r.event_id = ? AND `+RecapNotPrivate, eventID))
 }
 
 // GetMeetingRecapByTranscript returns the recap linked to the given transcript,

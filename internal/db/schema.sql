@@ -2253,7 +2253,7 @@ CREATE TABLE IF NOT EXISTS kb_sources (
 
 -- Source deletions and edits (see 00139): KB documents to re-render, filled by triggers.
 CREATE TABLE IF NOT EXISTS kb_dirty (
-    source TEXT NOT NULL,              -- KB source name: slack | gmail | jira
+    source TEXT NOT NULL,              -- KB source name: slack | gmail | jira | transcript | recap, or a media_items.kb_source
     key    TEXT NOT NULL,              -- that source's document key (kb_documents.id)
     gen    INTEGER NOT NULL DEFAULT 0, -- bumped on every re-mark; the drain deletes only the gen it rendered
     PRIMARY KEY (source, key)
@@ -2283,6 +2283,25 @@ CREATE TRIGGER IF NOT EXISTS jira_comments_kb_dirty AFTER DELETE ON jira_comment
 BEGIN
     INSERT INTO kb_dirty (source, key) VALUES ('jira', 'jira:' || OLD.account_id || ':' || OLD.issue_key)
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+
+-- A recording turned private (or back) re-renders its document and the recaps
+-- it owns; a private one renders as nil and leaves the index (see 00164).
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
+WHEN OLD.private != NEW.private
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+
+-- Deleting a private recording deletes the recaps it owns instead of letting
+-- the foreign key orphan them into a readable recap (see 00164).
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_delete_recaps BEFORE DELETE ON meeting_transcripts
+WHEN OLD.private = 1
+BEGIN
+    DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
 END;
 
 -- External knowledge sources (see 00074)
