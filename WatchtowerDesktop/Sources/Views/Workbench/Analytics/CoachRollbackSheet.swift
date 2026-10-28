@@ -24,13 +24,16 @@ struct CoachRollbackSheet: View {
             .padding(Spacing.cozy)
             .frame(height: 140)
             .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.control))
+            if let error = coach.cardErrors[proposal.id] {
+                Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Tone.warning)
+            }
             HStack(spacing: Spacing.regular) {
                 Spacer()
                 Button("Cancel") { dismiss() }.buttonStyle(.kitSecondary).keyboardShortcut(.cancelAction)
                 Button("Roll Back Anyway") {
                     Task {
                         _ = await coach.rollback(proposal.id, force: true)
-                        dismiss()
+                        if coach.cardErrors[proposal.id] == nil { dismiss() }
                     }
                 }
                 .buttonStyle(.kitDestructive)

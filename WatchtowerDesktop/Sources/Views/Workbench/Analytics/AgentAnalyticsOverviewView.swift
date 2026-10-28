@@ -13,6 +13,8 @@ struct AgentAnalyticsOverviewView: View {
     var workbench: Int64 = 0
     /// An ask link of a proposal: the ask's drawer.
     var openAsk: (Int64) -> Void = { _ in }
+    /// A terminal session link of a proposal.
+    var openTerminalSession: (Int64) -> Void = { _ in }
 
     private static let statisticsID = "statistics"
 
@@ -90,7 +92,7 @@ struct AgentAnalyticsOverviewView: View {
             if let coach {
                 CoachSectionsView(
                     coach: coach, workbench: workbench,
-                    actions: CoachActions(openAsk: openAsk, openSession: actions.openSession,
+                    actions: CoachActions(openAsk: openAsk, openTerminalSession: openTerminalSession,
                                           scrollToStatistics: scrollToStatistics)
                 )
                 SectionHeader(title: "Statistics", systemImage: "chart.bar").id(Self.statisticsID)

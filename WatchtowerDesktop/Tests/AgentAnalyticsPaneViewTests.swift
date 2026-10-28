@@ -690,7 +690,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let session = try XCTUnwrap(all.first { $0.destination == "session" })
         let allow = try XCTUnwrap(all.first { $0.destination == "claude_settings_allow" })
         func labels(_ proposal: CoachProposal) throws -> [String] {
-            let actions = CoachActions(openAsk: { _ in }, openSession: { _ in }, scrollToStatistics: {})
+            let actions = CoachActions(openAsk: { _ in }, openTerminalSession: { _ in }, scrollToStatistics: {})
             let card = CoachProposalCardView(proposal: proposal, isFirst: true, coach: coach, actions: actions) {}
             return try card.inspect().findAll(ViewType.Button.self).map { try $0.labelView().text().string() }
         }
@@ -718,5 +718,20 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
                                                 from: JSONSerialization.data(withJSONObject: copy))
         let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
         XCTAssertEqual(AgentAnalyticsFormat.previousPeriodLabel(overview, timeZone: utc), "Oct 14 – Oct 21")
+    }
+
+    func testEvidenceTargetPerKind() {
+        func target(_ kind: String, _ ref: String) -> CoachEvidenceTarget {
+            let json = Data(#"{"kind":"\#(kind)","ref":"\#(ref)"}"#.utf8)
+            guard let item = try? JSONDecoder().decode(CoachEvidence.self, from: json) else { return .text("undecodable") }
+            return CoachEvidenceTarget.of(item)
+        }
+        XCTAssertEqual(target("ask", "ask:581#a"), .ask(581))
+        XCTAssertEqual(target("session", "s12"), .terminalSession(12))
+        XCTAssertEqual(target("session", "sess-x"), .text("session"))
+        XCTAssertEqual(target("hint", "hint:H1@wb3"), .statistics)
+        XCTAssertEqual(target("round", "round:4"), .text("review round"))
+        XCTAssertEqual(target("chat", "c9"), .text("chat"))
+        XCTAssertEqual(target("suggestion", "sg:2"), .text("suggestion"))
     }
 }

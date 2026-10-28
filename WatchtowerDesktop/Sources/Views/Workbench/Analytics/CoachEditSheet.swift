@@ -36,6 +36,9 @@ struct CoachEditSheet: View {
             Text("The whole text of the destination is saved as written here.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let error = coach.cardErrors[proposal.id] {
+                Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Tone.warning)
+            }
             HStack(spacing: Spacing.regular) {
                 Spacer()
                 Button("Cancel") { dismiss() }.buttonStyle(.kitSecondary).keyboardShortcut(.cancelAction)
@@ -43,7 +46,8 @@ struct CoachEditSheet: View {
                     let edited = text
                     Task {
                         await coach.accept(proposal.id, editedText: edited)
-                        dismiss()
+                        // A failure keeps the sheet and the owner's text.
+                        if coach.cardErrors[proposal.id] == nil { dismiss() }
                     }
                 }
                 .buttonStyle(.kitPrimary)

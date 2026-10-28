@@ -121,7 +121,7 @@ enum CoachShotFixtures {
             Row(id: 8, title: "Allow go test without asking", destination: "claude_settings_allow",
                 metric: "task_hours", change: ("", "Bash(go test:*)"), status: "open",
                 why: "The agent waited for permission 41 times in 11 sessions.",
-                evidence: #"[{"kind":"session","ref":"sess-acme-0001"}]"#, workbench: 3),
+                evidence: #"[{"kind":"session","ref":"s12"}]"#, workbench: 3),
             Row(id: 2, title: "Quick asks when there are 2-3 options", destination: "chat", metric: "owner_loop",
                 change: ("", "Prefer quick asks."), decided: "2026-10-12T09:00:00Z", verdict: "works",
                 numbers: ("31", "22")),

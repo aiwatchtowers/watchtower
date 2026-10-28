@@ -5,10 +5,31 @@ import WatchtowerCore
 struct CoachActions {
     /// An ask id: the ask's drawer.
     let openAsk: (Int64) -> Void
-    /// A session uuid: its analytics detail.
-    let openSession: (String) -> Void
+    /// A terminal session id: that session in the workbench.
+    let openTerminalSession: (Int64) -> Void
     /// A hint: the Statistics block.
     let scrollToStatistics: () -> Void
+}
+
+/// What one evidence item links to.
+enum CoachEvidenceTarget: Equatable {
+    case ask(Int64), terminalSession(Int64), statistics
+    /// No link: the label is shown as text.
+    case text(String)
+
+    static func of(_ item: CoachEvidence) -> Self {
+        switch item.kind {
+        case "ask":
+            return CoachProposalCardView.askID(item.ref).map(Self.ask) ?? .text("ask")
+        case "session":
+            let digits = item.ref.hasPrefix("s") ? item.ref.dropFirst() : ""
+            if !digits.isEmpty, digits.allSatisfy(\.isNumber), let id = Int64(digits) { return .terminalSession(id) }
+            return .text("session")
+        case "hint": return .statistics
+        case "round": return .text("review round")
+        default: return .text(item.kind)
+        }
+    }
 }
 
 /// One open proposal: what it moves, why, the change, its evidence and the
@@ -45,7 +66,7 @@ struct CoachProposalCardView: View {
         let busy = coach.pending.contains(proposal.id)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(spacing: Spacing.compact) {
-                Chip(text: "moves: \(Self.metricLabel(proposal.metric))", color: .blue)
+                Chip(text: "moves: \(Self.metricLabel(proposal.metric))", color: Color.accentColor)
                 Chip(text: proposal.destinationLabel, color: .secondary)
             }
             Text(proposal.title).font(.headline)
@@ -57,13 +78,16 @@ struct CoachProposalCardView: View {
             HStack(spacing: Spacing.regular) {
                 evidence
                 Spacer(minLength: Spacing.regular)
-                Button("Decline") { confirmDecline = true }.buttonStyle(.kitSecondary)
-                if Self.hasEdit(proposal) {
-                    Button("Edit…", action: onEdit).buttonStyle(.kitSecondary)
+                // Disabled apart from the evidence links, which stay live.
+                HStack(spacing: Spacing.regular) {
+                    Button("Decline") { confirmDecline = true }.buttonStyle(.kitSecondary)
+                    if Self.hasEdit(proposal) {
+                        Button("Edit…", action: onEdit).buttonStyle(.kitSecondary)
+                    }
+                    acceptButton
                 }
-                acceptButton
+                .disabled(busy)
             }
-            .disabled(busy)
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -135,17 +159,15 @@ struct CoachProposalCardView: View {
     }
 
     @ViewBuilder private func evidenceLink(_ item: CoachEvidence) -> some View {
-        switch item.kind {
-        case "ask":
-            if let id = Self.askID(item.ref) {
-                Button("ask #\(id)") { actions.openAsk(id) }.buttonStyle(.link).font(.caption)
-            }
-        case "session":
-            Button(String(item.ref.prefix(8))) { actions.openSession(item.ref) }.buttonStyle(.link).font(.caption)
-        case "hint":
+        switch CoachEvidenceTarget.of(item) {
+        case let .ask(id):
+            Button("ask #\(id)") { actions.openAsk(id) }.buttonStyle(.link).font(.caption)
+        case let .terminalSession(id):
+            Button("session #\(id)") { actions.openTerminalSession(id) }.buttonStyle(.link).font(.caption)
+        case .statistics:
             Button("statistics") { actions.scrollToStatistics() }.buttonStyle(.link).font(.caption)
-        default:
-            Text(item.kind == "round" ? "review round" : item.kind).font(.caption).foregroundStyle(.secondary)
+        case let .text(label):
+            Text(label).font(.caption).foregroundStyle(.secondary)
         }
     }
 }
