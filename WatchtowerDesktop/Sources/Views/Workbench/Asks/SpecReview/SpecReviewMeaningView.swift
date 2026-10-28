@@ -31,7 +31,7 @@ struct SpecReviewMeaningView<AskContext: View>: View {
                     VStack(alignment: .leading, spacing: Spacing.small) {
                         SectionHeader(title: "Notes", systemImage: "info.circle")
                         ForEach(notes, id: \.self) {
-                            Text($0).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Text($0).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
@@ -94,9 +94,9 @@ struct SpecReviewMeaningView<AskContext: View>: View {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
                     Chip(text: resolved ? "Resolved" : "Open", color: resolved ? Tone.success : Tone.warning)
                     VStack(alignment: .leading, spacing: Spacing.tight) {
-                        Text("“\(item.commentQuote)”").font(.callout).italic().fixedSize(horizontal: false, vertical: true)
+                        SpecReviewQuote(label: "Your comment", quote: item.commentQuote)
                         if !item.note.isEmpty {
-                            Text(item.note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Text(item.note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }

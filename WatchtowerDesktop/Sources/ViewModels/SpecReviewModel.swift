@@ -17,6 +17,14 @@ enum SpecReviewChapterFinding: Equatable {
         case let .blindSpot(f): f.key
         }
     }
+
+    var severity: SpecReviewSeverity? {
+        switch self {
+        case let .agreement(f): f.severity
+        case let .decidedAlone(f): f.severity
+        case let .blindSpot(f): f.severity
+        }
+    }
 }
 
 /// One chapter of the Chapters phase: its slice of the document, the
@@ -48,6 +56,9 @@ final class SpecReviewModel {
     var phase: ReviewPhase = .meaning
     var chapterKey: String?
     var lastError: String?
+    /// The footer's Approve asked to confirm (unmarked findings, or an
+    /// unanswered dispute after an early end).
+    var confirmingApprove = false
 
     @ObservationIgnored let ask: OwnerAsk
     @ObservationIgnored private let dbPool: DatabasePool
@@ -211,13 +222,17 @@ final class SpecReviewModel {
     var isLoop: Bool { row?.loop == .owner }
 
     /// Findings the two sides argued over, in ledger order.
-    var disputes: [SpecReviewLedgerEntry] { row.map(SpecReviewLoop.disputed) ?? [] }
+    var disputes: [SpecReviewLedgerEntry] { bySeverity(row.map(SpecReviewLoop.disputed) ?? []) }
 
     /// Findings the author never answered (or fixed unchecked), in ledger order.
-    var unanswered: [SpecReviewLedgerEntry] { row.map(SpecReviewLoop.unanswered) ?? [] }
+    var unanswered: [SpecReviewLedgerEntry] { bySeverity(row.map(SpecReviewLoop.unanswered) ?? []) }
 
     /// Findings the reviewer judged fixed by the author.
-    var fixes: [SpecReviewLedgerEntry] { row.map(SpecReviewLoop.fixed) ?? [] }
+    var fixes: [SpecReviewLedgerEntry] { bySeverity(row.map(SpecReviewLoop.fixed) ?? []) }
+
+    private func bySeverity(_ entries: [SpecReviewLedgerEntry]) -> [SpecReviewLedgerEntry] {
+        SpecReviewPresentation.sortedBySeverity(entries, \.item.severity)
+    }
 
     var endedEarly: Bool { row.map(SpecReviewLoop.endedEarly) ?? false }
 
@@ -257,9 +272,12 @@ final class SpecReviewModel {
         let known = Set(result.chapters.map(\.key))
         func inChapter(_ key: String) -> Bool { known.contains(key) }
         func findings(_ pick: (String) -> Bool) -> [SpecReviewChapterFinding] {
-            result.agreements.filter { pick($0.chapter) }.map { .agreement($0) }
-                + result.decidedAlone.filter { pick($0.chapter) }.map { .decidedAlone($0) }
-                + result.blindSpots.filter { pick($0.chapter) }.map { .blindSpot($0) }
+            SpecReviewPresentation.sortedBySeverity(
+                result.agreements.filter { pick($0.chapter) }.map { .agreement($0) }
+                    + result.decidedAlone.filter { pick($0.chapter) }.map { .decidedAlone($0) }
+                    + result.blindSpots.filter { pick($0.chapter) }.map { .blindSpot($0) },
+                \.severity
+            )
         }
         var out = result.chapters.map { chapter in
             SpecReviewChapterVM(
@@ -347,9 +365,17 @@ final class SpecReviewModel {
 
     private var draftCommentCount: Int { draft.answer(for: ask).comments.count }
 
-    /// Send round to the author needs at least one comment, on a finding
-    /// or in the margin.
-    var canSend: Bool { row?.result != nil && commentCount + draftCommentCount > 0 }
+    /// N of **Request changes (N)**: every `comment` mark (Fix, Reviewer is
+    /// right, Reopen, Comment) and every margin comment under Read the spec.
+    var requestCount: Int { commentCount + draftCommentCount }
+
+    /// Request changes needs at least one comment, on a finding or in the
+    /// margin.
+    var canSend: Bool { row != nil && requestCount > 0 }
+
+    /// Approve is for "nothing to send back" (spec 2026-10-28 D7): off
+    /// while a comment would go to the author.
+    var canApprove: Bool { requestCount == 0 }
 
     /// Approve asks once when findings are still unmarked. A finished
     /// author loop's Approve is one press, except after an early end with
@@ -401,6 +427,30 @@ final class SpecReviewModel {
     }
 
     func approve() async -> OwnerAsksViewModel.AnswerResult {
-        await asks.answer(ask, with: answer(verdict: .approved))
+        guard canApprove else {
+            return .invalid("Remove your comments for the author to approve, or Request changes.")
+        }
+        return await asks.answer(ask, with: answer(verdict: .approved))
+    }
+
+    /// The footer's Approve: asks first when `needsApproveConfirm`.
+    func pressApprove() {
+        guard canApprove, answerBlocker == nil, !isAnswering else { return }
+        if needsApproveConfirm { confirmingApprove = true } else { Task { _ = await approve() } }
+    }
+
+    func pressRequestChanges() {
+        guard canSend, answerBlocker == nil, !isAnswering else { return }
+        Task { _ = await send() }
+    }
+
+    /// ⌘↩ / ⌘⇧↩ in the drawer while no text field has focus (a comment
+    /// editor keeps ⌘↩ for itself: `OwnerAskKeyCatcher` stands aside).
+    func pressKey(shift: Bool) {
+        switch SpecReviewPresentation.keyVerdict(shift: shift, canSend: canSend, canApprove: canApprove) {
+        case .changes: pressRequestChanges()
+        case .approved: pressApprove()
+        default: break
+        }
     }
 }

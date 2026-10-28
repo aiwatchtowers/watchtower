@@ -27,6 +27,8 @@ package struct SpecReviewLoopItem: Decodable, Equatable, Sendable {
     package var anchor: SpecReviewResult.Anchor?
     package var round: Int
     package var reply: Reply?
+    /// Set when the finding was raised, kept through the loop.
+    package var severity: SpecReviewSeverity?
 
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -37,10 +39,11 @@ package struct SpecReviewLoopItem: Decodable, Equatable, Sendable {
         anchor = try c.decodeIfPresent(SpecReviewResult.Anchor.self, forKey: .anchor)
         round = try c.decodeIfPresent(Int.self, forKey: .round) ?? 0
         reply = try c.decodeIfPresent(Reply.self, forKey: .reply)
+        severity = SpecReviewSeverity(raw: try c.decodeIfPresent(String.self, forKey: .severity))
     }
 
     private enum Keys: String, CodingKey {
-        case key, kind, text, note, round, reply
+        case key, kind, text, note, round, reply, severity
         case anchor = "where"
     }
 }

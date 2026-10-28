@@ -161,7 +161,7 @@ var DefaultVersions = map[string]int{
 	TerminalTitle:              3,  // v3: the messages are data to name, never to answer; "[Image #N]" placeholders (v2: agent-neutral; v1 named a Claude Code session)
 	ReviewOverview:             2,  // v2: coverage entries carry the intent item's 1-based "index" (v1: overview — intent coverage, risk map, chapters, strong tier)
 	ReviewLessons:              1,  // v1: diff reviewer — repeated review comments to house rules (strong tier)
-	SpecReview:                 3,  // v3: severity (blocker | major | minor) on every finding the owner or the author must act on (v2: author loop — verdicts on the previous open items, new findings only on changed text or blockers (v1: spec reviewer — a spec or plan against what was agreed, strong tier, read-only agent))
+	SpecReview:                 3,  // v3: severity (blocker | major | minor) on every finding the owner or the author must act on (v2: author loop — verdicts on the previous open items, new findings only on changed text or blockers; v1: spec reviewer — a spec or plan against what was agreed, strong tier, read-only agent)
 	InstructionSuggestions:     2,  // v2: also directions repeated across AI chats (c<id> labels); v1: workbench sessions (light tier)
 	CoachPropose:               2,  // v2: the exact allow-rule table, claude_md_user allowed (4000 ceiling), ROLLED BACK group (v1: agent coach — edits to the owner's setup from repeated signals, strong tier)
 	MediaDescribe:              1,  // v1: an attached image to a title, description, verbatim text and keys (strong tier, image input)

@@ -243,19 +243,46 @@ final class SpecReviewModelTests: XCTestCase {
         model.stopPolling()
     }
 
-    func testApproveWithResultSendsApprovedAndOnlyComments() async throws {
+    /// Approve is for "nothing to send back" (spec 2026-10-28 D7): a
+    /// comment mark turns it off, and Request changes carries only the
+    /// comment marks.
+    func testApproveIsOffWhileACommentWouldGoBack() async throws {
         try setRow(status: "done", result: resultJSON())
         let model = try await makeModel()
         await model.load()
+        XCTAssertTrue(model.canApprove)
+        XCTAssertEqual(model.requestCount, 0)
         await model.mark("ag:1", .comment, body: "name the period")
         await model.mark("da:1", .ok)
+        XCTAssertFalse(model.canApprove)
+        XCTAssertEqual(model.requestCount, 1, "an ok mark is nothing to send")
+        let refused = await model.approve()
+        guard case .invalid = refused else { return XCTFail("approve with a comment is refused: \(refused)") }
         model.note = "ship it"
-        let sent = await model.approve()
-        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        let sent = await model.send()
+        guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
         let answer = try await storedAnswer()
-        XCTAssertTrue(answer.contains("\"approved\""), answer)
+        XCTAssertTrue(answer.contains("\"changes\""), answer)
         XCTAssertTrue(answer.contains("Mute lasts a day"))
         XCTAssertFalse(answer.contains("Local db"), "an ok mark is not sent")
+    }
+
+    /// N counts every comment mark — Fix, Comment, Reviewer is right,
+    /// Reopen — and the margin comments.
+    func testRequestCountCountsCommentMarksAndMarginComments() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let model = try await makeModel()
+        await model.load()
+        await model.mark("ag:1", .comment)
+        await model.mark("bs:1", .comment, body: "say why")
+        await model.mark("da:1", .notUseful)
+        XCTAssertEqual(model.requestCount, 2)
+        XCTAssertTrue(model.canSend)
+        await model.unmark("ag:1")
+        await model.unmark("bs:1")
+        XCTAssertEqual(model.requestCount, 0)
+        XCTAssertFalse(model.canSend)
+        XCTAssertTrue(model.canApprove)
     }
 
     func testApproveWithoutResultStillAnswers() async throws {
@@ -464,10 +491,11 @@ final class SpecReviewModelTests: XCTestCase {
         await model.pick("bs:2", reviewerRight: true, body: " please add it ")
         XCTAssertEqual(model.marks["bs:2"]?.state, .comment)
         XCTAssertEqual(model.marks["bs:2"]?.about, "No undo")
-        let sent = await model.approve()
-        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        XCTAssertFalse(model.canApprove, "a Reviewer is right goes back through Request changes")
+        let sent = await model.send()
+        guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
         let answer = try OwnerAskAnswer.decode(try await storedAnswer())
-        XCTAssertEqual(answer.verdict, .approved)
+        XCTAssertEqual(answer.verdict, .changes)
         XCTAssertEqual(answer.comments.map(\.body), ["Reviewer is right: No undo — still needed\n\nplease add it"])
         XCTAssertEqual(answer.comments.first?.heading, "Behaviour")
     }
@@ -490,8 +518,8 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertTrue(model.disputes.isEmpty)
         XCTAssertEqual(model.unpickedDisputeCount, 1)
         await model.pick("bs:9", reviewerRight: true)
-        let sent = await model.approve()
-        guard case .delivered = sent else { return XCTFail("approved: \(sent)") }
+        let sent = await model.send()
+        guard case .delivered = sent else { return XCTFail("sent: \(sent)") }
         let answer = try OwnerAskAnswer.decode(try await storedAnswer())
         XCTAssertEqual(answer.comments.map(\.body), ["Reviewer is right: Spool follows the active workspace — a switch moves pending calls"])
     }
@@ -519,7 +547,7 @@ final class SpecReviewModelTests: XCTestCase {
         let saved = await model.reopen("ag:1", body: "still says a week")
         XCTAssertTrue(saved)
         XCTAssertEqual(model.marks["ag:1"]?.state, .comment)
-        _ = await model.approve()
+        _ = await model.send()
         let answer = try OwnerAskAnswer.decode(try await storedAnswer())
         XCTAssertEqual(answer.comments.map(\.body), ["Reopened: Mute lasts a day\n\nstill says a week"])
         XCTAssertEqual(answer.comments.first?.heading, "Behaviour", "no where: the finding's chapter heading")

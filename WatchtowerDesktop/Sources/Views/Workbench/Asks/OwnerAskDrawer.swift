@@ -216,6 +216,7 @@ struct OwnerAskDrawer: View {
                 asks: asks,
                 ask: ask,
                 showsVerdicts: !showsSpecReview,
+                specReview: showsSpecReview ? specReview : nil,
                 statusLine: OwnerAskPresentation.askStatusLine(ask, replacedBy: asks.replacements[ask.projectID]?[ask.id])
             )
         }
@@ -326,7 +327,10 @@ struct OwnerAskDrawer: View {
     /// #90): the answer button the key names, pressed as a click would —
     /// nothing while it is off.
     private func pressAnswerKey(_ shift: Bool) {
-        guard !showsSpecReview else { return }
+        if showsSpecReview {
+            specReview?.pressKey(shift: shift)
+            return
+        }
         asks.pressKey(on: ask, shift: shift)
     }
 

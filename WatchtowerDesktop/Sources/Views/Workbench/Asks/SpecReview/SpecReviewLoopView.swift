@@ -5,13 +5,12 @@ import WatchtowerCore
 /// why the loop ended early when it did, **Disputed** on top — each card
 /// with **Reviewer is right** / **Author is right** and an optional
 /// comment —, **Not answered by the author** (findings the loop ended on:
-/// **Fix** / **Skip**), **Fixed by the author** folded with **Reopen**, then the note
-/// and a one-press **Approve** (it asks once only after an early end with
-/// a dispute nobody answered). The answer is always `approved`; the
-/// **Reviewer is right** and **Reopen** marks go with it as comments.
+/// **Fix** / **Skip**), **Fixed by the author** folded with **Reopen**, then the note.
+/// The verdicts — **Request changes (N)** with the **Fix**, **Reviewer is
+/// right**, **Reopen** and **Comment** marks, or **Approve** when nothing
+/// goes back — sit in the drawer's footer (`SpecReviewVerdictButtons`).
 struct SpecReviewLoopView: View {
     let model: SpecReviewModel
-    @State private var confirmingApprove = false
     @State private var fixesExpanded = false
 
     var body: some View {
@@ -39,15 +38,10 @@ struct SpecReviewLoopView: View {
                     minHeight: CommentTextEditor.formMinHeight,
                     maxHeight: CommentTextEditor.formMaxHeight
                 )
-                actions
             }
             .frame(maxWidth: ReadableColumn.maxLineWidth, alignment: .leading)
             .padding(Spacing.page)
             .frame(maxWidth: .infinity)
-        }
-        .confirmationDialog(model.approveConfirmMessage, isPresented: $confirmingApprove) {
-            Button("Approve") { approve() }
-            Button("Cancel", role: .cancel) {}
         }
         .onAppear {
             // A fix the owner already reopened stays in view.
@@ -105,38 +99,6 @@ struct SpecReviewLoopView: View {
             }
         }
     }
-
-    private var actions: some View {
-        let blocker = model.answerBlocker
-        return VStack(alignment: .trailing, spacing: Spacing.small) {
-            if let blocker {
-                HStack(spacing: Spacing.compact) {
-                    Text(blocker).font(.caption).foregroundStyle(Tone.warning)
-                    if SpecReviewPresentation.showsGoToMeaning(row: model.row, hasQuestions: model.hasQuestions) {
-                        Button("Go to Meaning") { model.phase = .meaning }.buttonStyle(.kitQuiet)
-                    }
-                }
-            }
-            HStack(spacing: Spacing.regular) {
-                if model.isAnswering { ProgressView().controlSize(.small) }
-                Spacer()
-                Button("Approve", action: pressApprove)
-                    .buttonStyle(.kitPrimary)
-                    .help("Approve the document; Reviewer is right and Reopen go to the author as fixes to make")
-            }
-            .disabled(blocker != nil || model.isAnswering)
-        }
-        .controlSize(.small)
-    }
-
-    private func pressApprove() {
-        if model.needsApproveConfirm { confirmingApprove = true } else { approve() }
-    }
-
-    // The answer's failures land in the ask's answer errors (the drawer's footer).
-    private func approve() {
-        Task { _ = await model.approve() }
-    }
 }
 
 /// One dispute: the finding, where the document says it, the reviewer's
@@ -149,10 +111,9 @@ private struct SpecReviewDisputeCard: View {
     @State private var comment = ""
 
     var body: some View {
-        let badge = SpecReviewPresentation.disputeBadge(entry)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                Chip(text: badge.title, color: badge.tint.color)
+                SpecReviewChips(severity: entry.item.severity, kind: SpecReviewPresentation.loopBadge(entry))
                 Text(entry.item.text).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }
             if let anchor = entry.item.anchor, !anchor.quote.isEmpty {
@@ -183,16 +144,14 @@ private struct SpecReviewDisputeCard: View {
             case .comment:
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     HStack(spacing: Spacing.regular) {
-                        Label(unanswered ? "Fix — the author fixes it" : "Reviewer is right — the author fixes it",
-                              systemImage: "text.bubble.fill")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Color.accentColor)
+                        SpecReviewPickedLabel(
+                            title: unanswered ? "Fix — the author fixes it" : "Reviewer is right — the author fixes it",
+                            systemImage: "text.bubble.fill"
+                        )
                         Spacer()
                         Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                     }
-                    if let body = model.marks[key]?.body, !body.isEmpty {
-                        Text(body).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                    }
+                    SpecReviewMarkComment(model: model, key: key)
                 }
             case .ok:
                 HStack(spacing: Spacing.regular) {
@@ -254,6 +213,9 @@ private struct SpecReviewFixRow: View {
         let key = entry.item.key
         VStack(alignment: .leading, spacing: Spacing.small) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                if let severity = SpecReviewPresentation.severityBadge(entry.item.severity) {
+                    Chip(text: severity.title, color: severity.tint.color)
+                }
                 Text(entry.item.text).font(.callout).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: Spacing.regular)
                 Text(SpecReviewPresentation.fixRound(entry)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -268,9 +230,7 @@ private struct SpecReviewFixRow: View {
             } else if model.marks[key]?.state == .comment {
                 VStack(alignment: .leading, spacing: Spacing.tight) {
                     HStack(spacing: Spacing.regular) {
-                        Label("Reopened", systemImage: "arrow.uturn.backward.circle.fill")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Color.accentColor)
+                        SpecReviewPickedLabel(title: "Reopened", systemImage: "arrow.uturn.backward.circle.fill")
                         Spacer()
                         Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                     }

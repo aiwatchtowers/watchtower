@@ -59,7 +59,7 @@ The owner opened a finished author loop (v0.26.1) and hit four problems:
 
 - `SpecReviewQuote`: the quote is upright `.callout` in primary colour, rendered as inline Markdown (code spans monospaced, emphasis applied, no raw backticks or asterisks), with a 2-pt bar in secondary colour on its left instead of quotation marks; the label is `.caption.weight(.semibold)` in primary at reduced opacity rather than `.secondary`. The same applies to the idea card and the "Your comments from the last round" list.
 - Notes on Meaning: `.callout` in secondary, not `.caption`.
-- "Changes since #N" (`OwnerAskHeaderCard`): a `changes` text with no line break, longer than 200 characters and with three or more `; `-separated parts is shown as a bullet list, one part per line. Anything else — a short line, prose with one or two semicolons, text with line breaks or a Markdown list — is shown as today.
+- "Changes since #N" (`OwnerAskHeaderCard`): a `changes` text with no line break, longer than 200 characters and with four or more `; `-separated parts (three semicolons) is shown as a bullet list, one part per line. Anything else — a short line, prose with one or two semicolons, text with line breaks or a Markdown list — is shown as today.
 
 ### 4. Comments everywhere
 
