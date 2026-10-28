@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -193,6 +194,7 @@ func store(cfg config, c Call) error {
 func reportLoss(cfg config, c Call, err error) {
 	line := fmt.Sprintf("llmusage: call not recorded (%s, %s): %s\n", c.Purpose, c.Process, errClass(err))
 	if cfg.logPath != "" {
+		_ = os.MkdirAll(filepath.Dir(cfg.logPath), 0o700) // the open below reports a failure
 		if f, oerr := os.OpenFile(cfg.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); oerr == nil {
 			_, _ = io.WriteString(f, time.Now().Format("2006/01/02 15:04:05 ")+line)
 			_ = f.Close()

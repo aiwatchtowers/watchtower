@@ -31,9 +31,7 @@ func llmWiringHome(t *testing.T) (dataRoot string) {
 		llmusage.SetLogPath("")
 		llmusage.SetSink(nil)
 	})
-	dataRoot = filepath.Join(home, ".local", "share", "watchtower")
-	require.NoError(t, os.MkdirAll(dataRoot, 0o700))
-	return dataRoot
+	return filepath.Join(home, ".local", "share", "watchtower") // not created: a fresh install
 }
 
 // writeWiringConfig writes a config whose active workspace is ws, at the
@@ -53,15 +51,30 @@ func TestSpoolPathWithoutConfig(t *testing.T) {
 
 	calls, err := llmusage.ReadSpool(llmusage.SpoolPath(root))
 	require.NoError(t, err)
-	require.Len(t, calls, 1, "the setup spool under the data root holds the call")
+	require.Len(t, calls, 1, "the setup spool under the missing data root holds the call")
 	assert.Equal(t, "probe", calls[0].Purpose)
+}
+
+func TestSpoolPathConfigWithoutWorkspaceIsTheSetupSpool(t *testing.T) {
+	root := llmWiringHome(t)
+	require.NoError(t, os.MkdirAll(filepath.Dir(flagConfig), 0o700))
+	body := fmt.Sprintf("db:\n  schema_format: %d\n", db.CurrentSchemaFormat)
+	require.NoError(t, os.WriteFile(flagConfig, []byte(body), 0o600))
+	require.NoError(t, ensureSchemaFormat(nil, nil))
+
+	llmusage.Record(context.Background(), llmusage.Call{Purpose: "probe", Model: "m", OK: true})
+
+	calls, err := llmusage.ReadSpool(llmusage.SpoolPath(root))
+	require.NoError(t, err)
+	require.Len(t, calls, 1, "no workspace resolves: the setup spool holds the call")
+	assert.Equal(t, "probe", calls[0].Purpose)
+	assert.NoFileExists(t, filepath.Join(root, "watchtower.log"), "nothing was lost")
 }
 
 func TestSpoolPathWithConfigIsTheWorkspaceSpool(t *testing.T) {
 	root := llmWiringHome(t)
 	writeWiringConfig(t, "ws")
-	flagWorkspace = "other"
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "other"), 0o700))
+	flagWorkspace = "other" // its directory does not exist yet
 	require.NoError(t, ensureSchemaFormat(nil, nil))
 
 	llmusage.Record(context.Background(), llmusage.Call{Purpose: "chat", Model: "m", OK: true})
@@ -112,6 +125,7 @@ func TestFallbackNeverCreatesADatabase(t *testing.T) {
 
 func TestNoConfigLostCallLogsUnderDataRoot(t *testing.T) {
 	root := llmWiringHome(t)
+	require.NoError(t, os.MkdirAll(root, 0o700))
 	require.NoError(t, os.WriteFile(llmusage.SpoolPath(root), nil, 0o400))
 	require.NoError(t, ensureSchemaFormat(nil, nil))
 

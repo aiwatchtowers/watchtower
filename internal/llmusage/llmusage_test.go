@@ -140,9 +140,10 @@ func TestRecordSpoolsWithoutSink(t *testing.T) {
 func TestUnwritableSpoolFallsBack(t *testing.T) {
 	errBuf := reset(t)
 	dir := t.TempDir()
-	// the spool's directory does not exist, so neither the lock nor the
-	// spool can be created
-	SetSpoolPath(filepath.Join(dir, "missing", "llm_calls.spool.jsonl"))
+	// the spool's directory is a regular file, so neither the directory,
+	// the lock nor the spool can be created
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "blocked"), nil, 0o600))
+	SetSpoolPath(filepath.Join(dir, "blocked", "llm_calls.spool.jsonl"))
 	SetProcess("hook:stop", "")
 	var got []Call
 	SetFallback(func(c Call) error { got = append(got, c); return nil })
@@ -167,6 +168,34 @@ func TestUnwritableSpoolFallsBack(t *testing.T) {
 		assert.Contains(t, out, "llmusage: call not recorded (automation.llm, hook:stop): ", name)
 		assert.NotContains(t, out, "/secret/path", name+": error class only")
 	}
+}
+
+func TestSpoolCreatesItsDirectory(t *testing.T) {
+	reset(t)
+	dir := filepath.Join(t.TempDir(), "fresh", "data-root")
+	SetSpoolPath(SpoolPath(dir))
+
+	Record(context.Background(), Call{Model: "m", OK: true})
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	calls, err := ReadSpool(SpoolPath(dir))
+	require.NoError(t, err)
+	assert.Len(t, calls, 1)
+}
+
+func TestLossLineCreatesTheLogDirectory(t *testing.T) {
+	errBuf := reset(t)
+	logPath := filepath.Join(t.TempDir(), "fresh", "watchtower.log")
+	SetLogPath(logPath)
+
+	Record(context.Background(), Call{Purpose: "probe"})
+
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "llmusage: call not recorded (probe, ): ")
+	assert.Contains(t, errBuf.String(), "llmusage: call not recorded (probe, ): ")
 }
 
 func TestRecordWithNothingSetWritesStderrOnly(t *testing.T) {

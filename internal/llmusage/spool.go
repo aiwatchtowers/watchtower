@@ -18,9 +18,13 @@ import (
 func SpoolPath(dir string) string { return filepath.Join(dir, "llm_calls.spool.jsonl") }
 
 // LockSpool takes the exclusive flock on path's sidecar lock file (path +
-// ".lock", created 0600), blocking until it is free. An append and the
+// ".lock", created 0600, its directory 0700 when missing — a fresh install
+// has no data root yet), blocking until it is free. An append and the
 // daemon's rename-for-import both hold it, so no appended line is lost.
 func LockSpool(path string) (unlock func(), err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("creating spool directory: %w", err)
+	}
 	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening spool lock: %w", err)

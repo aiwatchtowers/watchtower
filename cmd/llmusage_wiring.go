@@ -14,32 +14,28 @@ import (
 // hook on a hard budget may be the caller.
 const ledgerFallbackBusy = 2 * time.Second
 
-// wireLLMUsage points this process's LLM call records at their files. cfg
-// nil means no config file: there is no workspace database yet, so calls go
-// to the setup spool under the data root (the first daemon cycle of any
-// workspace claims it), with no fallback and the loss line in the data
-// root's watchtower.log. With a config, calls go to the workspace spool
-// (after --workspace), the fallback is a direct insert into that
-// workspace's database, and the loss line goes to its watchtower.log. A
-// config without a workspace sets no spool: its calls are reported lost,
-// never written to the setup spool.
+// wireLLMUsage points this process's LLM call records at their files. A
+// process that cannot resolve a workspace — cfg nil (no config file) or a
+// config with no active workspace after --workspace — has no workspace
+// database, so its calls go to the setup spool under the data root (the
+// first daemon cycle of any workspace claims it), with no fallback and the
+// loss line in the data root's watchtower.log. Otherwise calls go to the
+// workspace spool, the fallback is a direct insert into that workspace's
+// database, and the loss line goes to its watchtower.log.
 func wireLLMUsage(cfg *config.Config) {
 	root, err := config.DataRoot()
 	if err != nil {
 		return // no home: Record reports each call lost on stderr
 	}
-	if cfg == nil {
-		llmusage.SetSpoolPath(llmusage.SpoolPath(root))
-		llmusage.SetFallback(nil)
-		llmusage.SetLogPath(filepath.Join(root, "watchtower.log"))
-		return
-	}
-	ws := cfg.ActiveWorkspace
-	if flagWorkspace != "" {
-		ws = flagWorkspace
+	ws := ""
+	if cfg != nil {
+		ws = cfg.ActiveWorkspace
+		if flagWorkspace != "" {
+			ws = flagWorkspace
+		}
 	}
 	if ws == "" {
-		llmusage.SetSpoolPath("")
+		llmusage.SetSpoolPath(llmusage.SpoolPath(root))
 		llmusage.SetFallback(nil)
 		llmusage.SetLogPath(filepath.Join(root, "watchtower.log"))
 		return
