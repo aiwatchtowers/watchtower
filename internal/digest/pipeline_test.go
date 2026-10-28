@@ -2338,14 +2338,13 @@ func TestWithSource(t *testing.T) {
 	ctx := context.Background()
 	ctx = WithSource(ctx, "digest.channel")
 
-	val, ok := ctx.Value(sessionSourceKey{}).(string)
+	val, ok := SourceFromContext(ctx)
 	assert.True(t, ok)
 	assert.Equal(t, "digest.channel", val)
 }
 
 func TestWithSource_EmptyContext(t *testing.T) {
-	ctx := context.Background()
-	val, ok := ctx.Value(sessionSourceKey{}).(string)
+	val, ok := SourceFromContext(context.Background())
 	assert.False(t, ok)
 	assert.Equal(t, "", val)
 }
@@ -2895,10 +2894,8 @@ func TestParseBatchDigestResult(t *testing.T) {
 
 // sourceFromContext extracts the source label set by WithSource.
 func sourceFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(sessionSourceKey{}).(string); ok {
-		return v
-	}
-	return ""
+	v, _ := SourceFromContext(ctx)
+	return v
 }
 
 // multiMockGenerator returns different responses based on the source context key.

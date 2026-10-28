@@ -1,4 +1,4 @@
-package agentlog
+package pricing
 
 import (
 	"testing"
@@ -63,4 +63,18 @@ func TestModelTiers_ByOutputPriceHighestFirst(t *testing.T) {
 	for i := 1; i < len(tiers); i++ {
 		assert.GreaterOrEqual(t, prices[tiers[i-1]].output, prices[tiers[i]].output)
 	}
+}
+
+func TestResolveAliases(t *testing.T) {
+	for short, id := range map[string]string{
+		"opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5",
+		"haiku": "claude-haiku-5-5", "fable": "claude-fable-5-1",
+	} {
+		assert.Equal(t, id, Resolve(short), short)
+		_, known := Cost(Resolve(short), "", 1, 1, 0, 0, 0)
+		assert.True(t, known, short)
+	}
+	assert.Equal(t, "gpt-5.6-sol", Resolve("gpt-5.6-sol"))
+	assert.Equal(t, "claude-opus-5-5", Resolve("claude-opus-5-5"))
+	assert.Empty(t, Resolve(""))
 }
