@@ -292,9 +292,14 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             wire("session_chat_request", entity: "7", params: #"{"session_id":7,"subagent_id":"a1b2","tool_use_id":"toolu_01a"}"#)
         )
         try assertParams(
-            AutomationRunParams(workbenchID: 7),
+            AutomationRunParams(workbenchID: 7, confirmed: false),
             entityID: "3",
-            wire("automation_run", entity: "3", params: #"{"workbench_id":7}"#)
+            wire("automation_run", entity: "3", params: #"{"confirmed":false,"workbench_id":7}"#)
+        )
+        try assertParams(
+            AutomationRunParams(workbenchID: 7, confirmed: true),
+            entityID: "3",
+            wire("automation_run", entity: "3", params: #"{"confirmed":true,"workbench_id":7}"#)
         )
         try assertParams(
             SessionInterruptParams(),

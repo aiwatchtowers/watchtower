@@ -126,15 +126,17 @@ final class BoardWriter {
         return try await send(BoardTargetCreateParams.actionKind, nil, params)
     }
 
-    /// Asks the Mac to run the automation now (ask #692); a run already on
-    /// its way sends nothing (false). Its older failed rows go once it is queued.
+    /// Asks the Mac to run the automation now (ask #692). `confirmed`: the
+    /// owner pressed Run in the phone's confirmation (a `confirm: true` recipe
+    /// runs only with it). A second tap while this one is still being saved
+    /// sends nothing (false); once queued, the screen shows the run as sending
+    /// and offers no Run. Its older failed rows go once it is queued.
     @discardableResult
-    func runAutomation(_ automation: WorkbenchAutomation, workbenchID: Int64) async throws -> Bool {
+    func runAutomation(_ automation: WorkbenchAutomation, workbenchID: Int64, confirmed: Bool = false) async throws -> Bool {
         let entity = Self.automationRecordName(automation.id)
         let stale = try failedRows(.automationRun, entity)
-        guard try await send(.automationRun, entity, try AutomationRunParams(workbenchID: workbenchID).wireParams()) else {
-            return false
-        }
+        let params = try AutomationRunParams(workbenchID: workbenchID, confirmed: confirmed).wireParams()
+        guard try await send(.automationRun, entity, params) else { return false }
         for id in stale {
             try remove(id)
         }

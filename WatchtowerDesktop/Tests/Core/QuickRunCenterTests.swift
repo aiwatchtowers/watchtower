@@ -131,6 +131,22 @@ final class QuickRunCenterTests: XCTestCase {
         XCTAssertEqual(center.watched[runID]?.origin, .phone)
     }
 
+    /// A phone run's refusal is the phone's: the Mac's palette error stays as it was.
+    func testAPhoneRefusalLeavesThePalettesErrorAlone() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db, slug: "notes", name: "Notes") }
+        let runner = FakeCLIRunner(stdout: Self.runJSON(1))
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "the daemon is not running")
+        let (center, _) = make(runner)
+        let notes = try row(center, id)
+        center.lastError = "the owner's own error"
+
+        let outcome = await center.runFromPhone(notes)
+
+        guard case .refused = outcome else { return XCTFail("refused expected, got \(outcome)") }
+        XCTAssertEqual(center.lastError, "the owner's own error")
+        XCTAssertFalse(center.hasWatchedRuns)
+    }
+
     func testConfirmRecipeRunsOnlyAfterRun() async throws {
         let id = try await pool.write { db in
             try TestDatabase.insertAutomation(db, slug: "release", name: "Release", triggerKind: "button",

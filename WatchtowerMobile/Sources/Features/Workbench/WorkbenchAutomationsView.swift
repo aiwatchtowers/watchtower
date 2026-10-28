@@ -45,7 +45,7 @@ struct WorkbenchAutomationsView: View {
             titleVisibility: .visible,
             presenting: confirming
         ) { automation in
-            Button(AutomationRunText.run) { send(automation) }
+            Button(AutomationRunText.run) { send(automation, confirmed: true) }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -54,15 +54,15 @@ struct WorkbenchAutomationsView: View {
         if automation.asksFirst {
             confirming = automation
         } else {
-            send(automation)
+            send(automation, confirmed: false)
         }
     }
 
-    private func send(_ automation: WorkbenchAutomation) {
+    private func send(_ automation: WorkbenchAutomation, confirmed: Bool) {
         Task {
             do {
                 sendError = nil
-                try await writer.runAutomation(automation, workbenchID: workbenchID)
+                try await writer.runAutomation(automation, workbenchID: workbenchID, confirmed: confirmed)
             } catch {
                 sendError = BoardWriteText.sendError(error)
             }

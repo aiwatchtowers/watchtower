@@ -109,12 +109,13 @@ struct WorkbenchAutomationsModel: Equatable {
         return items
     }
 
-    /// `automation_runs.status` as the Mac's card names it.
+    /// `automation_runs.status` as the Mac's card names it
+    /// (`AutomationCardPresentation.statusText`).
     static func statusText(_ status: String) -> String {
         switch status {
         case "succeeded": "Succeeded"
         case "failed": "Failed"
-        case "budget_exceeded": "Over budget"
+        case "budget_exceeded": "Budget exceeded"
         case "timed_out": "Timed out"
         case "cancelled": "Cancelled"
         case "expired": "Expired"
@@ -122,6 +123,8 @@ struct WorkbenchAutomationsModel: Equatable {
         }
     }
 
+    /// The Mac's badge colours, except over budget: orange is the phone's
+    /// waiting-for-you tone only (`OrangeToneTests`), so it reads red here.
     private static func statusTone(_ status: String) -> PhoneTone {
         switch status {
         case "succeeded": .green

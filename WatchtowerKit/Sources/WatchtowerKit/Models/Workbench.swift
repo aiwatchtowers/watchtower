@@ -45,7 +45,7 @@ public struct Workbench: SliceMirror, Identifiable {
     /// support, which starts Claude Code.
     public let defaultAgent: TerminalSessionState.Agent?
     /// The workbench's own automations the phone may run (ask #692), at most
-    /// `WorkbenchAutomation.maxPerWorkbench`, in the Mac's quick-run order.
+    /// 50 (the hub's `WorkbenchSlice.maxAutomations`), in the Mac's quick-run order.
     /// Absent when it has none, and from a hub older than phone runs.
     public let automations: [WorkbenchAutomation]?
 
@@ -77,8 +77,6 @@ public struct Workbench: SliceMirror, Identifiable {
 /// One automation of a workbench as the phone lists it (ask #692): the
 /// Mac's quick-run row (`QuickRunRow`), resolved on the Mac.
 public struct WorkbenchAutomation: Codable, Hashable, Sendable, Identifiable {
-    public static let maxPerWorkbench = 50
-
     /// rawValues are wire format.
     public struct Kind: OpenWireValue {
         public let rawValue: String
@@ -114,7 +112,8 @@ public struct WorkbenchAutomation: Codable, Hashable, Sendable, Identifiable {
     public let name: String
     public let nameClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
     public let kind: Kind
-    /// A button recipe with `confirm: true`: the phone asks before it sends the run.
+    /// A button recipe with `confirm: true`: the phone asks before it sends the
+    /// run, and the Mac runs it only with `AutomationRunParams.confirmed`.
     public let asksFirst: Bool
     public let state: State
     /// The newest finished run's `automation_runs.status` (`succeeded`,

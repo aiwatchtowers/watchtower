@@ -13,7 +13,7 @@ struct WorkbenchSlice: SliceSource {
     let kind = SliceKind.workbench
 
     static let maxWorkbenches = 100
-    /// Twin of the Kit's `WorkbenchAutomation.maxPerWorkbench`.
+    /// The phone's list cap (ask #692); the Kit's `Workbench.automations` names it.
     static let maxAutomations = 50
 
     /// The home folder `folder_display` abbreviates to `~`.

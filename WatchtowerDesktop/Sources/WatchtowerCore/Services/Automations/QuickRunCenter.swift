@@ -156,10 +156,15 @@ package final class QuickRunCenter {
     }
 
     /// A run the phone asked for (ask #692): the caller read `row` fresh and
-    /// found it runnable; a `confirm: true` recipe was asked on the phone, so
-    /// no sheet comes up here. Watched like any quick run.
+    /// found it runnable; a `confirm: true` recipe was confirmed on the phone,
+    /// so no sheet comes up here. Watched like any quick run; a refusal is
+    /// returned only, never left in `lastError`, which the palette and sheet show.
     package func runFromPhone(_ row: QuickRunRow) async -> Outcome {
-        await start(row, origin: .phone)
+        do {
+            return try await launch(row, origin: .phone)
+        } catch {
+            return .refused(AutomationsViewModel.message(for: error))
+        }
     }
 
     /// **Cancel** in the sheet: nothing runs.
@@ -176,14 +181,19 @@ package final class QuickRunCenter {
     private func start(_ row: QuickRunRow, origin: Origin) async -> Outcome {
         lastError = nil
         do {
-            let result = try await cli.run(row.id)
-            watched[result.runID] = WatchedRun(automationID: row.id, name: row.name, origin: origin)
-            viewModel.noteRunStarted()
-            rebuildRows()
-            return result.coalesced ? .coalesced(runID: result.runID) : .started(runID: result.runID)
+            return try await launch(row, origin: origin)
         } catch {
             return refuse(AutomationsViewModel.message(for: error))
         }
+    }
+
+    /// `automations run`, then the finish watch.
+    private func launch(_ row: QuickRunRow, origin: Origin) async throws -> Outcome {
+        let result = try await cli.run(row.id)
+        watched[result.runID] = WatchedRun(automationID: row.id, name: row.name, origin: origin)
+        viewModel.noteRunStarted()
+        rebuildRows()
+        return result.coalesced ? .coalesced(runID: result.runID) : .started(runID: result.runID)
     }
 
     private func refuse(_ message: String) -> Outcome {

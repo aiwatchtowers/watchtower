@@ -57,13 +57,13 @@ final class AutomationRunWiringTests: XCTestCase {
         let writer = BoardWriter.sending(through: outbox, store: store)
         let release = try XCTUnwrap(try demoSnapshot(now: now).workbench(DemoSeed.acmeID)?.automations?.first)
 
-        let sent = try await writer.runAutomation(release, workbenchID: DemoSeed.acmeID)
+        let sent = try await writer.runAutomation(release, workbenchID: DemoSeed.acmeID, confirmed: true)
         XCTAssertTrue(sent)
 
         let row = try XCTUnwrap(store.pendingActions().first)
         XCTAssertEqual(row.action.kind, .automationRun)
         XCTAssertEqual(row.action.entityID, "71")
-        XCTAssertEqual(try AutomationRunParams(wireParams: row.action.params), AutomationRunParams(workbenchID: DemoSeed.acmeID))
+        XCTAssertEqual(try AutomationRunParams(wireParams: row.action.params), AutomationRunParams(workbenchID: DemoSeed.acmeID, confirmed: true))
         var snapshot = try demoSnapshot(now: now)
         snapshot.pending = try store.pendingActions()
         guard case .sending = model(snapshot).rows[0].action else { return XCTFail("a pending run shows its progress") }

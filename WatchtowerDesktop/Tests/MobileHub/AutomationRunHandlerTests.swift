@@ -41,24 +41,26 @@ final class AutomationRunHandlerTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func dispatcher(startSessions: Bool = true) -> MobileHubCommandDispatcher {
+    private func dispatcher(startSessions: Bool = true, loaded: Bool = true) -> MobileHubCommandDispatcher {
         let dispatcher = MobileHubCommandDispatcher()
         AutomationRunHandler(
-            dbPool: dbPool, quickRun: { [center] in center },
+            dbPool: dbPool, quickRun: { [center] in loaded ? center : nil },
             deviceGrant: { _ in .init(typingAllowed: startSessions, startSessionsAllowed: startSessions) },
             publishSoon: { [weak self] in self?.published.append($0) }
         ).register(on: dispatcher)
         return dispatcher
     }
 
-    private func action(_ automationID: Int64, workbench: Int64) -> ActionRequestPayload {
+    private func action(_ automationID: Int64, workbench: Int64, confirmed: Bool = false) -> ActionRequestPayload {
         ActionRequestPayload(
             id: UUID().uuidString, kind: .automationRun, entityID: String(automationID),
-            params: ["workbench_id": .integer(workbench)], createdAt: Date()
+            params: ["workbench_id": .integer(workbench), "confirmed": .bool(confirmed)], createdAt: Date()
         )
     }
 
-    private func seed(confirmedHash: String = "h1", enabled: Bool = true, button confirm: Bool = false)
+    private func seed(
+        confirmedHash: String = "h1", enabled: Bool = true, parseError: String = "", button confirm: Bool = false
+    )
         async throws -> (workbench: Int64, automation: Int64) {
         try await dbPool.write { db in
             let folder = "/tmp/acme-\(UUID().uuidString)"
@@ -66,23 +68,39 @@ final class AutomationRunHandlerTests: XCTestCase {
             let automation = try TestDatabase.insertAutomation(
                 db, slug: "release", name: "Release", triggerKind: confirm ? "button" : "manual",
                 triggerSpec: confirm ? #"{"button":{"label":"Release","confirm":true}}"# : #"{"manual":true}"#,
-                confirmedHash: confirmedHash, enabled: enabled, workbenchID: workbench
+                confirmedHash: confirmedHash, parseError: parseError, enabled: enabled, workbenchID: workbench
             )
             return (workbench, automation)
         }
     }
 
     func testARunnableRecipeRunsThroughQuickRun() async throws {
-        let (workbench, automation) = try await seed(button: true)
+        let (workbench, automation) = try await seed()
 
         let outcome = try await dispatcher().dispatch(action(automation, workbench: workbench))
 
         XCTAssertEqual(outcome, .applied(["run_id": .integer(1), "coalesced": .bool(false)]))
-        XCTAssertEqual(runner.invocations, [["automations", "run", String(automation), "--json"]],
-                       "a confirm: true recipe was asked on the phone: no sheet on the Mac")
-        XCTAssertNil(center.pendingConfirm)
+        XCTAssertEqual(runner.invocations, [["automations", "run", String(automation), "--json"]])
         XCTAssertEqual(center.watched[1]?.origin, .phone)
         XCTAssertEqual(published, [[.workbench]])
+    }
+
+    /// AUTO-06 (amended, ask #692): a `confirm: true` recipe runs only after
+    /// Run in the phone's confirmation, carried as `confirmed`.
+    func testAConfirmRecipeRunsOnlyWhenThePhoneConfirmedIt() async throws {
+        let (workbench, automation) = try await seed(button: true)
+        let dispatcher = dispatcher()
+
+        let unconfirmed = try await dispatcher.dispatch(action(automation, workbench: workbench))
+        XCTAssertEqual(unconfirmed?.reason, .conflict)
+        XCTAssertEqual(unconfirmed?.errorMessage, "This automation asks before it runs — confirm it on the phone")
+        XCTAssertEqual(runner.invocations, [], "nothing runs without the phone's confirmation")
+
+        let outcome = try await dispatcher.dispatch(action(automation, workbench: workbench, confirmed: true))
+
+        XCTAssertEqual(outcome, .applied(["run_id": .integer(1), "coalesced": .bool(false)]))
+        XCTAssertEqual(runner.invocations, [["automations", "run", String(automation), "--json"]])
+        XCTAssertNil(center.pendingConfirm, "confirmed on the phone: no sheet on the Mac")
     }
 
     func testAPhoneWithoutTheStartGrantIsRefused() async throws {
@@ -115,14 +133,17 @@ final class AutomationRunHandlerTests: XCTestCase {
     func testARecipeThatCannotRunIsRefusedWithItsReason() async throws {
         let unconfirmed = try await seed(confirmedHash: "")
         let off = try await seed(enabled: false)
+        let broken = try await seed(parseError: "bad frontmatter")
         let dispatcher = dispatcher()
 
         let first = try await dispatcher.dispatch(action(unconfirmed.automation, workbench: unconfirmed.workbench))
         let second = try await dispatcher.dispatch(action(off.automation, workbench: off.workbench))
+        let third = try await dispatcher.dispatch(action(broken.automation, workbench: broken.workbench))
 
         XCTAssertEqual(first?.reason, .conflict)
         XCTAssertEqual(first?.errorMessage, "Confirm this automation on the Mac first")
         XCTAssertEqual(second?.errorMessage, "This automation is turned off on the Mac")
+        XCTAssertEqual(third?.errorMessage, "This automation can't be read on the Mac")
         XCTAssertEqual(runner.invocations, [], "nothing runs")
     }
 
@@ -146,7 +167,24 @@ final class AutomationRunHandlerTests: XCTestCase {
 
         XCTAssertEqual(outcome?.status, .failed)
         XCTAssertEqual(outcome?.reason, .writeFailed)
+        XCTAssertEqual(outcome?.errorMessage?.contains("the daemon is not running"), true, "the CLI's own words reach the phone")
+        XCTAssertNil(center.lastError, "the Mac's palette never shows a phone refusal")
         XCTAssertEqual(published, [], "nothing changed to publish")
+    }
+
+    func testMissingParamsAndAnUnloadedHubAreRefused() async throws {
+        let (workbench, automation) = try await seed()
+        let noWorkbench = ActionRequestPayload(
+            id: UUID().uuidString, kind: .automationRun, entityID: String(automation), params: [:], createdAt: Date()
+        )
+
+        let invalid = try await dispatcher().dispatch(noWorkbench)
+        let loading = try await dispatcher(loaded: false).dispatch(action(automation, workbench: workbench))
+
+        XCTAssertEqual(invalid?.reason, .invalidParams)
+        XCTAssertEqual(loading?.reason, .writeFailed)
+        XCTAssertEqual(loading?.errorMessage, "Automations are loading on the Mac")
+        XCTAssertEqual(runner.invocations, [])
     }
 
     func testARunIsNeverReplayed() {

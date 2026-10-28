@@ -4,13 +4,14 @@ import WatchtowerCore
 import WatchtowerSync
 
 /// `automation_run` from the phone (ask #692; entity: the automation id,
-/// params `{workbench_id}`): runs a workbench automation now, as the Mac's
+/// params `{workbench_id, confirmed}`): runs a workbench automation now, as the Mac's
 /// quick run does (`QuickRunCenter`, `automations run <id> --json`), under
 /// the start-sessions grant. The row is read fresh here, not from the
 /// palette's cached list: a recipe that is gone, not on this workbench, or
 /// not runnable (unconfirmed, off, unreadable) is refused with the reason;
 /// one already running is `applied` with that run. A `confirm: true`
-/// recipe was asked on the phone, so it runs with no sheet on the Mac.
+/// recipe runs only with `confirmed` (the owner pressed Run in the phone's
+/// confirmation, AUTO-06), and then with no sheet on the Mac.
 /// `applied` carries `{run_id, coalesced}`; the workbench record is
 /// published at once, so the phone sees the run.
 @MainActor
@@ -62,6 +63,7 @@ final class AutomationRunHandler {
               case let .integer(workbenchID)? = action.params["workbench_id"] else {
             return .failed(.invalidParams, message: "automation_run needs an automation id and a workbench_id")
         }
+        let confirmed = action.params["confirmed"] == .bool(true)
         guard deviceGrant(action.deviceID).startSessionsAllowed else {
             return .failed(.deviceNotAllowed, message: Self.notAllowedMessage)
         }
@@ -76,7 +78,10 @@ final class AutomationRunHandler {
             return .failed(.notOnBoard, message: "That automation is not on this workbench")
         }
         switch row.state {
-        case .runnable: break
+        case .runnable:
+            guard !row.asksFirst || confirmed else {
+                return .failed(.conflict, message: "This automation asks before it runs — confirm it on the phone")
+            }
         case let .running(runID): return Self.applied(runID: runID, coalesced: true)
         case .needsConfirmation: return .failed(.conflict, message: "Confirm this automation on the Mac first")
         case .disabled: return .failed(.conflict, message: "This automation is turned off on the Mac")
