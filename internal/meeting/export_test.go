@@ -65,6 +65,24 @@ func TestMeetPriv05_RenderTranscriptExportSRTNeedsSegments(t *testing.T) {
 	}
 }
 
+// TestMeetPriv05_RenderTranscriptExportNothingLeft pins that a recording with
+// no utterance left renders nothing in any format (srt keeps its own
+// message), so no empty file passes for the transcript.
+func TestMeetPriv05_RenderTranscriptExportNothingLeft(t *testing.T) {
+	for name, in := range map[string]TranscriptExport{
+		"all deleted":       {Title: "t", Text: "x", Segments: []TranscriptUtterance{{Idx: 0, StartSec: 1, EndSec: 2, Speaker: "A", Text: "x", Deleted: true}}},
+		"legacy blank text": {Title: "t", Text: " \n"},
+	} {
+		for _, format := range []string{"txt", "md", "json"} {
+			out, err := RenderTranscriptExport(in, format)
+			assert.ErrorIs(t, err, ErrNothingToExport, name+" "+format)
+			assert.Nil(t, out, name+" "+format)
+		}
+	}
+	_, err := RenderTranscriptExport(TranscriptExport{Text: ""}, "pdf")
+	assert.ErrorContains(t, err, `unknown export format "pdf"`)
+}
+
 func TestMeetPriv05_RenderTranscriptExportJSON(t *testing.T) {
 	in := exportFixture()
 	in.Private = true

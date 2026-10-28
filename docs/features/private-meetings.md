@@ -35,7 +35,7 @@ What stays out of reach of this contract: a workbench agent with a shell can sti
   - `md` — `# <title>`, a date / duration / event line (the event title is left out, with a stderr warning, when its lookup fails), then `**Speaker** · hh:mm:ss` + text per utterance;
   - `srt` — numbered SubRip cues from the segments' start/end (`Speaker: text`); a row without segments exits 1 (`transcript <id>: no timed segments`);
   - `json` — `{id, title, event_id, created_at, duration_sec, private, segments:[{start_sec,end_sec,speaker,text}], transcript_text}`.
-  Deleted utterances are never exported. `show` gains the `private` key.
+  Deleted utterances are never exported; a recording with none left (or a legacy row with blank text) exits 1 in txt, md and json too (`transcript <id>: nothing to export`) and writes no file. `show` gains the `private` key.
 
 ## Desktop
 

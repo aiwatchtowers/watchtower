@@ -12,6 +12,11 @@ import (
 // a recording without segments: subtitles need each utterance's times.
 var ErrNoTimedSegments = errors.New("no timed segments")
 
+// ErrNothingToExport is RenderTranscriptExport's answer when no utterance is
+// left (every one deleted, or a legacy row with blank text): an empty file is
+// never written as if it were the transcript.
+var ErrNothingToExport = errors.New("nothing to export")
+
 // TranscriptExport is what `transcript export` renders: one recording with
 // its utterances (nil for a legacy row without segments, whose flat Text is
 // then exported instead). Deleted utterances are skipped by the renderer.
@@ -35,6 +40,16 @@ func RenderTranscriptExport(e TranscriptExport, format string) ([]byte, error) {
 	for _, u := range e.Segments {
 		if !u.Deleted {
 			kept = append(kept, u)
+		}
+	}
+	empty := len(kept) == 0
+	if e.Segments == nil {
+		empty = strings.TrimSpace(e.Text) == ""
+	}
+	switch format {
+	case "txt", "md", "json":
+		if empty {
+			return nil, ErrNothingToExport
 		}
 	}
 	switch format {

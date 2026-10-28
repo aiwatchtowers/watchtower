@@ -122,13 +122,15 @@
 
 **Status:** Enforced (Go).
 
-**Observable:** `transcript export <id> --format txt|md|srt|json [--output <file>]` works for private and public recordings alike, renders through `meeting.RenderTranscriptExport` (deleted utterances never exported; srt without segments exits 1 `transcript <id>: no timed segments`; a failed calendar-event lookup only leaves the md `Event:` line out, with a stderr warning), writes to stdout or to a file created 0600, and calls no model.
+**Observable:** `transcript export <id> --format txt|md|srt|json [--output <file>]` works for private and public recordings alike, renders through `meeting.RenderTranscriptExport` (deleted utterances never exported; srt without segments exits 1 `transcript <id>: no timed segments`; any other format with no utterance left exits 1 `transcript <id>: nothing to export` and writes no file; a failed calendar-event lookup only leaves the md `Event:` line out, with a stderr warning), writes to stdout or to a file created 0600, and calls no model.
 
 **Test guards:**
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv05_ExportPrivateToFile0600`
 - `cmd/meeting_transcript_private_test.go::TestTranscriptExport_MarkdownEventTitle`
 - `internal/meeting/export_test.go::TestMeetPriv05_RenderTranscriptExport`
 - `internal/meeting/export_test.go::TestMeetPriv05_RenderTranscriptExportSRTNeedsSegments`
+- `internal/meeting/export_test.go::TestMeetPriv05_RenderTranscriptExportNothingLeft`
+- `cmd/meeting_transcript_private_test.go::TestMeetPriv05_ExportWithNothingLeftFails`
 - `internal/meeting/export_test.go::TestMeetPriv05_RenderTranscriptExportJSON`
 
 **Locked since:** 2026-10-28

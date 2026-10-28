@@ -348,6 +348,38 @@ func TestTranscriptExport_SRTWithoutSegmentsFails(t *testing.T) {
 	assert.EqualError(t, err, "transcript 999999 not found")
 }
 
+// TestMeetPriv05_ExportWithNothingLeftFails pins that exporting a recording
+// whose utterances are all deleted exits 1 with "nothing to export" and
+// writes neither stdout nor a file.
+func TestMeetPriv05_ExportWithNothingLeftFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title: "Gone", TranscriptText: "[A] x",
+		SegmentsJSON: sql.NullString{Valid: true, String: `[{"idx":0,"start_sec":0,"end_sec":1,"speaker":"A","text":"x","deleted":true}]`},
+	})
+	require.NoError(t, err)
+
+	for _, format := range []string{"txt", "md", "json"} {
+		out := filepath.Join(t.TempDir(), "gone."+format)
+		for _, output := range []string{"", out} {
+			transcriptExportFlagFormat, transcriptExportFlagOutput = format, output
+			var stdout bytes.Buffer
+			transcriptExportCmd.SetOut(&stdout)
+			err = transcriptExportCmd.RunE(transcriptExportCmd, []string{fmt.Sprint(id)})
+			assert.EqualError(t, err, fmt.Sprintf("transcript %d: nothing to export", id), format)
+			assert.Empty(t, stdout.String(), format)
+		}
+		_, statErr := os.Stat(out)
+		assert.True(t, os.IsNotExist(statErr), "no file is written for %s", format)
+	}
+}
+
 // TestMeetPriv02_EventRecapOfPrivateRecordingNotRegenerated pins that
 // `meeting-prep recap` refuses an event whose recap a private recording owns:
 // no generator call and the row is left as it was. A public recording's event
