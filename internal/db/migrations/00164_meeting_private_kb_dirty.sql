@@ -2,9 +2,10 @@
 -- Private meeting recordings (docs/features/private-meetings.md, MEETPRIV-02):
 -- flipping meeting_transcripts.private moves no knowledge-index cursor the
 -- recap source can see, and the Desktop writes the flag directly. Mark the
--- recording's document and every recap it owns in kb_dirty, so the indexer
--- re-renders them on its next pass — a private one renders as nil and leaves
--- the index, one made public again comes back.
+-- recording's document, every recap it owns and every artifact kept from its
+-- meeting chat (context_type 'meeting', context_id = the recording id) in
+-- kb_dirty, so the indexer re-renders them on its next pass — a private one
+-- renders as nil and leaves the index, one made public again comes back.
 --
 -- Deleting a private recording deletes the recaps it owns: the foreign key
 -- would otherwise null their transcript_id (ON DELETE SET NULL), and a recap
@@ -17,6 +18,11 @@ BEGIN
     INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
     INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key)
+        SELECT 'chat_artifact', 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+        FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+        WHERE c.context_type = 'meeting' AND c.context_id = CAST(NEW.id AS TEXT)
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END;
 -- +goose StatementEnd

@@ -28,7 +28,10 @@ type recapExecer interface {
 
 // UpsertMeetingRecap inserts a new recap or updates the existing row for the
 // given event_id. transcriptID (0 = none) links the recap to its transcript so
-// it survives event deletion. updated_at is bumped to "now" on every call.
+// it survives event deletion; 0 keeps an existing row's link, so a rewrite
+// never strips a recording's ownership (MEETPRIV-02 hides and deletes a
+// private recording's recap by it). updated_at is bumped to "now" on every
+// call.
 func (db *DB) UpsertMeetingRecap(eventID, sourceText, recapJSON string, transcriptID int64) error {
 	return upsertMeetingRecap(db, eventID, sourceText, recapJSON, transcriptID)
 }
@@ -44,7 +47,7 @@ func upsertMeetingRecap(q recapExecer, eventID, sourceText, recapJSON string, tr
 		ON CONFLICT(event_id) DO UPDATE SET
 			source_text   = excluded.source_text,
 			recap_json    = excluded.recap_json,
-			transcript_id = excluded.transcript_id,
+			transcript_id = COALESCE(excluded.transcript_id, meeting_recaps.transcript_id),
 			updated_at    = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 	`, eventID, sourceText, recapJSON, tid)
 	if err != nil {
@@ -123,6 +126,35 @@ func (db *DB) GetMeetingRecap(eventID string) (*MeetingRecap, error) {
 // (MEETPRIV-02). A recap with no owning recording (pasted text) is kept.
 // Exported so the knowledge index (internal/kb) filters with the same text.
 const RecapNotPrivate = `NOT EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = r.transcript_id AND pt.private = 1)`
+
+// ChatNotPrivateMeeting is the SQL predicate, over the chat_conversations
+// alias c, that keeps a conversation unless it is the meeting chat of a
+// private recording (context_type 'meeting', context_id = the recording id;
+// MEETPRIV-02). Exported so the knowledge index filters with the same text.
+const ChatNotPrivateMeeting = `NOT (COALESCE(c.context_type, '') = 'meeting' AND EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = CAST(c.context_id AS INTEGER) AND pt.private = 1))`
+
+// MeetingChatArtifactKeys lists the knowledge-index keys
+// ("chat_artifact:<conversation>:<key>") of the artifacts kept from the
+// meeting chat of recording transcriptID — the keys migration 00164's flip
+// trigger marks — so kb.DropPrivateRecording can delete them at once.
+func (db *DB) MeetingChatArtifactKeys(transcriptID int64) ([]string, error) {
+	rows, err := db.Query(`SELECT 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+		FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+		WHERE c.context_type = 'meeting' AND c.context_id = CAST(? AS TEXT)`, transcriptID)
+	if err != nil {
+		return nil, fmt.Errorf("listing meeting chat artifacts of recording %d: %w", transcriptID, err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scanning meeting chat artifact key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
 
 // GetMeetingRecapForAI is GetMeetingRecap for a reader whose output reaches a
 // model: a recap owned by a private recording reads as none (MEETPRIV-02).

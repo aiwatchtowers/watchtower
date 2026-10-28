@@ -77,9 +77,13 @@ func TestMeetPriv02_TaskContextMeetingsSkipPrivate(t *testing.T) {
 	_, err := d.InsertMeetingTranscript(db.MeetingTranscript{Title: "Public PROJ-7 review", LangStats: "{}", TranscriptText: "we reviewed PROJ-7"})
 	require.NoError(t, err)
 
+	collect := func(m []taskMeeting, notes []string) []taskMeeting {
+		require.Empty(t, notes, "the meeting search must not fail")
+		return m
+	}
 	for name, meetings := range map[string][]taskMeeting{
-		"jira":   func() []taskMeeting { m, _ := collectTaskMeetings(d, "PROJ-7", nil); return m }(),
-		"linear": func() []taskMeeting { m, _ := collectLinearTaskMeetings(d, []string{"PROJ-7"}, nil); return m }(),
+		"jira":   collect(collectTaskMeetings(d, "PROJ-7", nil)),
+		"linear": collect(collectLinearTaskMeetings(d, []string{"PROJ-7"}, nil)),
 	} {
 		require.Len(t, meetings, 1, name)
 		assert.Equal(t, "Public PROJ-7 review", meetings[0].Title, name)
