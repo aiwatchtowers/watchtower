@@ -2471,3 +2471,12 @@ Entry format:
 - weak-dimension: 7. The pure decision and the injected-fetch paths are tested. The production `fetchNotes` mapping (404 → "", gated same-version → notes or "", error → nil) and the `isBusy` refusal are not.
 - rule-gap (candidate, Lifecycle & state): *a once-per-version surface added beside an existing one copies its retry cadence (per check, not per launch) or says in a comment why per-launch is enough.*
 - outcome: TBD
+
+## 2026-10-28 — fix/update-indicator-opens-window (owner request: the sidebar's Update Available row and rail icon, and the tray's update item, open the Software Update window through `UpdateService.presentUpdateWindow` instead of Settings → System; guide line 30; 3 files +6/−11; panel: prosecutor (4) + codex (0) + pr-test-analyzer + silent-failure-hunter + code-reviewer; judge verified against f0399ba74 by reading and grep, no runs) — verdict: changes-needed
+
+- contested (F1, raised by 2 lanes, held major): the diff updated the guide's Updates paragraph but left "Install an update" step 1 saying the menu item opens Settings → System → Update, so the page now contradicts itself. **When a change reroutes where a control leads, grep the guide page for every sentence that names the old destination (step lists and Learn card `text:` included), not only the paragraph next to the feature.** [2/8]
+- false-positive (dismissed): F4, the silent `_ = presentUpdateWindow?()` when the presenter is nil. Both scenes wire it in `onAppear` before any sidebar or tray click can happen, and `SystemSettings` already uses the same pattern. The silent-failure lane's helper is optional hardening.
+- miss: codex reported none and missed the stale step list. Code-reviewer and prosecutor agreed on both doc findings, so the specialists added signal on a small diff.
+- weak-dimension: 8. The diff edited one guide line and did not read the rest of the page.
+- rule-gap: none new. The CLAUDE.md "user-facing change updates its page" rule covered it; scope of the notification's click target (still Settings) is an owner call, not a rule.
+- outcome: TBD
