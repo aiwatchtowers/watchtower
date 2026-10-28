@@ -2,18 +2,21 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
 	"watchtower/internal/fsutil"
+	"watchtower/internal/kb"
 	"watchtower/internal/meeting"
 
 	"github.com/spf13/cobra"
 )
 
-// runTranscriptPrivate sets a recording's private flag (MEETPRIV-04): the
-// knowledge index drops or restores it on its next pass; nothing is
-// generated or unmined.
+// runTranscriptPrivate sets a recording's private flag (MEETPRIV-04). Turning
+// it on also drops the recording's knowledge documents now, so search stops
+// serving them at once; the indexer's next pass restores them once it is
+// off. Nothing is generated or unmined.
 func runTranscriptPrivate(cmd *cobra.Command, args []string) error {
 	id, err := strconv.ParseInt(args[0], 10, 64)
 	if err != nil {
@@ -40,6 +43,11 @@ func runTranscriptPrivate(cmd *cobra.Command, args []string) error {
 	}
 	if !found {
 		return fmt.Errorf("transcript %d not found", id)
+	}
+	if private {
+		if _, err := kb.DropPrivateRecording(cmd.Context(), database, id); err != nil {
+			return fmt.Errorf("recording %d is private, but removing it from the knowledge index failed (the next index pass retries): %w", id, err)
+		}
 	}
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"id": id, "private": private})
 }
@@ -71,11 +79,12 @@ func runTranscriptExport(cmd *cobra.Command, args []string) error {
 		DurationSec: tr.DurationSec, Private: tr.Private, Text: tr.TranscriptText,
 	}
 	if tr.EventID.Valid {
+		// The event title only labels the md header: a failed lookup leaves
+		// it out instead of failing the export.
 		ev, err := database.GetCalendarEventByID(tr.EventID.String)
 		if err != nil {
-			return fmt.Errorf("looking up calendar event %s: %w", tr.EventID.String, err)
-		}
-		if ev != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: looking up calendar event %s (%v); exporting without its title\n", tr.EventID.String, err)
+		} else if ev != nil {
 			e.EventTitle = ev.Title
 		}
 	}
@@ -88,6 +97,9 @@ func runTranscriptExport(cmd *cobra.Command, args []string) error {
 		}
 	}
 	out, err := meeting.RenderTranscriptExport(e, transcriptExportFlagFormat)
+	if errors.Is(err, meeting.ErrNoTimedSegments) {
+		return fmt.Errorf("transcript %d: %w", id, err)
+	}
 	if err != nil {
 		return err
 	}

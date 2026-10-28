@@ -59,8 +59,9 @@ const ChatImageLabel = "Image (AI description of an attached image)"
 
 // ListChatTurnsForIdeas returns up to limit owner and assistant messages with
 // id > afterID, on each conversation's active branch, outside Discuss-an-idea
-// chats (context_type 'idea') and workbench code questions ('code_question',
-// which never leave their Questions tab — spec 2026-10-02 §9.4), in id order. Failed replies (status 'error')
+// chats (context_type 'idea'), workbench code questions ('code_question',
+// which never leave their Questions tab — spec 2026-10-02 §9.4) and the
+// meeting chat of a private recording (MEETPRIV-02), in id order. Failed replies (status 'error')
 // are left out; a stopped reply ('partial') is real text and stays. The
 // listing stops below the first message (of any kind) created after cutoffISO
 // (RFC 3339): a caller that advances a floor to the last returned id can then
@@ -87,11 +88,11 @@ func (db *DB) ListChatTurnsForIdeas(afterID int64, cutoffISO string, limit int) 
 		        JOIN chat_attachments a ON a.message_id = m.id
 		        JOIN media_items mi ON mi.chat_attachment_id = a.id
 		        WHERE m.id > ? AND m.role IN ('user', 'assistant') AND m.status != 'error'
-		          AND COALESCE(c.context_type, '') NOT IN ('idea', 'code_question') AND `+onActiveBranch+`
+		          AND COALESCE(c.context_type, '') NOT IN ('idea', 'code_question') AND `+ChatNotPrivateMeeting+` AND `+onActiveBranch+`
 		          AND mi.status = 'pending'
 		          AND mi.content_at >= (SELECT start_at FROM media_state WHERE id = 1)
 		          AND mi.content_at > ?), 9223372036854775807)
-		  AND COALESCE(c.context_type, '') NOT IN ('idea', 'code_question') AND `+onActiveBranch+`
+		  AND COALESCE(c.context_type, '') NOT IN ('idea', 'code_question') AND `+ChatNotPrivateMeeting+` AND `+onActiveBranch+`
 		ORDER BY m.id
 		LIMIT ?`, afterID, afterID, at, afterID, mediaTime(time.Now().Add(-maxChatImageHold)), limit)
 	if err != nil {

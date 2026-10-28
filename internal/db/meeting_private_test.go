@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -112,6 +113,38 @@ func TestMeetPriv02_IdeasReaderSkipsPrivate(t *testing.T) {
 	assert.Empty(t, got[secondID], "the private recording's recap must not ride along with another recording")
 }
 
+// TestMeetPriv02_IdeasChatTurnsSkipPrivateMeetingChat pins that the ideas
+// miner never reads the meeting chat of a private recording, while a public
+// recording's meeting chat and a plain chat stay mined.
+func TestMeetPriv02_IdeasChatTurnsSkipPrivateMeetingChat(t *testing.T) {
+	d := openTestDB(t)
+	f := seedMeetPriv(t, d)
+	cutoff := time.Now().UTC().Add(time.Hour)
+
+	privConv := insertChatConversation(t, d, "meeting", fmt.Sprint(f.privateID))
+	pubConv := insertChatConversation(t, d, "meeting", fmt.Sprint(f.publicID))
+	plain := insertChatConversation(t, d, "", "")
+	insertChatMessage(t, d, privConv, "user", "secret plan", 1)
+	pub := insertChatMessage(t, d, pubConv, "user", "public plan", 2)
+	other := insertChatMessage(t, d, plain, "assistant", "plain chat", 3)
+
+	got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 100)
+	require.NoError(t, err)
+	var ids []int64
+	for _, turn := range got {
+		ids = append(ids, turn.ID)
+	}
+	assert.Equal(t, []int64{pub, other}, ids)
+
+	// Turning it private later stops the mining of what is left too.
+	_, err = d.SetMeetingTranscriptPrivate(f.publicID, true)
+	require.NoError(t, err)
+	got, err = d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 100)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, other, got[0].ID)
+}
+
 func TestMeetPriv02_CatchupSkipsPrivate(t *testing.T) {
 	d := openTestDB(t)
 	f := seedMeetPriv(t, d)
@@ -179,6 +212,31 @@ func TestMeetPriv02_GetMeetingRecapForAISkipsPrivate(t *testing.T) {
 	own, err := d.GetMeetingRecap("E-priv")
 	require.NoError(t, err)
 	assert.NotNil(t, own)
+}
+
+// TestMeetPriv02_UpsertKeepsRecapOwnership pins that a rewrite with no
+// recording (the event-notes recap) never NULLs an existing owner: the link is
+// what hides a private recording's recap and deletes it with the recording.
+func TestMeetPriv02_UpsertKeepsRecapOwnership(t *testing.T) {
+	d := openTestDB(t)
+	f := seedMeetPriv(t, d)
+
+	require.NoError(t, d.UpsertMeetingRecap("E-priv", "pasted", `{"summary":"new"}`, 0))
+	got, err := d.GetMeetingRecap("E-priv")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, f.privateRecapID, got.ID)
+	assert.True(t, got.TranscriptID.Valid)
+	assert.Equal(t, f.privateID, got.TranscriptID.Int64)
+	ai, err := d.GetMeetingRecapForAI("E-priv")
+	require.NoError(t, err)
+	assert.Nil(t, ai, "the rewritten recap is still the private recording's")
+
+	// A writer that names a recording still sets it.
+	require.NoError(t, d.UpsertMeetingRecap("E-paste", "src", `{"summary":"r"}`, f.publicID))
+	got, err = d.GetMeetingRecap("E-paste")
+	require.NoError(t, err)
+	assert.Equal(t, f.publicID, got.TranscriptID.Int64)
 }
 
 func TestMeetPriv02_DeletingPrivateRecordingDeletesItsRecap(t *testing.T) {

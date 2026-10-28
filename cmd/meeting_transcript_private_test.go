@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/kb"
+	"watchtower/internal/meeting"
 )
 
 // Guards for MEETPRIV-01/04/05 (docs/inventory/meetings.md) at the CLI.
@@ -170,6 +172,18 @@ func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
 	}
 	assert.Equal(t, false, show()["private"])
 
+	ctx := context.Background()
+	kbSources := []string{"transcript", "recap"}
+	_, err = kb.Run(ctx, database, kb.Options{Sources: kbSources})
+	require.NoError(t, err)
+	indexed := func() bool {
+		var n int
+		require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE id = ?`, fmt.Sprintf("transcript:%d", id)).Scan(&n))
+		return n == 1
+	}
+	require.True(t, indexed())
+
+	transcriptPrivateCmd.SetContext(ctx)
 	for _, tc := range []struct {
 		arg  string
 		want bool
@@ -179,7 +193,23 @@ func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
 		require.NoError(t, transcriptPrivateCmd.RunE(transcriptPrivateCmd, []string{fmt.Sprint(id), tc.arg}))
 		assert.JSONEq(t, fmt.Sprintf(`{"id":%d,"private":%t}`, id, tc.want), buf.String())
 		assert.Equal(t, tc.want, show()["private"])
+		if tc.want {
+			// Out of the knowledge index at once, with no indexer pass.
+			assert.False(t, indexed(), "private on must drop the transcript document now")
+			// Still in the owner's own list.
+			var listBuf bytes.Buffer
+			transcriptListCmd.SetOut(&listBuf)
+			require.NoError(t, transcriptListCmd.RunE(transcriptListCmd, nil))
+			var listed []map[string]any
+			require.NoError(t, json.Unmarshal(listBuf.Bytes(), &listed))
+			require.Len(t, listed, 1)
+			assert.Equal(t, float64(id), listed[0]["id"])
+		}
 	}
+	// Off: the indexer's next pass brings it back.
+	_, err = kb.Run(ctx, database, kb.Options{Sources: kbSources})
+	require.NoError(t, err)
+	assert.True(t, indexed())
 
 	err = transcriptPrivateCmd.RunE(transcriptPrivateCmd, []string{fmt.Sprint(id), "yes"})
 	assert.ErrorContains(t, err, `invalid value "yes"`)
@@ -197,6 +227,9 @@ func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
 	// generator instead of being refused.
 	var out bytes.Buffer
 	transcriptChaptersCmd.SetOut(&out)
+	// The error is ignored on purpose: the mock's recap JSON is no chapters
+	// answer, so the run may fail after the call — only reaching the
+	// generator is asserted here.
 	_ = transcriptChaptersCmd.RunE(transcriptChaptersCmd, []string{fmt.Sprint(id)})
 	assert.Equal(t, 1, gen.calls, "chapters must reach the generator once private is off")
 }
@@ -255,7 +288,8 @@ func TestTranscriptExport_SRTWithoutSegmentsFails(t *testing.T) {
 
 	transcriptExportFlagFormat = "srt"
 	err = transcriptExportCmd.RunE(transcriptExportCmd, []string{fmt.Sprint(id)})
-	assert.EqualError(t, err, "no timed segments")
+	assert.EqualError(t, err, fmt.Sprintf("transcript %d: no timed segments", id))
+	assert.ErrorIs(t, err, meeting.ErrNoTimedSegments)
 
 	transcriptExportFlagFormat = "txt"
 	var stdout bytes.Buffer
@@ -265,4 +299,105 @@ func TestTranscriptExport_SRTWithoutSegmentsFails(t *testing.T) {
 
 	err = transcriptExportCmd.RunE(transcriptExportCmd, []string{"999999"})
 	assert.EqualError(t, err, "transcript 999999 not found")
+}
+
+// TestMeetPriv02_EventRecapOfPrivateRecordingNotRegenerated pins that
+// `meeting-prep recap` refuses an event whose recap a private recording owns:
+// no generator call and the row is left as it was. A public recording's event
+// recap still regenerates and keeps its owner.
+func TestMeetPriv02_EventRecapOfPrivateRecordingNotRegenerated(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	gen := &transcriptMockGen{response: transcriptMockRecapJSON}
+	stubTranscriptGenerator(t, gen)
+	t.Cleanup(func() { meetingRecapFlagEventID, meetingRecapFlagText = "", "" })
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	_, err = database.Exec(`INSERT INTO calendar_calendars (id, name) VALUES ('cal1', 'Primary')`)
+	require.NoError(t, err)
+	seed := func(eventID string, private bool) int64 {
+		_, err := database.Exec(`INSERT INTO calendar_events (id, calendar_id, title, start_time, end_time)
+			VALUES (?, 'cal1', 'Sync', '2026-01-01T10:00:00Z', '2026-01-01T11:00:00Z')`, eventID)
+		require.NoError(t, err)
+		id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+			EventID: sql.NullString{String: eventID, Valid: true}, Title: "Sync", TranscriptText: "the transcript",
+		})
+		require.NoError(t, err)
+		require.NoError(t, database.UpsertMeetingRecap(eventID, "the transcript", `{"summary":"old"}`, id))
+		_, err = database.SetMeetingTranscriptPrivate(id, private)
+		require.NoError(t, err)
+		return id
+	}
+	privID := seed("E-priv", true)
+	pubID := seed("E-pub", false)
+
+	before, err := database.GetMeetingRecap("E-priv")
+	require.NoError(t, err)
+	meetingRecapFlagEventID, meetingRecapFlagText = "E-priv", "pasted notes"
+	var out bytes.Buffer
+	meetingRecapCmd.SetOut(&out)
+	meetingRecapCmd.SetContext(context.Background())
+	err = runMeetingRecap(meetingRecapCmd, nil)
+	assert.EqualError(t, err, fmt.Sprintf("event E-priv's recap belongs to private recording %d", privID))
+	assert.Empty(t, out.String())
+	assert.Zero(t, gen.calls, "a refused recap must never call the generator")
+	after, err := database.GetMeetingRecap("E-priv")
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "a refused recap writes nothing")
+
+	meetingRecapFlagEventID = "E-pub"
+	out.Reset()
+	require.NoError(t, runMeetingRecap(meetingRecapCmd, nil))
+	assert.Equal(t, 1, gen.calls)
+	got, err := database.GetMeetingRecap("E-pub")
+	require.NoError(t, err)
+	assert.Equal(t, "pasted notes", got.SourceText)
+	assert.Equal(t, pubID, got.TranscriptID.Int64, "a rewrite keeps the recording's ownership")
+}
+
+// TestTranscriptExport_MarkdownEventTitle pins the md header's Event line from
+// the linked calendar event, and that a failed event lookup only drops that
+// line (a stderr warning) instead of failing the export.
+func TestTranscriptExport_MarkdownEventTitle(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	_, err = database.Exec(`INSERT INTO calendar_calendars (id, name) VALUES ('cal1', 'Primary')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO calendar_events (id, calendar_id, title, start_time, end_time)
+		VALUES ('E1', 'cal1', 'Quarterly planning', '2026-01-01T10:00:00Z', '2026-01-01T11:00:00Z')`)
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		EventID: sql.NullString{String: "E1", Valid: true}, Title: "Planning", DurationSec: 5,
+		TranscriptText: "[Я] привет",
+		SegmentsJSON:   sql.NullString{Valid: true, String: `[{"idx":0,"start_sec":0,"end_sec":2.5,"speaker":"Я","text":"привет","deleted":false}]`},
+	})
+	require.NoError(t, err)
+
+	export := func() (string, string) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		transcriptExportCmd.SetOut(&stdout)
+		transcriptExportCmd.SetErr(&stderr)
+		require.NoError(t, transcriptExportCmd.RunE(transcriptExportCmd, []string{fmt.Sprint(id)}))
+		return stdout.String(), stderr.String()
+	}
+	transcriptExportFlagFormat = "md"
+	md, warn := export()
+	assert.Contains(t, md, "Event: Quarterly planning")
+	assert.Empty(t, warn)
+
+	// The lookup fails (no calendar_events table): the export still runs.
+	_, err = database.Exec(`ALTER TABLE calendar_events RENAME TO calendar_events_gone`)
+	require.NoError(t, err)
+	md, warn = export()
+	assert.NotContains(t, md, "Event:")
+	assert.Contains(t, md, "привет")
+	assert.Contains(t, warn, "warning: looking up calendar event E1")
 }

@@ -27,6 +27,10 @@ func TestMeetPriv02_NotesPromptSkipsPrivateRecap(t *testing.T) {
 		t.Fatal("a private recording's recap reached the notes prompt")
 	}
 
+	// A recap with no recording: the upsert keeps an existing owner, so the
+	// private one's row goes first.
+	_, err = database.Exec(`DELETE FROM meeting_recaps WHERE event_id = 'evt1'`)
+	require.NoError(t, err)
 	require.NoError(t, database.UpsertMeetingRecap("evt1", "src", `{"summary":"PASTED-RECAP"}`, 0))
 	_, _, err = pipe.GenerateTranscriptNotes(context.Background(), "evt1", "public take of the meeting")
 	require.NoError(t, err)

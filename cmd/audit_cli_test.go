@@ -306,6 +306,7 @@ var cliNoContentCommands = map[string]bool{
 	"logs":                             true,
 	"mcp":                              true,
 	"meeting-prep extract-topics":      true,
+	"meeting-prep transcript private":  true,
 	"memory consolidate":               true,
 	"memory migrate-slack-ids":         true,
 	"memory reindex":                   true,
