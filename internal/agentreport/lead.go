@@ -1,6 +1,11 @@
 package agentreport
 
-import "math"
+import (
+	"cmp"
+	"math"
+
+	"watchtower/internal/agentlog"
+)
 
 // leads writes the one plain sentence of each block (context, skills,
 // trouble) in lang. It is built from the block's counts, part names, error
@@ -44,7 +49,7 @@ func troubleLead(l Lang, t TroubleReport) string {
 	for _, c := range t.Classes { // largest first
 		failed += c.Count
 		if c.Count > topN {
-			top, topN = c.Class, c.Count
+			top, topN = cmp.Or(c.Class, agentlog.ClassOther), c.Count
 		}
 	}
 	for _, d := range t.denials { // uncut

@@ -39,9 +39,11 @@ func TestLead_Trouble_EnRu(t *testing.T) {
 	assert.Equal(t, "7 упавших вызовов и 3 отказа в разрешении; чаще всего — edit_no_match.", troubleLead(Russian, tr))
 	tr.Classes = nil
 	assert.Equal(t, "0 failed calls and 3 permission denials; most of them Bash.", troubleLead(English, tr))
+	tr.Classes = []ErrorClassRow{{Count: 4}} // class stored as "": other
+	assert.Equal(t, "4 failed calls and 3 permission denials; most of them other.", troubleLead(English, tr))
 	tr.Classes = []ErrorClassRow{{Count: 1}}
 	tr.denials = nil
-	assert.Equal(t, "1 failed call and 0 permission denials.", troubleLead(English, tr))
+	assert.Equal(t, "1 failed call and 0 permission denials; most of them other.", troubleLead(English, tr))
 	assert.Empty(t, troubleLead(English, TroubleReport{}))
 }
 
