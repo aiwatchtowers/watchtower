@@ -9,7 +9,7 @@ struct AgentAnalyticsSkillsView: View {
     static let shownRows = 10
 
     var body: some View {
-        AgentAnalyticsBlock(title: "Skills", state: state) {
+        AgentAnalyticsBlock(title: "Skills", lead: skills?.lead, state: state) {
             if let skills { measured(skills) }
         }
     }
@@ -21,17 +21,31 @@ struct AgentAnalyticsSkillsView: View {
 
     private func measured(_ skills: AgentSkillsReport) -> some View {
         let rows = skills.rows ?? []
-        return VStack(alignment: .leading, spacing: Spacing.regular) {
-            Text(Self.usedLine(skills)).font(.callout)
+        return VStack(alignment: .leading, spacing: Spacing.compact) {
+            // Without a lead from the report the plain count stands in for it.
+            if (skills.lead ?? "").isEmpty { Text(Self.usedLine(skills)).font(.callout) }
             if !rows.isEmpty {
-                AgentAnalyticsTopRows(rows: rows, shown: Self.shownRows) { rowList($0) }
+                DisclosureGroup("Used (\(rows.count))") {
+                    AgentAnalyticsTopRows(rows: rows, shown: Self.shownRows) { rowList($0) }
+                        .padding(.top, Spacing.small)
+                }
+                .font(.callout)
             }
             if let unused = skills.neverUsed, !unused.isEmpty {
-                Text("Never used: " + unused.map { "\($0.name) (\(AgentAnalyticsFormat.tokens($0.listingTokens)))" }
-                    .joined(separator: ", "))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .help("Each listed skill costs its listing tokens in every session")
+                DisclosureGroup("Never used (\(unused.count))") {
+                    LazyVStack(alignment: .leading, spacing: Spacing.tight) {
+                        ForEach(unused, id: \.name) { skill in
+                            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                                Text(skill.name).font(.callout.monospaced()).lineLimit(1)
+                                Text("\(AgentAnalyticsFormat.tokens(skill.listingTokens)) tokens")
+                                    .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.top, Spacing.small)
+                }
+                .font(.callout)
+                .help("Each listed skill costs its listing tokens in every session")
             }
         }
     }

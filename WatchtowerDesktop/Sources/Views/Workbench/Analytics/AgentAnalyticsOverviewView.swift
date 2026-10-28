@@ -108,6 +108,8 @@ struct AgentAnalyticsOverviewView: View {
                 section("What else would save") {
                     AgentAnalyticsCappedHints(hints: Array(overview.hints.dropFirst()), actions: actions)
                 }
+                .padding(Spacing.medium)
+                .card()
             }
             DisclosureGroup {
                 time(overview).padding(.top, Spacing.regular)
@@ -187,21 +189,40 @@ struct AgentAnalyticsOverviewView: View {
     private func tiles(_ overview: AgentReportOverview) -> some View {
         let totals = overview.totals
         return VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(spacing: 24) {
+            HStack(alignment: .top, spacing: Spacing.wide) {
                 tile("Cost", AgentAnalyticsFormat.cost(totals.costUSD))
                 tile("Sessions", "\(totals.sessions)")
                 tile("Active", AgentAnalyticsFormat.duration(totals.activeMS))
                 tile("Cache hit", AgentAnalyticsFormat.cacheHit(totals.tokens))
                     .help("Input tokens read from the cache, of all input tokens")
+                subagentsTile(overview.subagents)
+                Spacer(minLength: 0)
             }
-            Text(AgentAnalyticsFormat.subagentsLine(overview.subagents))
-                .font(.callout)
             if totals.costEstimatedCalls > 0 {
                 Text("\(totals.costEstimatedCalls) \(totals.costEstimatedCalls == 1 ? "call" : "calls") priced by estimate")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+        .padding(Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
+    private func subagentsTile(_ subagents: AgentSubagents) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text("Subagents").font(.caption).foregroundStyle(.secondary)
+            if subagents.count >= 1 {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.small) {
+                    Text(String(format: "%.1f", subagents.avgParallel)).font(.title2.weight(.semibold).monospacedDigit())
+                    Text("avg · peak \(subagents.peak)").font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("none").font(.title2.weight(.semibold))
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .help("Subagents running at once: the average and the peak")
     }
 
     private func tile(_ title: String, _ value: String) -> some View {

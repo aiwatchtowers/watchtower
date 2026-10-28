@@ -9,7 +9,7 @@ struct AgentAnalyticsTroubleView: View {
     let actions: AgentAnalyticsActions
 
     var body: some View {
-        AgentAnalyticsBlock(title: "Trouble", state: state) {
+        AgentAnalyticsBlock(title: "Trouble", lead: trouble?.lead, state: state) {
             if let trouble { measured(trouble) }
         }
     }
@@ -23,12 +23,19 @@ struct AgentAnalyticsTroubleView: View {
     }
 
     private func measured(_ trouble: AgentTroubleReport) -> some View {
+        DisclosureGroup("Details") {
+            details(trouble).padding(.top, Spacing.small)
+        }
+        .font(.callout)
+    }
+
+    private func details(_ trouble: AgentTroubleReport) -> some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             if let classes = trouble.classes, !classes.isEmpty {
                 LazyVStack(alignment: .leading, spacing: Spacing.tight) {
                     ForEach(Array(classes.enumerated()), id: \.offset) { _, row in
                         HStack(spacing: Spacing.compact) {
-                            Text("\(AgentAnalyticsFormat.label(errorClass: row.class)) · \(row.tool) — \(row.count)")
+                            Text("\(AgentAnalyticsFormat.label(errorClass: row.class)) · \(AgentAnalyticsFormat.toolName(row.tool)) — \(row.count)")
                             if let top = row.sessions.first {
                                 AgentSessionLink(uuid: top.sessionUUID, actions: actions)
                             }
@@ -41,7 +48,7 @@ struct AgentAnalyticsTroubleView: View {
                 Text("Denied").font(.callout)
                 LazyVStack(alignment: .leading, spacing: Spacing.tight) {
                     ForEach(Array(denials.enumerated()), id: \.offset) { _, row in
-                        let what = [row.tool, row.target].filter { !$0.isEmpty }.joined(separator: " ")
+                        let what = [AgentAnalyticsFormat.toolName(row.tool), row.target].filter { !$0.isEmpty }.joined(separator: " ")
                         Text("\(AgentAnalyticsFormat.label(denial: row.kind)) · \(what) — \(row.count)")
                             .font(.callout.monospacedDigit())
                             .lineLimit(1)

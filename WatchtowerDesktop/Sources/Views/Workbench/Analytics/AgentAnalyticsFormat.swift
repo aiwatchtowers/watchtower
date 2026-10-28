@@ -19,6 +19,39 @@ enum AgentAnalyticsFormat {
         return "\(Int((part / whole * 100).rounded()))%"
     }
 
+    /// A part's share of a whole: "46%", `<1%` for anything above zero but
+    /// under one percent (never "0%"), "0%" only for none.
+    static func share(_ part: Int64, of total: Int64) -> String {
+        guard part > 0, total > 0 else { return "0%" }
+        return share(Double(part) / Double(total))
+    }
+
+    /// The same for a fraction the report already computed (0...1).
+    static func share(_ fraction: Double) -> String {
+        guard fraction > 0 else { return "0%" }
+        let percent = fraction * 100
+        return percent < 1 ? "<1%" : "\(Int(percent.rounded()))%"
+    }
+
+    /// A tool's name as the owner reads it: `mcp__watchtower-workbench__get_ask`
+    /// is "Watchtower: get_ask", another server's `mcp__<server>__<tool>` is
+    /// "<server>: <tool>"; anything else as sent.
+    static func toolName(_ raw: String) -> String {
+        guard raw.hasPrefix("mcp__") else { return raw }
+        let rest = raw.dropFirst("mcp__".count)
+        guard let split = rest.range(of: "__") else { return raw }
+        let server = String(rest[..<split.lowerBound]), tool = String(rest[split.upperBound...])
+        guard !server.isEmpty, !tool.isEmpty else { return raw }
+        let isWatchtower = server == "watchtower" || server.hasPrefix("watchtower-")
+        return "\(isWatchtower ? "Watchtower" : server): \(tool)"
+    }
+
+    /// The first `keep` rows and the rest.
+    static func fold<T>(_ rows: [T], keep: Int) -> (shown: [T], rest: [T]) {
+        let count = max(keep, 0)
+        return (Array(rows.prefix(count)), Array(rows.dropFirst(count)))
+    }
+
     /// Cache reads over all input the model read (fresh, cache reads and
     /// cache writes; output left out): "28%", "—" with no input.
     static func cacheHit(_ tokens: AgentTokens) -> String {
@@ -42,7 +75,7 @@ enum AgentAnalyticsFormat {
     static func label(growthSource raw: String) -> String {
         [
             "owner": "Your turns", "model": "Model output", "reminders": "System reminders & other"
-        ][raw] ?? raw
+        ][raw] ?? toolName(raw)
     }
 
     /// An error class's name (`internal/agentlog/claude_tools.go`); an
@@ -94,11 +127,6 @@ enum AgentAnalyticsFormat {
             }
         }
         return lines.joined(separator: "\n")
-    }
-
-    static func subagentsLine(_ subagents: AgentSubagents) -> String {
-        guard subagents.count >= 1 else { return "Subagents: none" }
-        return "Subagents: \(String(format: "%.1f", subagents.avgParallel)) at once on average · peak \(subagents.peak)"
     }
 
     /// "Loading history — 1,234 files so far" until the import is done; nil

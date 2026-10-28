@@ -319,6 +319,9 @@ enum DesignShotCatalog {
             DesignShot(name: "analytics-coach", size: NSSize(width: 900, height: 1700)) {
                 CoachShotFixtures.screen(.sections)
             },
+            DesignShot(name: "analytics-statistics", size: NSSize(width: 900, height: 1340)) {
+                StatisticsShotFixtures.screen()
+            },
             DesignShot(name: "analytics-coach-edit-sheet", size: NSSize(width: 520, height: 320)) {
                 CoachShotFixtures.screen(.editSheet)
             },

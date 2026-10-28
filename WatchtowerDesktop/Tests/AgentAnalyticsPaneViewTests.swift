@@ -160,7 +160,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertTrue(all.contains("5%"), "cache hit: 400 of 7 410 input tokens")
         XCTAssertTrue(all.contains("$15.50"))
         XCTAssertTrue(all.contains("2"), "sessions")
-        XCTAssertTrue(all.contains("Subagents: 1.0 at once on average · peak 1"), "\(all)")
+        XCTAssertTrue(all.contains("1.0") && all.contains("avg · peak 1"), "\(all)")
         XCTAssertTrue(all.contains("1 call priced by estimate"), "\(all)")
     }
 
@@ -427,11 +427,11 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let view = overviewView(.overview(try Self.filledOverview(), staleError: nil), log: log)
         let all = try texts(view)
         XCTAssertFalse(all.contains(AgentAnalyticsBlockState.notMeasuredLine))
-        for line in ["Baseline: 9.0k tokens at session start", "CLAUDE.md & rules 8.1k · 90%", "Bash 50 · 50%",
+        for line in ["At session start · 9.0k", "CLAUDE.md & rules", "8.1k · 90%", "Bash", "50", "50%",
                      "Compactions: 1 in 1 session · median 800 → 100 tokens",
                      "CLAUDE.md: 60 lines, 2 KB · rules 10 bytes",
                      "Used 1 of 5 listed skills · the listing costs 300 tokens per session",
-                     "brainstorm", "Never used: deploy (60)",
+                     "brainstorm", "Never used (1)", "deploy",
                      "Interrupts: 4 · rejections: 1", "Unfinished subagents: 1", "Rate limited: 2"] {
             XCTAssertTrue(all.contains(line), "\(line): \(all)")
         }
