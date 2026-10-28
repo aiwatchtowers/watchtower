@@ -7,8 +7,10 @@ import XCTest
 final class BoardFilterTests: XCTestCase {
     private let now = Date()
 
-    private func board(_ filter: BoardFilter) throws -> BoardModel {
-        BoardModel(workbenchID: DemoSeed.acmeID, snapshot: try demoSnapshot(now: now), filter: filter)
+    /// Done children shown (the owner pressed Show done) unless a test says
+    /// otherwise, so the rows of a whole group can be checked.
+    private func board(_ filter: BoardFilter, showDone: Bool = true) throws -> BoardModel {
+        BoardModel(workbenchID: DemoSeed.acmeID, snapshot: try demoSnapshot(now: now), filter: filter, showDone: showDone)
     }
 
     private func archivedIDs() throws -> Set<Int64> {
@@ -49,6 +51,43 @@ final class BoardFilterTests: XCTestCase {
         XCTAssertTrue(done.isDimmed)
         XCTAssertEqual(done.progressText, "done")
         XCTAssertFalse(try XCTUnwrap(hierarchy.children.first).row.isDimmed)
+    }
+
+    /// #1191: done sub-targets are hidden until Show done, the button
+    /// counts them either way, and the chip counts do not move.
+    func testDoneChildrenStayHiddenUntilShowDone() throws {
+        let hidden = try board(.open, showDone: false)
+        let shown = try board(.open, showDone: true)
+        XCTAssertEqual(try XCTUnwrap(hidden.roots.first { $0.id == 420 }).children.map(\.id), [421])
+        XCTAssertFalse(hidden.visibleIDs.contains(422))
+        XCTAssertEqual(try XCTUnwrap(shown.roots.first { $0.id == 420 }).children.map(\.id), [421, 422])
+        XCTAssertEqual(hidden.doneChildCount, 1)
+        XCTAssertEqual(shown.doneChildCount, 1)
+        XCTAssertEqual(hidden.count(.open), shown.count(.open))
+        XCTAssertEqual(try board(.inProgress, showDone: true).doneChildCount, 0, "only Open adds done children")
+        let archive = try board(.archive, showDone: false)
+        XCTAssertEqual(archive.visibleIDs, [390, 391, 417], "Archive shows everything archived")
+    }
+
+    func testShowDoneButtonTitle() {
+        XCTAssertEqual(ShowDoneButton.title(doneCount: 3, showDone: false), "Show done (3)")
+        XCTAssertEqual(ShowDoneButton.title(doneCount: 3, showDone: true), "Hide done")
+    }
+
+    /// #1191: a target's sub-targets hide done ones the same way; the
+    /// header still counts them all.
+    func testTheDetailHidesDoneSubTargetsUntilShowDone() throws {
+        let snapshot = try demoSnapshot(now: now)
+        let hidden = try XCTUnwrap(BoardTargetDetailModel(targetID: 420, snapshot: snapshot, now: now))
+        XCTAssertEqual(hidden.children.map(\.id), [421])
+        XCTAssertEqual(hidden.doneChildCount, 1)
+        XCTAssertEqual(hidden.childrenHeader, "Sub-targets · 1 / 2")
+        let shown = try XCTUnwrap(BoardTargetDetailModel(targetID: 420, snapshot: snapshot, now: now, showDone: true))
+        XCTAssertEqual(shown.children.map(\.id), [421, 422])
+        XCTAssertEqual(shown.childrenHeader, hidden.childrenHeader)
+        let leaf = try XCTUnwrap(BoardTargetDetailModel(targetID: 421, snapshot: snapshot, now: now))
+        XCTAssertEqual(leaf.childrenHeader, "Sub-targets")
+        XCTAssertEqual(leaf.doneChildCount, 0)
     }
 
     /// A done target with no shown parent stays out of Open, and the other
