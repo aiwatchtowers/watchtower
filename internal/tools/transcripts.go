@@ -95,7 +95,7 @@ func NewListTranscripts() *Tool {
 				return nil, err
 			}
 			transcripts, err := d.ListMeetingTranscripts(db.MeetingTranscriptFilter{
-				EventID: a.EventID, FromTime: from, ToTime: to, Limit: listLimit(a.Limit),
+				EventID: a.EventID, FromTime: from, ToTime: to, Limit: listLimit(a.Limit), ExcludePrivate: true,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("listing transcripts: %w", err)
@@ -130,6 +130,9 @@ func NewGetTranscript() *Tool {
 			}
 			if tr == nil {
 				return nil, fmt.Errorf("no transcript with id %d", a.ID)
+			}
+			if tr.Private { // MEETPRIV-02
+				return nil, fmt.Errorf("recording %d is private", a.ID)
 			}
 			recap := transcriptRecapFor(d, tr)
 			return transcriptDetail{
@@ -177,14 +180,15 @@ func renderSearchHit(d *db.DB, h *db.TranscriptHit) transcriptRow {
 
 // transcriptRecapFor parses the recap attached to a transcript: its own
 // summary_json (ad-hoc recordings) or, for event-linked transcripts, the
-// meeting_recaps row of the linked event. Missing or malformed recap JSON yields
-// a zero recap — transcripts are useful without one.
+// meeting_recaps row of the linked event (none when another, private
+// recording of the event owns it — MEETPRIV-02). Missing or malformed recap
+// JSON yields a zero recap — transcripts are useful without one.
 func transcriptRecapFor(d *db.DB, tr *db.MeetingTranscript) transcriptRecap {
 	raw := ""
 	if tr.SummaryJSON.Valid && tr.SummaryJSON.String != "" {
 		raw = tr.SummaryJSON.String
 	} else if tr.EventID.Valid {
-		if r, err := d.GetMeetingRecap(tr.EventID.String); err == nil && r != nil {
+		if r, err := d.GetMeetingRecapForAI(tr.EventID.String); err == nil && r != nil {
 			raw = r.RecapJSON
 		}
 	}
