@@ -2204,7 +2204,7 @@ transcript_text TEXT NOT NULL,
 summary_json TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT)
+, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)))
 
 table	memory_aliases
 CREATE TABLE memory_aliases (
@@ -5330,6 +5330,7 @@ GROUP BY up.ancestor
 13	chapters_json	TEXT	notnull=0	dflt=NULL	pk=0
 14	speaker_names_changed_at	TEXT	notnull=0	dflt=NULL	pk=0
 15	summary_updated_at	TEXT	notnull=0	dflt=NULL	pk=0
+16	private	INTEGER	notnull=1	dflt=0	pk=0
 
 ## memory_aliases
 0	alias	TEXT	notnull=0	dflt=NULL	pk=1

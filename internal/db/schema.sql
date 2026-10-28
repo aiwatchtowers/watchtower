@@ -1409,7 +1409,8 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     speaker_names_changed_at TEXT,
-    summary_updated_at TEXT
+    summary_updated_at TEXT,
+    private         INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)) -- 1 = never sent to an AI provider; skip it in every prompt-feeding read
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
 

@@ -608,7 +608,7 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     summary_json    TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT);
+, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)));
 CREATE TABLE IF NOT EXISTS email_accounts (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     provider       TEXT NOT NULL CHECK(provider IN ('imap','outlook')),
