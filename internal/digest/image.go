@@ -216,8 +216,9 @@ func (g *ClaudeGenerator) GenerateWithImage(ctx context.Context, systemPrompt, u
 	systemPromptFile, payloads := systemPromptPayload(systemPrompt)
 
 	model := g.modelForContext(ctx)
-	resp, err := g.runClaude(ctx, imageArgs(model, systemPromptFile), bytes.NewReader(line), dir, parseStreamResult,
-		payloads...)
+	// The usage estimate (no envelope) covers the text only, not the image.
+	resp, err := g.runClaude(ctx, model, systemPrompt+userMessage, imageArgs(model, systemPromptFile),
+		bytes.NewReader(line), dir, parseStreamResult, payloads...)
 	if err != nil {
 		return "", nil, err
 	}
