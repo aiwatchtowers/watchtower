@@ -28,6 +28,7 @@
 **Test guards:**
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv01_SavePrivateGeneratesNothing`
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv01_AICommandsRefusePrivate`
+- `cmd/meeting_transcript_private_test.go::TestMeetPriv01_SaveGeneratorsRefuseRowFlippedPrivate`
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv01_SaveTooShortKeepsBoolSkip`
 - `internal/db/meeting_private_test.go::TestMeetPriv01_InsertStoresPrivate`
 

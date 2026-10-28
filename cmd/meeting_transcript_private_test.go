@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -108,6 +109,45 @@ func TestMeetPriv01_AICommandsRefusePrivate(t *testing.T) {
 	for _, p := range []string{"meeting_transcript", "meeting_notes", "meeting_chapters", "meeting_followup"} {
 		assert.Nil(t, findPipelineRun(t, database, p), p)
 	}
+}
+
+// TestMeetPriv01_SaveGeneratorsRefuseRowFlippedPrivate pins the save path's
+// own check: a row the Desktop turns private after the insert but before the
+// recap and chapters run reaches no generator and gets nothing written.
+func TestMeetPriv01_SaveGeneratorsRefuseRowFlippedPrivate(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	gen := &transcriptMockGen{response: transcriptMockRecapJSON}
+	stubTranscriptGenerator(t, gen)
+
+	cfg, database, err := transcriptEnv()
+	require.NoError(t, err)
+	defer database.Close()
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title: "Flipped", DurationSec: 5, TranscriptText: longSegmentsFixtureText,
+		SegmentsJSON: sql.NullString{String: longSegmentsFixtureJSON, Valid: true},
+	})
+	require.NoError(t, err)
+	_, err = database.SetMeetingTranscriptPrivate(id, true)
+	require.NoError(t, err)
+
+	var errOut bytes.Buffer
+	_, chaptersOutcome, recapErr := runSaveGenerations(context.Background(), database, cfg, id, longSegmentsFixtureText, true, &errOut)
+	want := fmt.Sprintf("recording %d is private", id)
+	require.Error(t, recapErr)
+	assert.Equal(t, want, recapErr.Error())
+	require.NotNil(t, chaptersOutcome)
+	require.Error(t, *chaptersOutcome)
+	assert.Equal(t, want, (*chaptersOutcome).Error())
+	assert.Zero(t, gen.calls)
+
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	assert.False(t, tr.SummaryJSON.Valid)
+	assert.False(t, tr.ChaptersJSON.Valid)
+	assert.Nil(t, findPipelineRun(t, database, "meeting_transcript"))
+	assert.Nil(t, findPipelineRun(t, database, "meeting_chapters"))
 }
 
 func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
