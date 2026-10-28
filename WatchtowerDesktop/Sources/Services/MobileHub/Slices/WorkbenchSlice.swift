@@ -13,6 +13,8 @@ struct WorkbenchSlice: SliceSource {
     let kind = SliceKind.workbench
 
     static let maxWorkbenches = 100
+    /// Twin of the Kit's `WorkbenchAutomation.maxPerWorkbench`.
+    static let maxAutomations = 50
 
     /// The home folder `folder_display` abbreviates to `~`.
     let home: String
@@ -52,6 +54,20 @@ struct WorkbenchSlice: SliceSource {
             var notRunning = 0
         }
 
+        /// One quick-run row of the workbench (ask #692), the Kit's `WorkbenchAutomation`.
+        struct Automation: Encodable, Equatable {
+            let id: Int64
+            let name: String
+            let nameClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+            /// `manual`, `button` or `scheduled` (a schedule or event recipe).
+            let kind: String
+            let asksFirst: Bool
+            /// `runnable`, `running`, `needs_confirmation`, `disabled` or `parse_error`.
+            let state: String
+            let lastRunStatus: String?
+            let lastRunAt: Date?
+        }
+
         let id: Int64
         let name: String
         let nameClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
@@ -74,6 +90,8 @@ struct WorkbenchSlice: SliceSource {
         let targetsMore: Int?
         /// `TerminalSessionSlice.wireAgent`: `claude_code` or `codex_cli`.
         let defaultAgent: String
+        /// nil (an absent key) when the workbench has none.
+        var automations: [Automation]?
     }
 
     func records(_ db: Database) throws -> [SliceRecord] {
@@ -84,8 +102,10 @@ struct WorkbenchSlice: SliceSource {
         let encoder = RelayCoder.makeEncoder()
         let stamp = now()
         let agent = TerminalSessionSlice.wireAgent(defaultAgent())
+        let automations = try Self.automations(db, now: stamp)
         return try summaries.map { summary in
-            let payload = makePayload(summary, window: window, sessions: counts[summary.id] ?? .init(), agent: agent)
+            var payload = makePayload(summary, window: window, sessions: counts[summary.id] ?? .init(), agent: agent)
+            payload.automations = automations[summary.id]
             return SliceRecord(kind: kind, id: String(summary.id), modifiedAt: stamp, payload: try encoder.encode(payload))
         }
     }
@@ -120,7 +140,42 @@ struct WorkbenchSlice: SliceSource {
             lastSessionActivity: SliceDate.parse(summary.lastSessionActivity),
             archiveAfterDays: project.archiveAfterDays,
             targetsMore: more > 0 ? more : nil,
-            defaultAgent: agent
+            defaultAgent: agent,
+            automations: nil
+        )
+    }
+
+    /// The automations a phone may run, by workbench (ask #692): quick run's
+    /// rows (`QuickRunCatalog`, removed recipes left out) of workbench
+    /// recipes only, in its order, at most `maxAutomations` each.
+    static func automations(_ db: Database, now: Date) throws -> [Int64: [Payload.Automation]] {
+        let rows = QuickRunCatalog.rows(try AutomationQueries.fetchList(db, now: now), workbenchNames: [:])
+        var out: [Int64: [Payload.Automation]] = [:]
+        for row in rows {
+            guard case let .workbench(id, _) = row.group, out[id, default: []].count < maxAutomations else { continue }
+            out[id, default: []].append(automation(row))
+        }
+        return out
+    }
+
+    private static func automation(_ row: QuickRunRow) -> Payload.Automation {
+        let name = SliceClip.text(row.name, limit: 200)
+        let kind = switch row.kind {
+        case .manual: "manual"
+        case .button: "button"
+        case .scheduledOrEvent: "scheduled"
+        }
+        let state = switch row.state {
+        case .runnable: "runnable"
+        case .running: "running"
+        case .needsConfirmation: "needs_confirmation"
+        case .disabled: "disabled"
+        case .parseError: "parse_error"
+        }
+        let run = row.lastRun
+        return Payload.Automation(
+            id: row.id, name: name.text, nameClipped: name.clipped, kind: kind, asksFirst: row.asksFirst, state: state,
+            lastRunStatus: run?.status.rawValue, lastRunAt: run.flatMap { $0.finishedAt ?? $0.startedAt ?? $0.queuedAt }
         )
     }
 

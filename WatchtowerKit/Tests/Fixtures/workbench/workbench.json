@@ -1,5 +1,9 @@
 {
   "archive_after_days": 14,
+  "automations": [
+    {"asks_first": true, "id": 3, "kind": "button", "last_run_at": 1700000000, "last_run_status": "succeeded", "name": "Release notes", "state": "runnable"},
+    {"asks_first": false, "id": 4, "kind": "scheduled", "name": "Nightly triage", "state": "needs_confirmation"}
+  ],
   "blocked_targets": 1,
   "branch": "feature/acme-export",
   "changes": 3,

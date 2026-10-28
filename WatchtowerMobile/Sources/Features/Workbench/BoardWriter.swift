@@ -5,7 +5,7 @@ import WatchtowerSync
 
 /// Sends the phone's board writes (spec §5.2, §6.3) through the outbox:
 /// status, priority, comments, replies and new targets, and resolves a
-/// conflict. `from_status`/`from_priority` are always the replica's value
+/// conflict; and runs of the workbench's automations (ask #692). `from_status`/`from_priority` are always the replica's value
 /// the phone shows, never an optimistic one. Owned by `AppEnvironment`.
 ///
 /// A comment or reply the Mac applied stays in its thread
@@ -124,6 +124,31 @@ final class BoardWriter {
     func create(_ draft: NewBoardTargetDraft) async throws -> Bool {
         guard let params = try draft.params() else { return false }
         return try await send(BoardTargetCreateParams.actionKind, nil, params)
+    }
+
+    /// Asks the Mac to run the automation now (ask #692); a run already on
+    /// its way sends nothing (false). Its older failed rows go once it is queued.
+    @discardableResult
+    func runAutomation(_ automation: WorkbenchAutomation, workbenchID: Int64) async throws -> Bool {
+        let entity = Self.automationRecordName(automation.id)
+        let stale = try failedRows(.automationRun, entity)
+        guard try await send(.automationRun, entity, try AutomationRunParams(workbenchID: workbenchID).wireParams()) else {
+            return false
+        }
+        for id in stale {
+            try remove(id)
+        }
+        return true
+    }
+
+    /// Dismiss on the Mac's refusal of a run.
+    func dismissRun(_ failure: WorkbenchAutomationsModel.Failure) throws {
+        try remove(failure.pending.id)
+    }
+
+    /// The `automation_run` entity: the hub reads the id after the hyphen.
+    nonisolated static func automationRecordName(_ id: Int64) -> String {
+        "automation-\(id)"
     }
 
     /// "Apply anyway" on a conflict: a new action with the same requested

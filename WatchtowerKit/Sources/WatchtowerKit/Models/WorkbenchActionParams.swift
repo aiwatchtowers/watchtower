@@ -275,3 +275,20 @@ public struct SessionChatRequestParams: ActionParams {
         case toolUseID = "toolUseId"
     }
 }
+
+/// `automation_run`, entity: the automation id. Runs a workbench automation
+/// now (ask #692); the Mac refuses a recipe that is not on this workbench or
+/// cannot run. A `confirm: true` recipe is asked on the phone before it is sent.
+public struct AutomationRunParams: ActionParams {
+    public static let actionKind = ActionKind.automationRun
+
+    public let workbenchID: Int64
+
+    public init(workbenchID: Int64) {
+        self.workbenchID = workbenchID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case workbenchID = "workbenchId"
+    }
+}

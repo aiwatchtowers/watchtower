@@ -39,7 +39,8 @@ package protocol AutomationRunNotifying {
 @Observable
 package final class QuickRunCenter {
     package enum Origin: Equatable, Sendable {
-        case palette, tray
+        /// `phone`: a linked phone's `automation_run` (ask #692).
+        case palette, tray, phone
     }
 
     package enum Outcome: Equatable, Sendable {
@@ -152,6 +153,13 @@ package final class QuickRunCenter {
         let outcome = await start(row, origin: pendingOrigin)
         if case .refused = outcome { return }
         if pendingConfirm == row { pendingConfirm = nil }
+    }
+
+    /// A run the phone asked for (ask #692): the caller read `row` fresh and
+    /// found it runnable; a `confirm: true` recipe was asked on the phone, so
+    /// no sheet comes up here. Watched like any quick run.
+    package func runFromPhone(_ row: QuickRunRow) async -> Outcome {
+        await start(row, origin: .phone)
     }
 
     /// **Cancel** in the sheet: nothing runs.

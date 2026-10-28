@@ -9,6 +9,8 @@ struct WorkbenchView: View {
     enum Segment: String, CaseIterable, Identifiable {
         case sessions = "Sessions"
         case board = "Board"
+        /// Only when the workbench has automations (ask #692).
+        case automations = "Automations"
 
         var id: Self { self }
     }
@@ -45,6 +47,8 @@ struct WorkbenchView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // Another workbench, or the last automation removed, leaves no Automations segment.
+        .onChange(of: segments) { if !segments.contains(segment) { segment = .sessions } }
         .toolbar {
             ToolbarItem(placement: .principal) { switcher }
             ToolbarItem(placement: .topBarTrailing) {
@@ -69,6 +73,12 @@ struct WorkbenchView: View {
         .navigationDestination(item: $openSession) { route in
             WorkchatView(replica: replica, sessionID: route.id, store: env.store, requester: env.chatRequests)
         }
+    }
+
+    /// Automations shows only when the workbench has some.
+    private var segments: [Segment] {
+        let automations = replica.snapshot.workbench(workbenchID)?.automations ?? []
+        return automations.isEmpty ? [.sessions, .board] : Segment.allCases
     }
 
     private func menu(at date: Date) -> WorkbenchMenuModel? {
@@ -108,7 +118,7 @@ struct WorkbenchView: View {
             }
             .padding(.horizontal, Spacing.large)
             Picker("View", selection: $segment) {
-                ForEach(Segment.allCases) { Text($0.rawValue).tag($0) }
+                ForEach(segments) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, Spacing.large)
@@ -120,6 +130,7 @@ struct WorkbenchView: View {
                     sessions(self.menu(at: context.date) ?? menu)
                 }
             case .board: BoardView(replica: replica, writer: writer, workbenchID: menu.id, now: now)
+            case .automations: WorkbenchAutomationsView(replica: replica, writer: writer, workbenchID: menu.id, now: now)
             }
         }
     }

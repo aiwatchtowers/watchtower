@@ -53,6 +53,9 @@ public enum ActionKind: String, Codable, CaseIterable {
     case sessionInterrupt = "session_interrupt"
     /// Entity: session id; params `session_id`, optional `subagent_id`. Idempotent: asks the Mac to watch the chat.
     case sessionChatRequest = "session_chat_request"
+    /// Entity: automation id; params `workbench_id`. Not idempotent: runs a workbench automation now, under the
+    /// start-sessions grant (ask #692).
+    case automationRun = "automation_run"
 }
 
 /// Wire status of one action record (spec §5.2). Only the Mac moves a record
