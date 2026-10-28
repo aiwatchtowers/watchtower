@@ -83,7 +83,7 @@ struct SpecReviewChaptersView: View {
                     if !chapter.checks.isEmpty {
                         SectionHeader(title: "Checklist", systemImage: "checklist", count: chapter.checks.count)
                             .padding(.top, Spacing.small)
-                        ForEach(chapter.checks, id: \.key) { checkRow($0) }
+                        ForEach(SpecReviewPresentation.sortedBySeverity(chapter.checks, \.severity), id: \.key) { checkRow($0) }
                     }
                     if !model.isLoop {
                         HStack {
@@ -109,14 +109,14 @@ struct SpecReviewChaptersView: View {
         let badge = SpecReviewPresentation.checkBadge(answer: check.answer)
         return VStack(alignment: .leading, spacing: Spacing.small) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                Chip(text: badge.title, color: badge.tint.color)
+                SpecReviewChips(severity: check.severity, kind: badge)
                 Text(check.question).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
             if !check.note.isEmpty {
-                Text(check.note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(check.note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if check.answer == "concern", !model.isLoop {
-                SpecReviewMarkControls(model: model, key: check.key)
+            if check.answer == "concern" {
+                SpecReviewMarkControls(model: model, key: check.key, commentOnly: model.isLoop)
             }
         }
         .padding(Spacing.regular)

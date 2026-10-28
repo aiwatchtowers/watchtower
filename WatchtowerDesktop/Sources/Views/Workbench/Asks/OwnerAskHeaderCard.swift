@@ -36,7 +36,7 @@ struct OwnerAskHeaderCard: View {
                             }
                         }
                         if !ask.changes.isEmpty {
-                            MarkdownView(text: ask.changes)
+                            MarkdownView(text: OwnerAskPresentation.changesMarkdown(ask.changes))
                         }
                     }
                 }

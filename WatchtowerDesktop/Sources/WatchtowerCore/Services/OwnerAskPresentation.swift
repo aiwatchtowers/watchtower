@@ -192,4 +192,18 @@ package enum OwnerAskPresentation {
     package static func answerNotes(from answer: OwnerAskAnswer) -> [String: String] {
         Dictionary(answer.checklist.filter { !$0.note.isEmpty }.map { ($0.id, $0.note) }) { first, _ in first }
     }
+
+    /// "Changes since #N" as written, or — for one long line of four or
+    /// more `; `-joined parts (an agent's run-on summary) — a bullet list,
+    /// one part per line (spec 2026-10-28 §3). A short line, prose with one
+    /// or two semicolons, or text with a line break stays as it is.
+    package static func changesMarkdown(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.contains("\n"), trimmed.count > 200 else { return text }
+        let parts = trimmed.components(separatedBy: "; ")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard parts.count >= 4 else { return text }
+        return parts.map { "- \($0)" }.joined(separator: "\n")
+    }
 }

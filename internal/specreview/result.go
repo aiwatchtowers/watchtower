@@ -87,6 +87,8 @@ type Agreement struct {
 	Chapter string  `json:"chapter"`
 	Source  Source  `json:"source"`
 	Where   *Anchor `json:"where"`
+	// Severity is blocker, major or minor; empty on an as_agreed agreement.
+	Severity string `json:"severity,omitempty"`
 }
 
 // DecidedAlone is something the document decides that nobody agreed.
@@ -96,6 +98,8 @@ type DecidedAlone struct {
 	Note    string `json:"note"`
 	Chapter string `json:"chapter"`
 	Where   Anchor `json:"where"`
+	// Severity is blocker, major or minor, or empty.
+	Severity string `json:"severity,omitempty"`
 }
 
 // BlindSpot is something neither the owner nor the document considered.
@@ -106,6 +110,8 @@ type BlindSpot struct {
 	Chapter  string    `json:"chapter"`
 	Where    *Anchor   `json:"where"`
 	Evidence *Evidence `json:"evidence"`
+	// Severity is blocker, major or minor, or empty.
+	Severity string `json:"severity,omitempty"`
 }
 
 // Check is the answer to one lens question for one chapter. Answer is ok,
@@ -117,6 +123,8 @@ type Check struct {
 	Question string `json:"question"`
 	Answer   string `json:"answer"`
 	Note     string `json:"note"`
+	// Severity is blocker, major or minor; empty unless Answer is concern.
+	Severity string `json:"severity,omitempty"`
 }
 
 // Resolved reports a comment of the previous round. Status is resolved or open.
@@ -174,4 +182,21 @@ type Sources struct {
 	// PrevOpenKeys is the previous round's open items of an author loop:
 	// the only keys a verdict may name.
 	PrevOpenKeys map[string]bool
+}
+
+// Severity levels of a finding.
+const (
+	SeverityBlocker = "blocker"
+	SeverityMajor   = "major"
+	SeverityMinor   = "minor"
+)
+
+// normSeverity lower-cases and trims s and keeps it only when it is one of
+// the three levels; anything else is "".
+func normSeverity(s string) string {
+	switch s = strings.ToLower(strings.TrimSpace(s)); s {
+	case SeverityBlocker, SeverityMajor, SeverityMinor:
+		return s
+	}
+	return ""
 }

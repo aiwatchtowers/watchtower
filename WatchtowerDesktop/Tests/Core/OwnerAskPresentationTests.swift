@@ -227,4 +227,18 @@ final class OwnerAskPresentationTests: XCTestCase {
         let action = try XCTUnwrap(OwnerAskPresentation.answerActions(for: .question).first)
         XCTAssertEqual(OwnerAskPresentation.blocker(ask, draft: OwnerAskDraft(), with: action), "Answer every question")
     }
+
+    /// "Changes since #N" (spec 2026-10-28 §3): only a long run-on line of
+    /// four or more `; `-joined parts becomes a list.
+    func testChangesMarkdownSplitsOnlyALongRunOnLine() {
+        let long = (1...4).map { "part \($0) " + String(repeating: "x", count: 60) }.joined(separator: "; ")
+        XCTAssertEqual(OwnerAskPresentation.changesMarkdown(long).components(separatedBy: "\n").count, 4)
+        XCTAssertTrue(OwnerAskPresentation.changesMarkdown(long).hasPrefix("- part 1"))
+        let short = "a; b; c; d"
+        XCTAssertEqual(OwnerAskPresentation.changesMarkdown(short), short)
+        let prose = String(repeating: "word ", count: 50) + "; and then; more"
+        XCTAssertEqual(OwnerAskPresentation.changesMarkdown(prose), prose, "two semicolons are prose")
+        let lines = long.replacingOccurrences(of: "part 2", with: "part\n2")
+        XCTAssertEqual(OwnerAskPresentation.changesMarkdown(lines), lines, "a line break means the author laid it out")
+    }
 }

@@ -4,12 +4,11 @@ import WatchtowerCore
 /// Spec review, step 3 (spec §7): every finding grouped with the owner's
 /// mark, an unmarked one flagged (a click opens its chapter); **From the
 /// previous run** for comments whose finding the re-run did not find again;
-/// the note; then **Send round to the author** (verdict `changes`, needs a
-/// comment) and **Approve** (asks once while findings are unmarked).
+/// the note. **Request changes** and **Approve** sit in the drawer's footer
+/// (`SpecReviewVerdictButtons`).
 struct SpecReviewWrapUpView: View {
     let model: SpecReviewModel
     let result: SpecReviewResult
-    @State private var confirmingApprove = false
 
     var body: some View {
         ScrollView {
@@ -30,15 +29,10 @@ struct SpecReviewWrapUpView: View {
                     minHeight: CommentTextEditor.formMinHeight,
                     maxHeight: CommentTextEditor.formMaxHeight
                 )
-                actions
             }
             .frame(maxWidth: ReadableColumn.maxLineWidth, alignment: .leading)
             .padding(Spacing.page)
             .frame(maxWidth: .infinity)
-        }
-        .confirmationDialog(model.approveConfirmMessage, isPresented: $confirmingApprove) {
-            Button("Approve") { approve() }
-            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -75,9 +69,9 @@ struct SpecReviewWrapUpView: View {
         case .ok:
             Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success).accessibilityLabel("Fine as is")
         case .comment where mark?.body.isEmpty ?? true:
-            Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(Color.accentColor).accessibilityLabel("Fix")
+            Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(.secondary).accessibilityLabel("Fix")
         case .comment:
-            Image(systemName: "text.bubble.fill").foregroundStyle(Color.accentColor).accessibilityLabel("Comment")
+            Image(systemName: "text.bubble.fill").foregroundStyle(.secondary).accessibilityLabel("Comment")
         case .notUseful:
             Image(systemName: "hand.thumbsdown.fill").foregroundStyle(Color.secondary).accessibilityLabel("Not useful")
         case .viewed, nil:
@@ -114,57 +108,6 @@ struct SpecReviewWrapUpView: View {
                 .padding(.vertical, Spacing.compact)
             }
         }
-    }
-
-    /// One prominent action: Send while there are comments, else Approve.
-    /// Both stay off, with the reason, while the answer cannot go (an ask
-    /// question not answered yet).
-    private var actions: some View {
-        let blocker = model.answerBlocker
-        return VStack(alignment: .trailing, spacing: Spacing.small) {
-            if let blocker {
-                HStack(spacing: Spacing.compact) {
-                    Text(blocker).font(.caption).foregroundStyle(Tone.warning)
-                    if model.hasQuestions {
-                        Button("Go to Meaning") { model.phase = .meaning }.buttonStyle(.kitQuiet)
-                    }
-                }
-            }
-            actionButtons.disabled(blocker != nil)
-        }
-        .controlSize(.small)
-    }
-
-    private var actionButtons: some View {
-        HStack(spacing: Spacing.regular) {
-            if model.isAnswering { ProgressView().controlSize(.small) }
-            Spacer()
-            if model.canSend {
-                Button("Approve", action: pressApprove).buttonStyle(.kitSecondary)
-                Button("Send round to the author", action: send).buttonStyle(.kitPrimary)
-            } else {
-                Button("Send round to the author", action: send)
-                    .buttonStyle(.kitSecondary)
-                    .disabled(true)
-                    .help("Comment on a finding, or in the margin under Read the spec, first")
-                Button("Approve", action: pressApprove).buttonStyle(.kitPrimary)
-            }
-        }
-        .controlSize(.small)
-        .disabled(model.isAnswering)
-    }
-
-    private func pressApprove() {
-        if model.needsApproveConfirm { confirmingApprove = true } else { approve() }
-    }
-
-    // The answer's failures land in the ask's answer errors (the drawer's footer).
-    private func approve() {
-        Task { _ = await model.approve() }
-    }
-
-    private func send() {
-        Task { _ = await model.send() }
     }
 
     private func icon(_ title: String) -> String {

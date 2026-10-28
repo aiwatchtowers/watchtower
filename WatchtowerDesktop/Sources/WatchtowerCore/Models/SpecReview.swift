@@ -66,6 +66,9 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
         package var source: Source?
         package var anchor: Anchor?
 
+        /// Nil for an old review, a customised prompt or an unknown value.
+        package var severity: SpecReviewSeverity?
+
         package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
@@ -75,10 +78,11 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
             chapter = try c.decodeIfPresent(String.self, forKey: .chapter) ?? ""
             source = try c.decodeIfPresent(Source.self, forKey: .source)
             anchor = try c.decodeIfPresent(Anchor.self, forKey: .anchor)
+            severity = SpecReviewSeverity(raw: try c.decodeIfPresent(String.self, forKey: .severity))
         }
 
         private enum Keys: String, CodingKey {
-            case key, text, status, note, chapter, source
+            case key, text, status, note, chapter, source, severity
             case anchor = "where"
         }
     }
@@ -90,6 +94,9 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
         package var chapter: String
         package var anchor: Anchor?
 
+        /// Nil for an old review, a customised prompt or an unknown value.
+        package var severity: SpecReviewSeverity?
+
         package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
@@ -97,10 +104,11 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
             note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
             chapter = try c.decodeIfPresent(String.self, forKey: .chapter) ?? ""
             anchor = try c.decodeIfPresent(Anchor.self, forKey: .anchor)
+            severity = SpecReviewSeverity(raw: try c.decodeIfPresent(String.self, forKey: .severity))
         }
 
         private enum Keys: String, CodingKey {
-            case key, text, note, chapter
+            case key, text, note, chapter, severity
             case anchor = "where"
         }
     }
@@ -113,6 +121,9 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
         package var anchor: Anchor?
         package var evidence: Evidence?
 
+        /// Nil for an old review, a customised prompt or an unknown value.
+        package var severity: SpecReviewSeverity?
+
         package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
@@ -121,10 +132,11 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
             chapter = try c.decodeIfPresent(String.self, forKey: .chapter) ?? ""
             anchor = try c.decodeIfPresent(Anchor.self, forKey: .anchor)
             evidence = try c.decodeIfPresent(Evidence.self, forKey: .evidence)
+            severity = SpecReviewSeverity(raw: try c.decodeIfPresent(String.self, forKey: .severity))
         }
 
         private enum Keys: String, CodingKey {
-            case key, text, why, chapter, evidence
+            case key, text, why, chapter, evidence, severity
             case anchor = "where"
         }
     }
@@ -138,6 +150,9 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
         package var answer: String
         package var note: String
 
+        /// Nil for an old review, a customised prompt or an unknown value.
+        package var severity: SpecReviewSeverity?
+
         package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
@@ -146,9 +161,10 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
             question = try c.decodeIfPresent(String.self, forKey: .question) ?? ""
             answer = try c.decodeIfPresent(String.self, forKey: .answer) ?? ""
             note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+            severity = SpecReviewSeverity(raw: try c.decodeIfPresent(String.self, forKey: .severity))
         }
 
-        private enum Keys: String, CodingKey { case key, chapter, lens, question, answer, note }
+        private enum Keys: String, CodingKey { case key, chapter, lens, question, answer, note, severity }
     }
 
     /// A comment of the previous round. `status`: resolved or open.
@@ -366,4 +382,27 @@ package struct SpecReviewMark: Equatable, Sendable {
         self.body = body
         self.about = about
     }
+}
+
+/// How much a finding matters, as the reviewer rates it (Go `specreview`
+/// severity; prompt `review.spec` v3). Ordered most serious first.
+package enum SpecReviewSeverity: String, Comparable, Sendable, CaseIterable {
+    case blocker, major, minor
+
+    /// Nil for a missing or unknown value (Go's `Parse` already empties
+    /// invalid ones; this keeps the Desktop as strict).
+    package init?(raw: String?) {
+        guard let raw else { return nil }
+        self.init(rawValue: raw.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    private var rank: Int {
+        switch self {
+        case .blocker: 0
+        case .major: 1
+        case .minor: 2
+        }
+    }
+
+    package static func < (lhs: Self, rhs: Self) -> Bool { lhs.rank < rhs.rank }
 }

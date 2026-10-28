@@ -161,7 +161,7 @@ var DefaultVersions = map[string]int{
 	TerminalTitle:              3,  // v3: the messages are data to name, never to answer; "[Image #N]" placeholders (v2: agent-neutral; v1 named a Claude Code session)
 	ReviewOverview:             2,  // v2: coverage entries carry the intent item's 1-based "index" (v1: overview — intent coverage, risk map, chapters, strong tier)
 	ReviewLessons:              1,  // v1: diff reviewer — repeated review comments to house rules (strong tier)
-	SpecReview:                 2,  // v2: author loop — verdicts on the previous open items, new findings only on changed text or blockers (v1: spec reviewer — a spec or plan against what was agreed, strong tier, read-only agent)
+	SpecReview:                 3,  // v3: severity (blocker | major | minor) on every finding the owner or the author must act on (v2: author loop — verdicts on the previous open items, new findings only on changed text or blockers; v1: spec reviewer — a spec or plan against what was agreed, strong tier, read-only agent)
 	InstructionSuggestions:     2,  // v2: also directions repeated across AI chats (c<id> labels); v1: workbench sessions (light tier)
 	CoachPropose:               2,  // v2: the exact allow-rule table, claude_md_user allowed (4000 ceiling), ROLLED BACK group (v1: agent coach — edits to the owner's setup from repeated signals, strong tier)
 	MediaDescribe:              1,  // v1: an attached image to a title, description, verbatim text and keys (strong tier, image input)
@@ -1721,7 +1721,8 @@ Rules:
 
 // defaultSpecReview is the independent spec reviewer (spec
 // 2026-10-25-spec-review-design §3, §6, §9; v2: the author loop of
-// 2026-10-26-spec-review-author-loop-design §4). Verbatim text, no format verbs:
+// 2026-10-26-spec-review-author-loop-design §4; v3: severity of
+// 2026-10-28-spec-review-severity-design §1). Verbatim text, no format verbs:
 // the document and every source arrive in the user message after the
 // "=== DATA ===" line, each fenced as <<<name … >>>. The reply keys follow
 // internal/specreview/testdata/result_keys.golden; code drops every finding
@@ -1760,6 +1761,12 @@ What to report:
 7. verdicts (author-loop rounds only, when the previous_open_items block is present): one entry per [key] line of that block, with the key copied exactly. "resolved" when the fix is in the document or the author's reason convinces you; "disputed" when you keep your position after the author disagreed (the note says why in one line); "open" when the author said fixed but the fix is not in the document. Leave verdicts out, or empty, when the block is absent.
 8. summary: one or two sentences the owner reads first.
 
+Severity: every agreement with status "differs" or "missing", every decided_alone, every blind_spot and every check answered "concern" carries "severity", one of:
+- "blocker": building as written ships something wrong: a broken promise to the owner, lost data, a missing contract, a path that fails silently.
+- "major": a real gap to fix before building: a missing case, an unclear behaviour, a task with no test.
+- "minor": wording, a nit, a nice-to-have.
+An agreement with status "as_agreed" and a check answered "ok" or "n/a" carry no severity. Give a severity when you raise a finding; never change it later.
+
 On an author-loop round (the previous_open_items block is present), raise a new finding only about text that changed since the previous round's document, or when it would block the work: a broken promise to the owner, a missing contract, a path that loses data. Drop small new remarks on unchanged text. Never raise a previous item again as a new finding: give it a verdict instead.
 
 The Decisions section (specs only): a spec should keep a "## Decisions" section (its heading may go on, as in "## Decisions (owner-approved)"), one line per decision with its source (an ask number or "conversation"). Check it both ways. A decision listed there with no trace in the sources is a finding (decided_alone, or an agreement that differs). An agreement in the sources that is missing from the list is a finding (an agreement whose where is the Decisions section when the document covers the point elsewhere, or "missing"). A spec with no Decisions section at all is a blind spot. A plan is exempt: it keeps no Decisions section, because its agreements come from its spec (the spec block, its Decisions section included); never report a plan's missing Decisions section.
@@ -1782,16 +1789,17 @@ Return ONLY a JSON object (no markdown fences, no prose outside the JSON) with e
 {
   "summary": "one or two sentences",
   "idea": {"owner_quote": "the owner's words", "goal_quote": "the document's words", "verdict": "matches", "note": "one line", "owner_source": {"kind": "conversation", "ref": "entry:<id>", "quote": "the owner's words"}},
-  "agreements": [{"text": "the agreed point, one line", "status": "as_agreed", "note": "one line", "source": {"kind": "ask", "ref": "ask:<n>", "quote": "copied from that answer"}, "where": {"heading": "Chapter heading", "quote": "copied from that chapter"}}, {"text": "an agreed point the document leaves out", "status": "missing", "note": "one line", "source": {"kind": "conversation", "ref": "entry:<id>", "quote": "the owner's words"}, "where": null, "chapter": "ch:2"}],
-  "decided_alone": [{"text": "what the document decides", "note": "why the owner should know", "where": {"heading": "Chapter heading", "quote": "copied from that chapter"}}],
-  "blind_spots": [{"text": "what is not considered", "why": "why it matters", "where": {"heading": "Chapter heading", "quote": "copied from that chapter"}, "evidence": {"path": "path/in/the/folder.go", "line": 42}}],
-  "checks": [{"chapter": "ch:1", "lens": "promises", "question": "Does every promise have a task?", "answer": "concern", "note": "one line"}],
+  "agreements": [{"text": "the agreed point, one line", "status": "as_agreed", "note": "one line", "source": {"kind": "ask", "ref": "ask:<n>", "quote": "copied from that answer"}, "where": {"heading": "Chapter heading", "quote": "copied from that chapter"}}, {"text": "an agreed point the document leaves out", "status": "missing", "severity": "major", "note": "one line", "source": {"kind": "conversation", "ref": "entry:<id>", "quote": "the owner's words"}, "where": null, "chapter": "ch:2"}],
+  "decided_alone": [{"text": "what the document decides", "severity": "minor", "note": "why the owner should know", "where": {"heading": "Chapter heading", "quote": "copied from that chapter"}}],
+  "blind_spots": [{"text": "what is not considered", "severity": "major", "why": "why it matters", "where": {"heading": "Chapter heading", "quote": "copied from that chapter"}, "evidence": {"path": "path/in/the/folder.go", "line": 42}}],
+  "checks": [{"chapter": "ch:1", "lens": "promises", "question": "Does every promise have a task?", "answer": "concern", "severity": "major", "note": "one line"}],
   "resolved": [{"comment_quote": "copied from the owner's comment", "status": "resolved", "note": "one line"}],
   "verdicts": [{"key": "ag:0123456789ab", "verdict": "resolved", "note": "one line"}],
   "notes": ["anything the owner should know about this review, e.g. what you could not check"]
 }
 
 Rules:
+- "severity" appears only on the findings named in the Severity section, and is exactly "blocker", "major" or "minor".
 - "where" is null on a missing agreement and may be null on a blind spot; "evidence" may be null.
 - "chapter" in checks is a chapter key from the review block (ch:<n>). On an agreement or a blind spot whose "where" is null, "chapter" is the key of the chapter it belongs in (leave it out when none fits); with a "where", leave "chapter" out.
 - Use empty lists when there is nothing to report; resolved is empty on a first round, verdicts on any round without a previous_open_items block.

@@ -9,10 +9,9 @@ struct SpecReviewFindingCard: View {
     let finding: SpecReviewChapterFinding
 
     var body: some View {
-        let badge = SpecReviewPresentation.badge(for: finding)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                Chip(text: badge.title, color: badge.tint.color)
+                SpecReviewChips(severity: finding.severity, kind: SpecReviewPresentation.badge(for: finding))
                 Text(text).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }
             if let source, !source.quote.isEmpty {
@@ -31,10 +30,9 @@ struct SpecReviewFindingCard: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
-            // A finished author loop is decided on its own screen: no marks here.
-            if !model.isLoop {
-                SpecReviewMarkControls(model: model, key: finding.key)
-            }
+            // A finished author loop takes Fix and Comment only: the sides
+            // are picked on Decide (spec 2026-10-28 §4).
+            SpecReviewMarkControls(model: model, key: finding.key, commentOnly: model.isLoop)
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -71,7 +69,11 @@ struct SpecReviewFindingCard: View {
     }
 }
 
-/// A caption label over a quoted line.
+/// A label over a quote: upright text in the primary colour with a bar on
+/// its left, inline Markdown rendered (code spans, emphasis; links as text), so it reads
+/// at a glance in dark mode (spec 2026-10-28 §3). `quoted` marks words
+/// copied from a source (the bar is drawn); the reviewer's and the author's
+/// own lines go without it.
 struct SpecReviewQuote: View {
     let label: String
     let quote: String
@@ -79,13 +81,102 @@ struct SpecReviewQuote: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
-            Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            Text(quoted ? "“\(quote)”" : quote)
-                .font(.callout)
-                .italic(quoted)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+            Text(label).font(.caption.weight(.semibold)).foregroundStyle(.primary)
+            HStack(alignment: .top, spacing: Spacing.compact) {
+                if quoted {
+                    Rectangle().fill(.secondary).frame(width: Spacing.tight)
+                }
+                Text(MarkdownView.inlineLabel(quote))
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+/// A finding's head chips: the coloured severity, when the reviewer gave
+/// one, then the neutral kind (and loop status).
+struct SpecReviewChips: View {
+    let severity: SpecReviewSeverity?
+    let kind: SpecReviewPresentation.Badge
+
+    var body: some View {
+        if let badge = SpecReviewPresentation.severityBadge(severity) {
+            Chip(text: badge.title, color: badge.tint.color)
+        }
+        Chip(text: kind.title, color: kind.tint.color)
+    }
+}
+
+/// The owner's pick on a finding, in the primary colour: only severity is
+/// coloured on this screen.
+struct SpecReviewPickedLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label {
+            Text(title).foregroundStyle(.primary)
+        } icon: {
+            Image(systemName: systemImage).foregroundStyle(.secondary)
+        }
+        .font(.caption.weight(.medium))
+    }
+}
+
+/// The comment under a picked **Fix** / **Reviewer is right**: the owner's
+/// words with **Edit**, or **Add comment**; it writes the body of the same
+/// `comment` mark (spec 2026-10-28 §4).
+struct SpecReviewMarkComment: View {
+    let model: SpecReviewModel
+    let key: String
+    @State private var editing = false
+    @State private var text = ""
+
+    var body: some View {
+        let body = model.marks[key]?.body ?? ""
+        if editing {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                CommentTextEditor(
+                    text: $text,
+                    placeholder: "Your comment for the author",
+                    focusOnAppear: true,
+                    minHeight: CommentTextEditor.formMinHeight,
+                    maxHeight: CommentTextEditor.formMaxHeight,
+                    onSubmit: save
+                ) { editing = false }
+                HStack(spacing: Spacing.regular) {
+                    Spacer()
+                    Button("Cancel") { editing = false }.buttonStyle(.kitQuiet)
+                    Button("Save", action: save)
+                        .buttonStyle(.kitSecondary)
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help("Shortcut: ⌘↩")
+                }
+            }
+        } else if body.isEmpty {
+            HStack {
+                Spacer()
+                Button("Add Comment") { text = ""; editing = true }.buttonStyle(.kitQuiet)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(body).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button("Edit") { text = body; editing = true }.buttonStyle(.kitQuiet)
+                }
+            }
+        }
+    }
+
+    private func save() {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+        editing = false
+        Task { await model.mark(key, .comment, body: body) }
     }
 }
 
@@ -97,6 +188,8 @@ struct SpecReviewQuote: View {
 struct SpecReviewMarkControls: View {
     let model: SpecReviewModel
     let key: String
+    /// A finished author loop: **Fix** and **Comment** only.
+    var commentOnly = false
     @State private var editing = false
     @State private var text = ""
 
@@ -108,7 +201,8 @@ struct SpecReviewMarkControls: View {
                 switch model.marks[key]?.state {
                 case .ok:
                     HStack(spacing: Spacing.regular) {
-                        Label("Fine as is", systemImage: "checkmark.circle.fill")
+                        // In a loop the mark comes from Decide's Author is right / Skip.
+                        Label(commentOnly ? "Kept as is" : "Fine as is", systemImage: "checkmark.circle.fill")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Tone.success)
                         Spacer()
@@ -124,18 +218,14 @@ struct SpecReviewMarkControls: View {
                     }
                 case .comment where model.marks[key]?.body.isEmpty ?? true:
                     HStack(spacing: Spacing.regular) {
-                        Label("Fix", systemImage: "wrench.and.screwdriver.fill")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Color.accentColor)
+                        SpecReviewPickedLabel(title: "Fix", systemImage: "wrench.and.screwdriver.fill")
                         Spacer()
                         Button("Add Comment") { startEditing() }.buttonStyle(.kitQuiet)
                         Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                     }
                 case .comment:
                     VStack(alignment: .leading, spacing: Spacing.small) {
-                        Label("Your comment", systemImage: "text.bubble.fill")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Color.accentColor)
+                        SpecReviewPickedLabel(title: "Your comment", systemImage: "text.bubble.fill")
                         Text(model.marks[key]?.body ?? "").font(.callout).textSelection(.enabled)
                         HStack(spacing: Spacing.regular) {
                             Spacer()
@@ -143,6 +233,8 @@ struct SpecReviewMarkControls: View {
                             Button("Remove") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                         }
                     }
+                case .viewed where commentOnly, nil where commentOnly:
+                    HStack(spacing: Spacing.regular) { fixButton; commentButton }
                 case .viewed, nil:
                     // A narrow drawer puts them on two rows.
                     ViewThatFits(in: .horizontal) {
