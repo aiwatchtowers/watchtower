@@ -6,14 +6,16 @@ import (
 	"strconv"
 
 	"watchtower/internal/fsutil"
+	"watchtower/internal/kb"
 	"watchtower/internal/meeting"
 
 	"github.com/spf13/cobra"
 )
 
-// runTranscriptPrivate sets a recording's private flag (MEETPRIV-04): the
-// knowledge index drops or restores it on its next pass; nothing is
-// generated or unmined.
+// runTranscriptPrivate sets a recording's private flag (MEETPRIV-04). Turning
+// it on also drops the recording's knowledge documents now, so search stops
+// serving them at once; the indexer's next pass restores them once it is
+// off. Nothing is generated or unmined.
 func runTranscriptPrivate(cmd *cobra.Command, args []string) error {
 	id, err := strconv.ParseInt(args[0], 10, 64)
 	if err != nil {
@@ -40,6 +42,11 @@ func runTranscriptPrivate(cmd *cobra.Command, args []string) error {
 	}
 	if !found {
 		return fmt.Errorf("transcript %d not found", id)
+	}
+	if private {
+		if _, err := kb.DropPrivateRecording(cmd.Context(), database, id); err != nil {
+			return fmt.Errorf("recording %d is private, but removing it from the knowledge index failed (the next index pass retries): %w", id, err)
+		}
 	}
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"id": id, "private": private})
 }

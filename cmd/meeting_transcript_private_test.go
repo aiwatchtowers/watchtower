@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/kb"
 )
 
 // Guards for MEETPRIV-01/04/05 (docs/inventory/meetings.md) at the CLI.
@@ -170,6 +171,18 @@ func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
 	}
 	assert.Equal(t, false, show()["private"])
 
+	ctx := context.Background()
+	kbSources := []string{"transcript", "recap"}
+	_, err = kb.Run(ctx, database, kb.Options{Sources: kbSources})
+	require.NoError(t, err)
+	indexed := func() bool {
+		var n int
+		require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE id = ?`, fmt.Sprintf("transcript:%d", id)).Scan(&n))
+		return n == 1
+	}
+	require.True(t, indexed())
+
+	transcriptPrivateCmd.SetContext(ctx)
 	for _, tc := range []struct {
 		arg  string
 		want bool
@@ -179,7 +192,15 @@ func TestMeetPriv04_PrivateCommandTogglesAndShowReports(t *testing.T) {
 		require.NoError(t, transcriptPrivateCmd.RunE(transcriptPrivateCmd, []string{fmt.Sprint(id), tc.arg}))
 		assert.JSONEq(t, fmt.Sprintf(`{"id":%d,"private":%t}`, id, tc.want), buf.String())
 		assert.Equal(t, tc.want, show()["private"])
+		if tc.want {
+			// Out of the knowledge index at once, with no indexer pass.
+			assert.False(t, indexed(), "private on must drop the transcript document now")
+		}
 	}
+	// Off: the indexer's next pass brings it back.
+	_, err = kb.Run(ctx, database, kb.Options{Sources: kbSources})
+	require.NoError(t, err)
+	assert.True(t, indexed())
 
 	err = transcriptPrivateCmd.RunE(transcriptPrivateCmd, []string{fmt.Sprint(id), "yes"})
 	assert.ErrorContains(t, err, `invalid value "yes"`)
