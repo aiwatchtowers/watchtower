@@ -19,6 +19,8 @@ package struct RecordingListItem: Decodable, FetchableRecord, Identifiable, Equa
     package let hasRecap: Bool
     package let hasNotes: Bool
     package let snippet: String
+    /// `meeting_transcripts.private` — the row's lock badge.
+    package let isPrivate: Bool
 
     package init(
         id: Int64,
@@ -30,7 +32,8 @@ package struct RecordingListItem: Decodable, FetchableRecord, Identifiable, Equa
         createdAt: String,
         hasRecap: Bool,
         hasNotes: Bool,
-        snippet: String
+        snippet: String,
+        isPrivate: Bool = false
     ) {
         self.id = id
         self.eventID = eventID
@@ -42,6 +45,7 @@ package struct RecordingListItem: Decodable, FetchableRecord, Identifiable, Equa
         self.hasRecap = hasRecap
         self.hasNotes = hasNotes
         self.snippet = snippet
+        self.isPrivate = isPrivate
     }
 
     package enum CodingKeys: String, CodingKey {
@@ -55,6 +59,7 @@ package struct RecordingListItem: Decodable, FetchableRecord, Identifiable, Equa
         case hasRecap = "has_recap"
         case hasNotes = "has_notes"
         case snippet
+        case isPrivate = "private"
     }
 
     private static let iso8601Formatter: ISO8601DateFormatter = {

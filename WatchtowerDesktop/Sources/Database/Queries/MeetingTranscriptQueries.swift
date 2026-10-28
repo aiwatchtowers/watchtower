@@ -36,7 +36,9 @@ enum MeetingTranscriptQueries {
     /// links the transcript to the event; if the event has no `meeting_recaps`
     /// row and the transcript carries a summary, copies it into
     /// `meeting_recaps` (`source_text` = transcript text) so the recap shows up
-    /// in the existing recap UI immediately.
+    /// in the existing recap UI immediately — except for a private recording,
+    /// whose text never lands in `meeting_recaps` (MEETPRIV-03: Go's prompt
+    /// readers would otherwise see it through the event's recap row).
     static func linkToEvent(_ db: Database, id: Int64, eventID: String) throws {
         guard let transcript = try fetch(db, id: id) else { return }
         try db.execute(
@@ -46,6 +48,7 @@ enum MeetingTranscriptQueries {
                 WHERE id = ?
                 """,
             arguments: [eventID, id])
+        guard !transcript.isPrivate else { return }
         guard let summaryJSON = transcript.summaryJSON, !summaryJSON.isEmpty else { return }
         guard try MeetingRecapQueries.fetch(db, eventID: eventID) == nil else { return }
         try db.execute(
@@ -81,7 +84,8 @@ enum MeetingTranscriptQueries {
                             WHERE r.event_id = t.event_id OR r.transcript_id = t.id
                         )) AS has_recap,
                        (t.notes_md IS NOT NULL) AS has_notes,
-                       substr(t.transcript_text, 1, 200) AS snippet
+                       substr(t.transcript_text, 1, 200) AS snippet,
+                       t.private
                 FROM meeting_transcripts t
                 LEFT JOIN calendar_events e ON e.id = t.event_id
                 ORDER BY t.created_at DESC, t.id DESC

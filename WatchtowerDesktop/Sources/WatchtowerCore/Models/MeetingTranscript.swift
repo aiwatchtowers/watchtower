@@ -13,6 +13,8 @@ import GRDB
 /// speaker label (nil when the diarizer produced no embeddings).
 /// `chaptersJSON` is the AI chapter breakdown (nil until generated).
 /// `speakerNamesChangedAt` is stamped by every speaker relabel.
+/// `isPrivate` (`private`, migration 00163) keeps the recording away from
+/// every AI provider (MEETPRIV-01..05); only the CLI writes it.
 package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     package static let databaseTableName = "meeting_transcripts"
 
@@ -38,6 +40,9 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     /// Go's recap writer. nil for a recap older than the column. Unlike
     /// `updatedAt`, a relabel never bumps it.
     package let summaryUpdatedAt: String?
+    /// The owner marked the recording private: no AI action runs on it and
+    /// no AI reader sees it (docs/features/private-meetings.md).
+    package let isPrivate: Bool
 
     package init(
         id: Int64? = nil,
@@ -55,7 +60,8 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         createdAt: String,
         updatedAt: String,
         speakerNamesChangedAt: String? = nil,
-        summaryUpdatedAt: String? = nil
+        summaryUpdatedAt: String? = nil,
+        isPrivate: Bool = false
     ) {
         self.id = id
         self.eventID = eventID
@@ -73,6 +79,7 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         self.updatedAt = updatedAt
         self.speakerNamesChangedAt = speakerNamesChangedAt
         self.summaryUpdatedAt = summaryUpdatedAt
+        self.isPrivate = isPrivate
     }
 
     /// Whether speaker names changed (a Voices-window label, relabel or retro
@@ -154,6 +161,7 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         case updatedAt = "updated_at"
         case speakerNamesChangedAt = "speaker_names_changed_at"
         case summaryUpdatedAt = "summary_updated_at"
+        case isPrivate = "private"
     }
 
     package mutating func didInsert(_ inserted: InsertionSuccess) {

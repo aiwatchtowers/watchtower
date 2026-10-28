@@ -418,4 +418,126 @@ final class TranscriptSaveServiceTests: XCTestCase {
             eventID: nil, title: nil, langStatsJSON: "{}")
         XCTAssertNil(try json(try payload(fake)["speakers"]), "nil speakers → null, legacy behavior")
     }
+
+    // MARK: - Private recordings (MEETPRIV)
+
+    func test_savePrivateAppendsPrivateFlag() async throws {
+        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        _ = try await svc.save(
+            transcriptText: "hello", audioPath: "/tmp/a.wav", durationSec: 60,
+            eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: true)
+
+        XCTAssertEqual(fake.invocations.first?.last, "--private")
+        XCTAssertEqual(fake.invocations.first?.filter { $0 == "--private" }.count, 1)
+    }
+
+    func test_saveNotPrivateOmitsPrivateFlag() async throws {
+        let fake = FakeCLIRunner(stdout: Data(envelopeJSON.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        _ = try await svc.save(
+            transcriptText: "hello", audioPath: "/tmp/a.wav", durationSec: 60,
+            eventID: nil, title: nil, langStatsJSON: "{}")
+
+        XCTAssertFalse(fake.invocations.first?.contains("--private") ?? true)
+    }
+
+    func test_saveDecodesPrivateSkipEnvelope() async throws {
+        let payload = """
+        {"transcript_id":9,"recap_ok":false,"recap_error":"","recap_skipped":"private",\
+        "chapters_ok":false,"chapters_skipped":"private"}
+        """
+        let svc = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data(payload.utf8)))
+
+        let result = try await svc.save(
+            transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
+            eventID: nil, title: nil, langStatsJSON: "{}", isPrivate: true)
+
+        XCTAssertEqual(result.transcriptID, 9)
+        XCTAssertTrue(result.recapSkipped)
+        XCTAssertTrue(result.recapSkippedPrivate)
+    }
+
+    func test_saveBoolRecapSkippedIsNotPrivate() async throws {
+        let payload = #"{"transcript_id":7,"recap_ok":false,"recap_error":"short","recap_skipped":true}"#
+        let svc = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data(payload.utf8)))
+
+        let result = try await svc.save(
+            transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
+            eventID: nil, title: nil, langStatsJSON: "{}")
+
+        XCTAssertTrue(result.recapSkipped)
+        XCTAssertFalse(result.recapSkippedPrivate)
+    }
+
+    func test_setPrivateArgsAndDecode() async throws {
+        let fake = FakeCLIRunner(stdout: Data(#"{"id":12,"private":true}"#.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        let on = try await svc.setPrivate(transcriptID: 12, true)
+        XCTAssertEqual(fake.invocations.last, ["meeting-prep", "transcript", "private", "12", "on"])
+        XCTAssertEqual(on, TranscriptPrivateResult(transcriptID: 12, isPrivate: true))
+
+        let offFake = FakeCLIRunner(stdout: Data(#"{"id":12,"private":false}"#.utf8))
+        let off = try await TranscriptSaveService(runner: offFake).setPrivate(transcriptID: 12, false)
+        XCTAssertEqual(offFake.invocations.last, ["meeting-prep", "transcript", "private", "12", "off"])
+        XCTAssertFalse(off.isPrivate)
+    }
+
+    func test_setPrivatePropagatesRunnerError() async {
+        let svc = TranscriptSaveService(runner: FakeCLIRunner(error: CLIRunnerError.binaryNotFound))
+        do {
+            _ = try await svc.setPrivate(transcriptID: 3, true)
+            XCTFail("expected throw")
+        } catch CLIRunnerError.binaryNotFound {
+            // expected
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+    }
+
+    func test_exportToFileArgs() async throws {
+        for format in TranscriptExportFormat.allCases {
+            let fake = FakeCLIRunner(stdout: Data())
+            try await TranscriptSaveService(runner: fake).export(
+                transcriptID: 5, format: format, outputPath: "/tmp/out.\(format.fileExtension)")
+            XCTAssertEqual(fake.invocations.first, [
+                "meeting-prep", "transcript", "export", "5", "--format", format.rawValue,
+                "--output", "/tmp/out.\(format.fileExtension)"
+            ])
+        }
+    }
+
+    func test_exportToStdoutReturnsRendering() async throws {
+        let fake = FakeCLIRunner(stdout: Data("[00:00:01] Speaker 1: hi\n".utf8))
+        let data = try await TranscriptSaveService(runner: fake).export(transcriptID: 5, format: .txt)
+
+        XCTAssertEqual(fake.invocations.first, ["meeting-prep", "transcript", "export", "5", "--format", "txt"])
+        XCTAssertEqual(String(bytes: data, encoding: .utf8), "[00:00:01] Speaker 1: hi\n")
+    }
+
+    func test_exportPropagatesRunnerError() async {
+        let svc = TranscriptSaveService(runner: FakeCLIRunner(error: CLIRunnerError.binaryNotFound))
+        do {
+            try await svc.export(transcriptID: 5, format: .srt, outputPath: "/tmp/x.srt")
+            XCTFail("expected throw")
+        } catch CLIRunnerError.binaryNotFound {
+            // expected
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+    }
+
+    func test_exportFormatOnlySRTNeedsSegments() {
+        XCTAssertEqual(TranscriptExportFormat.allCases.filter(\.needsSegments), [.srt])
+    }
+
+    func test_exportSuggestedFileName() {
+        XCTAssertEqual(TranscriptExportFormat.md.suggestedFileName(title: "Weekly sync"), "Weekly sync.md")
+        XCTAssertEqual(TranscriptExportFormat.srt.suggestedFileName(title: "Q3/Q4: plan"), "Q3-Q4- plan.srt")
+        XCTAssertEqual(TranscriptExportFormat.txt.suggestedFileName(title: "   "), "Recording.txt")
+        XCTAssertEqual(TranscriptExportFormat.json.suggestedFileName(title: ".."), "Recording.json")
+    }
 }
