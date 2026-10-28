@@ -1,0 +1,74 @@
+{
+  "chats": {
+    "calls": 96, "errors": 0, "estimated_calls": 0, "no_price_calls": 0, "untagged_calls": 0,
+    "input": 1200000, "cache_read": 35600000, "cache_write": 900000, "output": 300000,
+    "cost_usd": 61.0, "cost_is_lower_bound": false
+  },
+  "ledger_since": "2026-10-20T07:12:03Z",
+  "own_automations": {
+    "totals": {
+      "calls": 226, "errors": 1, "estimated_calls": 0, "no_price_calls": 0, "untagged_calls": 0,
+      "input": 60000, "cache_read": 0, "cache_write": 0, "output": 1003000,
+      "cost_usd": 22.4, "cost_is_lower_bound": false
+    },
+    "rows": [
+      { "automation_id": 7, "name": "Weekly to-do", "runs": 6, "calls": 6,
+        "input": 37000, "output": 3000, "cost_usd": 0.5, "cost_is_estimate": true },
+      { "automation_id": 3, "name": "Triage new tracker issues", "runs": 110, "calls": 220,
+        "input": 23000, "output": 1000000, "cost_usd": 21.9, "cost_is_estimate": false }
+    ]
+  },
+  "page_total": {
+    "calls": 1606, "errors": 4, "estimated_calls": 12, "no_price_calls": 30, "untagged_calls": 3,
+    "input": 1472000, "cache_read": 44600000, "cache_write": 1300000, "output": 1789000,
+    "cost_usd": 124.6, "cost_is_lower_bound": true
+  },
+  "period": "7d",
+  "watchtower": {
+    "totals": {
+      "calls": 1284, "errors": 3, "estimated_calls": 12, "no_price_calls": 30, "untagged_calls": 3,
+      "input": 212000, "cache_read": 9000000, "cache_write": 400000, "output": 486000,
+      "cost_usd": 41.2, "cost_is_lower_bound": true
+    },
+    "rows": [
+      { "purpose": "media.describe", "models": ["sonnet"], "calls": 120,
+        "input": 40000, "cache_read": 300000, "cache_write": 18000, "output": 22000,
+        "cost_usd": 2.9, "cost_is_estimate": false, "cost_is_lower_bound": false, "per_call_tokens": 3166 },
+      { "purpose": "digest.channel", "models": ["haiku", "sonnet"], "calls": 412,
+        "input": 90000, "cache_read": 2800000, "cache_write": 90000, "output": 120000,
+        "cost_usd": 14.1, "cost_is_estimate": false, "cost_is_lower_bound": false, "per_call_tokens": 7524 },
+      { "purpose": "", "process": "cli:jira boards", "models": ["sonnet"], "calls": 3,
+        "input": 2000, "cache_read": 15000, "cache_write": 0, "output": 1000,
+        "cost_usd": 0.2, "cost_is_estimate": false, "cost_is_lower_bound": false, "per_call_tokens": 6000 },
+      { "purpose": "briefing.daily", "models": ["opus"], "calls": 7,
+        "input": 30000, "cache_read": 1100000, "cache_write": 30000, "output": 40000,
+        "cost_usd": 9.8, "cost_is_estimate": false, "cost_is_lower_bound": false, "per_call_tokens": 171428 },
+      { "purpose": "memory.extract_episodes", "models": ["llama3"], "calls": 30,
+        "input": 20000, "cache_read": 0, "cache_write": 0, "output": 6000,
+        "cost_usd": null, "cost_is_estimate": false, "cost_is_lower_bound": true, "per_call_tokens": 866 },
+      { "purpose": "instructions.suggest", "models": ["sonnet"], "calls": 7,
+        "input": 10000, "cache_read": 900000, "cache_write": 33000, "output": 17000,
+        "cost_usd": 6.4, "cost_is_estimate": false, "cost_is_lower_bound": false, "per_call_tokens": 137142 },
+      { "purpose": "ideas.consolidate", "models": ["sonnet"], "calls": 53,
+        "input": 20000, "cache_read": 385000, "cache_write": 1000, "output": 4000,
+        "cost_usd": 3.1, "cost_is_estimate": true, "cost_is_lower_bound": false, "per_call_tokens": 7735 }
+    ]
+  },
+  "workbenches": {
+    "totals": {
+      "calls": 9120, "errors": 0, "estimated_calls": 0, "no_price_calls": 0, "untagged_calls": 0,
+      "input": 4100000, "cache_read": 398000000, "cache_write": 6000000, "output": 3900000,
+      "cost_usd": 620.0, "cost_is_lower_bound": false
+    },
+    "sessions": {
+      "sessions": 41, "calls": 9000, "input": 4000000, "cache_read": 396500000, "cache_write": 5900000,
+      "output": 3600000, "cost_usd": 612.0
+    },
+    "helpers": {
+      "calls": 120, "errors": 0, "estimated_calls": 0, "no_price_calls": 0, "untagged_calls": 0,
+      "input": 100000, "cache_read": 1500000, "cache_write": 100000, "output": 300000,
+      "cost_usd": 8.0, "cost_is_lower_bound": false
+    },
+    "analytics_off": ["demo-bench"]
+  }
+}
