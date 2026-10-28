@@ -51,8 +51,7 @@ Sections, each call in exactly one: **Watchtower** (surface `watchtower`, built-
 - A call lost on both the spool and the fallback leaves only the `watchtower.log` line and stderr; when the log append fails too (the disk is the usual cause of all three) only stderr. The screen cannot count these.
 - An interrupted chat turn loses its streamed tokens: usage arrives with the `result` line, which an interrupt never produces.
 - Workbench session totals are estimates priced from agent-analytics tokens and cover only workbenches with analytics on; the screen names the ones left out.
-- A transient undercount for one refresh is possible: the table reads are not in one snapshot, and the two spool files (`.importing` and the live one) are read without a lock.
-- A workbench session on an unpriced model shows ≈ $0 rather than ≥.
+- The table reads run in one read-only snapshot and the spool is read live file first, then `.importing`, without a lock; a daemon import racing the read can only make a call appear in both, which the `call_id` de-duplication removes.
 - Retention is 90 days; the screen's longest period is 30.
 
 ### Guard blind spots

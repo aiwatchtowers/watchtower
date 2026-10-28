@@ -701,7 +701,7 @@ log.") and never reads as empty.
   `target_status_history` rows of `project_id IS NOT NULL` targets (this is
   the PROJ-01 mirror — workbench targets only, never reaching the feed).
   Recorded: `meeting_transcripts` created today. View: `NumbersZoneView.swift`
-  (muted, nothing clickable).
+  (muted; only the AI spend cell is clickable — it opens Usage → Watchtower).
 
 ### Resolutions made while planning
 
