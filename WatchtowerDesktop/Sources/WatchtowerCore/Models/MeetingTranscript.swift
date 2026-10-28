@@ -41,8 +41,10 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     /// `updatedAt`, a relabel never bumps it.
     package let summaryUpdatedAt: String?
     /// The owner marked the recording private: no AI action runs on it and
-    /// no AI reader sees it (docs/features/private-meetings.md).
-    package let isPrivate: Bool
+    /// no AI reader sees it (docs/features/private-meetings.md). A `var` only
+    /// so the detail view can turn its in-memory row private ahead of the
+    /// reload; the CLI stays the only writer of the column.
+    package var isPrivate: Bool
 
     package init(
         id: Int64? = nil,

@@ -368,6 +368,12 @@ struct RecordingDetailView: View {
             // The pane moved to another recording during the read: its own
             // load fills the screen, this one must not overwrite it.
             guard isShowing(transcriptID) else { return }
+            if loaded.row?.isPrivate == true {
+                // Made private elsewhere (the CLI, another window) while a
+                // chat engine of it was alive.
+                appState.embeddedChatCenter.dropContext(type: MeetingChatSurface.contextType,
+                                                        id: String(transcriptID))
+            }
             transcript = loaded.row
             linkedEvent = loaded.link
             callAudioNote = loaded.callAudioNote
@@ -483,10 +489,13 @@ struct RecordingDetailView: View {
 
     /// The CLI set the flag. Turning it on stops this recording's chat
     /// (MEETPRIV-01: nothing more reaches the provider); then the row
-    /// reloads so every tab follows the flag.
+    /// reloads so every tab follows the flag. The row on screen turns
+    /// private first: dropping the engine re-renders the Chat tab, which
+    /// must not build a new engine from the old, non-private row.
     private func privateChanged(_ isPrivate: Bool) {
         let id = transcriptID
         if isPrivate {
+            if isShowing(id) { transcript?.isPrivate = true }
             appState.embeddedChatCenter.dropContext(type: MeetingChatSurface.contextType, id: String(id))
         }
         onChanged()
