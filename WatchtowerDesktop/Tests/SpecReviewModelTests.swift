@@ -180,6 +180,18 @@ final class SpecReviewModelTests: XCTestCase {
         model.stopPolling()
     }
 
+    /// Approve from the reviewer's status page asks once: nothing is reviewed yet.
+    func testApproveWhileTheReviewerRunsAsksOnce() async throws {
+        try setRow(status: "running")
+        let model = try await makeModel()
+        await model.load()
+        XCTAssertTrue(model.canApprove)
+        XCTAssertTrue(model.needsApproveConfirm)
+        XCTAssertEqual(model.approveConfirmMessage, "The reviewer has not finished — approve anyway?")
+        model.pressApprove()
+        XCTAssertTrue(model.confirmingApprove)
+    }
+
     func testApproveWithUnmarkedNeedsConfirmFlag() async throws {
         try setRow(status: "done", result: resultJSON())
         let model = try await makeModel()

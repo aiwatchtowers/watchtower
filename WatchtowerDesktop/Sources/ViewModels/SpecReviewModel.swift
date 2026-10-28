@@ -381,10 +381,16 @@ final class SpecReviewModel {
     /// author loop's Approve is one press, except after an early end with
     /// a dispute nobody answered.
     var needsApproveConfirm: Bool {
-        isLoop ? endedEarly && unpickedDisputeCount > 0 : unmarkedCount > 0
+        if reviewerUnfinished { return true }
+        return isLoop ? endedEarly && unpickedDisputeCount > 0 : unmarkedCount > 0
     }
 
+    /// The footer's Approve on the reviewer's status page: allowed, but
+    /// asked once, since nothing has been reviewed yet.
+    private var reviewerUnfinished: Bool { isReviewerActive && row?.result == nil && !isLoop }
+
     var approveConfirmMessage: String {
+        if reviewerUnfinished { return "The reviewer has not finished — approve anyway?" }
         if isLoop {
             let n = unpickedDisputeCount
             return "\(n) disputed finding\(n == 1 ? " was" : "s were") never answered — approve anyway?"
