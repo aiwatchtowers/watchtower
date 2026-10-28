@@ -31,10 +31,8 @@ struct TrayMenuView: View {
             updateVersion: appState.updateService.isUpdateAvailable
                 ? appState.updateService.availableVersion : nil,
             updateAction: {
-                // Same "become regular" move as Settings… below.
-                ActivationPolicyDecision.becomeRegularAndActivate()
-                appState.settingsTab = .system
-                openSettings()
+                // The closure becomes regular and activates, like Settings… below.
+                _ = appState.updateService.presentUpdateWindow?()
             },
             syncNowAction: {
                 Task { await appState.daemonManager.syncNow() }

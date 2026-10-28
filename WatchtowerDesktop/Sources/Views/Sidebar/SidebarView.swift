@@ -9,7 +9,6 @@ struct SidebarView: View {
     /// section folded into one group icon (see `railBody`).
     var compact = false
     @Environment(AppState.self) private var appState
-    @Environment(\.openSettings) private var openSettings
 
     /// Per-section collapsed flag — the one state both the menu and the icon
     /// rail draw, so folding a section in either shows it folded in the other.
@@ -153,9 +152,8 @@ struct SidebarView: View {
             // Update available indicator
             if appState.updateService.isUpdateAvailable {
                 Button {
-                    // `showSettingsWindow:` via sendAction is a no-op on macOS 14+.
-                    appState.settingsTab = .system
-                    openSettings()
+                    // The Software Update window: notes, download progress, install.
+                    _ = appState.updateService.presentUpdateWindow?()
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.down.circle.fill")
@@ -641,8 +639,7 @@ struct SidebarView: View {
 
         if appState.updateService.isUpdateAvailable {
             Button {
-                appState.settingsTab = .system
-                openSettings()
+                _ = appState.updateService.presentUpdateWindow?()
             } label: {
                 railIcon("arrow.down.circle.fill", isSelected: false, tint: .blue, dot: nil)
             }

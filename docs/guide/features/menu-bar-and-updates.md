@@ -27,7 +27,7 @@ Other lines appear only when they apply:
 
 Watchtower checks for a new version at every launch and then every 6 hours while it runs. When it finds one, you get one notification and one **Software Update** window per version, never repeated. The window shows the release notes in full.
 
-The window is held back while a recording or transcription is running, and appears at the next background check after it ends (checks run every 6 hours). **Update to <version> available…** also shows in the menu.
+The window is held back while a recording or transcription is running, and appears at the next background check after it ends (checks run every 6 hours). **Update to <version> available…** also shows in the menu, and **Update Available** at the bottom of the sidebar; both open the **Software Update** window, where the download shows its progress.
 
 Installing replaces the app in place and restarts it. Before it swaps anything, it checks that the new app is signed by the same developer as the one you run. A build that is distributed outside the public releases shows "Updates for this build are distributed out of band" instead, and never updates from the public feed.
 
