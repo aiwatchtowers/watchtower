@@ -22,7 +22,9 @@ action: nav:calendar
 
 A private recording is transcribed on your Mac like any other, and saved without a recap or chapters. Where an AI action would be, the recording shows **Private recording — not sent to AI**: no **Generate recap**, chapters, **Follow-up draft**, notes **Generate** or **Chat**.
 
-The assistant never finds it either: chat search, knowledge search, ideas, Catch Up and Memory skip it. Linking it to a calendar event does not copy its text into the event's recap.
+The assistant never finds it either: chat search, knowledge search, ideas, Catch Up and Memory skip it. Linking it to a calendar event does not copy its text into the event's recap. Another, regular recording of the same event doesn't pass the private one's recap to its chat.
+
+On the event's page, a recap made from a private recording still shows. Where **Re-generate** would be, it says **Private recording — not sent to AI**. Its action items have no **+ to notes**, and **Recap from text** is off.
 
 You can still read the transcript, name speakers, play the audio and write your own notes. An action item's **Target** button is off too: targets feed the briefing, the day plan and the chat.
 
@@ -68,12 +70,13 @@ Open the recording and choose from **Export** in its header:
 - **Save as Subtitles (SRT)…**: numbered cues for a video player.
 - **Save as JSON…**: the segments with times and speakers, for your own scripts.
 
-Deleted utterances are never exported. Saved files are readable only by your user. A short line under the header confirms the copy or the saved file's name. Export runs on your Mac, so private recordings export too.
+Deleted utterances are never exported; once every utterance is deleted, **Export** is greyed out. Saved files are readable only by your user. A short line under the header confirms the copy or the saved file's name. Export runs on your Mac, so private recordings export too.
 
 ## When it's empty or wrong
 
 - **Save as Subtitles (SRT)… is greyed out:** the recording has no timed utterances (an older recording). Use **Re-transcribe** under its transcript in the event, or export as text.
 - **"Private recording — not sent to AI" where you expected a recap:** the recording is private. Turn **Private** off in its header, then press **Generate recap**.
+- **Export is greyed out:** every utterance of the recording is deleted. Undo a deletion in its **Transcript** tab to export again.
 - **The lock on a pill can't be clicked:** the recording is already being saved; once it's saved, change it with **Private** in the recording's header.
 - **A recovered recording saved without a recap:** it came back private because its choice was unknown. Turn **Private** off in its header, then press **Generate recap**.
 
