@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
 )
 
@@ -102,6 +103,18 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 	if !d.lastCoachFailed.IsZero() && now.Sub(d.lastCoachFailed) < coachRetryAfter {
 		return
 	}
+	// The same lock `coach run` holds: a pass already running (the owner's
+	// own) is not doubled; nothing is stamped, so the next cycle looks again.
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(d.config.WorkspaceDir()))
+	if err != nil {
+		d.logger.Printf("coach: lock: %v", err)
+		return
+	}
+	if !ok {
+		d.logger.Printf("coach: busy, skipped")
+		return
+	}
+	defer unlock()
 	d.trackedPipelineRun("coach", func() pipelineRunStats {
 		if d.agentLog == nil {
 			d.logger.Printf("coach: agentlog.db is not open, judging skipped")

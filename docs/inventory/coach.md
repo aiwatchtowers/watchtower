@@ -19,7 +19,7 @@
 
 **Status:** Enforced (Go).
 
-**Observable:** The weekly pass and `coach run` only store proposals (`coach_proposals`, status `open`); every destination — the owner's session, procedure and chat texts, a prompt's additions, `~/.claude/settings.json`, `~/.claude/CLAUDE.md` — is unchanged until `Applier.Accept` (the owner's `coach accept`) writes that one proposal. `coach accept`, `decline`, `rollback` and `run` are refused under an AI agent's environment markers and otherwise need the owner's confirmation in the running Desktop (AGENT-07, ask #659). The destination set is the owner's own setup: a repository file (the repo `CLAUDE.md`, `.watchtower/*`, `.claude/skills/`, a project `.claude/settings.json`) is never a destination, and the two files under the home folder are `<home>/.claude/settings.json` and `<home>/.claude/CLAUDE.md`. A model-proposed destination outside the set is dropped by `Validate`.
+**Observable:** The weekly pass and `coach run` only store proposals (`coach_proposals`, status `open`); every destination — the owner's session, procedure and chat texts, a prompt's additions, `~/.claude/settings.json`, `~/.claude/CLAUDE.md` — is unchanged until `Applier.Accept` (the owner's `coach accept`) writes that one proposal. `coach accept`, `decline`, `rollback` and `run` are refused under an AI agent's environment markers and otherwise need the owner's confirmation in the running Desktop (AGENT-07, ask #659). The destination set is the owner's own setup: a repository file (the repo `CLAUDE.md`, `.watchtower/*`, `.claude/skills/`, a project `.claude/settings.json`) is never a destination, and the two files under the home folder are `<home>/.claude/settings.json` and `<home>/.claude/CLAUDE.md`. A model-proposed destination outside the set is dropped by `Validate`. CLI additions that relax nothing: `coach status --days N` (1..90, default 14), `coach run` fails with code `busy` while another pass holds `<workspace>/coach.lock` (the daemon's weekly pass skips then), and with `--json` every failure object is also echoed as the last stderr line.
 
 **Why locked:** The coach turns an agent-visible signal into edits of the text every agent reads next. An edit applied on its own, or into a file a team shares, is a prompt injection path and a surprise for the owner (spec D3, D6).
 
@@ -36,3 +36,4 @@
 ## Changelog
 
 - 2026-10-26 (agent coach Plan 1, board #1120): file created with COACH-01. Related amendments: SPECREVIEW (`not_useful` mark, `findings`) in `spec-review.md`, AGENT-07 in `agent-actions.md`, PROJ-22 in `workbench.md` (ask #659).
+- 2026-10-28 (Plan 2): `--days`, `busy`, stderr echo; nothing relaxed.

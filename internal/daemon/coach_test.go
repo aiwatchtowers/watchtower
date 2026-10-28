@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/coach"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 )
 
 type coachCalls struct{ judge, propose int }
@@ -142,4 +143,18 @@ func TestPhaseCoach_CancelledRunDoesNotStamp(t *testing.T) {
 	assert.Equal(t, 1, c.propose)
 	d.phaseCoach(context.Background())
 	assert.Equal(t, 2, c.propose, "the next cycle runs again")
+}
+
+func TestPhaseCoach_SkipsWhenLocked(t *testing.T) {
+	d, _ := coachDaemon(t)
+	c := stubCoach(t, nil)
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(d.config.WorkspaceDir()))
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer unlock()
+
+	d.phaseCoach(context.Background())
+	assert.Equal(t, coachCalls{}, *c, "no model call")
+	assert.NoFileExists(t, d.lastCoachPath())
+	assert.NoFileExists(t, d.lastCoachFailedPath())
 }

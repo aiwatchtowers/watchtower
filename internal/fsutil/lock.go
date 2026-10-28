@@ -45,3 +45,31 @@ func LockFile(ctx context.Context, path string) (func(), error) {
 		}
 	}
 }
+
+// TryLockFile is LockFile without the wait: it takes the exclusive advisory
+// flock on path (created 0600 if missing) when it is free right now and
+// reports ok=false, with no error, when another holder has it. The lock file
+// is left in place on unlock, for the reason LockFile gives.
+func TryLockFile(path string) (unlock func(), ok bool, err error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, false, fmt.Errorf("opening lock file: %w", err)
+	}
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() {
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				_ = f.Close()
+			}, true, nil
+		}
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		_ = f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("locking %s: %w", path, err)
+	}
+}

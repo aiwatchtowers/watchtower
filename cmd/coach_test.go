@@ -16,9 +16,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/specreview"
 )
@@ -27,15 +29,16 @@ import (
 func runCoach(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
+	var errb bytes.Buffer
 	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&out)
+	rootCmd.SetErr(&errb) // the --json failure echo lives here, not in the stdout under test
 	rootCmd.SetIn(strings.NewReader(stdin))
 	rootCmd.SetArgs(append([]string{"coach"}, args...))
 	err := rootCmd.Execute()
 	rootCmd.SetArgs(nil)
 	rootCmd.SetIn(nil)
 	coachFlagJSON, coachFlagWorkbench, coachFlagStatus = false, 0, "open"
-	coachFlagStdin, coachFlagForce, coachFlagDryRun = false, false, false
+	coachFlagStdin, coachFlagForce, coachFlagDryRun, coachFlagDays = false, false, false, coachDefaultDays
 	return out.String(), err
 }
 
@@ -206,7 +209,7 @@ func TestCoachProposals_JSONKeysPinned(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"id", "title", "why", "destination", "workbench_id", "prompt_id", "kind",
 		"metric", "before", "after", "evidence", "sources", "status", "created_at", "decided_at", "baseline",
-		"verdict", "verdict_value", "verdict_at", "reverts_id"}, got)
+		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget"}, got)
 	assert.JSONEq(t, `[{"kind":"session","ref":"s1"}]`, string(items[0]["evidence"]))
 	assert.Equal(t, "null", string(items[0]["decided_at"]))
 
@@ -375,4 +378,114 @@ func coachStampPathForTest(t *testing.T) string {
 	cfg, err := workspaceConfigFromFlags()
 	require.NoError(t, err)
 	return cfg.WorkspaceDir() + "/last_coach.txt"
+}
+
+// runCoachSplit is runCoach with stdout and stderr kept apart.
+func runCoachSplit(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errb)
+	rootCmd.SetIn(strings.NewReader(""))
+	rootCmd.SetArgs(append([]string{"coach"}, args...))
+	err = rootCmd.Execute()
+	rootCmd.SetArgs(nil)
+	rootCmd.SetIn(nil)
+	coachFlagJSON, coachFlagWorkbench, coachFlagStatus = false, 0, "open"
+	coachFlagStdin, coachFlagForce, coachFlagDryRun, coachFlagDays = false, false, false, coachDefaultDays
+	return out.String(), errb.String(), err
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return lines[len(lines)-1]
+}
+
+func TestCoachStatus_DaysWindow(t *testing.T) {
+	coachSetup(t)
+	span := func(args ...string) time.Duration {
+		out, err := runCoach(t, "", append([]string{"status", "--json"}, args...)...)
+		require.NoError(t, err, out)
+		var st coachStatusJSON
+		require.NoError(t, json.Unmarshal([]byte(out), &st))
+		since, err := time.Parse(time.RFC3339, st.Period.Since)
+		require.NoError(t, err)
+		until, err := time.Parse(time.RFC3339, st.Period.Until)
+		require.NoError(t, err)
+		return until.Sub(since)
+	}
+	assert.Equal(t, 7*24*time.Hour, span("--days", "7"))
+	assert.Equal(t, 24*time.Hour, span("--days", "1"))
+	assert.Equal(t, 14*24*time.Hour, span())
+	for _, bad := range []string{"0", "91"} {
+		_, err := runCoach(t, "", "status", "--days", bad)
+		require.Error(t, err, bad)
+		assert.Contains(t, err.Error(), "--days must be between 1 and 90")
+	}
+}
+
+func TestCoachRun_BusyWhenLocked(t *testing.T) {
+	coachSetup(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(cfg.WorkspaceDir()))
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer unlock()
+
+	stdout, stderr, err := runCoachSplit(t, "run", "--json")
+	require.Error(t, err)
+	assert.JSONEq(t, `{"ok":false,"code":"busy","error":"the coach is already running"}`, stdout)
+	assert.JSONEq(t, stdout, lastLine(stderr))
+}
+
+func TestCoachJSONFailure_EchoedOnStderr(t *testing.T) {
+	coachSetup(t)
+	stdout, stderr, err := runCoachSplit(t, "accept", "999", "--json")
+	require.Error(t, err)
+	var a, b map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &a), stdout)
+	require.NoError(t, json.Unmarshal([]byte(lastLine(stderr)), &b), stderr)
+	assert.Equal(t, false, a["ok"])
+	assert.Equal(t, a, b)
+}
+
+func TestCoachProposals_BudgetPerDestination(t *testing.T) {
+	d := coachSetup(t)
+	claude := strings.Repeat("x", 3800)
+	short := strings.Repeat("y", 100)
+	cases := []struct {
+		dest, before string
+		want         int
+	}{
+		{"session", "", 1000}, {"procedure", "", 1000}, {"chat", "", 1000},
+		{"prompt_addition", "", 600}, {"claude_settings_allow", "", 0},
+		{"claude_md_user", short, 500}, {"claude_md_user", claude, 4000},
+	}
+	for i, c := range cases {
+		_, err := d.InsertCoachProposal(db.CoachProposal{Fingerprint: fmt.Sprintf("fp%d", i), Kind: "add",
+			Destination: c.dest, Title: c.dest, Metric: "corrections", BeforeText: c.before, AfterText: "z",
+			Evidence: []db.CoachEvidence{{Kind: "session", Ref: "s1"}}, Sources: 3}, time.Now())
+		require.NoError(t, err)
+	}
+	out, err := runCoach(t, "", "proposals", "--status", "all", "--json")
+	require.NoError(t, err)
+	var res struct {
+		Proposals []struct {
+			Destination string `json:"destination"`
+			Before      string `json:"before"`
+			Budget      int    `json:"budget"`
+		} `json:"proposals"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.Len(t, res.Proposals, len(cases))
+	for i, c := range cases {
+		var got int = -1
+		for _, p := range res.Proposals {
+			if p.Destination == c.dest && p.Before == c.before {
+				got = p.Budget
+			}
+		}
+		assert.Equal(t, c.want, got, "case %d %s", i, c.dest)
+	}
 }

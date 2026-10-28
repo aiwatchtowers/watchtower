@@ -10,9 +10,7 @@ import (
 
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
-	"watchtower/internal/instructions"
 	"watchtower/internal/logredact"
-	"watchtower/internal/prompts"
 )
 
 var (
@@ -267,7 +265,7 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 	}
 	switch p.Destination {
 	case DestSession, DestProcedure, DestChat:
-		t.Budget = instructions.MaxRunes
+		t.Budget = BudgetOf(p.Destination, "")
 		var o db.OwnerInstructions
 		var err error
 		if p.WorkbenchID == 0 {
@@ -287,7 +285,7 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 			t.Text = o.Chat
 		}
 	case DestPromptAdd:
-		t.Budget = prompts.MaxAdditionRunes
+		t.Budget = BudgetOf(DestPromptAdd, "")
 		adds, err := a.DB.ListPromptAdditions(p.PromptID)
 		if err != nil {
 			return CurrentText{}, err

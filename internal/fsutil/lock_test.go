@@ -56,3 +56,20 @@ func TestLockFile_ContextCancelStopsWaiting(t *testing.T) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
 }
+
+func TestTryLockFile_SecondHolderGetsFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.lock")
+	unlock, ok, err := TryLockFile(path)
+	if err != nil || !ok {
+		t.Fatalf("first: ok=%v err=%v", ok, err)
+	}
+	if _, ok2, err := TryLockFile(path); err != nil || ok2 {
+		t.Fatalf("second: ok=%v err=%v, want false, nil", ok2, err)
+	}
+	unlock()
+	unlock2, ok3, err := TryLockFile(path)
+	if err != nil || !ok3 {
+		t.Fatalf("after unlock: ok=%v err=%v", ok3, err)
+	}
+	unlock2()
+}
