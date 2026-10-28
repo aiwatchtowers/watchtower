@@ -40,19 +40,32 @@ type cliUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	// CacheCreation splits CacheCreationInputTokens by cache TTL.
+	CacheCreation struct {
+		FiveMin int `json:"ephemeral_5m_input_tokens"`
+		OneHour int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+}
+
+// resultUsage is the usage a result envelope or result stream event
+// reports: the LLM usage ledger's numbers (recordClaude).
+type resultUsage struct {
+	CostUSD float64  `json:"total_cost_usd"`
+	Usage   cliUsage `json:"usage"`
+	// ModelUsage is the per-model usage keyed by the model's full name.
+	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
 }
 
 // cliResponse is the JSON structure returned by `claude --output-format json`.
 type cliResponse struct {
-	Type       string   `json:"type"`
-	Subtype    string   `json:"subtype"`
-	Result     string   `json:"result"`
-	CostUSD    float64  `json:"total_cost_usd"`
-	DurationMS int      `json:"duration_ms"`
-	NumTurns   int      `json:"num_turns"`
-	IsError    bool     `json:"is_error"`
-	SessionID  string   `json:"session_id"`
-	Usage      cliUsage `json:"usage"`
+	Type       string `json:"type"`
+	Subtype    string `json:"subtype"`
+	Result     string `json:"result"`
+	DurationMS int    `json:"duration_ms"`
+	NumTurns   int    `json:"num_turns"`
+	IsError    bool   `json:"is_error"`
+	SessionID  string `json:"session_id"`
+	resultUsage
 }
 
 // parseCLIOutput handles both output formats from the Claude CLI:
@@ -688,6 +701,27 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			errCh <- err
 			return
 		}
+
+		// The run is recorded in the LLM usage ledger when the stream ends,
+		// however it ends: from the last result event's usage, else
+		// estimated from the prompt and the text streamed so far.
+		start := time.Now()
+		var (
+			lastResult *streamEvent
+			streamed   strings.Builder
+			runErr     error
+		)
+		defer func() {
+			var u *resultUsage
+			if lastResult != nil {
+				u = &lastResult.resultUsage
+			}
+			recordClaude(ctx, c.model, u, cmd.Process != nil, start, runErr, systemPrompt+userMessage, streamed.String())
+		}()
+		fail := func(err error) {
+			runErr = err
+			errCh <- err
+		}
 		defer closePayloads()
 		if promptStdin != "" {
 			cmd.Stdin = strings.NewReader(promptStdin)
@@ -700,7 +734,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			errCh <- fmt.Errorf("creating stdout pipe: %w", err)
+			fail(fmt.Errorf("creating stdout pipe: %w", err))
 			return
 		}
 
@@ -709,7 +743,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 		if err := cmd.Start(); err != nil {
-			errCh <- classifyError(err, "")
+			fail(classifyError(err, ""))
 			return
 		}
 		closePayloads()
@@ -718,13 +752,13 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// Allow up to 1MB lines for large context responses
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-		// lastResult remembers the most recent "result" event's is_error/result
-		// fields — the CLI's own diagnostic (e.g. "Invalid API key · Please run
+		// lastResult (declared above) remembers the most recent "result"
+		// event: its usage for the ledger, and its is_error/result fields —
+		// the CLI's own diagnostic (e.g. "Invalid API key · Please run
 		// /login") for an API/usage failure, which otherwise arrives on stdout
 		// as an ordinary envelope (classifyError only ever sees stderr, which
 		// is empty in this case; see internal/digest/generator.go's
 		// errorEnvelopeMessage for the same pattern on the batch path).
-		var lastResult *streamEvent
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -753,7 +787,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				case textCh <- StreamChunk{ToolBoundary: true}:
 				case <-ctx.Done():
 					_ = cmd.Wait()
-					errCh <- ctx.Err()
+					fail(ctx.Err())
 					return
 				}
 				continue
@@ -763,20 +797,21 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			if text == "" {
 				continue
 			}
+			streamed.WriteString(text)
 
 			select {
 			case textCh <- StreamChunk{Text: text}:
 			case <-ctx.Done():
 				// CommandContext handles killing the process; just reap it.
 				_ = cmd.Wait()
-				errCh <- ctx.Err()
+				fail(ctx.Err())
 				return
 			}
 		}
 
 		if err := scanner.Err(); err != nil {
 			_ = cmd.Wait()
-			errCh <- fmt.Errorf("reading claude output: %w", err)
+			fail(fmt.Errorf("reading claude output: %w", err))
 			return
 		}
 
@@ -787,12 +822,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// its own message is always more actionable than a bare exit code or
 		// empty stderr, so it takes priority over classifyError below.
 		if lastResult != nil && lastResult.IsError {
-			errCh <- logredact.Errorf("claude returned error (subtype=%s): %s", lastResult.Subtype, envelopeMessage(lastResult.Result))
+			fail(logredact.Errorf("claude returned error (subtype=%s): %s", lastResult.Subtype, envelopeMessage(lastResult.Result)))
 			return
 		}
 
 		if waitErr != nil {
-			errCh <- classifyError(waitErr, stderrBuf.String())
+			fail(classifyError(waitErr, stderrBuf.String()))
 		}
 	}()
 
@@ -802,7 +837,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // QuerySync sends a non-streaming request via the Claude Code CLI and returns
 // the full response text and token usage. The sessionID argument is ignored
 // (see Query).
-func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *Usage, error) {
+func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (text string, _ *Usage, err error) {
 	args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "json")
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	// cmd.Output starts the child before it blocks; the parent's read ends
@@ -823,6 +858,13 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
+	// Every run is recorded in the LLM usage ledger, failed ones included.
+	start := time.Now()
+	var envelope *resultUsage
+	defer func() {
+		recordClaude(ctx, c.model, envelope, cmd.Process != nil, start, err, systemPrompt+userMessage, text)
+	}()
+
 	output, err := cmd.Output()
 	if err != nil {
 		// The CLI reports an API or usage failure as an ordinary result
@@ -834,6 +876,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
+				envelope = &resp.resultUsage
 				return "", nil, logredact.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
 					exitErr.ExitCode(), resp.Subtype, envelopeMessage(resp.Result))
 			}
@@ -846,6 +889,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		// Fallback: treat as plain text if JSON parsing fails (e.g. old CLI version)
 		return strings.TrimRight(string(output), "\n"), nil, nil // intentional fallback to plain text
 	}
+	envelope = &resp.resultUsage
 
 	if resp.IsError {
 		return "", nil, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result))
@@ -870,6 +914,8 @@ type streamEvent struct {
 	Message   *streamMessage `json:"message"`
 	Result    string         `json:"result"`
 	IsError   bool           `json:"is_error"`
+	// resultUsage is filled on a "result" event only.
+	resultUsage
 }
 
 type streamMessage struct {

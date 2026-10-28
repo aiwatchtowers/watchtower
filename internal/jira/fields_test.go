@@ -14,23 +14,27 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 )
 
 // scriptedAI is an ai.Provider whose QuerySync returns a fixed reply (or
 // error) with fixed usage, recording each user message.
 type scriptedAI struct {
-	reply string
-	err   error
-	usage *ai.Usage
-	calls []string
+	reply    string
+	err      error
+	usage    *ai.Usage
+	calls    []string
+	purposes []string // each call's LLM ledger purpose
 }
 
 func (s *scriptedAI) Query(context.Context, string, string, string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
 	panic("scriptedAI.Query: field discovery uses QuerySync only")
 }
 
-func (s *scriptedAI) QuerySync(_ context.Context, _, user, _ string) (string, *ai.Usage, error) {
+func (s *scriptedAI) QuerySync(ctx context.Context, _, user, _ string) (string, *ai.Usage, error) {
 	s.calls = append(s.calls, user)
+	purpose, _ := llmusage.PurposeFrom(ctx)
+	s.purposes = append(s.purposes, purpose)
 	return s.reply, s.usage, s.err
 }
 
@@ -132,6 +136,7 @@ func TestClassifyFields_WritesClassificationAndUsage(t *testing.T) {
 	assert.Equal(t, "estimation", useful[0].UsageHint)
 	in, out, total := fd.AccumulatedUsage()
 	assert.Equal(t, []int{3, 4, 7}, []int{in, out, total})
+	assert.Equal(t, []string{"jira.fields"}, gen.purposes, "the call is tagged for the LLM ledger")
 }
 
 // ClassifyFields' guard rails: nothing to classify makes no call, a missing
@@ -189,6 +194,7 @@ func TestMapFieldsForBoard_StoresSampledRoles(t *testing.T) {
 	assert.Equal(t, []db.JiraBoardFieldMap{{AccountID: 1, BoardID: 42, FieldID: "customfield_1", Role: "story_points"}}, got)
 
 	require.Len(t, gen.calls, 1)
+	assert.Equal(t, []string{"jira.fields"}, gen.purposes, "the call is tagged for the LLM ledger")
 	assert.Contains(t, gen.calls[0], "customfield_1")
 	assert.Contains(t, gen.calls[0], "customfield_2")
 	assert.NotContains(t, gen.calls[0], "customfield_3", "a field null on every sampled issue is not sent")

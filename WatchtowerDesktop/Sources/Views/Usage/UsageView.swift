@@ -10,6 +10,7 @@ struct UsageView: View {
 
     enum Tab: String, CaseIterable {
         case plan = "Claude plan"
+        case watchtower = "Watchtower"
         case progress = "Progress"
         case usage = "Usage"
     }
@@ -29,6 +30,8 @@ struct UsageView: View {
             switch selectedTab {
             case .plan:
                 ClaudePlanView()
+            case .watchtower:
+                WatchtowerUsageView()
             case .progress:
                 ScrollView {
                     ProgressDetailContent()
@@ -36,7 +39,7 @@ struct UsageView: View {
                         .padding(20)
                 }
             case .usage:
-                usageContent
+                UsageRunLogContent(viewModel: viewModel) { selectedTab = .watchtower }
             }
         }
         .onAppear {
@@ -48,10 +51,15 @@ struct UsageView: View {
             viewModel.stop()
         }
     }
+}
 
-    // MARK: - Usage Content
+/// The Usage tab's run log: one day of `pipeline_runs`, status, duration,
+/// items and errors. Tokens and cost live on the Watchtower tab (`onOpenWatchtower`).
+struct UsageRunLogContent: View {
+    let viewModel: PipelineHistoryViewModel
+    let onOpenWatchtower: () -> Void
 
-    private var usageContent: some View {
+    var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Header with day picker
@@ -63,6 +71,9 @@ struct UsageView: View {
                     dayPicker
                 }
 
+                UsageTokensPointer(buttonTitle: "Open Watchtower tab", onOpen: onOpenWatchtower)
+                    .font(.callout)
+
                 if viewModel.isLoading {
                     HStack { Spacer(); ProgressView(); Spacer() }
                 } else if viewModel.runs.isEmpty {
@@ -71,9 +82,6 @@ struct UsageView: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.vertical, 32)
                 } else {
-                    // Day summary
-                    daySummary
-                    // Chronological log
                     runsList
                 }
             }
@@ -108,29 +116,6 @@ struct UsageView: View {
         }
     }
 
-    // MARK: - Day Summary
-
-    private var daySummary: some View {
-        GroupBox {
-            HStack(spacing: 24) {
-                summaryItem(label: "AI Calls", value: "\(viewModel.totalCalls)")
-                summaryItem(
-                    label: "Input",
-                    value: formatTokens(viewModel.totalApiTokens),
-                    tooltip: "Total input tokens processed by the API (includes cache reads and cache writes)"
-                )
-                summaryItem(
-                    label: "Uncached",
-                    value: formatTokens(viewModel.totalInputTokens),
-                    tooltip: "Input tokens billed at the non-cached rate (excludes cache reads and writes)"
-                )
-                summaryItem(label: "Output", value: formatTokens(viewModel.totalOutputTokens))
-
-            }
-            .padding(4)
-        }
-    }
-
     // MARK: - Runs List
 
     private var runsList: some View {
@@ -146,20 +131,6 @@ struct UsageView: View {
                 }
             }
         }
-    }
-
-    // MARK: - Helpers
-
-    private func summaryItem(label: String, value: String, tooltip: String? = nil) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.headline)
-                .fontWeight(.bold)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .help(tooltip ?? "")
     }
 }
 
@@ -219,9 +190,6 @@ private struct RunRow: View {
                         .background(.quaternary)
                         .clipShape(Capsule())
 
-                    tokenBadge("In", count: run.totalApiTokens)
-                    tokenBadge("Out", count: run.outputTokens)
-
                     Text(timeString(run.startedAt))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -257,12 +225,6 @@ private struct RunRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if run.inputTokens > 0 {
-                    Label("Uncached: \(formatTokens(run.inputTokens))", systemImage: "arrow.up.arrow.down")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help("Input tokens billed at the non-cached rate")
-                }
             }
             .padding(.bottom, 4)
 
@@ -294,9 +256,6 @@ private struct RunRow: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        tokenBadge("In", count: step.totalApiTokens, small: true)
-                        tokenBadge("Out", count: step.outputTokens, small: true)
-
                     }
                     .padding(.vertical, 1)
                 }
@@ -304,17 +263,6 @@ private struct RunRow: View {
                 ProgressView()
                     .controlSize(.small)
             }
-        }
-    }
-
-    private func tokenBadge(_ label: String, count: Int, small: Bool = false) -> some View {
-        HStack(spacing: 2) {
-            Text(label)
-                .font(small ? .system(size: 9) : .caption2)
-                .foregroundStyle(.tertiary)
-            Text(formatTokens(count))
-                .font(small ? .caption2 : .caption)
-                .monospacedDigit()
         }
     }
 
@@ -331,15 +279,6 @@ private struct RunRow: View {
 }
 
 // MARK: - Formatting Helpers
-
-private func formatTokens(_ count: Int) -> String {
-    if count >= 1_000_000 {
-        return String(format: "%.1fM", Double(count) / 1_000_000)
-    } else if count >= 1_000 {
-        return String(format: "%.1fK", Double(count) / 1_000)
-    }
-    return "\(count)"
-}
 
 private func timeString(_ iso: String) -> String {
     let fmt = ISO8601DateFormatter()

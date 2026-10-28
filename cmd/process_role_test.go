@@ -50,3 +50,35 @@ func TestRoleForResolvesTheCommandCobraRuns(t *testing.T) {
 		}
 	}
 }
+
+func TestSurfaceFor(t *testing.T) {
+	for _, tc := range []struct {
+		role string
+		args []string
+		want string
+	}{
+		{"cli:ai session", []string{"ai", "session"}, "chat"},
+		{"cli:ai query", []string{"ai", "query", "hi"}, "chat"},
+		{"cli:ai models", []string{"ai", "models"}, "watchtower"},
+		{"mcp", []string{"mcp", "--workbench", "3"}, "workbench"},
+		{"mcp", []string{"mcp", "--workbench=3"}, "workbench"},
+		{"mcp", []string{"mcp", "--chat", "--surface", "automation", "--automation-run", "7"}, "watchtower"},
+		{"mcp", []string{"mcp", "--chat", "--surface=automation"}, "watchtower"},
+		{"mcp", []string{"mcp", "--chat", "--surface", "main"}, "chat"},
+		{"mcp", []string{"mcp", "--chat"}, "chat"},
+		{"mcp", []string{"mcp", "--chat=false"}, "watchtower"},
+		{"mcp", []string{"mcp"}, "watchtower"},
+		{"cli:workbench review overview", nil, "workbench"},
+		{"cli:workbench", nil, "workbench"},
+		{"cli:terminal open", nil, "workbench"},
+		{"hook:ask-guard", nil, "workbench"},
+		{"hook:session-state", nil, "workbench"},
+		{"daemon", []string{"sync", "--daemon"}, "watchtower"},
+		{"cli:briefing generate", nil, "watchtower"},
+		{"cli", nil, "watchtower"},
+	} {
+		if got := surfaceFor(tc.role, tc.args); got != tc.want {
+			t.Errorf("surfaceFor(%q, %q) = %q, want %q", tc.role, tc.args, got, tc.want)
+		}
+	}
+}

@@ -3519,3 +3519,38 @@ CREATE TABLE IF NOT EXISTS chat_queued_drafts (
     text        TEXT NOT NULL,
     at          REAL NOT NULL
 );
+
+-- LLM usage ledger (00163): one row per finished (ok = 1) or failed (ok = 0)
+-- model call a Watchtower process made. at = RFC 3339 UTC finish time.
+-- surface: watchtower (Watchtower's own work, incl. automations — automation_id
+-- set), chat (ai session / ai query), workbench (workbench helpers). purpose =
+-- the call's source tag ('' = untagged); process = daemon, cli:<command path>,
+-- mcp:<surface>, …. Tokens: input_tokens is fresh input; cache writes split by
+-- TTL. usage_estimated = 1 when the tokens are a length/4 estimate.
+-- reported_cost_usd = the provider's own (API-equivalent) cost, NULL when none;
+-- est_cost_usd = price-table estimate, NULL when the model has no price. No
+-- foreign keys (rows outlive a deleted automation); kept 90 days.
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id                    INTEGER PRIMARY KEY,
+    call_id               TEXT NOT NULL UNIQUE,                -- 16 hex chars; makes spool imports idempotent
+    at                    TEXT NOT NULL,
+    surface               TEXT NOT NULL CHECK (surface IN ('watchtower','chat','workbench')),
+    purpose               TEXT NOT NULL DEFAULT '',
+    process               TEXT NOT NULL DEFAULT '',
+    provider              TEXT NOT NULL DEFAULT '',            -- claude | codex | ollama | http
+    model                 TEXT NOT NULL DEFAULT '',
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    usage_estimated       INTEGER NOT NULL DEFAULT 0,
+    reported_cost_usd     REAL,
+    est_cost_usd          REAL,
+    duration_ms           INTEGER NOT NULL DEFAULT 0,
+    ok                    INTEGER NOT NULL DEFAULT 1,
+    automation_id         INTEGER,                             -- automations.id, no FK; NULL = not an automation run
+    automation_run_id     INTEGER                              -- automation_runs.id, no FK
+);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);

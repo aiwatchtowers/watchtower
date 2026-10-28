@@ -2326,6 +2326,28 @@ CREATE TABLE IF NOT EXISTS prompt_additions (
     proposal_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id                    INTEGER PRIMARY KEY,
+    call_id               TEXT NOT NULL UNIQUE,
+    at                    TEXT NOT NULL,
+    surface               TEXT NOT NULL CHECK (surface IN ('watchtower','chat','workbench')),
+    purpose               TEXT NOT NULL DEFAULT '',
+    process               TEXT NOT NULL DEFAULT '',
+    provider              TEXT NOT NULL DEFAULT '',
+    model                 TEXT NOT NULL DEFAULT '',
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    usage_estimated       INTEGER NOT NULL DEFAULT 0,
+    reported_cost_usd     REAL,
+    est_cost_usd          REAL,
+    duration_ms           INTEGER NOT NULL DEFAULT 0,
+    ok                    INTEGER NOT NULL DEFAULT 1,
+    automation_id         INTEGER,
+    automation_run_id     INTEGER
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2669,6 +2691,8 @@ CREATE INDEX IF NOT EXISTS idx_media_items_chat ON media_items(chat_attachment_i
 CREATE INDEX IF NOT EXISTS idx_media_items_target ON media_items(target_image_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at);
 CREATE INDEX IF NOT EXISTS prompt_additions_prompt ON prompt_additions(prompt_id, id);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

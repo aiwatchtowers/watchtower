@@ -36,6 +36,7 @@ import (
 	"watchtower/internal/issuekey"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
 	"watchtower/internal/prompts"
@@ -869,6 +870,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// The daemon's one connection holds the page cache every cycle reads
 	// through; other long-lived processes let theirs close when idle.
 	database.KeepConnectionWarm()
+	// The daemon writes its own LLM calls straight to llm_calls; every other
+	// process spools them for phaseLLMLedger to import.
+	llmusage.SetSink(db.LLMCallSink{DB: database})
 	// Perform the one-time feature-gate migration (and its first-contact
 	// marker stamp) for digest.enabled=false installs. On a real migration,
 	// reload the config so this daemon process uses the migrated values.

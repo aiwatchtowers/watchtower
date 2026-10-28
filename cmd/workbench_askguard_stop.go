@@ -575,6 +575,9 @@ func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Confi
 	if empty {
 		return nil, true
 	}
+	// This hook skips the root's pre-run, so it points its one model call's
+	// record at the workspace spool itself.
+	wireLLMUsage(cfg)
 	v, err := classifyAskGuard(ctx, askGuardGeneratorFactory(cfg), askGuardMessageTail(in.LastAssistantMessage))
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)

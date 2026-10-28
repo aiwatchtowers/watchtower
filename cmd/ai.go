@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
 	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
@@ -346,7 +347,7 @@ func runAITest(_ *cobra.Command, _ []string) error {
 	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
 	defer cancel()
 
-	_, _, err = aiClient.QuerySync(ctx, "", "respond with exactly: OK", "")
+	_, _, err = aiClient.QuerySync(digest.WithSource(ctx, "probe"), "", "respond with exactly: OK", "")
 	if err != nil {
 		return enc.Encode(map[string]any{
 			"ok":       false,

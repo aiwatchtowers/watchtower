@@ -118,6 +118,10 @@ func automationWorkbenchResolver(cfg *config.Config, database *db.DB) automation
 // automationAgentMaxTurns bounds an agent() loop's model calls (spec §6.5).
 const automationAgentMaxTurns = 12
 
+// automationAgentSource is the LLM ledger purpose of an agent() child's
+// model calls.
+const automationAgentSource = "automation.agent"
+
 // automationAgentSystemPrompt frames every agent() loop: the instruction is
 // the task, the tools are the only way to act, writes are proposals.
 const automationAgentSystemPrompt = "You are one step of an automation script the owner wrote. " +
@@ -171,7 +175,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	if err := providers.Allowed(r.provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608: nothing spawned, nothing metered
 	}
-	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
+	ctx, cancel := context.WithDeadline(digest.WithSource(ctx, automationAgentSource), req.Deadline)
 	defer cancel()
 	model := tierModel(r.cfg, r.provider, req.Tier)
 	readyDir, err := os.MkdirTemp("", "wt-agent-ready-*")
@@ -350,7 +354,7 @@ func (r *runtimeBAgentRunner) Run(ctx context.Context, req automations.AgentRequ
 	if err := providers.Allowed(r.cfg.AI.Provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608
 	}
-	ctx, cancel := context.WithDeadline(ctx, req.Deadline)
+	ctx, cancel := context.WithDeadline(digest.WithSource(ctx, automationAgentSource), req.Deadline)
 	defer cancel()
 	allowed := req.Tools
 	if allowed == nil {

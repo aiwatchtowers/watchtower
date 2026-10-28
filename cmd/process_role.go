@@ -44,20 +44,66 @@ func processRole(path string, args []string) string {
 	return "cli:" + path
 }
 
-// daemonFlag reports whether args set --daemon, the last occurrence
-// winning as pflag does; args after "--" are positional.
-func daemonFlag(args []string) bool {
+// daemonFlag reports whether args set --daemon.
+func daemonFlag(args []string) bool { return boolFlag(args, "--daemon") }
+
+// boolFlag reports whether args set the bool flag name ("--daemon"), the
+// last occurrence winning as pflag does; args after "--" are positional.
+func boolFlag(args []string, name string) bool {
 	on := false
 	for _, a := range args {
 		if a == "--" {
 			break
 		}
-		if a == "--daemon" {
+		if a == name {
 			on = true
-		} else if v, ok := strings.CutPrefix(a, "--daemon="); ok {
+		} else if v, ok := strings.CutPrefix(a, name+"="); ok {
 			b, err := strconv.ParseBool(v)
 			on = err == nil && b
 		}
 	}
 	return on
+}
+
+// flagValue returns the last value args give the flag name ("--surface"),
+// as "--surface x" or "--surface=x"; "" when unset.
+func flagValue(args []string, name string) string {
+	v := ""
+	for i, a := range args {
+		if a == "--" {
+			break
+		}
+		if a == name && i+1 < len(args) {
+			v = args[i+1]
+		} else if s, ok := strings.CutPrefix(a, name+"="); ok {
+			v = s
+		}
+	}
+	return v
+}
+
+// surfaceFor is the ledger surface (llm_calls.surface) of a process's calls
+// that name none in their context: the AI chat commands and chat MCP
+// servers are "chat", workbench commands, the workbench MCP server and the
+// agent hooks are "workbench", and everything else — the daemon, an
+// automation's agent() server, other commands — is "watchtower".
+func surfaceFor(role string, args []string) string {
+	switch {
+	case role == "cli:ai session", role == "cli:ai query":
+		return "chat"
+	case role == "mcp":
+		if w := flagValue(args, "--workbench"); w != "" && w != "0" {
+			return "workbench"
+		}
+		if boolFlag(args, "--chat") {
+			if flagValue(args, "--surface") == "automation" {
+				return "watchtower"
+			}
+			return "chat"
+		}
+	case strings.HasPrefix(role, "cli:workbench"), strings.HasPrefix(role, "cli:terminal"),
+		strings.HasPrefix(role, "hook:"):
+		return "workbench"
+	}
+	return "watchtower"
 }
