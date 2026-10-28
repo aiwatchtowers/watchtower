@@ -29,14 +29,25 @@ struct AgentAnalyticsPaneView: View {
                     state: .make(overview: center?.overviews[project.id],
                                  enabling: center?.enabling.contains(project.id) ?? false),
                     period: period,
-                    actions: actions
-                )
+                    actions: actions,
+                    coach: vm.coach,
+                    workbench: project.id
+                ) { id in Task { await vm.showAsk(id, projectID: project.id) } }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { center?.show(workbench: project.id, period: period.wrappedValue) }
-        .onDisappear { center?.hide(workbench: project.id) }
-        .onChange(of: period.wrappedValue) { _, new in center?.show(workbench: project.id, period: new) }
+        .onAppear {
+            center?.show(workbench: project.id, period: period.wrappedValue)
+            vm.coach?.show(workbench: project.id, period: period.wrappedValue)
+        }
+        .onDisappear {
+            center?.hide(workbench: project.id)
+            vm.coach?.hide(workbench: project.id)
+        }
+        .onChange(of: period.wrappedValue) { _, new in
+            center?.show(workbench: project.id, period: new)
+            vm.coach?.show(workbench: project.id, period: new)
+        }
     }
 
     private var period: Binding<AgentAnalyticsCenter.Period> {

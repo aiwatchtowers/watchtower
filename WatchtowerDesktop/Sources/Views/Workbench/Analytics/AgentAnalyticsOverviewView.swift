@@ -8,6 +8,13 @@ struct AgentAnalyticsOverviewView: View {
     let state: AgentAnalyticsPaneState
     @Binding var period: AgentAnalyticsCenter.Period
     let actions: AgentAnalyticsActions
+    /// The coach sections (nil: a pane hosted without the coach).
+    var coach: CoachCenter?
+    var workbench: Int64 = 0
+    /// An ask link of a proposal: the ask's drawer.
+    var openAsk: (Int64) -> Void = { _ in }
+
+    private static let statisticsID = "statistics"
 
     var body: some View {
         switch state {
@@ -22,11 +29,15 @@ struct AgentAnalyticsOverviewView: View {
         case let .off(enabling, error):
             offView(enabling: enabling, error: error)
         case let .overview(overview, staleError):
-            ScrollView {
-                content(overview, staleError: staleError)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    content(overview, staleError: staleError) {
+                        withAnimation(Motion.panel) { proxy.scrollTo(Self.statisticsID, anchor: .top) }
+                    }
                     .frame(maxWidth: 900, alignment: .leading)
-                    .padding(16)
+                    .padding(Spacing.large)
                     .frame(maxWidth: .infinity)
+                }
             }
         }
     }
@@ -52,7 +63,9 @@ struct AgentAnalyticsOverviewView: View {
         .padding(24)
     }
 
-    private func content(_ overview: AgentReportOverview, staleError: String?) -> some View {
+    private func content(
+        _ overview: AgentReportOverview, staleError: String?, scrollToStatistics: @escaping () -> Void
+    ) -> some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
             if let state = overview.importState, let line = AgentAnalyticsFormat.importLine(state) {
                 if AgentAnalyticsFormat.isImportWarning(state) {
@@ -73,6 +86,14 @@ struct AgentAnalyticsOverviewView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .help("The last refresh failed; these numbers are from an earlier run.")
+            }
+            if let coach {
+                CoachSectionsView(
+                    coach: coach, workbench: workbench,
+                    actions: CoachActions(openAsk: openAsk, openSession: actions.openSession,
+                                          scrollToStatistics: scrollToStatistics)
+                )
+                SectionHeader(title: "Statistics", systemImage: "chart.bar").id(Self.statisticsID)
             }
             tiles(overview)
             if let first = overview.hints.first {
@@ -137,26 +158,28 @@ struct AgentAnalyticsOverviewView: View {
     private func header(_ overview: AgentReportOverview) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
             Text(AgentAnalyticsFormat.periodLabel(overview)).font(.headline)
+            if let previous = AgentAnalyticsFormat.previousPeriodLabel(overview) {
+                Text("against \(previous)").font(.caption).foregroundStyle(.secondary)
+            }
             if AgentAnalyticsFormat.period(of: overview) != period {
                 Text("Updating…").font(.caption).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 8)
-            Picker("Period", selection: $period) {
-                Text("1 day").tag(AgentAnalyticsCenter.Period.day)
-                Text("7 days").tag(AgentAnalyticsCenter.Period.week)
-                Text("30 days").tag(AgentAnalyticsCenter.Period.month)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            Label("On", systemImage: "circle.fill")
-                .labelStyle(.titleAndIcon)
-                .font(.caption)
-                .foregroundStyle(.green)
+            Spacer(minLength: Spacing.regular)
+            KitSegmentedPicker(title: "Period", selection: $period, segments: [
+                KitSegment(value: AgentAnalyticsCenter.Period.day, title: "1 day"),
+                KitSegment(value: AgentAnalyticsCenter.Period.week, title: "7 days"),
+                KitSegment(value: AgentAnalyticsCenter.Period.month, title: "30 days")
+            ])
+            Circle()
+                .fill(Tone.success)
+                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                 .help("Agent analytics is on for this workbench")
+                .accessibilityLabel("Analytics on")
             Button("Discuss in Chat") { actions.discuss(AgentAnalyticsFormat.discussText(overview)) }
+                .buttonStyle(.kitSecondary)
                 .help("Open the chat with this report's top findings in the composer")
         }
+        .controlSize(.small)
     }
 
     private func tiles(_ overview: AgentReportOverview) -> some View {

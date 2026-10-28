@@ -24,6 +24,9 @@ final class CoachCenter {
     private(set) var running = false
     private(set) var runLine: String?
     private(set) var cardErrors: [Int64: String] = [:]
+    /// Proposals with an owner verb in flight: a second press on the same
+    /// card does nothing and the card disables its buttons meanwhile.
+    private(set) var pending: Set<Int64> = []
 
     @ObservationIgnored var isTabOnScreen: () -> Bool = { false }
 
@@ -91,6 +94,8 @@ final class CoachCenter {
 
     /// `editedText` is sent over stdin; nil accepts the proposal as written.
     func accept(_ id: Int64, editedText: String?) async {
+        guard pending.insert(id).inserted else { return }
+        defer { pending.remove(id) }
         cardErrors[id] = nil
         let args = ["coach", "accept", String(id), "--json"] + (editedText == nil ? [] : ["--stdin"])
         do {
@@ -106,6 +111,8 @@ final class CoachCenter {
     }
 
     func decline(_ id: Int64) async {
+        guard pending.insert(id).inserted else { return }
+        defer { pending.remove(id) }
         cardErrors[id] = nil
         do {
             _ = try await runner.run(args: ["coach", "decline", String(id), "--json"])
@@ -118,6 +125,8 @@ final class CoachCenter {
     /// Returns the `diff` when the destination changed since the accept (the
     /// owner may then force it); nil otherwise.
     func rollback(_ id: Int64, force: Bool) async -> String? {
+        guard pending.insert(id).inserted else { return nil }
+        defer { pending.remove(id) }
         cardErrors[id] = nil
         let args = ["coach", "rollback", String(id), "--json"] + (force ? ["--force"] : [])
         do {

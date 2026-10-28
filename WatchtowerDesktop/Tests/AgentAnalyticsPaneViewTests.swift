@@ -31,6 +31,20 @@ private final class AnalyticsActionLog {
     }
 }
 
+/// Answers the coach's reads from the fixtures.
+private final class CoachFixtureRunner: CLIRunnerProtocol, @unchecked Sendable {
+    func run(args: [String]) async throws -> Data {
+        switch args.dropFirst().first {
+        case "status": return AgentAnalyticsPaneViewTests.coachFixture("coach-status")
+        case "proposals": return AgentAnalyticsPaneViewTests.coachFixture("coach-proposals")
+        default: return Data(#"{"ok":true}"#.utf8)
+        }
+    }
+
+    func run(args: [String], timeout: TimeInterval) async throws -> Data { try await run(args: args) }
+    func run(args: [String], stdin: Data) async throws -> Data { try await run(args: args) }
+}
+
 /// The Analytics pane (#298): what each state shows and where its links
 /// go. View inspection over the decoded fixtures, plus the view model's
 /// navigation and a light/dark render of the category colours.
@@ -627,5 +641,82 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             XCTAssertFalse(pixel.red == pixel.green && pixel.green == pixel.blue && abs(pixel.red - background) < 20,
                            "\(name.rawValue): \(pixel) looks like the background")
         }
+    }
+
+    // MARK: - Coach sections (#1120)
+
+    nonisolated static func coachFixture(_ name: String) -> Data { fixture(name) }
+
+    private func loadedCoach() async -> CoachCenter {
+        let coach = CoachCenter(runner: CoachFixtureRunner(), interval: .seconds(3600))
+        coach.show(workbench: 3, period: .week)
+        let deadline = Date().addingTimeInterval(5)
+        while coach.status[3]?.value == nil || coach.proposals?.value == nil, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return coach
+    }
+
+    func testCoachSectionsShownWhenOn() async throws {
+        let coach = await loadedCoach()
+        defer { coach.stop() }
+        let view = AgentAnalyticsOverviewView(
+            state: .overview(try Self.overview(), staleError: nil), period: .constant(.week),
+            actions: AnalyticsActionLog().actions, coach: coach, workbench: 3)
+        let all = try texts(view)
+        for title in ["How it's going", "Proposed edits", "Accepted edits", "Statistics"] {
+            XCTAssertTrue(all.contains(title), "\(title) missing in \(all)")
+        }
+        XCTAssertTrue(all.contains("Run the linter before finishing"))
+        XCTAssertTrue(all.contains("Allow go test"), "the accepted row")
+    }
+
+    func testCoachSectionsHiddenWhenOff() async throws {
+        let coach = await loadedCoach()
+        defer { coach.stop() }
+        let view = AgentAnalyticsOverviewView(
+            state: .off(enabling: false, error: nil), period: .constant(.week),
+            actions: AnalyticsActionLog().actions, coach: coach, workbench: 3)
+        let all = try texts(view)
+        XCTAssertFalse(all.contains("Proposed edits"))
+        XCTAssertFalse(all.contains("How it's going"))
+        XCTAssertTrue(all.contains("Turn On"))
+    }
+
+    func testAllowRuleCardHasNoEdit() async throws {
+        let coach = await loadedCoach()
+        defer { coach.stop() }
+        let all = try XCTUnwrap(coach.proposals?.value)
+        let session = try XCTUnwrap(all.first { $0.destination == "session" })
+        let allow = try XCTUnwrap(all.first { $0.destination == "claude_settings_allow" })
+        func labels(_ proposal: CoachProposal) throws -> [String] {
+            let actions = CoachActions(openAsk: { _ in }, openSession: { _ in }, scrollToStatistics: {})
+            let card = CoachProposalCardView(proposal: proposal, isFirst: true, coach: coach, actions: actions) {}
+            return try card.inspect().findAll(ViewType.Button.self).map { try $0.labelView().text().string() }
+        }
+        XCTAssertEqual(try labels(session).filter { $0 == "Edit…" }.count, 1)
+        XCTAssertEqual(try labels(allow).filter { $0 == "Edit…" }.count, 0)
+        XCTAssertTrue(try labels(allow).contains("Accept"))
+    }
+
+    func testCoachTilesAndTones() throws {
+        let status = try JSONDecoder().decode(CoachStatus.self, from: Self.fixture("coach-status"))
+        let tiles = CoachTiles.make(status)
+        XCTAssertEqual(tiles.map(\.title), ["Corrections per task", "Per task", "You in the loop", "Review findings"])
+        XCTAssertEqual(tiles[0].value, "2.1")
+        XCTAssertEqual(tiles[1].value, "$4.50", "hours unknown: the cost alone")
+        XCTAssertEqual(tiles[2].value, "22%")
+        XCTAssertEqual(CoachTiles.hours(1.6667), "1h 40m")
+    }
+
+    func testPreviousPeriodLabel() throws {
+        let json = try Self.unmeasuredJSON()
+        var copy = json
+        copy["since"] = "2026-10-21T00:00:00Z"
+        copy["until"] = "2026-10-28T00:00:00Z"
+        let overview = try JSONDecoder().decode(AgentReportOverview.self,
+                                                from: JSONSerialization.data(withJSONObject: copy))
+        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        XCTAssertEqual(AgentAnalyticsFormat.previousPeriodLabel(overview, timeZone: utc), "Oct 14 – Oct 21")
     }
 }

@@ -139,6 +139,18 @@ enum AgentAnalyticsFormat {
         return "\(since) – \(until)"
     }
 
+    /// The window of the same length right before the report's ("Oct 14 – Oct 21"); nil for no start.
+    static func previousPeriodLabel(_ overview: AgentReportOverview, timeZone: TimeZone = .current) -> String? {
+        guard !overview.since.isEmpty, let since = reportDate(overview.since),
+              let until = reportDate(overview.until) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "MMM d"
+        let start = since.addingTimeInterval(-until.timeIntervalSince(since))
+        return "\(formatter.string(from: start)) – \(formatter.string(from: since))"
+    }
+
     /// "Oct 1, 10:00" in local time.
     static func moment(_ raw: String) -> String {
         guard let value = reportDate(raw) else { return raw }

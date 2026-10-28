@@ -138,6 +138,19 @@ final class CoachCenterTests: XCTestCase {
         await waitUntil { runner.invocations.filter { $0.contains("proposals") }.count > before }
     }
 
+    func testDoublePressRunsOnce() async {
+        let runner = ScriptedCoachRunner(Self.standard())
+        runner.hold()
+        let center = makeCenter(runner)
+        let first = Task { await center.decline(7) }
+        await waitUntil { center.pending.contains(7) }
+        await center.decline(7)
+        XCTAssertEqual(runner.invocations.filter { $0.contains("decline") }.count, 1)
+        runner.release(0)
+        await first.value
+        XCTAssertTrue(center.pending.isEmpty)
+    }
+
     func testRunNowBusyLine() async {
         let runner = ScriptedCoachRunner { _ in
             throw Self.failure(#"{"ok":false,"error":"the coach is already running","code":"busy"}"#)

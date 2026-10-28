@@ -314,6 +314,16 @@ enum DesignShotCatalog {
             // Agent Settings as a page screen (#1150).
             DesignShot(name: "workbench-agent-settings", size: NSSize(width: 1040, height: 900)) {
                 AgentSettingsShotFixtures.screen()
+            },
+            // The coach on the Analytics pane (#1120, Plan 2).
+            DesignShot(name: "analytics-coach", size: NSSize(width: 900, height: 1700)) {
+                CoachShotFixtures.screen(.sections)
+            },
+            DesignShot(name: "analytics-coach-edit-sheet", size: NSSize(width: 520, height: 320)) {
+                CoachShotFixtures.screen(.editSheet)
+            },
+            DesignShot(name: "analytics-coach-rollback-sheet", size: NSSize(width: 520, height: 300)) {
+                CoachShotFixtures.screen(.rollbackSheet)
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
@@ -363,6 +373,7 @@ enum DesignShotFixtures {
         BuiltinShotFixtures.cleanUp()
         CleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
+        CoachShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
