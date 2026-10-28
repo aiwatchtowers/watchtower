@@ -25,7 +25,8 @@ struct HomeView: View {
                 onReconnect: { appState.openAccountConnection(source: $0) },
                 purges: appState.accountPurgeCenter?.openRows ?? [],
                 learn: appState.learnCenter.zone,
-                learnActions: appState.learnZoneActions
+                learnActions: appState.learnZoneActions,
+                coachNote: appState.homeCenter.coachNote
             )
         }
     }
@@ -58,6 +59,7 @@ struct HomeContent: View {
     /// The Learn zone; nil hides it (catalog failed or empty).
     let learn: LearnSelection?
     let learnActions: LearnZoneActions
+    let coachNote: String?
 
     init(
         snapshot: HomeSnapshot?,
@@ -75,11 +77,13 @@ struct HomeContent: View {
         onReconnect: @escaping (String) -> Void = { _ in },
         purges: [AccountPurge] = [],
         learn: LearnSelection? = nil,
-        learnActions: LearnZoneActions = .none
+        learnActions: LearnZoneActions = .none,
+        coachNote: String? = nil
     ) {
         self.purges = purges
         self.learn = learn
         self.learnActions = learnActions
+        self.coachNote = coachNote
         self.onReconnect = onReconnect
         self.calendar = calendar
         self.feedErrors = feedErrors
@@ -133,7 +137,7 @@ struct HomeContent: View {
                 calendar: calendar)
             HomeSideColumn(
                 snapshot: snapshot, onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach, learn: learn,
-                learnActions: learnActions)
+                learnActions: learnActions, coachNote: coachNote)
         }
     }
 
@@ -184,13 +188,15 @@ struct HomeSideColumn: View {
     let onOpenCoach: (Int64) -> Void
     var learn: LearnSelection?
     var learnActions: LearnZoneActions = .none
+    var coachNote: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
-            if snapshot.showsWorkbench {
+            if snapshot.showsWorkbench || coachNote != nil {
                 WorkbenchZoneView(
                     blocks: snapshot.workbench, coach: snapshot.coach, failed: snapshot.workbenchFailed,
-                    onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach)
+                    onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach,
+                    coachNote: coachNote)
             }
             if !snapshot.links.isEmpty {
                 LinksZoneView(links: snapshot.links, failed: snapshot.linksFailed, onLink: onLink)

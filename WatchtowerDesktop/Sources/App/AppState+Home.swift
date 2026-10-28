@@ -129,6 +129,7 @@ extension AppState {
             if case let CLIRunnerError.nonZeroExit(_, stderr) = error, let failure = CoachFailure.parse(stderr: stderr) {
                 if failure.code == "stale" || failure.code == "state_changed" {
                     await homeCenter.rereadNow()
+                    homeCenter.showCoachNote(Self.coachChangedLine)
                     return Self.coachChangedLine
                 }
                 return failure.error

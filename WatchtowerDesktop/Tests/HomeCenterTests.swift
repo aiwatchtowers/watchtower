@@ -264,6 +264,26 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(appState.homeCenter.todayReads, reads + 2)
     }
 
+    /// The note outlives the row the re-read removed, and is cleared on its clock.
+    func testStaleDecideLeavesTheNoteOnTheCenter() async throws {
+        let appState = AppState.isolated()
+        appState.homeEnvironmentOverride = FakeHomeEnvironment()
+        appState.homeCenter.beginReading(pool: try makePool())
+        defer { appState.homeCenter.endReading() }
+        await waitUntil(appState.homeCenter) { $0 != nil }
+        let stderr = #"{"ok":false,"error":"x","code":"stale"}"# + "\ncoach: x\n"
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
+
+        _ = await appState.decideCoachProposal(id: 7, accept: true, runner: runner)
+
+        XCTAssertEqual(appState.homeCenter.coachNote, "That proposal changed — showing the next one")
+        appState.homeCenter.showCoachNote("short", seconds: 0.05)
+        XCTAssertEqual(appState.homeCenter.coachNote, "short", "a newer note replaces it")
+        let deadline = Date().addingTimeInterval(2)
+        while appState.homeCenter.coachNote != nil, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertNil(appState.homeCenter.coachNote)
+    }
+
     func testHomeDecideErrorKeepsRow() async throws {
         let appState = AppState.isolated()
         appState.homeEnvironmentOverride = FakeHomeEnvironment()

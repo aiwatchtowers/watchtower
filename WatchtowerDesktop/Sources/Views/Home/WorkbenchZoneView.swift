@@ -13,6 +13,8 @@ struct WorkbenchZoneView: View {
     let onDecideCoach: (Int64, Bool) async -> String?
     /// Open the proposal in this workbench's Analytics pane.
     let onOpenCoach: (Int64) -> Void
+    /// `HomeCenter.coachNote`: shown where the row sits, with or without one.
+    var coachNote: String?
 
     var body: some View {
         HomeZone(title: "Workbench") {
@@ -29,6 +31,9 @@ struct WorkbenchZoneView: View {
                 if let coach {
                     HomeCoachRow(coach: coach, onDecide: onDecideCoach, onOpen: onOpenCoach)
                         .id(coach.proposal.id)
+                }
+                if let coachNote {
+                    Text(coachNote).font(.caption).foregroundStyle(Tone.warning).homeZoneInset()
                 }
             }
         }
@@ -186,10 +191,6 @@ private struct HomeCoachRow: View {
             note = line
             // The re-read replaces or removes the row; a failure keeps it usable.
             busy = false
-            guard line == AppState.coachChangedLine else { return }
-            // Shown for 5 s under the place the row had.
-            try? await Task.sleep(for: .seconds(5))
-            note = nil
         }
     }
 }

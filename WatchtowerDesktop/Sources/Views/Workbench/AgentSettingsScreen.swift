@@ -17,7 +17,8 @@ struct AgentSettingsScreen: View {
     @State private var busy = false
     @State private var showPreview = false
     /// `projects.agent_analytics` of this workbench; read on appear.
-    @State private var analyticsOn = true
+    @State private var analyticsOn = false
+    @State private var analyticsKnown = false
     @FocusState private var focused: Bool
 
     static let title = "Agent settings"
@@ -49,7 +50,8 @@ struct AgentSettingsScreen: View {
         }
         .task(id: project.id) {
             let id = project.id
-            analyticsOn = (try? await vm.dbPool.read { try HomeQueries.analyticsOnWorkbenches($0) })?.contains(id) ?? true
+            analyticsOn = (try? await vm.dbPool.read { try HomeQueries.analyticsOnWorkbenches($0) })?.contains(id) ?? false
+            analyticsKnown = true
         }
         .sheet(isPresented: $showPreview) { InstructionsPreviewSheet(workbenchID: project.id) }
     }
@@ -186,8 +188,11 @@ struct AgentSettingsScreen: View {
         analyticsOn ? "Suggestions for this workbench come from the coach." : "Turn on Analytics to get the coach's suggestions."
     }
 
-    private var coachPointer: CoachPointer {
-        CoachPointer(text: Self.coachPointerText(analyticsOn: analyticsOn)) {
+    /// Nothing until the Analytics state is read, so an off workbench never
+    /// flashes the "come from the coach" line.
+    private var coachPointer: CoachPointer? {
+        guard analyticsKnown else { return nil }
+        return CoachPointer(text: Self.coachPointerText(analyticsOn: analyticsOn)) {
             appState.openCoachInAnalytics(workbench: project.id)
         }
     }

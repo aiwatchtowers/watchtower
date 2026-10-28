@@ -368,6 +368,22 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(calls.map(\.1), [true])
     }
 
+    /// The "changed" note shows with no row left, and beside a replacement row.
+    func testCoachNoteShowsWithAndWithoutARow() throws {
+        let note = "That proposal changed — showing the next one"
+        let bare = HomeContent(snapshot: viewSnapshot(), today: Date(), onLink: { _ in }, onHideGettingReady: {}, coachNote: note)
+        let all = try texts(bare)
+        XCTAssertTrue(all.contains("Workbench"), "the zone shows for the note alone")
+        XCTAssertTrue(all.contains(note))
+        let replaced = HomeContent(
+            snapshot: viewSnapshot(coach: Self.coach(1, id: 6)), today: Date(), onLink: { _ in },
+            onHideGettingReady: {}, coachNote: note)
+        let both = try texts(replaced)
+        XCTAssertTrue(both.contains(note))
+        XCTAssertTrue(both.contains("Specs have no Non-goals"))
+        XCTAssertFalse(try texts(makeContent(viewSnapshot(coach: Self.coach()))).contains(note))
+    }
+
     /// A change over 4 lines shows its first 4 and "…", without Accept.
     func testLongChangeHasNoAccept() throws {
         let view = makeContent(viewSnapshot(coach: Self.coach(6)))
