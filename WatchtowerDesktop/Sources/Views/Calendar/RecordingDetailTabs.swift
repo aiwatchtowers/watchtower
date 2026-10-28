@@ -57,7 +57,9 @@ struct RecordingRecapTab: View {
                 .font(.callout)
                 .textSelection(.enabled)
         }
-        followupButton(chapterIdx: nil, label: "Follow-up draft (whole meeting)")
+        if !isPrivate {
+            followupButton(chapterIdx: nil, label: "Follow-up draft (whole meeting)")
+        }
 
         ForEach(Array(chapters.chapters.enumerated()), id: \.offset) { idx, chapter in
             chapterGroup(idx: idx, chapter: chapter)
@@ -83,7 +85,9 @@ struct RecordingRecapTab: View {
                 if !chapter.openQuestions.isEmpty {
                     recapSubsection(title: "Open questions", items: chapter.openQuestions)
                 }
-                followupButton(chapterIdx: idx, label: "Follow-up draft")
+                if !isPrivate {
+                    followupButton(chapterIdx: idx, label: "Follow-up draft")
+                }
             }
             .padding(.top, 6)
         } label: {
@@ -137,7 +141,7 @@ struct RecordingRecapTab: View {
                         Button("Target") {
                             onConvertActionItem(chapterIdx, itemIdx)
                         }
-                        .buttonStyle(.kitSecondary)
+                        .buttonStyle(.bordered)
                         .controlSize(.mini)
                         .help("Create a Target from this action item")
                     }
@@ -146,18 +150,15 @@ struct RecordingRecapTab: View {
         }
     }
 
-    @ViewBuilder
     private func followupButton(chapterIdx: Int?, label: String) -> some View {
-        if !isPrivate {
-            Button {
-                onFollowup(chapterIdx)
-            } label: {
-                Label(label, systemImage: "paperplane")
-                    .font(.caption)
-            }
-            .buttonStyle(.kitSecondary)
-            .controlSize(.small)
+        Button {
+            onFollowup(chapterIdx)
+        } label: {
+            Label(label, systemImage: "paperplane")
+                .font(.caption)
         }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 
     @ViewBuilder
@@ -188,7 +189,7 @@ struct RecordingRecapTab: View {
                       systemImage: isGeneratingChapters ? "hourglass" : "arrow.triangle.2.circlepath")
                     .font(.caption)
             }
-            .buttonStyle(.kitSecondary)
+            .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(isGeneratingChapters)
             .confirmationDialog(
@@ -215,7 +216,7 @@ struct RecordingRecapTab: View {
                       systemImage: isRetrying ? "hourglass" : "arrow.triangle.2.circlepath")
                     .font(.caption)
             }
-            .buttonStyle(.kitSecondary)
+            .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(isRetrying)
         }
@@ -274,7 +275,7 @@ struct RecordingRecapTab: View {
                       systemImage: isRetrying ? "hourglass" : "arrow.triangle.2.circlepath")
                     .font(.caption)
             }
-            .buttonStyle(.kitSecondary)
+            .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(isRetrying)
 
@@ -288,7 +289,7 @@ struct RecordingRecapTab: View {
                           systemImage: isGeneratingChapters ? "hourglass" : "sparkles")
                         .font(.caption)
                 }
-                .buttonStyle(.kitSecondary)
+                .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(isGeneratingChapters)
             }
@@ -424,7 +425,7 @@ struct RecordingNotesTab: View {
                               systemImage: "sparkles")
                             .font(.caption)
                     }
-                    .buttonStyle(.kitSecondary)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(isGenerating)
                 }
@@ -450,7 +451,7 @@ struct RecordingNotesTab: View {
                         Label(isEditing ? "Done" : "Edit", systemImage: isEditing ? "checkmark" : "pencil")
                             .font(.caption)
                     }
-                    .buttonStyle(.kitSecondary)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(isGenerating)
 
@@ -469,7 +470,7 @@ struct RecordingNotesTab: View {
                         Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(.caption)
                     }
-                    .buttonStyle(.kitSecondary)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
             }
@@ -647,7 +648,7 @@ struct RecordingTranscriptTab: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Regenerate", action: onRegenerateRecap)
-                .buttonStyle(.kitSecondary)
+                .buttonStyle(.bordered)
                 .controlSize(.small)
         }
     }

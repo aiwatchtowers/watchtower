@@ -9557,16 +9557,16 @@
     "violation": {
       "ruleName": "kit_no_stock_buttons",
       "location": {
-        "line": 397,
+        "line": 428,
         "file": "Sources/Views/Calendar/RecordingDetailTabs.swift",
-        "character": 17
+        "character": 21
       },
       "severity": "error",
       "ruleIdentifier": "kit_no_stock_buttons",
       "ruleDescription": "",
       "reason": "Use .kitPrimary / .kitSecondary / .kitQuiet / .kitDestructive."
     },
-    "text": "                .buttonStyle(.bordered)"
+    "text": "                    .buttonStyle(.bordered)"
   },
   {
     "violation": {
