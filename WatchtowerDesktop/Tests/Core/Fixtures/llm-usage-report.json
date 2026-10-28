@@ -7,9 +7,9 @@
   "ledger_since": "2026-10-20T07:12:03Z",
   "own_automations": {
     "totals": {
-      "calls": 226, "errors": 1, "estimated_calls": 0, "no_price_calls": 0, "untagged_calls": 0,
+      "calls": 226, "errors": 1, "estimated_calls": 0, "no_price_calls": 1, "untagged_calls": 0,
       "input": 60000, "cache_read": 0, "cache_write": 0, "output": 1003000,
-      "cost_usd": 22.4, "cost_is_lower_bound": false
+      "cost_usd": 22.4, "cost_is_lower_bound": true
     },
     "rows": [
       { "automation_id": 7, "name": "Weekly to-do", "runs": 6, "calls": 6,

@@ -34,8 +34,14 @@ struct NumbersZoneView: View {
         }
     }
 
-    /// A cell with a link is one plain button (the whole cell, no plate, so
-    /// it lines up with the others); every cell carries its tooltip.
+    /// The accent line under a linked cell's caption (the mockup's).
+    static let linkTitle = "Open Usage → Watchtower"
+
+    /// A cell with a link is one button over the whole cell, its accent
+    /// "Open Usage → Watchtower" line saying so; every cell carries its
+    /// tooltip. `.plain`, not `.kitQuiet`: the quiet style pads, tints and
+    /// fixes the size of its label, which would pull this cell out of line
+    /// with its grid neighbours and recolour its value.
     @ViewBuilder
     private func cellView(_ cell: Cell) -> some View {
         if let link = cell.link {
@@ -57,6 +63,11 @@ struct NumbersZoneView: View {
             Text(cell.caption)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+            if cell.link != nil {
+                Text(Self.linkTitle)
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            }
             if let bar = cell.bar {
                 ProgressView(value: Double(min(max(bar, 0), 100)), total: 100)
                     .progressViewStyle(.linear)

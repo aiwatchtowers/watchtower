@@ -94,7 +94,11 @@ final class HomeAISpendTests: XCTestCase {
         let cell = NumbersZoneView.cells(HomeNumbers(), aiSpend: Self.unavailable)
         XCTAssertEqual(cell, [NumbersZoneView.Cell(
             value: "—", caption: "AI spend today", tooltip: "AI spend unavailable", link: .usageWatchtower)])
-        try view.inspect().find(ViewType.Button.self).tap()
+        let button = try view.inspect().find(ViewType.Button.self)
+        XCTAssertNoThrow(try button.find(text: NumbersZoneView.linkTitle),
+                         "the accent line is inside the whole-cell button")
+        XCTAssertNoThrow(try button.find(text: "AI spend today"))
+        try button.tap()
         XCTAssertEqual(opened, [.usageWatchtower])
     }
 
