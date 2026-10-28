@@ -19,16 +19,6 @@ final class WorkbenchCLIInstructionsTests: XCTestCase {
         XCTAssertEqual(runner.stdinInputs, [Data("секрет text".utf8)])
     }
 
-    func testDecideSuggestionPassesNoWorkbench() async throws {
-        let runner = FakeCLIRunner(stdout: Self.ok)
-        _ = try await WorkbenchCLI(runner: runner).decideSuggestion(id: 3, add: true)
-        _ = try await WorkbenchCLI(runner: runner).decideSuggestion(id: 4, add: false)
-        XCTAssertEqual(runner.invocations, [
-            ["instructions", "suggestion", "add", "3", "--json"],
-            ["instructions", "suggestion", "dismiss", "4", "--json"]
-        ])
-    }
-
     func testRefusalThrowsGoTextTrimmed() async {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
             code: 1, stderr: "session instructions: over the 1000 character limit\n"))

@@ -23,6 +23,9 @@ protocol HomeEnvironment: AnyObject {
     /// The live session states (`SessionAgentStateCenter.statuses`), read
     /// under observation tracking: a state change rebuilds without a read.
     var workbenchSessions: [SessionAgentStatus] { get }
+    /// The workbench last opened (`WorkbenchesViewModel.selectedWorkbenchID`):
+    /// where a global coach proposal opens when its Analytics is on.
+    var lastOpenedWorkbench: Int64? { get }
 }
 
 /// The Getting ready memory, per install: `home.gettingReady.hidden` (Bool),
@@ -218,12 +221,13 @@ final class HomeCenter {
         let token = readToken
         let now = environment.now
         let calendar = environment.calendar
+        let lastOpened = environment.lastOpenedWorkbench
         var value: HomeWorkbenchData
         var feedValue: HomeFeedData
         var linksValue: HomeLinksData
         do {
             (value, feedValue, linksValue) = try await pool.read { db in
-                (HomeQueries.workbench(db, now: now),
+                (HomeQueries.workbench(db, lastOpened: lastOpened),
                  HomeFeedQueries.read(db, now: now, calendar: calendar),
                  HomeLinksQueries.read(db, now: now, calendar: calendar))
             }
@@ -413,7 +417,7 @@ final class HomeCenter {
             firstSync: inputs.firstSync,
             feed: makeFeed(feedData, sources: inputs.feedSources, now: now, calendar: calendar),
             workbench: HomeWorkbenchBuilder.blocks(sessions: inputs.sessions, asks: data.asks),
-            suggestion: data.suggestion,
+            coach: data.coach,
             workbenchFailed: data.failed,
             links: links,
             // A failure behind no visible link is not shown.
@@ -476,4 +480,5 @@ final class LiveHomeEnvironment: HomeEnvironment {
     var workbenchSessions: [SessionAgentStatus] {
         appState?.sessionAgentStateCenter.map { Array($0.statuses.values) } ?? []
     }
+    var lastOpenedWorkbench: Int64? { appState?.workbenchesViewModel?.selectedWorkbenchID }
 }

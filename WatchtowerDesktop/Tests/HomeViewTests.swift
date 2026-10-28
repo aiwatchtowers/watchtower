@@ -31,7 +31,7 @@ final class HomeViewTests: XCTestCase {
         _ zone: GettingReadyZone = .hidden,
         firstSync: FirstSyncLine? = nil,
         workbench: [HomeWorkbenchBlock] = [],
-        suggestion: HomeInstructionSuggestion? = nil,
+        coach: HomeCoachProposal? = nil,
         workbenchFailed: Bool = false,
         links: [HomeLinkRow] = [],
         linksFailed: Bool = false,
@@ -40,7 +40,7 @@ final class HomeViewTests: XCTestCase {
         HomeSnapshot(
             gettingReady: zone, firstSync: firstSync,
             feed: HomeFeedBuilder.feed(HomeFeedData(), now: Date(), calendar: .current, hidden: []),
-            workbench: workbench, suggestion: suggestion, workbenchFailed: workbenchFailed,
+            workbench: workbench, coach: coach, workbenchFailed: workbenchFailed,
             links: links, linksFailed: linksFailed, numbers: numbers)
     }
 
@@ -295,14 +295,20 @@ final class HomeViewTests: XCTestCase {
         }
     }
 
-    private static let suggestion = HomeInstructionSuggestion(id: 5, text: "run the linter before committing")
+    private static func coach(_ lines: Int = 1, id: Int64 = 5) -> HomeCoachProposal {
+        let after = (1...lines).map { "Line \($0)." }.joined(separator: "\n")
+        return HomeCoachProposal(
+            proposal: CoachProposalFixture.make(id: id, title: "Specs have no Non-goals", after: after), targetWorkbench: 2)
+    }
+
+    private static let coach = coach()
 
     func testNoBlocksHidesTheZone() throws {
         let all = try texts(makeContent(viewSnapshot()))
         XCTAssertFalse(all.contains("Workbench"))
         XCTAssertFalse(all.contains("Couldn't read Workbench — see the log."))
-        // The suggestion alone still shows the zone.
-        XCTAssertTrue(try texts(makeContent(viewSnapshot(suggestion: Self.suggestion))).contains("Workbench"))
+        // The coach row alone still shows the zone.
+        XCTAssertTrue(try texts(makeContent(viewSnapshot(coach: Self.coach))).contains("Workbench"))
     }
 
     func testWorkbenchBlocksShowSessionsAndAsks() throws {
@@ -332,39 +338,46 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(tapped.last, .workbenches)
     }
 
-    func testSuggestionIsTheLastRow() async throws {
+    func testCoachRowIsTheLastRow() async throws {
         let blocks = HomeWorkbenchBuilder.blocks(
             sessions: [Self.session(1, title: "Rate limiter", .readyToCheck)],
             asks: WorkbenchAskRows(rows: [], unreadableIDs: []))
         let decided = expectation(description: "decided")
         var calls: [(Int64, Bool)] = []
+        var opened: [Int64] = []
         let view = HomeContent(
-            snapshot: viewSnapshot(workbench: blocks, suggestion: Self.suggestion), today: Date(), onLink: { _ in },
-            onDecideSuggestion: { id, add in
-                calls.append((id, add))
+            snapshot: viewSnapshot(workbench: blocks, coach: Self.coach), today: Date(), onLink: { _ in },
+            onDecideCoach: { id, accept in
+                calls.append((id, accept))
                 decided.fulfill()
                 return nil
             },
+            onOpenCoach: { opened.append($0) },
             onHideGettingReady: {})
         let all = try texts(view)
-        let line = "You keep telling agents: \u{201C}run the linter before committing\u{201D}. Add to your instructions?"
         let rate = try XCTUnwrap(all.firstIndex(of: "Rate limiter"))
-        let suggestionIndex = try XCTUnwrap(all.firstIndex(of: line))
-        XCTAssertLessThan(rate, suggestionIndex)
-        // Only its buttons follow it, then the page's help line.
-        XCTAssertEqual(Array(all[(suggestionIndex + 1)...].prefix(3)), ["Add", "Dismiss", "Stuck? Press "])
-        try view.inspect().find(button: "Add").tap()
+        let header = try XCTUnwrap(all.firstIndex(of: "Coach suggests · Session instructions · all workbenches"))
+        XCTAssertLessThan(rate, header)
+        XCTAssertEqual(Array(all[(header + 1)...].prefix(6)),
+                       ["Specs have no Non-goals", "+ Line 1.", "Open in Analytics", "Decline", "Accept", "Stuck? Press "])
+        try view.inspect().find(button: "Open in Analytics").tap()
+        XCTAssertEqual(opened, [2])
+        try view.inspect().find(button: "Accept").tap()
         await fulfillment(of: [decided], timeout: 2)
         XCTAssertEqual(calls.map(\.0), [5])
         XCTAssertEqual(calls.map(\.1), [true])
     }
 
-    /// A chat-only suggestion is about the chat, not the agents.
-    func testChatSuggestionNamesTheChat() throws {
-        let chat = HomeInstructionSuggestion(id: 6, text: "answer in English", field: "chat")
-        let all = try texts(makeContent(viewSnapshot(suggestion: chat)))
-        XCTAssertTrue(all.contains(
-            "You keep telling the chat: \u{201C}answer in English\u{201D}. Add to your chat instructions?"))
+    /// A change over 4 lines shows its first 4 and "…", without Accept.
+    func testLongChangeHasNoAccept() throws {
+        let view = makeContent(viewSnapshot(coach: Self.coach(6)))
+        let all = try texts(view)
+        XCTAssertTrue(all.contains("+ Line 4."))
+        XCTAssertFalse(all.contains("+ Line 5."))
+        XCTAssertTrue(all.contains("…"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Open in Analytics"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Decline"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Accept"))
     }
 
     func testWorkbenchReadFailedIsSaid() throws {
@@ -560,7 +573,7 @@ final class HomeViewTests: XCTestCase {
     /// column with the feed first; the side column stacks Workbench, links,
     /// numbers.
     func testLayoutTwoColumnsThenOneColumn() throws {
-        let snapshot = viewSnapshot(suggestion: Self.suggestion, links: Self.links, numbers: HomeNumbers())
+        let snapshot = viewSnapshot(coach: Self.coach, links: Self.links, numbers: HomeNumbers())
         let page = try makeContent(snapshot).inspect()
         // One layout switches by width (`testColumnsFrames…`), so the feed
         // and the side column are each built once.

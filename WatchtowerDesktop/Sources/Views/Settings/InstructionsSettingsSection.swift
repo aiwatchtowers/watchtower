@@ -12,16 +12,14 @@ struct InstructionsSettingsSection: View {
     @State private var model = InstructionsSettingsModel(cli: nil)
     @State private var showPreview = false
 
-    /// Workbench id → name, for the "only <workbench>" suggestion label.
-    private var workbenchNames: [Int64: String] {
-        Dictionary(uniqueKeysWithValues: (appState.workbenchesViewModel?.summaries ?? []).map { ($0.project.id, $0.project.name) })
-    }
-
     var body: some View {
         Group {
             if let state = model.state {
                 fieldBlock(.session, title: "For chats and agents",
-                           caption: "Every chat and every new workbench session starts with this. Workbenches can add their own.", state: state)
+                           caption: "Every chat and every new workbench session starts with this. Workbenches can add their own.", state: state,
+                           coachPointer: CoachPointer(text: Self.coachPointerText) {
+                               Task { await appState.openCoachInAnalyticsFromSettings() }
+                           })
                 fieldBlock(.chat, title: "Only in chats",
                            caption: "Added to every chat, never to a workbench session. \"remember: …\" in a chat adds a line here.", state: state)
                 addedFromChats(state.chatLines)
@@ -46,14 +44,21 @@ struct InstructionsSettingsSection: View {
         .sheet(isPresented: $showPreview) { InstructionsPreviewSheet(workbenchID: nil) }
     }
 
-    private func fieldBlock(_ field: InstructionField, title: String, caption: String, state: OwnerInstructionsState) -> some View {
+    static let coachPointerText = "Suggestions now come from the coach — see a workbench's Analytics."
+
+    private func fieldBlock(
+        _ field: InstructionField,
+        title: String,
+        caption: String,
+        state: OwnerInstructionsState,
+        coachPointer: CoachPointer? = nil
+    ) -> some View {
         InstructionFieldBlock(
             title: title, caption: caption, stored: state.global.text(field), limit: state.limit,
-            suggestions: state.suggestions.filter { $0.field == field },
-            detail: detail, error: model.errors[field], busy: model.busy,
+            error: model.errors[field], busy: model.busy,
             draft: Binding(get: { model.drafts[field] }, set: { model.drafts[field] = $0 }),
             onSave: { body in Task { await model.save(field, body: body) } },
-            onDecide: { row, add in Task { await model.decide(row, add: add) } }
+            coachPointer: coachPointer
         )
     }
 
@@ -74,13 +79,5 @@ struct InstructionsSettingsSection: View {
                 }
             }
         }
-    }
-
-    private func detail(_ row: InstructionSuggestion) -> String {
-        var text = "\(row.sessionCount) sessions, \(row.workbenchCount) workbenches"
-        if let id = row.workbenchID {
-            text = "\(row.sessionCount) sessions · only \(workbenchNames[id] ?? "workbench \(id)") → adds to that workbench"
-        }
-        return text
     }
 }

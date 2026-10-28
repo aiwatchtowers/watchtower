@@ -16,7 +16,8 @@ struct HomeView: View {
                 feedErrors: appState.homeCenter.feedErrors,
                 digestsTurnOn: appState.digestsTurnOnState,
                 onLink: { appState.openHomeLink($0) },
-                onDecideSuggestion: { await appState.decideInstructionSuggestion(id: $0, add: $1) },
+                onDecideCoach: { await appState.decideCoachProposal(id: $0, accept: $1) },
+                onOpenCoach: { appState.openCoachInAnalytics(workbench: $0) },
                 onHideGettingReady: { appState.homeCenter.hideGettingReady() },
                 onAsk: { appState.toggleHelpChat() },
                 onAct: { await appState.homeCenter.act($0, on: $1) },
@@ -44,7 +45,8 @@ struct HomeContent: View {
     let feedErrors: [FeedRef: String]
     let digestsTurnOn: DigestsTurnOnState
     let onLink: (HomeLink) -> Void
-    let onDecideSuggestion: (Int64, Bool) async -> String?
+    let onDecideCoach: (Int64, Bool) async -> String?
+    let onOpenCoach: (Int64) -> Void
     let onHideGettingReady: () -> Void
     let onAsk: () -> Void
     let onAct: (FeedAction, FeedRef) async -> Void
@@ -64,7 +66,8 @@ struct HomeContent: View {
         feedErrors: [FeedRef: String] = [:],
         digestsTurnOn: DigestsTurnOnState = .idle,
         onLink: @escaping (HomeLink) -> Void,
-        onDecideSuggestion: @escaping (Int64, Bool) async -> String? = { _, _ in nil },
+        onDecideCoach: @escaping (Int64, Bool) async -> String? = { _, _ in nil },
+        onOpenCoach: @escaping (Int64) -> Void = { _ in },
         onHideGettingReady: @escaping () -> Void,
         onAsk: @escaping () -> Void = {},
         onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
@@ -82,7 +85,8 @@ struct HomeContent: View {
         self.feedErrors = feedErrors
         self.onAct = onAct
         self.onPage = onPage
-        self.onDecideSuggestion = onDecideSuggestion
+        self.onDecideCoach = onDecideCoach
+        self.onOpenCoach = onOpenCoach
         self.snapshot = snapshot
         self.today = today
         self.digestsTurnOn = digestsTurnOn
@@ -128,7 +132,7 @@ struct HomeContent: View {
                 feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onPage: onPage, now: today,
                 calendar: calendar)
             HomeSideColumn(
-                snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion, learn: learn,
+                snapshot: snapshot, onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach, learn: learn,
                 learnActions: learnActions)
         }
     }
@@ -176,7 +180,8 @@ struct HomeContent: View {
 struct HomeSideColumn: View {
     let snapshot: HomeSnapshot
     let onLink: (HomeLink) -> Void
-    let onDecideSuggestion: (Int64, Bool) async -> String?
+    let onDecideCoach: (Int64, Bool) async -> String?
+    let onOpenCoach: (Int64) -> Void
     var learn: LearnSelection?
     var learnActions: LearnZoneActions = .none
 
@@ -184,8 +189,8 @@ struct HomeSideColumn: View {
         VStack(alignment: .leading, spacing: Spacing.page) {
             if snapshot.showsWorkbench {
                 WorkbenchZoneView(
-                    blocks: snapshot.workbench, suggestion: snapshot.suggestion, failed: snapshot.workbenchFailed,
-                    onLink: onLink, onDecideSuggestion: onDecideSuggestion)
+                    blocks: snapshot.workbench, coach: snapshot.coach, failed: snapshot.workbenchFailed,
+                    onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach)
             }
             if !snapshot.links.isEmpty {
                 LinksZoneView(links: snapshot.links, failed: snapshot.linksFailed, onLink: onLink)

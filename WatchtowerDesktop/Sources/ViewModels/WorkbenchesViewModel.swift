@@ -1200,14 +1200,6 @@ final class WorkbenchesViewModel {
         }
     }
 
-    /// Adds or dismisses one suggestion; the answer carries this workbench's texts.
-    func decideSuggestion(projectID: Int64, field: InstructionField, id: Int64, add: Bool) async {
-        await runInstructions(projectID: projectID, field: field) { cli in
-            _ = try await cli.decideSuggestion(id: id, add: add)
-            return try await cli.instructions(workbenchID: projectID)
-        }
-    }
-
     @discardableResult
     private func runInstructions(
         projectID: Int64,

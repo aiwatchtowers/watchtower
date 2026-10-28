@@ -236,9 +236,9 @@ final class HomeQueriesTests: XCTestCase {
     // MARK: - workbench
 
     func testWorkbenchEmptyDatabaseReadsNoContent() throws {
-        let data = try db.read { HomeQueries.workbench($0, now: Date()) }
+        let data = try db.read { HomeQueries.workbench($0) }
         XCTAssertTrue(data.asks.rows.isEmpty && data.asks.unreadableIDs.isEmpty)
-        XCTAssertNil(data.suggestion)
+        XCTAssertNil(data.coach)
         XCTAssertFalse(data.failed)
     }
 
@@ -249,18 +249,19 @@ final class HomeQueriesTests: XCTestCase {
             let p = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
             try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
             try d.execute(sql: """
-                DROP TABLE instruction_suggestions;
-                CREATE TABLE instruction_suggestions (id INTEGER PRIMARY KEY, body TEXT);
+                DROP TABLE coach_proposals;
+                CREATE TABLE coach_proposals (id INTEGER PRIMARY KEY, body TEXT);
+                UPDATE projects SET agent_analytics = 1;
                 """)
-            return HomeQueries.workbench(d, now: Date())
+            return HomeQueries.workbench(d)
         }
         XCTAssertTrue(data.failed)
-        XCTAssertNil(data.suggestion)
+        XCTAssertNil(data.coach)
         XCTAssertEqual(data.asks.rows.map(\.ask.title), ["Check the build"])
 
         let missing = try db.write { d in
-            try d.execute(sql: "DROP TABLE instruction_suggestions")
-            return HomeQueries.workbench(d, now: Date())
+            try d.execute(sql: "DROP TABLE coach_proposals")
+            return HomeQueries.workbench(d)
         }
         XCTAssertFalse(missing.failed)
     }
@@ -272,14 +273,14 @@ final class HomeQueriesTests: XCTestCase {
             let p = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
             try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
             try self.insertUnreadableAsk(d, projectID: p)
-            return HomeQueries.workbench(d, now: Date())
+            return HomeQueries.workbench(d)
         }
         XCTAssertTrue(data.failed)
         XCTAssertEqual(data.asks.rows.map(\.ask.title), ["Check the build"])
     }
 
     func testObservedTablesCoverEveryRead() {
-        for table in ["owner_asks", "projects", "instruction_suggestions"] {
+        for table in ["owner_asks", "projects", "coach_proposals"] {
             XCTAssertTrue(HomeQueries.observedTables.contains(table), table)
         }
     }
@@ -291,59 +292,5 @@ final class HomeQueriesTests: XCTestCase {
                       "messages"] {
             XCTAssertFalse(HomeQueries.observedTables.contains(table), table)
         }
-    }
-
-    // MARK: - Instruction suggestion
-
-    private func insertSuggestion(
-        _ d: Database, _ text: String, status: String = "open", daysAgo: Double = 1, field: String = "session"
-    ) throws {
-        let seen = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-daysAgo * 86400))
-        try d.execute(
-            sql: """
-                INSERT INTO instruction_suggestions (text, field, first_seen_at, last_seen_at, status, fingerprint)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """, arguments: [text, field, seen, seen, status, text])
-    }
-
-    private func suggestionRead() throws -> HomeWorkbenchData {
-        try db.read { HomeQueries.workbench($0, now: Date()) }
-    }
-
-    func testInstructionSuggestionCardShowsNewest() throws {
-        try db.write { d in
-            try insertSuggestion(d, "older", daysAgo: 3)
-            try insertSuggestion(d, "newest", daysAgo: 1)
-        }
-        XCTAssertEqual(try suggestionRead().suggestion?.text, "newest")
-    }
-
-    func testInstructionSuggestionCarriesItsField() throws {
-        try db.write { try insertSuggestion($0, "answer in English", field: "chat") }
-        let suggestion = try XCTUnwrap(try suggestionRead().suggestion)
-        XCTAssertEqual(suggestion.field, "chat")
-    }
-
-    func testInstructionSuggestionCardHiddenAfterSevenDays() throws {
-        try db.write { try insertSuggestion($0, "stale", daysAgo: 8) }
-        XCTAssertNil(try suggestionRead().suggestion)
-    }
-
-    func testInstructionSuggestionCardHiddenWhenDecided() throws {
-        try db.write { d in
-            try insertSuggestion(d, "added", status: "added")
-            try insertSuggestion(d, "dismissed", status: "dismissed")
-        }
-        XCTAssertNil(try suggestionRead().suggestion)
-    }
-
-    func testSecondOpenSuggestionShowsAfterFirstIsDecided() throws {
-        try db.write { d in
-            try insertSuggestion(d, "first", daysAgo: 1)
-            try insertSuggestion(d, "second", daysAgo: 2)
-        }
-        XCTAssertEqual(try suggestionRead().suggestion?.text, "first")
-        try db.write { try $0.execute(sql: "UPDATE instruction_suggestions SET status = 'added' WHERE text = 'first'") }
-        XCTAssertEqual(try suggestionRead().suggestion?.text, "second")
     }
 }

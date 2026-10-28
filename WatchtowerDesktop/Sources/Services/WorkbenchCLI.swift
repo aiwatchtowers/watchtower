@@ -795,7 +795,7 @@ struct WorkbenchCLI {
     // MARK: - Owner instructions (agent instructions, Task 9)
 
     /// `watchtower instructions show --json`: the owner's texts, the limit and
-    /// the open "you keep saying this" suggestions. `workbenchID` adds that
+    /// the open suggestions (read-only since the coach took them over). `workbenchID` adds that
     /// workbench's own texts.
     func instructions(workbenchID: Int64?) async throws -> OwnerInstructionsState {
         try await instructionsCall(["show"], workbenchID: workbenchID)
@@ -805,11 +805,6 @@ struct WorkbenchCLI {
     /// argv; a refusal (over the limit) throws `OwnerInstructionsError`.
     func setInstruction(field: InstructionField, workbenchID: Int64?, body: String) async throws -> OwnerInstructionsState {
         try await instructionsCall(["set", "--field", field.rawValue, "--stdin"], workbenchID: workbenchID, stdin: Data(body.utf8))
-    }
-
-    /// Adds (to the matching instructions) or dismisses one suggestion.
-    func decideSuggestion(id: Int64, add: Bool) async throws -> OwnerInstructionsState {
-        try await instructionsCall(["suggestion", add ? "add" : "dismiss", String(id)], workbenchID: nil)
     }
 
     /// The exact brief slot and target procedure the agent receives.
@@ -843,7 +838,7 @@ struct WorkbenchCLI {
     /// that message as an `OwnerInstructionsError`.
     private func instructionsRun(_ sub: [String], workbenchID: Int64?, stdin: Data?) async throws -> Data {
         var args = ["instructions"] + sub
-        if let workbenchID, sub.first != "suggestion" { args += ["--workbench", String(workbenchID)] }
+        if let workbenchID { args += ["--workbench", String(workbenchID)] }
         args.append("--json")
         do {
             if let stdin { return try await runner.run(args: args, stdin: stdin) }
