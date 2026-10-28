@@ -38,6 +38,10 @@ struct RecordingDetailView: View {
     @State private var utterances: [TranscriptUtterance]?
     @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
+    /// The recap the meeting chat's prompt carries
+    /// (`MeetingChatSurface.recapContent`): unlike `recapContent`, never an
+    /// event recap a private recording owns (MEETPRIV-02).
+    @State private var chatRecapContent: MeetingRecap.Content?
     /// True when `recapContent` came from the event's `meeting_recaps` row and
     /// that row was generated from a different recording's transcript (or
     /// another source) than this one — the Recap tab needs a provenance note
@@ -229,7 +233,7 @@ struct RecordingDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let chatConversationID, let db = appState.databaseManager,
                       let spec = MeetingChatSurface.spec(
-                        transcript: transcript, transcriptID: transcriptID, recapContent: recapContent,
+                        transcript: transcript, transcriptID: transcriptID, recapContent: chatRecapContent,
                         conversationID: chatConversationID, dbPool: db.dbPool) {
                 let engine = appState.embeddedChatCenter.engine(for: spec)
                 RecordingChatTab(engine: engine, transcriptID: transcriptID)
@@ -334,6 +338,7 @@ struct RecordingDetailView: View {
     private struct LoadedDetail {
         var row: MeetingTranscript?
         var recap: RecordingRecap?
+        var chatRecap: MeetingRecap.Content?
         var link: CalendarQueries.EventLink?
         var utterances: [TranscriptUtterance]?
         var chapters: MeetingChapters?
@@ -352,6 +357,9 @@ struct RecordingDetailView: View {
                     // transcript's summary_json.
                     let recap = try MeetingRecapQueries.fetchForRecording(
                         conn, transcriptID: transcriptID, eventID: row?.eventID)
+                    let chatRecap = try row.flatMap {
+                        try MeetingChatSurface.recapContent(conn, transcript: $0, transcriptID: transcriptID)
+                    }
                     var link: CalendarQueries.EventLink?
                     if let eventID = row?.eventID {
                         // Lightweight (title + start_time); nil when the event
@@ -360,7 +368,7 @@ struct RecordingDetailView: View {
                     }
                     // The sidecar is read here, off-main with the rest, so
                     // every field lands in one main-actor turn.
-                    return LoadedDetail(row: row, recap: recap, link: link,
+                    return LoadedDetail(row: row, recap: recap, chatRecap: chatRecap, link: link,
                                         utterances: row?.utterances, chapters: row?.parsedChapters,
                                         callAudioNote: CallAudioGapNote.load(audioPath: row?.audioPath))
                 }
@@ -386,6 +394,7 @@ struct RecordingDetailView: View {
             // in row builders.
             let eventRecapContent = loaded.recap?.recap.parsed
             recapContent = eventRecapContent ?? loaded.row?.parsedSummary
+            chatRecapContent = loaded.chatRecap
             // An exact source-text match means the event recap WAS generated
             // from this recording's own transcript; anything else (including
             // no event recap at all, or a recap row whose recap_json failed

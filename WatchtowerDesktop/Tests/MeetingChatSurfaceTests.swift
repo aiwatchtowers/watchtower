@@ -50,6 +50,48 @@ final class MeetingChatSurfaceTests: XCTestCase {
                                              conversationID: 1, dbPool: dbManager.dbPool))
     }
 
+    /// MEETPRIV-02: a public recording B on event E never sends the recap
+    /// a private recording A owns on E (Go's `GetMeetingRecapForAI`); a
+    /// pasted recap (no owning recording) still reaches the prompt.
+    func testMeetPriv02_ChatPromptSkipsTheEventRecapAPrivateRecordingOwns() async throws {
+        let secret = #"{"summary":"PRIVATE-A-RECAP","key_decisions":["PRIVATE-A-DECISION"],"action_items":[],"open_questions":[]}"#
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-e")
+            try TestDatabase.insertMeetingTranscript(db, id: 20, eventID: "evt-e", title: "A", isPrivate: true)
+            try TestDatabase.insertMeetingTranscript(db, id: 21, eventID: "evt-e", title: "B")
+            try TestDatabase.insertMeetingRecap(db, eventID: "evt-e", transcriptID: 20,
+                                                sourceText: "a's transcript", recapJSON: secret)
+        }
+        let (aiRecap, content, transcript) = try await dbManager.dbPool.read { db in
+            let row = try XCTUnwrap(try MeetingTranscriptQueries.fetch(db, id: 21))
+            return (try MeetingRecapQueries.fetchForRecordingForAI(db, transcriptID: 21, eventID: "evt-e"),
+                    try MeetingChatSurface.recapContent(db, transcript: row, transcriptID: 21), row)
+        }
+        XCTAssertNil(aiRecap)
+        XCTAssertNil(content)
+        let prompt = MeetingChatSurface.buildSystemPrompt(
+            transcript: transcript, recapContent: content, dbPool: dbManager.dbPool,
+            memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: nil)
+        XCTAssertFalse(prompt.contains("PRIVATE-A"))
+        // The owner's own Recap tab still shows it locally.
+        let shown = try await dbManager.dbPool.read { db in
+            try MeetingRecapQueries.fetchForRecording(db, transcriptID: 21, eventID: "evt-e")
+        }
+        XCTAssertEqual(shown?.recap.parsed?.summary, "PRIVATE-A-RECAP")
+
+        // A pasted recap (NULL transcript_id) on the event reaches the prompt.
+        let pasted = #"{"summary":"PASTED-RECAP","key_decisions":[],"action_items":[],"open_questions":[]}"#
+        try await dbManager.dbPool.write { db in
+            try db.execute(sql: "DELETE FROM meeting_recaps")
+            try TestDatabase.insertMeetingRecap(db, eventID: "evt-e", sourceText: "pasted", recapJSON: pasted)
+        }
+        let pastedContent = try await dbManager.dbPool.read { db in
+            try MeetingChatSurface.recapContent(db, transcript: transcript, transcriptID: 21)
+        }
+        XCTAssertTrue(MeetingChatSurface.meetingContextBlock(transcript, recapContent: pastedContent)
+            .contains("PASTED-RECAP"))
+    }
+
     func testCreatesConversationWithMeetingContext() async throws {
         let transcript = try loadTranscript()
         _ = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)

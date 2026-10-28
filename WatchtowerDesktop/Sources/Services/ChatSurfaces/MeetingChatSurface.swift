@@ -62,6 +62,18 @@ enum MeetingChatSurface {
         )
     }
 
+    /// The recap the chat's prompt carries: the recording's recap row
+    /// without one a private recording owns (MEETPRIV-02 — a public
+    /// recording on the same event as a private one must not send the
+    /// private one's recap), else the transcript's own `summary_json`. The
+    /// Recap tab shows the unfiltered row; this is the provider's view.
+    static func recapContent(_ db: Database, transcript: MeetingTranscript,
+                             transcriptID: Int64) throws -> MeetingRecap.Content? {
+        let recap = try MeetingRecapQueries.fetchForRecordingForAI(
+            db, transcriptID: transcriptID, eventID: transcript.eventID)
+        return recap?.recap.parsed ?? transcript.parsedSummary
+    }
+
     // MARK: - System prompt
 
     /// The `=== MEETING RECORDING ===` block: transcript metadata + recap.
