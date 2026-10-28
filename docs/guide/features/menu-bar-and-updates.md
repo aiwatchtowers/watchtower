@@ -82,13 +82,15 @@ Watchtower registers itself as a login item once per installed copy, so the daem
 
 ### Install an update
 <!-- learn
-id: menubar-install-update
-title: Install an update
-text: When **Update to <version> available…** shows in the menu, press **Download**, then **Install & Restart**.
+id: menubar-update-whats-new
+title: Read what's new, then update
+text: When an update shows in the menu, press **What's New…** to read the notes, then **Download** and **Install & Restart**.
+changed: Release notes open in full, and once more after an update.
+replaces: [menubar-install-update]
 area: setup
 level: next
 kind: feature
-since: 0.24.0
+since: 0.26.2
 -->
 
 1. Click **Update to <version> available…** (or the notification). It opens Settings → System → **Update**.

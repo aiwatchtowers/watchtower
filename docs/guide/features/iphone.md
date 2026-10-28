@@ -68,7 +68,7 @@ since: 0.24.0
 -->
 
 - **Now** shows your Mac's status, then **Waiting for you**, **Working** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
-- **Workbench** lists your workbenches as cards. Open one for **Sessions** (in the Mac's sessions panel order) or **Board** (targets with status, priority and comments). Done targets stay hidden until you tap **Show done**; the phone remembers your choice. Its badge counts open asks.
+- **Workbench** lists your workbenches as cards. Open one for **Sessions** (in the Mac's sessions panel order) or **Board** (targets with status, priority and comments). A group's done sub-targets stay hidden until you tap **Show done (N)** (remembered). Its badge counts open asks.
 - **Calendar** shows the events your Mac publishes, with prep, the **Record** button and the **Recordings** list.
 
 Asks come in three kinds: a question, a review (select text, **Comment on the selection**, then **Approve** or **Request changes**) and a check (mark each step **OK**, **Broken** or **Skipped**).
@@ -78,13 +78,15 @@ A session opens as its chat, with a field to write to it and its report behind *
 
 ### Let the phone do more
 <!-- learn
-id: iphone-start-sessions
+id: iphone-start-session-any-task
 title: Start sessions from your phone
-text: Turn on **Start sessions from this phone**, then press **Allow…** on the Mac's phone row to grant it.
+text: Allow **Start sessions from this phone**, then start one from a target or with **No target** and a typed task.
+changed: A session can start with no target: type the task on the phone.
+replaces: [iphone-start-sessions]
 area: iphone
 level: power
 kind: feature
-since: 0.24.0
+since: 0.26.2
 -->
 <!-- learn
 id: iphone-type-into-sessions
@@ -98,7 +100,7 @@ since: 0.24.0
 
 Three switches under Settings → **Workbench** on the phone:
 
-- **Start sessions from this phone** lets you start a session from a target, or from the Workbench's **New session** with **No target** and a task you type. It runs the Mac's default agent. The Mac decides: allow typing on its phone row, then **Allow…** on **Starting sessions off**. Until then **Start** stays off and says where to allow it.
+- **Start sessions from this phone** lets you start a session from a target, or from the Workbench's **New session** with **No target** and a task you type. It runs the Mac's default agent. The Mac decides: allow typing on its phone row, then **Allow…** on **Starting sessions off**. Until then **Start session** stays off and says why.
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
 - **Answer permission prompts from this phone** lets you answer a Claude Code permission prompt. It is a separate grant: the Mac's phone row shows **Asks to answer permission prompts**, with its own **Allow…**.
 
@@ -134,7 +136,7 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"<Mac> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes on the phone: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
 - **"iCloud is slowing sync down"** on the Mac's Mobile tab clears on its own.
-- **"Your Mac has not allowed this phone to start sessions"** under **Start**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant existed needs it once too.
+- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant existed needs it once too.
 - **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
 - **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
 - **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.
