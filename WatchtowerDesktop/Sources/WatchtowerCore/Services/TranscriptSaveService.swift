@@ -16,10 +16,11 @@ import Foundation
 /// `recapSkipped` means the CLI deliberately skipped recap generation for a
 /// too-short transcript (`recapOK` is also false in that case) — an older-CLI
 /// envelope omits the key, decoding as `false`. A private save (MEETPRIV-01)
-/// skips recap and chapters on purpose: `recap_skipped`/`chapters_skipped`
-/// true with `recap_skipped_reason`/`chapters_skipped_reason` = "private"
-/// (`recapSkippedPrivate`/`chaptersSkippedPrivate`); the too-short skip
-/// carries no reason and no chapters keys.
+/// skips recap and chapters on purpose; `recapSkippedPrivate` is its
+/// affirmative signal (`recap_skipped_reason` = "private"), which the
+/// completion notification reads. The too-short skip carries no reason. The
+/// envelope's `chapters_skipped*` keys are not decoded: `chapters_ok: false`
+/// already reads as `.failed`, and the private notice wins over it.
 package struct TranscriptSaveResult: Decodable, Equatable {
     /// Outcome of the auto-chapter generation the CLI attempts after save.
     package enum ChaptersOutcome: Equatable {
@@ -33,8 +34,6 @@ package struct TranscriptSaveResult: Decodable, Equatable {
     package let recapError: String
     package let recapSkipped: Bool
     package let recapSkippedPrivate: Bool
-    package let chaptersSkipped: Bool
-    package let chaptersSkippedPrivate: Bool
     package let segmentsOK: Bool
     package let segmentsError: String?
     package let chapters: ChaptersOutcome
@@ -46,15 +45,13 @@ package struct TranscriptSaveResult: Decodable, Equatable {
         case recapError = "recap_error"
         case recapSkipped = "recap_skipped"
         case recapSkippedReason = "recap_skipped_reason"
-        case chaptersSkipped = "chapters_skipped"
-        case chaptersSkippedReason = "chapters_skipped_reason"
         case segmentsOK = "segments_ok"
         case segmentsError = "segments_error"
         case chaptersOK = "chapters_ok"
         case chaptersError = "chapters_error"
     }
 
-    /// `recap_skipped_reason`/`chapters_skipped_reason` of a private save.
+    /// `recap_skipped_reason` of a private save.
     package static let privateSkipReason = "private"
 
     package init(from decoder: Decoder) throws {
@@ -64,9 +61,6 @@ package struct TranscriptSaveResult: Decodable, Equatable {
         recapError = try container.decode(String.self, forKey: .recapError)
         recapSkipped = try container.decodeIfPresent(Bool.self, forKey: .recapSkipped) ?? false
         recapSkippedPrivate = try container.decodeIfPresent(String.self, forKey: .recapSkippedReason)
-            == Self.privateSkipReason
-        chaptersSkipped = try container.decodeIfPresent(Bool.self, forKey: .chaptersSkipped) ?? false
-        chaptersSkippedPrivate = try container.decodeIfPresent(String.self, forKey: .chaptersSkippedReason)
             == Self.privateSkipReason
         segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
         segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)

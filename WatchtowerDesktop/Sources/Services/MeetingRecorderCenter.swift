@@ -1768,8 +1768,8 @@ final class MeetingRecorderCenter {
             let title = job.title ?? "Recording"
             // Recap/roles failures are non-fatal — the transcript row is saved;
             // flag them in the notification rather than reporting a failure.
-            if job.isPrivate {
-                // MEETPRIV-01: nothing was generated, on purpose.
+            if result.recapSkippedPrivate {
+                // MEETPRIV-01: the CLI says nothing was generated, on purpose.
                 notifier.sendTranscriptReadyNotification(title: "\(title) — saved as private, no recap")
             } else if !result.recapOK {
                 if result.recapSkipped {

@@ -460,8 +460,6 @@ final class TranscriptSaveServiceTests: XCTestCase {
         XCTAssertEqual(result.transcriptID, 9)
         XCTAssertTrue(result.recapSkipped)
         XCTAssertTrue(result.recapSkippedPrivate)
-        XCTAssertTrue(result.chaptersSkipped)
-        XCTAssertTrue(result.chaptersSkippedPrivate)
         XCTAssertEqual(result.chapters, .failed)
     }
 
@@ -475,8 +473,6 @@ final class TranscriptSaveServiceTests: XCTestCase {
 
         XCTAssertTrue(result.recapSkipped)
         XCTAssertFalse(result.recapSkippedPrivate, "the too-short skip carries no reason")
-        XCTAssertFalse(result.chaptersSkipped)
-        XCTAssertFalse(result.chaptersSkippedPrivate)
     }
 
     func test_setPrivateArgsAndDecode() async throws {
