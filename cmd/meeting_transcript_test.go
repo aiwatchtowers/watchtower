@@ -71,6 +71,9 @@ func resetTranscriptFlags(t *testing.T) {
 		transcriptSaveFlagStdin = false
 		transcriptListFlagEventID = ""
 		transcriptFollowupChapter = -1
+		transcriptSaveFlagPrivate = false
+		transcriptExportFlagFormat = ""
+		transcriptExportFlagOutput = ""
 	})
 	transcriptSaveFlagFile = ""
 	transcriptSaveFlagSegments = ""
@@ -83,6 +86,9 @@ func resetTranscriptFlags(t *testing.T) {
 	transcriptSaveFlagStdin = false
 	transcriptListFlagEventID = ""
 	transcriptFollowupChapter = -1
+	transcriptSaveFlagPrivate = false
+	transcriptExportFlagFormat = ""
+	transcriptExportFlagOutput = ""
 }
 
 // writeTranscriptFile writes content into a temp transcript file and returns its path.

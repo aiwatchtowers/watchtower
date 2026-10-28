@@ -190,7 +190,7 @@ func (p *Pipeline) buildOneCalendarEpisode(ev db.CalendarExtractEvent, calReg *p
 		return false, false, nil
 	}
 
-	recap, rerr := p.db.GetMeetingRecap(ev.ID)
+	recap, rerr := p.db.GetMeetingRecapForAI(ev.ID) // a private recording's recap stays out (MEETPRIV-02)
 	if rerr != nil {
 		return false, false, fmt.Errorf("memory: calendar ingest: recap %s: %w", ev.ID, rerr)
 	}

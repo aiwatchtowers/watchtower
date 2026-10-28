@@ -56,7 +56,7 @@ Every AI feature sends the relevant text to the provider you chose in [AI provid
 - **Digests, tracks, people and rollups:** message text of the channels that are not muted for AI.
 - **Mail and Jira digests:** the text of new mail and changed issues and comments.
 - **Briefing, day plan, Catch Up:** your calendar, targets, digests and attention items.
-- **Meeting recaps and the meeting chat:** the transcript.
+- **Meeting recaps and the meeting chat:** the transcript, unless the recording is [private](../features/meeting-recording-private-and-export.md).
 - **Chats:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider.
 - **Asking with ⌘/:** the same as Chats, plus a short note on the tab you are on, its empty-state status line and the selected item's title. The note is sent with that message only and is not stored.
 - **Automations:** a confirmed automation sends data to the provider on its own schedule whenever its recipe calls `llm()` or `agent()`.

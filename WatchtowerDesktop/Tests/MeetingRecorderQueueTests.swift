@@ -816,7 +816,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
 
         // An explicit re-transcribe of the same file, this time saving fine.
         activeRunner = goodRunner
-        await center.prepareRetry(audioURL: started, eventID: "evt-1", title: "Dup")
+        await center.prepareRetry(audioURL: started, eventID: "evt-1", title: "Dup", isPrivate: false)
         await center.retryTranscription(config: config)
 
         XCTAssertEqual(goodRunner.invocations.count, 1)
@@ -855,7 +855,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let recovered = recordingsDir.appendingPathComponent("rec_19700101_000000.caf")
         try Data([0x00]).write(to: recovered)
 
-        await center.prepareRetry(audioURL: recovered, eventID: nil, title: "Recovered")
+        await center.prepareRetry(audioURL: recovered, eventID: nil, title: "Recovered", isPrivate: false)
 
         XCTAssertNil(center.retriableFailureID, "the recovered recording is what retry would act on")
         XCTAssertEqual(center.dismissableFailureID, center.jobs.first?.id,

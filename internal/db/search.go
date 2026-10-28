@@ -196,7 +196,8 @@ type TranscriptHit struct {
 // SearchTranscripts runs a full-text search over meeting transcripts via
 // transcripts_fts, newest first. The query is sanitized the same way
 // SearchMessages sanitizes its input, so caller text can never inject FTS5
-// operators. An empty query returns no rows and no error.
+// operators. An empty query returns no rows and no error. Private recordings
+// are never hits: every caller feeds a model (MEETPRIV-02).
 func (db *DB) SearchTranscripts(query string, limit int) ([]TranscriptHit, error) {
 	sanitized := sanitizeFTS5Query(query)
 	if sanitized == "" {
@@ -211,7 +212,7 @@ func (db *DB) SearchTranscripts(query string, limit int) ([]TranscriptHit, error
 		       snippet(transcripts_fts, 0, '', '', '…', 40)
 		FROM transcripts_fts
 		JOIN meeting_transcripts mt ON mt.id = transcripts_fts.transcript_id
-		WHERE transcripts_fts MATCH ?
+		WHERE transcripts_fts MATCH ? AND mt.private = 0
 		ORDER BY mt.created_at DESC
 		LIMIT ?`, sanitized, limit)
 	if err != nil {

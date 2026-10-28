@@ -36,16 +36,34 @@ enum MeetingChatSurface {
             title: "Meeting: \(String(title.prefix(60)))")
     }
 
+    /// MEETPRIV-01: the recording turned private (the header toggle, or a
+    /// reload that finds it private): its chat engines stop, so nothing more
+    /// reaches the provider. The row on screen turns private FIRST: dropping
+    /// an engine re-renders the Chat tab, which must not build a new engine
+    /// from a non-private row (`spec` is nil only for a private one).
+    @MainActor
+    static func recordingTurnedPrivate(
+        _ transcriptID: Int64,
+        shownRow: inout MeetingTranscript?,
+        chats: EmbeddedChatCenter
+    ) {
+        if shownRow?.id == transcriptID { shownRow?.isPrivate = true }
+        chats.dropContext(type: contextType, id: String(transcriptID))
+    }
+
     /// Built per render from the latest transcript and recap, so an edited
     /// transcript reaches the next first-turn prompt without a new engine.
+    /// nil for a private recording (MEETPRIV-01): no chat is ever built that
+    /// would send it to the provider.
     static func spec(
         transcript: MeetingTranscript,
         transcriptID: Int64,
         recapContent: MeetingRecap.Content?,
         conversationID: Int64,
         dbPool: DatabasePool
-    ) -> ChatSurfaceSpec {
-        ChatSurfaceSpec(
+    ) -> ChatSurfaceSpec? {
+        guard !transcript.isPrivate else { return nil }
+        return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType, contextID: String(transcriptID), conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
@@ -57,6 +75,21 @@ enum MeetingChatSurface {
             emptyHint: "Ask about this meeting — what was decided, who said what, or draft a follow-up.",
             starterPrompts: starterPrompts
         )
+    }
+
+    /// The recap the chat's prompt carries: the recording's recap row
+    /// without one a private recording owns (MEETPRIV-02 — a public
+    /// recording on the same event as a private one must not send the
+    /// private one's recap), else the transcript's own `summary_json`. The
+    /// Recap tab shows the unfiltered row; this is the provider's view.
+    static func recapContent(
+        _ db: Database,
+        transcript: MeetingTranscript,
+        transcriptID: Int64
+    ) throws -> MeetingRecap.Content? {
+        let recap = try MeetingRecapQueries.fetchForRecordingForAI(
+            db, transcriptID: transcriptID, eventID: transcript.eventID)
+        return recap?.recap.parsed ?? transcript.parsedSummary
     }
 
     // MARK: - System prompt

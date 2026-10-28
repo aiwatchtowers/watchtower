@@ -691,15 +691,18 @@ package enum TestDatabase {
         segmentsJSON: String? = nil,
         speakersJSON: String? = nil,
         chaptersJSON: String? = nil,
-        createdAt: String? = nil
+        createdAt: String? = nil,
+        isPrivate: Bool = false
     ) throws {
         try db.execute(sql: """
             INSERT INTO meeting_transcripts (id, event_id, title, audio_path,
-                duration_sec, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+                duration_sec, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json,
+                created_at, private)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')), ?)
             """,
             arguments: [id, eventID, title, audioPath, durationSec,
-                        transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON, createdAt])
+                        transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON, createdAt,
+                        isPrivate])
     }
 
     package static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {

@@ -59,7 +59,7 @@ When headphones or AirPods connect or disconnect, the capture reattaches to the 
 
 ### Transcription is local
 
-Audio never leaves your Mac. Only the transcript text goes to your AI provider, for the recap.
+Audio never leaves your Mac. Only the transcript text goes to your AI provider, for the recap. A [private recording](meeting-recording-private-and-export.md) sends nothing.
 
 Pick the **Engine** in **Settings → Meetings**. Only engines available on your Mac are listed:
 
@@ -187,6 +187,7 @@ Recording or transcript failing? See [Recording or transcript problems](../troub
 ## Related
 
 - [Calendar and meeting prep](calendar-and-meeting-prep.md)
+- [Private recordings and transcript export](meeting-recording-private-and-export.md)
 - [Voice dictation](voice-dictation.md) shares the same transcription engine slot.
 
 For developers: [docs/features/meeting-transcriber.md](../../features/meeting-transcriber.md)

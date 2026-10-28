@@ -114,6 +114,8 @@ final class MeetingRecorderCenter {
         /// was started for even when a later recording is already capturing.
         let eventID: String?
         let title: String?
+        /// Saves with `--private` (MEETPRIV-01); `setJobPrivate` until the save.
+        var isPrivate: Bool
         var phase: Phase = .queued
         /// Output of the recording's live pass when it produced usable text: the
         /// job then skips the decode + batch pass entirely (the single-pass
@@ -142,6 +144,9 @@ final class MeetingRecorderCenter {
         let audioURL: URL
         let eventID: String?
         let title: String?
+        /// `setRecoverablePrivate` until it is transcribed; true when the
+        /// choice was never recorded (MEETPRIV fails closed).
+        var isPrivate: Bool
 
         var id: URL { audioURL }
     }
@@ -180,6 +185,8 @@ final class MeetingRecorderCenter {
     private(set) var currentEventID: String?
     /// Title snapshot for the active/last recording.
     private(set) var currentTitle: String?
+    /// The active capture saves private (MEETPRIV; `setCapturePrivate`).
+    private(set) var currentPrivate = false
 
     /// Reads the voice registry for the post-diarization identification pass
     /// (samples, people, the event's invited set, the owner's people). Set by
@@ -915,8 +922,11 @@ final class MeetingRecorderCenter {
     /// Starts a recording for `eventID` (nil = ad-hoc). No-op while a recording
     /// is already being captured; the processing queue never blocks a start.
     /// The `rec_X.meta` sidecar is written before capture starts, so a crash
-    /// still leaves a recoverable, event-linked pointer.
-    func startRecording(eventID: String?, title: String?, config: TranscriptionConfig = .fromDefaults()) async {
+    /// still leaves a recoverable, event-linked pointer. Private when
+    /// `isPrivate` (Record Privately) or the Settings default says so.
+    func startRecording(
+        eventID: String?, title: String?, isPrivate: Bool = false, config: TranscriptionConfig = .fromDefaults()
+    ) async {
         guard !isCapturing else { return }
         // Past the duplicate-start guard — a rejected start must not fire the
         // dictation handshake — but before any capture/engine work begins.
@@ -935,6 +945,8 @@ final class MeetingRecorderCenter {
 
         currentEventID = eventID
         currentTitle = title
+        let isPrivate = isPrivate || config.privateByDefault
+        currentPrivate = isPrivate
 
         let recorder = recorderFactory()
         self.recorder = recorder
@@ -974,17 +986,48 @@ final class MeetingRecorderCenter {
             // Once the capture runs and shows: a slow or failing write never
             // delays or stops it, and a crash before the row lands is
             // recovered from the audio file alone.
-            await beginPending(eventID: eventID, title: title, for: url)
+            await beginPending(eventID: eventID, title: title, isPrivate: isPrivate, for: url)
+            // A lock flipped before the row landed updated nothing: re-apply
+            // the recording's current choice — its job's once Stop queued it
+            // (a new start may own `currentPrivate` by then), else the
+            // capture's.
+            let current = jobs.first { $0.audioURL == url }?.isPrivate
+                ?? (captureAudioURL == url ? currentPrivate : isPrivate)
+            if current != isPrivate {
+                await persistPrivate(current, for: url)
+            }
         } catch {
             // Start failed before any audio was captured: nothing to keep.
             self.recorder = nil
             captureAudioURL = nil
-            currentEventID = nil
-            currentTitle = nil
+            (currentEventID, currentTitle, currentPrivate) = (nil, nil, false)
             await removePending(for: url)
             captureError = error.localizedDescription
             notifier.sendTranscriptFailedNotification(reason: error.localizedDescription)
         }
+    }
+
+    /// The indicator's lock on the capture: in memory and its pending row
+    /// (`persistPrivate`). No-op when nothing is captured.
+    func setCapturePrivate(_ isPrivate: Bool) async {
+        guard case .recording = captureState, let url = captureAudioURL else { return }
+        currentPrivate = isPrivate
+        await persistPrivate(isPrivate, for: url)
+    }
+
+    /// The lock on a queued job, until its save starts (`canChangePrivate`).
+    func setJobPrivate(_ id: ProcessingJob.ID, _ isPrivate: Bool) async {
+        guard let job = job(id), job.canChangePrivate else { return }
+        updateJob(id) { $0.isPrivate = isPrivate }
+        await persistPrivate(isPrivate, for: job.audioURL)
+    }
+
+    /// The recovered pill's lock on a recording not yet transcribed: in
+    /// memory and its pending row.
+    func setRecoverablePrivate(_ audioURL: URL, _ isPrivate: Bool) async {
+        guard let index = recoverable.firstIndex(where: { $0.audioURL == audioURL }) else { return }
+        recoverable[index].isPrivate = isPrivate
+        await persistPrivate(isPrivate, for: audioURL)
     }
 
     /// Keeps the owner's microphone out of the active capture while `muted`
@@ -1125,10 +1168,15 @@ final class MeetingRecorderCenter {
         let eventID = currentEventID
         let title = currentTitle
 
+        // `currentPrivate` is read only after this await, in the same turn
+        // that sets `captureState = .idle`: the indicator's lock stays live
+        // (`setCapturePrivate`) for as long as Stop finalizes the file, so a
+        // flip in that window must reach the job (MEETPRIV-01).
         let result: RecordingResult
         do {
             result = try await recorder.stop() // also finishes liveSamples
         } catch {
+            let isPrivate = currentPrivate
             // `recorder.stop()` finishes `liveSamples` before throwing, so the
             // live task is still draining the buffered backlog through the
             // (heavy) engine. Cancel it — `StreamingTranscriber.run` checks
@@ -1170,7 +1218,7 @@ final class MeetingRecorderCenter {
             // The audio captured so far stays on disk with its sidecar: surface
             // it as a failed job so Retry re-runs the batch path from the file.
             if let startedURL {
-                var job = ProcessingJob(audioURL: startedURL, eventID: eventID, title: title)
+                var job = ProcessingJob(audioURL: startedURL, eventID: eventID, title: title, isPrivate: isPrivate)
                 job.phase = .failed(error.localizedDescription)
                 jobs.append(job)
             }
@@ -1178,6 +1226,7 @@ final class MeetingRecorderCenter {
             return
         }
 
+        let isPrivate = currentPrivate
         captureState = .idle
         captureAudioURL = nil
         stopLevelsTask()
@@ -1189,7 +1238,7 @@ final class MeetingRecorderCenter {
         // dips through `.idle` mid-run. Marked as awaiting its tail until the
         // handover below, which is what guarantees the job starts only once it
         // is fully built — with the live text it may not need the engine for.
-        let job = ProcessingJob(audioURL: result.audioURL, eventID: eventID, title: title)
+        let job = ProcessingJob(audioURL: result.audioURL, eventID: eventID, title: title, isPrivate: isPrivate)
         jobs.append(job)
         if ownsLivePass { jobsAwaitingLiveTail.insert(job.id) }
         let task = startJobTask(jobID: job.id, config: config)
@@ -1270,7 +1319,7 @@ final class MeetingRecorderCenter {
         guard !isBusy else { return }
         if let entry = recoverable.first {
             recoverable.removeFirst()
-            let job = ProcessingJob(audioURL: entry.audioURL, eventID: entry.eventID, title: entry.title)
+            let job = ProcessingJob(audioURL: entry.audioURL, eventID: entry.eventID, title: entry.title, isPrivate: entry.isPrivate)
             jobs.append(job)
             await startJobTask(jobID: job.id, config: config).value
             return
@@ -1289,7 +1338,8 @@ final class MeetingRecorderCenter {
     /// sidecars left next to the audio by an earlier run are deleted here —
     /// otherwise `retryTranscription` would short-circuit to the stale persisted
     /// text instead of re-running the engine.
-    func prepareRetry(audioURL: URL, eventID: String?, title: String?) async {
+    /// `isPrivate`: a private recording's re-transcription saves private too.
+    func prepareRetry(audioURL: URL, eventID: String?, title: String?, isPrivate: Bool) async {
         guard !isBusy else { return }
         do {
             try await pendingStore?.clearTranscript(recording: audioURL.lastPathComponent)
@@ -1297,7 +1347,8 @@ final class MeetingRecorderCenter {
             print("[MeetingRecorder] could not clear the kept transcript of \(audioURL.lastPathComponent): "
                   + error.localizedDescription)
         }
-        addRecoverable(RecoverableRecording(audioURL: audioURL, eventID: eventID, title: title), atHead: true)
+        addRecoverable(RecoverableRecording(audioURL: audioURL, eventID: eventID, title: title, isPrivate: isPrivate),
+                       atHead: true)
     }
 
     /// Clears the failure the legacy pill shows. A failed job becomes a
@@ -1312,7 +1363,7 @@ final class MeetingRecorderCenter {
         }
         guard let index = jobs.lastIndex(where: { $0.phase.isFailed }) else { return }
         let job = jobs.remove(at: index)
-        addRecoverable(RecoverableRecording(audioURL: job.audioURL, eventID: job.eventID, title: job.title))
+        addRecoverable(RecoverableRecording(audioURL: job.audioURL, eventID: job.eventID, title: job.title, isPrivate: job.isPrivate))
     }
 
     /// Forgets a recovered recording the user chose not to transcribe: drops the
@@ -1353,7 +1404,8 @@ final class MeetingRecorderCenter {
         let busy = Set(jobs.map(\.audioURL)).union(captureAudioURL.map { [$0] } ?? [])
         await tombstoneLegacyAudioOnce(store: store, busy: busy)
         await prunePendingRows(store: store, busy: busy)
-        for entry in Self.recoverable(in: recordingsDirectory, store: store) where !busy.contains(entry.audioURL) {
+        for entry in Self.recoverable(in: recordingsDirectory, store: store)
+        where !busy.contains(entry.audioURL) {
             addRecoverable(entry)
         }
     }
@@ -1370,13 +1422,16 @@ final class MeetingRecorderCenter {
         let title = defaults.string(forKey: Self.pendingTitleKey)
         if FileManager.default.fileExists(atPath: path) {
             let url = URL(fileURLWithPath: path)
+            // No private choice was ever recorded for it: private until the
+            // owner opens the lock (MEETPRIV fails closed).
             do {
-                try await store.begin(recording: url.lastPathComponent, eventID: eventID, title: title, at: clock())
+                try await store.begin(recording: url.lastPathComponent, eventID: eventID, title: title,
+                                      isPrivate: true, at: clock())
             } catch {
                 print("[MeetingRecorder] could not record the legacy pending recording: \(error.localizedDescription)")
                 return
             }
-            addRecoverable(RecoverableRecording(audioURL: url, eventID: eventID, title: title))
+            addRecoverable(RecoverableRecording(audioURL: url, eventID: eventID, title: title, isPrivate: true))
         }
         defaults.removeObject(forKey: Self.pendingAudioPathKey)
         defaults.removeObject(forKey: Self.pendingEventIDKey)
@@ -1679,7 +1734,8 @@ final class MeetingRecorderCenter {
         // re-transcription — or a re-diarization (spec §7).
         await persistTranscript(text: rendered.text, utterances: rendered.utterances,
                                 speakers: rendered.speakers, durationSec: durationSec,
-                                langStats: output.langStats, audioURL: job.audioURL)
+                                langStats: output.langStats, audioURL: job.audioURL,
+                                isPrivate: self.job(jobID)?.isPrivate ?? job.isPrivate)
         await save(jobID: jobID, text: rendered.text, utterances: rendered.utterances,
                    speakers: rendered.speakers, durationSec: durationSec, langStats: output.langStats,
                    registry: rendered.registry, voiceNotifications: config.voiceNotifications)
@@ -1714,7 +1770,8 @@ final class MeetingRecorderCenter {
                 durationSec: durationSec,
                 eventID: job.eventID,
                 title: job.title,
-                langStatsJSON: Self.encodeLangStats(langStats)
+                langStatsJSON: Self.encodeLangStats(langStats),
+                isPrivate: job.isPrivate
             )
             let rolesError = self.job(jobID)?.rolesError
             await removePending(for: job.audioURL)
@@ -1733,7 +1790,12 @@ final class MeetingRecorderCenter {
             let title = job.title ?? "Recording"
             // Recap/roles failures are non-fatal — the transcript row is saved;
             // flag them in the notification rather than reporting a failure.
-            if !result.recapOK {
+            if result.recapNotGeneratedPrivate {
+                // MEETPRIV-01: the CLI says nothing was generated, on purpose.
+                // A roles failure still shows: it is not about privacy.
+                let roles = rolesError != nil ? ", without speaker labels" : ""
+                notifier.sendTranscriptReadyNotification(title: "\(title) — saved as private, no recap\(roles)")
+            } else if !result.recapOK {
                 if result.recapSkipped {
                     notifier.sendTranscriptReadyNotification(
                         title: "\(title) — transcript saved (too short for recap)")
@@ -1853,14 +1915,15 @@ final class MeetingRecorderCenter {
     /// Records the recording as not saved yet. Best-effort, but logged: a
     /// recording whose row never landed still comes back after a crash from
     /// its audio file alone, only without its event link.
-    private func beginPending(eventID: String?, title: String?, for audioURL: URL) async {
+    private func beginPending(eventID: String?, title: String?, isPrivate: Bool, for audioURL: URL) async {
         guard let store = pendingStore else {
             print("[MeetingRecorder] the database is not open: \(audioURL.lastPathComponent) records without its "
                   + "pending row and is recovered from its audio file if the app quits before it is saved")
             return
         }
         do {
-            try await store.begin(recording: audioURL.lastPathComponent, eventID: eventID, title: title, at: clock())
+            try await store.begin(recording: audioURL.lastPathComponent, eventID: eventID, title: title,
+                                  isPrivate: isPrivate, at: clock())
         } catch {
             print("[MeetingRecorder] failed to record \(audioURL.lastPathComponent) as pending: "
                   + "\(error.localizedDescription) — it is recovered from its audio file alone")
@@ -1876,48 +1939,6 @@ final class MeetingRecorderCenter {
             print("[MeetingRecorder] failed to remove the pending row of \(audioURL.lastPathComponent): "
                   + error.localizedDescription)
         }
-    }
-
-    /// The recordings to recover, oldest first: the rows (not dismissed) whose
-    /// audio is still in `directory`, then — merged in name order — every
-    /// `rec_*` audio file there with no row and no saved transcript.
-    private static func recoverable(in directory: URL, store: PendingTranscriptStore) -> [RecoverableRecording] {
-        let names: [String]
-        do {
-            names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
-        } catch {
-            print("[MeetingRecorder] cannot scan \(directory.path) for recoverable recordings: "
-                  + "\(error.localizedDescription)")
-            return []
-        }
-        let audio = Set(names.filter { $0.hasPrefix("rec_") && recordingAudioExtensions.contains(($0 as NSString).pathExtension) })
-        let rows: [PendingTranscript]
-        let saved: Set<String>
-        do {
-            rows = try store.pending()
-            saved = try store.savedAudioPaths()
-        } catch {
-            print("[MeetingRecorder] cannot read the pending recordings: \(error.localizedDescription)")
-            return []
-        }
-        var byName: [String: RecoverableRecording] = [:]
-        var withRow: Set<String> = []
-        for row in rows {
-            withRow.insert(row.recording)
-            // A row whose audio is gone (the daemon's orphan sweep took it)
-            // is not listed; `prunePendingRows` removes it at launch.
-            guard audio.contains(row.recording) else { continue }
-            // A saved recording whose row a failed removal left behind.
-            if row.dismissed || saved.contains(directory.appendingPathComponent(row.recording).path) { continue }
-            byName[row.recording] = RecoverableRecording(audioURL: directory.appendingPathComponent(row.recording),
-                                                         eventID: row.eventID, title: row.title)
-        }
-        for name in audio where !withRow.contains(name) {
-            let url = directory.appendingPathComponent(name)
-            if saved.contains(url.path) { continue }
-            byName[name] = RecoverableRecording(audioURL: url, eventID: nil, title: nil)
-        }
-        return byName.keys.sorted { recoverySortKey($0) < recoverySortKey($1) }.compactMap { byName[$0] }
     }
 
     // MARK: - Transcript persistence (retry save without re-transcribing)
@@ -1952,13 +1973,15 @@ final class MeetingRecorderCenter {
                                    speakers: [SpeakerEmbedding]?,
                                    durationSec: Int,
                                    langStats: [String: Int],
-                                   audioURL: URL) async {
+                                   audioURL: URL,
+                                   isPrivate: Bool) async {
         guard let store = pendingStore else { return }
         let meta = PersistedTranscriptMeta(durationSec: durationSec, langStats: langStats,
                                            utterances: utterances, speakers: speakers)
         do {
             let json = String(bytes: try JSONEncoder().encode(meta), encoding: .utf8) ?? "{}"
-            try await store.saveTranscript(recording: audioURL.lastPathComponent, text: text, metaJSON: json, at: clock())
+            try await store.saveTranscript(recording: audioURL.lastPathComponent, text: text, metaJSON: json,
+                                           isPrivate: isPrivate, at: clock())
         } catch {
             print("[MeetingRecorder] could not keep the transcript of \(audioURL.lastPathComponent) for a retry: "
                   + error.localizedDescription)
@@ -2039,12 +2062,13 @@ final class MeetingRecorderCenter {
         let isAudio = try await Task.detached { try await Self.isAudioRecording(sourceURL) }.value
         guard isAudio else { throw PhoneIngestError.notAudio }
         guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
-        let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title,
+        let isPrivate = config.privateByDefault // no per-recording choice on the phone
+        let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title, isPrivate: isPrivate,
                                                             in: recordingsDirectory, store: store, date: clock())
         try await Task.detached {
             try await Self.copyPhoneRecording(from: sourceURL, to: audioURL, store: store)
         }.value
-        let job = ProcessingJob(audioURL: audioURL, eventID: eventID, title: title)
+        let job = ProcessingJob(audioURL: audioURL, eventID: eventID, title: title, isPrivate: isPrivate)
         jobs.append(job)
         _ = startJobTask(jobID: job.id, config: config)
         return audioURL

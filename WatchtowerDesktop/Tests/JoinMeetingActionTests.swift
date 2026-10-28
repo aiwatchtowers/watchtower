@@ -247,6 +247,23 @@ final class JoinMeetingActionTests: XCTestCase {
         }
     }
 
+    /// The auto-record follows the private default (MEETPRIV) — off unless
+    /// Settings → Transcription turns it on.
+    func testJoinAutoRecordTakesThePrivateDefault() async throws {
+        for privateByDefault in [false, true] {
+            let defaults = try isolatedDefaults()
+            defaults.set(privateByDefault, forKey: TranscriptionConfig.privateByDefaultKey)
+            let center = makeCenter(recorder: JoinFakeRecorder(), defaults: defaults)
+            let event = makeEvent(id: "evt-private", conferenceURL: "https://meet.google.com/abc-defg-hij")
+
+            await JoinMeetingAction.join(event: event, center: center, defaults: defaults,
+                                         recordingSupported: true) { _ in true }
+
+            XCTAssertTrue(center.isCapturing)
+            XCTAssertEqual(center.currentPrivate, privateByDefault)
+        }
+    }
+
     /// End to end: joining a Meet event whose owning account is known opens the
     /// account-hinted URL, not the raw one.
     func testJoinOpensAuthuserHintedURLForMeet() async throws {

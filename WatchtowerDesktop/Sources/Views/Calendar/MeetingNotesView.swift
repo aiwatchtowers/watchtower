@@ -14,6 +14,9 @@ struct MeetingNotesView: View {
     @State private var isSavingNote = false
     @State private var showExtractSheet = false
     @State private var recap: MeetingRecap?
+    /// MEETPRIV-01/02: a recap a private recording owns shows here, but
+    /// none of its AI actions does (`EventRecapGate`). Closed until loaded.
+    @State private var recapGate = EventRecapGate(ownedByPrivateRecording: true)
     @State private var showRecapSheet = false
     @State private var addedActionItems: Set<Int> = []
 
@@ -44,7 +47,7 @@ struct MeetingNotesView: View {
         .sheet(isPresented: $showRecapSheet) {
             GenerateRecapSheet(
                 eventID: eventID,
-                prefilledText: recap?.sourceText ?? "",
+                prefilledText: recapGate.prefilledText(recap),
                 onCompleted: { loadNotes() }
             )
         }
@@ -151,6 +154,9 @@ struct MeetingNotesView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                // The CLI refuses to replace a private recording's recap too.
+                .disabled(!recapGate.offersAIActions)
+                .help(recapGate.offersAIActions ? "" : PrivateRecordingCopy.notSentToAI)
             }
             .padding(.top, 4)
 
@@ -260,14 +266,18 @@ struct MeetingNotesView: View {
                     Text("AI Recap")
                         .font(.headline)
                     Spacer()
-                    Button {
-                        showRecapSheet = true
-                    } label: {
-                        Label("Re-generate", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.caption)
+                    if recapGate.offersAIActions {
+                        Button {
+                            showRecapSheet = true
+                        } label: {
+                            Label("Re-generate", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.kitSecondary)
+                        .controlSize(.small)
+                    } else {
+                        PrivateRecordingNotice()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
 
                 if !content.summary.isEmpty {
@@ -327,7 +337,9 @@ struct MeetingNotesView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if addedActionItems.contains(idx) {
+                    if !recapGate.offersAIActions {
+                        EmptyView()
+                    } else if addedActionItems.contains(idx) {
                         Label("Added", systemImage: "checkmark")
                             .labelStyle(.titleAndIcon)
                             .font(.caption2)
@@ -360,8 +372,14 @@ struct MeetingNotesView: View {
     // list reloads once the write lands.
 
     private func addActionItemToNotes(idx: Int, text: String) {
+        guard recapGate.offersAIActions, let db = appState.databaseManager else { return }
         let nextSort = (freeformNotes.last?.sortOrder ?? -1) + 1
         Task {
+            // Checked again now: the recording may have turned private since
+            // the page loaded, and "+ to notes" has no CLI backstop.
+            let gate = await EventRecapGate.current(db.dbPool, eventID: eventID)
+            recapGate = gate
+            guard gate.offersAIActions else { return }
             guard await saveMeetingNote(asQuestion: false, text: text, sortOrder: nextSort) else { return }
             addedActionItems.insert(idx)
             loadNotes()
@@ -379,6 +397,11 @@ struct MeetingNotesView: View {
             recap = try? db.dbPool.read { dbConn in
                 try MeetingRecapQueries.fetch(dbConn, eventID: eventID)
             }
+            // A failed read keeps the gate closed: no AI action on a recap
+            // whose owner could not be checked.
+            recapGate = (try? db.dbPool.read { dbConn in
+                try EventRecapGate.load(dbConn, eventID: eventID)
+            }) ?? EventRecapGate(ownedByPrivateRecording: true)
             addedActionItems = []
         } catch {
             // Silent: table may not exist yet on older DB schema versions

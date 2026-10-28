@@ -15,7 +15,12 @@ import Foundation
 /// command, and envelopes from an older CLI without the chapters keys.
 /// `recapSkipped` means the CLI deliberately skipped recap generation for a
 /// too-short transcript (`recapOK` is also false in that case) — an older-CLI
-/// envelope omits the key, decoding as `false`.
+/// envelope omits the key, decoding as `false`. A private save (MEETPRIV-01)
+/// skips recap and chapters on purpose; `recapSkippedPrivate` is its
+/// affirmative signal (`recap_skipped_reason` = "private"), which the
+/// completion notification reads. The too-short skip carries no reason. The
+/// envelope's `chapters_skipped*` keys are not decoded: `chapters_ok: false`
+/// already reads as `.failed`, and the private notice wins over it.
 package struct TranscriptSaveResult: Decodable, Equatable {
     /// Outcome of the auto-chapter generation the CLI attempts after save.
     package enum ChaptersOutcome: Equatable {
@@ -28,6 +33,7 @@ package struct TranscriptSaveResult: Decodable, Equatable {
     package let recapOK: Bool
     package let recapError: String
     package let recapSkipped: Bool
+    package let recapSkippedPrivate: Bool
     package let segmentsOK: Bool
     package let segmentsError: String?
     package let chapters: ChaptersOutcome
@@ -38,10 +44,22 @@ package struct TranscriptSaveResult: Decodable, Equatable {
         case recapOK = "recap_ok"
         case recapError = "recap_error"
         case recapSkipped = "recap_skipped"
+        case recapSkippedReason = "recap_skipped_reason"
         case segmentsOK = "segments_ok"
         case segmentsError = "segments_error"
         case chaptersOK = "chapters_ok"
         case chaptersError = "chapters_error"
+    }
+
+    /// `recap_skipped_reason` of a private save.
+    package static let privateSkipReason = "private"
+
+    /// Nothing was generated because the recording is private: saved with
+    /// `--private`, or turned private while the save ran — then the save's
+    /// generators refused it with Go's `errRecordingPrivate` text
+    /// (cmd/meeting_transcript.go; keep the two in step).
+    package var recapNotGeneratedPrivate: Bool {
+        recapSkippedPrivate || (!recapOK && recapError == "recording \(transcriptID) is private")
     }
 
     package init(from decoder: Decoder) throws {
@@ -50,6 +68,8 @@ package struct TranscriptSaveResult: Decodable, Equatable {
         recapOK = try container.decode(Bool.self, forKey: .recapOK)
         recapError = try container.decode(String.self, forKey: .recapError)
         recapSkipped = try container.decodeIfPresent(Bool.self, forKey: .recapSkipped) ?? false
+        recapSkippedPrivate = try container.decodeIfPresent(String.self, forKey: .recapSkippedReason)
+            == Self.privateSkipReason
         segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
         segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)
         if let chaptersOK = try container.decodeIfPresent(Bool.self, forKey: .chaptersOK) {
@@ -108,6 +128,58 @@ package struct TranscriptFollowupResult: Decodable, Equatable {
     }
 }
 
+// MARK: - TranscriptPrivateResult
+
+/// Decoded stdout of `watchtower meeting-prep transcript private <id> on|off`.
+package struct TranscriptPrivateResult: Decodable, Equatable {
+    package let transcriptID: Int64
+    package let isPrivate: Bool
+    /// Set when `on` wrote the flag but dropping the recording's knowledge
+    /// documents failed (the next index pass removes them).
+    package let kbDropError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case transcriptID = "id"
+        case isPrivate = "private"
+        case kbDropError = "kb_drop_error"
+    }
+}
+
+// MARK: - TranscriptExportFormat
+
+/// `meeting-prep transcript export --format`: the renderers live in Go only
+/// (MEETPRIV-05 — export is local and always allowed, private or not).
+package enum TranscriptExportFormat: String, CaseIterable, Sendable {
+    case txt, md, srt, json
+
+    /// The Export menu's item title.
+    package var menuTitle: String {
+        switch self {
+        case .txt: return "Save as Text…"
+        case .md: return "Save as Markdown…"
+        case .srt: return "Save as Subtitles (SRT)…"
+        case .json: return "Save as JSON…"
+        }
+    }
+
+    package var fileExtension: String { rawValue }
+
+    /// SRT cues need the segments' timings; the CLI refuses a row without
+    /// segments (`no timed segments`).
+    package var needsSegments: Bool { self == .srt }
+
+    /// The save panel's suggested name: the recording's title with the
+    /// characters a file name cannot hold replaced, "Recording" when blank.
+    package func suggestedFileName(title: String) -> String {
+        let cleaned = title
+            .components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.newlines).union(.controlCharacters))
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespaces)
+        let base = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: ".")).isEmpty ? "Recording" : cleaned
+        return "\(base).\(fileExtension)"
+    }
+}
+
 // MARK: - TranscriptSaveService
 
 /// Bridges the Desktop app to `watchtower meeting-prep transcript`.
@@ -121,7 +193,7 @@ package struct TranscriptSaveService {
     }
 
     /// Invokes `meeting-prep transcript save --stdin --audio <p> --duration <n>
-    /// [--event-id <id>] [--title <s>] --lang-stats <json>` with one JSON
+    /// [--event-id <id>] [--title <s>] --lang-stats <json> [--private]` with one JSON
     /// object on stdin — `{"transcript", "segments", "speakers"}` — and decodes
     /// the stdout envelope (#604 S7: no temp file holds the transcript).
     /// Non-nil `utterances` travel as `segments`, which the CLI persists to
@@ -135,7 +207,8 @@ package struct TranscriptSaveService {
                       durationSec: Int,
                       eventID: String?,
                       title: String?,
-                      langStatsJSON: String) async throws -> TranscriptSaveResult {
+                      langStatsJSON: String,
+                      isPrivate: Bool) async throws -> TranscriptSaveResult {
         var segmentsJSON: String?
         if let utterances, !utterances.isEmpty {
             segmentsJSON = TranscriptSegments.encode(utterances)
@@ -158,6 +231,10 @@ package struct TranscriptSaveService {
             args += ["--title", title]
         }
         args += ["--lang-stats", langStatsJSON]
+        if isPrivate {
+            // MEETPRIV-01: stored private, no recap or chapters generated.
+            args.append("--private")
+        }
 
         let payload = try Self.stdinPayload(transcript: transcriptText, segmentsJSON: segmentsJSON,
                                             speakersJSON: speakersJSON)
@@ -207,5 +284,22 @@ package struct TranscriptSaveService {
         }
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(TranscriptFollowupResult.self, from: data)
+    }
+
+    /// `meeting-prep transcript private <id> on|off` — marks the recording
+    /// private (no AI reader sees it from then on, MEETPRIV-02/04) or not.
+    package func setPrivate(transcriptID: Int64, _ isPrivate: Bool) async throws -> TranscriptPrivateResult {
+        let args = ["meeting-prep", "transcript", "private", String(transcriptID), isPrivate ? "on" : "off"]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(TranscriptPrivateResult.self, from: data)
+    }
+
+    /// `meeting-prep transcript export <id> --format <f>`: the rendering, from
+    /// stdout. The app writes any file itself — a file written by the CLI
+    /// child into a folder TCC guards would be checked against Watchtower.app
+    /// without the save panel's grant.
+    package func export(transcriptID: Int64, format: TranscriptExportFormat) async throws -> Data {
+        try await runner.run(args: ["meeting-prep", "transcript", "export", String(transcriptID),
+                                    "--format", format.rawValue])
     }
 }

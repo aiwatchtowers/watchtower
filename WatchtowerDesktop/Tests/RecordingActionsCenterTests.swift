@@ -1,0 +1,256 @@
+import Foundation
+import XCTest
+@testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
+
+/// The recording header's Private toggle and Export runs
+/// (docs/features/private-meetings.md): state keyed by recording on AppState,
+/// a file written by the app (not the CLI child), failures and the success
+/// line kept until the owner looks.
+@MainActor
+final class RecordingActionsCenterTests: XCTestCase {
+
+    private var copied: [String] = []
+
+    private func makeCenter(noticeLifetime: Duration = .seconds(60)) -> RecordingActionsCenter {
+        RecordingActionsCenter(noticeLifetime: noticeLifetime) { [weak self] in self?.copied.append($0) }
+    }
+
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline {
+                XCTFail("condition not met in \(timeout)s")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func tempURL(_ name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir.appendingPathComponent(name)
+    }
+
+    func testSaveWritesTheCLIRenderingFromTheApp() async throws {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(stdout: Data("# Weekly sync\n".utf8))
+        let url = try tempURL("Weekly sync.md")
+
+        center.save(transcriptID: 5, format: .md, to: url, service: TranscriptSaveService(runner: runner))
+        XCTAssertTrue(center.exporting.contains(5), "the busy flag is set at once, on AppState")
+        await waitUntil { !center.exporting.contains(5) }
+
+        XCTAssertEqual(runner.invocations, [["meeting-prep", "transcript", "export", "5", "--format", "md"]],
+                       "the CLI renders to stdout; it is never handed the destination")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "# Weekly sync\n")
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.int16Value, 0o600, "readable by the owner only")
+        XCTAssertEqual(center.notice[5], "Saved to Weekly sync.md")
+        XCTAssertNil(center.lastError[5])
+    }
+
+    /// A replaced 0644 file comes out 0600 with the new text, and no temp
+    /// file is left beside it.
+    func testWriteOwnerOnlyReplacesAWorldReadableFileWith0600() throws {
+        let url = try tempURL("old.txt")
+        try Data("old".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+
+        try RecordingActionsCenter.writeOwnerOnly(Data("new".utf8), to: url)
+
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.int16Value, 0o600)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "new")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path),
+                       ["old.txt"])
+    }
+
+    /// A rename that fails (the destination is a non-empty folder) throws,
+    /// leaves the destination as it was and removes the temp file.
+    func testWriteOwnerOnlyFailureCleansUp() throws {
+        let url = try tempURL("taken")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: url.appendingPathComponent("inside"))
+
+        XCTAssertThrowsError(try RecordingActionsCenter.writeOwnerOnly(Data("new".utf8), to: url))
+
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path),
+                       ["taken"])
+        XCTAssertEqual(try String(contentsOf: url.appendingPathComponent("inside"), encoding: .utf8), "keep")
+    }
+
+    func testSaveFailureIsKeptForTheRecordingAndWritesNothing() async throws {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "no timed segments"))
+        let url = try tempURL("x.srt")
+
+        center.save(transcriptID: 5, format: .srt, to: url, service: TranscriptSaveService(runner: runner))
+        await waitUntil { !center.exporting.contains(5) }
+
+        XCTAssertNotNil(center.lastError[5])
+        XCTAssertTrue(center.lastError[5]?.hasPrefix("Export failed: ") == true)
+        XCTAssertNil(center.notice[5])
+        XCTAssertNil(center.lastError[6], "another recording shows nothing")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testCopyPutsTheTextOnThePasteboardAndConfirms() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(stdout: Data("[00:00:01] Speaker 1: hi\n".utf8))
+
+        center.copyTranscript(transcriptID: 5, service: TranscriptSaveService(runner: runner))
+        await waitUntil { !center.exporting.contains(5) }
+
+        XCTAssertEqual(runner.invocations.first, ["meeting-prep", "transcript", "export", "5", "--format", "txt"])
+        XCTAssertEqual(copied, ["[00:00:01] Speaker 1: hi\n"])
+        XCTAssertEqual(center.notice[5], "Copied the transcript")
+    }
+
+    func testCopyOfNonTextFailsWithoutTouchingThePasteboard() async {
+        let center = makeCenter()
+        let notText = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data([0xFF, 0xFE])))
+        center.copyTranscript(transcriptID: 5, service: notText)
+        await waitUntil { !center.exporting.contains(5) }
+
+        XCTAssertEqual(copied, [])
+        XCTAssertEqual(center.lastError[5], "Couldn't copy the transcript: the export was not text")
+    }
+
+    /// Every utterance deleted: the rendering is empty, which is reported —
+    /// never "Copied"/"Saved" of nothing, and no file is written.
+    func testEmptyExportIsReportedNotSaved() async throws {
+        let center = makeCenter()
+        let empty = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data("\n".utf8)))
+        center.copyTranscript(transcriptID: 5, service: empty)
+        await waitUntil { !center.exporting.contains(5) }
+        XCTAssertEqual(copied, [])
+        XCTAssertEqual(center.lastError[5], "Couldn't copy the transcript: nothing to export — every utterance is deleted")
+        XCTAssertNil(center.notice[5])
+
+        let url = try tempURL("empty.txt")
+        center.save(transcriptID: 5, format: .txt, to: url, service: empty)
+        await waitUntil { !center.exporting.contains(5) }
+        XCTAssertEqual(center.lastError[5], "Export failed: nothing to export — every utterance is deleted")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testNoticeExpires() async {
+        let center = makeCenter(noticeLifetime: .milliseconds(20))
+        let service = TranscriptSaveService(runner: FakeCLIRunner(stdout: Data("x".utf8)))
+        center.copyTranscript(transcriptID: 5, service: service)
+        await waitUntil { center.notice[5] != nil }
+        await waitUntil { center.notice[5] == nil }
+    }
+
+    func testSetPrivateReportsTheCLIFlag() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(stdout: Data(#"{"id":5,"private":true}"#.utf8))
+        let done = expectation(description: "changed")
+        var reported: [Bool] = []
+
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { false }, onChanged: {
+            reported.append($0)
+            done.fulfill()
+        })
+        XCTAssertTrue(center.changingPrivate.contains(5))
+        center.setPrivate(transcriptID: 5, false, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { false }, onChanged: { _ in
+            XCTFail("a second change of the same recording while one runs is ignored")
+        })
+        await fulfillment(of: [done], timeout: 5)
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertEqual(reported, [true])
+        XCTAssertEqual(runner.invocations, [["meeting-prep", "transcript", "private", "5", "on"]])
+        XCTAssertNil(center.lastError[5])
+    }
+
+    func testSetPrivateFailureIsKeptAndReportsNoChange() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { false }, onChanged: { _ in
+            XCTFail("no change landed")
+        })
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
+    }
+
+    /// MEETPRIV-01: a failed `on` whose flag landed anyway (the row reads
+    /// private) still runs the private-turned path, so the meeting chat's
+    /// engine is dropped and the toggle shows the truth.
+    func testMeetPriv01_FailedOnThatLandedRunsThePrivatePath() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let done = expectation(description: "changed")
+        var reported: [Bool] = []
+
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { true }, onChanged: {
+            reported.append($0)
+            done.fulfill()
+        })
+        await fulfillment(of: [done], timeout: 5)
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertEqual(reported, [true])
+        XCTAssertTrue(center.lastError[5]?.hasPrefix("Private is on, but the change reported an error: ") == true)
+    }
+
+    /// A failed `on` whose read-back fails too reports the failure as it is
+    /// and claims no change.
+    func testSetPrivateFailureWithUnreadableRowReportsNoChange() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { throw CLIRunnerError.nonZeroExit(code: 1, stderr: "db") }, onChanged: { _ in
+            XCTFail("the flag is not known to have landed")
+        })
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
+    }
+
+    /// A failed `off` is never turned into a private change by the read-back.
+    func testSetPrivateOffFailureIgnoresReadBack() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+
+        center.setPrivate(transcriptID: 5, false, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { true }, onChanged: { _ in
+            XCTFail("no change landed")
+        })
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
+    }
+
+    /// MEETPRIV-04: the CLI's `kb_drop_error` (flag set, knowledge drop
+    /// failed) reports the flag and the failure.
+    func testMeetPriv04_KBDropErrorIsReportedWithTheFlag() async {
+        let center = makeCenter()
+        let runner = FakeCLIRunner(stdout: Data(#"{"id":5,"private":true,"kb_drop_error":"kb: begin: locked"}"#.utf8))
+        let done = expectation(description: "changed")
+        var reported: [Bool] = []
+
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { false }, onChanged: {
+            reported.append($0)
+            done.fulfill()
+        })
+        await fulfillment(of: [done], timeout: 5)
+        await waitUntil { !center.changingPrivate.contains(5) }
+
+        XCTAssertEqual(reported, [true])
+        XCTAssertEqual(center.lastError[5],
+                       "Private is on, but removing it from knowledge search failed (the next index pass retries): kb: begin: locked")
+    }
+}

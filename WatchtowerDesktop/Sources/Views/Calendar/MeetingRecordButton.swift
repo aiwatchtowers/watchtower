@@ -8,7 +8,8 @@ import WatchtowerCore
 /// target is the one being recorded; disabled when another recording is
 /// capturing or system-audio capture is unsupported. A previous recording
 /// still being transcribed does NOT disable it — post-processing is queued,
-/// not exclusive.
+/// not exclusive. Record's menu holds **Record Privately** (MEETPRIV); the
+/// plain click follows Settings → Meetings' private default.
 struct MeetingRecordButton: View {
     let eventID: String?
     let title: String?
@@ -21,25 +22,46 @@ struct MeetingRecordButton: View {
             if case .recording = center.phase { return center.currentEventID == eventID }
             return false
         }()
-        Button {
+        Group {
             if isRecordingThis {
                 // No CLI-runner guard here: stopping capture must never
                 // depend on the watchtower binary resolving — the Center
                 // fails visibly at the save step instead, with the audio kept.
-                Task { await center.stopAndProcess(config: .fromDefaults()) }
+                Button {
+                    Task { await center.stopAndProcess(config: .fromDefaults()) }
+                } label: {
+                    Label("Stop", systemImage: "stop.circle").font(.caption)
+                }
+                .buttonStyle(.kitDestructive)
             } else {
-                Task { await center.startRecording(eventID: eventID, title: title, config: .fromDefaults()) }
+                // The plain click follows the Settings default
+                // (`transcription.privateByDefault`); the menu forces private.
+                Menu {
+                    Button {
+                        start(isPrivate: true)
+                    } label: {
+                        Label("Record Privately", systemImage: "lock.fill")
+                    }
+                    .help("Saved without a recap and never sent to AI")
+                } label: {
+                    Label("Record", systemImage: "record.circle").font(.caption)
+                } primaryAction: {
+                    start(isPrivate: false)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.kitSecondary)
+                .fixedSize()
             }
-        } label: {
-            Label(isRecordingThis ? "Stop" : "Record",
-                  systemImage: isRecordingThis ? "stop.circle" : "record.circle")
-                .font(.caption)
         }
-        .buttonStyle(.bordered)
         .controlSize(.small)
-        .tint(isRecordingThis ? .red : nil)
         .disabled((center.isCapturing && !isRecordingThis) || !SystemAudioRecorder.isSupported)
         .help(SystemAudioRecorder.isSupported ? firstRecordingHint : "Recording requires macOS 14.4+")
+    }
+
+    /// `isPrivate` false still records privately when the Settings default is on.
+    private func start(isPrivate: Bool) {
+        let center = appState.meetingRecorderCenter
+        Task { await center.startRecording(eventID: eventID, title: title, isPrivate: isPrivate, config: .fromDefaults()) }
     }
 
     /// Said before the first recording, while the model is not known to be

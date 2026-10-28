@@ -22,6 +22,7 @@ extension MeetingRecorderCenter {
     nonisolated static func reservePhoneRecording(
         eventID: String?,
         title: String?,
+        isPrivate: Bool,
         in directory: URL,
         store: PendingTranscriptStore,
         date: Date = Date()
@@ -32,7 +33,8 @@ extension MeetingRecorderCenter {
             let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a") {
                 lost.contains($0) || isReserved($0, in: store)
             }
-            if try await store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title, at: date) {
+            if try await store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title,
+                                       isPrivate: isPrivate, at: date) {
                 return audioURL
             }
             // Lost the race for this name; the next `uniqueRecordingURL` moves past it.

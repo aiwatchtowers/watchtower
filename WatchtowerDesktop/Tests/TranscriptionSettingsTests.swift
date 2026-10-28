@@ -60,6 +60,14 @@ struct TranscriptionSettingsTests {
         #expect(!TranscriptionConfig.fromDefaults(defaults).speechGate)
     }
 
+    @Test("Recordings are not private unless the default is turned on")
+    func privateByDefault() throws {
+        #expect(!TranscriptionConfig.fromDefaults(try makeSuite()).privateByDefault)
+        let defaults = try makeSuite()
+        defaults.set(true, forKey: TranscriptionConfig.privateByDefaultKey)
+        #expect(TranscriptionConfig.fromDefaults(defaults).privateByDefault)
+    }
+
     @Test("Absent diarization threshold keeps the default")
     func diarizationThresholdDefault() throws {
         let config = TranscriptionConfig.fromDefaults(try makeSuite())

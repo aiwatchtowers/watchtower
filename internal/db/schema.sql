@@ -1409,7 +1409,8 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     speaker_names_changed_at TEXT,
-    summary_updated_at TEXT
+    summary_updated_at TEXT,
+    private         INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)) -- 1 = never sent to an AI provider; skip it in every prompt-feeding read
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
 
@@ -2252,7 +2253,7 @@ CREATE TABLE IF NOT EXISTS kb_sources (
 
 -- Source deletions and edits (see 00139): KB documents to re-render, filled by triggers.
 CREATE TABLE IF NOT EXISTS kb_dirty (
-    source TEXT NOT NULL,              -- KB source name: slack | gmail | jira
+    source TEXT NOT NULL,              -- KB source name: slack | gmail | jira | transcript | recap, or a media_items.kb_source
     key    TEXT NOT NULL,              -- that source's document key (kb_documents.id)
     gen    INTEGER NOT NULL DEFAULT 0, -- bumped on every re-mark; the drain deletes only the gen it rendered
     PRIMARY KEY (source, key)
@@ -2282,6 +2283,31 @@ CREATE TRIGGER IF NOT EXISTS jira_comments_kb_dirty AFTER DELETE ON jira_comment
 BEGIN
     INSERT INTO kb_dirty (source, key) VALUES ('jira', 'jira:' || OLD.account_id || ':' || OLD.issue_key)
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+
+-- A recording turned private (or back) re-renders its document, the recaps it
+-- owns and the artifacts kept from its meeting chat; a private one renders as
+-- nil and leaves the index (see 00164).
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
+WHEN OLD.private != NEW.private
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key)
+        SELECT 'chat_artifact', 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+        FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+        WHERE c.context_type = 'meeting' AND c.context_id = CAST(NEW.id AS TEXT)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+
+-- Deleting a private recording deletes the recaps it owns instead of letting
+-- the foreign key orphan them into a readable recap (see 00164).
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_delete_recaps BEFORE DELETE ON meeting_transcripts
+WHEN OLD.private = 1
+BEGIN
+    DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
 END;
 
 -- External knowledge sources (see 00074)
@@ -3481,7 +3507,8 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     transcript     TEXT,
     meta_json      TEXT,
     started_at     REAL NOT NULL,
-    transcribed_at REAL
+    transcribed_at REAL,
+    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1))
 );
 
 -- An embedded chat's owner message queued but not yet sent (00157, #604;

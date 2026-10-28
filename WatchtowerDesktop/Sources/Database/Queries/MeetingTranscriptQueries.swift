@@ -36,7 +36,9 @@ enum MeetingTranscriptQueries {
     /// links the transcript to the event; if the event has no `meeting_recaps`
     /// row and the transcript carries a summary, copies it into
     /// `meeting_recaps` (`source_text` = transcript text) so the recap shows up
-    /// in the existing recap UI immediately.
+    /// in the existing recap UI immediately — except for a private recording,
+    /// whose text never lands in `meeting_recaps` (MEETPRIV-03: Go's prompt
+    /// readers would otherwise see it through the event's recap row).
     static func linkToEvent(_ db: Database, id: Int64, eventID: String) throws {
         guard let transcript = try fetch(db, id: id) else { return }
         try db.execute(
@@ -46,6 +48,7 @@ enum MeetingTranscriptQueries {
                 WHERE id = ?
                 """,
             arguments: [eventID, id])
+        guard !transcript.isPrivate else { return }
         guard let summaryJSON = transcript.summaryJSON, !summaryJSON.isEmpty else { return }
         guard try MeetingRecapQueries.fetch(db, eventID: eventID) == nil else { return }
         try db.execute(
@@ -81,7 +84,8 @@ enum MeetingTranscriptQueries {
                             WHERE r.event_id = t.event_id OR r.transcript_id = t.id
                         )) AS has_recap,
                        (t.notes_md IS NOT NULL) AS has_notes,
-                       substr(t.transcript_text, 1, 200) AS snippet
+                       substr(t.transcript_text, 1, 200) AS snippet,
+                       t.private
                 FROM meeting_transcripts t
                 LEFT JOIN calendar_events e ON e.id = t.event_id
                 ORDER BY t.created_at DESC, t.id DESC
@@ -220,6 +224,9 @@ enum MeetingTranscriptQueries {
         case alreadyConverted(targetID: Int64)
         /// chapters_json re-encode failed — nothing may be written.
         case encodeFailed
+        /// The recording is private (MEETPRIV): a Target feeds the briefing,
+        /// day plan and chat prompts, so none is made from it.
+        case privateRecording
 
         var errorDescription: String? {
             switch self {
@@ -229,6 +236,8 @@ enum MeetingTranscriptQueries {
                 return "Already converted to Target #\(targetID)"
             case .encodeFailed:
                 return "Could not update chapters after creating the Target"
+            case .privateRecording:
+                return "Private recording — not sent to AI, so no Target is made from it"
             }
         }
     }
@@ -254,6 +263,9 @@ enum MeetingTranscriptQueries {
               chapters.chapters.indices.contains(chapterIdx),
               chapters.chapters[chapterIdx].actionItems.indices.contains(itemIdx) else {
             throw ActionItemConversionError.staleChapters
+        }
+        if transcript.isPrivate {
+            throw ActionItemConversionError.privateRecording
         }
         let chapter = chapters.chapters[chapterIdx]
         let item = chapter.actionItems[itemIdx]
@@ -307,9 +319,11 @@ enum MeetingTranscriptQueries {
     }
 
     /// Deletes a recording with all its content: the transcript row and its
-    /// "meeting" chat conversation (+ messages). The event's `meeting_recaps`
-    /// row is deliberately NOT touched — a recap can exist independently of
-    /// the recording (safe delete scope). Returns the audio_path (if any) so
+    /// "meeting" chat conversation (+ messages). This code leaves
+    /// `meeting_recaps` alone — a public recording's recap outlives it (the
+    /// foreign key only clears `transcript_id`) — but migration 00164's
+    /// `BEFORE DELETE` trigger deletes the recaps a PRIVATE recording owns
+    /// (MEETPRIV-02: no readable recap without its recording). Returns the audio_path (if any) so
     /// the caller can remove the file AFTER the transaction commits;
     /// callers must treat a missing file as success (daemon retention may
     /// have swept it already).

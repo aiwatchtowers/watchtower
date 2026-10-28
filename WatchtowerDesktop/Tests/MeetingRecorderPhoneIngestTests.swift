@@ -119,6 +119,58 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
                        "1 s of AAC decodes to 16 000 samples ±1 %")
     }
 
+    // MARK: - Private (MEETPRIV)
+
+    /// The phone has no per-recording choice: an ingest takes the Settings
+    /// default, in the pending row and the save.
+    func testIngestTakesThePrivateByDefaultSetting() async throws {
+        for privateByDefault in [false, true] {
+            let source = try makeDummyPhoneAudioFile()
+            defer { try? FileManager.default.removeItem(at: source) }
+            let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+            let center = try makeCenter(runner: runner)
+            let finished = expectFinished(center)
+            var config = singleWindowConfig()
+            config.privateByDefault = privateByDefault
+
+            let ingested = try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Phone",
+                                                                 config: config)
+            XCTAssertEqual(center.jobs.first?.isPrivate, privateByDefault)
+            await fulfillment(of: [finished], timeout: 10)
+            defer { try? FileManager.default.removeItem(at: ingested) }
+
+            XCTAssertEqual(try XCTUnwrap(runner.invocations.first).contains("--private"), privateByDefault)
+        }
+    }
+
+    /// A job queued behind a capture (it needs the engine the capture
+    /// holds) takes the lock, and its save carries it.
+    func testLockOnAJobQueuedBehindACaptureReachesTheSave() async throws {
+        let source = try makeDummyPhoneAudioFile()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = try makeCenter(runner: runner)
+        let finished = expectFinished(center)
+        finished.assertForOverFulfill = false
+
+        await center.startRecording(eventID: nil, title: "Live", config: singleWindowConfig())
+        let ingested = try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Phone",
+                                                             config: singleWindowConfig())
+        defer { try? FileManager.default.removeItem(at: ingested) }
+        let job = try XCTUnwrap(center.jobs.first { $0.audioURL == ingested })
+        XCTAssertEqual(job.phase, .queued)
+
+        await center.setJobPrivate(job.id, true)
+        XCTAssertEqual(pendingRow(ingested)?.isPrivate, true)
+        // The fake capture has no result: its Stop fails (no save of its
+        // own) and frees the engine for the queued job.
+        await center.stopAndProcess(config: singleWindowConfig())
+        await fulfillment(of: [finished], timeout: 10)
+
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
+    }
+
     // MARK: - Event link
 
     func testIngestWithAnEventLinksTheTranscriptAndScopesTheRegistry() async throws {
@@ -261,7 +313,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
             for index in 0..<8 {
                 group.addTask {
                     try await MeetingRecorderCenter.reservePhoneRecording(
-                        eventID: nil, title: "title \(index)", in: directory, store: store, date: date)
+                        eventID: nil, title: "title \(index)", isPrivate: false, in: directory, store: store, date: date)
                 }
             }
             return try await group.reduce(into: [URL]()) { $0.append($1) }
@@ -303,7 +355,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         defer { try? FileManager.default.removeItem(at: source) }
         let fixed = Date()
         let desktop = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: fixed)
-        try await pendingStore.begin(recording: desktop.lastPathComponent, eventID: "evt-desk", title: "Desk", at: fixed)
+        try await pendingStore.begin(recording: desktop.lastPathComponent, eventID: "evt-desk", title: "Desk", isPrivate: false, at: fixed)
         let center = try makeCenter(runner: nil) { fixed }
 
         let ingested = try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Phone",

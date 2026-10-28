@@ -2204,7 +2204,7 @@ transcript_text TEXT NOT NULL,
 summary_json TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT)
+, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)))
 
 table	memory_aliases
 CREATE TABLE memory_aliases (
@@ -2430,7 +2430,7 @@ transcript TEXT,
 meta_json TEXT,
 started_at REAL NOT NULL,
 transcribed_at REAL
-)
+, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)))
 
 table	people_card_summaries
 CREATE TABLE people_card_summaries (
@@ -3504,6 +3504,28 @@ DELETE FROM transcripts_fts WHERE rowid = OLD.id;
 INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
 SELECT NEW.id, NEW.transcript_text, NEW.id, NEW.title
 WHERE NEW.transcript_text != '';
+END
+
+trigger	meeting_transcripts_private_delete_recaps
+CREATE TRIGGER meeting_transcripts_private_delete_recaps BEFORE DELETE ON meeting_transcripts
+WHEN OLD.private = 1
+BEGIN
+DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
+END
+
+trigger	meeting_transcripts_private_kb_dirty
+CREATE TRIGGER meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
+WHEN OLD.private != NEW.private
+BEGIN
+INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
+ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+INSERT INTO kb_dirty (source, key)
+SELECT 'chat_artifact', 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+WHERE c.context_type = 'meeting' AND c.context_id = CAST(NEW.id AS TEXT)
+ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END
 
 trigger	messages_ad
@@ -5330,6 +5352,7 @@ GROUP BY up.ancestor
 13	chapters_json	TEXT	notnull=0	dflt=NULL	pk=0
 14	speaker_names_changed_at	TEXT	notnull=0	dflt=NULL	pk=0
 15	summary_updated_at	TEXT	notnull=0	dflt=NULL	pk=0
+16	private	INTEGER	notnull=1	dflt=0	pk=0
 
 ## memory_aliases
 0	alias	TEXT	notnull=0	dflt=NULL	pk=1
@@ -5536,6 +5559,7 @@ GROUP BY up.ancestor
 4	meta_json	TEXT	notnull=0	dflt=NULL	pk=0
 5	started_at	REAL	notnull=1	dflt=NULL	pk=0
 6	transcribed_at	REAL	notnull=0	dflt=NULL	pk=0
+7	private	INTEGER	notnull=1	dflt=0	pk=0
 
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

@@ -64,3 +64,40 @@ package struct RecordingRecap {
         self.ownedByRecording = ownedByRecording
     }
 }
+
+/// What the calendar event page offers on the event's recap. A recap a
+/// private recording owns (MEETPRIV-01/02) still shows there — it is the
+/// owner's own, local view — but nothing on it goes to AI: no Re-generate,
+/// no `source_text` (the private transcript) prefilled into the recap
+/// sheet, no "+ to notes" (a note becomes a Target, which feeds prompts).
+package struct EventRecapGate: Equatable {
+    package let ownedByPrivateRecording: Bool
+
+    package init(ownedByPrivateRecording: Bool) {
+        self.ownedByPrivateRecording = ownedByPrivateRecording
+    }
+
+    package static func load(_ db: Database, eventID: String) throws -> Self {
+        Self(ownedByPrivateRecording: try MeetingRecapQueries.isOwnedByPrivateRecording(db, eventID: eventID))
+    }
+
+    /// The gate as stored now, for a check at action time (the recording may
+    /// have turned private since the page loaded). A failed read (logged)
+    /// closes it: no AI action on a recap whose owner could not be checked.
+    package static func current(_ reader: some DatabaseReader, eventID: String) async -> Self {
+        do {
+            return try await reader.read { try load($0, eventID: eventID) }
+        } catch {
+            NSLog("EventRecapGate: checking event %@'s recap owner failed: %@", eventID, String(describing: error))
+            return Self(ownedByPrivateRecording: true)
+        }
+    }
+
+    /// Re-generate, "Recap from text" and "+ to notes".
+    package var offersAIActions: Bool { !ownedByPrivateRecording }
+
+    /// The text the recap sheet opens with.
+    package func prefilledText(_ recap: MeetingRecap?) -> String {
+        offersAIActions ? recap?.sourceText ?? "" : ""
+    }
+}

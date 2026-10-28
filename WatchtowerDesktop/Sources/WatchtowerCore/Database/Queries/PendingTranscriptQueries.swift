@@ -14,6 +14,8 @@ package struct PendingTranscript: Equatable, Sendable {
     package let metaJSON: String?
     package let startedAt: Date
     package let transcribedAt: Date?
+    /// The recording saves private (`--private`, MEETPRIV-01).
+    package let isPrivate: Bool
     /// The owner dismissed the recovered recording: kept as a tombstone so the
     /// audio file (which stays until the daemon's orphan sweep) is not offered
     /// again. Stored as `meta_json = '{"dismissed":true}'`.
@@ -25,35 +27,54 @@ package enum PendingTranscriptQueries {
     package static let dismissedMeta = #"{"dismissed":true}"#
 
     /// A recording starts (or a legacy pointer or sidecar is imported): its
-    /// event link and title. An existing row of the recording keeps its kept
-    /// transcript (a legacy import may bring the transcript first).
-    package static func begin(_ db: Database, recording: String, eventID: String?, title: String?, at: Date) throws {
+    /// event link, title and private flag. An existing row of the recording
+    /// keeps its kept transcript (a legacy import may bring the transcript
+    /// first).
+    package static func begin(
+        _ db: Database, recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date
+    ) throws {
         try db.execute(sql: """
-            INSERT INTO pending_transcripts (recording, event_id, title, started_at) VALUES (?, ?, ?, ?)
-            ON CONFLICT(recording) DO UPDATE SET event_id = excluded.event_id, title = excluded.title
-            """, arguments: [recording, eventID, title, at.timeIntervalSince1970])
+            INSERT INTO pending_transcripts (recording, event_id, title, private, started_at) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(recording) DO UPDATE SET event_id = excluded.event_id, title = excluded.title,
+                private = excluded.private
+            """, arguments: [recording, eventID, title, isPrivate, at.timeIntervalSince1970])
+    }
+
+    /// The owner flipped the flag on a recording still capturing or queued.
+    /// False when the recording has no row (nothing was written).
+    @discardableResult
+    package static func setPrivate(_ db: Database, recording: String, _ isPrivate: Bool) throws -> Bool {
+        try db.execute(sql: "UPDATE pending_transcripts SET private = ? WHERE recording = ?",
+                       arguments: [isPrivate, recording])
+        return db.changesCount > 0
     }
 
     /// Reserves `recording` (a phone recording's name): false when a row
     /// already holds it, so the caller tries the next name.
-    package static func reserve(_ db: Database, recording: String, eventID: String?, title: String?, at: Date)
-        throws -> Bool {
+    package static func reserve(
+        _ db: Database, recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date
+    ) throws -> Bool {
         try db.execute(sql: """
-            INSERT INTO pending_transcripts (recording, event_id, title, started_at) VALUES (?, ?, ?, ?)
+            INSERT INTO pending_transcripts (recording, event_id, title, private, started_at) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(recording) DO NOTHING
-            """, arguments: [recording, eventID, title, at.timeIntervalSince1970])
+            """, arguments: [recording, eventID, title, isPrivate, at.timeIntervalSince1970])
         return db.changesCount > 0
     }
 
     /// Transcription succeeded: a failed save retries from this text.
-    package static func saveTranscript(_ db: Database, recording: String, text: String, metaJSON: String, at: Date)
-        throws {
+    /// `isPrivate` is the job's flag, written on insert and on conflict: a
+    /// recording whose `begin` (or a lock flip) never landed must not get a
+    /// public row here (MEETPRIV-01).
+    package static func saveTranscript(
+        _ db: Database, recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date
+    ) throws {
         try db.execute(sql: """
-            INSERT INTO pending_transcripts (recording, transcript, meta_json, started_at, transcribed_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO pending_transcripts (recording, transcript, meta_json, private, started_at, transcribed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(recording) DO UPDATE SET transcript = excluded.transcript, meta_json = excluded.meta_json,
-                transcribed_at = excluded.transcribed_at
-            """, arguments: [recording, text, metaJSON, at.timeIntervalSince1970, at.timeIntervalSince1970])
+                private = excluded.private, transcribed_at = excluded.transcribed_at
+            """, arguments: [recording, text, metaJSON, isPrivate, at.timeIntervalSince1970,
+                             at.timeIntervalSince1970])
     }
 
     /// Forgets a persisted transcript (an explicit re-transcribe), keeping
@@ -100,6 +121,7 @@ package enum PendingTranscriptQueries {
             recording: row["recording"], eventID: row["event_id"], title: row["title"],
             transcript: row["transcript"], metaJSON: row["meta_json"],
             startedAt: Date(timeIntervalSince1970: row["started_at"]),
-            transcribedAt: (row["transcribed_at"] as Double?).map(Date.init(timeIntervalSince1970:)))
+            transcribedAt: (row["transcribed_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+            isPrivate: row["private"])
     }
 }
