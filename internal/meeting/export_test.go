@@ -23,7 +23,7 @@ func exportFixture() TranscriptExport {
 	}
 }
 
-func TestRenderTranscriptExport(t *testing.T) {
+func TestMeetPriv05_RenderTranscriptExport(t *testing.T) {
 	legacy := TranscriptExport{ID: 3, Title: "Old one", CreatedAt: "2026-01-02T03:04:05Z", Text: "[Anna] flat text\n[Bob] more"}
 
 	cases := []struct {
@@ -54,7 +54,7 @@ func TestRenderTranscriptExport(t *testing.T) {
 	}
 }
 
-func TestRenderTranscriptExport_SRTNeedsSegments(t *testing.T) {
+func TestMeetPriv05_RenderTranscriptExportSRTNeedsSegments(t *testing.T) {
 	for name, segs := range map[string][]TranscriptUtterance{
 		"no segments": nil,
 		"all deleted": {{Idx: 0, StartSec: 1, EndSec: 2, Speaker: "A", Text: "x", Deleted: true}},
@@ -65,7 +65,7 @@ func TestRenderTranscriptExport_SRTNeedsSegments(t *testing.T) {
 	}
 }
 
-func TestRenderTranscriptExport_JSON(t *testing.T) {
+func TestMeetPriv05_RenderTranscriptExportJSON(t *testing.T) {
 	in := exportFixture()
 	in.Private = true
 	got, err := RenderTranscriptExport(in, "json")

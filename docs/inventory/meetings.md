@@ -100,7 +100,9 @@
 
 **Test guards:**
 - `cmd/meeting_transcript_private_test.go::TestMeetPriv05_ExportPrivateToFile0600`
-- `internal/meeting/export_test.go::TestRenderTranscriptExport` (+ `_SRTNeedsSegments`, `_JSON`)
+- `internal/meeting/export_test.go::TestMeetPriv05_RenderTranscriptExport`
+- `internal/meeting/export_test.go::TestMeetPriv05_RenderTranscriptExportSRTNeedsSegments`
+- `internal/meeting/export_test.go::TestMeetPriv05_RenderTranscriptExportJSON`
 
 **Locked since:** 2026-10-28
 
