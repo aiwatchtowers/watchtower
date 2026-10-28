@@ -24,6 +24,7 @@ struct MeetingsSettings: View {
     @AppStorage(SystemAudioRecorder.reattachKey) private var reattachSystemAudio = true
     @AppStorage("transcription.voiceRecognition") private var voiceRecognition = true
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
+    @AppStorage(TranscriptionConfig.privateByDefaultKey) private var recordPrivatelyByDefault = false
     @AppStorage(DictationEngineChoice.defaultsKey) private var dictationModelRaw = ""
     @State private var showAdvancedTranscription = false
 
@@ -122,6 +123,11 @@ struct MeetingsSettings: View {
         Section("Recording") {
             Toggle("Auto-record on join", isOn: $autoRecordOnJoin)
                 .help("Pressing Join on a calendar event also starts an event-linked recording (unless one is already running)")
+
+            Toggle("Record meetings privately by default", isOn: $recordPrivatelyByDefault)
+                .help("Record and Join's auto-record start private recordings: saved without a recap "
+                    + "and never sent to AI. Record's menu always offers Record Privately; "
+                    + "the lock while recording changes it for one recording.")
 
             Toggle("Live transcription", isOn: $transcriptionLive)
                 .help("Transcribe while recording so text appears during the meeting. "

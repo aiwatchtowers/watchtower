@@ -11,7 +11,7 @@ final class RecordingIndicatorViewTests: XCTestCase {
         -> MeetingRecorderCenter.ProcessingJob {
         var job = MeetingRecorderCenter.ProcessingJob(
             audioURL: URL(fileURLWithPath: "/tmp/rec_\(UUID().uuidString).caf"),
-            eventID: nil, title: title)
+            eventID: nil, title: title, isPrivate: false)
         job.phase = phase
         return job
     }

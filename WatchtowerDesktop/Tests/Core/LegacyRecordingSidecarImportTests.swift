@@ -33,6 +33,7 @@ final class LegacyRecordingSidecarImportTests: XCTestCase {
         let row = try XCTUnwrap(try store.transcript(recording: "rec_20260801_090000.caf"))
         XCTAssertEqual(row.eventID, "evt-1")
         XCTAssertEqual(row.title, "Standup")
+        XCTAssertFalse(row.isPrivate, "a legacy sidecar has no private flag: the recording is not private")
         XCTAssertEqual(row.transcript, "[Я] привет")
         XCTAssertEqual(row.metaJSON, #"{"durationSec":42,"langStats":{"ru":42}}"#)
         let left = try FileManager.default.contentsOfDirectory(atPath: dir.path)

@@ -124,7 +124,12 @@ struct TranscriptionConfig: Equatable {
     /// invented over silence. A hidden kill switch (`transcription.speechGate`,
     /// absent = on) with no Settings UI; the dictation lane stamps it off.
     var speechGate: Bool = true
+    /// A recording started without an explicit choice (the plain Record
+    /// button, Join's auto-record, a phone recording) is private: never sent
+    /// to an AI provider (MEETPRIV). Settings → Transcription, default off.
+    var privateByDefault: Bool = false
     static let sampleRate = 16_000
+    static let privateByDefaultKey = "transcription.privateByDefault"
 }
 
 /// One timestamped segment of the full recording (absolute seconds), carrying
@@ -180,7 +185,8 @@ extension TranscriptionConfig {
             ("transcription.diarization", \.diarization),
             ("transcription.voiceRecognition", \.voiceRecognition),
             ("transcription.voiceNotifications", \.voiceNotifications),
-            ("transcription.speechGate", \.speechGate)
+            ("transcription.speechGate", \.speechGate),
+            (Self.privateByDefaultKey, \.privateByDefault)
         ]
         for toggle in toggles where defaults.object(forKey: toggle.key) != nil {
             config[keyPath: toggle.field] = defaults.bool(forKey: toggle.key)

@@ -186,12 +186,15 @@ private final class GatedPendingStore: PendingTranscriptStore, @unchecked Sendab
 
     func release() { gate.continuation.finish() }
 
-    func begin(recording: String, eventID: String?, title: String?, at: Date) async throws {
+    func begin(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws {
         for await _ in gate.stream {}
-        try await base.begin(recording: recording, eventID: eventID, title: title, at: at)
+        try await base.begin(recording: recording, eventID: eventID, title: title, isPrivate: isPrivate, at: at)
     }
-    func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool {
-        try await base.reserve(recording: recording, eventID: eventID, title: title, at: at)
+    func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool {
+        try await base.reserve(recording: recording, eventID: eventID, title: title, isPrivate: isPrivate, at: at)
+    }
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws {
+        try await base.setPrivate(recording: recording, isPrivate)
     }
     func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws {
         try await base.saveTranscript(recording: recording, text: text, metaJSON: metaJSON, at: at)
@@ -207,8 +210,11 @@ private final class GatedPendingStore: PendingTranscriptStore, @unchecked Sendab
 /// Every write fails; reads see nothing.
 private struct FailingPendingStore: PendingTranscriptStore {
     struct Failure: Error {}
-    func begin(recording: String, eventID: String?, title: String?, at: Date) async throws { throw Failure() }
-    func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool { throw Failure() }
+    func begin(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws { throw Failure() }
+    func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool {
+        throw Failure()
+    }
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws { throw Failure() }
     func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws { throw Failure() }
     func clearTranscript(recording: String) async throws { throw Failure() }
     func dismiss(recording: String, at: Date) async throws { throw Failure() }

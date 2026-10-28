@@ -6,9 +6,14 @@ import GRDB
 /// audio files' base names (`rec_<ts>.caf`). Writes await the writer (board
 /// #670: no synchronous write on the main thread); reads are synchronous.
 package protocol PendingTranscriptStore: Sendable {
-    func begin(recording: String, eventID: String?, title: String?, at: Date) async throws
+    /// `isPrivate` is the recording's private flag (MEETPRIV), kept so a
+    /// recording recovered after a crash still saves private.
+    func begin(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws
     /// Exclusive: false when another recording already holds the name.
-    func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool
+    func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool
+    /// The owner flipped the private flag while the recording was capturing
+    /// or queued. No-op when the recording has no row.
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws
     func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws
     func clearTranscript(recording: String) async throws
     /// Marks the recording dismissed (a row is written when it had none).
@@ -20,20 +25,40 @@ package protocol PendingTranscriptStore: Sendable {
     func savedAudioPaths() throws -> Set<String>
 }
 
+extension PendingTranscriptStore {
+    /// A non-private recording (legacy imports, tests).
+    package func begin(recording: String, eventID: String?, title: String?, at: Date) async throws {
+        try await begin(recording: recording, eventID: eventID, title: title, isPrivate: false, at: at)
+    }
+
+    package func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool {
+        try await reserve(recording: recording, eventID: eventID, title: title, isPrivate: false, at: at)
+    }
+}
+
 /// `PendingTranscriptStore` over the Desktop's database writer.
 package struct DatabasePendingTranscriptStore: PendingTranscriptStore {
     private let writer: any DatabaseWriter
 
     package init(writer: any DatabaseWriter) { self.writer = writer }
 
-    package func begin(recording: String, eventID: String?, title: String?, at: Date) async throws {
-        try await writer.write { try PendingTranscriptQueries.begin($0, recording: recording, eventID: eventID, title: title, at: at) }
+    package func begin(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws {
+        try await writer.write {
+            try PendingTranscriptQueries.begin($0, recording: recording, eventID: eventID, title: title,
+                                               isPrivate: isPrivate, at: at)
+        }
     }
 
-    package func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool {
+    package func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date)
+        async throws -> Bool {
         try await writer.write {
-            try PendingTranscriptQueries.reserve($0, recording: recording, eventID: eventID, title: title, at: at)
+            try PendingTranscriptQueries.reserve($0, recording: recording, eventID: eventID, title: title,
+                                                 isPrivate: isPrivate, at: at)
         }
+    }
+
+    package func setPrivate(recording: String, _ isPrivate: Bool) async throws {
+        try await writer.write { try PendingTranscriptQueries.setPrivate($0, recording: recording, isPrivate) }
     }
 
     package func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws {

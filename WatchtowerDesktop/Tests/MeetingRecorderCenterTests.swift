@@ -744,7 +744,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        await center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo")
+        await center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo", isPrivate: false)
         XCTAssertNil(pendingRow(audio)?.transcript, "prepareRetry must drop the stale kept transcript")
         XCTAssertNil(pendingRow(audio)?.metaJSON, "prepareRetry must drop the stale metadata")
 
@@ -824,7 +824,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        await center.prepareRetry(audioURL: audio, eventID: nil, title: "Ad hoc")
+        await center.prepareRetry(audioURL: audio, eventID: nil, title: "Ad hoc", isPrivate: false)
         let runTask = Task {
             await center.retryTranscription(config: threeWindowConfig())
         }
