@@ -227,6 +227,7 @@ extension AppState {
         BoardHandlers(
             dbPool: dbPool, cli: workbenchesViewModel?.cli,
             isReporting: { [weak vm = workbenchesViewModel] in vm?.onOwnerWrite != nil },
+            publishSoon: { [weak self] in self?.mobileHub?.publishSoon(kinds: $0) },
             onOwnerWrite: { [weak vm = workbenchesViewModel] projectID, subject in
                 vm?.onOwnerWrite?(projectID, subject)
             }
@@ -238,6 +239,12 @@ extension AppState {
             dbPool: dbPool, workbenches: workbenchesViewModel, terminalCenter: terminalCenter,
             deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
             bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
+        ).register(on: dispatcher)
+        // Automation runs take quick run's path under the start-sessions grant (ask #692).
+        AutomationRunHandler(
+            dbPool: dbPool, quickRun: { [weak self] in self?.quickRunCenter },
+            deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
+            publishSoon: { [weak self] in self?.mobileHub?.publishSoon(kinds: $0) }
         ).register(on: dispatcher)
         // Permission answers decide the waiting hook's row (its own grant)
         // and interrupts send one Esc (the typing grant), #517.

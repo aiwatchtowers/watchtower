@@ -5,8 +5,12 @@ import WatchtowerSync
 
 /// Sends the phone's board writes (spec §5.2, §6.3) through the outbox:
 /// status, priority, comments, replies and new targets, and resolves a
-/// conflict. `from_status`/`from_priority` are always the replica's value
+/// conflict; and runs of the workbench's automations (ask #692). `from_status`/`from_priority` are always the replica's value
 /// the phone shows, never an optimistic one. Owned by `AppEnvironment`.
+///
+/// A comment or reply the Mac applied stays in its thread
+/// (`postedComments`) until the Mac's comment record reaches the replica:
+/// the applied echo drops the pending row first (#1192).
 ///
 /// One write per field (or per comment target) is in flight at a time
 /// (`SendGuard`): a double tap never posts a non-idempotent comment twice
@@ -18,6 +22,8 @@ final class BoardWriter {
 
     /// Keys (`BoardWriter.key`) of the sends still waiting for the outbox.
     var inFlight: Set<String> { sendGuard.inFlight }
+    /// The comments and replies the Mac applied this run, newest last.
+    private(set) var postedComments: [PostedComment] = []
 
     @ObservationIgnored private let sendGuard = SendGuard()
     @ObservationIgnored private let enqueue: Enqueue
@@ -48,6 +54,27 @@ final class BoardWriter {
                     .map(\.id)
             }
         )
+    }
+
+    /// An `applied` echo of a comment or reply: kept with the Mac's
+    /// comment id until the record arrives. Other kinds are not ours.
+    func receiveApplied(_ action: ActionRequestPayload, now: Date = Date()) {
+        guard case let .integer(commentID)? = action.result?["comment_id"],
+              let entity = action.entityID.flatMap(Int64.init),
+              !postedComments.contains(where: { $0.commentID == commentID }) else { return }
+        let posted: PostedComment
+        switch action.kind {
+        case .boardCommentAdd:
+            guard let params = try? BoardCommentAddParams(wireParams: action.params) else { return }
+            posted = PostedComment(commentID: commentID, targetID: entity, rootID: nil, body: params.body, postedAt: now)
+        case .boardCommentReply:
+            guard let params = try? BoardCommentReplyParams(wireParams: action.params) else { return }
+            posted = PostedComment(commentID: commentID, targetID: nil, rootID: entity, body: params.body, postedAt: now)
+        default:
+            return
+        }
+        postedComments.removeAll { now.timeIntervalSince($0.postedAt) > PostedComment.keepFor }
+        postedComments.append(posted)
     }
 
     /// The in-flight key of a kind on an entity (nil for a new target).
@@ -97,6 +124,33 @@ final class BoardWriter {
     func create(_ draft: NewBoardTargetDraft) async throws -> Bool {
         guard let params = try draft.params() else { return false }
         return try await send(BoardTargetCreateParams.actionKind, nil, params)
+    }
+
+    /// Asks the Mac to run the automation now (ask #692). `confirmed`: the
+    /// owner pressed Run in the phone's confirmation (a `confirm: true` recipe
+    /// runs only with it). A second tap while this one is still being saved
+    /// sends nothing (false); once queued, the screen shows the run as sending
+    /// and offers no Run. Its older failed rows go once it is queued.
+    @discardableResult
+    func runAutomation(_ automation: WorkbenchAutomation, workbenchID: Int64, confirmed: Bool = false) async throws -> Bool {
+        let entity = Self.automationRecordName(automation.id)
+        let stale = try failedRows(.automationRun, entity)
+        let params = try AutomationRunParams(workbenchID: workbenchID, confirmed: confirmed).wireParams()
+        guard try await send(.automationRun, entity, params) else { return false }
+        for id in stale {
+            try remove(id)
+        }
+        return true
+    }
+
+    /// Dismiss on the Mac's refusal of a run.
+    func dismissRun(_ failure: WorkbenchAutomationsModel.Failure) throws {
+        try remove(failure.pending.id)
+    }
+
+    /// The `automation_run` entity: the hub reads the id after the hyphen.
+    nonisolated static func automationRecordName(_ id: Int64) -> String {
+        "automation-\(id)"
     }
 
     /// "Apply anyway" on a conflict: a new action with the same requested

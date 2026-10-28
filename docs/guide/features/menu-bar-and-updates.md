@@ -25,11 +25,13 @@ Other lines appear only when they apply:
 
 ### Updates
 
-Watchtower checks for a new version at every launch and then every 6 hours while it runs. When it finds one, you get one notification and one **Software Update** window per version, never repeated.
+Watchtower checks for a new version at every launch and then every 6 hours while it runs. When it finds one, you get one notification and one **Software Update** window per version, never repeated. The window shows the release notes in full.
 
 The window is held back while a recording or transcription is running, and appears at the next background check after it ends (checks run every 6 hours). **Update to <version> available…** also shows in the menu.
 
 Installing replaces the app in place and restarts it. Before it swaps anything, it checks that the new app is signed by the same developer as the one you run. A build that is distributed outside the public releases shows "Updates for this build are distributed out of band" instead, and never updates from the public feed.
+
+The first launch of a new version opens the **Software Update** window once more, on **What's New in Watchtower <version>**, so you see what changed.
 
 ## Using it
 
@@ -80,21 +82,25 @@ Watchtower registers itself as a login item once per installed copy, so the daem
 
 ### Install an update
 <!-- learn
-id: menubar-install-update
-title: Install an update
-text: When **Update to <version> available…** shows in the menu, press **Download**, then **Install & Restart**.
+id: menubar-update-whats-new
+title: Read what's new, then update
+text: When an update shows in the menu, press **What's New…** to read the notes, then **Download** and **Install & Restart**.
+changed: Release notes open in full, and once more after an update.
+replaces: [menubar-install-update]
 area: setup
 level: next
 kind: feature
-since: 0.24.0
+since: 0.26.2
 -->
 
 1. Click **Update to <version> available…** (or the notification). It opens Settings → System → **Update**.
-2. Press **Download**. Release notes show above it.
+2. Press **What's New…** to read the release notes, then **Download**.
 3. When it says **Ready to install**, press **Install & Restart**.
 4. If it says **Update installed — restart Watchtower to finish**, press **Restart Now**.
 
 **Check for Updates** in the same place checks on demand. The **Software Update** window does the same with **Update Now** and **Later**.
+
+**Watchtower → About Watchtower** links to the GitHub repository and to the release notes of the version you run.
 
 ## When it's empty or wrong
 

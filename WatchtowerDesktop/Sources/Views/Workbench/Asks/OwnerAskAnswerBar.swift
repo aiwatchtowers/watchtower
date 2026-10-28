@@ -12,8 +12,11 @@ import WatchtowerCore
 struct OwnerAskAnswerBar: View {
     let asks: OwnerAsksViewModel
     let ask: OwnerAsk
-    /// Off under the spec review screen, whose Send and Approve answer the ask.
+    /// Off under the spec review screen: its own verdicts take their place.
     var showsVerdicts = true
+    /// The spec review screen that is up, whose Request changes / Approve
+    /// (`SpecReviewVerdictButtons`) stand where the classic verdicts do.
+    var specReview: SpecReviewModel?
     let statusLine: String
 
     var body: some View {
@@ -42,7 +45,10 @@ struct OwnerAskAnswerBar: View {
                         .disabled(answering)
                         .help("Close this ask without answering; the agent goes on without it. Your note goes with it")
                     Spacer()
-                    if answering { ProgressView().controlSize(.small) }
+                    if answering, showsVerdicts { ProgressView().controlSize(.small) }
+                    if !showsVerdicts, let specReview {
+                        SpecReviewVerdictButtons(model: specReview)
+                    }
                     ForEach(showsVerdicts ? actions : [], id: \.verdict) { action in
                         answerButton(action, enabled: OwnerAskPresentation.canAnswer(ask, draft: draft, with: action, answering: answering))
                     }

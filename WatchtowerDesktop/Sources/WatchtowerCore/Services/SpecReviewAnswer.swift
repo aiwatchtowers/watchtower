@@ -37,6 +37,13 @@ package enum SpecReviewAnswer {
             answer.comments += loopComments(
                 ledger: loop, result: result, marks: marks, snapshot: snapshot, rendered: rendered
             )
+            // A Fix or Comment on a chapter finding the loop never carried
+            // (an As agreed one, spec 2026-10-28 §4) goes out as on a review
+            // without a loop.
+            let inLedger = Set(loop.map(\.item.key))
+            answer.comments += comments(
+                result: result, marks: marks.filter { !inLedger.contains($0.key) }, snapshot: snapshot, rendered: rendered
+            )
             return answer
         }
         answer.comments += comments(result: result, marks: marks, snapshot: snapshot, rendered: rendered)
@@ -81,7 +88,9 @@ package enum SpecReviewAnswer {
         } else {
             let reason = entry.item.reply?.note.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             var note = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
-            if entry.verdict == "unsettled", !note.isEmpty, note == reason {
+            // An unsettled item's verdict note is a loop-end line or the
+            // author's reason, never the reviewer's: the finding's note is.
+            if entry.verdict == "unsettled", !note.isEmpty, note == reason || !SpecReviewLoop.isDisagree(entry) {
                 note = entry.item.note.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             head = note.isEmpty ? "Reviewer is right: \(text)" : "Reviewer is right: \(text) — \(note)"

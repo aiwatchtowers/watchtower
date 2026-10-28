@@ -57,7 +57,7 @@ var workbenchSpecReviewShowCmd = &cobra.Command{
 }
 
 var workbenchSpecReviewRevealCmd = &cobra.Command{
-	Use:    "reveal --ask N --reason session_gone",
+	Use:    "reveal --ask N --reason session_gone|owner",
 	Short:  "End the author loop of ask N and show it to the owner",
 	Hidden: true,
 	Args:   cobra.NoArgs,
@@ -78,7 +78,7 @@ func init() {
 		workbenchSpecReviewCmd.AddCommand(c)
 	}
 	workbenchSpecReviewStartCmd.Flags().BoolVar(&specReviewFlagForce, "force", false, "run a done, failed or skipped review again")
-	workbenchSpecReviewRevealCmd.Flags().StringVar(&specReviewFlagReason, "reason", "", "why the loop ends (session_gone)")
+	workbenchSpecReviewRevealCmd.Flags().StringVar(&specReviewFlagReason, "reason", "", "why the loop ends (session_gone, or owner for Show Now)")
 	_ = workbenchSpecReviewRevealCmd.MarkFlagRequired("reason")
 	workbenchSpecReviewShowCmd.Flags().BoolVar(&specReviewFlagJSON, "json", false, "output JSON")
 	workbenchCmd.AddCommand(workbenchSpecReviewCmd)
@@ -346,8 +346,8 @@ func listOrEmpty(s string) json.RawMessage {
 // outside the daemon knows: the asking session is gone. A row already shown
 // to the owner is left as it is (exit 0).
 func runSpecReviewReveal(cmd *cobra.Command, _ []string) error {
-	if specReviewFlagReason != specreview.EndSessionGone {
-		return usageError("--reason must be %s", specreview.EndSessionGone)
+	if specReviewFlagReason != specreview.EndSessionGone && specReviewFlagReason != specreview.EndOwner {
+		return usageError("--reason must be %s or %s", specreview.EndSessionGone, specreview.EndOwner)
 	}
 	cfg, err := loadWorkbenchCLIConfig()
 	if err != nil {

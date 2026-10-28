@@ -5,7 +5,9 @@ import WatchtowerSync
 /// "New session on the Mac" (spec §6.5, §13 B6): the workbench, the target
 /// (fixed from a target's detail, picked from the Workbench header), the
 /// agent, the brief, "Bring the window forward on the Mac" (off) and "Plan
-/// first, then ask me" (on). A target that already has a session offers
+/// first, then ask me" (on). From the header the target picker opens on
+/// "No target — describe the task" (#1189): New Session on the Mac, with the
+/// owner's task as the first message. A target that already has a session offers
 /// Open it or Start a new one. Once sent, the sheet follows the Mac:
 /// Sent to your Mac → Mac picked it up → Starting <agent> → Open
 /// session. The progress lives in `SessionStarter`, so the sheet can be
@@ -24,10 +26,23 @@ struct StartSessionSheet: View {
         self.workbenchID = workbenchID
         fixedTargetID = fixed ? target?.id : nil
         self.onOpenSession = onOpenSession
-        _draft = State(initialValue: StartSessionDraft(target: target))
+        // The header's New session is New Session on the Mac: no target.
+        _draft = State(initialValue: StartSessionDraft(target: target, untargeted: !fixed && target == nil))
     }
 
     private var starter: SessionStarter { env.sessionStarts }
+
+    private var subject: StartSubject? {
+        if draft.isUntargeted { return .untargeted(workbenchID: workbenchID) }
+        return draft.targetID.map { .target($0) }
+    }
+
+    /// The target picker's rows: none, "No target", or a target.
+    private enum TargetChoice: Hashable {
+        case none
+        case untargeted
+        case target(Int64)
+    }
 
     var body: some View {
         NavigationStack {
@@ -35,9 +50,10 @@ struct StartSessionSheet: View {
                 if let model = StartSessionFormModel(
                     workbenchID: workbenchID,
                     targetID: draft.targetID,
+                    untargetedTask: draft.isUntargeted ? draft.brief : nil,
                     snapshot: env.workbenchReplica.snapshot,
                     grant: env.workbenchReplica.snapshot.grant(for: env.linkedDevice?.deviceID),
-                    attempt: draft.targetID.flatMap { starter.attempts[$0] },
+                    attempt: subject.flatMap(starter.attempt),
                     inFlight: starter.inFlight,
                     now: context.date,
                     startsTurnedOn: env.deviceSettings.startSessions
@@ -86,14 +102,23 @@ struct StartSessionSheet: View {
                         Text(model.targetLabel ?? "").lineLimit(2)
                     } else {
                         Picker("Target", selection: targetBinding(model)) {
-                            Text("Choose a target").tag(Int64?.none)
-                            ForEach(model.targetOptions) { Text($0.label).tag(Int64?.some($0.id)) }
+                            Text("Choose a target").tag(TargetChoice.none)
+                            Text(SessionStartText.noTarget).tag(TargetChoice.untargeted)
+                            ForEach(model.targetOptions) { Text($0.label).tag(TargetChoice.target($0.id)) }
                         }
                         .labelsHidden()
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                if model.target != nil {
+                if model.isUntargeted {
+                    SheetField(label: SessionStartText.taskLabel) {
+                        TextEditor(text: $draft.brief)
+                            .frame(minHeight: PhoneMetrics.minTouch * 3)
+                            .scrollContentBackground(.hidden)
+                            .disabled(!model.grant.typingAllowed)
+                            .accessibilityLabel(SessionStartText.taskLabel)
+                    }
+                } else if model.target != nil {
                     SheetField(label: "Brief the session gets") {
                         TextEditor(text: $draft.brief)
                             .frame(minHeight: PhoneMetrics.minTouch * 3)
@@ -128,7 +153,7 @@ struct StartSessionSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsRow(title: "Agent") { Text(model.agent) }
                 .accessibilityHint("The only agent in this version")
-            if model.target != nil {
+            if model.subject != nil {
                 CardRowDivider()
                 SettingsRow(title: "Bring the window forward on the Mac") {
                     Toggle("", isOn: $draft.bringForward).toggleStyle(SmallSwitchStyle())
@@ -142,14 +167,24 @@ struct StartSessionSheet: View {
         .card(.plain, padding: EdgeInsets(top: Spacing.tight, leading: Spacing.medium, bottom: Spacing.tight, trailing: Spacing.medium))
     }
 
-    private func targetBinding(_ model: StartSessionFormModel) -> Binding<Int64?> {
+    private func targetBinding(_ model: StartSessionFormModel) -> Binding<TargetChoice> {
         Binding(
-            get: { draft.targetID },
-            set: { id in
-                if let target = id.flatMap({ id in env.workbenchReplica.snapshot.targets.first { $0.id == id } }) {
-                    draft.pick(target)
-                } else {
-                    draft.targetID = nil
+            get: {
+                if draft.isUntargeted { return .untargeted }
+                return draft.targetID.map(TargetChoice.target) ?? .none
+            },
+            set: { choice in
+                switch choice {
+                case .untargeted:
+                    draft.pickUntargeted()
+                case let .target(id):
+                    if let target = env.workbenchReplica.snapshot.targets.first(where: { $0.id == id }) {
+                        draft.pick(target)
+                    } else {
+                        draft.clearPick()
+                    }
+                case .none:
+                    draft.clearPick()
                 }
             }
         )
@@ -309,9 +344,15 @@ struct StartSessionSheet: View {
     }
 
     private func start(_ mode: SessionStartParams.Mode, _ model: StartSessionFormModel) {
-        guard let target = model.target else { return }
         let params = draft.params(workbenchID: model.workbenchID, mode: mode, grant: model.grant)
-        run { try await starter.start(targetID: target.id, params: params) }
+        switch model.subject {
+        case let .target(id)?:
+            run { try await starter.start(targetID: id, params: params) }
+        case .untargeted?:
+            run { try await starter.startUntargeted(params: params) }
+        case nil:
+            break
+        }
     }
 
     private func retry(_ row: PendingAction) {
@@ -319,9 +360,9 @@ struct StartSessionSheet: View {
     }
 
     private func clear(_ model: StartSessionFormModel) {
-        guard let target = model.target else { return }
+        guard let subject = model.subject else { return }
         do {
-            try starter.clear(targetID: target.id)
+            try starter.clear(subject)
         } catch {
             sendError = BoardWriteText.sendError(error)
         }

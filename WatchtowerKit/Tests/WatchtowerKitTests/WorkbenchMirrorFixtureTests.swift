@@ -56,12 +56,12 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
     func testWorkbenchActionKindsAreFrozen() {
         XCTAssertEqual(
-            ActionKind.allCases.suffix(15).map(\.rawValue),
+            ActionKind.allCases.suffix(16).map(\.rawValue),
             [
                 "ask_answer", "board_target_status", "board_target_priority", "board_comment_add",
                 "board_comment_reply", "board_target_create", "session_start", "session_input",
                 "session_input_cancel", "session_finish_request", "session_stop", "session_report_request",
-                "permission_answer", "session_interrupt", "session_chat_request"
+                "permission_answer", "session_interrupt", "session_chat_request", "automation_run"
             ]
         )
     }
@@ -118,6 +118,11 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             ]
         )
         XCTAssertEqual(SessionStartParams.Mode.knownValues.map(\.rawValue), ["new", "open_existing"])
+        XCTAssertEqual(WorkbenchAutomation.Kind.knownValues.map(\.rawValue), ["manual", "button", "scheduled"])
+        XCTAssertEqual(
+            WorkbenchAutomation.State.knownValues.map(\.rawValue),
+            ["runnable", "running", "needs_confirmation", "disabled", "parse_error"]
+        )
     }
 
     // MARK: - Each kind decodes its frozen fixture
@@ -133,6 +138,16 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertFalse(workbench.detached)
         XCTAssertEqual(workbench.changes, 3)
         XCTAssertEqual(workbench.defaultAgent, .codexCLI)
+        XCTAssertEqual(
+            workbench.automations,
+            [
+                WorkbenchAutomation(
+                    id: 3, name: "Release notes", kind: .button, asksFirst: true, state: .runnable,
+                    lastRunStatus: "succeeded", lastRunAt: t0
+                ),
+                WorkbenchAutomation(id: 4, name: "Nightly triage", kind: .scheduled, asksFirst: false, state: .needsConfirmation)
+            ]
+        )
         XCTAssertEqual(workbench.openAsks, 2)
         XCTAssertEqual(workbench.openTargets, 9)
         XCTAssertEqual(workbench.inProgressTargets, 2)
@@ -275,6 +290,16 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             SessionChatRequestParams(sessionID: 7, subagentID: "a1b2", toolUseID: "toolu_01a"),
             entityID: "7",
             wire("session_chat_request", entity: "7", params: #"{"session_id":7,"subagent_id":"a1b2","tool_use_id":"toolu_01a"}"#)
+        )
+        try assertParams(
+            AutomationRunParams(workbenchID: 7, confirmed: false),
+            entityID: "3",
+            wire("automation_run", entity: "3", params: #"{"confirmed":false,"workbench_id":7}"#)
+        )
+        try assertParams(
+            AutomationRunParams(workbenchID: 7, confirmed: true),
+            entityID: "3",
+            wire("automation_run", entity: "3", params: #"{"confirmed":true,"workbench_id":7}"#)
         )
         try assertParams(
             SessionInterruptParams(),
@@ -598,7 +623,9 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         workbench["last_session_activity"] = nil
         workbench["targets_more"] = nil
         workbench["description_clipped"] = nil
+        workbench["automations"] = nil
         let decodedWorkbench = try Workbench.decode(payload: try data(workbench))
+        XCTAssertNil(decodedWorkbench.automations, "a hub older than phone runs sends no automations (ask #692)")
         XCTAssertNil(decodedWorkbench.lastSessionActivity)
         XCTAssertNil(decodedWorkbench.targetsMore)
         XCTAssertNil(decodedWorkbench.descriptionClipped)

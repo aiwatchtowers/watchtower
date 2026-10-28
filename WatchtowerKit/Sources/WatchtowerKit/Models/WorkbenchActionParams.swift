@@ -275,3 +275,25 @@ public struct SessionChatRequestParams: ActionParams {
         case toolUseID = "toolUseId"
     }
 }
+
+/// `automation_run`, entity: the automation id. Runs a workbench automation
+/// now (ask #692); the Mac refuses a recipe that is not on this workbench or
+/// cannot run. `confirmed` is true only after the owner pressed Run in the
+/// phone's "Run “X” on the Mac?": the Mac runs a `confirm: true` recipe only
+/// with it (AUTO-06).
+public struct AutomationRunParams: ActionParams {
+    public static let actionKind = ActionKind.automationRun
+
+    public let workbenchID: Int64
+    public let confirmed: Bool
+
+    public init(workbenchID: Int64, confirmed: Bool) {
+        self.workbenchID = workbenchID
+        self.confirmed = confirmed
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case workbenchID = "workbenchId"
+        case confirmed
+    }
+}

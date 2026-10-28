@@ -32,7 +32,8 @@ extension SliceSource {
 ///   30 s, sent when CKSyncEngine schedules it;
 /// - the urgent kinds (`urgentKinds`: asks, ask alerts, link grants,
 ///   permission requests, and the watched session chat) are also diffed every 10 s on their own (Go's
-///   writes, which no nudge sees), and the fast lane: `nudge(kinds:)` keeps only urgent kinds,
+///   writes, which no nudge sees), and the fast lane: `nudge(kinds:)` keeps only urgent kinds
+///   (`publishSoon(kinds:)`, the owner's own phone write, keeps any kind),
 ///   coalesces them for 1 s, then diffs only them, with at least 2 s
 ///   between two fast sends. Any cycle that saved or deleted an urgent
 ///   record asks the transport to send at once (`sendNow`, spec §4.5);
@@ -115,7 +116,7 @@ final class SlicePublisher: Sendable {
     /// What is published while no phone is linked: the link flow's answer.
     static let unlinkedKinds: Set<SliceKind> = [.deviceGrant]
 
-    /// One loop cycle: every kind, or the urgent kinds named.
+    /// One loop cycle: every kind, or the fast lane's kinds named.
     enum Cycle: Equatable {
         case full
         case urgent(Set<SliceKind>)
@@ -140,7 +141,8 @@ final class SlicePublisher: Sendable {
     static let sliceSQL: [SliceKind: String] = [:]
 
     struct Lane {
-        /// Nudged urgent kinds.
+        /// Nudged urgent kinds, and the kinds of the owner's phone writes
+        /// (`publishSoon`).
         var pendingKinds: Set<SliceKind> = []
         var firstNudgeAt: ContinuousClock.Instant?
         var lastFastSendAt: ContinuousClock.Instant?
@@ -157,6 +159,16 @@ final class SlicePublisher: Sendable {
         /// so a nudge can never land between "deadline computed" and
         /// "sleep stored".
         var sleep: Task<Void, Never>?
+        /// A phone write asked for the immediate send (`publishSoon`); the
+        /// next cycle diffing its kinds (fast or full) takes it.
+        var sendRequested = false
+        /// The cycle being run took that request.
+        var tookSendRequest = false
+
+        mutating func takeSendRequest() {
+            tookSendRequest = sendRequested
+            sendRequested = false
+        }
     }
 
     let dbPool: DatabasePool

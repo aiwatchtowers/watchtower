@@ -56,6 +56,20 @@ Type into **Message the session…** and send. Your line shows under it:
 
 The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. The report shows the targets' progress, the pull requests and the session's milestones.
 
+### Run an automation
+
+<!-- learn
+id: iphone-workbench-run-automation
+title: Run workbench automations from iPhone
+text: Open a workbench's **Automations** tab on the phone and press **Run**; the Mac runs it now.
+area: iphone
+level: next
+kind: feature
+since: 0.26.2
+-->
+
+A workbench with automations has an **Automations** tab beside **Sessions** and **Board**. **Run** starts one on the Mac right away, the same as **Run now** there. A recipe that asks before it runs asks on the phone. Each row shows its last run, and **Running** while one is in progress. Only running works from the phone: confirm, edit or turn recipes on and off on the Mac, and read their results in the Mac's **Inbox**. Running needs the same allow as starting sessions (see [Let the phone do more](iphone.md#let-the-phone-do-more)).
+
 ### Keep the Mac awake for the phone
 <!-- learn
 id: iphone-keep-mac-awake
@@ -76,6 +90,7 @@ While a session runs and the phone has been in touch in the last 24 hours, the M
 - **Your Mac is asleep · last seen 40 min ago. New lines go when it wakes.** above the chat, **Waiting for your Mac** under the field and your line, and a state line that reads **as of 40 min ago**: the Mac has not checked in for over 35 minutes. The line goes when it is back.
 - **Answer the request above** or **Needs approval on the Mac** instead of the field: the agent waits on a permission prompt, and nothing else goes to it until that is answered.
 - No field at all: typing is off for this phone; the bar says why, with **Turn On**. On a Codex session the bar says **Write to Codex sessions on the Mac.**
+- **Confirm on the Mac** beside an automation: it changed since you last confirmed it; confirm it in the Mac's Automations tab. **Off** means it is turned off there. **Not allowed**: the Mac has not allowed this phone to start sessions. If the Mac refuses a run, the row shows why in red; **Dismiss** clears it.
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 

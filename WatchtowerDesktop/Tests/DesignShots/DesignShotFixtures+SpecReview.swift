@@ -42,6 +42,11 @@ enum SpecReviewShotFixtures {
         }
     }
 
+    /// An agent's run-on "what changed" line, shown as a list.
+    private static let changes = "Goal says the channel comes back on its own; mentions still notify while muted; "
+        + "the sidebar greys a muted channel instead of the bell; a followed thread stays loud; "
+        + "the expiry test covers a mute across midnight"
+
     private static func resultJSON() throws -> String {
         func agreement(
             _ key: String,
@@ -50,9 +55,11 @@ enum SpecReviewShotFixtures {
             _ chapter: String,
             note: String,
             source: (kind: String, ref: String, quote: String, speaker: String)?,
-            anchor: (String, String)?
+            anchor: (String, String)?,
+            severity: String = ""
         ) -> [String: Any] {
             var out: [String: Any] = ["key": key, "text": text, "status": status, "chapter": chapter, "note": note]
+            if !severity.isEmpty { out["severity"] = severity }
             if let source {
                 out["source"] = ["kind": source.kind, "ref": source.ref, "quote": source.quote, "speaker": source.speaker]
             }
@@ -77,29 +84,31 @@ enum SpecReviewShotFixtures {
                 agreement("ag:3", "Muted channels look different in the sidebar", "differs", "ch:2",
                           note: "You asked for the channel to be greyed out; the spec draws a bell with a slash.",
                           source: ("conversation", "entry:7", "just grey it out", "owner"),
-                          anchor: ("Behaviour", "A muted channel shows a bell with a slash in the sidebar.")),
+                          anchor: ("Behaviour", "A muted channel shows a bell with a slash in the sidebar."), severity: "major"),
                 agreement("ag:4", "Mentions still notify while muted", "missing", "ch:2",
                           note: "Agreed in the discussion; the spec does not say it.",
-                          source: ("conversation", "entry:9", "mentions should still reach me", "owner"), anchor: nil),
+                          source: ("conversation", "entry:9", "mentions should still reach me", "owner"), anchor: nil,
+                          severity: "blocker"),
                 agreement("ag:5", "A test covers the expiry", "as_agreed", "ch:4", note: "",
                           source: ("ask", "ask:41", "test that it comes back", "owner"),
                           anchor: ("Tests", "checks it is back after a day"))
             ],
             "decided_alone": [
-                ["key": "da:1", "text": "The sidebar refreshes once a minute", "chapter": "ch:3",
+                ["key": "da:1", "text": "The sidebar refreshes once a minute", "chapter": "ch:3", "severity": "minor",
                  "note": "Nobody asked for a minute; a mute ending is then up to a minute late.",
                  "where": ["heading": "Decisions", "quote": "The sidebar refreshes once a minute."]],
-                ["key": "da:2", "text": "Mute state lives in the local database", "chapter": "ch:3", "note": "Fits the app.",
+                ["key": "da:2", "text": "Mute state lives in the local database", "chapter": "ch:3", "severity": "minor",
+                 "note": "Fits the app.",
                  "where": ["heading": "Decisions", "quote": "Mute state lives in the local database."]]
             ],
             "blind_spots": [
-                ["key": "bs:1", "text": "Threads of a muted channel", "chapter": "ch:2",
+                ["key": "bs:1", "text": "Threads of a muted channel", "chapter": "ch:2", "severity": "major",
                  "why": "A reply in a thread you follow would stay silent for a day.",
                  "evidence": ["path": "internal/notify/mute.go", "line": 42]]
             ],
             "checks": [
                 ["key": "ck:1", "chapter": "ch:2", "lens": "promises", "question": "Does every promise have a task?",
-                 "answer": "concern", "note": "Mentions while muted have none."],
+                 "answer": "concern", "severity": "major", "note": "Mentions while muted have none."],
                 ["key": "ck:2", "chapter": "ch:2", "lens": "done", "question": "Is there a done criterion?",
                  "answer": "ok", "note": ""],
                 ["key": "ck:3", "chapter": "ch:4", "lens": "tests", "question": "Is the expiry tested?", "answer": "ok", "note": ""]
@@ -128,28 +137,32 @@ enum SpecReviewShotFixtures {
             verdict: String,
             note: String,
             reply: (String, String)?,
-            anchor: (String, String)?
+            anchor: (String, String)?,
+            kind: String = "agreement",
+            severity: String = ""
         ) -> [String: Any] {
-            var out: [String: Any] = ["key": key, "kind": "agreement", "text": text, "note": "", "round": round,
+            var out: [String: Any] = ["key": key, "kind": kind, "text": text, "note": "", "round": round,
                                       "verdict": verdict, "verdict_note": note, "settled": settled]
+            if !severity.isEmpty { out["severity"] = severity }
             if let reply { out["reply"] = ["key": key, "reply": reply.0, "note": reply.1] }
             if let anchor { out["where"] = ["heading": anchor.0, "quote": anchor.1] }
             return out
         }
         let ledger: [[String: Any]] = [
             entry("ag:4", "Mentions still notify while muted", round: 1, settled: 2, verdict: "resolved",
-                  note: "Behaviour now says it.", reply: ("fixed", "Added a line to Behaviour."), anchor: nil),
+                  note: "Behaviour now says it.", reply: ("fixed", "Added a line to Behaviour."), anchor: nil, severity: "blocker"),
             entry("ag:3", "Muted channels look different in the sidebar", round: 1, settled: 2, verdict: "disputed",
                   note: "You asked for grey; a bell with a slash is a different design.",
                   reply: ("disagree", "A bell is what every other app does; grey reads as disabled."),
-                  anchor: ("Behaviour", "A muted channel shows a bell with a slash in the sidebar.")),
+                  anchor: ("Behaviour", "A muted channel shows a bell with a slash in the sidebar."), severity: "major"),
             entry("bs:1", "Threads of a muted channel", round: 1, settled: 2, verdict: "resolved",
-                  note: "", reply: ("fixed", ""), anchor: nil),
+                  note: "", reply: ("fixed", ""), anchor: nil, kind: "blind_spot", severity: "major"),
             entry("ck:1", "Does every promise have a task?", round: 2, settled: 3, verdict: "resolved",
-                  note: "", reply: ("fixed", "Tests now cover mentions while muted."), anchor: nil),
+                  note: "", reply: ("fixed", "Tests now cover mentions while muted."), anchor: nil, kind: "check",
+                  severity: "major"),
             entry("da:1", "The sidebar refreshes once a minute", round: 2, settled: 3, verdict: "unsettled",
                   note: "The author did not answer", reply: nil,
-                  anchor: ("Decisions", "The sidebar refreshes once a minute."))
+                  anchor: ("Decisions", "The sidebar refreshes once a minute."), kind: "decided_alone", severity: "minor")
         ]
         let data = try JSONSerialization.data(withJSONObject: ledger, options: [.sortedKeys])
         return String(bytes: data, encoding: .utf8) ?? "[]"
@@ -166,9 +179,9 @@ enum SpecReviewShotFixtures {
             let id = try TestDatabase.insertOwnerAsk(db, projectID: project, kind: "review", docPath: "docs/specs/channel-mute.md")
             try db.execute(sql: """
                 UPDATE owner_asks SET doc_snapshot = ?, title = 'Review the channel mute spec',
-                    summary = 'Second round: the expiry is now in Goal.', changes = 'Goal says the channel comes back on its own.'
+                    summary = 'Second round: the expiry is now in Goal.', changes = ?
                 WHERE id = ?
-                """, arguments: [snapshot, id])
+                """, arguments: [snapshot, changes, id])
             try db.execute(sql: """
                 INSERT INTO spec_reviews (ask_id, status, reason, model, result, queued_at)
                 VALUES (?, ?, ?, 'opus', ?, '2026-10-25T10:00:00Z')
@@ -228,13 +241,32 @@ enum SpecReviewShotFixtures {
         }
     }
 
+    /// The screen over the drawer's footer, as the drawer stacks them:
+    /// Dismiss, then the screen's Request changes (N) / Approve.
+    private static func withFooter(_ model: SpecReviewModel, _ screen: some View) -> AnyView {
+        AnyView(VStack(spacing: 0) {
+            screen.frame(maxHeight: .infinity)
+            Divider()
+            footer(model)
+        }
+        .background(Color(nsColor: .textBackgroundColor)))
+    }
+
+    private static func footer(_ model: SpecReviewModel) -> some View {
+        HStack(spacing: Spacing.regular) {
+            Button("Dismiss") {}
+            Spacer()
+            SpecReviewVerdictButtons(model: model)
+        }
+        .padding(Spacing.cozy)
+    }
+
     static func screen(_ phase: ReviewPhase) -> AnyView {
         view {
             let model = try model("done", status: "done", withResult: true)
             model.phase = phase
             let ask = model.ask
-            return AnyView(SpecReviewView(model: model, onReadSpec: {}, askContext: { OwnerAskHeaderCard(ask: ask) })
-                .background(Color(nsColor: .textBackgroundColor)))
+            return withFooter(model, SpecReviewView(model: model, onReadSpec: {}, askContext: { OwnerAskHeaderCard(ask: ask) }))
         }
     }
 
@@ -242,7 +274,34 @@ enum SpecReviewShotFixtures {
     static func loop() -> AnyView {
         view {
             let model = try model("loop", status: "done", withResult: true, loop: true)
-            return AnyView(SpecReviewView(model: model) {}.background(Color(nsColor: .textBackgroundColor)))
+            model.phase = .wrapup
+            return withFooter(model, SpecReviewView(model: model) {})
+        }
+    }
+
+    /// A finished loop's chapter: Fix and Comment on each finding.
+    static func loopChapters() -> AnyView {
+        view {
+            let model = try model("loop", status: "done", withResult: true, loop: true)
+            model.phase = .chapters
+            model.chapterKey = "ch:2"
+            return withFooter(model, SpecReviewView(model: model) {})
+        }
+    }
+
+    /// The footer with nothing to send back (Approve on) and with comments
+    /// (Request changes (N) on, Approve off).
+    static func footers() -> AnyView {
+        view {
+            let empty = try model("running", status: "running", withResult: false)
+            let marked = try model("done", status: "done", withResult: true)
+            return AnyView(VStack(spacing: 0) {
+                footer(empty)
+                Divider()
+                footer(marked)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(Color(nsColor: .textBackgroundColor)))
         }
     }
 

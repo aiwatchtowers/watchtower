@@ -216,6 +216,7 @@ struct OwnerAskDrawer: View {
                 asks: asks,
                 ask: ask,
                 showsVerdicts: !showsSpecReview,
+                specReview: showsSpecReview ? specReview : nil,
                 statusLine: OwnerAskPresentation.askStatusLine(ask, replacedBy: asks.replacements[ask.projectID]?[ask.id])
             )
         }
@@ -240,7 +241,10 @@ struct OwnerAskDrawer: View {
                 onAnswer: nil,
                 draftPicks: picksBinding,
                 editable: editable,
-                onKey: pressAnswerKey,
+                // Under the spec review screen a field's ⌘↩ never answers
+                // the ask (spec 2026-10-28 §5): only the key catcher does,
+                // with no field focused.
+                onKey: SpecReviewPresentation.fieldAnswersAsk(screenUp: showsSpecReview) ? pressAnswerKey : nil,
                 keyboardStop: keys.shownStop,
                 fieldFocus: fieldFocus,
                 onLeaveField: leaveField
@@ -326,7 +330,10 @@ struct OwnerAskDrawer: View {
     /// #90): the answer button the key names, pressed as a click would —
     /// nothing while it is off.
     private func pressAnswerKey(_ shift: Bool) {
-        guard !showsSpecReview else { return }
+        if showsSpecReview {
+            specReview?.pressKey(shift: shift)
+            return
+        }
         asks.pressKey(on: ask, shift: shift)
     }
 

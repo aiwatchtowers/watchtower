@@ -31,10 +31,11 @@ extension SessionLineDelivery: SpecReviewLineDelivering {
     }
 }
 
-/// Ends an author loop whose session is gone (`WorkbenchCLI` in the app).
+/// Ends an author loop (`WorkbenchCLI` in the app): `session_gone` when its
+/// session is gone, `owner` for the owner's Show Now.
 @MainActor
 protocol SpecReviewRevealing {
-    func specReviewReveal(askID: Int64) async throws
+    func specReviewReveal(askID: Int64, reason: String) async throws
 }
 
 extension WorkbenchCLI: SpecReviewRevealing {}
@@ -46,7 +47,9 @@ extension WorkbenchCLI: SpecReviewRevealing {}
 ///   a held or queued line is tried again on the next poll;
 /// - when the session is not running, the loop ends (`spec-review reveal
 ///   --reason session_gone`, once per ask per run) and the owner gets the ask;
-/// - `progress` (session id → round) feeds the session row's line.
+/// - `progress` (session id → round) feeds the session row's line;
+/// - `hidden` lists the asks in a loop for the stack's **Show Now**, which
+///   ends one at once (`reveal --reason owner`).
 ///
 /// Go writes `spec_reviews` from another process, so GRDB observation never
 /// fires: a poll re-reads it. Owned by `AppState`.
@@ -59,6 +62,9 @@ final class SpecReviewLoopCenter {
 
     /// Session id → the round of its author loop.
     private(set) var progress: [Int64: Int] = [:]
+
+    /// Open asks hidden in their author loop.
+    private(set) var hidden: [SpecReviewLoopQueries.HiddenLoop] = []
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let delivery: any SpecReviewLineDelivering
@@ -110,11 +116,13 @@ final class SpecReviewLoopCenter {
     func poll() async {
         let pending: [SpecReviewLoopQueries.PendingRound]
         do {
-            let (rounds, latest) = try await dbPool.read { db in
-                (try SpecReviewLoopQueries.pending(db), try SpecReviewLoopQueries.progress(db))
+            let (rounds, latest, loops) = try await dbPool.read { db in
+                (try SpecReviewLoopQueries.pending(db), try SpecReviewLoopQueries.progress(db),
+                 try SpecReviewLoopQueries.hidden(db))
             }
             failing = false
             if latest != progress { progress = latest }
+            if loops != hidden { hidden = loops }
             pending = rounds
         } catch {
             if !failing { NSLog("SpecReviewLoop: read failed: %@", "\(error)") }
@@ -125,6 +133,23 @@ final class SpecReviewLoopCenter {
             guard !Task.isCancelled else { return }
             await deliver(round)
         }
+    }
+
+    /// **Show Now**: ends the ask's loop for the owner, whatever round it is
+    /// in; no findings line goes to the author after it. False when the CLI
+    /// failed (logged).
+    @discardableResult
+    func showNow(askID: Int64) async -> Bool {
+        revealed.insert(askID)
+        do {
+            try await cli.specReviewReveal(askID: askID, reason: "owner")
+        } catch {
+            revealed.remove(askID)
+            NSLog("SpecReviewLoop: ask %lld: show now failed: %@", askID, "\(error)")
+            return false
+        }
+        await poll()
+        return true
     }
 
     private func deliver(_ round: SpecReviewLoopQueries.PendingRound) async {
@@ -141,7 +166,7 @@ final class SpecReviewLoopCenter {
             // ends a loop whose session is gone too.
             revealed.insert(round.askID)
             do {
-                try await cli.specReviewReveal(askID: round.askID)
+                try await cli.specReviewReveal(askID: round.askID, reason: "session_gone")
             } catch {
                 NSLog("SpecReviewLoop: ask %lld: reveal failed: %@", round.askID, "\(error)")
             }

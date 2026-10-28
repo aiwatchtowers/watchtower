@@ -680,7 +680,9 @@ final class HubSession {
         // Before any fetch, so no applied echo goes unseen: an ask answer's
         // delivery, a start's session id.
         await outbox.setAppliedObserver(
-            Self.appliedObserver(askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs)
+            Self.appliedObserver(
+                askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter
+            )
         )
         switch transportKind {
         case .inMemoryDemo:
@@ -774,13 +776,15 @@ final class HubSession {
     nonisolated static func appliedObserver(
         askAnswerer: AskAnswerer,
         sessionStarts: SessionStarter,
-        sessionInputs: SessionInputSender? = nil
+        sessionInputs: SessionInputSender? = nil,
+        boardWriter: BoardWriter? = nil
     ) -> @Sendable (ActionRequestPayload) -> Void {
-        { [weak askAnswerer, weak sessionStarts, weak sessionInputs] action in
+        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter] action in
             Task { @MainActor in
                 askAnswerer?.receiveApplied(action)
                 sessionStarts?.receiveApplied(action)
                 sessionInputs?.receiveApplied(action)
+                boardWriter?.receiveApplied(action)
             }
         }
     }

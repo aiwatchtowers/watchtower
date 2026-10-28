@@ -13,13 +13,18 @@ struct BoardView: View {
     /// under Open, open under Archive, where every archived target stays
     /// visible); a filter change resets it.
     @State private var doneFlipped = false
+    /// Done sub-targets of shown groups under Open (#1191), remembered.
+    @AppStorage(ShowDoneButton.storageKey) private var showDoneChildren = false
     @State private var sendError: String?
 
     var body: some View {
-        let board = BoardModel(workbenchID: workbenchID, snapshot: replica.snapshot, filter: filter, now: now)
+        let board = BoardModel(
+            workbenchID: workbenchID, snapshot: replica.snapshot, filter: filter, showDone: showDoneChildren, now: now
+        )
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Spacing.regular) {
                 chips(board)
+                ShowDoneButton(doneCount: board.doneChildCount, showDone: $showDoneChildren)
                 if !board.pendingCreates.isEmpty {
                     SectionHeader("New targets")
                     writes(board.pendingCreates)

@@ -12,11 +12,27 @@ extension SlicePublisher {
     /// send. The other kinds ride the next full tick (≤ 30 s), which diffs
     /// every kind anyway.
     func nudge(kinds: Set<SliceKind>) {
-        let urgent = kinds.intersection(Self.urgentKinds)
-        guard !urgent.isEmpty else { return }
+        enqueueFast(kinds.intersection(Self.urgentKinds))
+    }
+
+    /// The owner's own phone write (a comment, a status, a new target)
+    /// changed `kinds`: they go out in the fast lane like an urgent nudge,
+    /// any kind kept, and the next cycle that diffs them — the fast one, or
+    /// a full tick due first — sends at once even when it finds no change
+    /// (a full cycle running during the write may have saved it already),
+    /// so the phone sees its write within seconds instead of whenever
+    /// CKSyncEngine sends (#1192). Rare by nature — one per phone action —
+    /// so the 30 s battery rule for the normal kinds' own changes holds.
+    func publishSoon(kinds: Set<SliceKind>) {
+        enqueueFast(kinds, sendAtOnce: true)
+    }
+
+    private func enqueueFast(_ kinds: Set<SliceKind>, sendAtOnce: Bool = false) {
+        guard !kinds.isEmpty else { return }
         lane.withLock { lane in
             if lane.pendingKinds.isEmpty { lane.firstNudgeAt = clock() }
-            lane.pendingKinds.formUnion(urgent)
+            lane.pendingKinds.formUnion(kinds)
+            if sendAtOnce { lane.sendRequested = true }
             lane.sleep?.cancel()
         }
     }
@@ -47,6 +63,7 @@ extension SlicePublisher {
                 lane.tookUrgentTick = true
                 lane.pendingKinds = []
                 lane.firstNudgeAt = nil
+                lane.takeSendRequest()
                 return .full
             }
             let fastDue = Self.fastDeadline(lane, timing: timing).map { now >= $0 } ?? false
@@ -58,6 +75,7 @@ extension SlicePublisher {
                 lane.pendingKinds = []
                 lane.firstNudgeAt = nil
                 lane.lastFastSendAt = now
+                lane.takeSendRequest()
             }
             if urgentDue {
                 kinds.formUnion(Self.urgentKinds)
@@ -165,7 +183,12 @@ extension SlicePublisher {
         if newlyLinked, outcome?.completed == true {
             unlinkedAtLastCycle.withLock { $0 = false }
         }
-        if let current = outcome, current.urgentChanges > 0 {
+        // The cycle took a phone write's request (`publishSoon`).
+        let requested = lane.withLock { lane in
+            defer { lane.tookSendRequest = false }
+            return lane.tookSendRequest
+        }
+        if requested || (outcome?.urgentChanges ?? 0) > 0 {
             await sendAtOnce()
         }
         if let first { outcome?.absorb(first) }

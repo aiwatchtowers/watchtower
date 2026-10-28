@@ -135,16 +135,17 @@ struct SpecReviewNextStepButton: View {
 /// The screen's strings, badges and groupings, kept out of the views so
 /// they are tested (`SpecReviewViewTests`).
 enum SpecReviewPresentation {
-    /// A badge's colour, named so tests can compare it.
+    /// A badge's colour, named so tests can compare it. On a finding only
+    /// its severity is coloured (spec 2026-10-28 §2); the kind and the loop
+    /// status are neutral.
     enum Tint: Equatable {
-        case success, warning, error, accent, neutral
+        case success, warning, error, neutral
 
         var color: Color {
             switch self {
             case .success: Tone.success
             case .warning: Tone.warning
             case .error: Tone.error
-            case .accent: Tone.status("blue")
             case .neutral: Tone.status("gray")
             }
         }
@@ -223,33 +224,72 @@ enum SpecReviewPresentation {
         }
     }
 
-    /// "9 as agreed · 1 differs · 1 missing · 4 decided alone · 2 blind
-    /// spots"; zero counts are left out.
+    /// "2 blockers · 1 major — 9 as agreed · 1 differs · …": the severity
+    /// counts lead when the reviewer gave any; zero counts are left out.
     static func countsLine(_ result: SpecReviewResult) -> String {
-        SpecReviewSummary.countsLine(result)
+        let counts = SpecReviewSummary.countsLine(result)
+        guard let severities = severityCounts(result) else { return counts }
+        return "\(severities) — \(counts)"
     }
 
+    /// "2 blockers · 3 major · 4 minor" over every finding to act on; nil
+    /// when none has a severity (an old review, a customised prompt).
+    static func severityCounts(_ result: SpecReviewResult) -> String? {
+        let all = result.agreements.filter { $0.status != "as_agreed" }.map(\.severity)
+            + result.decidedAlone.map(\.severity) + result.blindSpots.map(\.severity)
+            + result.checks.filter { $0.answer == "concern" }.map(\.severity)
+        let parts: [String] = SpecReviewSeverity.allCases.compactMap { level in
+            let n = all.filter { $0 == level }.count
+            guard n > 0 else { return nil }
+            return level == .blocker ? "\(n) blocker\(n == 1 ? "" : "s")" : "\(n) \(level.rawValue)"
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// The coloured chip of a finding; nil without a severity.
+    static func severityBadge(_ severity: SpecReviewSeverity?) -> Badge? {
+        switch severity {
+        case .blocker: Badge(title: "Blocker", tint: .error)
+        case .major: Badge(title: "Major", tint: .warning)
+        case .minor: Badge(title: "Minor", tint: .neutral)
+        case nil: nil
+        }
+    }
+
+    /// Items sorted blocker, major, minor, none; stable within a level.
+    static func sortedBySeverity<T>(_ items: [T], _ severity: (T) -> SpecReviewSeverity?) -> [T] {
+        func rank(_ item: T) -> Int {
+            severity(item).flatMap { SpecReviewSeverity.allCases.firstIndex(of: $0) } ?? SpecReviewSeverity.allCases.count
+        }
+        let indexed = items.enumerated().map { (rank: rank($0.element), offset: $0.offset, element: $0.element) }
+        let sorted = indexed.sorted { $0.rank != $1.rank ? $0.rank < $1.rank : $0.offset < $1.offset }
+        return sorted.map(\.element)
+    }
+
+    /// An agreement's kind chip: As agreed stays green (it is not a
+    /// finding); the others are neutral, their colour is the severity's.
     static func agreementBadge(status: String) -> Badge {
         switch status {
         case "as_agreed": Badge(title: "As agreed", tint: .success)
-        case "differs": Badge(title: "Differs", tint: .warning)
-        case "missing": Badge(title: "Missing", tint: .error)
+        case "differs": Badge(title: "Differs", tint: .neutral)
+        case "missing": Badge(title: "Missing", tint: .neutral)
         default: Badge(title: status.isEmpty ? "Agreement" : status, tint: .neutral)
         }
     }
 
+    /// A finding's kind chip, neutral beside its severity chip.
     static func badge(for finding: SpecReviewChapterFinding) -> Badge {
         switch finding {
         case let .agreement(f): agreementBadge(status: f.status)
-        case .decidedAlone: Badge(title: "Decided alone", tint: .accent)
-        case .blindSpot: Badge(title: "Blind spot", tint: .error)
+        case .decidedAlone: Badge(title: "Decided alone", tint: .neutral)
+        case .blindSpot: Badge(title: "Blind spot", tint: .neutral)
         }
     }
 
     static func checkBadge(answer: String) -> Badge {
         switch answer {
         case "ok": Badge(title: "OK", tint: .success)
-        case "concern": Badge(title: "Concern", tint: .warning)
+        case "concern": Badge(title: "Concern", tint: .neutral)
         case "n/a": Badge(title: "N/A", tint: .neutral)
         default: Badge(title: answer.isEmpty ? "—" : answer, tint: .neutral)
         }
@@ -264,23 +304,27 @@ enum SpecReviewPresentation {
         }
     }
 
-    /// A chapter row's badges: one per kind other than As agreed, with its count.
+    /// A chapter row's badges with their counts: each finding (As agreed
+    /// left out) and each concern counts under its severity, or under its
+    /// neutral kind without one; severities first, most serious first.
     static func chapterBadges(_ chapter: SpecReviewChapterVM) -> [(badge: Badge, count: Int)] {
         var order: [Badge] = []
         var counts: [Badge: Int] = [:]
-        for finding in chapter.findings {
-            let badge = badge(for: finding)
-            if badge.tint == .success { continue }
+        func count(_ badge: Badge) {
             if counts[badge] == nil { order.append(badge) }
             counts[badge, default: 0] += 1
         }
-        let concerns = chapter.checks.filter { $0.answer == "concern" }.count
-        if concerns > 0 {
-            let badge = checkBadge(answer: "concern")
-            order.append(badge)
-            counts[badge] = concerns
+        for finding in chapter.findings {
+            let kind = badge(for: finding)
+            if kind.tint == .success { continue }
+            count(severityBadge(finding.severity) ?? kind)
         }
-        return order.map { ($0, counts[$0] ?? 0) }
+        for check in chapter.checks where check.answer == "concern" {
+            count(severityBadge(check.severity) ?? checkBadge(answer: "concern"))
+        }
+        let severities = SpecReviewSeverity.allCases.compactMap(severityBadge)
+        let ranked = severities.filter { counts[$0] != nil } + order.filter { !severities.contains($0) }
+        return ranked.map { ($0, counts[$0] ?? 0) }
     }
 
     /// The label over an agreement's source quote. Only the owner's own
@@ -354,26 +398,67 @@ enum SpecReviewPresentation {
         }
     }
 
-    /// A dispute card's badge: the reviewer kept it (Disputed) or the
-    /// loop ended before it settled (Not settled).
-    static func disputeBadge(_ entry: SpecReviewLedgerEntry) -> Badge {
-        entry.verdict == "unsettled"
-            ? Badge(title: "Not settled", tint: .warning)
-            : Badge(title: "Disputed", tint: .error)
+    /// Whether a drawer field's own ⌘↩ / ⌘⇧↩ answers the ask: never while
+    /// the spec review screen is up, where the verdicts go by the key
+    /// catcher alone (no field focused) and a comment editor keeps ⌘↩.
+    static func fieldAnswersAsk(screenUp: Bool) -> Bool { !screenUp }
+
+    /// The verdict a key names: ⌘⇧↩ Request changes, ⌘↩ Approve; nil
+    /// when that button is off.
+    static func keyVerdict(shift: Bool, canSend: Bool, canApprove: Bool) -> OwnerAskAnswer.Verdict? {
+        if shift { return canSend ? .changes : nil }
+        return canApprove ? .approved : nil
     }
 
-    /// The reviewer's position on a dispute: its verdict note (for an
-    /// unsettled item, the cap or no-answer note), else the finding's own
-    /// note. An unsettled item whose note is the author's reason, copied
-    /// there by an early end, shows the finding's note instead.
+    /// A loop card's neutral chip: the finding's kind and where it stands —
+    /// the reviewer kept it after the author's fix (Disputed), the author
+    /// disagreed and the loop ended (Not settled), a fix nobody checked
+    /// (Fix not checked), or a finding the author never saw an answer for
+    /// (New in round N). Colour is the severity chip's.
+    static func loopBadge(_ entry: SpecReviewLedgerEntry) -> Badge {
+        let state: String
+        if entry.verdict != "unsettled" {
+            state = "Disputed"
+        } else {
+            switch entry.item.reply?.reply {
+            case "disagree": state = "Not settled"
+            case "fixed": state = "Fix not checked"
+            default: state = "New in round \(max(entry.item.round, 1))"
+            }
+        }
+        let kind = loopKindTitle(entry.item.kind)
+        return Badge(title: kind.map { "\($0) · \(state)" } ?? state, tint: .neutral)
+    }
+
+    /// The kind of a loop item in words; nil for one this build does not know.
+    static func loopKindTitle(_ kind: String) -> String? {
+        switch kind {
+        case "agreement": "Agreement"
+        case "decided_alone": "Decided alone"
+        case "blind_spot": "Blind spot"
+        case "check": "Concern"
+        default: nil
+        }
+    }
+
+    /// The reviewer's argument: on a dispute its answer to the author's
+    /// reply (the verdict note), else the finding's own note — never a
+    /// loop-end line such as "Not settled in 3 rounds".
     static func reviewerPosition(_ entry: SpecReviewLedgerEntry) -> String? {
         let verdict = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
         let own = entry.item.note.trimmingCharacters(in: .whitespacesAndNewlines)
-        if entry.verdict == "unsettled", !verdict.isEmpty, verdict == authorReason(entry) {
-            return own.isEmpty ? nil : own
-        }
-        if !verdict.isEmpty { return verdict }
+        if entry.verdict == "disputed", !verdict.isEmpty { return verdict }
         return own.isEmpty ? nil : own
+    }
+
+    /// Why an unsettled card is still open: the loop-end note (the cap, a
+    /// fix not checked, Show Now); nil on a dispute or when it only repeats
+    /// the author's reason or the reviewer's argument.
+    static func loopStatus(_ entry: SpecReviewLedgerEntry) -> String? {
+        guard entry.verdict == "unsettled" else { return nil }
+        let note = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        if note.isEmpty || note == authorReason(entry) || note == reviewerPosition(entry) { return nil }
+        return note
     }
 
     /// The author's reason (its last reply's note); nil when it gave none.

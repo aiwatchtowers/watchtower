@@ -114,10 +114,14 @@ final class SpecReviewViewTests: XCTestCase {
         XCTAssertEqual(Pres.reviewerPosition(entries[0]), "still")
         XCTAssertEqual(Pres.authorReason(entries[0]), "no")
         XCTAssertEqual(Pres.reviewerPosition(entries[1]), "own", "an early end copied the author's reason")
-        XCTAssertEqual(Pres.reviewerPosition(entries[2]), "The author did not answer")
+        XCTAssertNil(Pres.reviewerPosition(entries[2]), "a loop-end line is never the reviewer's argument")
+        XCTAssertEqual(Pres.loopStatus(entries[2]), "The author did not answer")
+        XCTAssertNil(Pres.loopStatus(entries[0]), "a dispute has no loop-end line")
+        XCTAssertNil(Pres.loopStatus(entries[1]), "the author's reason is not repeated")
         XCTAssertNil(Pres.authorReason(entries[2]))
-        XCTAssertEqual(Pres.disputeBadge(entries[0]).title, "Disputed")
-        XCTAssertEqual(Pres.disputeBadge(entries[2]).title, "Not settled")
+        XCTAssertEqual(Pres.loopBadge(entries[0]).title, "Disputed")
+        XCTAssertEqual(Pres.loopBadge(entries[1]).title, "Not settled")
+        XCTAssertEqual(Pres.loopBadge(entries[2]).title, "New in round 1")
         XCTAssertEqual(Pres.fixRound(entries[3]), "Round 2")
         XCTAssertEqual(Pres.fixNote(entries[3]), "no note")
         XCTAssertEqual(Pres.nextStep(.chapters, loop: true)?.phase, .wrapup)
@@ -151,7 +155,7 @@ final class SpecReviewViewTests: XCTestCase {
         """)
         let badges = r.agreements.map { SpecReviewPresentation.badge(for: .agreement($0)) }
         XCTAssertEqual(badges.map(\.title), ["As agreed", "Differs", "Missing", "odd"])
-        XCTAssertEqual(badges.map(\.tint), [.success, .warning, .error, .neutral])
+        XCTAssertEqual(badges.map(\.tint), [.success, .neutral, .neutral, .neutral], "only severity is coloured")
         XCTAssertEqual(SpecReviewPresentation.badge(for: .decidedAlone(r.decidedAlone[0])).title, "Decided alone")
         XCTAssertEqual(SpecReviewPresentation.badge(for: .blindSpot(r.blindSpots[0])).title, "Blind spot")
 
@@ -288,23 +292,84 @@ final class SpecReviewViewTests: XCTestCase {
         }
     }
 
-    func testWrapUpSendNeedsACommentAndApproveAsksOnce() async throws {
+    /// The footer's verdicts (spec 2026-10-28 §5, ask #690): Request
+    /// changes needs a comment and shows N; Approve is always on; the body
+    /// of Wrap-up carries no verdict button any more.
+    func testFooterVerdictsRequestChangesAndApprove() async throws {
         let model = try await makeModel(
             status: "done",
             result: #"{"agreements":[{"key":"ag:1","text":"t","status":"differs"},{"key":"ag:2","text":"u","status":"missing"}]}"#
         )
         let result = try XCTUnwrap(model.row?.result)
-
-        func send() throws -> InspectableView<ViewType.Button> {
-            try SpecReviewWrapUpView(model: model, result: result).inspect().find(button: "Send round to the author")
+        func button(_ title: String) throws -> InspectableView<ViewType.Button> {
+            try SpecReviewVerdictButtons(model: model).inspect().find(button: title)
         }
-        XCTAssertTrue(try send().isDisabled())
+        XCTAssertTrue(try button("Request changes").isDisabled())
+        XCTAssertFalse(try button("Approve").isDisabled())
         XCTAssertTrue(model.needsApproveConfirm)
         XCTAssertEqual(model.approveConfirmMessage, "2 findings are not marked. Approve anyway?")
 
         await model.mark("ag:1", .comment, body: "Keep it as agreed.")
-        XCTAssertFalse(try send().isDisabled())
+        XCTAssertFalse(try button("Request changes (1)").isDisabled())
+        XCTAssertFalse(try button("Approve").isDisabled(), "Approve is never off (ask #690)")
         await model.mark("ag:2", .ok)
         XCTAssertFalse(model.needsApproveConfirm, "every finding marked: Approve goes straight through")
+
+        let wrapUp = try SpecReviewWrapUpView(model: model, result: result).inspect()
+        XCTAssertThrowsError(try wrapUp.find(button: "Approve"), "no verdict in Wrap-up's body")
+        XCTAssertThrowsError(try wrapUp.find(button: "Send round to the author"))
+    }
+
+    /// ⌘↩ approves, ⌘⇧↩ requests changes, each only while its button is
+    /// on. A focused comment editor never sees them here: the key catcher
+    /// stands aside for an editable text view (`OwnerAskKeyCatcher`), and
+    /// the editor's own ⌘↩ saves the comment.
+    func testKeyVerdicts() {
+        typealias Pres = SpecReviewPresentation
+        XCTAssertFalse(Pres.fieldAnswersAsk(screenUp: true), "a field's ⌘↩ never answers under the screen")
+        XCTAssertTrue(Pres.fieldAnswersAsk(screenUp: false), "the classic view keeps the fields' keys")
+        XCTAssertEqual(Pres.keyVerdict(shift: false, canSend: false, canApprove: true), .approved)
+        XCTAssertNil(Pres.keyVerdict(shift: false, canSend: true, canApprove: false))
+        XCTAssertEqual(Pres.keyVerdict(shift: true, canSend: true, canApprove: false), .changes)
+        XCTAssertNil(Pres.keyVerdict(shift: true, canSend: false, canApprove: true))
+    }
+
+    /// Colour is severity (spec 2026-10-28 §2): Blocker red, Major orange,
+    /// Minor grey; kinds and loop states are grey; findings sort by
+    /// severity, stable within a level; the counts line leads with it.
+    func testSeverityChipsSortAndCounts() throws {
+        typealias Pres = SpecReviewPresentation
+        XCTAssertEqual(Pres.severityBadge(.blocker), .init(title: "Blocker", tint: .error))
+        XCTAssertEqual(Pres.severityBadge(.major), .init(title: "Major", tint: .warning))
+        XCTAssertEqual(Pres.severityBadge(.minor), .init(title: "Minor", tint: .neutral))
+        XCTAssertNil(Pres.severityBadge(nil))
+
+        let r = try result("""
+        {"agreements":[{"key":"ag:1","status":"differs","severity":"minor"},{"key":"ag:2","status":"as_agreed"}],
+         "decided_alone":[{"key":"da:1","severity":" Major "}],
+         "blind_spots":[{"key":"bs:1","severity":"blocker"},{"key":"bs:2","severity":"huge"},{"key":"bs:3","severity":"blocker"}],
+         "checks":[{"key":"ck:1","answer":"concern","severity":"major"}]}
+        """)
+        XCTAssertEqual(r.decidedAlone[0].severity, .major, "trimmed and lower-cased")
+        XCTAssertNil(r.blindSpots[1].severity, "an unknown level is none")
+        let findings: [SpecReviewChapterFinding] = r.agreements.map { .agreement($0) }
+            + r.decidedAlone.map { .decidedAlone($0) } + r.blindSpots.map { .blindSpot($0) }
+        XCTAssertEqual(Pres.sortedBySeverity(findings, \.severity).map(\.key), ["bs:1", "bs:3", "da:1", "ag:1", "ag:2", "bs:2"])
+        XCTAssertEqual(Pres.severityCounts(r), "2 blockers · 2 major · 1 minor")
+        XCTAssertTrue(Pres.countsLine(r).hasPrefix("2 blockers · 2 major · 1 minor — 1 as agreed"))
+        XCTAssertNil(Pres.severityCounts(try result(#"{"blind_spots":[{"key":"bs:1"}]}"#)), "an old review has no severities")
+        XCTAssertEqual(Pres.countsLine(try result(#"{"blind_spots":[{"key":"bs:1"}]}"#)), "1 blind spot")
+        XCTAssertEqual(Pres.badge(for: .decidedAlone(r.decidedAlone[0])).tint, .neutral, "Decided alone is never blue")
+    }
+
+    func testLoopItemKeepsSeverityAndAGreyChip() throws {
+        let entries = try JSONDecoder().decode([SpecReviewLedgerEntry].self, from: Data("""
+        [{"key":"bs:1","kind":"blind_spot","text":"t","round":3,"severity":"blocker","verdict":"unsettled"},
+         {"key":"ck:1","kind":"check","text":"t","round":2,"verdict":"disputed"}]
+        """.utf8))
+        XCTAssertEqual(entries[0].item.severity, .blocker)
+        XCTAssertNil(entries[1].item.severity, "a ledger without severity decodes")
+        XCTAssertEqual(SpecReviewPresentation.loopBadge(entries[0]), .init(title: "Blind spot · New in round 3", tint: .neutral))
+        XCTAssertEqual(SpecReviewPresentation.loopBadge(entries[1]).title, "Concern · Disputed")
     }
 }

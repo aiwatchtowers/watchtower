@@ -23,6 +23,10 @@ import WatchtowerSync
 /// The phone has no agent picker: `startForTarget` launches the
 /// workbench's default agent (D6, board #399).
 ///
+/// No entity (#1189): New Session on the Mac (`startUntargeted`), no
+/// target written; the phone's `brief` is required and is the first
+/// message, so the device needs the typing grant too, and `mode` is `new`.
+///
 /// `session_stop` (entity: the session id) is `TerminalCenter.close`:
 /// SIGHUP, then SIGKILL after the grace. Idempotent: a session that is not
 /// live is `applied` with no signal.
@@ -65,6 +69,8 @@ final class SessionStartStopHandlers {
     nonisolated static let launchWatchStep: Duration = .milliseconds(100)
     static let timeoutMessage = "The Mac did not finish this in time — check the session on the Mac"
     static let kinds: [ActionKind] = [.sessionStart, .sessionStop]
+    /// The phone's task description for a start without a target.
+    nonisolated static let briefLimit = 4000
 
     private let dbPool: DatabasePool
     private weak var workbenches: WorkbenchesViewModel?
@@ -119,12 +125,17 @@ final class SessionStartStopHandlers {
     // MARK: - Start
 
     private func start(_ action: ActionRequestPayload) async throws -> ActionOutcome {
-        guard let targetID = action.entityID.flatMap(Int64.init),
-              case let .integer(workbenchID)? = action.params["workbench_id"],
+        guard case let .integer(workbenchID)? = action.params["workbench_id"],
               case let .string(rawMode)? = action.params["mode"],
               case let .bool(planFirst)? = action.params["plan_first"],
               case let .bool(forward)? = action.params["bring_forward"] else {
-            return .failed(.invalidParams, message: "session_start needs a target id, workbench_id, mode, plan_first and bring_forward")
+            return .failed(.invalidParams, message: "session_start needs a workbench_id, mode, plan_first and bring_forward")
+        }
+        guard let entity = action.entityID else {
+            return try await startUntargeted(action, workbenchID: workbenchID, mode: rawMode, planFirst: planFirst, forward: forward)
+        }
+        guard let targetID = Int64(entity) else {
+            return .failed(.invalidParams, message: "session_start's entity must be a target id")
         }
         let mode: WorkbenchesViewModel.TargetStartMode
         switch rawMode {
@@ -159,7 +170,48 @@ final class SessionStartStopHandlers {
             return Self.outcome(error)
         }
         // A session already running was not launched now: nothing to watch.
-        if !liveBefore.contains(session.id), await exitedNotFound(session.id) {
+        return await launched(session, watch: !liveBefore.contains(session.id))
+    }
+
+    /// A start with no target (#1189): New Session on the Mac, with the
+    /// phone's `brief` (required, ≤ `briefLimit`) as the first message. It
+    /// is the phone's own text, so it needs the typing grant as well; the
+    /// mode can only be `new`.
+    private func startUntargeted(
+        _ action: ActionRequestPayload, workbenchID: Int64, mode: String, planFirst: Bool, forward: Bool
+    ) async throws -> ActionOutcome {
+        guard mode == "new" else { return .failed(.invalidParams, message: "a start without a target is always mode new") }
+        guard case let .string(raw)? = action.params["brief"] else {
+            return .failed(.invalidParams, message: "a start without a target needs a brief")
+        }
+        let brief = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !brief.isEmpty else { return .failed(.invalidParams, message: "The task description is empty") }
+        guard brief.count <= Self.briefLimit else {
+            return .failed(.invalidParams, message: "The task description is longer than \(Self.briefLimit) characters")
+        }
+        let grant = deviceGrant(action.deviceID)
+        guard grant.startSessionsAllowed, grant.typingAllowed else {
+            return .failed(.deviceNotAllowed, message: Self.startNotAllowedMessage)
+        }
+        let exists = try await dbPool.read { try WorkbenchQueries.fetch($0, id: workbenchID) != nil }
+        guard exists else { return .failed(.notFound, message: "This workbench no longer exists on the Mac") }
+        guard let workbenches else { return .failed(.writeFailed, message: "The workbench is reloading on the Mac") }
+        if forward { bringForward(workbenchID) }
+        let session: TerminalSession
+        do {
+            session = try await workbenches.startUntargeted(
+                projectID: workbenchID, prompt: brief, placement: forward ? .keeping(.board) : .background, planFirst: planFirst
+            )
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            return Self.outcome(error)
+        }
+        return await launched(session, watch: true)
+    }
+
+    /// The applied echo of a started session, or the agent-not-found
+    /// refusal when `watch` and the launch exited 127.
+    private func launched(_ session: TerminalSession, watch: Bool) async -> ActionOutcome {
+        if watch, await exitedNotFound(session.id) {
             return .failed(Self.notFoundReason(session.kind), message: TerminalLaunch.exitMessage(code: 127, agent: session.kind.agent ?? .claude))
         }
         return .applied(["session_id": .integer(session.id), "stage": .string("starting")])

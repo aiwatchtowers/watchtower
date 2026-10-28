@@ -44,6 +44,10 @@ public struct Workbench: SliceMirror, Identifiable {
     /// workbench, carried on each record. nil from a hub older than Codex
     /// support, which starts Claude Code.
     public let defaultAgent: TerminalSessionState.Agent?
+    /// The workbench's own automations the phone may run (ask #692), at most
+    /// 50 (the hub's `WorkbenchSlice.maxAutomations`), in the Mac's quick-run order.
+    /// Absent when it has none, and from a hub older than phone runs.
+    public let automations: [WorkbenchAutomation]?
 
     /// Session counts over the workbench's published `terminal_session`
     /// records, by resolved state.
@@ -67,5 +71,73 @@ public struct Workbench: SliceMirror, Identifiable {
             self.stopped = stopped
             self.notRunning = notRunning
         }
+    }
+}
+
+/// One automation of a workbench as the phone lists it (ask #692): the
+/// Mac's quick-run row (`QuickRunRow`), resolved on the Mac.
+public struct WorkbenchAutomation: Codable, Hashable, Sendable, Identifiable {
+    /// rawValues are wire format.
+    public struct Kind: OpenWireValue {
+        public let rawValue: String
+        public init(rawValue: String) { self.rawValue = rawValue }
+
+        /// Runs only when the owner runs it.
+        public static let manual = Self(rawValue: "manual")
+        /// A button recipe.
+        public static let button = Self(rawValue: "button")
+        /// A schedule or event recipe, run now out of turn.
+        public static let scheduled = Self(rawValue: "scheduled")
+        public static let knownValues: [Self] = [.manual, .button, .scheduled]
+    }
+
+    /// rawValues are wire format. Only `runnable` runs; a value this build
+    /// does not know is not runnable.
+    public struct State: OpenWireValue {
+        public let rawValue: String
+        public init(rawValue: String) { self.rawValue = rawValue }
+
+        public static let runnable = Self(rawValue: "runnable")
+        /// A run is queued, running or waiting.
+        public static let running = Self(rawValue: "running")
+        /// Changed since the owner last confirmed it: confirmed on the Mac only.
+        public static let needsConfirmation = Self(rawValue: "needs_confirmation")
+        public static let disabled = Self(rawValue: "disabled")
+        public static let parseError = Self(rawValue: "parse_error")
+        public static let knownValues: [Self] = [.runnable, .running, .needsConfirmation, .disabled, .parseError]
+    }
+
+    public let id: Int64
+    /// Cap 200.
+    public let name: String
+    public let nameClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    public let kind: Kind
+    /// A button recipe with `confirm: true`: the phone asks before it sends the
+    /// run, and the Mac runs it only with `AutomationRunParams.confirmed`.
+    public let asksFirst: Bool
+    public let state: State
+    /// The newest finished run's `automation_runs.status` (`succeeded`,
+    /// `failed`, …); absent before the first run.
+    public let lastRunStatus: String?
+    public let lastRunAt: Date?
+
+    public init(
+        id: Int64,
+        name: String,
+        nameClipped: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        kind: Kind,
+        asksFirst: Bool,
+        state: State,
+        lastRunStatus: String? = nil,
+        lastRunAt: Date? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.nameClipped = nameClipped
+        self.kind = kind
+        self.asksFirst = asksFirst
+        self.state = state
+        self.lastRunStatus = lastRunStatus
+        self.lastRunAt = lastRunAt
     }
 }

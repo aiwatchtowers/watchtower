@@ -108,6 +108,21 @@ final class SpecReviewTests: XCTestCase {
         XCTAssertEqual(a.note, "n")
     }
 
+    /// **Fix** is a comment with no body: the finding's text goes as it is,
+    /// and as an orphan after a re-run, its kept text.
+    func testFixSendsTheFindingAsItIs() throws {
+        let r = try golden()
+        let marks = [
+            "da:0123456789ab": SpecReviewMark(key: "da:0123456789ab", state: .comment, about: "State is kept in the local database"),
+            "ag:gone": SpecReviewMark(key: "ag:gone", state: .comment, about: "Threads stay muted")
+        ]
+        let a = SpecReviewAnswer.build(result: r, marks: marks, verdict: .changes, snapshot: snapshot)
+        XCTAssertEqual(a.comments.map(\.body), [
+            "State is kept in the local database",
+            "From the previous run: Threads stay muted"
+        ])
+    }
+
     func testAnswerSkipsNotUseful() throws {
         let r = try golden()
         let marks = [

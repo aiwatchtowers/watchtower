@@ -68,7 +68,14 @@ extension DemoSeed {
                 "name": "Acme", "folder_display": "~/Projects/acme", "branch": "main", "changes": 3,
                 "open_asks": 3, "open_targets": 7, "in_progress_targets": 3, "blocked_targets": 1, "done_targets": 1,
                 "session_counts": JSON.counts(working: 1, waiting: 1, needsApproval: 1, finished: 2, failed: 1, stopped: 1, notRunning: 1),
-                "last_session_activity": JSON.stamp(ago(30))
+                "last_session_activity": JSON.stamp(ago(30)),
+                "automations": [
+                    ["id": 71, "name": "Release notes", "kind": "button", "asks_first": true, "state": "runnable",
+                     "last_run_status": "succeeded", "last_run_at": JSON.stamp(ago(7200))],
+                    ["id": 72, "name": "Changelog check", "kind": "manual", "asks_first": false, "state": "running"],
+                    ["id": 73, "name": "Nightly triage", "kind": "scheduled", "asks_first": false, "state": "needs_confirmation",
+                     "last_run_status": "failed", "last_run_at": JSON.stamp(ago(36000))]
+                ]
             ]),
             JSON.workbench(websiteID, [
                 "name": "Acme Website", "folder_display": "~/Projects/acme-web", "branch": "feature/landing",

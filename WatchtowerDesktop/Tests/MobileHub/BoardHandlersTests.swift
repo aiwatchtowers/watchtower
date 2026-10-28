@@ -283,6 +283,28 @@ final class BoardHandlersTests: XCTestCase {
         XCTAssertEqual(reported, [.target(t)])
     }
 
+    /// #1192: a board write asks for the board's records at once, so the
+    /// phone's comment does not vanish until the next full tick.
+    func testABoardWriteAsksForTheBoardsRecordsAtOnce() async throws {
+        let (p, t) = try seedTarget()
+        var published: [Set<SliceKind>] = []
+        let handlers = BoardHandlers(dbPool: pool, cli: nil, publishSoon: { published.append($0) }, onOwnerWrite: { _, _ in })
+
+        let outcome = try await handlers.handle(
+            action(.boardCommentAdd, entity: t, ["workbench_id": .integer(p), "body": .string("Ship it")])
+        )
+
+        XCTAssertEqual(outcome.status, .applied)
+        XCTAssertEqual(published, [BoardHandlers.publishedKinds])
+
+        // A refusal publishes too (a conflict shows the current value).
+        let refused = try await handlers.handle(
+            action(.boardCommentAdd, entity: t, ["workbench_id": .integer(p), "body": .string("  ")])
+        )
+        XCTAssertEqual(refused.reason, .invalidParams)
+        XCTAssertEqual(published.count, 2)
+    }
+
     func testAnEmptyOrOverlongCommentIsInvalidParams() async throws {
         let (p, t) = try seedTarget()
         let handlers = makeHandlers()

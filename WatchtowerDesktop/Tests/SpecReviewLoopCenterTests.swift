@@ -18,7 +18,11 @@ private final class FakeLineDelivery: SpecReviewLineDelivering {
 @MainActor
 private final class FakeReveal: SpecReviewRevealing {
     private(set) var asks: [Int64] = []
-    func specReviewReveal(askID: Int64) async throws { asks.append(askID) }
+    private(set) var reasons: [String] = []
+    func specReviewReveal(askID: Int64, reason: String) async throws {
+        asks.append(askID)
+        reasons.append(reason)
+    }
 }
 
 @MainActor
@@ -90,7 +94,23 @@ final class SpecReviewLoopCenterTests: XCTestCase {
         await center.poll()
         await center.poll()
         XCTAssertEqual(cli.asks, [ask])
+        XCTAssertEqual(cli.reasons, ["session_gone"])
         XCTAssertEqual(delivery.lines.count, 1, "a revealed ask is not tried again")
+    }
+
+    /// Show Now ends the loop with reason owner, and the round's line never
+    /// goes to the author after it.
+    func testShowNowRevealsForTheOwner() async throws {
+        let ask = try await insertRound()
+        delivery.answers = [.held]
+        await center.poll()
+        XCTAssertEqual(center.hidden.map(\.askID), [ask])
+        XCTAssertEqual(center.hidden.first?.round, 1)
+        let shown = await center.showNow(askID: ask)
+        XCTAssertTrue(shown)
+        XCTAssertEqual(cli.asks, [ask])
+        XCTAssertEqual(cli.reasons, ["owner"])
+        XCTAssertEqual(delivery.lines.count, 1, "no line after Show Now")
     }
 
     func testHeldRetriesNextPoll() async throws {

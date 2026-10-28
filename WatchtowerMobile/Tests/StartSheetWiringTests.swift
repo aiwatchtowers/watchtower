@@ -644,6 +644,82 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertEqual(starter.attempts[400]?.actionID, "action-1")
     }
 
+    // MARK: - No target (#1189)
+
+    /// The header's New session opens on "No target": Start waits for a
+    /// task, then sends `session_start` with no entity, the task as the
+    /// brief and the toggles; the stages follow the echoes by workbench.
+    func testAStartWithoutATargetSendsTheTaskAndFollowsTheEchoes() async throws {
+        let fixture = try await makeFixture()
+        let replica = try snapshot(fixture.store, grant: grant(typing: true, start: true))
+        var draft = StartSessionDraft(target: nil, untargeted: true)
+        XCTAssertTrue(draft.isUntargeted)
+        XCTAssertEqual(draft.brief, "", "no work-on prompt to prefill")
+
+        func model(_ draft: StartSessionDraft, _ snapshot: WorkbenchReplicaSnapshot) throws -> StartSessionFormModel {
+            try XCTUnwrap(StartSessionFormModel(
+                workbenchID: DemoSeed.acmeID, targetID: nil, untargetedTask: draft.brief, snapshot: snapshot,
+                grant: snapshot.grant(for: DemoSeed.device.deviceID),
+                attempt: fixture.starter.attempt(.untargeted(workbenchID: DemoSeed.acmeID)),
+                inFlight: fixture.starter.inFlight, now: now
+            ))
+        }
+        let empty = try model(draft, replica)
+        XCTAssertTrue(empty.isUntargeted)
+        XCTAssertFalse(empty.canStart)
+        XCTAssertEqual(empty.startCaption, SessionStartText.describeTask)
+
+        draft.brief = "   "
+        XCTAssertFalse(try model(draft, replica).canStart, "whitespace is no task")
+        draft.brief = "Add a dark mode toggle"
+        let ready = try model(draft, replica)
+        XCTAssertTrue(ready.canStart)
+        XCTAssertNil(ready.startCaption)
+
+        let params = draft.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: ready.grant)
+        XCTAssertEqual(params.brief, "Add a dark mode toggle")
+        XCTAssertTrue(params.planFirst)
+        let started = try await fixture.starter.startUntargeted(params: params)
+        XCTAssertTrue(started)
+        let row = try XCTUnwrap(fixture.store.pendingActions().first)
+        XCTAssertEqual(row.action.kind, .sessionStart)
+        XCTAssertNil(row.entityRecordName, "no target")
+        XCTAssertNil(row.action.entityID)
+
+        let sent = try XCTUnwrap(try model(draft, try snapshot(fixture.store, grant: grant(typing: true, start: true))).progress)
+        XCTAssertEqual(sent.stage, .sent)
+        try await echo(fixture, .received)
+        let picked = try XCTUnwrap(try model(draft, try snapshot(fixture.store, grant: grant(typing: true, start: true))).progress)
+        XCTAssertEqual(picked.stage, .pickedUp)
+        try await echo(fixture, .applied, result: ["session_id": .integer(95), "stage": .string("starting")])
+        try await poll(timeout: 2, {
+            fixture.starter.attempt(.untargeted(workbenchID: DemoSeed.acmeID))?.applied == true
+        }, "the applied observer reached the starter")
+        XCTAssertEqual(fixture.starter.attempt(.untargeted(workbenchID: DemoSeed.acmeID))?.sessionID, 95)
+        XCTAssertTrue(fixture.starter.attempts.isEmpty, "no target's start")
+
+        try fixture.starter.clear(.untargeted(workbenchID: DemoSeed.acmeID))
+        XCTAssertNil(fixture.starter.attempt(.untargeted(workbenchID: DemoSeed.acmeID)))
+    }
+
+    /// Picking a target after "No target" fills the brief from its work-on
+    /// prompt; "No target" again starts an empty task.
+    func testPickingBetweenATargetAndNoTarget() throws {
+        var draft = StartSessionDraft(target: nil, untargeted: true)
+        draft.brief = "Something"
+        draft.pick(try target(415))
+        XCTAssertFalse(draft.isUntargeted)
+        XCTAssertEqual(draft.targetID, 415)
+        XCTAssertEqual(draft.brief, try target(415).workOnPrompt)
+        draft.pickUntargeted()
+        XCTAssertTrue(draft.isUntargeted)
+        XCTAssertNil(draft.targetID)
+        XCTAssertEqual(draft.brief, "")
+        draft.clearPick()
+        XCTAssertFalse(draft.isUntargeted)
+        XCTAssertNil(draft.targetID)
+    }
+
     // MARK: - Stop
 
     /// Ruling 6: Stop is offered on a live session only; it sends
