@@ -818,6 +818,8 @@ struct UpdateServicePeriodicTests {
     func loopSleepsOnInterval() async {
         let svc = UpdateService()
         svc.buildFlavor = ""
+        // Each pass starts with What's New; never the network here.
+        svc.fetchInstalledNotes = { _ in "" }
         var fetches = 0
         svc.fetchCheck = {
             fetches += 1
@@ -1002,6 +1004,146 @@ struct UpdateServicePeriodicTests {
         #expect(UpdateService.shouldAnnounce(version: "v1.0.0", lastAnnounced: nil))
         #expect(UpdateService.shouldAnnounce(version: "v1.0.1", lastAnnounced: "v1.0.0"))
         #expect(!UpdateService.shouldAnnounce(version: "v1.0.0", lastAnnounced: "v1.0.0"))
+    }
+
+    @Test("What's New shows on a newer version, or on the offered one before the memo existed")
+    func whatsNewDecision() {
+        #expect(UpdateService.shouldShowWhatsNew(current: "1.1.0", lastLaunched: "1.0.0", lastOffered: nil))
+        #expect(!UpdateService.shouldShowWhatsNew(current: "1.1.0", lastLaunched: "1.1.0", lastOffered: "v1.1.0"))
+        #expect(!UpdateService.shouldShowWhatsNew(current: "1.0.0", lastLaunched: "1.1.0", lastOffered: nil))
+        // First launch of the memo: only an update this app offered counts.
+        #expect(UpdateService.shouldShowWhatsNew(current: "1.1.0", lastLaunched: nil, lastOffered: "v1.1.0"))
+        #expect(!UpdateService.shouldShowWhatsNew(current: "1.1.0", lastLaunched: nil, lastOffered: "v1.0.9"))
+        #expect(!UpdateService.shouldShowWhatsNew(current: "1.1.0", lastLaunched: nil, lastOffered: nil))
+    }
+
+    /// A public-channel service whose notes fetch returns `notes`.
+    private func whatsNewService(
+        _ defaults: UserDefaults, notes: String?, presented: @escaping (String) -> Void
+    ) -> UpdateService {
+        let svc = UpdateService()
+        svc.buildFlavor = ""
+        svc.defaults = defaults
+        svc.isBusy = { false }
+        svc.fetchInstalledNotes = { _ in notes }
+        svc.presentUpdateWindow = { [weak svc] in
+            presented(svc?.installedRelease?.notes ?? "")
+            return true
+        }
+        return svc
+    }
+
+    @Test("the first launch of a new version opens its notes once")
+    func whatsNewOncePerVersion() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("1.0.0", forKey: "lastLaunchedAppVersion")
+        var presented: [String] = []
+        let svc = whatsNewService(defaults, notes: "## New") { presented.append($0) }
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(svc.installedRelease == .init(version: "1.1.0", notes: "## New"))
+        svc.dismissInstalledRelease()
+        #expect(svc.installedRelease == nil)
+
+        let relaunched = whatsNewService(defaults, notes: "## New") { presented.append($0) }
+        await relaunched.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(presented == ["## New"])
+    }
+
+    @Test("a fresh install shows nothing and remembers its version")
+    func whatsNewFreshInstall() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var presented: [String] = []
+        let svc = whatsNewService(defaults, notes: "## New") { presented.append($0) }
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(presented.isEmpty)
+        #expect(defaults.string(forKey: "lastLaunchedAppVersion") == "1.1.0")
+    }
+
+    @Test("a failed fetch retries next launch; empty notes are not shown and not retried")
+    func whatsNewFetchOutcomes() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("1.0.0", forKey: "lastLaunchedAppVersion")
+        var presented: [String] = []
+        let offline = whatsNewService(defaults, notes: nil) { presented.append($0) }
+        await offline.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(defaults.string(forKey: "lastLaunchedAppVersion") == "1.0.0")
+
+        let empty = whatsNewService(defaults, notes: "") { presented.append($0) }
+        await empty.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(presented.isEmpty)
+        #expect(empty.installedRelease == nil)
+        #expect(defaults.string(forKey: "lastLaunchedAppVersion") == "1.1.0")
+    }
+
+    @Test("a window that could not open, or a busy recorder, is retried and leaves nothing pending")
+    func whatsNewUnwiredOrBusyRetries() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("1.0.0", forKey: "lastLaunchedAppVersion")
+        var presented: [String] = []
+        let svc = whatsNewService(defaults, notes: "## New") { presented.append($0) }
+        let present = svc.presentUpdateWindow
+        svc.presentUpdateWindow = nil
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        svc.presentUpdateWindow = present
+        svc.isBusy = { true }
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        svc.presentUpdateWindow = { false }
+        svc.isBusy = { false }
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(svc.installedRelease == nil)
+        #expect(defaults.string(forKey: "lastLaunchedAppVersion") == "1.0.0")
+
+        svc.presentUpdateWindow = present
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(presented == ["## New"])
+        #expect(defaults.string(forKey: "lastLaunchedAppVersion") == "1.1.0")
+    }
+
+    @Test("a rollback launch does not move the memo back")
+    func whatsNewRollbackKeepsMemo() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("1.1.0", forKey: "lastLaunchedAppVersion")
+        var presented: [String] = []
+        let svc = whatsNewService(defaults, notes: "## New") { presented.append($0) }
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.0.0")
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(presented.isEmpty)
+        #expect(defaults.string(forKey: "lastLaunchedAppVersion") == "1.1.0")
+    }
+
+    @Test("the periodic loop retries a What's New the launch could not show")
+    func whatsNewRetriedByTheLoop() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("0.0.1", forKey: "lastLaunchedAppVersion")
+        var presented: [String] = []
+        let svc = whatsNewService(defaults, notes: "## New") { presented.append($0) }
+        svc.fetchCheck = { .upToDate }
+        svc.startPeriodicChecks { _ in throw CancellationError() }
+        await svc.periodicTask?.value
+        #expect(presented == ["## New"])
+    }
+
+    @Test("the transition memo is the newer of the presented and announced versions")
+    func newerMemo() {
+        #expect(UpdateService.newer("v1.0.9", "v1.1.0") == "v1.1.0")
+        #expect(UpdateService.newer("v1.1.0", "v1.0.9") == "v1.1.0")
+        #expect(UpdateService.newer(nil, "v1.1.0") == "v1.1.0")
+        #expect(UpdateService.newer("v1.1.0", nil) == "v1.1.0")
+        #expect(UpdateService.newer(nil, nil) == nil)
+    }
+
+    @Test("the gated manifest gives notes only while it still holds the running version")
+    func gatedNotesForRunningVersion() {
+        #expect(UpdateService.gatedNotes(manifestVersion: "1.1.0", notes: "## New", running: "1.1.0") == "## New")
+        #expect(UpdateService.gatedNotes(manifestVersion: "v1.1.0", notes: "## New", running: "1.1.0") == "## New")
+        #expect(UpdateService.gatedNotes(manifestVersion: "1.1.0", notes: nil, running: "1.1.0").isEmpty)
+        #expect(UpdateService.gatedNotes(manifestVersion: "1.2.0", notes: "## Newer", running: "1.1.0").isEmpty)
     }
 }
 

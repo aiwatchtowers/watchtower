@@ -58,15 +58,15 @@ At the top of the session panel, **Reviewer and author** lists the asks still in
 
 ## Using it
 <!-- learn
-id: spec-review-findings-fix
+id: spec-review-findings-severity
 title: Go through the reviewer's findings
-text: Open the review ask and mark each finding **Fix**, **Fine as is** or **Comment**, then send the round or **Approve**.
-changed: **Fix** sends a finding to the agent as it is, in one press.
-replaces: [spec-review-findings]
+text: Open the review ask: red **Blocker** findings come first. Mark each, then **Request changes** or **Approve**.
+changed: Findings show how much they matter, and the verdict buttons stay at the bottom.
+replaces: [spec-review-findings-fix, spec-review-findings]
 area: development
 level: next
 kind: tip
-since: 0.26.1
+since: 0.26.2
 action: nav:projects
 -->
 
@@ -84,7 +84,7 @@ Open the review ask. The drawer shows three steps.
 2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**, most serious first. The coloured chip is how much it matters: red **Blocker**, orange **Major**, grey **Minor**. Press **Fix** when the reviewer is right and the finding should go to the author as it is, **Fine as is** when the document is right as written, or **Comment** to tell the author what to change in your own words. When the reviewer ran checks on a chapter, its **Checklist** sits under the cards. Mark the chapter **Viewed** when you are done with it.
 3. **Wrap-up.** Everything you marked, **From the previous run** (with the finding each comment was about), and a note for the author.
 
-**Request changes** and **Approve** stay at the bottom of the drawer on every step (⌘⇧↩ and ⌘↩). **Request changes** returns your comments, the margin ones under **Read the spec** included; **Approve** accepts the document. If items are still unmarked, approving asks once.
+**Request changes** and **Approve** stay at the bottom of the drawer on every step (⌘⇧↩ and ⌘↩). **Request changes** returns your comments, the margin ones under **Read the spec** included; it stays off until you mark a finding **Fix**, comment or write a note, and shows how many comments go; **Approve** accepts the document. If items are still unmarked, approving asks once.
 
 **Read the spec** always opens the classic document view with margin comments, whatever state the reviewer is in. Its **Request changes** and **Approve** also send your comments on findings, so nothing you wrote on either screen is lost. An answer from your phone sends them too.
 

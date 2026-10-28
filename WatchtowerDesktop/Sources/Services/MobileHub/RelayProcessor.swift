@@ -98,7 +98,7 @@ final class RelayProcessor: Sendable {
     static let hygieneStampKey = "hygiene_last_run"
     static let defaultBatchLimit = 200
     static let actionMaxAge: TimeInterval = 7 * 86_400
-    /// Session input, finish and start requests go stale sooner (§5.2 rule 5).
+    /// Session input, finish and start requests, and automation runs, go stale sooner (§5.2 rule 5).
     static let sessionRequestMaxAge: TimeInterval = 86_400
     /// How far ahead of the Mac's clock a phone's `created_at` may be before the action counts as expired.
     static let maxClockSkew: TimeInterval = 300
@@ -114,12 +114,12 @@ final class RelayProcessor: Sendable {
     static let nonIdempotentKinds: Set<ActionKind> = [
         .boardCommentAdd, .boardCommentReply, .boardTargetCreate,
         .sessionStart, .sessionInput, .sessionFinishRequest,
-        .permissionAnswer, .sessionInterrupt
+        .permissionAnswer, .sessionInterrupt, .automationRun
     ]
     /// Echoed `received` as soon as they are dequeued (§5.2 rule 6).
     static let receivedEchoKinds: Set<ActionKind> = [.sessionStart, .sessionInput, .boardTargetCreate]
     private static let sessionRequestKinds: Set<ActionKind> = [
-        .sessionInput, .sessionFinishRequest, .sessionStart, .sessionChatRequest
+        .sessionInput, .sessionFinishRequest, .sessionStart, .sessionChatRequest, .automationRun
     ]
     /// The pre-POC Today/task kinds: refused until sub-project D.
     static let refusedKinds: Set<ActionKind> = [.targetDone, .targetSnooze, .taskCreate]

@@ -212,7 +212,10 @@ func TestPublishDir_CreatedPrivate(t *testing.T) {
 // a folder outside) is refused rather than written through.
 func TestPublishDir_CheckRefusesAReplacedDir(t *testing.T) {
 	_, d := newTestPublishDir(t)
-	require.NoError(t, os.Remove(d.Path()))
+	// The original is moved aside, not removed: it keeps its inode, so the
+	// replacements below can never get it back (ext4 reuses a freed inode
+	// for the next mkdir).
+	require.NoError(t, os.Rename(d.Path(), d.Path()+".orig"))
 	require.NoError(t, os.Symlink(t.TempDir(), d.Path()))
 	assert.ErrorIs(t, d.Check(filepath.Join(d.Path(), "x.html")), ErrUnsafePublishPath)
 

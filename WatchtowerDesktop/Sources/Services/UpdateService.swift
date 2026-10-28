@@ -334,6 +334,9 @@ final class UpdateService {
     }
 
     private func runBackgroundCheck() async {
+        // A What's New the last pass could not show (offline, busy recorder,
+        // no window yet) is retried here; once seen this is a memo read.
+        await showWhatsNewIfUpdated()
         guard Self.shouldAutoCheck(state: state) else { return }
         await checkForUpdates(background: true)
     }
@@ -380,6 +383,107 @@ final class UpdateService {
             guard let present = presentUpdateWindow, !isBusy(), present() else { return }
         }
         defaults.set(version, forKey: Self.lastPresentedVersionKey)
+    }
+
+    // MARK: - What's New after an update
+
+    struct InstalledRelease: Equatable {
+        let version: String
+        let notes: String
+    }
+
+    /// The release this app was just updated to, shown by the update window
+    /// when no newer update is on offer; set by the first launch of a new
+    /// version, cleared when that window closes.
+    private(set) var installedRelease: InstalledRelease?
+
+    private static let lastLaunchedVersionKey = "lastLaunchedAppVersion"
+
+    /// Release notes of the running version from the channel; nil = could not
+    /// fetch (retried next launch), "" = none published. Nil = the real
+    /// network fetch; tests inject.
+    var fetchInstalledNotes: ((String) async -> String?)?
+
+    nonisolated static func newer(_ a: String?, _ b: String?) -> String? {
+        guard let a, let b else { return a ?? b }
+        return isNewer(b, than: a) ? b : a
+    }
+
+    /// Notes of the gated manifest for the running version: the manifest
+    /// holds only the latest release, so once it moved on they are gone ("").
+    nonisolated static func gatedNotes(manifestVersion: String, notes: String?, running: String) -> String {
+        let same = !isNewer(manifestVersion, than: running) && !isNewer(running, than: manifestVersion)
+        return same ? notes ?? "" : ""
+    }
+
+    /// Whether this launch is the first of a newer version. Before this memo
+    /// existed (`lastLaunched` nil) only an update this app offered counts —
+    /// a fresh install shows nothing.
+    nonisolated static func shouldShowWhatsNew(current: String, lastLaunched: String?, lastOffered: String?) -> Bool {
+        if let lastLaunched { return isNewer(current, than: lastLaunched) }
+        guard let lastOffered else { return false }
+        return !isNewer(current, than: lastOffered) && !isNewer(lastOffered, than: current)
+    }
+
+    /// Once per new version: open the update window on its release notes.
+    /// The memo is written only once the window was shown or there is
+    /// nothing to show, so an offline launch or a busy recorder retries on
+    /// the next launch.
+    func showWhatsNewIfUpdated(currentVersion: String = Constants.appVersion) async {
+        guard updatesSupported else { return }
+        let lastLaunched = defaults.string(forKey: Self.lastLaunchedVersionKey)
+        let lastOffered = Self.newer(defaults.string(forKey: Self.lastPresentedVersionKey),
+                                     defaults.string(forKey: Self.lastAnnouncedVersionKey))
+        // Only forward: a rollback launch must not make the newer build's
+        // next launch look like a fresh update.
+        let markSeen = {
+            guard Self.newer(lastLaunched, currentVersion) == currentVersion else { return }
+            self.defaults.set(currentVersion, forKey: Self.lastLaunchedVersionKey)
+        }
+        guard Self.shouldShowWhatsNew(current: currentVersion, lastLaunched: lastLaunched, lastOffered: lastOffered) else {
+            markSeen()
+            return
+        }
+        let fetched = if let fetchInstalledNotes {
+            await fetchInstalledNotes(currentVersion)
+        } else {
+            await fetchNotes(forVersion: currentVersion)
+        }
+        guard let notes = fetched else { return }
+        guard !notes.isEmpty else {
+            markSeen()
+            return
+        }
+        guard let present = presentUpdateWindow, !isBusy() else { return }
+        installedRelease = InstalledRelease(version: currentVersion, notes: notes)
+        guard present() else {
+            installedRelease = nil
+            return
+        }
+        markSeen()
+    }
+
+    func dismissInstalledRelease() {
+        installedRelease = nil
+    }
+
+    private func fetchNotes(forVersion version: String) async -> String? {
+        do {
+            switch channel {
+            case .disabled:
+                return ""
+            case .publicGitHub:
+                return try await fetchReleaseNotes(tag: "v" + version)
+            case let .gated(feedURL, clientID, clientSecret):
+                let manifestURL = feedURL.appendingPathComponent("dl/manifest/\(buildFlavor).json")
+                let data = try await gatedGET(manifestURL, clientID: clientID, clientSecret: clientSecret)
+                let manifest = try JSONDecoder().decode(GatedManifest.self, from: data)
+                return Self.gatedNotes(manifestVersion: manifest.version, notes: manifest.notes, running: version)
+            }
+        } catch {
+            NSLog("UpdateService: release notes fetch failed: %@", error.localizedDescription)
+            return nil
+        }
     }
 
     // MARK: - Download
@@ -896,24 +1000,35 @@ final class UpdateService {
         CLIBinaryStore.runningTeamIdentifier()
     }
 
-    private func fetchLatestRelease() async throws -> GitHubRelease {
-        let urlString = "https://api.github.com/repos/\(Self.repo)/releases/latest"
-        guard let url = URL(string: urlString) else {
+    /// A GET on the public repository's releases API (`releases/<path>`).
+    private func releasesRequest(_ path: String) throws -> URLRequest {
+        guard let url = URL(string: "https://api.github.com/repos/\(Self.repo)/releases/\(path)") else {
             throw URLError(.badURL)
         }
-
         var request = URLRequest(url: url)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("Watchtower/\(Constants.appVersion)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 15
+        return request
+    }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+    private func fetchLatestRelease() async throws -> GitHubRelease {
+        let (data, response) = try await URLSession.shared.data(for: releasesRequest("latest"))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             throw UpdateError.httpError(code)
         }
 
         return try JSONDecoder().decode(GitHubRelease.self, from: data)
+    }
+
+    /// The body of the public release `tag`; "" when there is no such release.
+    private func fetchReleaseNotes(tag: String) async throws -> String {
+        let (data, response) = try await URLSession.shared.data(for: releasesRequest("tags/\(tag)"))
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 404 { return "" }
+        guard status == 200 else { throw UpdateError.httpError(status) }
+        return try JSONDecoder().decode(GitHubRelease.self, from: data).body ?? ""
     }
 
     private func downloadWithProgress(from url: URL) async throws -> (URL, URLResponse) {
