@@ -69,10 +69,10 @@ var knownNonLLMHTTP = map[string]string{
 // literals is not checked (named in the feature note).
 var llmEndpoints = []string{"/chat/completions", "/v1/messages", "/api/chat", "/api/generate", "/responses"}
 
-// TestLLMUsageLeaves fails when a process start or an LLM HTTP call in cmd/
+// TestLLMUSAGE01_LeavesRecord fails when a process start or an LLM HTTP call in cmd/
 // or internal/ neither records into llmusage in its function nor is listed
 // above with a reason.
-func TestLLMUsageLeaves(t *testing.T) {
+func TestLLMUSAGE01_LeavesRecord(t *testing.T) {
 	root := repoRoot(t)
 	for _, list := range []map[string]string{knownNonLLMExec, knownNonLLMHTTP} {
 		for k, reason := range list {

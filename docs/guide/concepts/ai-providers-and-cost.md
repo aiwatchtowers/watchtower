@@ -67,21 +67,33 @@ On a local Ollama model nothing is billed, but speed and quality depend on the m
 
 ## Where to see usage
 <!-- learn
-id: ai-usage-by-day
-title: See what the AI used
-text: Open **Usage** and pick a day to see AI calls and tokens per request, so you know what to switch off.
+id: ai-usage-ledger
+title: See what Watchtower spends on AI
+text: Open **Usage → Watchtower** to see each AI job's calls, tokens and cost, so you know what to switch off.
 area: setup
 level: basics
 kind: feature
-since: 0.24.0
+since: next
 action: nav:usage
+replaces: [ai-usage-by-day]
+changed: Usage now shows every AI call by job, with cost, on the Watchtower tab.
 -->
 
-**Usage** has three tabs:
+**Usage** has four tabs:
 
-- **Usage**: pick a day. It shows AI calls, input tokens (including cache), uncached input and output tokens, then each request with its pipeline, model and call count. It shows tokens, not money. A day with no AI calls shows nothing; pick another day.
-- **Progress**: history of the background runs, with each run's steps, tokens and duration. Runs that made no AI call are not listed, except a failed Memory run.
 - **Claude plan**: your Claude account's limits, below.
+- **Watchtower**: what Watchtower itself spends on AI, for **Today**, **7 days** or **30 days**. A totals row shows calls, fresh input, cache, output and cost. Below it, a table lists each job (digests, briefing, ideas, memory, images, built-in automations and so on) with calls, tokens, output, cost and tokens per call. **Your automations** is a separate section with one row per automation of your own. **Chats and workbenches** shows one line each: your chats, and workbench sessions plus the helper calls Watchtower makes for workbenches. Workbench sessions count only for workbenches with analytics on; the tab names the ones left out.
+- **Usage**: the run log, one entry per background run with status, duration, items and errors. It shows no tokens or money; a button takes you to the Watchtower tab.
+- **Progress**: history of the background runs and their steps, also without tokens.
+
+Reading the numbers:
+
+- Cost is what the provider reports, which for Claude is the price at API rates even on a subscription, so it is not your bill. A figure with **≈** is an estimate from a price table, and **≥** means some calls have no price (Codex and local models), so the real total is higher; those calls still count in the token columns.
+- A grey line under the totals names every gap: calls where the provider gave no usage (counted by length), calls with no price, and **Untagged** calls, which are listed with the command that made them.
+- The tab starts counting from the first AI call after the update ("Recording starts with the next AI call"), keeps 90 days and refreshes every minute. Home shows today's total as **AI spend** (Watchtower, your automations and chats, without workbenches).
+- A call that could not be written anywhere is missing from the tab; the cause (usually a full disk) leaves a line in `watchtower.log`.
+
+For a terminal, `watchtower usage llm` prints the same numbers ([Command-line reference](../reference/cli.md)).
 
 ## Claude plan limits
 <!-- learn
@@ -114,4 +126,4 @@ It never refreshes that sign-in, so if Claude Code's token has expired the tab s
 - [Privacy](privacy.md): what is sent to the provider.
 - [Troubleshooting](../troubleshooting/README.md)
 
-For developers: [docs/features/model-provider-registry.md](../../features/model-provider-registry.md), [docs/features/claude-plan-limits.md](../../features/claude-plan-limits.md)
+For developers: [docs/features/llm-usage-ledger.md](../../features/llm-usage-ledger.md), [docs/features/model-provider-registry.md](../../features/model-provider-registry.md), [docs/features/claude-plan-limits.md](../../features/claude-plan-limits.md)

@@ -14,7 +14,7 @@ Your Claude plan limit belongs to your Claude account, so Watchtower's backgroun
 
 ## Fix
 
-1. Open **Usage** and pick a day to see which pipeline made the calls, and **Progress** to see each run's tokens.
+1. Open **Usage → Watchtower** and pick **7 days**. The table lists each job by cost (by tokens where no cost is known), so the biggest is first; **Your automations** and **Chats and workbenches** are below it.
 2. Switch off what you do not need in **Settings → Features**. The badges mark Heavy, Medium and Light. Turning off Slack Digests also leaves Tracks and People Cards with nothing to read, and Ideas with most of it.
 3. In **Statistics**, **Mute for AI** on noisy channels or bots. Muted channels are skipped by digests, tracks and the briefing.
 4. Lower the load per call: set **Light Model** and **Strong Model** in **Settings → System → AI**, or use Codex or a local Ollama model, which bills nothing.
@@ -25,7 +25,7 @@ Your Claude plan limit belongs to your Claude account, so Watchtower's backgroun
 
 ## How to check
 
-**Usage** shows fewer AI calls for the next day, and the 5-hour percentage grows slower. History backfill runs on at its own pace; the plan limit never pauses it.
+**Usage → Watchtower** shows fewer calls and tokens for the jobs you switched off on the next day, and the 5-hour percentage grows slower. History backfill runs on at its own pace; the plan limit never pauses it.
 
 ## If it did not help
 

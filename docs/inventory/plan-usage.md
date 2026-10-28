@@ -9,7 +9,7 @@
 > read this file first. Any proposed change that would break a guard test or remove
 > a contract must be raised as a question before touching code.
 
-**Module:** `internal/planusage/` + `internal/db/plan_usage.go` + `cmd/usage_plan.go` + `cmd/plan_usage_daemon.go` + Desktop `PlanUsage*`
+**Module:** `internal/llmusage/` (LLMUSAGE-01) + `internal/planusage/` + `internal/db/plan_usage.go` + `cmd/usage_plan.go` + `cmd/plan_usage_daemon.go` + Desktop `PlanUsage*`
 **Last full audit:** 2026-10-15
 
 ## PLANUSAGE-01 — The token is never refreshed or written; an expired token sends no request
@@ -51,7 +51,23 @@
 
 **Locked since:** 2026-10-15
 
+## LLMUSAGE-01 — Every LLM leaf records exactly once
+
+**Status:** Enforced
+
+**Observable:** Every model call made by a Watchtower Go process produces exactly one `llm_calls` row (or one spool line the daemon imports once), recorded by the leaf implementation that holds the provider's numbers; wrappers add none. Every process start and every HTTP request in an LLM-endpoint package sits in a function that records into `internal/llmusage`, or is listed with a reason as not a model call. A failed ledger write never changes the call's result.
+
+**Why locked:** The Usage screen and Home's AI spend are only trustworthy if a new feature cannot bypass the ledger by forgetting to opt in; an unrecorded leaf is a silent undercount.
+
+**Test guards:**
+- `internal/llmusage/leaves_test.go::TestLLMUSAGE01_LeavesRecord`
+- `internal/llmusage/leaves_test.go::TestLLMUsageLeavesCatchesNewLeaf` (the checker itself)
+- per-leaf tests in `internal/digest`, `internal/codex`, `internal/ollama`, `internal/ai`, `internal/agentloop` and `internal/chat` (one fake response with known usage gives one row with the right split)
+
+**Locked since:** 2026-10-28
+
 ## Changelog
 
+- 2026-10-28: LLMUSAGE-01 added by the LLM usage ledger (spec `docs/superpowers/specs/2026-10-27-llm-usage-ledger-design.md`, note `docs/features/llm-usage-ledger.md`); the file also covers `internal/llmusage/`.
 - 2026-10-15: PLANUSAGE-03 wording — the key's reset time is rounded to the minute, past windows never notify; same contract.
 - 2026-10-15: file created with 3 contracts (PLANUSAGE-01..03), introduced by the Claude plan limits feature (spec `docs/superpowers/specs/2026-10-15-claude-plan-limits-design.md`).
