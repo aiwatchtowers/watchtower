@@ -2253,7 +2253,7 @@ CREATE TABLE IF NOT EXISTS kb_sources (
 
 -- Source deletions and edits (see 00139): KB documents to re-render, filled by triggers.
 CREATE TABLE IF NOT EXISTS kb_dirty (
-    source TEXT NOT NULL,              -- KB source name: slack | gmail | jira
+    source TEXT NOT NULL,              -- KB source name: slack | gmail | jira | transcript | recap, or a media_items.kb_source
     key    TEXT NOT NULL,              -- that source's document key (kb_documents.id)
     gen    INTEGER NOT NULL DEFAULT 0, -- bumped on every re-mark; the drain deletes only the gen it rendered
     PRIMARY KEY (source, key)
