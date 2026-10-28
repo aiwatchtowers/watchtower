@@ -89,7 +89,10 @@ package enum LegacyRecordingSidecarImport {
             transcript = (text, json)
         }
         do {
-            try await store.begin(recording: audioName, eventID: meta.eventID, title: meta.title, at: started)
+            // An older build recorded no private choice: private until the
+            // owner opens the recovered pill's lock (MEETPRIV fails closed).
+            try await store.begin(recording: audioName, eventID: meta.eventID, title: meta.title,
+                                  isPrivate: true, at: started)
             if let transcript {
                 try await store.saveTranscript(recording: audioName, text: transcript.text, metaJSON: transcript.metaJSON,
                                                at: started)

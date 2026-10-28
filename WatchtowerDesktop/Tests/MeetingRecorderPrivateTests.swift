@@ -16,7 +16,7 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         + #""chapters_skipped_reason":"private"}"#).utf8)
 
     private func makeCenter(recorder: FakeRecorder = FakeRecorder(),
-                            runner: FakeCLIRunner,
+                            runner: CLIRunnerProtocol,
                             notifier: FakeNotifier = FakeNotifier(),
                             defaults: UserDefaults) -> MeetingRecorderCenter {
         MeetingRecorderCenter(
@@ -165,6 +165,43 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         XCTAssertEqual(runner.invocations.count, 1)
     }
 
+    /// Once the save runs (`.summarizing`) the lock is fixed: the CLI already
+    /// has the flag.
+    func testLockIsRefusedOnceTheSaveStarted() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 12)
+        let runner = GatedSaveRunner(stdout: recapOKEnvelope)
+        let center = makeCenter(recorder: recorder, runner: runner, defaults: try isolatedDefaults())
+
+        await center.startRecording(eventID: nil, title: "Saving", config: config(privateByDefault: false))
+        let started = try startedRecording()
+        defer { removeSidecars(started) }
+        await center.stopAndProcess(config: singleWindowConfig())
+        await waitUntil { runner.isHoldingASave }
+        let job = try XCTUnwrap(center.jobs.first)
+        XCTAssertEqual(job.phase, .summarizing)
+        XCTAssertFalse(job.canChangePrivate)
+
+        await center.setJobPrivate(job.id, true)
+        XCTAssertEqual(center.jobs.first?.isPrivate, false)
+        XCTAssertEqual(pendingRow(started)?.isPrivate, false)
+        runner.releaseAll()
+        await waitUntil { center.jobs.isEmpty }
+    }
+
+    private func waitUntil(timeout: TimeInterval = 10, _ condition: @escaping @MainActor () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline {
+                XCTFail("condition not met in \(timeout)s")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     func testCrashRecoveryKeepsTheFlag() async throws {
         let name = "rec_20261028_100000.caf"
         let audio = recordingsDir.appendingPathComponent(name)
@@ -182,23 +219,62 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
     }
 
-    /// A recording with no row (the database was not open at its start) has
-    /// no recorded choice: it recovers with the Settings default.
-    func testAudioOnlyRecoveryTakesTheSettingsDefault() async throws {
+    /// A recording with no row (the database was not open at its start, or
+    /// the start's row write failed) has no recorded choice: it recovers
+    /// private whatever the Settings default (MEETPRIV fails closed), and
+    /// the recovered pill's lock opens it before Transcribe.
+    func testAudioOnlyRecoveryIsPrivateUntilTheOwnerOpensTheLock() async throws {
         let name = "rec_20261028_110000.caf"
         let audio = recordingsDir.appendingPathComponent(name)
         try Data([0x00]).write(to: audio)
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+        let defaults = try isolatedDefaults()
+        defaults.set(false, forKey: TranscriptionConfig.privateByDefaultKey)
+        // Past the one-time pass that tombstones an older build's audio.
+        defaults.set(true, forKey: MeetingRecorderCenter.legacyAudioTombstonedKey)
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = makeCenter(runner: runner, defaults: defaults)
 
-        for privateByDefault in [false, true] {
-            let defaults = try isolatedDefaults()
-            defaults.set(privateByDefault, forKey: TranscriptionConfig.privateByDefaultKey)
-            // Past the one-time pass that tombstones an older build's audio.
-            defaults.set(true, forKey: MeetingRecorderCenter.legacyAudioTombstonedKey)
-            let center = makeCenter(runner: FakeCLIRunner(stdout: recapOKEnvelope), defaults: defaults)
-            await center.restorePendingOnLaunch()
-            XCTAssertEqual(center.recoverable.map(\.isPrivate), [privateByDefault])
-        }
+        await center.restorePendingOnLaunch()
+        XCTAssertEqual(center.recoverable.map(\.isPrivate), [true])
+
+        await center.setRecoverablePrivate(audio, false)
+        XCTAssertEqual(center.recoverable.map(\.isPrivate), [false])
+        await center.retryTranscription(config: singleWindowConfig())
+        XCTAssertFalse(try XCTUnwrap(runner.invocations.first).contains("--private"))
+    }
+
+    /// The recovered pill's lock on a recording with a row reaches the row,
+    /// so a second crash keeps the owner's choice.
+    func testLockOnARecoveredRecordingReachesItsRow() async throws {
+        let name = "rec_20261028_120000.caf"
+        let audio = recordingsDir.appendingPathComponent(name)
+        try Data([0x00]).write(to: audio)
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+        try await pendingStore.begin(recording: name, eventID: nil, title: "Kept", isPrivate: false, at: Date())
+        let runner = FakeCLIRunner(stdout: privateEnvelope)
+        let center = makeCenter(runner: runner, defaults: try isolatedDefaults())
+
+        await center.restorePendingOnLaunch()
+        await center.setRecoverablePrivate(audio, true)
+
+        XCTAssertEqual(pendingRow(audio)?.isPrivate, true)
+        await center.retryTranscription(config: singleWindowConfig())
+        XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
+    }
+
+    /// The pre-queue single-slot pointer recorded no private choice either.
+    func testLegacyPendingPointerRecoversPrivate() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+        let defaults = try isolatedDefaults()
+        defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
+        let center = makeCenter(runner: FakeCLIRunner(stdout: privateEnvelope), defaults: defaults)
+
+        await center.restorePendingOnLaunch()
+
+        XCTAssertEqual(center.recoverable.first(where: { $0.audioURL == audio })?.isPrivate, true)
+        XCTAssertEqual(pendingRow(audio)?.isPrivate, true)
     }
 
     func testPrepareRetryOfAPrivateRecordingSavesPrivate() async throws {

@@ -389,6 +389,12 @@ struct RecordingIndicatorView: View {
         indicatorCapsule(moveGesture: moveGesture) {
             Image(systemName: "waveform.badge.exclamationmark")
                 .foregroundStyle(.blue)
+            // The lock of the recording Transcribe takes next (MEETPRIV).
+            if let next = center.recoverable.first {
+                PrivateRecordingToggle(isPrivate: next.isPrivate) {
+                    Task { await center.setRecoverablePrivate(next.audioURL, !next.isPrivate) }
+                }
+            }
             Text(Self.recoveredLabel(count: center.recoverable.count)).font(.callout)
             // The Center acts on the oldest recovered recording only, so both
             // buttons take one at a time however many are listed.

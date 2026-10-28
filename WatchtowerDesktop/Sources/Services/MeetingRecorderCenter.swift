@@ -144,7 +144,9 @@ final class MeetingRecorderCenter {
         let audioURL: URL
         let eventID: String?
         let title: String?
-        let isPrivate: Bool
+        /// `setRecoverablePrivate` until it is transcribed; true when the
+        /// choice was never recorded (MEETPRIV fails closed).
+        var isPrivate: Bool
 
         var id: URL { audioURL }
     }
@@ -1011,6 +1013,14 @@ final class MeetingRecorderCenter {
         await persistPrivate(isPrivate, for: job.audioURL)
     }
 
+    /// The recovered pill's lock on a recording not yet transcribed: in
+    /// memory and its pending row.
+    func setRecoverablePrivate(_ audioURL: URL, _ isPrivate: Bool) async {
+        guard let index = recoverable.firstIndex(where: { $0.audioURL == audioURL }) else { return }
+        recoverable[index].isPrivate = isPrivate
+        await persistPrivate(isPrivate, for: audioURL)
+    }
+
     /// Keeps the owner's microphone out of the active capture while `muted`
     /// (the call audio is still recorded). No-op when nothing is captured.
     func setMicMuted(_ muted: Bool) {
@@ -1385,8 +1395,7 @@ final class MeetingRecorderCenter {
         let busy = Set(jobs.map(\.audioURL)).union(captureAudioURL.map { [$0] } ?? [])
         await tombstoneLegacyAudioOnce(store: store, busy: busy)
         await prunePendingRows(store: store, busy: busy)
-        let fallback = TranscriptionConfig.fromDefaults(defaults).privateByDefault
-        for entry in Self.recoverable(in: recordingsDirectory, store: store, unknownPrivate: fallback)
+        for entry in Self.recoverable(in: recordingsDirectory, store: store)
         where !busy.contains(entry.audioURL) {
             addRecoverable(entry)
         }
@@ -1404,13 +1413,16 @@ final class MeetingRecorderCenter {
         let title = defaults.string(forKey: Self.pendingTitleKey)
         if FileManager.default.fileExists(atPath: path) {
             let url = URL(fileURLWithPath: path)
+            // No private choice was ever recorded for it: private until the
+            // owner opens the lock (MEETPRIV fails closed).
             do {
-                try await store.begin(recording: url.lastPathComponent, eventID: eventID, title: title, at: clock())
+                try await store.begin(recording: url.lastPathComponent, eventID: eventID, title: title,
+                                      isPrivate: true, at: clock())
             } catch {
                 print("[MeetingRecorder] could not record the legacy pending recording: \(error.localizedDescription)")
                 return
             }
-            addRecoverable(RecoverableRecording(audioURL: url, eventID: eventID, title: title, isPrivate: false))
+            addRecoverable(RecoverableRecording(audioURL: url, eventID: eventID, title: title, isPrivate: true))
         }
         defaults.removeObject(forKey: Self.pendingAudioPathKey)
         defaults.removeObject(forKey: Self.pendingEventIDKey)
@@ -1920,10 +1932,9 @@ final class MeetingRecorderCenter {
     /// The recordings to recover, oldest first: the rows (not dismissed) whose
     /// audio is still in `directory`, then — merged in name order — every
     /// `rec_*` audio file there with no row and no saved transcript (its
-    /// private flag unknown: `unknownPrivate`, the Settings default).
-    private static func recoverable(
-        in directory: URL, store: PendingTranscriptStore, unknownPrivate: Bool
-    ) -> [RecoverableRecording] {
+    /// private flag unknown, so private: MEETPRIV fails closed, and the
+    /// recovered pill's lock lets the owner open it before transcribing).
+    private static func recoverable(in directory: URL, store: PendingTranscriptStore) -> [RecoverableRecording] {
         let names: [String]
         do {
             names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
@@ -1957,7 +1968,7 @@ final class MeetingRecorderCenter {
         for name in audio where !withRow.contains(name) {
             let url = directory.appendingPathComponent(name)
             if saved.contains(url.path) { continue }
-            byName[name] = RecoverableRecording(audioURL: url, eventID: nil, title: nil, isPrivate: unknownPrivate)
+            byName[name] = RecoverableRecording(audioURL: url, eventID: nil, title: nil, isPrivate: true)
         }
         return byName.keys.sorted { recoverySortKey($0) < recoverySortKey($1) }.compactMap { byName[$0] }
     }
