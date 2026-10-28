@@ -16,9 +16,9 @@ struct RecordingHeaderActions: View {
     /// False once every utterance is deleted: there is nothing to export.
     let hasContent: Bool
     let center: RecordingActionsCenter
-    /// The row's flag as stored now (nil: no row), read back after a failed
-    /// change.
-    let readPrivate: @Sendable () async throws -> Bool?
+    /// The row's flag as stored now (false: no row), read back after a
+    /// failed change.
+    let readPrivate: @Sendable () async throws -> Bool
     /// The flag landed (the CLI answered), even after the owner moved on.
     let onPrivateChanged: (Bool) -> Void
     /// No CLI to run.

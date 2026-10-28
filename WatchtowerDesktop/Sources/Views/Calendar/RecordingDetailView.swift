@@ -509,12 +509,12 @@ struct RecordingDetailView: View {
 
     /// The row's stored flag, for `RecordingActionsCenter.setPrivate`'s
     /// read-back after a failed change.
-    private var readStoredPrivate: @Sendable () async throws -> Bool? {
+    private var readStoredPrivate: @Sendable () async throws -> Bool {
         let db = appState.databaseManager
         let transcriptID = transcriptID
         return {
             guard let db else { throw DatabaseNotOpen() }
-            return try await db.dbPool.read { try MeetingTranscriptQueries.fetch($0, id: transcriptID)?.isPrivate }
+            return try await db.dbPool.read { try MeetingTranscriptQueries.fetch($0, id: transcriptID)?.isPrivate == true }
         }
     }
 

@@ -152,14 +152,16 @@ final class RecordingActionsCenterTests: XCTestCase {
         let done = expectation(description: "changed")
         var reported: [Bool] = []
 
-        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner), readPrivate: { nil }) {
+        center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { false }, onChanged: {
             reported.append($0)
             done.fulfill()
-        }
+        })
         XCTAssertTrue(center.changingPrivate.contains(5))
-        center.setPrivate(transcriptID: 5, false, service: TranscriptSaveService(runner: runner), readPrivate: { nil }) { _ in
+        center.setPrivate(transcriptID: 5, false, service: TranscriptSaveService(runner: runner),
+                          readPrivate: { false }, onChanged: { _ in
             XCTFail("a second change of the same recording while one runs is ignored")
-        }
+        })
         await fulfillment(of: [done], timeout: 5)
         await waitUntil { !center.changingPrivate.contains(5) }
 
@@ -173,9 +175,9 @@ final class RecordingActionsCenterTests: XCTestCase {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
 
         center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
-                          readPrivate: { false }) { _ in
+                          readPrivate: { false }, onChanged: { _ in
             XCTFail("no change landed")
-        }
+        })
         await waitUntil { !center.changingPrivate.contains(5) }
 
         XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
@@ -191,10 +193,10 @@ final class RecordingActionsCenterTests: XCTestCase {
         var reported: [Bool] = []
 
         center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
-                          readPrivate: { true }) {
+                          readPrivate: { true }, onChanged: {
             reported.append($0)
             done.fulfill()
-        }
+        })
         await fulfillment(of: [done], timeout: 5)
         await waitUntil { !center.changingPrivate.contains(5) }
 
@@ -209,9 +211,9 @@ final class RecordingActionsCenterTests: XCTestCase {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
 
         center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
-                          readPrivate: { throw CLIRunnerError.nonZeroExit(code: 1, stderr: "db") }) { _ in
+                          readPrivate: { throw CLIRunnerError.nonZeroExit(code: 1, stderr: "db") }, onChanged: { _ in
             XCTFail("the flag is not known to have landed")
-        }
+        })
         await waitUntil { !center.changingPrivate.contains(5) }
 
         XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
@@ -223,9 +225,9 @@ final class RecordingActionsCenterTests: XCTestCase {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
 
         center.setPrivate(transcriptID: 5, false, service: TranscriptSaveService(runner: runner),
-                          readPrivate: { true }) { _ in
+                          readPrivate: { true }, onChanged: { _ in
             XCTFail("no change landed")
-        }
+        })
         await waitUntil { !center.changingPrivate.contains(5) }
 
         XCTAssertTrue(center.lastError[5]?.hasPrefix("Couldn't change Private: ") == true)
@@ -240,10 +242,10 @@ final class RecordingActionsCenterTests: XCTestCase {
         var reported: [Bool] = []
 
         center.setPrivate(transcriptID: 5, true, service: TranscriptSaveService(runner: runner),
-                          readPrivate: { nil }) {
+                          readPrivate: { false }, onChanged: {
             reported.append($0)
             done.fulfill()
-        }
+        })
         await fulfillment(of: [done], timeout: 5)
         await waitUntil { !center.changingPrivate.contains(5) }
 

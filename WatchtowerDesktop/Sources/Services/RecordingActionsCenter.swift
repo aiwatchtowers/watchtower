@@ -44,7 +44,7 @@ final class RecordingActionsCenter {
         transcriptID: Int64,
         _ isPrivate: Bool,
         service: TranscriptSaveService,
-        readPrivate: @escaping @Sendable () async throws -> Bool?,
+        readPrivate: @escaping @Sendable () async throws -> Bool,
         onChanged: @escaping @MainActor (Bool) -> Void
     ) {
         guard !changingPrivate.contains(transcriptID) else { return }
@@ -77,10 +77,10 @@ final class RecordingActionsCenter {
     /// (logged) counts as not known, so the failure is shown as it is.
     private static func landedPrivate(
         _ transcriptID: Int64,
-        _ readPrivate: @Sendable () async throws -> Bool?
+        _ readPrivate: @Sendable () async throws -> Bool
     ) async -> Bool {
         do {
-            return try await readPrivate() == true
+            return try await readPrivate()
         } catch {
             NSLog("RecordingActionsCenter: re-reading recording %lld after a failed Private change failed: %@",
                   transcriptID, String(describing: error))
