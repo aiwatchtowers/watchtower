@@ -276,7 +276,9 @@ final class BoardWriteWiringTests: XCTestCase {
         XCTAssertEqual(arrived.map(\.id).filter { $0 == "comment-900" || $0 == "comment-901" }.count, 2)
 
         let stale = try XCTUnwrap(BoardTargetDetailModel(
-            targetID: 415, snapshot: try snapshot(fixture.store), now: now.addingTimeInterval(PostedComment.keepFor + 1),
+            // From the phone's own stamp: the test's `now` predates the run.
+            targetID: 415, snapshot: try snapshot(fixture.store),
+            now: try XCTUnwrap(fixture.writer.postedComments.map(\.postedAt).max()).addingTimeInterval(PostedComment.keepFor + 1),
             posted: fixture.writer.postedComments
         )).thread
         XCTAssertFalse(stale.contains { $0.id == "comment-900" }, "a posted comment is not kept forever")
