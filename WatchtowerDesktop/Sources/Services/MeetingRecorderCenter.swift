@@ -1148,12 +1148,16 @@ final class MeetingRecorderCenter {
         let startedURL = captureAudioURL
         let eventID = currentEventID
         let title = currentTitle
-        let isPrivate = currentPrivate
 
+        // `currentPrivate` is read only after this await, in the same turn
+        // that sets `captureState = .idle`: the indicator's lock stays live
+        // (`setCapturePrivate`) for as long as Stop finalizes the file, so a
+        // flip in that window must reach the job (MEETPRIV-01).
         let result: RecordingResult
         do {
             result = try await recorder.stop() // also finishes liveSamples
         } catch {
+            let isPrivate = currentPrivate
             // `recorder.stop()` finishes `liveSamples` before throwing, so the
             // live task is still draining the buffered backlog through the
             // (heavy) engine. Cancel it — `StreamingTranscriber.run` checks
@@ -1203,6 +1207,7 @@ final class MeetingRecorderCenter {
             return
         }
 
+        let isPrivate = currentPrivate
         captureState = .idle
         captureAudioURL = nil
         stopLevelsTask()

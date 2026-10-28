@@ -102,6 +102,38 @@ final class MeetingRecorderPrivateTests: MeetingRecorderTestCase {
         XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
     }
 
+    /// The lock stays live while Stop finalizes the file: a flip in that
+    /// window reaches the saved job, on the success and the failure path.
+    func testLockFlippedWhileStopFinalizesReachesTheJob() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 12)
+        let runner = FakeCLIRunner(stdout: privateEnvelope)
+        let center = makeCenter(recorder: recorder, runner: runner, defaults: try isolatedDefaults())
+        recorder.duringStop = { await center.setCapturePrivate(true) }
+
+        await center.startRecording(eventID: nil, title: "Late lock", config: config(privateByDefault: false))
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        XCTAssertTrue(try XCTUnwrap(runner.invocations.first).contains("--private"))
+    }
+
+    func testLockFlippedWhileAFailingStopFinalizesReachesTheFailedJob() async throws {
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        let center = makeCenter(recorder: recorder, runner: FakeCLIRunner(stdout: privateEnvelope),
+                                defaults: try isolatedDefaults())
+        recorder.duringStop = { await center.setCapturePrivate(true) }
+
+        await center.startRecording(eventID: nil, title: "Late lock", config: config(privateByDefault: false))
+        let started = try startedRecording()
+        defer { removeSidecars(started) }
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        XCTAssertEqual(center.jobs.map(\.isPrivate), [true])
+    }
+
     func testSetCapturePrivateIsANoOpWhenNothingIsCaptured() async throws {
         let center = makeCenter(runner: FakeCLIRunner(stdout: recapOKEnvelope), defaults: try isolatedDefaults())
         await center.setCapturePrivate(true)
