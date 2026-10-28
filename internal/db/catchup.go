@@ -165,7 +165,8 @@ func renderStreamTopics(id int, topicsJSON string) string {
 // transcript summaries (area "transcripts") created inside the window. Meetings
 // are keyed on the recap's created_at because calendar_events retains only ~24h
 // of past events while recaps survive (spec §5.2). Title resolution for a recap:
-// calendar event title → linked transcript title → "Meeting".
+// calendar event title → linked transcript title → "Meeting". Private
+// recordings and the recaps they own are skipped (MEETPRIV-02).
 func (db *DB) ListCatchupMeetings(from, to float64, limit int) ([]CatchupItem, error) {
 	fromISO, toISO := unixToISO(from), unixToISO(to)
 	recaps, err := db.listCatchupRecaps(fromISO, toISO, limit)
@@ -185,7 +186,7 @@ func (db *DB) listCatchupRecaps(fromISO, toISO string, limit int) ([]CatchupItem
 		FROM meeting_recaps r
 		LEFT JOIN calendar_events e ON e.id = r.event_id
 		LEFT JOIN meeting_transcripts t ON t.id = r.transcript_id
-		WHERE r.created_at > ? AND r.created_at <= ?
+		WHERE r.created_at > ? AND r.created_at <= ? AND `+recapNotPrivate+`
 		ORDER BY r.created_at ASC LIMIT ?`, fromISO, toISO, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing catchup recaps: %w", err)
@@ -211,7 +212,7 @@ func (db *DB) listCatchupTranscripts(fromISO, toISO string, limit int) ([]Catchu
 	rows, err := db.Query(`
 		SELECT id, title, COALESCE(summary_json, ''), created_at
 		FROM meeting_transcripts
-		WHERE event_id IS NULL AND summary_json IS NOT NULL AND created_at > ? AND created_at <= ?
+		WHERE event_id IS NULL AND summary_json IS NOT NULL AND private = 0 AND created_at > ? AND created_at <= ?
 		ORDER BY created_at ASC LIMIT ?`, fromISO, toISO, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing catchup transcripts: %w", err)

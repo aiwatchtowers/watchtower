@@ -3011,5 +3011,13 @@ BEGIN
     VALUES ('image', 'target', 'target:' || NEW.id, NEW.id, NEW.path, NEW.file_name,
             NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END;
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
+WHEN OLD.private != NEW.private
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
 """#
 }

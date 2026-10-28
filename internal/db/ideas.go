@@ -976,13 +976,15 @@ type TranscriptForIdeas struct {
 // always "now"), a meeting_transcripts row's created_at genuinely
 // approximates its content time — the recording happens around when the
 // row is created — so bounding on it here is correct as-is, not a variant
-// of the GB1 bug ([OWNER] confirmed 2026-08-08, GB12).
+// of the GB1 bug ([OWNER] confirmed 2026-08-08, GB12). Private recordings,
+// and a recap another private recording of the same event owns, are never
+// read (MEETPRIV-02); the floor simply moves past them with later rows.
 func (db *DB) ListTranscriptsForIdeasAfter(floor int64, toISO string) ([]TranscriptForIdeas, error) {
 	query := `SELECT mt.id, COALESCE(mt.event_id, ''), mt.title,
-			COALESCE(mr.recap_json, mt.summary_json, ''), mt.created_at
+			COALESCE(r.recap_json, mt.summary_json, ''), mt.created_at
 		FROM meeting_transcripts mt
-		LEFT JOIN meeting_recaps mr ON mr.event_id = mt.event_id
-		WHERE mt.id > ?`
+		LEFT JOIN meeting_recaps r ON r.event_id = mt.event_id AND ` + recapNotPrivate + `
+		WHERE mt.id > ? AND mt.private = 0`
 	args := []any{floor}
 	if toISO != "" {
 		query += ` AND mt.created_at <= ?`

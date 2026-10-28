@@ -52,7 +52,10 @@ func sortedKeys(set map[string]bool) []string {
 	return keys
 }
 
-// transcriptSource renders one document per meeting transcript.
+// transcriptSource renders one document per meeting transcript. A private
+// recording renders as nil, so it is never indexed and one turned private is
+// deleted on the next pass: the private flip marks it in kb_dirty (migration
+// 00164) and Keys leaves it out of the reconcile (MEETPRIV-02).
 type transcriptSource struct{}
 
 func (transcriptSource) Name() string { return "transcript" }
@@ -64,7 +67,7 @@ func (transcriptSource) Changed(ctx context.Context, q Queryer, cursor string, _
 }
 
 func (transcriptSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
-	return queryStrings(ctx, q, `SELECT 'transcript:' || id FROM meeting_transcripts`)
+	return queryStrings(ctx, q, `SELECT 'transcript:' || id FROM meeting_transcripts WHERE private = 0`)
 }
 
 type transcriptSegment struct {
@@ -81,7 +84,7 @@ func (transcriptSource) Build(ctx context.Context, q Queryer, key string) (*Doc,
 	}
 	var title, createdAt, text, segmentsJSON string
 	err := q.QueryRowContext(ctx, `SELECT title, created_at, transcript_text, COALESCE(segments_json, '')
-		FROM meeting_transcripts WHERE id = ?`, id).Scan(&title, &createdAt, &text, &segmentsJSON)
+		FROM meeting_transcripts WHERE id = ? AND private = 0`, id).Scan(&title, &createdAt, &text, &segmentsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -127,8 +130,14 @@ func (transcriptSource) Build(ctx context.Context, q Queryer, key string) (*Doc,
 	return doc, nil
 }
 
-// recapSource renders one document per meeting recap.
+// recapSource renders one document per meeting recap. A recap owned by a
+// private recording (transcript_id) renders as nil, like a private
+// transcript (MEETPRIV-02).
 type recapSource struct{}
+
+// recapNotPrivate keeps a recap whose owning recording is not private; the
+// same predicate as internal/db's for alias r.
+const recapNotPrivate = `NOT EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = r.transcript_id AND pt.private = 1)`
 
 func (recapSource) Name() string { return "recap" }
 
@@ -139,7 +148,7 @@ func (recapSource) Changed(ctx context.Context, q Queryer, cursor string, _ time
 }
 
 func (recapSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
-	return queryStrings(ctx, q, `SELECT 'recap:' || id FROM meeting_recaps`)
+	return queryStrings(ctx, q, `SELECT 'recap:' || r.id FROM meeting_recaps r WHERE `+recapNotPrivate)
 }
 
 // Build joins the event title in at render time. Accepted v1 limit: a later
@@ -152,7 +161,7 @@ func (recapSource) Build(ctx context.Context, q Queryer, key string) (*Doc, erro
 	}
 	var recapJSON, createdAt, eventID, eventTitle string
 	err := q.QueryRowContext(ctx, `SELECT r.recap_json, r.created_at, COALESCE(r.event_id,''), COALESCE(e.title,'')
-		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE r.id = ?`, id).
+		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE r.id = ? AND `+recapNotPrivate, id).
 		Scan(&recapJSON, &createdAt, &eventID, &eventTitle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

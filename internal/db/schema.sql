@@ -2285,6 +2285,17 @@ BEGIN
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END;
 
+-- A recording turned private (or back) re-renders its document and the recaps
+-- it owns; a private one renders as nil and leaves the index (see 00164).
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
+WHEN OLD.private != NEW.private
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+
 -- External knowledge sources (see 00074)
 CREATE TABLE IF NOT EXISTS ext_sources (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,

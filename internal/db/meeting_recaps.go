@@ -115,6 +115,18 @@ func (db *DB) GetMeetingRecap(eventID string) (*MeetingRecap, error) {
 	return scanMeetingRecapRow(db.QueryRow(meetingRecapSelectCols+` WHERE event_id = ?`, eventID))
 }
 
+// recapNotPrivate is the SQL predicate, over the meeting_recaps alias r, that
+// keeps a recap unless the recording owning it (transcript_id) is private
+// (MEETPRIV-02). A recap with no owning recording (pasted text) is kept.
+const recapNotPrivate = `NOT EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = r.transcript_id AND pt.private = 1)`
+
+// GetMeetingRecapForAI is GetMeetingRecap for a reader whose output reaches a
+// model: a recap owned by a private recording reads as none (MEETPRIV-02).
+func (db *DB) GetMeetingRecapForAI(eventID string) (*MeetingRecap, error) {
+	return scanMeetingRecapRow(db.QueryRow(`SELECT r.id, r.event_id, r.transcript_id, r.source_text, r.recap_json, r.created_at, r.updated_at
+		FROM meeting_recaps r WHERE r.event_id = ? AND `+recapNotPrivate, eventID))
+}
+
 // GetMeetingRecapByTranscript returns the recap linked to the given transcript,
 // or (nil, nil) if none. This is the path that still resolves an orphaned recap
 // (event deleted, event_id NULL) — see 00056.
