@@ -26,7 +26,7 @@ enum CoachEvidenceTarget: Equatable {
             if !digits.isEmpty, digits.allSatisfy(\.isNumber), let id = Int64(digits) { return .terminalSession(id) }
             return .text("session")
         case "hint": return .statistics
-        case "round": return .text("review round")
+        case "review_round": return .text("review round")
         default: return .text(item.kind)
         }
     }

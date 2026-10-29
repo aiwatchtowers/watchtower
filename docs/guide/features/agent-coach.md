@@ -20,7 +20,7 @@ replaces: [agent-coach-suggestions, instructions-suggestions]
 changed: Suggestions now live in Analytics and on Home, and repeated directions you give agents come through the coach.
 -->
 
-Once a week the background daemon looks at the last four weeks: your marks on spec review findings (**Comment** counts as a real problem, **Not useful** as noise), the first round of your code reviews, the lines you sent to agents and chats, and the hints in **Analytics**. When a pattern shows up in at least three different sessions, specs or review rounds, it becomes a suggestion. At most three wait for you at once, and a suggestion you decline never comes back.
+Once a week the background daemon looks at the last four weeks: your marks on spec review findings (**Comment** counts as a real problem, **Not useful** as noise), the first round of your code reviews, the lines you sent to agents and chats, and the hints in **Analytics**. When a pattern shows up in at least three different sessions, specs or review rounds, it becomes a suggestion. At most three wait for you at once, and a suggestion you decline is not proposed again unless the text it would change has changed since.
 
 A suggestion edits one place, always your own setup and never a file in a repository:
 

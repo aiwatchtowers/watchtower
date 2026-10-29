@@ -259,9 +259,10 @@ final class HomeCenterTests: XCTestCase {
             let stderr = #"{"ok":false,"error":"x","code":"\#(code)"}"# + "\ncoach: x\n"
             let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
             let line = await appState.decideCoachProposal(id: 7, accept: true, runner: runner)
-            XCTAssertEqual(line, "That proposal changed — showing the next one")
+            XCTAssertNil(line, "the changed line lives on HomeCenter.coachNote only")
         }
         XCTAssertEqual(appState.homeCenter.todayReads, reads + 2)
+        XCTAssertEqual(appState.homeCenter.coachNote, "That proposal changed — showing the next one")
     }
 
     /// The note outlives the row the re-read removed, and is cleared on its clock.

@@ -730,7 +730,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(target("session", "s12"), .terminalSession(12))
         XCTAssertEqual(target("session", "sess-x"), .text("session"))
         XCTAssertEqual(target("hint", "hint:H1@wb3"), .statistics)
-        XCTAssertEqual(target("round", "round:4"), .text("review round"))
+        XCTAssertEqual(target("review_round", "round:4"), .text("review round"))
         XCTAssertEqual(target("chat", "c9"), .text("chat"))
         XCTAssertEqual(target("suggestion", "sg:2"), .text("suggestion"))
     }

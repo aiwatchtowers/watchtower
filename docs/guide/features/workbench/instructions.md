@@ -55,7 +55,7 @@ To keep a direction while you chat, start a message with `remember:`, `remember 
 
 ### Suggestions
 
-The [agent coach](../agent-coach.md) reads what you typed in your recent sessions, from both agents, and in your chats. When you gave the same standing direction in at least three sessions, it suggests adding it to your instructions. Nothing changes until you accept it. You see the newest suggestion on Home as **Coach suggests**, and all of them in a workbench's **Analytics**, under **Proposed edits**. Suggestions from before the coach took over once moved there: the newest became coach suggestions, and the others stop showing. A suggestion that moved is accepted or declined in the coach only. A suggestion you dismissed earlier is never suggested again.
+The [agent coach](../agent-coach.md) reads what you typed in your recent sessions, from both agents, and in your chats. When you gave the same standing direction in at least three sessions, it suggests adding it to your instructions. Nothing changes until you accept it. You see the newest suggestion on Home as **Coach suggests**, and all of them in a workbench's **Analytics**, under **Proposed edits**. Suggestions from before the coach took over once moved there: the newest became coach suggestions, and the others stop showing. A suggestion that moved is accepted or declined in the coach only. A suggestion you dismissed earlier is not suggested again, unless it was carried into the coach and the text it would change has changed since.
 
 ## Using it
 

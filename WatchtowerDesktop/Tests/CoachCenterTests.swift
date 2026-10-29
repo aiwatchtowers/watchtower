@@ -236,10 +236,4 @@ final class CoachCenterTests: XCTestCase {
         XCTAssertEqual(diff, "-a\n+b")
         XCTAssertNil(center.cardErrors[5])
     }
-
-    func testStoredAllPeriodReadsAsWeek() {
-        XCTAssertEqual(AgentAnalyticsCenter.Period.stored(0), .week)
-        XCTAssertEqual(AgentAnalyticsCenter.Period.stored(1), .day)
-        XCTAssertEqual(AgentAnalyticsCenter.Period.stored(30), .month)
-    }
 }

@@ -360,6 +360,20 @@ func TestCoachRun_DryRunWritesNothing(t *testing.T) {
 	_, statErr := os.Stat(coachStampPathForTest(t))
 	assert.True(t, os.IsNotExist(statErr), "and does not touch the weekly stamp")
 
+	// A failed suggestion fold does not stop the run: it is logged and the
+	// proposals are still made.
+	prevImport := coachImportSuggestions
+	coachImportSuggestions = func(*db.DB, string, time.Time) (int, error) { return 0, errors.New("fold boom") }
+	t.Cleanup(func() { coachImportSuggestions = prevImport })
+	stdout, stderr, err := runCoachSplit(t, "run", "--json")
+	require.NoError(t, err, stderr)
+	assert.Contains(t, stderr, "fold boom")
+	assert.JSONEq(t, `true`, string(coachJSONObject(t, stdout)["ok"]))
+	all, err = d.ListCoachProposals()
+	require.NoError(t, err)
+	assert.Len(t, all, 1, "the run went on to propose")
+	coachImportSuggestions = prevImport
+
 	// A failed judge step does not stop the proposals (as in the daemon); the
 	// output says why judging failed.
 	prevJudge := coachJudge

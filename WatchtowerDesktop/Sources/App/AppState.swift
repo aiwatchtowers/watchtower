@@ -1858,7 +1858,7 @@ final class AppState {
     private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
         let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
-        agentAnalyticsCenter?.stop()
+        agentAnalyticsCenter?.stop(); coachCenter?.stop()
         (agentAnalyticsCenter, vm.agentAnalytics) = (analytics, analytics)
         let coach = CoachCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         coach.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }

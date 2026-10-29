@@ -387,25 +387,38 @@ func (db *DB) FoldInstructionSuggestions(now time.Time,
 		if err != nil {
 			return err
 		}
+		type chosen struct {
+			id int64
+			p  CoachProposal
+		}
+		var picked []chosen
 		for _, s := range list {
 			before, err := suggestionTargetTextTx(tx, s)
 			if err != nil {
 				return err
 			}
-			movedTo := int64(-1)
 			if p, ok := decide(open, s, before); ok {
-				id, err := insertCoachProposal(tx, p, now)
-				if err != nil {
-					return err
-				}
-				if id != 0 {
-					p.ID, p.Status = id, "open"
-					open = append(open, p)
-					movedTo = id
-					written++
-				}
+				open = append(open, p) // holds its slot and destination for the rows after it
+				picked = append(picked, chosen{s.ID, p})
+				continue
 			}
-			if err := moveInstructionSuggestionTx(tx, s.ID, movedTo); err != nil {
+			if err := moveInstructionSuggestionTx(tx, s.ID, -1); err != nil {
+				return err
+			}
+		}
+		// Written oldest first, so the newest-seen suggestion ends with the
+		// highest id (the coach rows order by created_at DESC, id DESC).
+		for i := len(picked) - 1; i >= 0; i-- {
+			id, err := insertCoachProposal(tx, picked[i].p, now)
+			if err != nil {
+				return err
+			}
+			movedTo := int64(-1)
+			if id != 0 {
+				movedTo = id
+				written++
+			}
+			if err := moveInstructionSuggestionTx(tx, picked[i].id, movedTo); err != nil {
 				return err
 			}
 		}

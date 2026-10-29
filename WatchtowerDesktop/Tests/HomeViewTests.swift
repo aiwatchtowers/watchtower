@@ -368,6 +368,18 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(calls.map(\.1), [true])
     }
 
+    /// Decline asks first: one press runs nothing.
+    func testHomeDeclineNeedsConfirmation() async throws {
+        var calls: [(Int64, Bool)] = []
+        let view = HomeContent(
+            snapshot: viewSnapshot(coach: Self.coach), today: Date(), onLink: { _ in },
+            onDecideCoach: { id, accept in calls.append((id, accept)); return nil },
+            onHideGettingReady: {})
+        try view.inspect().find(button: "Decline").tap()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(calls.isEmpty)
+    }
+
     /// The "changed" note shows with no row left, and beside a replacement row.
     func testCoachNoteShowsWithAndWithoutARow() throws {
         let note = "That proposal changed — showing the next one"

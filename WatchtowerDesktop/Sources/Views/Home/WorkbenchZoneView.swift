@@ -123,6 +123,7 @@ private struct HomeCoachRow: View {
     let onOpen: (Int64) -> Void
     @State private var busy = false
     @State private var note: String?
+    @State private var confirmDecline = false
 
     var body: some View {
         let proposal = coach.proposal
@@ -149,7 +150,7 @@ private struct HomeCoachRow: View {
                 Button("Open in Analytics") { onOpen(coach.targetWorkbench) }
                     .buttonStyle(.kitQuiet)
                 Spacer(minLength: Spacing.regular)
-                Button("Decline") { decide(accept: false) }
+                Button("Decline") { confirmDecline = true }
                     .buttonStyle(.kitQuiet)
                     .disabled(busy)
                 if !preview.truncated {
@@ -161,6 +162,12 @@ private struct HomeCoachRow: View {
             .controlSize(.small)
         }
         .homeZoneInset()
+        .confirmationDialog("Decline this proposal?", isPresented: $confirmDecline) {
+            Button("Decline", role: .destructive) { decide(accept: false) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Decline for good? It will not be proposed again.")
+        }
     }
 
     /// "Coach suggests · Session instructions · all workbenches".

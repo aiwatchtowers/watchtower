@@ -118,7 +118,8 @@ extension AppState {
     /// Accept / Decline from Home's coach row, through `coach accept|decline
     /// <id> --json`. A success re-reads Home at once (the CLI writes from
     /// another process, which the GRDB observation never sees); a proposal
-    /// that changed under the row reloads Home and says so; any other
+    /// that changed under the row reloads Home and says so through
+    /// `HomeCenter.coachNote` (nil here: one line, not two); any other
     /// failure comes back as text for the row to show. `runner` replaces
     /// the CLI in tests.
     func decideCoachProposal(id: Int64, accept: Bool, runner: (any CLIRunnerProtocol)? = nil) async -> String? {
@@ -130,7 +131,7 @@ extension AppState {
                 if failure.code == "stale" || failure.code == "state_changed" {
                     await homeCenter.rereadNow()
                     homeCenter.showCoachNote(Self.coachChangedLine)
-                    return Self.coachChangedLine
+                    return nil
                 }
                 return failure.error
             }

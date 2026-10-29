@@ -51,10 +51,10 @@ func TestImportSuggestions_CarriesNewestIntoFreeSlots(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, n, "two free slots")
 
-	open, err := d.ListCoachProposals("open") // newest id first
+	open, err := d.ListCoachProposals("open") // highest id first
 	require.NoError(t, err)
 	require.Len(t, open, 3)
-	carried, next := open[1], open[0]
+	carried, next := open[0], open[1] // the newest-seen suggestion has the highest id
 	assert.Equal(t, sql.NullInt64{Int64: carried.ID, Valid: true}, movedTo(t, d.DB, newest))
 	assert.Equal(t, sql.NullInt64{Int64: next.ID, Valid: true}, movedTo(t, d.DB, second))
 	assert.Equal(t, sql.NullInt64{Int64: -1, Valid: true}, movedTo(t, d.DB, third))
@@ -140,4 +140,24 @@ func TestImportSuggestions_WhyInLanguage(t *testing.T) {
 		require.Len(t, open, 1)
 		assert.Equal(t, tc.want, open[0].Why, tc.lang)
 	}
+}
+
+func TestImportSuggestions_BusyDestinationAndWorkbenchChatRetired(t *testing.T) {
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "acme", 0)
+	// An open proposal already edits the global session text.
+	_, err := d.InsertCoachProposal(db.CoachProposal{Fingerprint: "busy", Kind: "add", Destination: DestSession,
+		Title: "t", Why: "w", Metric: "owner_loop", AfterText: "Be brief.", Sources: 3}, sigNow)
+	require.NoError(t, err)
+	busy := addSuggestion(t, d.DB, "Run the linter first", db.InstructionSession, 0, 3, sigNow)
+	chat := addSuggestion(t, d.DB, "Answer briefly", db.InstructionChat, wb, 3, sigNow.Add(-time.Hour))
+
+	n, err := ImportSuggestions(d.DB, "", sigNow)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Equal(t, sql.NullInt64{Int64: -1, Valid: true}, movedTo(t, d.DB, busy), "same destination as an open proposal: retired")
+	assert.Equal(t, sql.NullInt64{Int64: -1, Valid: true}, movedTo(t, d.DB, chat), "a chat suggestion bound to a workbench: retired")
+	all, err := d.ListCoachProposals()
+	require.NoError(t, err)
+	assert.Len(t, all, 1, "no proposal was written")
 }

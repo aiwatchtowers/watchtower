@@ -532,8 +532,9 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 	now := time.Now()
 	res := coachRunJSON{OK: true, DryRun: coachFlagDryRun, Proposals: []coachProposalJSON{}}
 	if !coachFlagDryRun {
+		// A failed fold must not stop the run (the daemon's phase logs it too).
 		if _, err := coachImportSuggestions(e.db, e.cfg.Digest.Language, now); err != nil {
-			return nil, err
+			fmt.Fprintf(cmd.ErrOrStderr(), "coach: folding instruction suggestions: %v\n", err)
 		}
 		judged, cuts, err := coachJudge(e.db, e.al, now)
 		if err != nil {

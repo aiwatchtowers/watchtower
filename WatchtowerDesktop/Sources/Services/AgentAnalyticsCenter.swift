@@ -26,10 +26,6 @@ final class AgentAnalyticsCenter {
         case day = 1
         case week = 7
         case month = 30
-
-        /// A stored raw value read back: the retired "all history" (0) and
-        /// anything unknown mean the default, 7 days.
-        static func stored(_ raw: Int) -> Self { Self(rawValue: raw) ?? .week }
     }
 
     private(set) var overviews: [Int64: SessionReportCenter.Snapshot<AgentReportOverview>] = [:]
