@@ -10,8 +10,10 @@ h2{font-size:14px;color:#a1a1a6;margin:28px 0 10px}
 .mac{width:640px;background:#1e1e20;border:1px solid #3a3a3c;border-radius:12px;padding:18px 22px}
 .sec{color:#8e8e93;font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin:16px 0 6px}
 .group{background:#2a2a2d;border-radius:8px}
-.item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid #38383b}
-.item:first-child{border-top:0}
+.item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px}
+.item .btn.red{visibility:hidden}
+.item:hover,.item.hover{background:#333336}
+.item:hover .btn.red,.item.hover .btn.red{visibility:visible}
 .grow{flex:1}
 .sub{color:#8e8e93;font-size:12px;margin-top:2px}
 .btn{background:#3a3a3d;border-radius:6px;padding:3px 10px;color:#e6e6e8;font-size:12px}
@@ -25,7 +27,7 @@ h2{font-size:14px;color:#a1a1a6;margin:28px 0 10px}
 .err{color:#ff6961}
 .num{font-variant-numeric:tabular-nums}
 table{border-collapse:collapse;width:100%}
-td,th{padding:6px 12px;text-align:left;border-top:1px solid #38383b}
+td,th{padding:6px 12px;text-align:left}
 th{color:#8e8e93;font-weight:500;border-top:0}
 /* iPhone */
 .phone{width:300px;height:620px;background:#000;border:1px solid #3a3a3c;border-radius:38px;padding:14px 12px;box-sizing:border-box;display:flex;flex-direction:column}
@@ -44,7 +46,7 @@ th{color:#8e8e93;font-weight:500;border-top:0}
 .link{color:#0a84ff}
 </style></head><body>
 <h1>Relay client — mockups (2026-10-29)</h1>
-<div class="note">Spec: docs/superpowers/specs/2026-10-29-relay-client-design.md. Copy and layout only; colours follow the design kit when built (docs/design/desktop-style-guide.md). Sample names are neutral.</div>
+<div class="note">Spec: docs/superpowers/specs/2026-10-29-relay-client-design.md. Copy and layout only; colours follow the design kit when built (docs/design/desktop-style-guide.md): Desktop rows are `SettingsSection` + `.kitRow`, no separators, row actions on hover. Sample names are neutral.</div>
 
 <h2>1. Desktop — Settings → Mobile → Phones (this Mac runs over Relay)</h2>
 <div class="note">Each phone shows its transport. A phone without a subscription is told it gets no updates while the Mac runs over Relay. The hub line says who switched and when. Spec §10.</div>
@@ -56,7 +58,7 @@ th{color:#8e8e93;font-weight:500;border-top:0}
 </div>
 <div class="sec">Phones</div>
 <div class="group">
-<div class="item"><div class="grow">iPhone A<div class="sub">Linked 12 Oct · subscribed</div></div><span class="pill p-relay">Relay</span><span class="btn red">Remove…</span></div>
+<div class="item hover"><div class="grow">iPhone A<div class="sub">Linked 12 Oct · subscribed · row hovered: Remove shows</div></div><span class="pill p-relay">Relay</span><span class="btn red">Remove…</span></div>
 <div class="item"><div class="grow">iPhone B<div class="sub warn">Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, or subscribe on iPhone B.</div></div><span class="pill p-none">No updates</span><span class="btn red">Remove…</span></div>
 <div class="item"><div class="grow">iPhone C<div class="sub warn">2 actions from this phone were not delivered — it shows them with Retry.</div></div><span class="pill p-relay">Relay</span><span class="btn red">Remove…</span></div>
 </div>
@@ -162,6 +164,48 @@ Changes reach your phone in under a second instead of tens of seconds.<br><br>
 <div class="iitem"><span class="grow">Move “Fix login” to Done<div class="sub">Today 09:59</div></span><span class="link">Retry</span></div>
 </div>
 <div class="igroup"><div class="iitem" style="color:#ff453a">Dismiss All</div></div>
+</div>
+</div>
+
+<h2>6. iPhone — Diagnostics and edge states</h2>
+<div class="note">Phone-side timings (spec §10); Mac needs an update (§5.10); subscription moved (§9); app too old for the relay (§7); three Macs in slots (§8).</div>
+<div class="row">
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Settings</div><div class="nav">Diagnostics</div>
+<div class="ihead">Action → result on screen · 7 days</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Relay<div class="sub">214 actions</div></span><span style="color:#8e8e93">p50 0.31 s · p90 0.7 s</span></div>
+<div class="iitem"><span class="grow">iCloud<div class="sub">31 actions</div></span><span style="color:#8e8e93">p50 6.8 s · p90 22 s</span></div>
+</div>
+<div class="ifoot">Measured on this iPhone only. Nothing is sent anywhere.</div>
+<div class="ihead">Battery</div>
+<div class="igroup"><div class="iitem" style="color:#8e8e93">(today's battery report)</div></div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Macs</div><div class="nav">Home Mac</div>
+<div class="ihead">Connection</div>
+<div class="igroup">
+<div class="iitem"><span class="grow" style="color:#8e8e93">Relay<div class="sub warn">Update Watchtower on this Mac to use Relay</div></span></div>
+<div class="iitem"><span class="grow">iCloud</span><span class="check">✓</span></div>
+</div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="nav">Now</div>
+<div class="banner">Your Relay subscription moved to another iPhone. This iPhone is back on iCloud. <span class="link">Restore Purchases</span></div>
+<div class="banner">Update Watchtower from the App Store to keep using Relay.</div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Macs</div><div class="nav">Add Mac</div>
+<div class="banner">Your subscription already has 3 Macs. Remove one to add this Mac over Relay.</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Work Mac</span><span style="color:#ff453a">Remove</span></div>
+<div class="iitem"><span class="grow">Home Mac</span><span style="color:#ff453a">Remove</span></div>
+<div class="iitem"><span class="grow">Studio Mac</span><span style="color:#ff453a">Remove</span></div>
+</div>
+<div class="ifoot">Up to 5 replacements in 30 days. Or add this Mac over iCloud.</div>
 </div>
 </div>
 </body></html>
