@@ -92,6 +92,7 @@ This keeps an agent that was talked into running such a command from going ahead
 |---|---|
 | `watchtower ai models` | Models per provider and tier |
 | `watchtower usage plan` | Claude plan limits (5-hour, weekly) |
+| `watchtower usage llm [--since today\|7d\|30d] [--json]` | AI calls, tokens and cost: Watchtower, your automations, chats, workbenches ([AI providers, models and cost](../concepts/ai-providers-and-cost.md)) |
 | `watchtower prompts`, `tune` | Prompt templates and feedback-based tuning |
 | `--provider claude\|codex\|ollama` | Per-command provider override |
 

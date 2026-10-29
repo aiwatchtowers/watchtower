@@ -48,6 +48,7 @@ var cliContentCommands = map[string]bool{
 	"kb search":                        true,
 	"meeting-prep":                     true,
 	"meeting-prep transcript chapters": true,
+	"meeting-prep transcript export":   true,
 	"meeting-prep transcript followup": true,
 	"meeting-prep transcript list":     true,
 	"meeting-prep transcript notes":    true,

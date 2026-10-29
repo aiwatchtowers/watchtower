@@ -356,6 +356,12 @@ CREATE INDEX idx_linear_teams_key ON linear_teams(key)
 index	idx_linear_user_map_slack
 CREATE INDEX idx_linear_user_map_slack ON linear_user_map(slack_user_id)
 
+index	idx_llm_calls_at
+CREATE INDEX idx_llm_calls_at ON llm_calls(at)
+
+index	idx_llm_calls_surface_at
+CREATE INDEX idx_llm_calls_surface_at ON llm_calls(surface, at)
+
 index	idx_media_items_chat
 CREATE INDEX idx_media_items_chat ON media_items(chat_attachment_id)
 
@@ -2093,6 +2099,30 @@ position REAL NOT NULL DEFAULT 0,
 PRIMARY KEY (account_id, id)
 )
 
+table	llm_calls
+CREATE TABLE llm_calls (
+id INTEGER PRIMARY KEY,
+call_id TEXT NOT NULL UNIQUE,
+at TEXT NOT NULL,
+surface TEXT NOT NULL CHECK (surface IN ('watchtower','chat','workbench')),
+purpose TEXT NOT NULL DEFAULT '',
+process TEXT NOT NULL DEFAULT '',
+provider TEXT NOT NULL DEFAULT '',
+model TEXT NOT NULL DEFAULT '',
+input_tokens INTEGER NOT NULL DEFAULT 0,
+cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+output_tokens INTEGER NOT NULL DEFAULT 0,
+usage_estimated INTEGER NOT NULL DEFAULT 0,
+reported_cost_usd REAL,
+est_cost_usd REAL,
+duration_ms INTEGER NOT NULL DEFAULT 0,
+ok INTEGER NOT NULL DEFAULT 1,
+automation_id INTEGER,
+automation_run_id INTEGER
+)
+
 table	media_items
 CREATE TABLE media_items (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2204,7 +2234,7 @@ transcript_text TEXT NOT NULL,
 summary_json TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT)
+, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)))
 
 table	memory_aliases
 CREATE TABLE memory_aliases (
@@ -2430,7 +2460,7 @@ transcript TEXT,
 meta_json TEXT,
 started_at REAL NOT NULL,
 transcribed_at REAL
-)
+, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)))
 
 table	people_card_summaries
 CREATE TABLE people_card_summaries (
@@ -3504,6 +3534,28 @@ DELETE FROM transcripts_fts WHERE rowid = OLD.id;
 INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
 SELECT NEW.id, NEW.transcript_text, NEW.id, NEW.title
 WHERE NEW.transcript_text != '';
+END
+
+trigger	meeting_transcripts_private_delete_recaps
+CREATE TRIGGER meeting_transcripts_private_delete_recaps BEFORE DELETE ON meeting_transcripts
+WHEN OLD.private = 1
+BEGIN
+DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
+END
+
+trigger	meeting_transcripts_private_kb_dirty
+CREATE TRIGGER meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
+WHEN OLD.private != NEW.private
+BEGIN
+INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
+ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+INSERT INTO kb_dirty (source, key)
+SELECT 'chat_artifact', 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+WHERE c.context_type = 'meeting' AND c.context_id = CAST(NEW.id AS TEXT)
+ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
 END
 
 trigger	messages_ad
@@ -5245,6 +5297,28 @@ GROUP BY up.ancestor
 4	type	TEXT	notnull=1	dflt=''	pk=0
 5	position	REAL	notnull=1	dflt=0	pk=0
 
+## llm_calls
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	call_id	TEXT	notnull=1	dflt=NULL	pk=0
+2	at	TEXT	notnull=1	dflt=NULL	pk=0
+3	surface	TEXT	notnull=1	dflt=NULL	pk=0
+4	purpose	TEXT	notnull=1	dflt=''	pk=0
+5	process	TEXT	notnull=1	dflt=''	pk=0
+6	provider	TEXT	notnull=1	dflt=''	pk=0
+7	model	TEXT	notnull=1	dflt=''	pk=0
+8	input_tokens	INTEGER	notnull=1	dflt=0	pk=0
+9	cache_read_tokens	INTEGER	notnull=1	dflt=0	pk=0
+10	cache_write_5m_tokens	INTEGER	notnull=1	dflt=0	pk=0
+11	cache_write_1h_tokens	INTEGER	notnull=1	dflt=0	pk=0
+12	output_tokens	INTEGER	notnull=1	dflt=0	pk=0
+13	usage_estimated	INTEGER	notnull=1	dflt=0	pk=0
+14	reported_cost_usd	REAL	notnull=0	dflt=NULL	pk=0
+15	est_cost_usd	REAL	notnull=0	dflt=NULL	pk=0
+16	duration_ms	INTEGER	notnull=1	dflt=0	pk=0
+17	ok	INTEGER	notnull=1	dflt=1	pk=0
+18	automation_id	INTEGER	notnull=0	dflt=NULL	pk=0
+19	automation_run_id	INTEGER	notnull=0	dflt=NULL	pk=0
+
 ## media_items
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	kind	TEXT	notnull=1	dflt=NULL	pk=0
@@ -5331,6 +5405,7 @@ GROUP BY up.ancestor
 13	chapters_json	TEXT	notnull=0	dflt=NULL	pk=0
 14	speaker_names_changed_at	TEXT	notnull=0	dflt=NULL	pk=0
 15	summary_updated_at	TEXT	notnull=0	dflt=NULL	pk=0
+16	private	INTEGER	notnull=1	dflt=0	pk=0
 
 ## memory_aliases
 0	alias	TEXT	notnull=0	dflt=NULL	pk=1
@@ -5537,6 +5612,7 @@ GROUP BY up.ancestor
 4	meta_json	TEXT	notnull=0	dflt=NULL	pk=0
 5	started_at	REAL	notnull=1	dflt=NULL	pk=0
 6	transcribed_at	REAL	notnull=0	dflt=NULL	pk=0
+7	private	INTEGER	notnull=1	dflt=0	pk=0
 
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

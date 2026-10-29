@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 )
 
 // FieldDiscovery handles custom field discovery and classification for one
@@ -167,7 +168,7 @@ Be generous — if a field COULD provide useful context for understanding how a 
 	}
 	userMessage := fmt.Sprintf("Classify these %d custom fields:\n\n%s", len(inputs), string(dataJSON))
 
-	response, usage, err := fd.aiProvider.QuerySync(ctx, systemPrompt, userMessage, "")
+	response, usage, err := fd.aiProvider.QuerySync(llmusage.WithPurpose(ctx, "jira.fields"), systemPrompt, userMessage, "")
 	fd.addUsage(usage)
 	if err != nil {
 		return fmt.Errorf("LLM classification: %w", err)
@@ -367,7 +368,7 @@ Consider the sample values to determine the correct role.`
 	userMessage := fmt.Sprintf("Assign roles to these custom fields for board %q:\n\n%s",
 		board.Name, string(dataJSON))
 
-	response, mapUsage, err := fd.aiProvider.QuerySync(ctx, systemPrompt, userMessage, "")
+	response, mapUsage, err := fd.aiProvider.QuerySync(llmusage.WithPurpose(ctx, "jira.fields"), systemPrompt, userMessage, "")
 	fd.addUsage(mapUsage)
 	if err != nil {
 		return nil, fmt.Errorf("LLM field mapping: %w", err)

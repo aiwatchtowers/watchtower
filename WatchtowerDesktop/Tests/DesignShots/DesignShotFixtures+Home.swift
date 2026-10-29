@@ -26,7 +26,8 @@ enum HomeShotFixtures {
                 snapshot: try snapshot(gettingReady: gettingReady ? Self.gettingReady : .hidden),
                 today: now, calendar: calendar,
                 feedErrors: [.target(4): "The database is locked."],
-                onLink: { _ in }, onHideGettingReady: {}, purges: purges, learn: learn))
+                onLink: { _ in }, onHideGettingReady: {}, purges: purges, learn: learn,
+                aiSpend: HomeAISpend(value: "≥ $6.40", tooltip: LLMUsagePresentation.homeAISpendTooltip)))
         } catch {
             XCTFail("home shot fixture failed: \(error)")
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
@@ -74,7 +75,6 @@ enum HomeShotFixtures {
         numbers.messagesSent = 12
         numbers.meetings = 4
         numbers.meetingHours = 3.5
-        numbers.aiSpendUSD = 1.84
         numbers.plan5h = 41
         numbers.planWeek = 63
         numbers.workbenchCreated = 5

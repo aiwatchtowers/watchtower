@@ -453,15 +453,15 @@ final class HomeViewTests: XCTestCase {
         numbers.messagesSent = 12
         numbers.meetings = 4
         numbers.meetingHours = 3.5
-        numbers.aiSpendUSD = 1.84
         numbers.plan5h = 41
         numbers.planWeek = 63
         numbers.workbenchCreated = 5
         numbers.workbenchDone = 3
         numbers.meetingsRecorded = 1
-        let all = try texts(NumbersZoneView(numbers: numbers))
-        for text in ["Today in numbers", "38 / 12", "messages to me / sent", "4 · 3.5 h", "meetings", "$1.84",
-                     "AI spend", "41% · 63%", "Claude 5 h · week", "5 / 3", "workbench targets new / done", "1",
+        let spend = HomeAISpend(value: "≈ $1.84", tooltip: LLMUsagePresentation.homeAISpendTooltip)
+        let all = try texts(NumbersZoneView(numbers: numbers, aiSpend: spend))
+        for text in ["Today in numbers", "38 / 12", "messages to me / sent", "4 · 3.5 h", "meetings", "≈ $1.84",
+                     "AI spend today", "41% · 63%", "Claude 5 h · week", "5 / 3", "workbench targets new / done", "1",
                      "meeting recorded"] {
             XCTAssertTrue(all.contains(text), text)
         }
@@ -470,13 +470,13 @@ final class HomeViewTests: XCTestCase {
         var sparse = HomeNumbers()
         sparse.meetings = 0
         sparse.meetingHours = 0
-        sparse.failed = ["aiSpendUSD"]
+        sparse.failed = ["plan5h"]
         let few = try texts(NumbersZoneView(numbers: sparse))
         XCTAssertTrue(few.contains("0"))
         XCTAssertTrue(few.contains("—"))
-        XCTAssertTrue(few.contains("AI spend"))
+        XCTAssertTrue(few.contains("Claude 5 h · week"))
+        XCTAssertTrue(few.contains("AI spend today"), "AI spend always shows, \"—\" until its read lands")
         XCTAssertFalse(few.contains("messages to me / sent"))
-        XCTAssertFalse(few.contains { $0.hasPrefix("Claude") })
         // Nothing at all: the header still shows.
         XCTAssertTrue(try texts(NumbersZoneView(numbers: HomeNumbers())).contains("Today in numbers"))
     }

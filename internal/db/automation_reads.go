@@ -184,12 +184,14 @@ type MeetingRecapRow struct {
 const meetingRecapWhen = `COALESCE(e.start_time, r.created_at)`
 
 // ListMeetingRecaps returns recaps whose event start (else created_at) is in
-// [since, until), newest first, without their texts.
+// [since, until), newest first, without their texts. Here and in the gets, a
+// recap owned by a private recording does not exist (MEETPRIV-02).
 func (db *DB) ListMeetingRecaps(ctx context.Context, since, until string, limit int) ([]MeetingRecapRow, error) {
 	if err := positiveLimit("listing meeting recaps", limit); err != nil {
 		return nil, err
 	}
 	w := readWhere{}
+	w.add(RecapNotPrivate)
 	if since != "" {
 		w.add(meetingRecapWhen+" >= ?", since)
 	}
@@ -234,7 +236,7 @@ func (db *DB) getMeetingRecapRow(ctx context.Context, where string, key any) (*M
 	var r MeetingRecapRow
 	err := db.QueryRowContext(ctx, `SELECT r.id, COALESCE(r.event_id, ''), r.transcript_id, r.source_text, r.recap_json,
 		r.created_at, r.updated_at, COALESCE(e.title, ''), COALESCE(e.start_time, '')
-		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE `+where, key).
+		FROM meeting_recaps r LEFT JOIN calendar_events e ON e.id = r.event_id WHERE `+where+` AND `+RecapNotPrivate, key).
 		Scan(&r.ID, &r.EventID, &r.TranscriptID, &r.SourceText, &r.RecapJSON, &r.CreatedAt, &r.UpdatedAt,
 			&r.EventTitle, &r.EventStart)
 	if err == sql.ErrNoRows {

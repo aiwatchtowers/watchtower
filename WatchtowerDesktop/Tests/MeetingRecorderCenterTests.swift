@@ -726,7 +726,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             removeSidecars(audio)
         }
         try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "STALE cached text",
-                                              metaJSON: #"{"durationSec":5,"langStats":{}}"#, at: Date())
+                                              metaJSON: #"{"durationSec":5,"langStats":{}}"#,
+                                              isPrivate: false, at: Date())
 
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         var engineLoads = 0
@@ -744,7 +745,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        await center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo")
+        await center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo", isPrivate: false)
         XCTAssertNil(pendingRow(audio)?.transcript, "prepareRetry must drop the stale kept transcript")
         XCTAssertNil(pendingRow(audio)?.metaJSON, "prepareRetry must drop the stale metadata")
 
@@ -774,7 +775,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             try? FileManager.default.removeItem(at: audio)
             removeSidecars(audio)
         }
-        try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: txt, metaJSON: json, at: Date())
+        try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: txt, metaJSON: json,
+                                              isPrivate: false, at: Date())
 
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
@@ -824,7 +826,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        await center.prepareRetry(audioURL: audio, eventID: nil, title: "Ad hoc")
+        await center.prepareRetry(audioURL: audio, eventID: nil, title: "Ad hoc", isPrivate: false)
         let runTask = Task {
             await center.retryTranscription(config: threeWindowConfig())
         }
@@ -1226,11 +1228,12 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         diarizer: FakeDiarizer,
         defaults: UserDefaults,
         rolesEnabled: Bool = true,
-        registry: VoiceRegistrySnapshot = .empty
+        registry: VoiceRegistrySnapshot = .empty,
+        envelope: Data? = nil
     ) async throws -> DiarizationFlowResult {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
-        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let runner = TranscriptCapturingRunner(stdout: envelope ?? recapOKEnvelope)
         let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
             pendingStore: pendingStore,
@@ -1491,6 +1494,25 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
                        "the notification must flag the missing labels")
     }
 
+    /// The private notice does not hide the missing speaker labels.
+    func testPrivateSaveWithoutSpeakerLabelsSaysBoth() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.error = FakeDiarizer.FakeError()
+        let privateEnvelope = Data((#"{"transcript_id":7,"recap_ok":false,"recap_error":"private recording: recap skipped","#
+            + #""recap_skipped":true,"recap_skipped_reason":"private"}"#).utf8)
+
+        let flow = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(), envelope: privateEnvelope
+        )
+
+        XCTAssertEqual(flow.notifier.readyTitles, ["Roles — saved as private, no recap, without speaker labels"])
+    }
+
     func testLivePathRendersRolesFromDecodedFile() async throws {
         // The live path reaches renderRoles with samples: nil — the roles
         // decode is the ONLY decode (live STT never re-decodes the file).
@@ -1666,7 +1688,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         }
         // Exact old-format payload: durationSec + langStats only.
         try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "[Я] привет",
-                                              metaJSON: #"{"durationSec":42,"langStats":{"ru":42}}"#, at: Date())
+                                              metaJSON: #"{"durationSec":42,"langStats":{"ru":42}}"#,
+                                              isPrivate: false, at: Date())
 
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)

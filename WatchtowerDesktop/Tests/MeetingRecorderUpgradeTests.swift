@@ -129,7 +129,7 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
     /// A failed `removePending` after a save must not bring the recording back.
     func testARowOfASavedRecordingIsNotOffered() async throws {
         let saved = try oldAudio("rec_20260801_140000.caf")
-        try await pendingStore.begin(recording: saved.lastPathComponent, eventID: nil, title: "Saved", at: Date())
+        try await pendingStore.begin(recording: saved.lastPathComponent, eventID: nil, title: "Saved", isPrivate: false, at: Date())
         try await pendingDB.write { try TestDatabase.insertMeetingTranscript($0, audioPath: saved.path) }
         let center = try center()
         await center.restorePendingOnLaunch()
@@ -138,10 +138,10 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
 
     func testLaunchPrunesRowsWhoseAudioIsGone() async throws {
         let old = Date().addingTimeInterval(-86_400)
-        try await pendingStore.begin(recording: "rec_20260801_150000.caf", eventID: nil, title: "Gone", at: old)
+        try await pendingStore.begin(recording: "rec_20260801_150000.caf", eventID: nil, title: "Gone", isPrivate: false, at: old)
         try await pendingStore.dismiss(recording: "rec_20260801_160000.caf", at: old)
         let kept = try oldAudio("rec_20260801_170000.caf")
-        try await pendingStore.begin(recording: kept.lastPathComponent, eventID: nil, title: "Kept", at: old)
+        try await pendingStore.begin(recording: kept.lastPathComponent, eventID: nil, title: "Kept", isPrivate: false, at: old)
         let center = try center()
         await center.restorePendingOnLaunch()
         XCTAssertEqual(try pendingStore.pending().map(\.recording), [kept.lastPathComponent])
@@ -167,6 +167,48 @@ final class MeetingRecorderUpgradeTests: MeetingRecorderTestCase {
         XCTAssertEqual(try pendingStore.pending().count, 1)
     }
 
+    /// MEETPRIV: a lock flipped while the row is still being written is
+    /// re-applied once it lands, so a crash recovers the owner's choice.
+    func testMeetPriv01_ALockFlippedBeforeTheRowLandsReachesTheRow() async throws {
+        let store = GatedPendingStore(base: pendingStore)
+        let center = try center(store: store)
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+        let start = Task { await center.startRecording(eventID: nil, title: "Slow", config: config) }
+        let recording = await waitUntil("the capture to show") {
+            if case .recording = center.captureState { return true }
+            return false
+        }
+        XCTAssertTrue(recording)
+        await center.setCapturePrivate(true)
+        store.release()
+        await start.value
+
+        XCTAssertEqual(try pendingStore.pending().map(\.isPrivate), [true])
+    }
+
+    /// The same, when the capture is stopped before the row lands.
+    func testMeetPriv01_ALockFlippedThenStoppedBeforeTheRowLandsReachesTheRow() async throws {
+        let store = GatedPendingStore(base: pendingStore)
+        let recorder = FakeRecorder()
+        recorder.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        let center = try center(store: store, recorder: recorder)
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+        let start = Task { await center.startRecording(eventID: nil, title: "Slow", config: config) }
+        let recording = await waitUntil("the capture to show") {
+            if case .recording = center.captureState { return true }
+            return false
+        }
+        XCTAssertTrue(recording)
+        await center.setCapturePrivate(true)
+        await center.stopAndProcess(config: config)
+        store.release()
+        await start.value
+
+        XCTAssertEqual(try pendingStore.pending().map(\.isPrivate), [true])
+    }
+
     func testAFailingStoreNeverStopsTheCapture() async throws {
         let center = try center(store: FailingPendingStore())
         var config = singleWindowConfig()
@@ -186,15 +228,18 @@ private final class GatedPendingStore: PendingTranscriptStore, @unchecked Sendab
 
     func release() { gate.continuation.finish() }
 
-    func begin(recording: String, eventID: String?, title: String?, at: Date) async throws {
+    func begin(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws {
         for await _ in gate.stream {}
-        try await base.begin(recording: recording, eventID: eventID, title: title, at: at)
+        try await base.begin(recording: recording, eventID: eventID, title: title, isPrivate: isPrivate, at: at)
     }
-    func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool {
-        try await base.reserve(recording: recording, eventID: eventID, title: title, at: at)
+    func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool {
+        try await base.reserve(recording: recording, eventID: eventID, title: title, isPrivate: isPrivate, at: at)
     }
-    func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws {
-        try await base.saveTranscript(recording: recording, text: text, metaJSON: metaJSON, at: at)
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws -> Bool {
+        try await base.setPrivate(recording: recording, isPrivate)
+    }
+    func saveTranscript(recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date) async throws {
+        try await base.saveTranscript(recording: recording, text: text, metaJSON: metaJSON, isPrivate: isPrivate, at: at)
     }
     func clearTranscript(recording: String) async throws { try await base.clearTranscript(recording: recording) }
     func dismiss(recording: String, at: Date) async throws { try await base.dismiss(recording: recording, at: at) }
@@ -207,9 +252,14 @@ private final class GatedPendingStore: PendingTranscriptStore, @unchecked Sendab
 /// Every write fails; reads see nothing.
 private struct FailingPendingStore: PendingTranscriptStore {
     struct Failure: Error {}
-    func begin(recording: String, eventID: String?, title: String?, at: Date) async throws { throw Failure() }
-    func reserve(recording: String, eventID: String?, title: String?, at: Date) async throws -> Bool { throw Failure() }
-    func saveTranscript(recording: String, text: String, metaJSON: String, at: Date) async throws { throw Failure() }
+    func begin(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws { throw Failure() }
+    func reserve(recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date) async throws -> Bool {
+        throw Failure()
+    }
+    func setPrivate(recording: String, _ isPrivate: Bool) async throws -> Bool { throw Failure() }
+    func saveTranscript(recording: String, text: String, metaJSON: String, isPrivate: Bool, at: Date) async throws {
+        throw Failure()
+    }
     func clearTranscript(recording: String) async throws { throw Failure() }
     func dismiss(recording: String, at: Date) async throws { throw Failure() }
     func pending() throws -> [PendingTranscript] { [] }

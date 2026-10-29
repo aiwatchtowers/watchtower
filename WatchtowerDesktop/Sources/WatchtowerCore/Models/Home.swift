@@ -119,6 +119,8 @@ package enum HomeLink: Equatable, Sendable {
     case connect(ReadinessSource)
     /// A Getting ready card's Turn on (a feature waiting on Slack Digests).
     case turnOn(featureID: String)
+    /// The numbers' AI spend: Usage → Watchtower.
+    case usageWatchtower
 }
 
 /// The Workbench zone's read (`HomeQueries.workbench`): the open asks and the
@@ -146,7 +148,7 @@ extension HomeNumbers {
     /// Every field's name, as `failed` names them: a pool that could not be
     /// read at all fails them all.
     package static let fieldNames: Set<String> = [
-        "messagesToMe", "messagesSent", "meetings", "meetingHours", "aiSpendUSD",
+        "messagesToMe", "messagesSent", "meetings", "meetingHours",
         "plan5h", "planWeek", "workbenchCreated", "workbenchDone", "meetingsRecorded"
     ]
 }

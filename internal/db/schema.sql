@@ -1409,7 +1409,8 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     speaker_names_changed_at TEXT,
-    summary_updated_at TEXT
+    summary_updated_at TEXT,
+    private         INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)) -- 1 = never sent to an AI provider; skip it in every prompt-feeding read
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
 
@@ -2252,7 +2253,7 @@ CREATE TABLE IF NOT EXISTS kb_sources (
 
 -- Source deletions and edits (see 00139): KB documents to re-render, filled by triggers.
 CREATE TABLE IF NOT EXISTS kb_dirty (
-    source TEXT NOT NULL,              -- KB source name: slack | gmail | jira
+    source TEXT NOT NULL,              -- KB source name: slack | gmail | jira | transcript | recap, or a media_items.kb_source
     key    TEXT NOT NULL,              -- that source's document key (kb_documents.id)
     gen    INTEGER NOT NULL DEFAULT 0, -- bumped on every re-mark; the drain deletes only the gen it rendered
     PRIMARY KEY (source, key)
@@ -2282,6 +2283,31 @@ CREATE TRIGGER IF NOT EXISTS jira_comments_kb_dirty AFTER DELETE ON jira_comment
 BEGIN
     INSERT INTO kb_dirty (source, key) VALUES ('jira', 'jira:' || OLD.account_id || ':' || OLD.issue_key)
         ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+
+-- A recording turned private (or back) re-renders its document, the recaps it
+-- owns and the artifacts kept from its meeting chat; a private one renders as
+-- nil and leaves the index (see 00164).
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
+WHEN OLD.private != NEW.private
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key)
+        SELECT 'chat_artifact', 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+        FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+        WHERE c.context_type = 'meeting' AND c.context_id = CAST(NEW.id AS TEXT)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+
+-- Deleting a private recording deletes the recaps it owns instead of letting
+-- the foreign key orphan them into a readable recap (see 00164).
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_delete_recaps BEFORE DELETE ON meeting_transcripts
+WHEN OLD.private = 1
+BEGIN
+    DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
 END;
 
 -- External knowledge sources (see 00074)
@@ -3291,7 +3317,7 @@ CREATE TABLE IF NOT EXISTS instruction_suggestions (
     status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
     fingerprint     TEXT NOT NULL UNIQUE,                                   -- normalised direction; a dismissed repeat stays dismissed
     decided_at      TEXT NULL,
-    moved_to        INTEGER                                                 -- 00163: NULL = never moved, a coach_proposals id = carried into it, -1 = retired at the fold
+    moved_to        INTEGER                                                 -- 00166: NULL = never moved, a coach_proposals id = carried into it, -1 = retired at the fold
 );
 CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
 
@@ -3482,7 +3508,8 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     transcript     TEXT,
     meta_json      TEXT,
     started_at     REAL NOT NULL,
-    transcribed_at REAL
+    transcribed_at REAL,
+    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1))
 );
 
 -- An embedded chat's owner message queued but not yet sent (00157, #604;
@@ -3493,3 +3520,38 @@ CREATE TABLE IF NOT EXISTS chat_queued_drafts (
     text        TEXT NOT NULL,
     at          REAL NOT NULL
 );
+
+-- LLM usage ledger (00163): one row per finished (ok = 1) or failed (ok = 0)
+-- model call a Watchtower process made. at = RFC 3339 UTC finish time.
+-- surface: watchtower (Watchtower's own work, incl. automations — automation_id
+-- set), chat (ai session / ai query), workbench (workbench helpers). purpose =
+-- the call's source tag ('' = untagged); process = daemon, cli:<command path>,
+-- mcp:<surface>, …. Tokens: input_tokens is fresh input; cache writes split by
+-- TTL. usage_estimated = 1 when the tokens are a length/4 estimate.
+-- reported_cost_usd = the provider's own (API-equivalent) cost, NULL when none;
+-- est_cost_usd = price-table estimate, NULL when the model has no price. No
+-- foreign keys (rows outlive a deleted automation); kept 90 days.
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id                    INTEGER PRIMARY KEY,
+    call_id               TEXT NOT NULL UNIQUE,                -- 16 hex chars; makes spool imports idempotent
+    at                    TEXT NOT NULL,
+    surface               TEXT NOT NULL CHECK (surface IN ('watchtower','chat','workbench')),
+    purpose               TEXT NOT NULL DEFAULT '',
+    process               TEXT NOT NULL DEFAULT '',
+    provider              TEXT NOT NULL DEFAULT '',            -- claude | codex | ollama | http
+    model                 TEXT NOT NULL DEFAULT '',
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    usage_estimated       INTEGER NOT NULL DEFAULT 0,
+    reported_cost_usd     REAL,
+    est_cost_usd          REAL,
+    duration_ms           INTEGER NOT NULL DEFAULT 0,
+    ok                    INTEGER NOT NULL DEFAULT 1,
+    automation_id         INTEGER,                             -- automations.id, no FK; NULL = not an automation run
+    automation_run_id     INTEGER                              -- automation_runs.id, no FK
+);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);

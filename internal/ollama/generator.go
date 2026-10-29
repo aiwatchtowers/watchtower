@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
@@ -59,6 +60,16 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// One ledger row per request, recorded on every return below: the
+	// response's usage, estimated when absent.
+	start := time.Now()
+	var result chatResponse
+	var text string
+	ok := false
+	defer func() {
+		recordOllamaCall(ctx, model, start, result.Usage, systemPrompt+userMessage, text, ok)
+	}()
+
 	resp, err := g.http.Do(req)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("ollama request failed: %w", err)
@@ -70,7 +81,6 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 		return "", nil, "", logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
 	}
 
-	var result chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", nil, "", fmt.Errorf("decoding ollama response: %w", err)
 	}
@@ -87,10 +97,11 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 		return "", nil, "", fmt.Errorf("ollama returned no choices")
 	}
 
-	text := strings.TrimSpace(result.Choices[0].Message.Content)
+	text = strings.TrimSpace(result.Choices[0].Message.Content)
 	if text == "" {
 		return "", nil, "", fmt.Errorf("ollama returned empty result")
 	}
+	ok = true
 
 	var usage *digest.Usage
 	if result.Usage != nil {

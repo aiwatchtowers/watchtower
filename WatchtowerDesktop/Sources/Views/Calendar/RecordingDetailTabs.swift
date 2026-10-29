@@ -20,6 +20,9 @@ struct RecordingRecapTab: View {
     let recapFromOtherSource: Bool
     let chapters: MeetingChapters?
     let hasSegments: Bool
+    /// MEETPRIV-01: every AI action (recap, chapters, follow-up) gives way to
+    /// `PrivateRecordingNotice`; what was generated before stays readable.
+    let isPrivate: Bool
     let onRetryRecap: () -> Void
     let isRetrying: Bool
     let onGenerateChapters: () -> Void
@@ -54,7 +57,9 @@ struct RecordingRecapTab: View {
                 .font(.callout)
                 .textSelection(.enabled)
         }
-        followupButton(chapterIdx: nil, label: "Follow-up draft (whole meeting)")
+        if !isPrivate {
+            followupButton(chapterIdx: nil, label: "Follow-up draft (whole meeting)")
+        }
 
         ForEach(Array(chapters.chapters.enumerated()), id: \.offset) { idx, chapter in
             chapterGroup(idx: idx, chapter: chapter)
@@ -80,7 +85,9 @@ struct RecordingRecapTab: View {
                 if !chapter.openQuestions.isEmpty {
                     recapSubsection(title: "Open questions", items: chapter.openQuestions)
                 }
-                followupButton(chapterIdx: idx, label: "Follow-up draft")
+                if !isPrivate {
+                    followupButton(chapterIdx: idx, label: "Follow-up draft")
+                }
             }
             .padding(.top, 6)
         } label: {
@@ -131,12 +138,17 @@ struct RecordingRecapTab: View {
                             .foregroundStyle(.secondary)
                             .help("Already converted to a Target")
                     } else {
+                        // MEETPRIV: a Target feeds the briefing, day plan and
+                        // chat prompts, so a private recording makes none.
                         Button("Target") {
                             onConvertActionItem(chapterIdx, itemIdx)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
-                        .help("Create a Target from this action item")
+                        .disabled(isPrivate)
+                        .help(isPrivate
+                              ? "\(PrivateRecordingCopy.notSentToAI): no Target is made from it"
+                              : "Create a Target from this action item")
                     }
                 }
             }
@@ -156,6 +168,15 @@ struct RecordingRecapTab: View {
 
     @ViewBuilder
     private var chaptersFooter: some View {
+        if isPrivate {
+            PrivateRecordingNotice()
+        } else {
+            chaptersActions
+        }
+    }
+
+    @ViewBuilder
+    private var chaptersActions: some View {
         if let error = chaptersError {
             Label(error, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
@@ -242,6 +263,15 @@ struct RecordingRecapTab: View {
             .padding(.top, 24)
         }
 
+        if isPrivate {
+            PrivateRecordingNotice()
+        } else {
+            legacyRecapActions
+        }
+    }
+
+    @ViewBuilder
+    private var legacyRecapActions: some View {
         HStack(spacing: 8) {
             Button {
                 onRetryRecap()
@@ -373,6 +403,9 @@ struct FollowupDraftSheet: View {
 struct RecordingNotesTab: View {
     let transcript: MeetingTranscript
     let notesMD: String?
+    /// MEETPRIV-01: Generate gives way to `PrivateRecordingNotice`; the
+    /// owner's own notes stay editable.
+    let isPrivate: Bool
     let onGenerate: () -> Void
     let isGenerating: Bool
     let generationError: String?
@@ -387,16 +420,20 @@ struct RecordingNotesTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Button {
-                    onGenerate()
-                } label: {
-                    Label(notesMD == nil ? "Generate" : "Re-generate",
-                          systemImage: "sparkles")
-                        .font(.caption)
+                if isPrivate {
+                    PrivateRecordingNotice()
+                } else {
+                    Button {
+                        onGenerate()
+                    } label: {
+                        Label(notesMD == nil ? "Generate" : "Re-generate",
+                              systemImage: "sparkles")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isGenerating)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(isGenerating)
 
                 // Appending into `draft` rides the existing debounced autosave for
                 // free; isDisabled honors the same lock as the editor below so

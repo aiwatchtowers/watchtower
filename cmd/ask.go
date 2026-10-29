@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 
@@ -121,7 +122,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	runID, _ := database.CreatePipelineRun("ask", "cli", model)
 
-	resp, usage, err := aiClient.QuerySync(ctx, systemPrompt, userMessage, "")
+	resp, usage, err := aiClient.QuerySync(digest.WithSource(ctx, "ask"), systemPrompt, userMessage, "")
 
 	// Complete pipeline run regardless of outcome.
 	{

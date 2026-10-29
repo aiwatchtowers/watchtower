@@ -337,6 +337,26 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "agent-settings-coach-pointer", size: NSSize(width: 560, height: 420)) {
                 CoachPointerShotFixtures.pointer(settings: false)
+            },
+            // Usage → Watchtower (LLM usage ledger): filled (every gap line on), empty ledger, failed read.
+            DesignShot(name: "usage-watchtower-filled", size: NSSize(width: 860, height: 760)) {
+                LLMUsageShotFixtures.filled()
+            },
+            DesignShot(name: "usage-watchtower-empty", size: NSSize(width: 860, height: 360)) {
+                LLMUsageShotFixtures.screen(.emptyLedger)
+            },
+            DesignShot(name: "usage-watchtower-error", size: NSSize(width: 860, height: 360)) {
+                LLMUsageShotFixtures.screen(.failed(.timedOut))
+            },
+            DesignShot(name: "usage-watchtower-loading", size: NSSize(width: 860, height: 560)) {
+                LLMUsageShotFixtures.screen(.loading)
+            },
+            // The run log and the Progress tab: no tokens, a pointer to Usage → Watchtower.
+            DesignShot(name: "usage-run-log", size: NSSize(width: 860, height: 360)) {
+                LLMUsageShotFixtures.runLog()
+            },
+            DesignShot(name: "usage-progress-run", size: NSSize(width: 860, height: 420)) {
+                LLMUsageShotFixtures.progress()
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.

@@ -694,12 +694,14 @@ log.") and never reads as empty.
   `OwnerQueries.ownSlackUserIDs` (every non-removed Slack account; OWNER-01
   note). Meetings: `CalendarQueries.fetchEvents` through
   `HomeFeedQueries.isShownEvent`, only with a calendar connected, hours
-  rounded to 0.5. AI spend: `TokenUsageQueries.fetchUsage`. Plan: only when
+  rounded to 0.5. AI spend: `watchtower usage llm --since today`'s
+  `page_total` (Watchtower, own automations and chats), polled by
+  `HomeCenter` (`aiSpend`, every 5 minutes). Plan: only when
   `plan_usage_status.state == "ok"`. Workbench targets new/done: today's
   `target_status_history` rows of `project_id IS NOT NULL` targets (this is
   the PROJ-01 mirror — workbench targets only, never reaching the feed).
   Recorded: `meeting_transcripts` created today. View: `NumbersZoneView.swift`
-  (muted, nothing clickable).
+  (muted; only the AI spend cell is clickable — it opens Usage → Watchtower).
 
 ### Resolutions made while planning
 

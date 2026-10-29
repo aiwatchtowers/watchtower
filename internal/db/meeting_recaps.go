@@ -28,7 +28,11 @@ type recapExecer interface {
 
 // UpsertMeetingRecap inserts a new recap or updates the existing row for the
 // given event_id. transcriptID (0 = none) links the recap to its transcript so
-// it survives event deletion. updated_at is bumped to "now" on every call.
+// it survives event deletion; 0 unlinks it (a pasted recap belongs to no
+// recording). The one exception is a row a PRIVATE recording owns: its link is
+// kept whatever the writer passes, so no rewrite strips the ownership that
+// hides and deletes that recap (MEETPRIV-02). updated_at is bumped to "now"
+// on every call.
 func (db *DB) UpsertMeetingRecap(eventID, sourceText, recapJSON string, transcriptID int64) error {
 	return upsertMeetingRecap(db, eventID, sourceText, recapJSON, transcriptID)
 }
@@ -44,7 +48,10 @@ func upsertMeetingRecap(q recapExecer, eventID, sourceText, recapJSON string, tr
 		ON CONFLICT(event_id) DO UPDATE SET
 			source_text   = excluded.source_text,
 			recap_json    = excluded.recap_json,
-			transcript_id = excluded.transcript_id,
+			transcript_id = CASE WHEN EXISTS (
+				SELECT 1 FROM meeting_transcripts pt
+				WHERE pt.id = meeting_recaps.transcript_id AND pt.private = 1
+			) THEN meeting_recaps.transcript_id ELSE excluded.transcript_id END,
 			updated_at    = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 	`, eventID, sourceText, recapJSON, tid)
 	if err != nil {
@@ -111,8 +118,53 @@ func (db *DB) WriteTranscriptRecap(r TranscriptRecapRow) (err error) {
 const meetingRecapSelectCols = `SELECT id, event_id, transcript_id, source_text, recap_json, created_at, updated_at FROM meeting_recaps`
 
 // GetMeetingRecap returns the recap for the given event, or (nil, nil) if none.
+// It does not skip a recap owned by a private recording, so it serves writers
+// and the owner's own CLI only and must never feed a prompt — a reader whose
+// output reaches a model uses GetMeetingRecapForAI (MEETPRIV-02).
 func (db *DB) GetMeetingRecap(eventID string) (*MeetingRecap, error) {
 	return scanMeetingRecapRow(db.QueryRow(meetingRecapSelectCols+` WHERE event_id = ?`, eventID))
+}
+
+// RecapNotPrivate is the SQL predicate, over the meeting_recaps alias r, that
+// keeps a recap unless the recording owning it (transcript_id) is private
+// (MEETPRIV-02). A recap with no owning recording (pasted text) is kept.
+// Exported so the knowledge index (internal/kb) filters with the same text.
+const RecapNotPrivate = `NOT EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = r.transcript_id AND pt.private = 1)`
+
+// ChatNotPrivateMeeting is the SQL predicate, over the chat_conversations
+// alias c, that keeps a conversation unless it is the meeting chat of a
+// private recording (context_type 'meeting', context_id = the recording id;
+// MEETPRIV-02). Exported so the knowledge index filters with the same text.
+const ChatNotPrivateMeeting = `NOT (COALESCE(c.context_type, '') = 'meeting' AND EXISTS (SELECT 1 FROM meeting_transcripts pt WHERE pt.id = CAST(c.context_id AS INTEGER) AND pt.private = 1))`
+
+// MeetingChatArtifactKeys lists the knowledge-index keys
+// ("chat_artifact:<conversation>:<key>") of the artifacts kept from the
+// meeting chat of recording transcriptID — the keys migration 00164's flip
+// trigger marks — so kb.DropPrivateRecording can delete them at once.
+func (db *DB) MeetingChatArtifactKeys(transcriptID int64) ([]string, error) {
+	rows, err := db.Query(`SELECT 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+		FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+		WHERE c.context_type = 'meeting' AND c.context_id = CAST(? AS TEXT)`, transcriptID)
+	if err != nil {
+		return nil, fmt.Errorf("listing meeting chat artifacts of recording %d: %w", transcriptID, err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scanning meeting chat artifact key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+// GetMeetingRecapForAI is GetMeetingRecap for a reader whose output reaches a
+// model: a recap owned by a private recording reads as none (MEETPRIV-02).
+func (db *DB) GetMeetingRecapForAI(eventID string) (*MeetingRecap, error) {
+	return scanMeetingRecapRow(db.QueryRow(`SELECT r.id, r.event_id, r.transcript_id, r.source_text, r.recap_json, r.created_at, r.updated_at
+		FROM meeting_recaps r WHERE r.event_id = ? AND `+RecapNotPrivate, eventID))
 }
 
 // GetMeetingRecapByTranscript returns the recap linked to the given transcript,

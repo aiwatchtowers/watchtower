@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,8 +35,11 @@ var (
 	transcriptSaveFlagLangStats string
 	transcriptSaveFlagDuration  int
 	transcriptSaveFlagStdin     bool
+	transcriptSaveFlagPrivate   bool
 	transcriptListFlagEventID   string
 	transcriptFollowupChapter   int
+	transcriptExportFlagFormat  string
+	transcriptExportFlagOutput  string
 )
 
 // minRecapTranscriptChars gates the automatic recap (and chapters) generation
@@ -111,6 +115,25 @@ var transcriptChaptersCmd = &cobra.Command{
 	RunE: runTranscriptChapters,
 }
 
+var transcriptPrivateCmd = &cobra.Command{
+	Use:   "private <id> on|off",
+	Short: "Mark a saved recording private (never sent to an AI provider) or not",
+	Long: "Sets the recording's private flag and prints {id, private}. A private recording gets no recap, notes, chapters or follow-up, " +
+		"and every reader that feeds a model skips it and its recap (docs/features/private-meetings.md). " +
+		"Turning it off generates nothing by itself.",
+	Args: cobra.ExactArgs(2),
+	RunE: runTranscriptPrivate,
+}
+
+var transcriptExportCmd = &cobra.Command{
+	Use:   "export <id>",
+	Short: "Export a recording's transcript as txt, md, srt or json",
+	Long: "Renders the transcript (deleted utterances left out) to stdout, or with --output to a file written 0600. " +
+		"srt needs timed segments. Allowed for private recordings: nothing leaves the machine.",
+	Args: cobra.ExactArgs(1),
+	RunE: runTranscriptExport,
+}
+
 var transcriptFollowupCmd = &cobra.Command{
 	Use:   "followup <id>",
 	Short: "Draft a follow-up message from a transcript's chapters",
@@ -122,7 +145,12 @@ var transcriptFollowupCmd = &cobra.Command{
 
 func init() {
 	meetingPrepCmd.AddCommand(meetingTranscriptCmd)
-	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd, transcriptChaptersCmd, transcriptFollowupCmd)
+	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd, transcriptChaptersCmd, transcriptFollowupCmd,
+		transcriptPrivateCmd, transcriptExportCmd)
+
+	transcriptExportCmd.Flags().StringVar(&transcriptExportFlagFormat, "format", "", "txt, md, srt or json (required)")
+	transcriptExportCmd.Flags().StringVar(&transcriptExportFlagOutput, "output", "", "file to write (0600) instead of stdout")
+	_ = transcriptExportCmd.MarkFlagRequired("format")
 
 	transcriptFollowupCmd.Flags().IntVar(&transcriptFollowupChapter, "chapter", -1, "0-based chapter index to draft for (omit for a whole-meeting draft)")
 
@@ -139,6 +167,7 @@ func init() {
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagEventID, "event-id", "", "calendar event id to link the transcript to")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagTitle, "title", "", "transcript title (defaults to the event title or a timestamp)")
 	transcriptSaveCmd.Flags().StringVar(&transcriptSaveFlagLangStats, "lang-stats", "", "per-language duration stats JSON")
+	transcriptSaveCmd.Flags().BoolVar(&transcriptSaveFlagPrivate, "private", false, "save the recording as private: no recap or chapters are generated, now or later")
 
 	transcriptListCmd.Flags().StringVar(&transcriptListFlagEventID, "event-id", "", "filter transcripts by calendar event id")
 }
@@ -254,6 +283,7 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		TranscriptText: text,
 		SegmentsJSON:   segments,
 		SpeakersJSON:   speakers,
+		Private:        transcriptSaveFlagPrivate,
 	}
 	if eventID != "" {
 		tr.EventID = sql.NullString{String: eventID, Valid: true}
@@ -268,9 +298,12 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 
 	// The row is saved — from here on a recap failure must NOT flip the exit
 	// code; it is reported inside the envelope instead.
-	recapSkipped, chaptersOutcome, recapErr := runSaveGenerations(
+	if tr.Private { // MEETPRIV-01: nothing generated
+		return printTranscriptEnvelope(cmd, database, id, errPrivateSkip, segmentsErr, speakersErr, &errPrivateChaptersSkip, saveSkipPrivate)
+	}
+	skip, chaptersOutcome, recapErr := runSaveGenerations(
 		cmd.Context(), database, cfg, id, text, tr.SegmentsJSON.Valid, cmd.ErrOrStderr())
-	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome, recapSkipped)
+	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome, skip)
 }
 
 // resolveTranscriptSaveEvent returns save's event link and title. A queued
@@ -318,13 +351,53 @@ func warnDroppedTranscriptEvent(errOut io.Writer, eventID string) {
 	fmt.Fprintf(errOut, "warning: calendar event %s no longer exists (saving the transcript as a plain recording)\n", eventID)
 }
 
+// saveSkip is why save generated no recap. The envelope's recap_skipped stays
+// a Bool for both; a private recording, which also skips the chapters, adds
+// recap_skipped_reason/chapters_skipped_reason "private" and chapters_skipped.
+type saveSkip int
+
+const (
+	saveSkipNone saveSkip = iota
+	saveSkipTooShort
+	saveSkipPrivate
+)
+
+// The envelope errors of a private save (MEETPRIV-01); the chapters one is a
+// variable because the envelope takes its address.
+var (
+	errPrivateSkip         = errors.New("private recording: recap skipped")
+	errPrivateChaptersSkip = errors.New("private recording: chapters skipped")
+)
+
+// errRecordingPrivate is the refusal of every AI command on a private
+// recording (MEETPRIV-01).
+func errRecordingPrivate(id int64) error { return fmt.Errorf("recording %d is private", id) }
+
+// loadTranscriptForAI loads a recording an AI command is about to send to a
+// provider: a missing row and a private one are both errors, returned before
+// anything runs or is written.
+func loadTranscriptForAI(database *db.DB, id int64) (*db.MeetingTranscript, error) {
+	tr, err := database.GetMeetingTranscript(id)
+	if err != nil {
+		return nil, err
+	}
+	if tr == nil {
+		return nil, fmt.Errorf("transcript %d not found", id)
+	}
+	if tr.Private {
+		return nil, errRecordingPrivate(id)
+	}
+	return tr, nil
+}
+
 // runSaveGenerations runs save's post-insert AI steps: the recap (unless the
 // transcript is under minRecapTranscriptChars — the too-short skip) and,
 // when segments were persisted and the recap wasn't skipped, the chapters
 // pass. Returned values feed printTranscriptEnvelope verbatim.
-func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config, id int64, text string, hasSegments bool, errOut io.Writer) (recapSkipped bool, chaptersOutcome *error, recapErr error) {
-	recapSkipped = utf8.RuneCountInString(text) < minRecapTranscriptChars
+func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config, id int64, text string, hasSegments bool, errOut io.Writer) (skip saveSkip, chaptersOutcome *error, recapErr error) {
+	recapSkipped := utf8.RuneCountInString(text) < minRecapTranscriptChars
 	if recapSkipped {
+		skip = saveSkipTooShort
 		recapErr = fmt.Errorf("transcript too short (<%d chars): recap skipped", minRecapTranscriptChars)
 	} else {
 		recapErr = generateAndStoreTranscriptRecap(ctx, database, cfg, id, errOut)
@@ -338,7 +411,7 @@ func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config
 		_, chaptersErr := generateAndStoreTranscriptChapters(ctx, database, cfg, id, errOut)
 		chaptersOutcome = &chaptersErr
 	}
-	return recapSkipped, chaptersOutcome, recapErr
+	return skip, chaptersOutcome, recapErr
 }
 
 // loadTranscriptSegments reads and validates the optional --segments-file for
@@ -450,10 +523,8 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	if tr, err := database.GetMeetingTranscript(id); err != nil {
+	if _, err := loadTranscriptForAI(database, id); err != nil {
 		return err
-	} else if tr == nil {
-		return fmt.Errorf("transcript %d not found", id)
 	}
 
 	// The recap retry is never gated by minRecapTranscriptChars — an explicit
@@ -462,7 +533,7 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 	// The recap retry never touches segments or speakers — nothing attempted,
 	// nothing dropped, so segments_ok/speakers_ok are honestly true. Chapters
 	// are likewise not attempted here (nil ⇒ no chapters keys in the envelope).
-	return printTranscriptEnvelope(cmd, database, id, recapErr, nil, nil, nil, false)
+	return printTranscriptEnvelope(cmd, database, id, recapErr, nil, nil, nil, saveSkipNone)
 }
 
 // generateAndStoreTranscriptRecap runs the AI recap for a saved transcript and
@@ -473,12 +544,9 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 	if ctx == nil { // RunE invoked outside cobra's Execute (tests)
 		ctx = context.Background()
 	}
-	tr, err := database.GetMeetingTranscript(id)
+	tr, err := loadTranscriptForAI(database, id)
 	if err != nil {
 		return err
-	}
-	if tr == nil {
-		return fmt.Errorf("transcript %d not found", id)
 	}
 
 	runID, err := database.CreatePipelineRun("meeting_transcript", "cli", "auto")
@@ -588,9 +656,11 @@ func eventHasNoRecap(database *db.DB, eventID string, errOut io.Writer) bool {
 // keys, safe for the frozen Swift decoder. recapSkipped is true only when
 // runTranscriptSave skipped recap generation for a too-short transcript
 // (minRecapTranscriptChars); it adds the additive recap_skipped=true key —
-// the `transcript recap <id>` retry (never gated) always passes false, so
-// the key never appears in that envelope.
-func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr, segmentsErr, speakersErr error, chaptersErr *error, recapSkipped bool) error {
+// the `transcript recap <id>` retry (never gated) always passes
+// saveSkipNone, so the key never appears in that envelope. A private save
+// (MEETPRIV-01) reports recap_skipped and chapters_skipped true with
+// recap_skipped_reason and chapters_skipped_reason "private".
+func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr, segmentsErr, speakersErr error, chaptersErr *error, skip saveSkip) error {
 	recapErrMsg := ""
 	if recapErr != nil {
 		recapErrMsg = recapErr.Error()
@@ -612,8 +682,15 @@ func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, reca
 		"speakers_ok":    speakersErr == nil,
 		"speakers_error": speakersErrMsg,
 	}
-	if recapSkipped {
+	switch skip {
+	case saveSkipNone:
+	case saveSkipTooShort:
 		envelope["recap_skipped"] = true
+	case saveSkipPrivate:
+		envelope["recap_skipped"] = true
+		envelope["recap_skipped_reason"] = "private"
+		envelope["chapters_skipped"] = true
+		envelope["chapters_skipped_reason"] = "private"
 	}
 	if chaptersErr != nil {
 		chaptersErrMsg := ""
@@ -651,7 +728,7 @@ func runTranscriptList(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	rows, err := database.ListMeetingTranscripts(db.MeetingTranscriptFilter{EventID: transcriptListFlagEventID})
+	rows, err := database.ListMeetingTranscripts(db.MeetingTranscriptFilter{EventID: transcriptListFlagEventID, IncludePrivate: true})
 	if err != nil {
 		return err
 	}
@@ -722,6 +799,7 @@ func runTranscriptShow(cmd *cobra.Command, args []string) error {
 		"lang_stats":      tr.LangStats,
 		"transcript_text": tr.TranscriptText,
 		"summary_json":    summaryJSON,
+		"private":         tr.Private,
 		"created_at":      tr.CreatedAt,
 		"updated_at":      tr.UpdatedAt,
 	}
@@ -742,12 +820,9 @@ func runTranscriptNotes(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	tr, err := database.GetMeetingTranscript(id)
+	tr, err := loadTranscriptForAI(database, id)
 	if err != nil {
 		return err
-	}
-	if tr == nil {
-		return fmt.Errorf("transcript %d not found", id)
 	}
 
 	runID, err := database.CreatePipelineRun("meeting_notes", "cli", "auto")
@@ -799,12 +874,9 @@ func generateAndStoreTranscriptChapters(ctx context.Context, database *db.DB, cf
 	if ctx == nil { // RunE invoked outside cobra's Execute (tests)
 		ctx = context.Background()
 	}
-	tr, err := database.GetMeetingTranscript(id)
+	tr, err := loadTranscriptForAI(database, id)
 	if err != nil {
 		return "", err
-	}
-	if tr == nil {
-		return "", fmt.Errorf("transcript %d not found", id)
 	}
 	if !tr.SegmentsJSON.Valid {
 		return "", fmt.Errorf("transcript %d has no segments — chapters need per-utterance timecodes", id)
@@ -903,12 +975,9 @@ func runTranscriptFollowup(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	tr, err := database.GetMeetingTranscript(id)
+	tr, err := loadTranscriptForAI(database, id)
 	if err != nil {
 		return err
-	}
-	if tr == nil {
-		return fmt.Errorf("transcript %d not found", id)
 	}
 	if !tr.ChaptersJSON.Valid {
 		return fmt.Errorf("transcript %d has no chapters — generate them first (transcript chapters %d)", id, id)

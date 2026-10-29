@@ -186,7 +186,7 @@ func swapped(res sql.Result, err error, what string) (bool, error) {
 // InstructionSuggestion is one mined repeat the owner can add to the
 // instructions or dismiss. WorkbenchID is NULL for a global suggestion.
 // MovedTo is set once the row was folded into the agent coach (migration
-// 00163): a coach proposal id, or -1 for a row retired at the fold.
+// 00166): a coach proposal id, or -1 for a row retired at the fold.
 type InstructionSuggestion struct {
 	ID                           int64
 	Text                         string

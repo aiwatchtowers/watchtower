@@ -126,6 +126,25 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
+    /// MEETPRIV-03: a private recording's text never lands in
+    /// `meeting_recaps` — Go's prompt readers would see it through the
+    /// event's recap row. The link itself still lands.
+    func testMeetPriv03_LinkToEventPrivateRecordingCopiesNothingIntoRecaps() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1")
+            try TestDatabase.insertMeetingTranscript(
+                db, id: 1, transcriptText: "spoken words", summaryJSON: summaryJSON, isPrivate: true)
+            try MeetingTranscriptQueries.linkToEvent(db, id: 1, eventID: "evt-1")
+        }
+        try db.read { db in
+            let transcript = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(transcript.eventID, "evt-1")
+            XCTAssertTrue(transcript.isPrivate)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM meeting_recaps"), 0)
+        }
+    }
+
     /// The durable link: a recap whose event was deleted (event_id NULL,
     /// migration 00056 SET NULL) still resolves via its transcript_id, so an
     /// event-deleted recording keeps showing its recap.
@@ -183,6 +202,20 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
             XCTAssertFalse(items[1].hasNotes)
             XCTAssertEqual(items[1].snippet.count, 200, "snippet must be capped at 200 chars")
             XCTAssertEqual(items[1].eventID, "evt-1")
+        }
+    }
+
+    func test_recordingListProjectsPrivateFlag() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertMeetingTranscript(db, id: 1, title: "Open")
+            try TestDatabase.insertMeetingTranscript(db, id: 2, title: "Locked", isPrivate: true)
+        }
+        try db.read { db in
+            let items = try MeetingTranscriptQueries.fetchRecordingList(db)
+            XCTAssertEqual(Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.isPrivate) }), [1: false, 2: true])
+            XCTAssertEqual(try MeetingTranscriptQueries.fetch(db, id: 2)?.isPrivate, true)
+            XCTAssertEqual(try MeetingTranscriptQueries.fetch(db, id: 1)?.isPrivate, false)
         }
     }
 

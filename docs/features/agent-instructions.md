@@ -17,7 +17,7 @@ Migration `00137_agent_instructions.sql`, mirrored in `schema.sql`; Go access in
 
 - `owner_instructions(scope 'session'|'procedure' PRIMARY KEY, body, updated_at)` — the global texts.
 - `projects.session_instructions`, `projects.target_procedure` — nullable per-workbench texts.
-- `instruction_suggestions` — `text`, `field`, `workbench_id` (NULL = global), `session_count`, `workbench_count`, `first_seen_at`, `last_seen_at`, `status` open|added|dismissed, `fingerprint` UNIQUE, `decided_at`, `moved_to` (migration 00163: NULL, a coach proposal id, or `-1` = retired at the coach fold).
+- `instruction_suggestions` — `text`, `field`, `workbench_id` (NULL = global), `session_count`, `workbench_count`, `first_seen_at`, `last_seen_at`, `status` open|added|dismissed, `fingerprint` UNIQUE, `decided_at`, `moved_to` (migration 00166: NULL, a coach proposal id, or `-1` = retired at the coach fold).
 
 ## Rendering — `internal/instructions`
 

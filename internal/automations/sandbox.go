@@ -12,6 +12,7 @@ import (
 	"github.com/dop251/goja"
 
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/tools"
 )
 
@@ -218,12 +219,18 @@ type ModelUsage struct {
 
 // MeteredModelCall runs one model call under the meter: Meter.BeforeCall →
 // call → Meter.Debit → step.Usage. The usage call reports is debited even
-// when it also returns an error.
+// when it also returns an error. A run's call carries its automation and run
+// ids, so every LLM ledger row it records (llm(), agent(), a built-in
+// primitive) sums to what the run's row counts.
 func (e *Env) MeteredModelCall(step *Step, call func(ctx context.Context) (ModelUsage, error)) error {
 	if err := e.Meter.BeforeCall(); err != nil {
 		return err
 	}
-	u, err := call(e.Ctx)
+	ctx := e.Ctx
+	if e.Run != nil && e.Run.ID != 0 {
+		ctx = llmusage.WithAutomation(ctx, e.Run.AutomationID, e.Run.ID)
+	}
+	u, err := call(ctx)
 	e.Meter.Debit(u.InputTokens, u.OutputTokens)
 	step.Usage(u.InputTokens, u.OutputTokens, u.Estimated, u.ReportedUSD)
 	return err

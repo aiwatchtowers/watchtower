@@ -27,7 +27,7 @@ func (p *Pipeline) GenerateTranscriptNotes(ctx context.Context, eventID, transcr
 			title, startTime, endTime = ev.Title, ev.StartTime, ev.EndTime
 			attendees, description = ev.Attendees, ev.Description
 		}
-		if recap, err := p.db.GetMeetingRecap(eventID); err == nil && recap != nil {
+		if recap, err := p.db.GetMeetingRecapForAI(eventID); err == nil && recap != nil { // MEETPRIV-02
 			recapBlock = recap.RecapJSON
 		}
 	}

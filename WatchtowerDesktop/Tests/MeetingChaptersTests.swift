@@ -150,6 +150,25 @@ final class MeetingChaptersTests: XCTestCase {
         }
     }
 
+    /// MEETPRIV: a Target feeds AI prompts, so a private recording's action
+    /// item makes none.
+    func testMeetPriv01_ConvertActionItemOfAPrivateRecordingThrowsAndInsertsNoTarget() throws {
+        let db = try TestDatabase.create()
+        try db.write { conn in
+            try TestDatabase.insertMeetingTranscript(
+                conn, id: 8, transcriptText: "text", chaptersJSON: fullJSON, isPrivate: true)
+        }
+        XCTAssertThrowsError(try db.write { conn in
+            try MeetingTranscriptQueries.convertActionItemToTarget(conn, transcriptID: 8, chapterIdx: 0, itemIdx: 0)
+        }) { error in
+            XCTAssertEqual(error as? MeetingTranscriptQueries.ActionItemConversionError, .privateRecording)
+        }
+        XCTAssertEqual(try targetCount(db), 0)
+        try db.read { conn in
+            XCTAssertEqual(try MeetingTranscriptQueries.fetch(conn, id: 8)?.chaptersJSON, self.fullJSON)
+        }
+    }
+
     func testConvertActionItemStaleIndicesThrowsAndInsertsNoTarget() throws {
         // Stale UI indices must abort the whole transaction: no Target row,
         // JSON untouched (the old silent no-op could orphan a Target).

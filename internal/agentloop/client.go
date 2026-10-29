@@ -19,8 +19,10 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/ollama"
 	"watchtower/internal/tools"
 )
@@ -216,7 +218,8 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 }
 
 // meteredChat is one model call between the BeforeModelCall and
-// AfterModelCall hooks; a response with no choices is an error.
+// AfterModelCall hooks; a response with no choices is an error. The call's
+// ledger row is written by chat, which sends it.
 func (c *Client) meteredChat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (*oaResponse, error) {
 	if c.opts.BeforeModelCall != nil {
 		if err := c.opts.BeforeModelCall(); err != nil {
@@ -333,7 +336,9 @@ func (c *Client) buildTools() []oaTool {
 	return out
 }
 
-// chat makes one non-streaming chat-completions request.
+// chat makes one non-streaming chat-completions request and records it in
+// the LLM ledger on every return (recordModelCall); a response with no
+// choices is recorded as failed.
 func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (*oaResponse, error) {
 	body, err := json.Marshal(oaRequest{Model: c.model, Messages: msgs, Tools: oaTools, Stream: false})
 	if err != nil {
@@ -345,6 +350,11 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
+	var out oaResponse
+	ok := false
+	defer func() { recordModelCall(ctx, c.model, start, msgs, &out, ok) }()
+
 	resp, err := c.httpc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("model request failed: %w", err)
@@ -355,11 +365,43 @@ func (c *Client) chat(ctx context.Context, msgs []oaMessage, oaTools []oaTool) (
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("model returned HTTP %d: %s", resp.StatusCode, string(b))
 	}
-	var out oaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decoding model response: %w", err)
 	}
+	ok = len(out.Choices) > 0
 	return &out, nil
+}
+
+// recordModelCall records one runtime-B model call in the LLM ledger
+// (provider http, the request's model): the response's usage, or — when the
+// server sent none — length/4 estimates of the request's messages and the
+// response's first message.
+func recordModelCall(ctx context.Context, model string, start time.Time, msgs []oaMessage, resp *oaResponse, ok bool) {
+	c := llmusage.Call{Provider: "http", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
+	if u := resp.Usage; u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
+		c.Input, c.Output = int64(u.PromptTokens), int64(u.CompletionTokens)
+	} else {
+		var output string
+		if len(resp.Choices) > 0 {
+			output = messageText(resp.Choices[0].Message)
+		}
+		var prompt strings.Builder
+		for _, m := range msgs {
+			prompt.WriteString(messageText(m))
+		}
+		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt.String()), llmusage.EstimateTokens(output), true
+	}
+	llmusage.Record(ctx, c)
+}
+
+// messageText is a message's content and tool-call arguments, the text the
+// length/4 estimate counts.
+func messageText(m oaMessage) string {
+	s := m.Content
+	for _, tc := range m.ToolCalls {
+		s += tc.Function.Name + tc.Function.Arguments
+	}
+	return s
 }
 
 func errJSON(msg string) string {

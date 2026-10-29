@@ -184,6 +184,7 @@ type Daemon struct {
 	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
 	lastCoach           time.Time // when the agent coach last ran (weekly, no catch-up)
 	lastCoachFailed     time.Time // when the coach's last run failed (retried a day later)
+	lastLLMPrune        time.Time // when phaseLLMLedger last pruned llm_calls (once per day)
 	lastIdeasLockSkip   time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
 	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
 	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
@@ -556,6 +557,9 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 // budgets, throttle stamps and pipeline_runs rows see a cancel only on
 // shutdown. It moves d.cycleSection along for runLoop.
 func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
+	// First of all: this cycle's AI usage counts the calls other processes
+	// spooled since the last one.
+	d.phaseLLMLedger(ctx)
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)

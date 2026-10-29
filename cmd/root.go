@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/db/lockmetrics"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/repl"
 
@@ -40,10 +41,12 @@ var rootCmd = &cobra.Command{
 // ensureSchemaFormat runs once before every command. When the on-disk
 // db.schema_format flag is below db.CurrentSchemaFormat, it invokes the
 // one-shot RunSchemaUpgrade against the live DB (idempotent) and bumps
-// the flag in config. Skips silently when no config / no DB exists.
+// the flag in config. Skips silently when no config / no DB exists. It
+// also points the LLM call records at their spool first (wireLLMUsage).
 func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 	if _, err := os.Stat(flagConfig); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			wireLLMUsage(nil)
 			return nil
 		}
 		return fmt.Errorf("checking config file: %w", err)
@@ -53,6 +56,7 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	wireLLMUsage(cfg)
 	if cfg.DB.SchemaFormat >= db.CurrentSchemaFormat {
 		return nil
 	}
@@ -80,7 +84,11 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 func Execute() int {
 	role := roleFor(os.Args[1:])
 	lockmetrics.SetProcessRole(role)
+	llmusage.SetProcess(role, surfaceFor(role, os.Args[1:]))
 	auditlog.SetProcess(auditPath(role))
+	// Calls land in the setup spool until the root pre-run resolves the
+	// workspace; a command with its own no-op PersistentPreRunE keeps it.
+	wireLLMUsage(nil)
 	go sweepStaleTemp()
 	wrapContentCommands()
 	contentRan.Store(nil)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"watchtower/internal/llmusage"
 	"watchtower/internal/sessions"
 )
 
@@ -82,21 +83,20 @@ func (pg *PooledGenerator) GenerateWithImage(ctx context.Context, systemPrompt, 
 	return inner.GenerateWithImage(ctx, systemPrompt, userMessage, imagePath, mediaType)
 }
 
-// sessionSourceKey is the context key for the caller source label.
-type sessionSourceKey struct{}
-
-// WithSource returns a context that carries a source label for session logging.
+// WithSource returns a context that carries a source label for session
+// logging; the label is also the LLM usage ledger's purpose
+// (llmusage.WithPurpose).
 func WithSource(ctx context.Context, source string) context.Context {
-	return context.WithValue(ctx, sessionSourceKey{}, source)
+	return llmusage.WithPurpose(ctx, source)
 }
 
 // SourceFromContext returns the source label attached by WithSource.
-// Generator implementations in other packages must use this helper rather
-// than declaring their own key type: context keys are compared by concrete
-// type, so a locally-declared copy of sessionSourceKey never matches.
+// Generator implementations in other packages must use this helper (or
+// llmusage.PurposeFrom) rather than declaring their own key type: context
+// keys are compared by concrete type, so a locally-declared copy never
+// matches.
 func SourceFromContext(ctx context.Context) (string, bool) {
-	source, ok := ctx.Value(sessionSourceKey{}).(string)
-	return source, ok && source != ""
+	return llmusage.PurposeFrom(ctx)
 }
 
 // Source tags passed via WithSource select the model tier a Generator should

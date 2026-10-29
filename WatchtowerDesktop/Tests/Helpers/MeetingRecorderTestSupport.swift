@@ -15,6 +15,9 @@ final class FakeRecorder: AudioRecording, @unchecked Sendable {
     var startError: Error?
     var stopError: Error?
     var stopResult: RecordingResult?
+    /// Runs inside `stop()` before it returns or throws: what the owner does
+    /// while Stop is still finalizing the file.
+    var duringStop: (() async -> Void)?
 
     private(set) var startCalls = 0
     private(set) var stopCalls = 0
@@ -55,6 +58,7 @@ final class FakeRecorder: AudioRecording, @unchecked Sendable {
         stopCalls += 1
         liveContinuation.finish()
         levelsContinuation.finish()
+        await duringStop?()
         if let stopError { throw stopError }
         guard let stopResult else {
             throw AudioRecordingError.deviceSetupFailed("FakeRecorder has no stopResult")

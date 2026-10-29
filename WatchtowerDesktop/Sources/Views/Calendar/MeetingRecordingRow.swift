@@ -39,6 +39,9 @@ struct MeetingRecordingRow: View {
             Spacer()
 
             VStack(spacing: 4) {
+                if item.isPrivate {
+                    PrivateRecordingBadge()
+                }
                 if item.hasNotes {
                     Image(systemName: "doc.text")
                         .font(.caption2)

@@ -78,8 +78,7 @@ extension AppState {
     func openHomeLink(_ link: HomeLink) {
         switch link {
         case .inbox: selectedDestination = .inbox
-        case .permalink(let url):
-            if AllowedURLSchemes.permits(url) { NSWorkspace.shared.open(url) }
+        case .permalink(let url): openPermalink(url)
         case .calendarEvent(let id): navigateToCalendarEvent(id)
         case .briefing(let id): navigateToBriefing(id)
         case .targets: selectedDestination = .targets
@@ -92,7 +91,21 @@ extension AppState {
         case .feature(let feature): openFeature(feature)
         case .connect(let source): performEmptyStateAction(.connect(source))
         case .turnOn(let featureID): performEmptyStateAction(.turnOn(featureID: featureID))
+        case .usageWatchtower: openUsageWatchtower()
         }
+    }
+
+    /// A Slack / mail / Jira permalink, in the browser; only an allowed scheme.
+    private func openPermalink(_ url: URL) {
+        if AllowedURLSchemes.permits(url) { NSWorkspace.shared.open(url) }
+    }
+
+    /// Usage → Watchtower: the tab with tokens and cost (Home's AI spend, the
+    /// Progress tab's pointer). The Usage view's tab lives in its
+    /// `@AppStorage` key, which a visible Usage view follows too.
+    func openUsageWatchtower() {
+        UserDefaults.standard.set(UsageView.Tab.watchtower.rawValue, forKey: UsageView.selectedTabKey)
+        selectedDestination = .usage
     }
 
     /// A Getting ready card's Open: the Inbox filter of a feature whose cards

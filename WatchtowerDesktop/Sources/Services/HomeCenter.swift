@@ -99,6 +99,9 @@ final class HomeCenter {
     @ObservationIgnored private let store: GettingReadyStore
     @ObservationIgnored private let tickInterval: Duration
     @ObservationIgnored private let performer: any HomeFeedPerforming
+    /// Today's `usage llm` read behind the numbers' AI spend; not a DB read,
+    /// so it runs only while Home is on screen (`refreshAISpend`).
+    @ObservationIgnored private let spendUsage: LLMUsageViewModel
     /// Rows the owner pressed Done / Hide on: left out of the feed while the
     /// write runs, and after it until a read no longer returns them.
     @ObservationIgnored private(set) var hiddenRefs: Set<FeedRef> = []
@@ -150,13 +153,30 @@ final class HomeCenter {
         environment: any HomeEnvironment,
         store: GettingReadyStore,
         performer: any HomeFeedPerforming,
-        tickInterval: Duration = .seconds(30)
+        tickInterval: Duration = .seconds(30),
+        spendUsage: LLMUsageViewModel? = nil
     ) {
         self.readiness = readiness
         self.environment = environment
         self.store = store
         self.performer = performer
         self.tickInterval = tickInterval
+        self.spendUsage = spendUsage ?? LLMUsageViewModel(period: .today)
+    }
+
+    /// How often Home re-reads today's AI spend while it is on screen.
+    static let aiSpendRefreshInterval: TimeInterval = 5 * 60
+
+    /// The numbers' AI spend: today's `page_total` (Watchtower, automations
+    /// and chats), "—" until a read lands and while the latest one failed.
+    var aiSpend: HomeAISpend {
+        LLMUsagePresentation.homeAISpend(report: spendUsage.report, error: spendUsage.error)
+    }
+
+    /// Reads today's AI spend now and every five minutes until the calling
+    /// task ends (Home's `.task`: Home left the screen).
+    func refreshAISpend() async {
+        await spendUsage.refreshLoop(every: Self.aiSpendRefreshInterval)
     }
 
     /// Observes the Home tables that exist in this DB — the feed, Workbench

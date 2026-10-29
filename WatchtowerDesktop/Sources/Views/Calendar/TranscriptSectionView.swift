@@ -78,8 +78,13 @@ struct TranscriptSectionView: View {
 
                 TranscriptAudioControl(transcript: transcript, center: appState.audioPlaybackCenter)
 
+                if transcript.isPrivate {
+                    PrivateRecordingNotice()
+                }
+
                 HStack(spacing: 8) {
-                    if !hasRecap {
+                    // MEETPRIV-01: no AI action on a private recording.
+                    if !hasRecap && !transcript.isPrivate {
                         Button {
                             retryRecap(transcript)
                         } label: {
@@ -107,6 +112,9 @@ struct TranscriptSectionView: View {
             .padding(.top, 6)
         } label: {
             HStack(spacing: 8) {
+                if transcript.isPrivate {
+                    PrivateRecordingBadge()
+                }
                 Text(TranscriptFormatting.formatDuration(transcript.durationSec))
                     .font(.callout)
                 Text(TranscriptFormatting.formattedDate(transcript.createdAt))
@@ -119,7 +127,11 @@ struct TranscriptSectionView: View {
     // MARK: - Actions
 
     private func retryRecap(_ transcript: MeetingTranscript) {
-        guard let id = transcript.id, let runner = ProcessCLIRunner.makeDefault() else { return }
+        // MEETPRIV-01: the button is hidden for a private recording; this
+        // keeps a stale one from reaching the CLI (which refuses too).
+        guard !transcript.isPrivate, let id = transcript.id, let runner = ProcessCLIRunner.makeDefault() else {
+            return
+        }
         retryingRecapID = id
         Task {
             defer { retryingRecapID = nil }
@@ -141,7 +153,8 @@ struct TranscriptSectionView: View {
             await center.prepareRetry(
                 audioURL: URL(fileURLWithPath: audioPath),
                 eventID: transcript.eventID,
-                title: transcript.title
+                title: transcript.title,
+                isPrivate: transcript.isPrivate
             )
             await center.retryTranscription(config: .fromDefaults())
             load()

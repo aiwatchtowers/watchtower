@@ -148,7 +148,7 @@ final class NotificationService: Sendable {
     }
 
     /// One push per update version (`UpdateService.noteAvailable` keeps the
-    /// memo); clicking it opens Settings → System. Returns whether the system
+    /// memo); clicking it opens the Software Update window. Returns whether the system
     /// accepted the request, so the memo is only written for a delivered push.
     /// A pause returns false, so the memo stays unwritten and the push
     /// comes once notifications are back on.
@@ -156,7 +156,7 @@ final class NotificationService: Sendable {
         guard !NotificationPreferences.isPaused(.standard) else { return false }
         let content = UNMutableNotificationContent()
         content.title = "Watchtower update available"
-        content.body = "Version \(version) is ready to download in Settings → System."
+        content.body = "Version \(version) is ready to download. Click to see what's new."
         content.sound = .default
         content.userInfo = ["type": "update"]
 

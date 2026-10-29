@@ -608,7 +608,7 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     summary_json    TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT);
+, notes_md TEXT, segments_json TEXT, speakers_json TEXT, chapters_json TEXT, speaker_names_changed_at TEXT, summary_updated_at TEXT, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)));
 CREATE TABLE IF NOT EXISTS email_accounts (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     provider       TEXT NOT NULL CHECK(provider IN ('imap','outlook')),
@@ -2260,7 +2260,7 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     meta_json      TEXT,
     started_at     REAL NOT NULL,
     transcribed_at REAL
-);
+, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)));
 CREATE TABLE IF NOT EXISTS chat_queued_drafts (
     surface_key TEXT PRIMARY KEY,
     text        TEXT NOT NULL,
@@ -2325,6 +2325,28 @@ CREATE TABLE IF NOT EXISTS prompt_additions (
     text        TEXT NOT NULL,
     proposal_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
     created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id                    INTEGER PRIMARY KEY,
+    call_id               TEXT NOT NULL UNIQUE,
+    at                    TEXT NOT NULL,
+    surface               TEXT NOT NULL CHECK (surface IN ('watchtower','chat','workbench')),
+    purpose               TEXT NOT NULL DEFAULT '',
+    process               TEXT NOT NULL DEFAULT '',
+    provider              TEXT NOT NULL DEFAULT '',
+    model                 TEXT NOT NULL DEFAULT '',
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    usage_estimated       INTEGER NOT NULL DEFAULT 0,
+    reported_cost_usd     REAL,
+    est_cost_usd          REAL,
+    duration_ms           INTEGER NOT NULL DEFAULT 0,
+    ok                    INTEGER NOT NULL DEFAULT 1,
+    automation_id         INTEGER,
+    automation_run_id     INTEGER
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2669,6 +2691,8 @@ CREATE INDEX IF NOT EXISTS idx_media_items_chat ON media_items(chat_attachment_i
 CREATE INDEX IF NOT EXISTS idx_media_items_target ON media_items(target_image_id);
 CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at);
 CREATE INDEX IF NOT EXISTS prompt_additions_prompt ON prompt_additions(prompt_id, id);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
+CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
@@ -3010,6 +3034,24 @@ BEGIN
                              media_type, size_bytes, scope, from_owner, content_at)
     VALUES ('image', 'target', 'target:' || NEW.id, NEW.id, NEW.path, NEW.file_name,
             NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_kb_dirty AFTER UPDATE OF private ON meeting_transcripts
+WHEN OLD.private != NEW.private
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES ('transcript', 'transcript:' || NEW.id)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key) SELECT 'recap', 'recap:' || id FROM meeting_recaps WHERE transcript_id = NEW.id
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key)
+        SELECT 'chat_artifact', 'chat_artifact:' || k.conversation_id || ':' || k.artifact_key
+        FROM chat_knowledge_artifacts k JOIN chat_conversations c ON c.id = k.conversation_id
+        WHERE c.context_type = 'meeting' AND c.context_id = CAST(NEW.id AS TEXT)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_delete_recaps BEFORE DELETE ON meeting_transcripts
+WHEN OLD.private = 1
+BEGIN
+    DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
 END;
 """#
 }

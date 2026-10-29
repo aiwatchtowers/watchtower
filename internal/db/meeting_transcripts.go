@@ -20,6 +20,9 @@ import (
 // consumed by the Desktop rename flow to learn voice_prints.
 // ChaptersJSON is the AI-generated chapter breakdown (meeting.chapters
 // prompt); NULL until generated — see internal/meeting.ChaptersResult.
+// Private marks a recording never sent to an AI provider: nothing is
+// generated for it and every prompt-feeding reader skips it and the
+// meeting_recaps row it owns (docs/features/private-meetings.md, MEETPRIV).
 type MeetingTranscript struct {
 	ID             int64
 	EventID        sql.NullString
@@ -33,6 +36,7 @@ type MeetingTranscript struct {
 	SegmentsJSON   sql.NullString
 	SpeakersJSON   sql.NullString
 	ChaptersJSON   sql.NullString
+	Private        bool
 	CreatedAt      string
 	UpdatedAt      string
 }
@@ -44,14 +48,18 @@ type MeetingTranscriptFilter struct {
 	FromTime string // ISO8601 lower bound on created_at; "" = none
 	ToTime   string // ISO8601 upper bound on created_at; "" = none
 	Limit    int    // 0 = 50
+	// IncludePrivate keeps private recordings, which are left out by default
+	// (MEETPRIV-02). Set it only on an owner-only path whose output never
+	// reaches a model, such as the CLI's `transcript list`.
+	IncludePrivate bool
 }
 
-const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json, created_at, updated_at`
+const meetingTranscriptColumns = `id, event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json, private, created_at, updated_at`
 
 func scanMeetingTranscript(row interface{ Scan(...any) error }) (MeetingTranscript, error) {
 	var t MeetingTranscript
 	err := row.Scan(&t.ID, &t.EventID, &t.Title, &t.AudioPath, &t.DurationSec,
-		&t.LangStats, &t.TranscriptText, &t.SummaryJSON, &t.NotesMD, &t.SegmentsJSON, &t.SpeakersJSON, &t.ChaptersJSON, &t.CreatedAt, &t.UpdatedAt)
+		&t.LangStats, &t.TranscriptText, &t.SummaryJSON, &t.NotesMD, &t.SegmentsJSON, &t.SpeakersJSON, &t.ChaptersJSON, &t.Private, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
 
@@ -59,9 +67,9 @@ func scanMeetingTranscript(row interface{ Scan(...any) error }) (MeetingTranscri
 // CreatedAt/UpdatedAt are set by the table defaults.
 func (db *DB) InsertMeetingTranscript(t MeetingTranscript) (int64, error) {
 	res, err := db.Exec(`
-		INSERT INTO meeting_transcripts (event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, segments_json, speakers_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, t.EventID, t.Title, t.AudioPath, t.DurationSec, t.LangStats, t.TranscriptText, t.SummaryJSON, t.SegmentsJSON, t.SpeakersJSON)
+		INSERT INTO meeting_transcripts (event_id, title, audio_path, duration_sec, lang_stats, transcript_text, summary_json, segments_json, speakers_json, private)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, t.EventID, t.Title, t.AudioPath, t.DurationSec, t.LangStats, t.TranscriptText, t.SummaryJSON, t.SegmentsJSON, t.SpeakersJSON, t.Private)
 	if err != nil {
 		return 0, fmt.Errorf("inserting meeting transcript %q: %w", t.Title, err)
 	}
@@ -89,6 +97,7 @@ func (db *DB) GetMeetingTranscript(id int64) (*MeetingTranscript, error) {
 }
 
 // ListMeetingTranscripts returns transcripts matching the filter, newest first.
+// Private recordings are skipped unless f.IncludePrivate is set.
 func (db *DB) ListMeetingTranscripts(f MeetingTranscriptFilter) ([]MeetingTranscript, error) {
 	query := `SELECT ` + meetingTranscriptColumns + ` FROM meeting_transcripts WHERE 1=1`
 	var args []any
@@ -103,6 +112,9 @@ func (db *DB) ListMeetingTranscripts(f MeetingTranscriptFilter) ([]MeetingTransc
 	if f.ToTime != "" {
 		query += ` AND created_at <= ?`
 		args = append(args, f.ToTime)
+	}
+	if !f.IncludePrivate {
+		query += ` AND private = 0`
 	}
 	limit := f.Limit
 	if limit <= 0 {
@@ -126,6 +138,27 @@ func (db *DB) ListMeetingTranscripts(f MeetingTranscriptFilter) ([]MeetingTransc
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// SetMeetingTranscriptPrivate sets the recording's private flag and bumps
+// updated_at. It reports false when no row has that id. The knowledge index
+// re-renders the recording and the recaps it owns through the kb_dirty
+// trigger of migration 00164, so a recording turned private leaves the index
+// on the next pass (MEETPRIV-02).
+func (db *DB) SetMeetingTranscriptPrivate(id int64, private bool) (bool, error) {
+	res, err := db.Exec(`
+		UPDATE meeting_transcripts
+		SET private = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ?
+	`, private, id)
+	if err != nil {
+		return false, fmt.Errorf("setting meeting transcript %d private: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("reading meeting transcript %d private update: %w", id, err)
+	}
+	return n > 0, nil
 }
 
 // SetMeetingTranscriptSummary stores the recap JSON for an ad-hoc transcript
