@@ -1,6 +1,6 @@
 # Agent coach — weekly proposals to improve the owner's agent setup (2026-10-26, board #1120, Plan 1: the loop)
 
-Spec: `docs/superpowers/specs/2026-10-26-agent-coach-design.md`. Plan 1 ships the loop and the CLI; the Analytics screen redesign, Home's card and the miner fold are Plan 2. COACH-01 in `docs/inventory/coach.md`.
+Spec: `docs/superpowers/specs/2026-10-26-agent-coach-design.md`. Plan 1 shipped the loop and the CLI; Plan 2 (2026-10-29, `docs/superpowers/specs/2026-10-28-agent-coach-screen-design.md`) shipped the Analytics screen, Home's row and the miner fold. COACH-01 in `docs/inventory/coach.md`.
 
 Once a week the daemon reads what already exists (the owner's marks on spec review findings, first-round code review comments, the owner's lines to agents and chats, Analytics hints), asks the strong-tier model for concrete edits to the owner's own setup, validates them in Go and stores them as proposals. **Nothing is applied without the owner's Accept.** An accepted edit is measured for 14 days and gets a verdict.
 
@@ -64,6 +64,15 @@ The daily `phaseInstructionSuggestions` and its stamp are gone; the coach alread
 
 Spec review findings screen: **Not useful** beside **Fine as is** and **Comment** (`SpecReviewMarkState.notUseful`); shown as "Not useful" with Undo; never sent to the author (`SpecReviewAnswer` skips it); it is the coach's noise signal. The phone writes no marks.
 
+**Analytics pane (Plan 2).** `CoachCenter` on AppState shares the pane lifecycle with `AgentAnalyticsCenter` (60 s tick while the Workbench tab shows) and reads `coach status --workbench N --days D --json` and `coach proposals --status all --json` (Codable `CoachStatus`/`CoachProposal` in WatchtowerCore). Views in `Views/Workbench/Analytics/Coach*.swift`, above the Statistics blocks, shown only with analytics on for the workbench:
+
+- `CoachMetricTilesView` **How it's going**: four tiles (corrections per task, hours and cost per task, You in the loop, review findings with a per-code-review caption). Every metric is better lower; under 5 % is "about the same"; `known: false` or fewer than 3 behind it greys the value ("few data"). The period (1/7/30 days, `KitSegmentedPicker`) drives both the report and `--days`.
+- `CoachProposalCardView` **Proposed edits** (this workbench plus global proposals, at most 3 open): chips, why, the change with removed and added lines and the size against the budget, up to three evidence links. **Accept** (`coach accept`; the press is the owner's confirmation because the Desktop started the command), **Edit…** (`CoachEditSheet`, the destination's whole text through `accept --stdin`, none for allow rules), **Decline** (confirmation, for good). A `stale` answer closes the card ("The text changed since"). `CoachRunLineView`: last and next run and **Run Now** (disabled while its own run is in flight; `busy` shows "already running", a `judge_error` shows "Verdicts could not be updated").
+- `CoachAcceptedLogView` **Accepted edits**: accepted and rolled-back, newest first, 10 and **Show all**, verdict line **works** / **no effect** (and "a cut is proposed") / **too little data** / **measuring** / **rolled back**, **Roll Back** with `CoachRollbackSheet` (diff, **Roll Back Anyway** = `--force`).
+- Home: the Workbench zone's last row is the newest open proposal a pane can show (`HomeCoachProposal`, `CoachHomeRow.lines`): the change itself, **Accept** / **Decline** / **Open in Analytics**; over 4 lines only the last two. `HomeCenter.coachNote` carries its error line.
+- Settings → System → Workbench and Agent Settings…: a `CoachPointer` line under the shared `InstructionFieldBlock` replaces the old suggestion block (Add/Dismiss are gone from the Desktop).
+- Accepted prompt additions are visible and reversible in **Accepted edits** only.
+
 ## v1 limits
 
 - The verdict is judged on the whole metric over the scope, not a narrower measure of the edit (correlation, not causation).
@@ -72,7 +81,10 @@ Spec review findings screen: **Not useful** beside **Fine as is** and **Comment*
 - `~/.claude/CLAUDE.md` has a hard ceiling of 4000 runes (`claudeMDMaxRunes`, ask #659): an edit may grow the file by at most 400 runes and never past 4000; a file already at or over 4000 may only keep its size or shrink, so there the coach can only cut. The owner's own edits are not limited.
 - `~/.claude/CLAUDE.md` is written by atomic rename: hard links, extended attributes and ACLs on it are not kept. Rolling back an edit that created the file leaves an empty file (a created and an existing empty file cannot be told apart).
 - The ask level, personal methodology overrides and disabling skills are out of v1.
-- There is no Analytics screen, Home card or Settings → Prompts view of additions yet (Plan 2, Desktop tasks); until then proposals are read through the CLI.
+- There is no Settings → Prompts view of additions; the Accepted edits log is where they are undone.
+- A declined carried suggestion can be proposed again after its destination text changes (its fingerprint then differs).
+- The one-shot fold retires extra suggestions for a destination that already has an open proposal; their lines stay coach signals.
+- Review-round and chat evidence on a card is plain text (no open-review link yet).
 - A model proposal cites evidence only from the collected signals, so the `suggestion` evidence kind appears only on folded proposals.
 - `coach run` does not meter usage and `coach` never moves agentlog rows: a CLI-only install before the daemon's move measures an empty agentlog.
 - Allow-rule table contents and risk: above. A baseline needs analytics on for the workbench.

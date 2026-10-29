@@ -54,17 +54,8 @@ The same standing directions work in Chats. The **session instructions** text re
 To keep a direction while you chat, start a message with `remember:`, `remember this:` or `запомни:`. The rest of the message is added to **Only in chats** word for word, and the chat shows **Remembered for all chats** with **Undo** and **Open in Settings**. If the text is full, nothing is added and the chat says so. In a target's or track's chat with Memory's **Chats source** on, the same message is also saved as a [Memory](../memory.md) fact. A change reaches the next conversation; the current one already has your message.
 
 ### Suggestions
-<!-- learn
-id: instructions-suggestions
-title: Turn what you repeat into instructions
-text: When you give the same direction in three sessions or chats, Watchtower offers it; press **Add** to keep it.
-area: development
-level: power
-kind: tip
-since: 0.25.0
--->
 
-The [agent coach](../agent-coach.md) reads what you typed in your recent sessions, from both agents, and in your chats. When you gave the same standing direction in at least three sessions, it suggests adding it to your instructions. Nothing changes until you accept it. Suggestions from before the coach moved there once: the newest become coach suggestions, and the others stop showing. A suggestion that moved is accepted or declined in the coach only. A suggestion you dismissed earlier is never suggested again.
+The [agent coach](../agent-coach.md) reads what you typed in your recent sessions, from both agents, and in your chats. When you gave the same standing direction in at least three sessions, it suggests adding it to your instructions. Nothing changes until you accept it. You see the newest suggestion on Home as **Coach suggests**, and all of them in a workbench's **Analytics**, under **Proposed edits**. Suggestions from before the coach took over once moved there: the newest became coach suggestions, and the others stop showing. A suggestion that moved is accepted or declined in the coach only. A suggestion you dismissed earlier is never suggested again.
 
 ## Using it
 
@@ -72,16 +63,15 @@ The [agent coach](../agent-coach.md) reads what you typed in your recent session
 2. Type in **For chats and agents** (the session instructions), **Only in chats** or **Target procedure** and press **Save**. Lines added from chats are listed under **Added from chats**, each with **Open chat**.
 3. To add to one workbench only, open its **…** menu, choose **Agent Settings…** and use **Your instructions — this workbench**.
 4. Press **Preview what the agent gets…** to see the exact text for an agent and for a chat.
-5. When **You keep saying this** shows suggestions, press **Add** to append a line to the field, or **Dismiss**. While the field has an edit you have not saved, its **Add** is off: save or revert your edit first. Home shows the newest suggestion for a week as a card with the same buttons.
+5. Under the fields a line says suggestions come from the coach. Open a workbench's **Analytics** to accept, edit or decline them; Home shows the newest one as **Coach suggests**, with **Accept**, **Decline** and **Open in Analytics**.
 
 ## When it's empty or wrong
 
 - **A new session ignores a change.** The session began before you saved. Start a new one.
-- **Add says "adding this line would go over the 1000-character limit — shorten the text first".** The field plus the new line would pass 1,000 characters. Shorten the field's text, press **Save**, then press **Add** again.
-- **A suggestion's destination.** Chats only: **Only in chats**. Chats and sessions together: **For chats and agents**.
+- **A suggestion's destination.** The card names it. Chats only: **Only in chats**. Chats and sessions together: **For chats and agents**.
 - **No suggestions.** The coach runs about once a week and needs the direction in three sessions. The daemon must be running.
 - **`watchtower instructions suggestion add` says "moved to the coach".** That suggestion is now a coach suggestion. Use `watchtower coach proposals`, then `coach accept` or `coach decline`.
-- **A suggestion for one workbench.** When all its sessions were in one workbench, **Add** writes that workbench's text.
+- **A suggestion for one workbench.** When all its sessions were in one workbench, **Accept** writes that workbench's text.
 
 ## Related
 

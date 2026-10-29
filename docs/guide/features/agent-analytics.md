@@ -73,11 +73,11 @@ since: 0.24.0
 action: nav:projects
 -->
 
-The view starts with the header and tiles, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
+The header has the period (**1 day**, **7 days** or **30 days**) and **Discuss in Chat**. Above the statistics sit the coach's sections: **How it's going**, **Proposed edits** and **Accepted edits** (see [Agent coach](agent-coach.md)). Under **Statistics** the view starts with the totals, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
 
-- **Context** shows what a session carries before your first message (instructions, skills, tools, hooks) and what grew it afterwards: which tools and files, files read three or more times without an edit, compactions, and the size of your `CLAUDE.md` and rules.
-- **Skills** shows which skills ran and how, and which listed skills never did. Once five sessions over a week were measured, never-used skills are suggested for removal because each one's listing costs tokens in every session.
-- **Trouble** shows failed calls by class, commands that were denied, how often you interrupted or rejected the agent, subagents that never finished and rate limits.
+- **Context** starts with a sentence saying what matters, then shows what a session carries before your first message (instructions, skills, tools, hooks) and what grew it afterwards: which tools and files, files read three or more times without an edit, compactions, and the size of your `CLAUDE.md` and rules.
+- **Skills** (with its own sentence) shows which skills ran and how, and which listed skills never did. Once five sessions over a week were measured, never-used skills are suggested for removal because each one's listing costs tokens in every session.
+- **Trouble** (also with a sentence) shows failed calls by class, commands that were denied, how often you interrupted or rejected the agent, subagents that never finished and rate limits.
 - **What else would save** lists the remaining hints. The **Time** section, collapsed, keeps the time bar, tasks, sessions and commands.
 - **Discuss in Chat** opens the assistant with the report, so you can ask what to change.
 
