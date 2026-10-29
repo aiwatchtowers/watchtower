@@ -38,7 +38,7 @@ One package owns validation and rendering, so the brief, `update_target` and Pre
 
 ## CLI — `cmd/instructions.go`
 
-Every write (Settings, Agent Settings, Add and Dismiss from Settings or Home) goes through `watchtower instructions`:
+Every write (Settings, Agent Settings, `remember`) goes through `watchtower instructions`:
 
 - `show [--workbench N] --json` — pinned keys `ok`, `limit`, `global{session,procedure}`, `workbench{id,session,procedure}` (null without `--workbench`), `suggestions[]` (`id`, `text`, `field`, `workbench_id`, `session_count`, `workbench_count`, `first_seen_at`, `last_seen_at`).
 - `set --field session|procedure [--workbench N] --stdin` — the text comes on stdin, never argv; empty clears it.
@@ -66,9 +66,9 @@ A failure with `--json` prints `{"ok":false,"error":…}` and exits non-zero.
 ## Desktop
 
 - `OwnerInstructions` (WatchtowerCore) — the decoded `show --json` state; `WorkbenchesViewModel` instruction methods call the CLI.
-- Settings -> System -> Workbench: `InstructionsSettingsSection` with a `InstructionFieldBlock` per field (counter `n / limit`, its own **Save**, enabled while the text differs), the yellow **You keep saying this — N suggestions** block with **Add** / **Dismiss** (Add off while the field has an unsaved edit, `OwnerInstructionsState.hasUnsavedEdit`, hint "Save or revert your edit first"), and **Preview what the agent gets…** (`InstructionsPreviewSheet`, **What the agent gets**).
-- Workbench **…** -> **Agent Settings…**: the section **Your instructions — this workbench**, global text collapsed with **Edit in Settings**, then the workbench's own field. The `workflow.md` row stays and is the team's folder rules.
-- Home: the last row of the Workbench zone offers the newest open suggestion first seen in the last 7 days — **Add**, **Dismiss** (the field itself lives in Settings → System → Workbench). A successful Add/Dismiss re-reads Home at once (`HomeCenter.rereadNow`: the CLI writes from another process, which the observation misses). It leaves once acted on or at 7 days; older open suggestions stay in Settings only. A failed read is not an all-clear: the Workbench zone says so.
+- Settings -> System -> Workbench: `InstructionsSettingsSection` with a `InstructionFieldBlock` per field (counter `n / limit`, its own **Save**, enabled while the text differs), a `CoachPointer` line under the fields ("Suggestions now come from the coach — see a workbench's Analytics.", opens Analytics through `AppState.openCoachInAnalyticsFromSettings`) instead of the old yellow suggestion block (the Desktop's Add/Dismiss of suggestions are gone, 2026-10-29), and **Preview what the agent gets…** (`InstructionsPreviewSheet`, **What the agent gets**).
+- Workbench **…** -> **Agent Settings…**: the section **Your instructions — this workbench**, global text collapsed with **Edit in Settings**, then the workbench's own field. The `workflow.md` row stays and is the team's folder rules. The same `CoachPointer` line sits under the workbench field ("Suggestions for this workbench come from the coach.", or "Turn on Analytics to get the coach's suggestions.") and opens that workbench's Analytics.
+- Home: the last row of the Workbench zone is the **Coach suggests** row, the newest open `coach_proposals` row a pane can show (see `docs/features/agent-coach.md`), with its change, **Accept**, **Decline** and **Open in Analytics**; it no longer reads `instruction_suggestions`. `instructions suggestion add|dismiss` (CLI only now) refuse a row moved to the coach (`db.ErrSuggestionMoved`). A failed read is not an all-clear: the Workbench zone says so.
 
 ## Instructions in every AI chat (2026-10-24, owner decisions asks #514–#518, #522)
 
