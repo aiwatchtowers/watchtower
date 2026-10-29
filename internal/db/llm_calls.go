@@ -14,7 +14,7 @@ import (
 	"watchtower/internal/llmusage"
 )
 
-// LLM usage ledger (migration 00163, spec
+// LLM usage ledger (migration 00165, spec
 // docs/superpowers/specs/2026-10-27-llm-usage-ledger-design.md): the daemon
 // writes its own calls through LLMCallSink and imports every other process's
 // spool with ImportLLMSpool.

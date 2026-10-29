@@ -3521,7 +3521,7 @@ CREATE TABLE IF NOT EXISTS chat_queued_drafts (
     at          REAL NOT NULL
 );
 
--- LLM usage ledger (00163): one row per finished (ok = 1) or failed (ok = 0)
+-- LLM usage ledger (00165): one row per finished (ok = 1) or failed (ok = 0)
 -- model call a Watchtower process made. at = RFC 3339 UTC finish time.
 -- surface: watchtower (Watchtower's own work, incl. automations — automation_id
 -- set), chat (ai session / ai query), workbench (workbench helpers). purpose =
