@@ -161,3 +161,26 @@ func TestImportSuggestions_BusyDestinationAndWorkbenchChatRetired(t *testing.T) 
 	require.NoError(t, err)
 	assert.Len(t, all, 1, "no proposal was written")
 }
+
+func TestImportSuggestions_KnownFingerprintRetiredWithoutTakingASlot(t *testing.T) {
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "acme", 0)
+	newest := addSuggestion(t, d.DB, "Run the linter first", db.InstructionSession, 0, 3, sigNow)
+	// Its proposal was declined before: same text on the same destination.
+	fp, _ := fingerprint(keyOf(DestSession, 0, ""), "", "Run the linter first")
+	id, err := d.InsertCoachProposal(db.CoachProposal{Fingerprint: fp, Kind: "add", Destination: DestSession,
+		Title: "t", Why: "w", Metric: "owner_loop", AfterText: "Run the linter first", Sources: 3}, sigNow)
+	require.NoError(t, err)
+	require.NoError(t, d.DecideCoachProposal(id, "open", "declined", sigNow))
+	a := addSuggestion(t, d.DB, "Write a test first", db.InstructionProcedure, 0, 3, sigNow.Add(-time.Hour))
+	b := addSuggestion(t, d.DB, "Answer briefly", db.InstructionChat, 0, 3, sigNow.Add(-2*time.Hour))
+	c := addSuggestion(t, d.DB, "Update the changelog", db.InstructionSession, wb, 3, sigNow.Add(-3*time.Hour))
+
+	n, err := ImportSuggestions(d.DB, "", sigNow)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n, "the known one took no slot: the next three all fit")
+	assert.Equal(t, sql.NullInt64{Int64: -1, Valid: true}, movedTo(t, d.DB, newest))
+	assert.True(t, movedTo(t, d.DB, a).Int64 > 0)
+	assert.True(t, movedTo(t, d.DB, b).Int64 > 0)
+	assert.True(t, movedTo(t, d.DB, c).Int64 > 0)
+}

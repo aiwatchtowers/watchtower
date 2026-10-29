@@ -398,6 +398,22 @@ func (db *DB) FoldInstructionSuggestions(now time.Time,
 				return err
 			}
 			if p, ok := decide(open, s, before); ok {
+				// A fingerprint any proposal (any status) or an earlier pick already
+				// has would be refused at insert: retire it before it takes a slot.
+				var known int
+				if err := tx.QueryRow(`SELECT COUNT(*) FROM coach_proposals WHERE fingerprint = ?`, p.Fingerprint).Scan(&known); err != nil {
+					return fmt.Errorf("checking coach fingerprint: %w", err)
+				}
+				dup := false
+				for _, c := range picked {
+					dup = dup || c.p.Fingerprint == p.Fingerprint
+				}
+				if known > 0 || dup {
+					if err := moveInstructionSuggestionTx(tx, s.ID, -1); err != nil {
+						return err
+					}
+					continue
+				}
 				open = append(open, p) // holds its slot and destination for the rows after it
 				picked = append(picked, chosen{s.ID, p})
 				continue
