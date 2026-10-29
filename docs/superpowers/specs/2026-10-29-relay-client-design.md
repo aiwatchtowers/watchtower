@@ -1,7 +1,7 @@
 # Relay client — Watchtower side of the paid relay transport
 
 **Status:** draft · **Date:** 2026-10-29 · **Board:** #1230 (umbrella), #1236 (this spec)
-**Server design (contract):** `aiwatchtowers/relay` → `docs/superpowers/specs/2026-10-28-relay-design.md` (below: "relay spec"), approved in ask #712. **Client rules (executable):** `relay/sim/README.md` (below: "sim rule N") with its tests in `relay/sim/sim_test.go`. **Wire contract:** `relay/proto/relay/v1/relay.proto` + `relay/proto/README.md`.
+**Server design (contract):** `aiwatchtowers/relay` → `docs/superpowers/specs/2026-10-28-relay-design.md` (below: "relay spec"), approved in ask #712; the server moves from AWS to Cloudflare (Workers + Durable Objects + R2) per `docs/superpowers/specs/2026-10-29-relay-cloudflare-design.md` on `feature/relay-cf` (under review), with protocol v1, the proto schema and the client rules unchanged. **Client rules (executable):** `relay/sim/README.md` (below: "sim rule N") with its tests in `relay/sim/sim_test.go`. **Wire contract:** `relay/proto/relay/v1/relay.proto` + `relay/proto/README.md`.
 
 This spec does not repeat the relay spec. It says how Watchtower (Kit, Desktop hub, iPhone app) implements relay spec §9, in which order, and what changes for users who never pay.
 
@@ -95,7 +95,7 @@ Recon on #1238: the ~14 s median comes mostly from actions whose effect is never
 
 ## 7. Hosted relay transport
 
-`HostedRelayClient` (Kit, no UI, no GRDB) mirrors the Go client's behaviour (sim "The Go client"): register/login, HTTPS `POST /v1/op` and WebSocket `GET /v1/ws`, `Relay-Protocol-Version: 1`, relogin once on `UNAUTHENTICATED`/close 4001, reconnect with exponential backoff ≤ 60 s with jitter, immediate reconnect on `GoingAway`, one-by-one resubscribe (a refused zone is dropped and reported), a record-less `ZoneChanged` means "pull", a full event buffer never blocks the reader, `UNSUPPORTED_VERSION`/close 4000 → "update the app". After every reconnect: resubscribe, pull every zone from its last seq, `get_account_state`.
+`HostedRelayClient` (Kit, no UI, no GRDB) mirrors the Go client's behaviour (sim "The Go client"): register/login, HTTPS `POST /v1/op` and WebSocket `GET /v1/ws?device=<relay_device_id>` (the query names the device's Durable Object before `Hello`; a token for another device closes with 4001), `Relay-Protocol-Version: 1`, a client WebSocket ping every 30 s (the server does not ping, Cloudflare design §6), relogin once on `UNAUTHENTICATED`/close 4001, reconnect with exponential backoff ≤ 60 s with jitter, immediate reconnect on `GoingAway` (1001 also comes on every server deploy and when a newer socket of the same device takes over: one process per device identity, so the Mac never opens two), one-by-one resubscribe (a refused zone is dropped and reported), a record-less `ZoneChanged` means "pull", a full event buffer never blocks the reader, `UNSUPPORTED_VERSION`/close 4000 → "update the app". After every reconnect: resubscribe, pull every zone from its last seq, `get_account_state`.
 
 `HostedRelayTransport` implements `CloudSyncTransport`, `ConditionalTransport`, `MailboxAddressing`, `PagedChanges`, `LiveTransport`:
 
@@ -131,16 +131,16 @@ Implemented exactly as sim rules 8–16 (they change only together, relay spec �
 ## 11. Testing
 
 - **Kit, public CI:** a Swift port of the sim scenarios against `FakeHostedRelay` (in-memory server: zones, `record_seq`, conditional writes, mailbox ACL, controls, TTL with a fake clock) and against `InMemoryCloudTransport` extended with change tags — every sim test name gets a Swift twin with the same name (`TestGapTriggersResendFrom` → `testGapTriggersResendFrom`), so the two rule sets stay comparable. Login signing and `relay_device_id` pinned by vectors generated with the Go client.
-- **Interop with the real `relayd`:** locally through `make relay-interop RELAY=../relay` (starts relayd + Postgres + MinIO from the relay stand, §12), and in the relay repository's CI building the Kit's client (ask #734). Public Watchtower CI never needs the private repo.
+- **Interop with the real relay server:** locally through `make relay-interop RELAY=../relay` (starts the relay's local stand, `wrangler dev`, §12), and in the relay repository's CI building the Kit's client (ask #734). Public Watchtower CI never needs the private repo.
 - **Phone/Desktop:** existing suites keep passing on CloudKit; new wiring tests per phase; one manual device check per phase that touches the phone.
 
 ## 12. What we need from the relay repository (relay session)
 
-1. `feature/relay-v1` on main and `relay.proto` v1 frozen (`buf breaking` against main) — before Phase 2 ends; waits on the owner's relay review (ask #729 in the relay workbench). Until then Phase 2 builds against `feature/relay-v1` `cc5cff3`, where no proto change is planned.
-2. ~~A local stand and a dev-only entitlement grant~~ — done (`relay/deploy/local/README.md`, `relayd dev-entitlement`, dev only; from a physical iPhone use the Mac's LAN IP for origin and S3 and an ATS exception in Debug).
+1. `relay.proto` v1 frozen in the relay's `main` (`buf breaking` against main), landing together with the Cloudflare server from `feature/relay-cf`; `feature/relay-v1` (Go) is not merged and the relay ask #729 is withdrawn. Before Phase 2 ends. Until then Phase 2 builds against `cc5cff3`: the schema is the same; the relay session sends the exact `proto/README.md` changes (`device` query, client keepalive) once its design is approved.
+2. A local stand and a dev-only entitlement grant — done for the Go server (`relayd dev-entitlement`); moves to `wrangler dev` with no Docker and `POST /dev/entitlement` (dev only). Local attachments go through the Worker's own `/dev/blob/...` URLs, so the client treats upload/download URLs as opaque. From a physical iPhone: the Mac's LAN IP and an ATS exception in Debug.
 3. ~~Relay spec §4 wording fixed per R29–R32~~ — done.
 4. A CI job that builds the Watchtower Kit client and runs the interop scenarios — Phase 3.
-5. Staging in AWS; App Store Connect product, Paid Apps Agreement, APNs and App Store Server API keys — before the launch, not before development.
+5. Staging on Cloudflare (`relay-staging.<domain>`, the owner's domain); App Store Connect product, Paid Apps Agreement, APNs and App Store Server API keys — before the launch, not before development.
 
 ## 13. Phases
 
@@ -168,8 +168,9 @@ Launch for users waits for Phases 0–4 and §12 p. 5. Each phase gets its own p
 - Spec first, start the CloudKit-leak cleanup and publishing on change now — ask #734
 - Changes in the relay repository are done by the relay session — ask #734
 - `relay.proto` and the generated Swift are copied into the Kit, pinned to a relay commit — ask #734
-- Interop tests against the real relayd run locally and in the relay repository's CI; public Watchtower CI uses a fake server — ask #734
+- Interop tests against the real relay server run locally and in the relay repository's CI; public Watchtower CI uses a fake server — ask #734
 - Publishing on change per transport — ask #735 (pending)
+- The relay server moves to Cloudflare; protocol v1 and the client rules stay; the client adds the `device` query and a 30 s WebSocket ping — relay session message (2026-10-29), Cloudflare design under review
 - Existing "Relay" names keep meaning the mailbox lane; the new server's types are `HostedRelay*`; the user-facing name stays "Relay" — author's decision, for approval
 - **Needs the owner's explicit consent:** ordered actions, outbox and control records apply on CloudKit too, for free users as well (one code path for the switch); the visible change for free users is "Not delivered" + Retry; alternative in §5.11 — author's proposal, focus of this review
 - On CloudKit, mailbox-lane records written through `ConditionalTransport` turn `serverRecordChanged` into a conflict instead of "my payload wins"; slices keep today's path — author's proposal, for approval
