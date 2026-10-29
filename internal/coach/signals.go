@@ -286,9 +286,9 @@ func currentTexts(d *db.DB) ([]CurrentText, error) {
 		return nil, err
 	}
 	out = append(out,
-		CurrentText{Destination: DestSession, Text: g.Session, Budget: instructions.MaxRunes},
-		CurrentText{Destination: DestProcedure, Text: g.Procedure, Budget: instructions.MaxRunes},
-		CurrentText{Destination: DestChat, Text: g.Chat, Budget: instructions.MaxRunes})
+		CurrentText{Destination: DestSession, Text: g.Session, Budget: BudgetOf(DestSession, g.Session)},
+		CurrentText{Destination: DestProcedure, Text: g.Procedure, Budget: BudgetOf(DestProcedure, g.Procedure)},
+		CurrentText{Destination: DestChat, Text: g.Chat, Budget: BudgetOf(DestChat, g.Chat)})
 	wbs, err := d.ListWorkbenches()
 	if err != nil {
 		return nil, err
@@ -299,8 +299,8 @@ func currentTexts(d *db.DB) ([]CurrentText, error) {
 			return nil, err
 		}
 		out = append(out,
-			CurrentText{Destination: DestSession, WorkbenchID: w.ID, Text: t.Session, Budget: instructions.MaxRunes},
-			CurrentText{Destination: DestProcedure, WorkbenchID: w.ID, Text: t.Procedure, Budget: instructions.MaxRunes})
+			CurrentText{Destination: DestSession, WorkbenchID: w.ID, Text: t.Session, Budget: BudgetOf(DestSession, t.Session)},
+			CurrentText{Destination: DestProcedure, WorkbenchID: w.ID, Text: t.Procedure, Budget: BudgetOf(DestProcedure, t.Procedure)})
 	}
 	for _, id := range prompts.AllIDs {
 		if _, moved := prompts.MovedToBuiltin[id]; moved {
@@ -314,7 +314,7 @@ func currentTexts(d *db.DB) ([]CurrentText, error) {
 			continue // the spec reviewer is always shown: it is the main target
 		}
 		out = append(out, CurrentText{Destination: DestPromptAdd, PromptID: id,
-			Text: joinAdditions(adds), Budget: prompts.MaxAdditionRunes})
+			Text: joinAdditions(adds), Budget: BudgetOf(DestPromptAdd, "")})
 	}
 	out = append(out, CurrentText{Destination: DestSettingsAllow, Text: strings.Join(readAllowList(), "\n")})
 	if t, ok := readClaudeMDText(); ok {

@@ -83,9 +83,9 @@ func TestPolicySync_SourceAllowedNoProfile(t *testing.T) {
 	}
 }
 
-func TestProviderPolicy_InstructionMinerRefused(t *testing.T) {
+func TestProviderPolicy_CoachGeneratorRefused(t *testing.T) {
 	policytest.Set(t, map[string]any{"AllowedAIProviders": []any{"codex"}})
-	_, _, _, err := instructionGeneratorFactory(&config.Config{}).Generate(context.Background(), "", "", "")
+	_, _, _, err := coachGeneratorFactory(&config.Config{}).Generate(context.Background(), "", "", "")
 	assert.ErrorIs(t, err, policy.ErrNotAllowed)
 }
 

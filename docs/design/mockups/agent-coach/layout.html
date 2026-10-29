@@ -1,0 +1,71 @@
+<h2>Какой экран «улучшай мою работу с агентами» тебе ближе?</h2>
+<p class="subtitle">Три направления. Цифры и тексты выдуманы — смотри на форму. Кликни одно или несколько, детали — в ответе на ask.</p>
+
+<div class="options" data-multiselect>
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Коуч: лента предложенных правок</h3>
+      <p>Экран = очередь правок с доказательствами. Цифры аналитики свёрнуты в «Подробности».</p>
+      <div class="mockup">
+        <div class="mockup-header">Аналитика → Улучшения (3 новых)</div>
+        <div class="mockup-body" style="font-size:13px;line-height:1.5">
+          <div style="border:1px solid #555;border-radius:6px;padding:8px;margin-bottom:8px">
+            <b>В спеках нет раздела «Не цели»</b> — ревью спек ловило это 6 раз в 5 спеках, ты принял 5 из 6.<br>
+            <code style="color:#6c6">+ watchtower-flow/SKILL.md: «Каждая спека содержит Non-goals…»</code><br>
+            <span style="opacity:.7">Доказательства: ask #581, #594, #610 …</span><br>
+            <button class="mock-button">Принять</button> <button class="mock-button">Поправить</button> <button class="mock-button">Отклонить</button>
+          </div>
+          <div style="border:1px solid #555;border-radius:6px;padding:8px;margin-bottom:8px">
+            <b>Ты 4 раза писал «не запускай полный go test»</b> в 4 сессиях.<br>
+            <code style="color:#6c6">+ CLAUDE.md → Build &amp; Test: …</code><br>
+            <button class="mock-button">Принять</button> <button class="mock-button">Отклонить</button>
+          </div>
+          <div class="placeholder">▸ Подробности (контекст, время, стоимость)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Табло: 4 твоих метрики + правки под ними</h3>
+      <p>Сверху — ровно то, по чему ты судишь об успехе, с трендом. Под каждой — что её тянет вниз и правка.</p>
+      <div class="mockup">
+        <div class="mockup-header">Аналитика · последние 14 дней vs предыдущие</div>
+        <div class="mockup-body" style="font-size:13px">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px">
+            <div style="border:1px solid #555;border-radius:6px;padding:6px"><span style="opacity:.7">Поправки на задачу</span><br><b style="font-size:18px">2.1</b> <span style="color:#6c6">↓ 30%</span></div>
+            <div style="border:1px solid #555;border-radius:6px;padding:6px"><span style="opacity:.7">$ и часы на задачу</span><br><b style="font-size:18px">$14 · 1ч40</b> <span style="color:#c66">↑ 8%</span></div>
+            <div style="border:1px solid #555;border-radius:6px;padding:6px"><span style="opacity:.7">Ты в петле</span><br><b style="font-size:18px">22%</b> <span style="color:#6c6">↓ 9%</span></div>
+            <div style="border:1px solid #555;border-radius:6px;padding:6px"><span style="opacity:.7">Находок ревью на спеку</span><br><b style="font-size:18px">7.4</b> <span style="opacity:.7">→</span></div>
+          </div>
+          <div style="border:1px solid #555;border-radius:6px;padding:8px">
+            <b>$ и часы растут:</b> полный прогон тестов 3+ раз в задаче (11 задач).<br>
+            Правка: <code style="color:#6c6">+ CLAUDE.md …</code> <button class="mock-button">Принять</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Журнал правок с эффектом</h3>
+      <p>Каждая принятая правка живёт дальше: «до / после» по её метрике. Видно, что сработало, а что откатить.</p>
+      <div class="mockup">
+        <div class="mockup-header">Аналитика → Принятые правки</div>
+        <div class="mockup-body" style="font-size:13px;line-height:1.6">
+          <div>✅ <b>12 окт</b> «Non-goals в каждой спеке» — находок этого типа: 6 → 1 <span style="color:#6c6">работает</span></div>
+          <div>➖ <b>18 окт</b> «Не перечитывай файлы» — повторных чтений: 40k → 37k ток. <span style="opacity:.7">эффекта нет</span> <button class="mock-button">Откатить</button></div>
+          <div>⏳ <b>24 окт</b> «Quick-вопросы вместо Full» — мало данных (2 сессии)</div>
+          <div style="margin-top:8px" class="placeholder">Новые предложения (2) →</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>

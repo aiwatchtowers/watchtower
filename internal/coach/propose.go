@@ -90,8 +90,9 @@ func (p *Proposer) Run(ctx context.Context, in Inputs) (written int, usage *dige
 }
 
 // Preview does everything Run does except writing: the model call and the
-// validation, minus proposals whose fingerprint is already known. It is the
-// CLI's dry run.
+// validation, minus proposals whose fingerprint is already known and those
+// that add the text of an instruction suggestion the owner added or dismissed
+// (blockedBySuggestion). It is the CLI's dry run.
 func (p *Proposer) Preview(ctx context.Context, in Inputs) ([]db.CoachProposal, *digest.Usage, error) {
 	slots := maxOpen - len(in.Open)
 	if slots <= 0 || signalSources(in.Signals) < minDistinctSources {
@@ -113,14 +114,54 @@ func (p *Proposer) Preview(ctx context.Context, in Inputs) ([]db.CoachProposal, 
 	if err != nil {
 		return nil, usage, err
 	}
+	blocked, err := suggestionTexts(p.DB)
+	if err != nil {
+		return nil, usage, err
+	}
 	var out []db.CoachProposal
 	for _, pr := range props {
-		if _, ok := known[pr.Fingerprint]; !ok { // superseded or otherwise known: never revived
-			out = append(out, pr)
+		if _, ok := known[pr.Fingerprint]; ok { // superseded or otherwise known: never revived
+			continue
 		}
+		if blockedBySuggestion(pr, blocked) {
+			continue
+		}
+		out = append(out, pr)
 	}
 	return out, usage, nil
 }
+
+// suggestionTexts is the set of the added and dismissed instruction
+// suggestions' texts, trimmed and case-folded: the owner already decided them.
+func suggestionTexts(d *db.DB) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, status := range []string{"added", "dismissed"} {
+		texts, err := d.ListInstructionSuggestionTexts(status)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range texts {
+			if t = foldText(t); t != "" {
+				out[t] = true
+			}
+		}
+	}
+	return out, nil
+}
+
+// blockedBySuggestion is whether one of the lines p adds is, trimmed and
+// case-folded, the text of a decided suggestion.
+func blockedBySuggestion(p db.CoachProposal, blocked map[string]bool) bool {
+	_, added := ChangedLines(p.BeforeText, p.AfterText)
+	for _, l := range added {
+		if blocked[foldText(l)] {
+			return true
+		}
+	}
+	return false
+}
+
+func foldText(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
 // reply is the model's JSON.
 type reply struct {
@@ -280,9 +321,15 @@ func citedEvidence(cited []string, refs map[string]bool) ([]db.CoachEvidence, in
 
 // sourceOf maps a signal ref to its evidence kind and its source: one spec
 // review ("ask:<id>"), session ("s<id>"), chat ("c<id>"), review round
-// ("round:<id>") or hint ("hint:<id>@wb<id>"). An unknown shape has no kind.
+// ("round:<id>"), hint ("hint:<id>@wb<id>") or folded instruction suggestion
+// ("sg:<id>", ImportSuggestions). An unknown shape has no kind.
 func sourceOf(ref string) (kind, source string) {
 	switch {
+	case strings.HasPrefix(ref, "sg:"):
+		if _, err := strconv.ParseInt(ref[3:], 10, 64); err != nil {
+			return "", ""
+		}
+		return "suggestion", ref
 	case strings.HasPrefix(ref, "ask:"):
 		src, _, _ := strings.Cut(ref, "#")
 		return "ask", src

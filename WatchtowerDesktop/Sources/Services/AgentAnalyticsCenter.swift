@@ -21,11 +21,11 @@ import WatchtowerCore
 final class AgentAnalyticsCenter {
     nonisolated static let interval: Duration = .seconds(60)
 
-    /// The report window; the raw value is the CLI's `--days` (0 = all).
+    /// The report window; the raw value is the CLI's `--days`.
     enum Period: Int, CaseIterable {
+        case day = 1
         case week = 7
         case month = 30
-        case all = 0
     }
 
     private(set) var overviews: [Int64: SessionReportCenter.Snapshot<AgentReportOverview>] = [:]

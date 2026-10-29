@@ -17,7 +17,8 @@ struct HomeView: View {
                 feedErrors: appState.homeCenter.feedErrors,
                 digestsTurnOn: appState.digestsTurnOnState,
                 onLink: { appState.openHomeLink($0) },
-                onDecideSuggestion: { await appState.decideInstructionSuggestion(id: $0, add: $1) },
+                onDecideCoach: { await appState.decideCoachProposal(id: $0, accept: $1) },
+                onOpenCoach: { appState.openCoachInAnalytics(workbench: $0) },
                 onHideGettingReady: { appState.homeCenter.hideGettingReady() },
                 onAsk: { appState.toggleHelpChat() },
                 onAct: { await appState.homeCenter.act($0, on: $1) },
@@ -26,6 +27,7 @@ struct HomeView: View {
                 purges: appState.accountPurgeCenter?.openRows ?? [],
                 learn: appState.learnCenter.zone,
                 learnActions: appState.learnZoneActions,
+                coachNote: appState.homeCenter.coachNote,
                 aiSpend: appState.homeCenter.aiSpend
             )
         }
@@ -47,7 +49,8 @@ struct HomeContent: View {
     let feedErrors: [FeedRef: String]
     let digestsTurnOn: DigestsTurnOnState
     let onLink: (HomeLink) -> Void
-    let onDecideSuggestion: (Int64, Bool) async -> String?
+    let onDecideCoach: (Int64, Bool) async -> String?
+    let onOpenCoach: (Int64) -> Void
     let onHideGettingReady: () -> Void
     let onAsk: () -> Void
     let onAct: (FeedAction, FeedRef) async -> Void
@@ -59,6 +62,7 @@ struct HomeContent: View {
     /// The Learn zone; nil hides it (catalog failed or empty).
     let learn: LearnSelection?
     let learnActions: LearnZoneActions
+    let coachNote: String?
     /// The numbers' AI spend (`HomeCenter.aiSpend`).
     let aiSpend: HomeAISpend
 
@@ -69,7 +73,8 @@ struct HomeContent: View {
         feedErrors: [FeedRef: String] = [:],
         digestsTurnOn: DigestsTurnOnState = .idle,
         onLink: @escaping (HomeLink) -> Void,
-        onDecideSuggestion: @escaping (Int64, Bool) async -> String? = { _, _ in nil },
+        onDecideCoach: @escaping (Int64, Bool) async -> String? = { _, _ in nil },
+        onOpenCoach: @escaping (Int64) -> Void = { _ in },
         onHideGettingReady: @escaping () -> Void,
         onAsk: @escaping () -> Void = {},
         onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
@@ -78,18 +83,21 @@ struct HomeContent: View {
         purges: [AccountPurge] = [],
         learn: LearnSelection? = nil,
         learnActions: LearnZoneActions = .none,
+        coachNote: String? = nil,
         aiSpend: HomeAISpend = .unavailable
     ) {
         self.aiSpend = aiSpend
         self.purges = purges
         self.learn = learn
         self.learnActions = learnActions
+        self.coachNote = coachNote
         self.onReconnect = onReconnect
         self.calendar = calendar
         self.feedErrors = feedErrors
         self.onAct = onAct
         self.onPage = onPage
-        self.onDecideSuggestion = onDecideSuggestion
+        self.onDecideCoach = onDecideCoach
+        self.onOpenCoach = onOpenCoach
         self.snapshot = snapshot
         self.today = today
         self.digestsTurnOn = digestsTurnOn
@@ -135,8 +143,8 @@ struct HomeContent: View {
                 feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onPage: onPage, now: today,
                 calendar: calendar)
             HomeSideColumn(
-                snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion, learn: learn,
-                learnActions: learnActions, aiSpend: aiSpend)
+                snapshot: snapshot, onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach, learn: learn,
+                learnActions: learnActions, coachNote: coachNote, aiSpend: aiSpend)
         }
     }
 
@@ -183,17 +191,20 @@ struct HomeContent: View {
 struct HomeSideColumn: View {
     let snapshot: HomeSnapshot
     let onLink: (HomeLink) -> Void
-    let onDecideSuggestion: (Int64, Bool) async -> String?
+    let onDecideCoach: (Int64, Bool) async -> String?
+    let onOpenCoach: (Int64) -> Void
     var learn: LearnSelection?
     var learnActions: LearnZoneActions = .none
+    var coachNote: String?
     var aiSpend: HomeAISpend = .unavailable
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
-            if snapshot.showsWorkbench {
+            if snapshot.showsWorkbench || coachNote != nil {
                 WorkbenchZoneView(
-                    blocks: snapshot.workbench, suggestion: snapshot.suggestion, failed: snapshot.workbenchFailed,
-                    onLink: onLink, onDecideSuggestion: onDecideSuggestion)
+                    blocks: snapshot.workbench, coach: snapshot.coach, failed: snapshot.workbenchFailed,
+                    onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach,
+                    coachNote: coachNote)
             }
             if !snapshot.links.isEmpty {
                 LinksZoneView(links: snapshot.links, failed: snapshot.linksFailed, onLink: onLink)

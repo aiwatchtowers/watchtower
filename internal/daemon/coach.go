@@ -8,10 +8,16 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/agentlog"
 	"watchtower/internal/coach"
+	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
+	"watchtower/internal/ollama"
+	"watchtower/internal/providers"
+	"watchtower/internal/sessionfeed"
 )
 
 // coachInterval is the gap between two coach runs; coachRetryAfter the gap
@@ -22,14 +28,48 @@ const (
 )
 
 // coachGeneratorFactory is the seam tests override. The coach prompt carries
-// the owner's own text, so it is the miner's stdin-only generator; the model
-// tier comes from digest.TierForSource("coach.propose") (strong).
+// the owner's own typed text, so the CLI generators are switched to their
+// stdin-only mode (CHAT-04: owner text is never on argv; the
+// cmd.terminalTitleGeneratorFactory precedent, which the daemon cannot
+// import); the model tier comes from digest.TierForSource("coach.propose")
+// (strong).
 var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
-	return instructionGeneratorFactory(cfg)
+	if err := providers.Allowed(cfg.AI.Provider); err != nil {
+		return digest.RefusedGenerator{Err: err} // #608: the run fails with the policy error, no fallback
+	}
+	light, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+	var gen digest.Generator
+	switch cfg.AI.Provider {
+	case "codex":
+		gen = codex.NewCodexGenerator(light, strong, cfg.CodexPath)
+	case "ollama":
+		gen = ollama.NewGenerator(light, strong, cfg.AI.OllamaURL)
+	default:
+		gen = digest.NewClaudeGenerator(light, strong, cfg.ClaudePath)
+	}
+	if s, ok := gen.(interface{ SetStdinOnly(bool) }); ok {
+		s.SetStdinOnly(true)
+	}
+	return digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
 }
 
-// Seams tests replace to count and script the three steps.
+// coachSessionDirs is the test seam for the transcript directories the owner
+// lines are read from (the same rules as the cmd terminal seams: Claude
+// Code's dir is always ~/.claude; Codex's is an absolute $CODEX_HOME, else
+// ~/.codex).
+var coachSessionDirs = func() sessionfeed.Dirs {
+	dirs := sessionfeed.Dirs{ClaudeProjects: filepath.Join(agentlog.DefaultClaudeDir(), "projects")}
+	if dir := os.Getenv("CODEX_HOME"); filepath.IsAbs(dir) {
+		dirs.CodexHome = dir
+	} else if home, err := os.UserHomeDir(); err == nil {
+		dirs.CodexHome = filepath.Join(home, ".codex")
+	}
+	return dirs
+}
+
+// Seams tests replace to count and script the steps.
 var (
+	runCoachImport   = coach.ImportSuggestions
 	runCoachJudge    = coach.Judge
 	runCoachProposer = func(ctx context.Context, p *coach.Proposer, in coach.Inputs) (int, *digest.Usage, error) {
 		return p.Run(ctx, in)
@@ -82,8 +122,11 @@ func (d *Daemon) markCoachFailed(now time.Time) {
 	}
 }
 
-// phaseCoach runs the agent coach once a week: judge the accepted proposals
-// that are old enough, collect the signals, ask for new proposals. There is no
+// phaseCoach runs the agent coach once a week: fold the old instruction
+// suggestions in (once ever, ImportSuggestions), judge the accepted proposals
+// that are old enough, collect the signals, ask for new proposals. The fold
+// runs under the lock, before proposing, so it and `coach run` never race on
+// the free slots; its error is logged and the pass goes on. There is no
 // catch-up: a stamp of any age gives exactly one run. The weekly stamp is
 // written only when the proposing step ran to completion (spec §6.2: a failed
 // run is retried next time): a collect or model error writes the failure stamp
@@ -102,7 +145,24 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 	if !d.lastCoachFailed.IsZero() && now.Sub(d.lastCoachFailed) < coachRetryAfter {
 		return
 	}
+	// The same lock `coach run` holds: a pass already running (the owner's
+	// own) is not doubled; nothing is stamped, so the next cycle looks again.
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(d.config.WorkspaceDir()))
+	if err != nil {
+		d.logger.Printf("coach: lock: %v", err)
+		return
+	}
+	if !ok {
+		d.logger.Printf("coach: busy, skipped")
+		return
+	}
+	defer unlock()
 	d.trackedPipelineRun("coach", func() pipelineRunStats {
+		if n, err := runCoachImport(d.db, d.config.Digest.Language, now); err != nil {
+			d.logger.Printf("coach: folding instruction suggestions: %v", err)
+		} else if n > 0 {
+			d.logger.Printf("coach: %d instruction suggestion(s) folded into proposals", n)
+		}
 		if d.agentLog == nil {
 			d.logger.Printf("coach: agentlog.db is not open, judging skipped")
 		} else if judged, cuts, err := runCoachJudge(d.db, d.agentLog, now); err != nil {
@@ -110,7 +170,7 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		} else {
 			d.logger.Printf("coach: %d judged, %d cut", judged, cuts)
 		}
-		in, err := coach.Collect(ctx, d.db, d.agentLog, instructions.NewFeedReader(ctx, d.db, instructionSuggestionsDirs()), now)
+		in, err := coach.Collect(ctx, d.db, d.agentLog, instructions.NewFeedReader(ctx, d.db, coachSessionDirs()), now)
 		if err != nil {
 			if ctx.Err() == nil {
 				d.markCoachFailed(now)

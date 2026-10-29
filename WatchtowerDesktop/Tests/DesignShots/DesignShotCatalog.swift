@@ -315,6 +315,29 @@ enum DesignShotCatalog {
             DesignShot(name: "workbench-agent-settings", size: NSSize(width: 1040, height: 900)) {
                 AgentSettingsShotFixtures.screen()
             },
+            // The coach on the Analytics pane (#1120, Plan 2).
+            DesignShot(name: "analytics-coach", size: NSSize(width: 900, height: 1700)) {
+                CoachShotFixtures.screen(.sections)
+            },
+            DesignShot(name: "analytics-statistics", size: NSSize(width: 900, height: 1340)) {
+                StatisticsShotFixtures.screen()
+            },
+            DesignShot(name: "analytics-coach-edit-sheet", size: NSSize(width: 520, height: 320)) {
+                CoachShotFixtures.screen(.editSheet)
+            },
+            DesignShot(name: "analytics-coach-rollback-sheet", size: NSSize(width: 520, height: 300)) {
+                CoachShotFixtures.screen(.rollbackSheet)
+            },
+            // The coach's entry points outside the Analytics pane (#1120).
+            DesignShot(name: "home-coach-row", size: NSSize(width: 440, height: 360)) {
+                CoachPointerShotFixtures.homeRow()
+            },
+            DesignShot(name: "settings-instructions-coach-pointer", size: NSSize(width: 560, height: 220)) {
+                CoachPointerShotFixtures.pointer(settings: true)
+            },
+            DesignShot(name: "agent-settings-coach-pointer", size: NSSize(width: 560, height: 420)) {
+                CoachPointerShotFixtures.pointer(settings: false)
+            },
             // Usage → Watchtower (LLM usage ledger): filled (every gap line on), empty ledger, failed read.
             DesignShot(name: "usage-watchtower-filled", size: NSSize(width: 860, height: 760)) {
                 LLMUsageShotFixtures.filled()
@@ -383,6 +406,7 @@ enum DesignShotFixtures {
         BuiltinShotFixtures.cleanUp()
         CleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
+        CoachShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil

@@ -3316,7 +3316,8 @@ CREATE TABLE IF NOT EXISTS instruction_suggestions (
     last_seen_at    TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
     fingerprint     TEXT NOT NULL UNIQUE,                                   -- normalised direction; a dismissed repeat stays dismissed
-    decided_at      TEXT NULL
+    decided_at      TEXT NULL,
+    moved_to        INTEGER                                                 -- 00166: NULL = never moved, a coach_proposals id = carried into it, -1 = retired at the fold
 );
 CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
 

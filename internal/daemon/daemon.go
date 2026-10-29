@@ -166,31 +166,30 @@ type Daemon struct {
 	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
 	// briefNoDataAt, mbOwner, mbNow): a primitive runs on the script's
 	// goroutine, which can outlive the slot when the executor abandons it.
-	mbMu                       gosync.Mutex
-	briefNoDataAt              time.Time       // when a sync brief last found no data (the no-data backoff)
-	builtinsSwept              bool            // sweepBuiltinRuns succeeded this process
-	builtins                   *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
-	builtinActive              map[string]bool // by built-in id: false = its producers run as legacy phases
-	mbOwner                    db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
-	mbNow                      time.Time       // phaseMorningBrief's clock while its slot runs; zero = time.Now
-	lastJira                   time.Time
-	linearSyncers              []linearAccountSyncer
-	purgeHold                  map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
-	policySkipMu               gosync.Mutex
-	policySkipping             map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
-	lastLinear                 time.Time
-	lastPeople                 time.Time // when people cards last ran (once per day)
-	lastBriefing               time.Time // when briefing last ran (once per day)
-	lastIdeas                  time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
-	lastInstructionSuggestions time.Time // when the instruction suggestion miner last ran (once per day)
-	lastCoach                  time.Time // when the agent coach last ran (weekly, no catch-up)
-	lastCoachFailed            time.Time // when the coach's last run failed (retried a day later)
-	lastLLMPrune               time.Time // when phaseLLMLedger last pruned llm_calls (once per day)
-	lastIdeasLockSkip          time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
-	lastStreams                time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
-	lastStreamsLockSkip        time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
-	lastReactionCmd            time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
-	lastDayPlanDate            string    // YYYY-MM-DD of last generation, for dedup
+	mbMu                gosync.Mutex
+	briefNoDataAt       time.Time       // when a sync brief last found no data (the no-data backoff)
+	builtinsSwept       bool            // sweepBuiltinRuns succeeded this process
+	builtins            *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
+	builtinActive       map[string]bool // by built-in id: false = its producers run as legacy phases
+	mbOwner             db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
+	mbNow               time.Time       // phaseMorningBrief's clock while its slot runs; zero = time.Now
+	lastJira            time.Time
+	linearSyncers       []linearAccountSyncer
+	purgeHold           map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
+	policySkipMu        gosync.Mutex
+	policySkipping      map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
+	lastLinear          time.Time
+	lastPeople          time.Time // when people cards last ran (once per day)
+	lastBriefing        time.Time // when briefing last ran (once per day)
+	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
+	lastCoach           time.Time // when the agent coach last ran (weekly, no catch-up)
+	lastCoachFailed     time.Time // when the coach's last run failed (retried a day later)
+	lastLLMPrune        time.Time // when phaseLLMLedger last pruned llm_calls (once per day)
+	lastIdeasLockSkip   time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
+	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
+	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
+	lastReactionCmd     time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
+	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
 
 	// ideasMu guards lastIdeas and lastIdeasLockSkip on every path: the Idea
 	// finder's gate reads them on the slot's goroutine and its primitive
@@ -494,7 +493,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadLastPeople()
 	d.loadLastBriefing()
 	d.loadLastIdeas()
-	d.loadLastInstructionSuggestions()
 	d.loadLastCoach()
 	d.loadLastStreams()
 	d.loadDayPlanAttempts()
@@ -680,7 +678,6 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.phaseHistoryBackfill(fetchCtx)
 		d.setSection(sectionPipelines)
 	}
-	d.phaseInstructionSuggestions(ctx)
 	d.phaseCoach(ctx)
 	d.phaseSpecReviewSweep(ctx)
 }

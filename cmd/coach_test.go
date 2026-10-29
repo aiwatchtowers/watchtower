@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -16,9 +17,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/specreview"
 )
@@ -27,15 +30,16 @@ import (
 func runCoach(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
+	var errb bytes.Buffer
 	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&out)
+	rootCmd.SetErr(&errb) // the --json failure echo lives here, not in the stdout under test
 	rootCmd.SetIn(strings.NewReader(stdin))
 	rootCmd.SetArgs(append([]string{"coach"}, args...))
 	err := rootCmd.Execute()
 	rootCmd.SetArgs(nil)
 	rootCmd.SetIn(nil)
 	coachFlagJSON, coachFlagWorkbench, coachFlagStatus = false, 0, "open"
-	coachFlagStdin, coachFlagForce, coachFlagDryRun = false, false, false
+	coachFlagStdin, coachFlagForce, coachFlagDryRun, coachFlagDays = false, false, false, coachDefaultDays
 	return out.String(), err
 }
 
@@ -206,7 +210,7 @@ func TestCoachProposals_JSONKeysPinned(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"id", "title", "why", "destination", "workbench_id", "prompt_id", "kind",
 		"metric", "before", "after", "evidence", "sources", "status", "created_at", "decided_at", "baseline",
-		"verdict", "verdict_value", "verdict_at", "reverts_id"}, got)
+		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget"}, got)
 	assert.JSONEq(t, `[{"kind":"session","ref":"s1"}]`, string(items[0]["evidence"]))
 	assert.Equal(t, "null", string(items[0]["decided_at"]))
 
@@ -356,6 +360,20 @@ func TestCoachRun_DryRunWritesNothing(t *testing.T) {
 	_, statErr := os.Stat(coachStampPathForTest(t))
 	assert.True(t, os.IsNotExist(statErr), "and does not touch the weekly stamp")
 
+	// A failed suggestion fold does not stop the run: it is logged and the
+	// proposals are still made.
+	prevImport := coachImportSuggestions
+	coachImportSuggestions = func(*db.DB, string, time.Time) (int, error) { return 0, errors.New("fold boom") }
+	t.Cleanup(func() { coachImportSuggestions = prevImport })
+	stdout, stderr, err := runCoachSplit(t, "run", "--json")
+	require.NoError(t, err, stderr)
+	assert.Contains(t, stderr, "fold boom")
+	assert.JSONEq(t, `true`, string(coachJSONObject(t, stdout)["ok"]))
+	all, err = d.ListCoachProposals()
+	require.NoError(t, err)
+	assert.Len(t, all, 1, "the run went on to propose")
+	coachImportSuggestions = prevImport
+
 	// A failed judge step does not stop the proposals (as in the daemon); the
 	// output says why judging failed.
 	prevJudge := coachJudge
@@ -375,4 +393,185 @@ func coachStampPathForTest(t *testing.T) string {
 	cfg, err := workspaceConfigFromFlags()
 	require.NoError(t, err)
 	return cfg.WorkspaceDir() + "/last_coach.txt"
+}
+
+// runCoachSplit is runCoach with stdout and stderr kept apart.
+func runCoachSplit(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errb)
+	rootCmd.SetIn(strings.NewReader(""))
+	rootCmd.SetArgs(append([]string{"coach"}, args...))
+	err = rootCmd.Execute()
+	rootCmd.SetArgs(nil)
+	rootCmd.SetIn(nil)
+	coachFlagJSON, coachFlagWorkbench, coachFlagStatus = false, 0, "open"
+	coachFlagStdin, coachFlagForce, coachFlagDryRun, coachFlagDays = false, false, false, coachDefaultDays
+	return out.String(), errb.String(), err
+}
+
+// jsonObjectLine is the last stderr line that decodes as a JSON object.
+func jsonObjectLine(t *testing.T, s string) string {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var m map[string]any
+		if json.Unmarshal([]byte(lines[i]), &m) == nil {
+			return lines[i]
+		}
+	}
+	t.Fatalf("no JSON object line in stderr: %q", s)
+	return ""
+}
+
+func TestCoachStatus_DaysWindow(t *testing.T) {
+	coachSetup(t)
+	span := func(args ...string) time.Duration {
+		out, err := runCoach(t, "", append([]string{"status", "--json"}, args...)...)
+		require.NoError(t, err, out)
+		var st coachStatusJSON
+		require.NoError(t, json.Unmarshal([]byte(out), &st))
+		since, err := time.Parse(time.RFC3339, st.Period.Since)
+		require.NoError(t, err)
+		until, err := time.Parse(time.RFC3339, st.Period.Until)
+		require.NoError(t, err)
+		return until.Sub(since)
+	}
+	assert.Equal(t, 7*24*time.Hour, span("--days", "7"))
+	assert.Equal(t, 24*time.Hour, span("--days", "1"))
+	assert.Equal(t, 14*24*time.Hour, span())
+	for _, bad := range []string{"0", "91"} {
+		_, err := runCoach(t, "", "status", "--days", bad)
+		require.Error(t, err, bad)
+		assert.Contains(t, err.Error(), "--days must be between 1 and 90")
+	}
+}
+
+func TestCoachRun_BusyWhenLocked(t *testing.T) {
+	coachSetup(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(cfg.WorkspaceDir()))
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer unlock()
+
+	stdout, stderr, err := runCoachSplit(t, "run", "--json")
+	require.Error(t, err)
+	assert.JSONEq(t, `{"ok":false,"code":"busy","error":"the coach is already running"}`, stdout)
+	assert.JSONEq(t, stdout, jsonObjectLine(t, stderr))
+}
+
+func TestCoachJSONFailure_EchoedOnStderr(t *testing.T) {
+	coachSetup(t)
+	stdout, stderr, err := runCoachSplit(t, "accept", "999", "--json")
+	require.Error(t, err)
+	var a, b map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &a), stdout)
+	require.NoError(t, json.Unmarshal([]byte(jsonObjectLine(t, stderr)), &b), stderr)
+	assert.Equal(t, false, a["ok"])
+	assert.Equal(t, a, b)
+}
+
+func TestCoachProposals_BudgetPerDestination(t *testing.T) {
+	d := coachSetup(t)
+	claude := strings.Repeat("x", 3800)
+	short := strings.Repeat("y", 100)
+	cases := []struct {
+		dest, before string
+		want         int
+	}{
+		{"session", "", 1000}, {"procedure", "", 1000}, {"chat", "", 1000},
+		{"prompt_addition", "", 600}, {"claude_settings_allow", "", 0},
+		{"claude_md_user", short, 500}, {"claude_md_user", claude, 4000},
+	}
+	for i, c := range cases {
+		_, err := d.InsertCoachProposal(db.CoachProposal{Fingerprint: fmt.Sprintf("fp%d", i), Kind: "add",
+			Destination: c.dest, Title: c.dest, Metric: "corrections", BeforeText: c.before, AfterText: "z",
+			Evidence: []db.CoachEvidence{{Kind: "session", Ref: "s1"}}, Sources: 3}, time.Now())
+		require.NoError(t, err)
+	}
+	out, err := runCoach(t, "", "proposals", "--status", "all", "--json")
+	require.NoError(t, err)
+	var res struct {
+		Proposals []struct {
+			Destination string `json:"destination"`
+			Before      string `json:"before"`
+			Budget      int    `json:"budget"`
+		} `json:"proposals"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.Len(t, res.Proposals, len(cases))
+	for i, c := range cases {
+		var got int = -1
+		for _, p := range res.Proposals {
+			if p.Destination == c.dest && p.Before == c.before {
+				got = p.Budget
+			}
+		}
+		assert.Equal(t, c.want, got, "case %d %s", i, c.dest)
+	}
+}
+
+// Through the real Execute(): the JSON line is on stderr, followed by its prose line.
+func TestCoachJSONFailure_ThroughExecute(t *testing.T) {
+	coachSetup(t)
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	origErr, origArgs := os.Stderr, os.Args
+	os.Stderr, os.Args = w, []string{"watchtower", "coach", "accept", "999", "--json"}
+	t.Cleanup(func() {
+		os.Stderr, os.Args = origErr, origArgs
+		rootCmd.SetArgs(nil)
+		coachFlagJSON, coachFlagDays = false, coachDefaultDays
+	})
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(w)
+	rootCmd.SetArgs(os.Args[1:])
+	code := Execute()
+	require.NoError(t, w.Close())
+	raw, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, 1, code)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	require.GreaterOrEqual(t, len(lines), 2, string(raw))
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal([]byte(jsonObjectLine(t, string(raw))), &obj))
+	assert.Equal(t, false, obj["ok"])
+	var last map[string]any
+	assert.Error(t, json.Unmarshal([]byte(lines[len(lines)-1]), &last), "Execute's prose line follows the JSON line")
+}
+
+// `coach run` folds the open instruction suggestions in before proposing;
+// --dry-run folds nothing.
+func TestCoachRun_ImportsSuggestions(t *testing.T) {
+	d := coachSetup(t)
+	require.NoError(t, d.UpsertInstructionSuggestion(db.InstructionSuggestion{Text: "Run the linter first",
+		Field: db.InstructionSession, SessionCount: 3, Fingerprint: "fp"}, time.Now()))
+	gen := &scriptedGen{out: `{"proposals":[]}`}
+	prev := coachGeneratorFactory
+	coachGeneratorFactory = func(*config.Config) digest.Generator { return gen }
+	t.Cleanup(func() { coachGeneratorFactory = prev })
+
+	_, err := runCoach(t, "", "run", "--dry-run", "--json")
+	require.NoError(t, err)
+	open, err := d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	assert.Len(t, open, 1, "a dry run folds nothing")
+
+	out, err := runCoach(t, "", "run", "--json")
+	require.NoError(t, err, out)
+	var res struct {
+		Proposals []struct {
+			Title string `json:"title"`
+		} `json:"proposals"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.Len(t, res.Proposals, 1)
+	assert.Equal(t, "Run the linter first", res.Proposals[0].Title)
+	open, err = d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	assert.Empty(t, open, "the row moved to the coach")
 }

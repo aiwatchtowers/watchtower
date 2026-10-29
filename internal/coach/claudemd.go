@@ -72,7 +72,7 @@ func readClaudeMD(path string) (CurrentText, error) {
 		return CurrentText{}, err
 	}
 	return CurrentText{Destination: DestClaudeMDUser, Text: string(raw),
-		Budget: claudeMDBudget(utf8.RuneCount(raw))}, nil
+		Budget: BudgetOf(DestClaudeMDUser, string(raw))}, nil
 }
 
 // claudeMDBudget is the most runes an edit may leave in a file of n runes:

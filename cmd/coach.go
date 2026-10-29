@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,13 +19,17 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
 	"watchtower/internal/sessionfeed"
 )
 
-// coachPeriod is the length of the period `coach status` measures; the
-// previous period is the same length right before it.
-const coachPeriod = 14 * 24 * time.Hour
+// coachDefaultDays is the default length of the period `coach status`
+// measures; the previous period is the same length right before it.
+const (
+	coachDefaultDays = 14
+	coachMaxDays     = 90
+)
 
 var coachCmd = &cobra.Command{
 	Use:   "coach",
@@ -43,6 +48,7 @@ var (
 	coachFlagStdin     bool
 	coachFlagForce     bool
 	coachFlagDryRun    bool
+	coachFlagDays      int
 )
 
 // coachGeneratorFactory is the seam tests override. The prompt carries the
@@ -59,13 +65,18 @@ var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
 // coachJudge is the verdict step of `coach run` (a seam for tests).
 var coachJudge = coach.Judge
 
+// coachImportSuggestions is the one-time suggestion fold of `coach run` (a
+// seam for tests).
+var coachImportSuggestions = coach.ImportSuggestions
+
 // coachHome is the home folder ~/.claude lives in (a seam for tests).
 var coachHome = os.UserHomeDir
 
 func init() {
-	statusCmd := &cobra.Command{Use: "status", Short: "Metrics of the last 14 days against the 14 before",
+	statusCmd := &cobra.Command{Use: "status", Short: "Metrics of the last N days (default 14) against the N before",
 		Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error { return coachRun(c, runCoachStatus) }}
 	statusCmd.Flags().Int64Var(&coachFlagWorkbench, "workbench", 0, "workbench id (default: every workbench with analytics on)")
+	statusCmd.Flags().IntVar(&coachFlagDays, "days", coachDefaultDays, "length of the period in days (1 to 90)")
 	proposalsCmd := &cobra.Command{Use: "proposals", Short: "List the coach's proposals",
 		Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error { return coachRun(c, runCoachProposals) }}
 	proposalsCmd.Flags().StringVar(&coachFlagStatus, "status", "open", "open, accepted, declined or all")
@@ -113,9 +124,21 @@ func init() {
 func coachRefuseUnderAgent(cmd *cobra.Command, action string) error {
 	err := refuseUnderAgent(action)
 	if err != nil && coachFlagJSON {
-		_ = writeJSON(cmd.OutOrStdout(), map[string]any{"ok": false, "error": err.Error()})
+		coachWriteFailure(cmd, map[string]any{"ok": false, "error": err.Error()})
 	}
 	return err
+}
+
+// coachWriteFailure prints a --json failure object on stdout and again as one
+// line on stderr, so a caller that only keeps stderr of a failed run still
+// reads the reason. Execute() prints the error as prose after it, so the object
+// is not necessarily the last line: a reader takes the last line that decodes
+// as a JSON object.
+func coachWriteFailure(cmd *cobra.Command, fail map[string]any) {
+	_ = writeJSON(cmd.OutOrStdout(), fail)
+	if b, err := json.Marshal(fail); err == nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), string(b))
+	}
 }
 
 // coachEnv is what a coach verb works on.
@@ -170,7 +193,7 @@ func coachRun(cmd *cobra.Command, fn func(*cobra.Command, *coachEnv) (any, error
 					fail["diff"] = ce.diff
 				}
 			}
-			_ = writeJSON(cmd.OutOrStdout(), fail)
+			coachWriteFailure(cmd, fail)
 		}
 		return err
 	}
@@ -227,13 +250,17 @@ func metricJSON(cur, prev coach.Value) coachMetricJSON {
 }
 
 func runCoachStatus(_ *cobra.Command, e *coachEnv) (any, error) {
+	if coachFlagDays < 1 || coachFlagDays > coachMaxDays {
+		return nil, fmt.Errorf("--days must be between 1 and %d, not %d", coachMaxDays, coachFlagDays)
+	}
+	period := time.Duration(coachFlagDays) * 24 * time.Hour
 	now := time.Now().UTC()
-	since := now.Add(-coachPeriod)
+	since := now.Add(-period)
 	cur, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since, now)
 	if err != nil {
 		return nil, err
 	}
-	prev, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since.Add(-coachPeriod), since)
+	prev, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since.Add(-period), since)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +324,8 @@ type coachProposalJSON struct {
 	VerdictValue *float64            `json:"verdict_value"`
 	VerdictAt    *string             `json:"verdict_at"`
 	RevertsID    int64               `json:"reverts_id"`
+	// Budget is the destination's rune budget (0: none), the same number Validate uses.
+	Budget int `json:"budget"`
 }
 
 type coachProposalsJSON struct {
@@ -322,7 +351,7 @@ func proposalJSON(p db.CoachProposal) coachProposalJSON {
 		Before: p.BeforeText, After: p.AfterText, Evidence: ev, Sources: p.Sources, Status: p.Status,
 		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), DecidedAt: stampPtr(p.DecidedAt),
 		Baseline: p.Baseline, Verdict: p.Verdict, VerdictValue: p.VerdictValue, VerdictAt: stampPtr(p.VerdictAt),
-		RevertsID: p.RevertsID}
+		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText)}
 }
 
 func proposalsOf(ps []db.CoachProposal) coachProposalsJSON {
@@ -476,10 +505,11 @@ func coachSessionDirs() sessionfeed.Dirs {
 	return sessionfeed.Dirs{ClaudeProjects: filepath.Join(agentsClaudeDir(), "projects"), CodexHome: terminalCodexHome()}
 }
 
-// runCoachNow is the weekly pass on demand: judge, collect, propose. It
-// ignores the daemon's stamp and does not write it. No plan-limit gate (ask
-// #655). --dry-run judges nothing and writes nothing: it prints what the
-// model would have proposed.
+// runCoachNow is the weekly pass on demand: fold the old instruction
+// suggestions in (once ever, coach.ImportSuggestions, under the lock), judge,
+// collect, propose. It ignores the daemon's stamp and does not write it. No
+// plan-limit gate (ask #655). --dry-run folds nothing, judges nothing and
+// writes nothing: it prints what the model would have proposed.
 func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -490,10 +520,22 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 		if err := confirmWithOwner("run the coach", detail); err != nil {
 			return nil, err
 		}
+		unlock, ok, err := fsutil.TryLockFile(coach.LockPath(e.cfg.WorkspaceDir()))
+		if err != nil {
+			return nil, fmt.Errorf("locking the coach: %w", err)
+		}
+		if !ok {
+			return nil, &coachCodedError{code: "busy", err: errors.New("the coach is already running")}
+		}
+		defer unlock()
 	}
 	now := time.Now()
 	res := coachRunJSON{OK: true, DryRun: coachFlagDryRun, Proposals: []coachProposalJSON{}}
 	if !coachFlagDryRun {
+		// A failed fold must not stop the run (the daemon's phase logs it too).
+		if _, err := coachImportSuggestions(e.db, e.cfg.Digest.Language, now); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "coach: folding instruction suggestions: %v\n", err)
+		}
 		judged, cuts, err := coachJudge(e.db, e.al, now)
 		if err != nil {
 			res.JudgeError = err.Error()

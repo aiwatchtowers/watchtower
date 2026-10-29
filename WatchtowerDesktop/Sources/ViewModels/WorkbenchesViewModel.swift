@@ -130,6 +130,9 @@ final class WorkbenchesViewModel {
     /// Agent analytics (#298): the Analytics pane's reports. AppState wires
     /// its own; nil = a pane with nothing to show.
     @ObservationIgnored weak var agentAnalytics: AgentAnalyticsCenter?
+    /// The agent coach (#1120): the Analytics pane's proposals. AppState
+    /// wires its own; nil = a pane without the coach section.
+    @ObservationIgnored weak var coach: CoachCenter?
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
     /// The session (its uuid) whose detail the Analytics pane shows per
@@ -1194,14 +1197,6 @@ final class WorkbenchesViewModel {
     func saveInstruction(projectID: Int64, field: InstructionField, body: String) async -> Bool {
         await runInstructions(projectID: projectID, field: field) {
             try await $0.setInstruction(field: field, workbenchID: projectID, body: body)
-        }
-    }
-
-    /// Adds or dismisses one suggestion; the answer carries this workbench's texts.
-    func decideSuggestion(projectID: Int64, field: InstructionField, id: Int64, add: Bool) async {
-        await runInstructions(projectID: projectID, field: field) { cli in
-            _ = try await cli.decideSuggestion(id: id, add: add)
-            return try await cli.instructions(workbenchID: projectID)
         }
     }
 

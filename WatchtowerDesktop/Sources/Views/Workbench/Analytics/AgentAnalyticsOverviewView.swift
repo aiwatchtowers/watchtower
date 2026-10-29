@@ -8,6 +8,15 @@ struct AgentAnalyticsOverviewView: View {
     let state: AgentAnalyticsPaneState
     @Binding var period: AgentAnalyticsCenter.Period
     let actions: AgentAnalyticsActions
+    /// The coach sections (nil: a pane hosted without the coach).
+    var coach: CoachCenter?
+    var workbench: Int64 = 0
+    /// An ask link of a proposal: the ask's drawer.
+    var openAsk: (Int64) -> Void = { _ in }
+    /// A terminal session link of a proposal.
+    var openTerminalSession: (Int64) -> Void = { _ in }
+
+    private static let statisticsID = "statistics"
 
     var body: some View {
         switch state {
@@ -22,11 +31,15 @@ struct AgentAnalyticsOverviewView: View {
         case let .off(enabling, error):
             offView(enabling: enabling, error: error)
         case let .overview(overview, staleError):
-            ScrollView {
-                content(overview, staleError: staleError)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    content(overview, staleError: staleError) {
+                        withAnimation(Motion.panel) { proxy.scrollTo(Self.statisticsID, anchor: .top) }
+                    }
                     .frame(maxWidth: 900, alignment: .leading)
-                    .padding(16)
+                    .padding(Spacing.large)
                     .frame(maxWidth: .infinity)
+                }
             }
         }
     }
@@ -52,7 +65,9 @@ struct AgentAnalyticsOverviewView: View {
         .padding(24)
     }
 
-    private func content(_ overview: AgentReportOverview, staleError: String?) -> some View {
+    private func content(
+        _ overview: AgentReportOverview, staleError: String?, scrollToStatistics: @escaping () -> Void
+    ) -> some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
             if let state = overview.importState, let line = AgentAnalyticsFormat.importLine(state) {
                 if AgentAnalyticsFormat.isImportWarning(state) {
@@ -74,6 +89,14 @@ struct AgentAnalyticsOverviewView: View {
                     .foregroundStyle(.orange)
                     .help("The last refresh failed; these numbers are from an earlier run.")
             }
+            if let coach {
+                CoachSectionsView(
+                    coach: coach, workbench: workbench,
+                    actions: CoachActions(openAsk: openAsk, openTerminalSession: openTerminalSession,
+                                          scrollToStatistics: scrollToStatistics)
+                )
+                SectionHeader(title: "Statistics", systemImage: "chart.bar").id(Self.statisticsID)
+            }
             tiles(overview)
             if let first = overview.hints.first {
                 AgentAnalyticsMainThingCard(hint: first, actions: actions)
@@ -85,6 +108,8 @@ struct AgentAnalyticsOverviewView: View {
                 section("What else would save") {
                     AgentAnalyticsCappedHints(hints: Array(overview.hints.dropFirst()), actions: actions)
                 }
+                .padding(Spacing.medium)
+                .card()
             }
             DisclosureGroup {
                 time(overview).padding(.top, Spacing.regular)
@@ -137,46 +162,67 @@ struct AgentAnalyticsOverviewView: View {
     private func header(_ overview: AgentReportOverview) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
             Text(AgentAnalyticsFormat.periodLabel(overview)).font(.headline)
+            if let previous = AgentAnalyticsFormat.previousPeriodLabel(overview) {
+                Text("against \(previous)").font(.caption).foregroundStyle(.secondary)
+            }
             if AgentAnalyticsFormat.period(of: overview) != period {
                 Text("Updating…").font(.caption).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 8)
-            Picker("Period", selection: $period) {
-                Text("7 days").tag(AgentAnalyticsCenter.Period.week)
-                Text("30 days").tag(AgentAnalyticsCenter.Period.month)
-                Text("All").tag(AgentAnalyticsCenter.Period.all)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            Label("On", systemImage: "circle.fill")
-                .labelStyle(.titleAndIcon)
-                .font(.caption)
-                .foregroundStyle(.green)
+            Spacer(minLength: Spacing.regular)
+            KitSegmentedPicker(title: "Period", selection: $period, segments: [
+                KitSegment(value: AgentAnalyticsCenter.Period.day, title: "1 day"),
+                KitSegment(value: AgentAnalyticsCenter.Period.week, title: "7 days"),
+                KitSegment(value: AgentAnalyticsCenter.Period.month, title: "30 days")
+            ])
+            Circle()
+                .fill(Tone.success)
+                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                 .help("Agent analytics is on for this workbench")
+                .accessibilityLabel("Analytics on")
             Button("Discuss in Chat") { actions.discuss(AgentAnalyticsFormat.discussText(overview)) }
+                .buttonStyle(.kitSecondary)
                 .help("Open the chat with this report's top findings in the composer")
         }
+        .controlSize(.small)
     }
 
     private func tiles(_ overview: AgentReportOverview) -> some View {
         let totals = overview.totals
         return VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(spacing: 24) {
+            HStack(alignment: .top, spacing: Spacing.wide) {
                 tile("Cost", AgentAnalyticsFormat.cost(totals.costUSD))
                 tile("Sessions", "\(totals.sessions)")
                 tile("Active", AgentAnalyticsFormat.duration(totals.activeMS))
                 tile("Cache hit", AgentAnalyticsFormat.cacheHit(totals.tokens))
                     .help("Input tokens read from the cache, of all input tokens")
+                subagentsTile(overview.subagents)
+                Spacer(minLength: 0)
             }
-            Text(AgentAnalyticsFormat.subagentsLine(overview.subagents))
-                .font(.callout)
             if totals.costEstimatedCalls > 0 {
                 Text("\(totals.costEstimatedCalls) \(totals.costEstimatedCalls == 1 ? "call" : "calls") priced by estimate")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+        .padding(Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
+    private func subagentsTile(_ subagents: AgentSubagents) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text("Subagents").font(.caption).foregroundStyle(.secondary)
+            if subagents.count >= 1 {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.small) {
+                    Text(String(format: "%.1f", subagents.avgParallel)).font(.title2.weight(.semibold).monospacedDigit())
+                    Text("avg · peak \(subagents.peak)").font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("none").font(.title2.weight(.semibold))
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .help("Subagents running at once: the average and the peak")
     }
 
     private func tile(_ title: String, _ value: String) -> some View {

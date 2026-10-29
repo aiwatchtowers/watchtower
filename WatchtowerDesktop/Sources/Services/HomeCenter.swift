@@ -23,6 +23,9 @@ protocol HomeEnvironment: AnyObject {
     /// The live session states (`SessionAgentStateCenter.statuses`), read
     /// under observation tracking: a state change rebuilds without a read.
     var workbenchSessions: [SessionAgentStatus] { get }
+    /// The workbench last opened (`WorkbenchesViewModel.selectedWorkbenchID`):
+    /// where a global coach proposal opens when its Analytics is on.
+    var lastOpenedWorkbench: Int64? { get }
 }
 
 /// The Getting ready memory, per install: `home.gettingReady.hidden` (Bool),
@@ -105,6 +108,11 @@ final class HomeCenter {
     /// Rows whose write is still running: a second press does nothing, and a
     /// read landing meanwhile keeps them hidden.
     @ObservationIgnored private var acting: Set<FeedRef> = []
+    /// The line under the Workbench zone's coach place after a proposal
+    /// changed under the owner's press; cleared after 5 s. Held here, not in
+    /// the row, because the re-read replaces or removes the row.
+    private(set) var coachNote: String?
+    @ObservationIgnored private var coachNoteTask: Task<Void, Never>?
     /// The Workbench read; nil until the first read (the snapshot waits on it).
     @ObservationIgnored private var data: HomeWorkbenchData?
     /// The feed read, landed with `data`.
@@ -238,12 +246,13 @@ final class HomeCenter {
         let token = readToken
         let now = environment.now
         let calendar = environment.calendar
+        let lastOpened = environment.lastOpenedWorkbench
         var value: HomeWorkbenchData
         var feedValue: HomeFeedData
         var linksValue: HomeLinksData
         do {
             (value, feedValue, linksValue) = try await pool.read { db in
-                (HomeQueries.workbench(db, now: now),
+                (HomeQueries.workbench(db, lastOpened: lastOpened),
                  HomeFeedQueries.read(db, now: now, calendar: calendar),
                  HomeLinksQueries.read(db, now: now, calendar: calendar))
             }
@@ -350,6 +359,17 @@ final class HomeCenter {
         await reread(pool, generation: generation)
     }
 
+    /// Shows `text` for `seconds`; a newer note replaces it and restarts the clock.
+    func showCoachNote(_ text: String, seconds: Double = 5) {
+        coachNoteTask?.cancel()
+        coachNote = text
+        coachNoteTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            self?.coachNote = nil
+        }
+    }
+
     /// Stops the observation and the tick; the last snapshot stays.
     func endReading() {
         generation += 1
@@ -433,7 +453,7 @@ final class HomeCenter {
             firstSync: inputs.firstSync,
             feed: makeFeed(feedData, sources: inputs.feedSources, now: now, calendar: calendar),
             workbench: HomeWorkbenchBuilder.blocks(sessions: inputs.sessions, asks: data.asks),
-            suggestion: data.suggestion,
+            coach: data.coach,
             workbenchFailed: data.failed,
             links: links,
             // A failure behind no visible link is not shown.
@@ -496,4 +516,5 @@ final class LiveHomeEnvironment: HomeEnvironment {
     var workbenchSessions: [SessionAgentStatus] {
         appState?.sessionAgentStateCenter.map { Array($0.statuses.values) } ?? []
     }
+    var lastOpenedWorkbench: Int64? { appState?.workbenchesViewModel?.selectedWorkbenchID }
 }

@@ -83,18 +83,15 @@ package struct GettingReadyStep: Equatable, Sendable {
 
 // MARK: - Right column
 
-/// The open instruction suggestion Home offers (`instruction_suggestions`).
-package struct HomeInstructionSuggestion: Equatable, Sendable {
-    package let id: Int64
-    package let text: String
-    /// `instruction_suggestions.field`: `session`, `procedure` or `chat`
-    /// (the chat-only text, which reaches chats and never an agent).
-    package let field: String
+/// The newest open coach proposal Home offers (`coach_proposals`) and the
+/// workbench whose Analytics pane it opens in.
+package struct HomeCoachProposal: Equatable, Sendable {
+    package let proposal: CoachProposal
+    package let targetWorkbench: Int64
 
-    package init(id: Int64, text: String, field: String = "session") {
-        self.id = id
-        self.text = text
-        self.field = field
+    package init(proposal: CoachProposal, targetWorkbench: Int64) {
+        self.proposal = proposal
+        self.targetWorkbench = targetWorkbench
     }
 }
 
@@ -127,22 +124,22 @@ package enum HomeLink: Equatable, Sendable {
 }
 
 /// The Workbench zone's read (`HomeQueries.workbench`): the open asks and the
-/// instruction suggestion. The live sessions come from the app, not the DB.
+/// coach proposal. The live sessions come from the app, not the DB.
 package struct HomeWorkbenchData: Equatable, Sendable {
     package var asks: WorkbenchAskRows
-    /// The newest open suggestion first seen within 7 days.
-    package var suggestion: HomeInstructionSuggestion?
+    /// The newest open coach proposal a workbench with Analytics on can show.
+    package var coach: HomeCoachProposal?
     /// A read threw (logged) or an open ask could not be read: the zone says
     /// so and never reads as empty.
     package var failed: Bool
 
     package init(
         asks: WorkbenchAskRows = WorkbenchAskRows(rows: [], unreadableIDs: []),
-        suggestion: HomeInstructionSuggestion? = nil,
+        coach: HomeCoachProposal? = nil,
         failed: Bool = false
     ) {
         self.asks = asks
-        self.suggestion = suggestion
+        self.coach = coach
         self.failed = failed
     }
 }
@@ -177,9 +174,9 @@ package struct HomeSnapshot: Equatable, Sendable {
     /// The right column's Workbench zone: one block per workbench with a live
     /// session to look at or an open ask.
     package let workbench: [HomeWorkbenchBlock]
-    /// The zone's last row, Add / Dismiss.
-    package let suggestion: HomeInstructionSuggestion?
-    /// The asks or suggestion read failed, or an ask could not be read.
+    /// The zone's last row: the coach's proposal, Accept / Decline.
+    package let coach: HomeCoachProposal?
+    /// The asks or coach read failed, or an ask could not be read.
     package let workbenchFailed: Bool
     /// The links zone, only the links whose tab is visible.
     package let links: [HomeLinkRow]
@@ -193,7 +190,7 @@ package struct HomeSnapshot: Equatable, Sendable {
         firstSync: FirstSyncLine?,
         feed: HomeFeed,
         workbench: [HomeWorkbenchBlock] = [],
-        suggestion: HomeInstructionSuggestion? = nil,
+        coach: HomeCoachProposal? = nil,
         workbenchFailed: Bool = false,
         links: [HomeLinkRow] = [],
         linksFailed: Bool = false,
@@ -203,15 +200,15 @@ package struct HomeSnapshot: Equatable, Sendable {
         self.firstSync = firstSync
         self.feed = feed
         self.workbench = workbench
-        self.suggestion = suggestion
+        self.coach = coach
         self.workbenchFailed = workbenchFailed
         self.links = links
         self.linksFailed = linksFailed
         self.numbers = numbers
     }
 
-    /// The Workbench zone shows: a block, the suggestion or its read error.
+    /// The Workbench zone shows: a block, the coach row or its read error.
     package var showsWorkbench: Bool {
-        !workbench.isEmpty || suggestion != nil || workbenchFailed
+        !workbench.isEmpty || coach != nil || workbenchFailed
     }
 }

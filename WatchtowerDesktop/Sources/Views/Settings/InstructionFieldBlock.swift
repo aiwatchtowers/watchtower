@@ -2,22 +2,21 @@ import SwiftUI
 import WatchtowerCore
 
 /// One instruction field: an optional grey global text above, the editable
-/// text with its `n / limit` counter and Save, and the yellow "You keep
-/// saying this" block. Shared by Settings → System and the workbench's
+/// text with its `n / limit` counter and Save, and the pointer to the
+/// coach, which now makes the suggestions (#1120). Shared by Settings → System and the workbench's
 /// Agent Settings; the owner of the view holds the draft and does the CLI call.
 struct InstructionFieldBlock: View {
     let title: String
     let caption: String
     let stored: String
     let limit: Int
-    let suggestions: [InstructionSuggestion]
-    let detail: (InstructionSuggestion) -> String
     let error: String?
     let busy: Bool
     /// nil = no unsaved edit (the field shows `stored`).
     @Binding var draft: String?
     let onSave: (String) -> Void
-    let onDecide: (InstructionSuggestion, Bool) -> Void
+    /// The line under the field that sends the owner to the coach; nil = none.
+    var coachPointer: CoachPointer?
     /// The global text shown grey (first 2 lines) with "Edit in Settings".
     var globalText: String?
     var onEditGlobal: (() -> Void)?
@@ -48,7 +47,9 @@ struct InstructionFieldBlock: View {
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
-            suggestionsBlock
+            if let coachPointer {
+                coachPointerRow(coachPointer)
+            }
         }
         .padding(.vertical, 4)
     }
@@ -67,31 +68,21 @@ struct InstructionFieldBlock: View {
         }
     }
 
-    @ViewBuilder
-    private var suggestionsBlock: some View {
-        if !suggestions.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("You keep saying this — \(suggestions.count) suggestion\(suggestions.count == 1 ? "" : "s")")
-                    .font(.caption.weight(.semibold))
-                if unsavedEdit {
-                    Text("Save or revert your edit first").font(.caption).foregroundStyle(.secondary)
-                }
-                ForEach(suggestions) { row in
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("“\(row.text)”")
-                            Text(detail(row)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Add") { onDecide(row, true) }
-                            .disabled(unsavedEdit)
-                        Button("Dismiss") { onDecide(row, false) }
-                    }
-                    .disabled(busy)
-                }
-            }
-            .padding(8)
-            .background(Color.yellow.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
+    private func coachPointerRow(_ pointer: CoachPointer) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(pointer.text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Open Analytics", action: pointer.onOpen)
+                .controlSize(.small)
         }
     }
+}
+
+/// "Suggestions come from the coach" and where to read them.
+struct CoachPointer {
+    let text: String
+    let onOpen: () -> Void
 }

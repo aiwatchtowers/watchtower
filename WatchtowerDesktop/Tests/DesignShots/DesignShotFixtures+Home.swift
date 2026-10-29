@@ -7,7 +7,7 @@ import WatchtowerTestSupport
 /// Home on fixed sample data (#717): every zone filled — a feed with each
 /// row kind, a read row and a failed Done, the meeting in progress, later
 /// today and tomorrow; two workbenches with sessions, an ask and the
-/// instruction suggestion; the links; today in numbers. The clock and the
+/// coach proposal; the links; today in numbers. The clock and the
 /// zone are fixed (Monday 2026-10-19 10:40 UTC), so the times never move.
 @MainActor
 enum HomeShotFixtures {
@@ -83,7 +83,11 @@ enum HomeShotFixtures {
         return HomeSnapshot(
             gettingReady: gettingReady, firstSync: nil, feed: feed(),
             workbench: HomeWorkbenchBuilder.blocks(sessions: sessions, asks: asks),
-            suggestion: HomeInstructionSuggestion(id: 5, text: "run the linter before committing"),
+            coach: HomeCoachProposal(
+                proposal: CoachProposalFixture.make(
+                    id: 5, title: "Specs have no Non-goals section",
+                    after: "Every spec has a Non-goals section: what the feature deliberately does not do."),
+                targetWorkbench: 1),
             links: [
                 HomeLinkRow(kind: .briefing, title: "Briefing", status: "ready 08:12", highlighted: false,
                             link: .briefing(id: 7)),

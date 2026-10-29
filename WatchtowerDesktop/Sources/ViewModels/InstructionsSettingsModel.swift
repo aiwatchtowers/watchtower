@@ -60,17 +60,4 @@ final class InstructionsSettingsModel {
             errors[field] = error.localizedDescription
         }
     }
-
-    func decide(_ row: InstructionSuggestion, add: Bool) async {
-        guard let cli else { return }
-        busy = true
-        defer { busy = false }
-        do {
-            state = try await cli.decideSuggestion(id: row.id, add: add)
-            // An unsaved draft stays: only a field with no draft follows the new stored text.
-            errors[row.field] = nil
-        } catch {
-            errors[row.field] = error.localizedDescription
-        }
-    }
 }

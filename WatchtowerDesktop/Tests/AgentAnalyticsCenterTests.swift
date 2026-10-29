@@ -107,17 +107,17 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1, "the same period again runs nothing")
     }
 
-    func testPeriodChangeRunsAtOnceAndAllMapsToDaysZero() async {
+    func testPeriodChangeRunsAtOnceWithItsDays() async {
         let runner = ScriptedAgentsRunner(Self.byFlags())
         let center = makeCenter(runner)
 
         center.show(workbench: 3, period: .week)
         await waitUntil { runner.invocations.count == 1 }
-        center.show(workbench: 3, period: .all)
+        center.show(workbench: 3, period: .day)
         await waitUntil { runner.invocations.count == 2 }
 
         XCTAssertEqual(runner.invocations[0].suffix(2), ["--days", "7"])
-        XCTAssertEqual(runner.invocations[1].suffix(2), ["--days", "0"])
+        XCTAssertEqual(runner.invocations[1].suffix(2), ["--days", "1"])
     }
 
     func testTickRunsOnlyWhileTheTabIsOnScreen() async {
@@ -211,7 +211,7 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         center.show(workbench: 3, period: .week)
         await waitUntil { runner.invocations.count == 1 }
         center.show(workbench: 3, period: .month)
-        center.show(workbench: 3, period: .all)
+        center.show(workbench: 3, period: .day)
         await settle()
         XCTAssertEqual(runner.invocations.count, 1, "asking while a run is in flight starts none")
 
@@ -220,7 +220,7 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         runner.release(1)
         await settle()
         XCTAssertEqual(runner.invocations.count, 2, "two asks queue one rerun")
-        XCTAssertEqual(runner.invocations[1].suffix(2), ["--days", "0"], "the rerun reads the latest period")
+        XCTAssertEqual(runner.invocations[1].suffix(2), ["--days", "1"], "the rerun reads the latest period")
     }
 
     func testHideStopsTheTicks() async {

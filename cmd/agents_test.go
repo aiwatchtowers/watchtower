@@ -205,10 +205,10 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &ov))
 	require.Len(t, ov.Sessions, 1)
 	assert.Equal(t, []string{"files_stored", "state", "updated_at"}, mapKeys(ov.Import))
-	assert.Equal(t, []string{"baseline", "compactions", "disk", "facts_sessions", "growth", "repeated_reads", "sessions",
+	assert.Equal(t, []string{"baseline", "compactions", "disk", "facts_sessions", "growth", "lead", "repeated_reads", "sessions",
 		"subagent_baseline", "top_sources"}, mapKeys(ov.Context))
-	assert.Equal(t, []string{"facts_sessions", "listed", "listing_tokens", "never_used", "rows", "used"}, mapKeys(ov.Skills))
-	assert.Equal(t, []string{"classes", "denials", "facts_sessions", "interrupt_sessions", "interrupts", "rate_limited", "rejections",
+	assert.Equal(t, []string{"facts_sessions", "lead", "listed", "listing_tokens", "never_used", "rows", "used"}, mapKeys(ov.Skills))
+	assert.Equal(t, []string{"classes", "denials", "facts_sessions", "interrupt_sessions", "interrupts", "lead", "rate_limited", "rejections",
 		"unfinished_subagents"}, mapKeys(ov.Trouble))
 	var ctx struct {
 		Baseline    map[string]json.RawMessage `json:"baseline"`

@@ -1648,7 +1648,7 @@ last_seen_at TEXT NOT NULL,
 status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
 fingerprint TEXT NOT NULL UNIQUE,
 decided_at TEXT NULL
-)
+, moved_to INTEGER)
 
 table	issue_slack_links
 CREATE TABLE issue_slack_links (
@@ -4890,6 +4890,7 @@ GROUP BY up.ancestor
 8	status	TEXT	notnull=1	dflt='open'	pk=0
 9	fingerprint	TEXT	notnull=1	dflt=NULL	pk=0
 10	decided_at	TEXT	notnull=0	dflt=NULL	pk=0
+11	moved_to	INTEGER	notnull=0	dflt=NULL	pk=0
 
 ## issue_slack_links
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

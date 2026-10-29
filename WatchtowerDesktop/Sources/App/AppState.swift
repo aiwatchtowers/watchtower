@@ -382,8 +382,9 @@ final class AppState {
     /// The spec review author loop (#1121): each finished round typed into
     /// the author's session, and the session rows' round line.
     private(set) var specReviewLoopCenter: SpecReviewLoopCenter?
-    /// The Analytics pane's `agents report` runs and Turn On (#298).
+    /// The Analytics pane's `agents report` runs and Turn On (#298), and its coach (#1120).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
+    private(set) var coachCenter: CoachCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
@@ -734,8 +735,8 @@ final class AppState {
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
                     self?.specReviewLoopCenter?.stop()
-                    // An agents report / enable child gets SIGTERM.
-                    self?.agentAnalyticsCenter?.stop()
+                    // An agents report / enable / coach child gets SIGTERM.
+                    self?.agentAnalyticsCenter?.stop(); self?.coachCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
                     self?.ownerAwayCenter.stop()
@@ -1858,9 +1859,10 @@ final class AppState {
     /// Agent analytics (#298): the previous center stopped, a new one built.
     private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
         let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
-        analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
-        agentAnalyticsCenter?.stop()
-        (agentAnalyticsCenter, vm.agentAnalytics) = (analytics, analytics)
+        let coach = CoachCenter(runner: cliRunner ?? UnresolvedCLIRunner())
+        analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }; coach.isTabOnScreen = analytics.isTabOnScreen
+        agentAnalyticsCenter?.stop(); coachCenter?.stop()
+        (agentAnalyticsCenter, vm.agentAnalytics, coachCenter, vm.coach) = (analytics, analytics, coach, coach)
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.

@@ -9,7 +9,7 @@ The owner's own standing directions for the agents working in a workbench, as pl
 - **Session instructions** reach the agent in the brief of every new workbench session (Claude Code and Codex).
 - **Target procedure** reaches the agent in the result of `update_target` each time it sets a target `in_progress`.
 
-A daily phase reads the owner's lines in recent session feeds and proposes directions the owner keeps repeating. The model only proposes; only the owner's Add changes text. The agent has no tool to read or change these texts, and nothing lands in the workbench folder.
+The owner's repeated lines reach the owner as agent coach proposals (since 2026-10-28; the daily miner below is retired). The model only proposes; only the owner's Accept (or Add of a suggestion not moved to the coach) changes text. The agent has no tool to read or change these texts, and nothing lands in the workbench folder.
 
 ## Storage
 
@@ -17,7 +17,7 @@ Migration `00137_agent_instructions.sql`, mirrored in `schema.sql`; Go access in
 
 - `owner_instructions(scope 'session'|'procedure' PRIMARY KEY, body, updated_at)` — the global texts.
 - `projects.session_instructions`, `projects.target_procedure` — nullable per-workbench texts.
-- `instruction_suggestions` — `text`, `field`, `workbench_id` (NULL = global), `session_count`, `workbench_count`, `first_seen_at`, `last_seen_at`, `status` open|added|dismissed, `fingerprint` UNIQUE, `decided_at`.
+- `instruction_suggestions` — `text`, `field`, `workbench_id` (NULL = global), `session_count`, `workbench_count`, `first_seen_at`, `last_seen_at`, `status` open|added|dismissed, `fingerprint` UNIQUE, `decided_at`, `moved_to` (migration 00166: NULL, a coach proposal id, or `-1` = retired at the coach fold).
 
 ## Rendering — `internal/instructions`
 
@@ -38,7 +38,7 @@ One package owns validation and rendering, so the brief, `update_target` and Pre
 
 ## CLI — `cmd/instructions.go`
 
-Every write (Settings, Agent Settings, Add and Dismiss from Settings or Home) goes through `watchtower instructions`:
+Every write (Settings, Agent Settings, `remember`) goes through `watchtower instructions`:
 
 - `show [--workbench N] --json` — pinned keys `ok`, `limit`, `global{session,procedure}`, `workbench{id,session,procedure}` (null without `--workbench`), `suggestions[]` (`id`, `text`, `field`, `workbench_id`, `session_count`, `workbench_count`, `first_seen_at`, `last_seen_at`).
 - `set --field session|procedure [--workbench N] --stdin` — the text comes on stdin, never argv; empty clears it.
@@ -47,9 +47,11 @@ Every write (Settings, Agent Settings, Add and Dismiss from Settings or Home) go
 
 A failure with `--json` prints `{"ok":false,"error":…}` and exits non-zero.
 
-## Suggestions — `internal/instructions/suggest.go`, `internal/daemon/instruction_suggestions.go`
+## Suggestions — `internal/instructions/suggest.go` (retired 2026-10-28)
 
-`phaseInstructionSuggestions` runs once per calendar day (stamp `<workspace>/last_instruction_suggestions.txt`, written after every run, a failed one included, so a failure is retried next day and clears nothing). No plan gate (ask #655); the model call runs outside any write transaction. The generator is stdin-only (owner text is never on argv).
+**Retired:** the daemon phase is gone; open rows fold once into the agent coach (`coach.ImportSuggestions`, see `docs/features/agent-coach.md`), a moved row is decided only there and `suggestion add|dismiss` refuse it. The miner code below stays for its tests and the old rows; nothing runs it. What it did:
+
+`phaseInstructionSuggestions` ran once per calendar day (stamp `<workspace>/last_instruction_suggestions.txt`, written after every run, a failed one included, so a failure is retried next day and clears nothing). No plan gate (ask #655); the model call runs outside any write transaction. The generator is stdin-only (owner text is never on argv).
 
 1. **Input:** the owner entries (`KindOwner` only: no ask answers, briefs or Watchtower lines) of every workbench terminal session of the last 14 days, both agents, read through `sessionfeed` (`NewFeedReader`). Long entries are truncated, pasted blocks skipped, and the app-typed start prompts (`Work on target #…` / `Work on group #…`, with the phone's `Plan first:` line after one) dropped.
 2. **Model:** prompt id `instructions.suggest`, light tier (`TierLight`), runs on the claude and codex providers. It gets the owner lines grouped by session, the four current texts and the open and dismissed suggestions, and returns standing directions, each with `field` and session ids.
@@ -64,9 +66,9 @@ A failure with `--json` prints `{"ok":false,"error":…}` and exits non-zero.
 ## Desktop
 
 - `OwnerInstructions` (WatchtowerCore) — the decoded `show --json` state; `WorkbenchesViewModel` instruction methods call the CLI.
-- Settings -> System -> Workbench: `InstructionsSettingsSection` with a `InstructionFieldBlock` per field (counter `n / limit`, its own **Save**, enabled while the text differs), the yellow **You keep saying this — N suggestions** block with **Add** / **Dismiss** (Add off while the field has an unsaved edit, `OwnerInstructionsState.hasUnsavedEdit`, hint "Save or revert your edit first"), and **Preview what the agent gets…** (`InstructionsPreviewSheet`, **What the agent gets**).
-- Workbench **…** -> **Agent Settings…**: the section **Your instructions — this workbench**, global text collapsed with **Edit in Settings**, then the workbench's own field. The `workflow.md` row stays and is the team's folder rules.
-- Home: the last row of the Workbench zone offers the newest open suggestion first seen in the last 7 days — **Add**, **Dismiss** (the field itself lives in Settings → System → Workbench). A successful Add/Dismiss re-reads Home at once (`HomeCenter.rereadNow`: the CLI writes from another process, which the observation misses). It leaves once acted on or at 7 days; older open suggestions stay in Settings only. A failed read is not an all-clear: the Workbench zone says so.
+- Settings -> System -> Workbench: `InstructionsSettingsSection` with a `InstructionFieldBlock` per field (counter `n / limit`, its own **Save**, enabled while the text differs), a `CoachPointer` line under the fields ("Suggestions now come from the coach — see a workbench's Analytics.", opens Analytics through `AppState.openCoachInAnalyticsFromSettings`) instead of the old yellow suggestion block (the Desktop's Add/Dismiss of suggestions are gone, 2026-10-29), and **Preview what the agent gets…** (`InstructionsPreviewSheet`, **What the agent gets**).
+- Workbench **…** -> **Agent Settings…**: the section **Your instructions — this workbench**, global text collapsed with **Edit in Settings**, then the workbench's own field. The `workflow.md` row stays and is the team's folder rules. The same `CoachPointer` line sits under the workbench field ("Suggestions for this workbench come from the coach.", or "Turn on Analytics to get the coach's suggestions.") and opens that workbench's Analytics.
+- Home: the last row of the Workbench zone is the **Coach suggests** row, the newest open `coach_proposals` row a pane can show (see `docs/features/agent-coach.md`), with its change, **Accept**, **Decline** and **Open in Analytics**; it no longer reads `instruction_suggestions`. `instructions suggestion add|dismiss` (CLI only now) refuse a row moved to the coach (`db.ErrSuggestionMoved`). A failed read is not an all-clear: the Workbench zone says so.
 
 ## Instructions in every AI chat (2026-10-24, owner decisions asks #514–#518, #522)
 
@@ -82,14 +84,14 @@ Spec: `docs/superpowers/specs/2026-10-23-chat-owner-instructions-design.md`. PRO
 
 ## Coach
 
-Since 2026-10-26 the agent coach (`docs/features/agent-coach.md`, board #1120) also proposes edits to the global and per-workbench session and procedure texts and the chat text, weekly, from the same owner lines; the owner's Accept writes them through the same fields (budget `MaxRunes`). The daily miner above stays as it is until the coach absorbs it (Plan 2).
+Since 2026-10-26 the agent coach (`docs/features/agent-coach.md`, board #1120) also proposes edits to the global and per-workbench session and procedure texts and the chat text, weekly, from the same owner lines; the owner's Accept writes them through the same fields (budget `MaxRunes`). Since 2026-10-28 (Plan 2, ask #722) the coach absorbed the daily miner: see "Suggestions" above.
 
 ## Limits
 
 - No per-target texts, variables, structured rule list or phone sync. Remember applies to chats only; facts and decisions about the world are a separate design.
 - Edits reach running sessions only through `procedure`; their brief keeps the text they started with.
-- Suggestions need at least 3 sessions in 14 days; a quiet owner sees none.
+- The miner is retired; the coach's own 3-source floor applies to new proposals.
 
 ## Tests
 
-PROJ-22 guards: `cmd/workbench_brief_instructions_test.go`, `internal/tools/workbench_targets_procedure_test.go`; `internal/instructions/*_test.go`; `internal/daemon` phase tests; Desktop `OwnerInstructionsStateTests`, `WorkbenchCLIInstructionsTests`, `WorkbenchInstructionsViewModelTests`.
+PROJ-22 guards: `cmd/workbench_brief_instructions_test.go`, `internal/tools/workbench_targets_procedure_test.go`; `internal/instructions/*_test.go`; `internal/daemon/coach_test.go` (the fold); Desktop `OwnerInstructionsStateTests`, `WorkbenchCLIInstructionsTests`, `WorkbenchInstructionsViewModelTests`.

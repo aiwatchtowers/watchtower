@@ -8,8 +8,10 @@ struct AgentAnalyticsContextView: View {
     let context: AgentContextReport?
     let actions: AgentAnalyticsActions
 
+    static let shownGrowth = 6
+
     var body: some View {
-        AgentAnalyticsBlock(title: "Context", state: state) {
+        AgentAnalyticsBlock(title: "Context", lead: context?.lead, state: state) {
             if let context { measured(context) }
         } footer: {
             // Compactions and the files on disk show in any state.
@@ -31,40 +33,75 @@ struct AgentAnalyticsContextView: View {
     }
 
     private func measured(_ context: AgentContextReport) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.cozy) {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
             if let baseline = context.baseline, let parts = baseline.parts, !parts.isEmpty {
-                Text("Baseline: \(AgentAnalyticsFormat.tokens(baseline.tokens ?? 0)) tokens at session start")
-                    .font(.callout)
-                AgentShareBar(parts: parts.map { (AgentAnalyticsFormat.label(part: $0.part), $0.tokens, $0.share) })
-            }
-            if let growth = context.growth, !growth.isEmpty {
-                Text("Growth by source").font(.callout)
-                AgentShareBar(parts: growth.map { (AgentAnalyticsFormat.label(growthSource: $0.source), $0.tokens, $0.share) })
-            }
-            if let sources = context.topSources, !sources.isEmpty {
-                Text("Top sources").font(.callout)
-                LazyVStack(alignment: .leading, spacing: Spacing.tight) {
-                    ForEach(Array(sources.enumerated()), id: \.offset) { _, row in
-                        Text("\(row.tool) \(row.target) — \(AgentAnalyticsFormat.tokens(row.tokens)) tokens · "
-                            + "\(row.calls) \(row.calls == 1 ? "call" : "calls") · "
-                            + "\(row.sessions) \(row.sessions == 1 ? "session" : "sessions")")
-                            .font(.callout.monospacedDigit())
-                            .lineLimit(1)
-                    }
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    Text("At session start · \(AgentAnalyticsFormat.tokens(baseline.tokens ?? 0))")
+                        .font(.caption).foregroundStyle(.secondary)
+                    AgentBaselineBar(parts: AgentBaselinePart.fold(parts))
                 }
+            }
+            if let growth = context.growth, !growth.isEmpty { growthRows(growth) }
+            if let sources = context.topSources, !sources.isEmpty {
+                DisclosureGroup("Top sources") {
+                    LazyVStack(alignment: .leading, spacing: Spacing.tight) {
+                        ForEach(Array(sources.enumerated()), id: \.offset) { _, row in
+                            Text("\(AgentAnalyticsFormat.toolName(row.tool)) \(row.target) — "
+                                + "\(AgentAnalyticsFormat.tokens(row.tokens)) tokens · "
+                                + "\(row.calls) \(row.calls == 1 ? "call" : "calls") · "
+                                + "\(row.sessions) \(row.sessions == 1 ? "session" : "sessions")")
+                                .font(.callout.monospacedDigit())
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.top, Spacing.small)
+                }
+                .font(.callout)
             }
             if let reads = context.repeatedReads, !reads.isEmpty {
-                Text("Read again and again").font(.callout)
-                LazyVStack(alignment: .leading, spacing: Spacing.tight) {
-                    ForEach(Array(reads.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: Spacing.compact) {
-                            Text("\(row.target) — \(row.reads) reads, \(AgentAnalyticsFormat.tokens(row.tokens)) tokens")
-                                .lineLimit(1)
-                            AgentSessionLink(uuid: row.sessionUUID, actions: actions)
+                DisclosureGroup("Read again and again") {
+                    LazyVStack(alignment: .leading, spacing: Spacing.tight) {
+                        ForEach(Array(reads.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: Spacing.compact) {
+                                Text("\(row.target) — \(row.reads) reads, \(AgentAnalyticsFormat.tokens(row.tokens)) tokens")
+                                    .lineLimit(1)
+                                AgentSessionLink(uuid: row.sessionUUID, actions: actions)
+                            }
+                            .font(.callout.monospacedDigit())
                         }
-                        .font(.callout.monospacedDigit())
                     }
+                    .padding(.top, Spacing.small)
                 }
+                .font(.callout)
+            }
+        }
+    }
+
+    /// The six largest growth sources as bar rows; the rest folded.
+    private func growthRows(_ growth: [AgentGrowthRow]) -> some View {
+        let sorted = growth.sorted { $0.tokens > $1.tokens }
+        let (shown, rest) = AgentAnalyticsFormat.fold(sorted, keep: Self.shownGrowth)
+        let largest = sorted.first?.tokens ?? 0
+        let total = sorted.reduce(0) { $0 + $1.tokens }
+        let row = { (item: AgentGrowthRow) in
+            AgentGrowthRowView(name: AgentAnalyticsFormat.label(growthSource: item.source), tokens: item.tokens,
+                               share: item.share, largest: largest)
+        }
+        return VStack(alignment: .leading, spacing: Spacing.compact) {
+            Text("Growth during sessions · \(AgentAnalyticsFormat.tokens(total))")
+                .font(.caption).foregroundStyle(.secondary)
+            LazyVStack(alignment: .leading, spacing: Spacing.compact) {
+                ForEach(Array(shown.enumerated()), id: \.offset) { _, item in row(item) }
+            }
+            if !rest.isEmpty {
+                DisclosureGroup("\(rest.count) more \(rest.count == 1 ? "source" : "sources") · "
+                    + AgentAnalyticsFormat.tokens(rest.reduce(0) { $0 + $1.tokens })) {
+                    LazyVStack(alignment: .leading, spacing: Spacing.compact) {
+                        ForEach(Array(rest.enumerated()), id: \.offset) { _, item in row(item) }
+                    }
+                    .padding(.top, Spacing.small)
+                }
+                .font(.callout)
             }
         }
     }

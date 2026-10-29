@@ -248,6 +248,7 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	if err != nil {
 		return nil, err
 	}
+	ov.Context.Lead, ov.Skills.Lead, ov.Trouble.Lead = leads(lang, ov.Context, ov.Skills, ov.Trouble)
 
 	for _, r := range b.rows {
 		if r.OldFormat {
@@ -388,6 +389,7 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 	if err != nil {
 		return nil, err
 	}
+	ctx.Lead, skills.Lead, trouble.Lead = leads(lang, ctx, skills, trouble)
 	tasks := Tasks(targets, b.segments, b.events, now)
 	det.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ctx, Skills: skills, Trouble: trouble, Sessions: b.views, Tasks: tasks,
 		Targets: targets, Events: b.events, Now: now}))

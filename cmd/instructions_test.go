@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -330,4 +331,30 @@ func TestInstructionsSet_ChatWithWorkbenchRefused(t *testing.T) {
 	require.NoError(t, err)
 	g, _ := d.GetOwnerInstructions()
 	assert.Equal(t, "Be brief", g.Chat)
+}
+
+// A suggestion folded into the coach is decided only there: add and dismiss
+// refuse it and change nothing.
+func TestSuggestionVerbs_RefuseMovedRow(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	addSuggestion(t, d, "Be brief", db.InstructionSession, sql.NullInt64{}, "fp1", time.Now())
+	s := mustOpenSuggestion(t, d)
+	pid, err := d.InsertCoachProposal(db.CoachProposal{Fingerprint: "fp", Kind: "add", Destination: "session",
+		Title: "Be brief", Why: "w", Metric: "owner_loop", AfterText: "Be brief", Sources: 4}, time.Now())
+	require.NoError(t, err)
+	require.NoError(t, d.MoveInstructionSuggestion(s.ID, pid))
+
+	for _, verb := range []string{"add", "dismiss"} {
+		out, err := runInstructions(t, "", "suggestion", verb, strconv.FormatInt(s.ID, 10), "--json")
+		require.ErrorIs(t, err, db.ErrSuggestionMoved, verb)
+		m := decodeInstructions(t, out)
+		assert.Equal(t, false, m["ok"])
+		assert.Contains(t, m["error"], fmt.Sprintf("moved to the coach (proposal #%d)", pid), verb)
+	}
+	got, err := d.GetInstructionSuggestion(s.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "open", got.Status)
+	g, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.Empty(t, g.Session)
 }

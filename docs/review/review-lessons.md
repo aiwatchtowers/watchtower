@@ -2490,3 +2490,13 @@ Entry format:
 - weak-dimension: 8. The diff edited one guide line and did not read the rest of the page.
 - rule-gap: none new. The CLAUDE.md "user-facing change updates its page" rule covered it; scope of the notification's click target (still Settings) is an owner call, not a rule.
 - outcome: TBD
+
+## 2026-10-29 — feature/1120-coach-screen (board #1120 Plan 2: the agent coach screen — Analytics pane Proposed edits/metrics over `coach status|proposals --json`, `CoachCenter`, Home "Coach suggests" row, the one-time instruction-suggestion fold `coach.ImportSuggestions`, Statistics redesign, guide + feature notes; panel: prosecutor (8) + codex (0), 3 specialists DOWN (not installed); judge verified against 8bf1caf5c by reading and grep, no runs; ledger reports the full gate green) — verdict: changes-needed
+
+- contested (F1, held major): Home's **Decline** calls `coach decline` on one press, while the pane asks first. Spec §Decline and the owner-approved call list (ask #722, "Decline stays for good with a confirmation") apply to every Decline. The spec's Home paragraph doesn't repeat the confirmation, but that doesn't exempt Home. **When a second surface gets an irreversible verb its first surface guards with a confirmation, the guard goes with it (rule "automatic twin inherits gates", applied to a sibling surface).** [6]
+- contested (F2, held minor, not covered by the ledger ruling): the ruling "`round:` stays plain text" covers the missing link, not the label. Go emits `review_round` (`sourceOf`), Swift matches `"round"`, so the card shows the raw `review_round`. Same shape as the 2026-10-26 lsreg pairing: a Swift switch on a Go-emitted string, checked only against a hand-written fixture. [8]
+- false-positive (dismissed): deferred "measuring date in local TZ". It is a display string for the owner. The parsing side uses ISO8601 with Z, so the dual-path TZ rule doesn't apply. Deferred "empty trouble class never maps to other" is already handled by `cmp.Or(c.Class, ClassOther)`.
+- miss: codex reported none again. The prosecutor alone found the cross-surface confirmation gap and the Go/Swift kind mismatch. Two Task 9 deferred doc lines (agent-coach.md "over 4 lines only the last two"; the guide's "never comes back" against the new v1 limit) were still wrong at the gate.
+- weak-dimension: 7. The fold's deliberate busy-destination retire (a ledger ruling) and the workbench-bound chat retire have no test. Evidence-kind decoding has no Go-produced fixture.
+- rule-gap (candidate, dim 8, 2nd occurrence after 2026-10-26): *every Swift `switch` over a Go-emitted enum string is checked against the Go constant list, and one test feeds it the Go side's literal values.*
+- outcome: TBD

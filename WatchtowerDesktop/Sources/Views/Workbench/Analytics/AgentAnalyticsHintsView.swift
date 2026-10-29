@@ -70,7 +70,7 @@ struct AgentAnalyticsMainThingCard: View {
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: Radius.row).fill(Fill.card))
+        .card()
     }
 }
 

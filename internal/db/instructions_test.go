@@ -364,3 +364,97 @@ func TestSwapInstruction_OnlyFromBefore(t *testing.T) {
 	_, err = d.SwapWorkbenchInstruction(wb+1000, InstructionSession, "", "x")
 	assert.ErrorIs(t, err, ErrWorkbenchNotFound)
 }
+
+// A suggestion folded into the coach is decided only there: Decide and Add
+// refuse it, and the open list no longer shows it.
+func TestSuggestionVerbs_RefuseMovedRow(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	require.NoError(t, d.UpsertInstructionSuggestion(sugg("carried"), now))
+	require.NoError(t, d.UpsertInstructionSuggestion(sugg("retired"), now.Add(time.Minute)))
+	open, err := d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	require.Len(t, open, 2)
+	retired, carried := open[0].ID, open[1].ID
+	pid, err := d.InsertCoachProposal(CoachProposal{Fingerprint: "fp", Kind: "add", Destination: "session",
+		Title: "t", Why: "w", Metric: "owner_loop", AfterText: "run lint", Sources: 3}, now)
+	require.NoError(t, err)
+	require.NoError(t, d.MoveInstructionSuggestion(carried, pid))
+	require.NoError(t, d.MoveInstructionSuggestion(retired, -1))
+	assert.Error(t, d.MoveInstructionSuggestion(retired, pid), "a row moves once")
+	assert.Error(t, d.MoveInstructionSuggestion(9999, pid))
+
+	err = d.DecideInstructionSuggestion(carried, "dismissed", now)
+	require.ErrorIs(t, err, ErrSuggestionMoved)
+	assert.Contains(t, err.Error(), "moved to the coach (proposal #")
+	assert.ErrorIs(t, d.AddInstructionSuggestion(carried, "run lint", now), ErrSuggestionMoved)
+	assert.ErrorIs(t, d.DecideInstructionSuggestion(retired, "added", now), ErrSuggestionMoved)
+
+	g, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.Empty(t, g.Session, "a refused Add writes nothing")
+	got, err := d.GetInstructionSuggestion(carried)
+	require.NoError(t, err)
+	assert.Equal(t, "open", got.Status)
+	assert.Equal(t, sql.NullInt64{Int64: pid, Valid: true}, got.MovedTo)
+	open, err = d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	assert.Empty(t, open, "moved rows leave the open list")
+}
+
+func TestFoldInstructionSuggestions_MovesEveryOpenRowOnce(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	require.NoError(t, d.SetWorkbenchInstruction(wb, InstructionProcedure, "tests first"))
+	require.NoError(t, d.SetOwnerInstruction(InstructionChat, "be brief"))
+	older := sugg("older")
+	older.Field, older.WorkbenchID = InstructionProcedure, sql.NullInt64{Int64: wb, Valid: true}
+	require.NoError(t, d.UpsertInstructionSuggestion(older, now))
+	newer := sugg("newer")
+	newer.Field = InstructionChat
+	require.NoError(t, d.UpsertInstructionSuggestion(newer, now.Add(time.Hour)))
+	require.NoError(t, d.UpsertInstructionSuggestion(sugg("added"), now))
+	all, err := d.ListOpenInstructionSuggestions()
+	require.NoError(t, err)
+	for _, s := range all {
+		if s.Fingerprint == "added" {
+			require.NoError(t, d.DecideInstructionSuggestion(s.ID, "added", now))
+		}
+	}
+
+	var seen []string
+	var befores []string
+	n, err := d.FoldInstructionSuggestions(now, func(open []CoachProposal, s InstructionSuggestion, before string) (CoachProposal, bool) {
+		seen = append(seen, s.Fingerprint)
+		befores = append(befores, before)
+		if s.Fingerprint == "older" {
+			return CoachProposal{}, false
+		}
+		return CoachProposal{Fingerprint: "p-" + s.Fingerprint, Kind: "add", Destination: string(s.Field),
+			Title: "t", Why: "w", Metric: "owner_loop", BeforeText: before, AfterText: before + "\n" + s.Text, Sources: 3}, true
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, []string{"newer", "older"}, seen, "newest last_seen_at first, decided rows skipped")
+	assert.Equal(t, []string{"be brief", "tests first"}, befores)
+	open, err := d.ListCoachProposals("open")
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	var moved []sql.NullInt64
+	for _, fp := range []string{"added", "newer", "older"} {
+		var m sql.NullInt64
+		require.NoError(t, d.QueryRow(`SELECT moved_to FROM instruction_suggestions WHERE fingerprint = ?`, fp).Scan(&m))
+		moved = append(moved, m)
+	}
+	assert.Equal(t, []sql.NullInt64{{}, {Int64: open[0].ID, Valid: true}, {Int64: -1, Valid: true}}, moved)
+
+	called := false
+	n, err = d.FoldInstructionSuggestions(now, func([]CoachProposal, InstructionSuggestion, string) (CoachProposal, bool) {
+		called = true
+		return CoachProposal{}, false
+	})
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.False(t, called, "a second fold finds nothing")
+}

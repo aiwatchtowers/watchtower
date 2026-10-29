@@ -185,6 +185,8 @@ func swapped(res sql.Result, err error, what string) (bool, error) {
 
 // InstructionSuggestion is one mined repeat the owner can add to the
 // instructions or dismiss. WorkbenchID is NULL for a global suggestion.
+// MovedTo is set once the row was folded into the agent coach (migration
+// 00166): a coach proposal id, or -1 for a row retired at the fold.
 type InstructionSuggestion struct {
 	ID                           int64
 	Text                         string
@@ -193,16 +195,30 @@ type InstructionSuggestion struct {
 	SessionCount, WorkbenchCount int
 	FirstSeenAt, LastSeenAt      string
 	Status, Fingerprint          string
+	MovedTo                      sql.NullInt64
+}
+
+// ErrSuggestionMoved refuses a decision on a suggestion folded into the
+// agent coach: it is decided only through its coach proposal.
+var ErrSuggestionMoved = errors.New("moved to the coach")
+
+// SuggestionMovedError is the refusal for suggestion id moved to movedTo (a
+// coach proposal id, or -1 when it was retired at the fold).
+func SuggestionMovedError(id, movedTo int64) error {
+	if movedTo > 0 {
+		return fmt.Errorf("instruction suggestion %d: %w (proposal #%d)", id, ErrSuggestionMoved, movedTo)
+	}
+	return fmt.Errorf("instruction suggestion %d: %w (retired at the fold; its lines stay coach signals)", id, ErrSuggestionMoved)
 }
 
 const instructionSuggestionCols = `id, text, field, workbench_id, session_count, workbench_count,
-	first_seen_at, last_seen_at, status, fingerprint`
+	first_seen_at, last_seen_at, status, fingerprint, moved_to`
 
 func scanInstructionSuggestion(sc interface{ Scan(...any) error }) (InstructionSuggestion, error) {
 	var s InstructionSuggestion
 	var field string
 	err := sc.Scan(&s.ID, &s.Text, &field, &s.WorkbenchID, &s.SessionCount, &s.WorkbenchCount,
-		&s.FirstSeenAt, &s.LastSeenAt, &s.Status, &s.Fingerprint)
+		&s.FirstSeenAt, &s.LastSeenAt, &s.Status, &s.Fingerprint, &s.MovedTo)
 	s.Field = InstructionField(field)
 	return s, err
 }
@@ -231,13 +247,18 @@ func (db *DB) UpsertInstructionSuggestion(s InstructionSuggestion, now time.Time
 	return nil
 }
 
-// ListOpenInstructionSuggestions returns the open suggestions, newest first.
+// ListOpenInstructionSuggestions returns the open suggestions not moved to
+// the coach, newest first.
 func (db *DB) ListOpenInstructionSuggestions() ([]InstructionSuggestion, error) {
 	rows, err := db.Query(`SELECT ` + instructionSuggestionCols + ` FROM instruction_suggestions
-		WHERE status = 'open' ORDER BY first_seen_at DESC, id DESC`)
+		WHERE status = 'open' AND moved_to IS NULL ORDER BY first_seen_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("listing instruction suggestions: %w", err)
 	}
+	return collectInstructionSuggestions(rows)
+}
+
+func collectInstructionSuggestions(rows *sql.Rows) ([]InstructionSuggestion, error) {
 	defer rows.Close()
 	var out []InstructionSuggestion
 	for rows.Next() {
@@ -295,19 +316,171 @@ func decideInstructionSuggestionTx(tx *sql.Tx, id int64, status string, now time
 	if status != "added" && status != "dismissed" {
 		return fmt.Errorf("instruction suggestion status must be added or dismissed, got %q", status)
 	}
+	if err := refuseMovedSuggestionTx(tx, id); err != nil {
+		return err
+	}
 	res, err := tx.Exec(`UPDATE instruction_suggestions SET status = ?, decided_at = ?
-		WHERE id = ? AND status = 'open'`, status, instructionStamp(now), id)
+		WHERE id = ? AND status = 'open' AND moved_to IS NULL`, status, instructionStamp(now), id)
 	if err != nil {
 		return fmt.Errorf("deciding instruction suggestion %d: %w", id, err)
 	}
 	return requireAffected(res, fmt.Errorf("instruction suggestion %d is not open or does not exist", id))
 }
 
+// refuseMovedSuggestionTx returns the SuggestionMovedError of a suggestion
+// folded into the coach; nil for any other row, a missing one included.
+func refuseMovedSuggestionTx(tx *sql.Tx, id int64) error {
+	var moved sql.NullInt64
+	err := tx.QueryRow(`SELECT moved_to FROM instruction_suggestions WHERE id = ?`, id).Scan(&moved)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading instruction suggestion %d: %w", id, err)
+	}
+	if moved.Valid {
+		return SuggestionMovedError(id, moved.Int64)
+	}
+	return nil
+}
+
+// MoveInstructionSuggestion marks suggestion id as folded into the coach:
+// movedTo is its coach proposal id, or -1 when it was retired at the fold.
+func (db *DB) MoveInstructionSuggestion(id, movedTo int64) error {
+	return db.WithTx(func(tx *sql.Tx) error { return moveInstructionSuggestionTx(tx, id, movedTo) })
+}
+
+func moveInstructionSuggestionTx(tx *sql.Tx, id, movedTo int64) error {
+	if movedTo == 0 || movedTo < -1 {
+		return fmt.Errorf("instruction suggestion %d: invalid coach proposal id %d", id, movedTo)
+	}
+	res, err := tx.Exec(`UPDATE instruction_suggestions SET moved_to = ? WHERE id = ? AND status = 'open' AND moved_to IS NULL`,
+		movedTo, id)
+	if err != nil {
+		return fmt.Errorf("moving instruction suggestion %d: %w", id, err)
+	}
+	return requireAffected(res, fmt.Errorf("instruction suggestion %d is not open, already moved or does not exist", id))
+}
+
+// FoldInstructionSuggestions is the one-time move of the open suggestions
+// into the agent coach, in one transaction: for each open row not yet moved,
+// newest last_seen_at first, decide gets the open coach proposals (the ones
+// written by this fold included), the row and its destination's current text
+// (the chat text is global), and returns the proposal to write or false.
+// A written proposal's id becomes the row's moved_to; a refused row, or one
+// whose proposal's fingerprint is already known, gets -1. Every open row is
+// moved, so a second call finds nothing. It returns the proposals written.
+func (db *DB) FoldInstructionSuggestions(now time.Time,
+	decide func(open []CoachProposal, s InstructionSuggestion, before string) (CoachProposal, bool)) (int, error) {
+	written := 0
+	err := db.WithTx(func(tx *sql.Tx) error {
+		open, err := queryCoachProposals(tx, `SELECT `+coachCols+` FROM coach_proposals WHERE status = 'open' ORDER BY id DESC`)
+		if err != nil {
+			return err
+		}
+		rows, err := tx.Query(`SELECT ` + instructionSuggestionCols + ` FROM instruction_suggestions
+			WHERE status = 'open' AND moved_to IS NULL ORDER BY last_seen_at DESC, id DESC`)
+		if err != nil {
+			return fmt.Errorf("listing instruction suggestions to fold: %w", err)
+		}
+		list, err := collectInstructionSuggestions(rows)
+		if err != nil {
+			return err
+		}
+		type chosen struct {
+			id int64
+			p  CoachProposal
+		}
+		var picked []chosen
+		for _, s := range list {
+			before, err := suggestionTargetTextTx(tx, s)
+			if err != nil {
+				return err
+			}
+			if p, ok := decide(open, s, before); ok {
+				// A fingerprint any proposal (any status) or an earlier pick already
+				// has would be refused at insert: retire it before it takes a slot.
+				var known int
+				if err := tx.QueryRow(`SELECT COUNT(*) FROM coach_proposals WHERE fingerprint = ?`, p.Fingerprint).Scan(&known); err != nil {
+					return fmt.Errorf("checking coach fingerprint: %w", err)
+				}
+				dup := false
+				for _, c := range picked {
+					dup = dup || c.p.Fingerprint == p.Fingerprint
+				}
+				if known > 0 || dup {
+					if err := moveInstructionSuggestionTx(tx, s.ID, -1); err != nil {
+						return err
+					}
+					continue
+				}
+				open = append(open, p) // holds its slot and destination for the rows after it
+				picked = append(picked, chosen{s.ID, p})
+				continue
+			}
+			if err := moveInstructionSuggestionTx(tx, s.ID, -1); err != nil {
+				return err
+			}
+		}
+		// Written oldest first, so the newest-seen suggestion ends with the
+		// highest id (the coach rows order by created_at DESC, id DESC).
+		for i := len(picked) - 1; i >= 0; i-- {
+			id, err := insertCoachProposal(tx, picked[i].p, now)
+			if err != nil {
+				return err
+			}
+			movedTo := int64(-1)
+			if id != 0 {
+				movedTo = id
+				written++
+			}
+			if err := moveInstructionSuggestionTx(tx, picked[i].id, movedTo); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("folding instruction suggestions: %w", err)
+	}
+	return written, nil
+}
+
+// suggestionTargetTextTx reads the current text a suggestion appends to: its
+// field in its workbench, or the global text (always for the chat text).
+func suggestionTargetTextTx(tx *sql.Tx, s InstructionSuggestion) (string, error) {
+	if s.WorkbenchID.Valid && s.Field != InstructionChat {
+		var session, procedure sql.NullString
+		err := tx.QueryRow(`SELECT session_instructions, target_procedure FROM projects WHERE id = ?`,
+			s.WorkbenchID.Int64).Scan(&session, &procedure)
+		if err != nil {
+			return "", fmt.Errorf("reading workbench %d instructions: %w", s.WorkbenchID.Int64, err)
+		}
+		if s.Field == InstructionProcedure {
+			return procedure.String, nil
+		}
+		return session.String, nil
+	}
+	var body string
+	err := tx.QueryRow(`SELECT body FROM owner_instructions WHERE scope = ?`, string(s.Field)).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading owner %s instruction: %w", s.Field, err)
+	}
+	return body, nil
+}
+
 // AddInstructionSuggestion writes newBody to the suggestion's field in its scope
 // (global or its workbench) and marks it added, in one transaction. It errors
-// when the suggestion is not open.
+// when the suggestion is not open, and refuses one moved to the coach
+// (ErrSuggestionMoved).
 func (db *DB) AddInstructionSuggestion(id int64, newBody string, now time.Time) error {
 	return db.WithTx(func(tx *sql.Tx) error {
+		if err := refuseMovedSuggestionTx(tx, id); err != nil {
+			return err
+		}
 		var field string
 		var wb sql.NullInt64
 		err := tx.QueryRow(`SELECT field, workbench_id FROM instruction_suggestions

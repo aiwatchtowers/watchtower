@@ -31,7 +31,7 @@ The agent (`specReviewCLIAgent`, cmd) runs the configured provider in read-folde
 
 ## Daemon sweep — `internal/daemon/spec_review_sweep.go`
 
-`phaseSpecReviewSweep`, the last step of a cycle (after `phaseInstructionSuggestions`), runs only when cmd wired `SetSpecReviewLaunch` (`cmd/sync.go`):
+`phaseSpecReviewSweep`, the last step of a cycle (after `phaseCoach`), runs only when cmd wired `SetSpecReviewLaunch` (`cmd/sync.go`):
 
 - a `queued` row older than 60 s is re-queued by `RelaunchQueuedSpecReview` (attempt + 1, the minute restarts, only while still queued with `attempt < 3`) and launched only when that update changed the row, at most 3 per cycle — a slow reviewer that claimed the row meanwhile keeps it, no second reviewer starts; a row still queued with `attempt >= 3` is claimed under pid 0 and failed with "could not start";
 - a `running` row whose pid is gone (`syscall.Kill(pid, 0)` gives ESRCH) or that started more than `RunTimeout` + 2 min ago is failed with "reviewer process ended without a result"; an overdue reviewer still alive is first sent SIGTERM to its process group (`-pid`; it leads its own session), only when the pid still leads its group and the process started no later than `started_at` (+1 s), so a reused pid is never signalled.

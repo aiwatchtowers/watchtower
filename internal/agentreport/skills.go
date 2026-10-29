@@ -16,6 +16,7 @@ import (
 // of the whole listing. Only the sessions with the v2 facts (FactsSessions)
 // are measured.
 type SkillsReport struct {
+	Lead          string        `json:"lead"` // one plain sentence; "" when nothing was listed
 	FactsSessions int           `json:"facts_sessions"`
 	Listed        int           `json:"listed"`
 	Used          int           `json:"used"` // listed skills with a row (≤ Listed); Rows may also hold unlisted ones

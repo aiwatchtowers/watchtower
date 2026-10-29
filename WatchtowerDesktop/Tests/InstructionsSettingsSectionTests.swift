@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import ViewInspector
 import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
@@ -66,5 +68,28 @@ final class InstructionsSettingsSectionTests: XCTestCase {
         let without = OwnerInstructionChatLine(id: 2, line: "b", conversationID: nil, messageID: nil, addedAt: "")
         XCTAssertEqual(InstructionsSettingsModel.openChatTarget(with), 3)
         XCTAssertNil(InstructionsSettingsModel.openChatTarget(without))
+    }
+
+    private func block(pointer: CoachPointer?) -> InstructionFieldBlock {
+        InstructionFieldBlock(
+            title: "Session instructions", caption: "c", stored: "text", limit: 1000, error: nil, busy: false,
+            draft: .constant(nil), onSave: { _ in }, coachPointer: pointer)
+    }
+
+    /// Both hosts hand the block a pointer; no Add / Dismiss is left.
+    func testInstructionFieldBlockShowsCoachPointer() throws {
+        var opened = 0
+        let settings = block(pointer: CoachPointer(text: InstructionsSettingsSection.coachPointerText) { opened += 1 })
+        let texts = try settings.inspect().findAll(ViewType.Text.self).map { try $0.string() }
+        XCTAssertTrue(texts.contains("Suggestions now come from the coach — see a workbench's Analytics."))
+        XCTAssertThrowsError(try settings.inspect().find(button: "Add"))
+        XCTAssertThrowsError(try settings.inspect().find(button: "Dismiss"))
+        try settings.inspect().find(button: "Open Analytics").tap()
+        XCTAssertEqual(opened, 1)
+
+        let agent = block(pointer: CoachPointer(text: AgentSettingsScreen.coachPointerText(analyticsOn: true)) {})
+        XCTAssertNoThrow(try agent.inspect().find(text: "Suggestions for this workbench come from the coach."))
+        XCTAssertEqual(AgentSettingsScreen.coachPointerText(analyticsOn: false), "Turn on Analytics to get the coach's suggestions.")
+        XCTAssertThrowsError(try block(pointer: nil).inspect().find(button: "Open Analytics"))
     }
 }
