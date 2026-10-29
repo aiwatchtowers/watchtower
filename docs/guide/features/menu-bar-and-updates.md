@@ -90,7 +90,7 @@ replaces: [menubar-update-whats-new, menubar-install-update]
 area: setup
 level: next
 kind: feature
-since: next
+since: 0.26.3
 -->
 
 1. Click **Update Available** at the bottom of the sidebar, **Update to <version> available…** in the menu, or the notification. Each opens the **Software Update** window with the release notes.

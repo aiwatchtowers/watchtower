@@ -16,7 +16,7 @@ text: Choose **Record Privately** in **Record**'s menu: the transcript stays on 
 area: meetings
 level: next
 kind: feature
-since: next
+since: 0.26.3
 action: nav:calendar
 -->
 
@@ -58,7 +58,7 @@ text: In a recording's header, **Export** copies the transcript or saves it as t
 area: meetings
 level: next
 kind: feature
-since: next
+since: 0.26.3
 action: nav:calendar
 -->
 

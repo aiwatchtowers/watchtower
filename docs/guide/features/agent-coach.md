@@ -14,7 +14,7 @@ text: Open **Analytics** in a workbench to see the coach's suggested edits and p
 area: development
 level: power
 kind: feature
-since: next
+since: 0.26.3
 action: nav:projects
 replaces: [agent-coach-suggestions, instructions-suggestions]
 changed: Suggestions now live in Analytics and on Home, and repeated directions you give agents come through the coach.

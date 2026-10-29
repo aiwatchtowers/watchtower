@@ -73,7 +73,7 @@ text: Open **Usage → Watchtower** to see each AI job's calls, tokens and cost,
 area: setup
 level: basics
 kind: feature
-since: next
+since: 0.26.3
 action: nav:usage
 replaces: [ai-usage-by-day]
 changed: Usage now shows every AI call by job, with cost, on the Watchtower tab.
@@ -83,8 +83,8 @@ changed: Usage now shows every AI call by job, with cost, on the Watchtower tab.
 
 - **Claude plan**: your Claude account's limits, below.
 - **Watchtower**: what Watchtower itself spends on AI, for **Today**, **7 days** or **30 days**. A totals row shows calls, fresh input, cache, output and cost. Below it, a table lists each job (digests, briefing, ideas, memory, images, built-in automations and so on) with calls, tokens, output, cost and tokens per call. **Your automations** is a separate section with one row per automation of your own. **Chats and workbenches** shows one line each: your chats, and workbench sessions plus the helper calls Watchtower makes for workbenches. Workbench sessions count only for workbenches with analytics on; the tab names the ones left out.
-- **Usage**: the run log, one entry per background run with status, duration, items and errors. It shows no tokens or money; a button takes you to the Watchtower tab.
-- **Progress**: history of the background runs and their steps, also without tokens.
+- **Progress**: history of the background runs and their steps, without tokens.
+- **Usage**: pick a day to see its run log, one entry per background run with status, duration, items and errors. It shows no tokens or money; **Open Watchtower tab** takes you there.
 
 Reading the numbers:
 
