@@ -1,0 +1,160 @@
+# Relay client — Watchtower side of the paid relay transport
+
+**Status:** draft · **Date:** 2026-10-29 · **Board:** #1230 (umbrella), #1236 (this spec)
+**Server design (contract):** `aiwatchtowers/relay` → `docs/superpowers/specs/2026-10-28-relay-design.md` (below: "relay spec"), approved in ask #712. **Client rules (executable):** `relay/sim/README.md` (below: "sim rule N") with its tests in `relay/sim/sim_test.go`. **Wire contract:** `relay/proto/relay/v1/relay.proto` + `relay/proto/README.md`.
+
+This spec does not repeat the relay spec. It says how Watchtower (Kit, Desktop hub, iPhone app) implements relay spec §9, in which order, and what changes for users who never pay.
+
+## 1. Goal and boundaries
+
+- A paying phone and its Macs run entirely over the relay: slices, actions, echoes, attachments, pushes, transport switch, subscription. Target: action on the phone → result on the phone screen **p50 < 500 ms** on a good network.
+- Free users stay on CloudKit. Their crypto, zones, shares and pairing do not change. Two things change for them on purpose, because the transport switch needs one code path (relay spec §9 p. 2): the hub applies each phone's actions in order with an outbox (§5), and the hub publishes on change (§6, subject to ask #735).
+- The relay server, its protocol and its Go reference client are the relay repository's; changes there go through the relay session (ask #734). This spec only lists what it needs from there (§12).
+- Not in this spec: Android, web, the full ratchet.
+
+## 2. Names
+
+"Relay" already means something in this codebase: the CloudKit **action lane** — `RelayZone`, `RelayProcessor`, `RelayFeed`, `RelayRecordKind`, `relay_seen`, `CloudZoneID.relay`, the AAD zone byte `relay = 2`. Renaming all of that would touch the E2E format and many tests for no gain.
+
+- The existing names keep their meaning: **the mailbox lane** (phone ↔ hub records), on any transport. `CloudZoneID.relay` is that lane; its AAD byte stays `2`, `.data` stays `1` (`KeyDerivation.zoneByte` never changes).
+- The new server is the **hosted relay**. Its Swift types carry `Hosted`: `HostedRelayClient` (protocol client), `HostedRelayTransport` (a `CloudSyncTransport`), `HostedRelayIdentity` (`relay_auth`). The user-facing name stays "Relay" (Settings, guide); the internal prefix only avoids the clash.
+- `TransportKind` = `.cloudKit | .hostedRelay` is the hub's current transport (relay spec §3).
+
+## 3. Layers today and the seam
+
+```
+phone UI / hub services ─▶ RelayFeed · ActionOutbox · SlicePublisher · RelayProcessor · MobileLinkCenter
+                           SecureTransport (seal/open, wire names, rollback guard)
+                           ── CloudSyncTransport ── (the seam)
+                           CloudKitTransport (CKSyncEngine)  |  InMemoryCloudTransport (tests)
+```
+
+`SecureTransport` already depends only on `CloudSyncTransport`. The leaks are above it (recon on #1237):
+
+| Leak | Where | Neutral replacement |
+|---|---|---|
+| `CloudRecord.creatorUserRecordName`, author check `LinkedDevice.accepts(creator:)` with `CKCurrentUserDefaultName` | Kit seam, `HubSyncState+Linking`, `RelayProcessor`, `MobileLinkCenter` | `CloudRecord.origin: RecordOrigin { author: String?, serverAt: Date? }`; the check moves behind `TransportAuthorPolicy.accepts(origin:device:)`. CloudKit's policy is today's code bit for bit; the hosted relay's is "the server ACL already proved it" (mailbox = device). |
+| `CloudRecord.serverModifiedAt` (hygiene ages) | `RelayProcessor` hygiene, `UnopenableRecord` | `origin.serverAt` — same meaning, the relay stamps it. |
+| `CloudDatabaseScope` (`private` / `shared(ownerName:)`) | phone `HubBoot`, `HubSession`, `HubRegistry` persistence, `LinkStore`, `LinkingViewModel` | `HubRoute` enum: `.cloudKit(CloudDatabaseScope)` and `.hostedRelay(macDeviceID:)`. Persisted columns keep their raw values; a new nullable `route_kind` column decides. |
+| `ShareService` (zone loop, CKShare URLs, public link) | Desktop `MobileLinkCenter`, `ShareService` | `PhoneAccessService`: `ensureInvitation() -> LinkInvitation`, `participants()`, `remove(where:)`, `reconcile(keep:)`; `CloudKitShareService` keeps today's body. |
+| `LinkContainer` (accept shares) | phone onboarding | `LinkAccess`: `identity()`, `join(invitation:hubID:)`, `leave(hubID:)`. |
+| `AskAlertSubscription` (`import CloudKit` inside the Kit), `PushScope`, `AlertSubscriptionRegistrar`, NSE fetch, `TrayAppDelegate` silent push | Kit Secure, phone, NSE, Desktop | `PushWake` protocol: `subscribe(hub)`, `alertSource(for notification) -> AlertSource` where `AlertSource` is `.fetchRecord(id)` (CloudKit) or `.inline(envelope)` (relay). The CloudKit implementation moves into `CloudKitTransport/`. |
+| `transport is/as? CloudKitTransport` casts (`start/stop/sendNow/fetchDepth`) | phone `HubSession` (7 places) | `LiveTransport` capability protocol. |
+| Direct `CloudKitTransport(...)` construction, `entitlementPresent()` | `MobileHubService`, `HubBoot`, `AppRoot`, `MobileSettingsViewModel`, `BatteryDiagnostics` | `HubTransportFactory` / phone `TransportFactory` keyed by `HubRoute`. |
+| `LinkPayload` v3 CKShare URLs, `owner_user` | Kit Link | v4 adds `transport` and `relay_mac_device_id`; share URLs become optional (§8). |
+
+The seam gains surface only through **optional** protocols, the way `CompactingTransport`/`SweepingTransport` did, so `CloudSyncTransport` keeps its three requirements and the six phone test fakes keep compiling:
+
+- `ConditionalTransport`: `save(_ items: [ConditionalSave]) -> [SaveOutcome]` and `delete(_ items: [ConditionalDelete]) -> [DeleteOutcome]` with `expect: .none | .absent | .seq(UInt64)`, outcomes `.saved(recordSeq)`, `.conflict(current: CloudRecord)`, `.refused(TransportRefusal)`. `CloudRecord` gains `recordSeq: UInt64?`. On CloudKit, `.absent` maps to a create-only save and `.seq` to the stored change tag (`TransportStore` keeps the tag per record); a `serverRecordChanged` becomes `.conflict` instead of today's "my payload wins" retry — **only** for records written through this protocol (the mailbox lane, §5). Slices keep today's path.
+- `MailboxAddressing`: `changes(inMailboxOf device:)` / `save(…, mailbox:)` so the hub reads one mailbox per phone on the relay. On CloudKit the mailbox is a filter of the shared `RelayZone` by sender, as today.
+- `PagedChanges`: `changes` may return `more`; callers loop. `CloudKitTransport` never returns `more`.
+
+## 4. Identity on the relay
+
+- Every device (phone and Mac) creates an Ed25519 `relay_auth` key in the Keychain (`ThisDeviceOnly`, never synced, never backed up) on first use of the hosted relay — not at install. `relay_device_id` = lower-case unpadded base32 of SHA-256 of the public key (as `relay/client/client.go`).
+- Login: challenge–response, signing `nonce ‖ relay_device_id ‖ server_origin` (exact bytes from `client.go`; pinned by a Kit test vector produced by the Go client). Session tokens live in memory only.
+- The Mac stores its `relay_device_id` in `hub_meta`; the phone stores `hub_id → mac relay_device_id` in its hub registry row. A Mac reinstall yields a new `relay_device_id`: the phone treats the hub as a new one (sim "Watchtower hub_id vs. the relay's ids").
+- The server origin is a build setting (`WATCHTOWER_RELAY_ORIGIN`, default the production origin; Debug builds may point to a local stand, §11).
+
+## 5. Actions: one order, one outbox, both transports
+
+Today's action path does not meet sim rules 1–7a (recon on #1236): the envelope `seq` is shared by every sealed record and has holes; there is no unsent queue; the hub has no per-phone order; echoes are never deleted by the phone; there are no control records. The transport switch cannot be correct without these, and a switch involves both transports, so **the rules below apply on CloudKit too**. For a free user the visible change is small: actions keep arriving, and an action the phone lost (reinstall) shows as "not delivered" with Retry instead of vanishing.
+
+1. **Action counter.** Each phone keeps, per hub, a persisted gapless `action_seq` (u64, starts at 1, never reset while the link lives; R29: it continues across epochs). It is drawn only when an action is committed to the outbox. It travels **inside the sealed payload** (`ActionRequestPayload.action_seq`), not in the envelope header, whose `seq` stays the rollback-guard counter it is today.
+2. **Record name.** `a-<action_seq>` under `K_meta` (`wireName(zone: .relay, kind: "a", id: "<device_id>-<action_seq>")`). Deterministic, so a resend overwrites the same record and the hub can tell repeats. On CloudKit the device id in the HMAC input keeps phones apart in the shared zone.
+3. **Outbox.** `pending_actions` becomes the outbox: the sealed bytes, `action_seq`, epoch, state `queued | sent | echoed(final) | undelivered`. A flush writes queued actions in order with `expect: .absent`, stops at the first failure (unreachable, rate limit, quota, `ENTITLEMENT_INACTIVE`) and resumes on the next pass (sim rule 1). Conflicts resolve per sim rule 3.
+4. **Hub order.** The hub keeps `last_applied_action_seq` per phone (sidecar `devices`). It applies `last + 1` only; a lower or equal seq is a repeat (dropped, echoed); a higher one is held and the hub writes `resend_from(last + 1)` once per gap (sim rules 4–5). `relay_processed` stays as the exactly-once ledger for crash safety.
+5. **Echo.** The hub echoes every action record it reads — applied or repeat — by overwriting it with `expect: .seq` (sim rule 2). Final statuses: `applied`, `failed`, `expired`, `cancelled`. Non-final: `received`, `held`. On a final echo the phone settles the outbox row and deletes the echo (`expect: .seq`).
+6. **Skip.** A phone asked to resend from a seq it no longer has writes `skip_to(m)` and lists each missing action as **not delivered** with **Retry** (a new action at the end of the queue) (sim rule 6).
+7. **Control records** (`resend_from`, `skip_to`, `epoch_ack`, `transport_switch`, `transport_switched`, `transport_switch_rejected`, `hub_on_relay`, owed echoes) are new `RelayRecordKind`s with a durable per-mailbox queue on both sides, retried every pass (sim rule 7a). Names `c-<uuid>` under `K_meta`.
+8. **Hygiene.** On CloudKit, today's 7-day hub hygiene stays as the fallback. On the relay the recipient deletes and the server TTL (14 days) is the fallback (sim rule 15).
+9. **Migration.** At upgrade, actions already pending keep today's UUID names and are settled by today's code; new actions use the new path. A phone on an old app version keeps working against a new hub: the hub treats a payload without `action_seq` as today (unordered, by UUID). The hub's ordered mode starts for a phone at its first action carrying `action_seq`.
+
+## 6. Publishing on change
+
+Recon on #1238: the ~14 s median comes mostly from actions whose effect is never nudged (session start/stop/input, chat, report requests wait for the 30 s full tick) and from the 3 s / 30 s mailbox pass. The design:
+
+1. **Nudge after apply.** `MobileHubCommandDispatcher` calls `publishSoon(kinds)` from one table `ActionKind → [SliceKind]` after every applied action (generalises `BoardHandlers`).
+2. **In-process observation.** One `DatabaseRegionObservation` over every table a slice reads, mapped table → kinds (extends `FastLane.observedTables` from three tables to all).
+3. **Writes by Go processes.** A `PRAGMA data_version` poll on a dedicated read connection, every 200 ms while a phone is linked and the hub runs; on change, nudge the DB-backed kinds. Replaces `SessionAgentStateCenter`'s own 1 s poll as a shared change source.
+4. **Debounce** 150 ms trailing on the dirty-kind set; only dirty kinds are diffed. The full diff stays every 60 s as a backstop for clock-driven values (liveness ages, calendar horizon, permission expiry) and runner-fed kinds.
+5. **Per transport** — decision in ask #735 (pending). Recommended: steps 1–3 on both transports; the minimum spacing between sends stays ~2 s on CloudKit (each DataZone save is a silent push to the phone, the battery rule of #724) and drops to 150 ms on the hosted relay, where a foreground phone gets events over its WebSocket without pushes.
+6. **Mailbox pass.** On the hosted relay the hub reads mailboxes on the WebSocket event, not on a 3 s timer.
+
+## 7. Hosted relay transport
+
+`HostedRelayClient` (Kit, no UI, no GRDB) mirrors the Go client's behaviour (sim "The Go client"): register/login, HTTPS `POST /v1/op` and WebSocket `GET /v1/ws`, `Relay-Protocol-Version: 1`, relogin once on `UNAUTHENTICATED`/close 4001, reconnect with exponential backoff ≤ 60 s with jitter, immediate reconnect on `GoingAway`, one-by-one resubscribe (a refused zone is dropped and reported), a record-less `ZoneChanged` means "pull", a full event buffer never blocks the reader, `UNSUPPORTED_VERSION`/close 4000 → "update the app". After every reconnect: resubscribe, pull every zone from its last seq, `get_account_state`.
+
+`HostedRelayTransport` implements `CloudSyncTransport`, `ConditionalTransport`, `MailboxAddressing`, `PagedChanges`, `LiveTransport`:
+
+- Zones: `.data` → `data/<mac>`, `.relay` → `relay/<mac>/<phone>` (the hub enumerates its phones; the phone has one mailbox per hub), pairing → `pair/<slot>`. One persisted change token per zone; `TOKEN_EXPIRED` → full resync of that zone.
+- Attachments: `create_upload` → PUT of the already-sealed file (`ChunkedAssetCipher` unchanged) → `save` with `attachment_id`; download via `get_download`. A re-save of a recording uploads again (an overwrite deletes the old object). Pair zones carry none.
+- Save is not atomic: after an error response the transport re-reads the affected zone before retrying. `SaveResult` carries metadata only; the transport keeps its bytes and the returned `record_seq`.
+- Errors map to today's events: quota codes → `TransportEvent.quotaExceeded` (new cases `hubQuota`, `mailboxQuota`); `ENTITLEMENT_INACTIVE` and `Control{ENTITLEMENT_EXPIRED}` → §9; `FORBIDDEN` on a hub zone → the hub is no longer in any paying slot.
+- Generated code: `relay.proto` and the `protoc-gen-swift` output are copied into `WatchtowerKit/Sources/WatchtowerRelayProto/` with a `VERSION` file naming the relay commit (ask #734). New dependency `apple/swift-protobuf`, pinned exactly, in the Kit (Desktop and phone get it through the Kit). `make relay-proto RELAY=../relay` regenerates and refuses a dirty or unpinned source.
+
+## 8. Linking over the relay
+
+- **Upgrading an existing link** (relay spec §3.2 p. 2): when a phone subscribes, the hub publishes its `relay_mac_device_id` in the phone's `device_grant` over CloudKit; the phone calls `add_slot`; the hub calls `set_hub_readers`. No new QR.
+- **New link while the phone is on the relay** (§3.2 p. 3): `LinkPayload` v4 adds `transport` and `relay_mac_device_id`; the phone opens a pairing slot, writes today's sealed `DeviceHello` into `pair/<slot>`, the Mac (told by `Control{PAIRING_OPENED}`) answers with today's keybox flow there; after the owner's SAS confirmation the phone calls `promote_pairing`, the hub `set_hub_readers`. Today's attempt caps, refusals and code checks in `MobileLinkCenter` stay as they are — only the record route changes.
+- A Mac on the hosted relay still shows the CloudKit QR fields for a free phone; that phone links and then sees `hub_on_relay` ("this Mac runs over Relay").
+- Failures as relay spec §3.2 p. 3: slot expired or code refused → `close_pairing`, a new QR; three Macs in slots → the phone asks to remove one first.
+
+## 9. Transport switch and subscription
+
+Implemented exactly as sim rules 8–16 (they change only together, relay spec §9 p. 2):
+
+- The switch lives on the phone (Settings → Macs → transport per Mac, paying phones only) and is accepted by the hub with the 5-minute anti-flap rule toward the relay. The hub writes the transport marker record (R30) in its data zone.
+- Every switch starts a new epoch (`HubKeyring.rotate(reason: .transportSwitch)`) after the old transport's mailboxes are drained if reachable; the new keybox travels inside `transport_switched` in each phone's mailbox, not in the data zone. Old-epoch receiving keys are kept per sim rule 14 (≤ 14 days), which needs `HubKeyring.latestEpochs` and the phone's `HubLinkKeys.maxEpochs` to hold more than two epochs, and an `epoch_ack` per phone.
+- While on the hosted relay the hub keeps CloudKit zones and shares in place and polls its phones' CloudKit mailboxes every 30 s for control records (relay spec §4.1); a phone whose relay is unreachable > 60 s polls its CloudKit mailbox too. "Relay unavailable" shows after 60 s; after 10 min the phone offers **Switch to iCloud**.
+- **Subscription** (phone): StoreKit 2, auto-renewable, `appAccountToken = account_id`, Family Sharing off; the signed transaction goes to `submit_transaction`; restore = move (relay spec §3.2 p. 4); `SUBSCRIPTION_MOVED` → the old phone says so and returns to CloudKit. `ENTITLEMENT_EXPIRED` / `ENTITLEMENT_INACTIVE` → sim rule 16, including the lapsed phone's undelivered list (R32) and the Mac acting on the control's `detail` (R31).
+
+## 10. Pushes, Desktop, measurements
+
+- **Pushes (phone).** Forward the APNs token and environment with `register_push` at every launch. Silent push → background `changes` over HTTPS. Ask alerts: the hub calls `send_alert` per paying phone with the sealed `ask_alert`; the NSE takes `AlertSource.inline(envelope)` and opens it with today's `AlertOpener` under a fixed wire name `alert-push` (AAD), no network. CloudKit's `sig-` records and query subscription stay for CloudKit phones only.
+- **Desktop.** Settings → Mobile, per linked phone: its transport (iCloud / Relay), "does not receive updates: this Mac runs over Relay" for a free phone, who switched and when, "Relay unavailable", quota errors, and the undelivered-actions count the hub knows of. Built from the design kit; mockups go to `docs/design/mockups/relay-client/` with the phase that builds them.
+- **Measurements.** Content-free latency samples on both sides: the phone stamps action write → echo seen → slice with the effect seen; the hub stamps read → applied → slice saved. Stored locally (phone `replica_meta`-side table, hub sidecar), shown in Settings → Mobile → Diagnostics as p50/p90 per transport; nothing leaves the device. This is how the p50 < 500 ms goal is checked before launch.
+
+## 11. Testing
+
+- **Kit, public CI:** a Swift port of the sim scenarios against `FakeHostedRelay` (in-memory server: zones, `record_seq`, conditional writes, mailbox ACL, controls, TTL with a fake clock) and against `InMemoryCloudTransport` extended with change tags — every sim test name gets a Swift twin with the same name (`TestGapTriggersResendFrom` → `testGapTriggersResendFrom`), so the two rule sets stay comparable. Login signing and `relay_device_id` pinned by vectors generated with the Go client.
+- **Interop with the real `relayd`:** locally through `make relay-interop RELAY=../relay` (starts relayd + Postgres + MinIO from the relay stand, §12), and in the relay repository's CI building the Kit's client (ask #734). Public Watchtower CI never needs the private repo.
+- **Phone/Desktop:** existing suites keep passing on CloudKit; new wiring tests per phase; one manual device check per phase that touches the phone.
+
+## 12. What we need from the relay repository (relay session)
+
+1. `feature/relay-v1` on main and `relay.proto` v1 frozen (`buf breaking` against main) — before Phase 2.
+2. A local stand (relayd + Postgres + MinIO, one command) and a dev-only entitlement grant (`RELAY_ENV=dev` only) — before Phase 3.
+3. Relay spec §4 wording fixed per R29–R32.
+4. A CI job that builds the Watchtower Kit client and runs the interop scenarios — Phase 3.
+5. Staging in AWS; App Store Connect product, Paid Apps Agreement, APNs and App Store Server API keys — before the launch, not before development.
+
+## 13. Phases
+
+| Phase | Content | Depends on | Board |
+|---|---|---|---|
+| 0a | Seam neutral (§3): `RecordOrigin`, `TransportAuthorPolicy`, `HubRoute`, `PhoneAccessService`/`LinkAccess`, `PushWake`, `LiveTransport`, factories. No behaviour change on CloudKit. | — | #1237 |
+| 0b | Publishing on change (§6) | ask #735 | #1238 |
+| 1 | Ordered actions and outbox on both transports (§5), `ConditionalTransport` on CloudKit, control-record queue, "not delivered" on the phone | 0a | new under #1240 |
+| 2 | Proto in the Kit, `HostedRelayClient`, `HostedRelayTransport`, `FakeHostedRelay`, sim twins | 0a, relay §12 p. 1 | #1239, #1240 |
+| 3 | Identity, linking over the relay, transport switch + epochs (§8–9), interop | 1, 2, relay §12 p. 2 | #1241, #1242, #1247 |
+| 4 | Subscription, pushes, Desktop indicators, measurements (§9–10), guide pages | 3 | #1243–#1246 |
+| 5 | 7-day rotation with ephemeral X25519 (relay spec §7.4) — after launch | 3 | #1248 |
+
+Launch for users waits for Phases 0–4 and §12 p. 5. Each phase gets its own plan; phases 0a and 0b may run in parallel lanes.
+
+## Decisions
+
+- Spec first, start the CloudKit-leak cleanup and publishing on change now — ask #734
+- Changes in the relay repository are done by the relay session — ask #734
+- `relay.proto` and the generated Swift are copied into the Kit, pinned to a relay commit — ask #734
+- Interop tests against the real relayd run locally and in the relay repository's CI; public Watchtower CI uses a fake server — ask #734
+- Publishing on change per transport — ask #735 (pending)
+- Existing "Relay" names keep meaning the mailbox lane; the new server's types are `HostedRelay*`; the user-facing name stays "Relay" — author's decision, for approval
+- Ordered actions, outbox and control records apply on CloudKit too (one code path for the switch); the visible change for free users is "not delivered" + Retry — author's decision, for approval
+- `action_seq` is a separate gapless counter inside the sealed payload; the envelope `seq` stays the rollback-guard counter — author's decision, for approval
+- Seam grows only through optional protocols (`ConditionalTransport`, `MailboxAddressing`, `PagedChanges`, `LiveTransport`) — author's decision, for approval
+- Rotation keyboxes on the relay travel in the phone's mailbox inside `transport_switched` — author's decision, for approval
+- `relay_auth` is created on first use of the hosted relay, not at install; never synced or backed up — author's decision, for approval
+- Latency measurements stay on the device, shown in Diagnostics — author's decision, for approval
+- 7-day rotation with ephemeral keys comes after launch (relay spec §9 allows it) — author's decision, for approval
