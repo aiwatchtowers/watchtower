@@ -1355,6 +1355,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         selectedTextBackgroundColor = TerminalPalette.selectionBackground
         selectedTextForegroundColor = TerminalPalette.selectionForeground
         applyBackground()
+        syncMouseReporting()
     }
 
     @available(*, unavailable)
@@ -1365,6 +1366,29 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyBackground()
+    }
+
+    // MARK: Selection under streaming output
+
+    /// SwiftTerm clears the selection on every feed and line feed while
+    /// `allowMouseReporting` is on, whether or not the program asked for
+    /// the mouse — so Claude Code's spinner wiped an owner's selection
+    /// within a fraction of a second. Every mouse report SwiftTerm sends
+    /// also needs `mouseMode` on, so tying the flag to it changes nothing
+    /// else. `mouseMode` changes only inside a feed, so syncing after each
+    /// one leaves the flag right for the next.
+    func syncMouseReporting() {
+        allowMouseReporting = getTerminal().mouseMode != .off
+    }
+
+    /// The process's output, for the local and the hosted path alike.
+    func feedOutput(_ bytes: ArraySlice<UInt8>) {
+        feed(byteArray: bytes)
+        syncMouseReporting()
+    }
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        feedOutput(slice)
     }
 
     // MARK: Owner input (board #364)

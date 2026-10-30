@@ -207,7 +207,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
                 endReplayQuiet(after: transport, thenReportSize: sizeLater)
             }
         case .output:
-            terminal.feed(byteArray: frame.payload[...])
+            terminal.feedOutput(frame.payload[...])
         case .exit:
             let code = (try? frame.decoded(SessionHostExit.self))?.code
             finishRun(code: code.map { Int32(clamping: $0) }, forget: true)
