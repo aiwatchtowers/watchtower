@@ -27,15 +27,17 @@ import (
 	"github.com/slack-go/slack"
 )
 
-// defaultRedirectPort is the fixed port used for the in-app OAuth redirect URI.
-// The desktop app intercepts this redirect in WKWebView before it loads,
-// so no server needs to be running.
+// defaultRedirectPort is the first port ListenLocalTLS tries for the local
+// HTTPS callback server that receives Slack's OAuth redirect. Login keeps that
+// server up until the callback arrives or loginTimeout passes, then closes it.
 const defaultRedirectPort = 18491
 
 const (
 	slackAuthorizeURL = "https://slack.com/oauth/v2/authorize"
 	callbackPath      = "/callback"
-	loginTimeout      = 5 * time.Minute
+	// loginTimeout is long enough for a slow SSO/2FA consent: the redirect
+	// arriving after the server is closed is a dead "connection refused" page.
+	loginTimeout = time.Hour
 )
 
 // DefaultClientID and DefaultClientSecret are the Slack app credentials
