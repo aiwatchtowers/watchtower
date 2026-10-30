@@ -329,6 +329,12 @@ func TestLogin_Timeout(t *testing.T) {
 	assert.ErrorIs(t, err, oauthpage.ErrLoginTimedOut, "a timeout must not pull the app forward")
 }
 
+// A slow SSO/2FA consent must still find the callback server up: the redirect
+// after it closes is a dead "connection refused" page.
+func TestLoginTimeout_LongEnoughForSlowSSO(t *testing.T) {
+	assert.GreaterOrEqual(t, loginTimeout, 30*time.Minute)
+}
+
 func TestLogin_PortBusy(t *testing.T) {
 	var listeners []net.Listener
 	preferred := []int{18491, 18492, 18493, 18494, 18495, 18496, 18497, 18498, 18499, 18500}

@@ -2510,3 +2510,12 @@ Entry format:
 - weak-dimension: 7. Tests exercise the view directly but not both of its production feeders.
 - rule-gap (candidate, dim 7): *a fix routed through N entry points (local and hosted terminal, CLI and daemon) ships one test per entry point. A reviewer reverts each call site in their head and asks which test goes red.*
 - outcome: TBD
+
+## 2026-10-30 — fix/slack-login-wait (owner request: wait up to an hour for the Slack OAuth callback, close the server after connect; `internal/auth/oauth.go` `loginTimeout` 5m → 1h, `defaultRedirectPort` comment rewritten; 1 file; panel: prosecutor (8) + codex (0) + pr-test-analyzer + silent-failure-hunter + code-reviewer; judge verified against fcf5d7ac2 by reading and grep, no runs) — verdict: changes-needed
+
+- contested (held major, raised by 3 lanes): a one-constant Go change with no Swift diff still regresses the Desktop. `SlackAccountsViewModel.isConnecting` disables every per-account control and **Add Slack Workspace**, and only `AddSlackAccountView` offers Cancel. Its Close skips `cancelConnect()` (Jira's sheet abandons on `onDisappear`), and per-account Reconnect and the Inbox card's Reconnect Slack have no Cancel at all. At 5 min that was a nuisance; at 1 h it is a locked screen. **When a timeout grows by an order of magnitude, walk every UI that waits on it and confirm it has a way out.** [8]
+- false-positive (dismissed as a finding, moved to Needs human): "other providers still 5m". The owner asked about Slack only, so aligning them is a scope call.
+- miss: codex reported none and missed the Desktop blast radius entirely. The silent-failure lane found it, so the specialists earned their keep on a 1-line diff.
+- weak-dimension: 8. The author's view stopped at the Go file and never followed the constant to the Desktop UI that waits on it.
+- rule-gap (candidate, dim 8): *changing a wait/timeout constant that a Desktop flow blocks on audits each caller for a visible Cancel, and for a dismissal path that cancels.* §6's failing-before test applied cleanly here as a floor assertion on the constant.
+- outcome: TBD
