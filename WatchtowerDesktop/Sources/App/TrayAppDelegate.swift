@@ -260,6 +260,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         LocalPreviewServer.shared.stop()
         AppState.shared.slackAccountsViewModel?.cancelConnect()
+        AppState.shared.slackAuthFlow.cancelSignIn()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

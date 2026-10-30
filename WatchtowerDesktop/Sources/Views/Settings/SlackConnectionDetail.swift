@@ -24,6 +24,16 @@ final class SlackAuthFlowState {
     @ObservationIgnored var cancelRequested = OSAllocatedUnfairLock(initialState: false)
     var disconnecting = false
     let daemonManager = DaemonManager()
+
+    /// Ends a running reconnect's `auth login`. Flag first, then the running
+    /// check: a launch in between is caught by the flow's `onLaunch` re-check.
+    func cancelSignIn() {
+        cancelRequested.withLock { $0 = true }
+        if let process = authProcess, process.isRunning {
+            process.terminate()
+        }
+        authProcess = nil
+    }
 }
 
 /// Slack detail pane in the Connections tab — the legacy single-workspace
@@ -186,17 +196,6 @@ struct SlackConnectionDetail: View {
         }
     }
 
-    /// Slack Workspaces section — the multi-account Slack connections
-    /// (`slack_accounts` table, migration 00048), each independently granting
-    /// access via its own OAuth consent and carrying its own namespaced
-    /// identity.
-    ///
-    /// The removal confirmation copy explicitly states data is KEPT — unlike
-    /// Google's removal, `slack remove` is non-destructive: it drops the token
-    /// and marks the row removed/disabled but leaves already-synced messages,
-    /// digests, and situations in place. The legacy single-account Slack
-    /// "Disconnect" in `workspaceSection` now shares the same non-destructive
-    /// semantics (`auth logout` → `removeSlackAccount`).
     /// Add Slack Workspace, plus the running sign-in's Cancel: a Reconnect
     /// (here or on a failed send's card) waits up to an hour for the
     /// browser. The add sheet shows its own.
@@ -217,6 +216,17 @@ struct SlackConnectionDetail: View {
         }
     }
 
+    /// Slack Workspaces section — the multi-account Slack connections
+    /// (`slack_accounts` table, migration 00048), each independently granting
+    /// access via its own OAuth consent and carrying its own namespaced
+    /// identity.
+    ///
+    /// The removal confirmation copy explicitly states data is KEPT — unlike
+    /// Google's removal, `slack remove` is non-destructive: it drops the token
+    /// and marks the row removed/disabled but leaves already-synced messages,
+    /// digests, and situations in place. The legacy single-account Slack
+    /// "Disconnect" in `workspaceSection` now shares the same non-destructive
+    /// semantics (`auth logout` → `removeSlackAccount`).
     private var slackAccountsSection: some View {
         Section("Slack Workspaces") {
             if let vm = appState.slackAccountsViewModel {
@@ -471,13 +481,7 @@ struct SlackConnectionDetail: View {
     }
 
     private func cancelSlackReconnect() {
-        // Flag first, then the running check: a launch in between is caught
-        // by the flow's `onLaunch` re-check.
-        flow.cancelRequested.withLock { $0 = true }
-        if let process = flow.authProcess, process.isRunning {
-            process.terminate()
-        }
-        flow.authProcess = nil
+        flow.cancelSignIn()
         flow.reconnecting = false
         flow.reconnectResult = nil
     }

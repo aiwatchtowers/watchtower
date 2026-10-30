@@ -27,6 +27,9 @@ struct AddSlackAccountView: View {
     /// This sheet started the running sign-in; only that one is cancelled
     /// when the sheet goes away (not a Reconnect started elsewhere).
     @State private var startedSignIn = false
+    /// Bumped per Connect: a cancelled attempt finishing late must not clear
+    /// `startedSignIn` for a newer one the sheet started meanwhile.
+    @State private var signInAttempt = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -87,11 +90,13 @@ struct AddSlackAccountView: View {
     private func connect() {
         guard let vm else { return }
         startedSignIn = true
+        signInAttempt += 1
+        let attempt = signInAttempt
         Task {
             // Only a finished sign-in closes the sheet: a Cancel keeps it open
             // ("let me adjust the form", as AddGoogleAccountView does).
             let outcome = await vm.addAccount(daemonPolicy: daemonPolicy)
-            startedSignIn = false
+            if signInAttempt == attempt { startedSignIn = false }
             if outcome == .succeeded { dismiss() }
         }
     }
