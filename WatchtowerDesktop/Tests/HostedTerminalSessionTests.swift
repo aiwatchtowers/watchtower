@@ -387,6 +387,13 @@ final class HostedTerminalSessionTests: XCTestCase {
         XCTAssertEqual(try resizes(), [SessionHostResize(cols: terminal.cols - 1, rows: terminal.rows)])
         transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[?2004h".utf8)))
         XCTAssertTrue(session.bracketedPasteMode)
+        // Board #1271: mouse reporting follows the program's mouse mode.
+        let view = try terminalView(session)
+        XCTAssertFalse(view.allowMouseReporting)
+        transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[?1000h".utf8)))
+        XCTAssertTrue(view.allowMouseReporting)
+        transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[?1000l".utf8)))
+        XCTAssertFalse(view.allowMouseReporting)
 
         await waitUntil { release != nil }
         XCTAssertEqual(try resizes().count, 1, "the real size waits for the quiet period")

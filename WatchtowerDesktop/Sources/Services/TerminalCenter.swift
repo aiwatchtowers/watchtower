@@ -1375,8 +1375,11 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// the mouse — so Claude Code's spinner wiped an owner's selection
     /// within a fraction of a second. Every mouse report SwiftTerm sends
     /// also needs `mouseMode` on, so tying the flag to it changes nothing
-    /// else. `mouseMode` changes only inside a feed, so syncing after each
-    /// one leaves the flag right for the next.
+    /// else. SwiftTerm's `mouseModeChanged` is not open, so the flag is
+    /// synced after each output chunk (and after a reset): a chunk that
+    /// turns mouse tracking on is read with the old flag, the next one
+    /// with the new. While a program tracks the mouse, a shift-drag
+    /// selection is still cleared by its output — SwiftTerm's own rule.
     func syncMouseReporting() {
         allowMouseReporting = getTerminal().mouseMode != .off
     }
