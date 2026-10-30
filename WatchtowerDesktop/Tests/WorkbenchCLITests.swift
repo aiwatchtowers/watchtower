@@ -22,6 +22,17 @@ final class WorkbenchCLITests: XCTestCase {
                        WorkbenchCreated(id: 7, folder: "/tmp/acme", name: "acme"))
     }
 
+    /// `targets delete N --json`; a target outside a workbench sends no
+    /// `files_*` keys and decodes as clean.
+    func testDeleteTargetArgumentsAndEnvelope() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"id":9,"removed":true,"files_ok":false,"files_error":"denied"}"#.utf8))
+        let deleted = try await WorkbenchCLI(runner: runner).deleteTarget(id: 9)
+        XCTAssertEqual(runner.invocations, [["targets", "delete", "9", "--json"]])
+        XCTAssertEqual(deleted, WorkbenchTargetDeleted(id: 9, filesOK: false, filesError: "denied"))
+        let plain = try JSONDecoder().decode(WorkbenchTargetDeleted.self, from: Data(#"{"id":9,"removed":true}"#.utf8))
+        XCTAssertEqual(plain, WorkbenchTargetDeleted(id: 9))
+    }
+
     func testCreateWithoutNameOmitsTheFlag() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"id":1,"folder":"/tmp/a","name":"a"}"#.utf8))
         _ = try await WorkbenchCLI(runner: runner).create(folder: "/tmp/a", name: nil)
