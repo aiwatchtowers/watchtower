@@ -2500,3 +2500,13 @@ Entry format:
 - weak-dimension: 7. The fold's deliberate busy-destination retire (a ledger ruling) and the workbench-bound chat retire have no test. Evidence-kind decoding has no Go-produced fixture.
 - rule-gap (candidate, dim 8, 2nd occurrence after 2026-10-26): *every Swift `switch` over a Go-emitted enum string is checked against the Go constant list, and one test feeds it the Go side's literal values.*
 - outcome: TBD
+
+## 2026-10-30 — fix/terminal-selection (board #1271: SwiftTerm clears the selection on every feed/line feed while `allowMouseReporting` is on; `PalettedTerminalView` ties the flag to `mouseMode != .off`, synced after each output chunk on the local (`dataReceived`) and hosted (`.output` frame) paths; 3 files; panel: prosecutor (4) + codex (0), 3 specialists DOWN (not installed); judge verified against e4a66ca08 by reading the diff and SwiftTerm 1.20.0 sources, no runs) — verdict: changes-needed
+
+- contested (F2, raised minor, held major): the hosted `.output` path is the production default since the session host (#496), and reverting its one line to `terminal.feed(byteArray:)` keeps every test green. Priority 0 asks for a test that fails when the fix breaks, and for a bug fix with two entry points that means one test per entry point. `HostedTerminalSessionTests` already has a FakeTransport that pushes `.output` frames, so the test costs a few lines. [7]
+- contested (per-chunk sync vs a hook): the Mac view's `mouseModeChanged(source:)` is `public`, not `open`, so it can't be overridden. A sync after each chunk is the only seam available, and that explains the one-chunk lag (F4) and the reset gap (F1).
+- false-positive (downgraded): F3, shift-drag selections are still wiped while a program tracks the mouse. This is SwiftTerm's own behaviour and was there before the fix (back then the wipe happened always), so it is a known limit and not a regression. F1's stale flag after `resetToInitialState()` has no effect on behaviour, because every report also checks `mouseMode` and the reset clears the screen anyway. Only the comment is inaccurate.
+- miss: codex reported none. The prosecutor alone found the untested hosted path.
+- weak-dimension: 7. Tests exercise the view directly but not both of its production feeders.
+- rule-gap (candidate, dim 7): *a fix routed through N entry points (local and hosted terminal, CLI and daemon) ships one test per entry point. A reviewer reverts each call site in their head and asks which test goes red.*
+- outcome: TBD

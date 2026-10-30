@@ -114,6 +114,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// `attach` without restoring the reattach budget (`runLost`).
     private func reattach(_ info: SessionHostSessionInfo) {
         terminal.getTerminal().resetToInitialState()
+        terminal.syncMouseReporting()
         terminal.dropsTerminalReplies = true
         // An exited run's pid may already belong to another process group.
         pid = info.exited ? 0 : pid_t(info.pid)
@@ -207,7 +208,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
                 endReplayQuiet(after: transport, thenReportSize: sizeLater)
             }
         case .output:
-            terminal.feed(byteArray: frame.payload[...])
+            terminal.feedOutput(frame.payload[...])
         case .exit:
             let code = (try? frame.decoded(SessionHostExit.self))?.code
             finishRun(code: code.map { Int32(clamping: $0) }, forget: true)
