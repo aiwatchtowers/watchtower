@@ -1,6 +1,13 @@
 import Foundation
 import WatchtowerCore
 
+/// How a failed send's Reconnect Slack ended (`AppState.reconnectSlack`).
+enum SlackReconnectResult: Equatable {
+    case signedIn
+    case cancelled
+    case failed(String)
+}
+
 extension AppState {
     /// Opens the Connections tab: `service`'s detail, or the overview for nil.
     /// A caller outside the main window (Settings) brings that window forward itself.
@@ -40,22 +47,31 @@ extension AppState {
 
     /// Re-consents one Slack account from a failed send's card ("sign in
     /// again to grant send"): the same `slack login --account <id>` flow as
-    /// Connections → Slack → Reconnect. Returns why it failed (nil on success or
-    /// a cancelled sign-in) so the card can say so.
-    func reconnectSlack(accountID: Int64) async -> String? {
+    /// Connections → Slack → Reconnect. Says how it ended so the card can
+    /// word it — a cancelled sign-in is no failure.
+    func reconnectSlack(accountID: Int64) async -> SlackReconnectResult {
         guard let vm = slackAccountsViewModel else {
-            return "Slack accounts are not loaded yet — open Connections → Slack."
+            return .failed("Slack accounts are not loaded yet — open Connections → Slack.")
         }
         if vm.accounts.isEmpty {
             await vm.refreshAsync()
             // A failed read is not "no longer connected": say what failed.
-            if vm.accounts.isEmpty, let readError = vm.readError { return readError }
+            if vm.accounts.isEmpty, let readError = vm.readError { return .failed(readError) }
         }
         guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
-            return "Slack account #\(accountID) is no longer connected."
+            return .failed("Slack account #\(accountID) is no longer connected.")
         }
-        await vm.relogin(account)
-        return vm.error
+        switch await vm.relogin(account) {
+        case .succeeded: return .signedIn
+        case .cancelled: return .cancelled
+        case .failed: return .failed(vm.error ?? "Sign-in failed.")
+        }
+    }
+
+    /// The card's Cancel: stops the running Slack sign-in, wherever it was
+    /// started (the CLI waits up to an hour for the browser).
+    func cancelSlackReconnect() {
+        slackAccountsViewModel?.cancelConnect()
     }
 
     /// Every service, in the overview's order.

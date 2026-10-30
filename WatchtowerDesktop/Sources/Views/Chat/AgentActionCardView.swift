@@ -24,9 +24,12 @@ struct AgentActionCardView: View {
     /// no edits and Approve runs `onApprove`.
     var onApproveEdited: ((String) -> Void)?
     /// Re-consents a Slack account whose token lacks the send grant
-    /// (`SlackSendProposal.reconnectAccountID`) and returns why it failed, nil
-    /// on success. Nil hides the button.
-    var onReconnectSlack: ((Int64) async -> String?)?
+    /// (`SlackSendProposal.reconnectAccountID`) and says how it ended. Nil
+    /// hides the button.
+    var onReconnectSlack: ((Int64) async -> SlackReconnectResult)?
+    /// Stops the running sign-in (`AppState.cancelSlackReconnect`) — the CLI
+    /// waits up to an hour for the browser. Nil offers no Cancel.
+    var onCancelReconnectSlack: (() -> Void)?
     /// Where the proposal came from, above the card — "⚙ <automation> · run
     /// #<n>" for a row an automation run proposed (`ActionStripViewModel.actionLabels`).
     /// Nil shows nothing.
@@ -223,6 +226,15 @@ struct AgentActionCardView: View {
     static let reconnectDoneNote = "Sign-in closed. Press Retry — if sending is still refused, Slack has not "
         + "allowed it for this workspace yet (its app settings or admin must)."
 
+    /// The line under Reconnect Slack: a cancelled sign-in says nothing.
+    static func reconnectMessage(_ result: SlackReconnectResult) -> String? {
+        switch result {
+        case .signedIn: reconnectDoneNote
+        case .cancelled: nil
+        case .failed(let reason): "Reconnect failed: \(reason)"
+        }
+    }
+
     /// The owner's edits travel with the approval; no edits is a plain
     /// approve. An edit that cannot be encoded is reported, never dropped
     /// for the original draft.
@@ -323,15 +335,21 @@ struct AgentActionCardView: View {
                     Button("Reconnect Slack") {
                         Task {
                             reconnecting = true
-                            let failure = await onReconnectSlack(accountID)
+                            let result = await onReconnectSlack(accountID)
                             reconnecting = false
-                            slackMessage = failure.map { "Reconnect failed: \($0)" } ?? Self.reconnectDoneNote
+                            slackMessage = Self.reconnectMessage(result)
                         }
                     }
                     .disabled(reconnecting)
                     .help("Sign in to Slack again to grant Watchtower permission to send, then Retry")
                     .accessibilityIdentifier("agentAction.reconnectSlack")
-                    if reconnecting { ProgressView().controlSize(.small) }
+                    if reconnecting {
+                        ProgressView().controlSize(.small)
+                        if let onCancelReconnectSlack {
+                            Button("Cancel") { onCancelReconnectSlack() }
+                                .accessibilityIdentifier("agentAction.cancelReconnectSlack")
+                        }
+                    }
                 }
             }
             if let slackMessage {

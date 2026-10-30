@@ -375,7 +375,7 @@ final class AgentActionCardViewTests: XCTestCase {
                                        onReconnectSlack: { id in
                                            XCTAssertEqual(id, 3)
                                            reconnected.fulfill()
-                                           return nil
+                                           return .signedIn
                                        })
         try view.inspect().find(button: "Reconnect Slack").tap()
         wait(for: [reconnected], timeout: 2)
@@ -384,6 +384,14 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("already reached Slack") }))
         // swiftlint:disable:next trailing_closure
         XCTAssertThrowsError(try view.inspect().find(textWhere: { text, _ in text.contains("check Jira") }))
+    }
+
+    /// The CLI waits up to an hour for the browser, so a cancelled sign-in
+    /// is routine: it clears the line instead of reading as a failure.
+    func testReconnectMessageWordsEachOutcome() {
+        XCTAssertEqual(AgentActionCardView.reconnectMessage(.signedIn), AgentActionCardView.reconnectDoneNote)
+        XCTAssertNil(AgentActionCardView.reconnectMessage(.cancelled))
+        XCTAssertEqual(AgentActionCardView.reconnectMessage(.failed("boom")), "Reconnect failed: boom")
     }
 
     /// Untouched text approves plainly (no edits to carry), through the

@@ -13,6 +13,14 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class SlackAccountsViewModel {
+    /// How a browser sign-in (`add`/`login`) ended. `.failed` leaves the
+    /// reason in `error`; `.cancelled` (Cancel, a closed sheet, quit) does not.
+    enum AuthOutcome: Equatable {
+        case succeeded
+        case cancelled
+        case failed
+    }
+
     private(set) var accounts: [SlackAccount] = []
     var isConnecting = false
     var error: String?
@@ -30,6 +38,10 @@ final class SlackAccountsViewModel {
     /// Resolves the CLI binary; injectable so tests can run a stand-in.
     private let cliPath: () -> String?
     private var authProcess: Process?
+    /// A browser sign-in is running (`cancelConnect` can stop it) — the CLI
+    /// waits up to an hour for the browser, so every surface showing it
+    /// offers a Cancel. A management command never sets it.
+    var isSigningIn: Bool { authProcess != nil }
     /// The sign-in child's environment; injectable so tests can hold it.
     @ObservationIgnored var loginEnvironment: @Sendable () async -> [String: String] = {
         await Constants.resolvedEnvironmentAsync()
@@ -85,7 +97,8 @@ final class SlackAccountsViewModel {
     /// Connects a new Slack workspace via `watchtower slack add --app-return`.
     /// The OAuth consent happens in the loopback browser; the detached Process
     /// is held in `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(daemonPolicy: DaemonRestartPolicy = .restart) async {
+    @discardableResult
+    func addAccount(daemonPolicy: DaemonRestartPolicy = .restart) async -> AuthOutcome {
         await runAuthFlow(args: Self.addArgs, failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
@@ -101,14 +114,16 @@ final class SlackAccountsViewModel {
     /// --app-return` — same OAuth loopback-browser flow shape as `addAccount`,
     /// used when an account's status is "error"/"revoked" and needs a fresh
     /// grant.
-    func relogin(_ account: SlackAccount) async {
+    @discardableResult
+    func relogin(_ account: SlackAccount) async -> AuthOutcome {
         await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
     }
 
+    /// Stops a running browser sign-in. Does nothing for any other command,
+    /// so a management command never loses its busy guard mid-run.
     func cancelConnect() {
-        if let process = authProcess, process.isRunning {
-            process.terminate()
-        }
+        guard let process = authProcess else { return }
+        if process.isRunning { process.terminate() }
         authProcess = nil
         isConnecting = false
     }
@@ -168,14 +183,16 @@ final class SlackAccountsViewModel {
 
     /// Browser-consent flow (`add`/`login`) — holds the detached Process in
     /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
-    private func runAuthFlow(args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy) async {
+    private func runAuthFlow(
+        args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy
+    ) async -> AuthOutcome {
         guard !isConnecting else {
             error = "Another connection is already in progress."
-            return
+            return .failed
         }
         guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
-            return
+            return .failed
         }
 
         isConnecting = true
@@ -191,12 +208,26 @@ final class SlackAccountsViewModel {
         // running (Cancel visible); a Cancel or a newer attempt meanwhile
         // drops this launch.
         process.environment = await loginEnvironment()
-        guard authProcess === process else { return }
+        guard authProcess === process else { return .cancelled }
 
-        let result = await Self.runProcess(process)
+        // A Cancel that lands before the child is running cannot terminate
+        // it; re-checked once it is.
+        let onLaunch: @Sendable (Process) -> Void = { [weak self] launched in
+            Task { @MainActor in
+                if self?.authProcess !== launched { launched.terminate() }
+            }
+        }
+        let result = await ProcessPipes.run(process, onLaunch: onLaunch).trimmed
+        // Cancelled meanwhile: `cancelConnect` already reset the state, and a
+        // newer attempt may own it now — leave it and its error alone.
+        guard authProcess === process else {
+            return result.exitCode == 0
+                ? applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+                : .cancelled
+        }
         authProcess = nil
         isConnecting = false
-        applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
+        return applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
     }
 
     /// Non-browser management command (`enable`/`disable`/`remove`) — a plain
@@ -223,24 +254,28 @@ final class SlackAccountsViewModel {
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
     }
 
+    @discardableResult
     private func applyResult(
         _ result: (exitCode: Int32, stdout: String, stderr: String),
         failurePrefix: String,
         daemonPolicy: DaemonRestartPolicy
-    ) {
+    ) -> AuthOutcome {
         if result.exitCode == 0 {
             error = nil
             refresh()
             // Re-wire the daemon so the account set change takes effect now
             // (unless onboarding defers it — `DaemonRestartPolicy`).
             daemonRestartTask = daemonPolicy.apply(using: daemon)
+            return .succeeded
         } else if result.exitCode == 15 || result.exitCode == 9 {
             // SIGTERM/SIGKILL — user cancelled
             error = nil
+            return .cancelled
         } else {
             error = result.stderr.isEmpty
                 ? "\(failurePrefix) (exit \(result.exitCode))"
                 : String(result.stderr.prefix(200))
+            return .failed
         }
     }
 

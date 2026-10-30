@@ -24,10 +24,9 @@ struct AddSlackAccountView: View {
         self.daemonPolicy = daemonPolicy
     }
 
-    /// Set when Cancel is tapped so the awaited `addAccount` (which returns with
-    /// a cleared error after the SIGTERM) does NOT auto-dismiss — Cancel means
-    /// "let me adjust the form", matching AddGoogleAccountView's behavior.
-    @State private var cancelled = false
+    /// This sheet started the running sign-in; only that one is cancelled
+    /// when the sheet goes away (not a Reconnect started elsewhere).
+    @State private var startedSignIn = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -57,7 +56,6 @@ struct AddSlackAccountView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Cancel") {
-                        cancelled = true
                         vm?.cancelConnect()
                     }
                 } else {
@@ -78,19 +76,23 @@ struct AddSlackAccountView: View {
         }
         .padding(20)
         .frame(width: 360, height: 180)
+        // Close, Esc or onboarding moving on mid-connect: no sign-in outlives
+        // its sheet (the CLI would wait an hour for the browser), so a
+        // reopened sheet can start a new one.
+        .onDisappear {
+            if startedSignIn { vm?.cancelConnect() }
+        }
     }
 
     private func connect() {
         guard let vm else { return }
-        cancelled = false
+        startedSignIn = true
         Task {
-            await vm.addAccount(daemonPolicy: daemonPolicy)
-            // addAccount is awaited: on success `error` is nil. A user Cancel
-            // also clears error (SIGTERM/SIGKILL branch), so gate the dismiss on
-            // `cancelled` to keep the sheet open when the flow was cancelled.
-            if !cancelled && vm.error == nil {
-                dismiss()
-            }
+            // Only a finished sign-in closes the sheet: a Cancel keeps it open
+            // ("let me adjust the form", as AddGoogleAccountView does).
+            let outcome = await vm.addAccount(daemonPolicy: daemonPolicy)
+            startedSignIn = false
+            if outcome == .succeeded { dismiss() }
         }
     }
 }

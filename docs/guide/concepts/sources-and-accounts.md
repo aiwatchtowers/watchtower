@@ -50,7 +50,7 @@ A red dot on a service means at least one of its accounts has a problem. An expi
 
 A source your company's profile forbids is listed as **Blocked by your organization**: its accounts stop syncing and keep their data, and nothing new can be connected.
 
-Use **Reconnect Slack** or **Re-login** on the row. Your data stays and syncing resumes. More in [Troubleshooting](../troubleshooting/README.md).
+Use **Reconnect Slack** or **Re-login** on the row. Your data stays and syncing resumes. A Slack sign-in waits up to an hour for the browser; **Cancel** next to **Connecting...** stops it, and so does closing the add sheet or quitting Watchtower. More in [Troubleshooting](../troubleshooting/README.md).
 
 ## What removing an account does
 

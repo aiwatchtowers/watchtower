@@ -197,6 +197,26 @@ struct SlackConnectionDetail: View {
     /// digests, and situations in place. The legacy single-account Slack
     /// "Disconnect" in `workspaceSection` now shares the same non-destructive
     /// semantics (`auth logout` → `removeSlackAccount`).
+    /// Add Slack Workspace, plus the running sign-in's Cancel: a Reconnect
+    /// (here or on a failed send's card) waits up to an hour for the
+    /// browser. The add sheet shows its own.
+    private func addWorkspaceRow(_ vm: SlackAccountsViewModel) -> some View {
+        HStack {
+            Button("Add Slack Workspace") {
+                showAddSlackAccountSheet = true
+            }
+            .managedByOrganization(sourceBlocked)
+            .disabled(vm.isConnecting)
+            if vm.isSigningIn, !showAddSlackAccountSheet {
+                ProgressView().controlSize(.small)
+                Text("Connecting...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Cancel") { vm.cancelConnect() }
+            }
+        }
+    }
+
     private var slackAccountsSection: some View {
         Section("Slack Workspaces") {
             if let vm = appState.slackAccountsViewModel {
@@ -273,11 +293,7 @@ struct SlackConnectionDetail: View {
                         .foregroundStyle(.red)
                 }
 
-                Button("Add Slack Workspace") {
-                    showAddSlackAccountSheet = true
-                }
-                .managedByOrganization(sourceBlocked)
-                .disabled(vm.isConnecting)
+                addWorkspaceRow(vm)
             } else {
                 Text("Loading...")
                     .font(.caption)

@@ -254,9 +254,12 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
 
     /// Runs on every termination, whichever quit path led here (sessions
     /// closed or kept, a duplicate instance quitting at once): the html
-    /// preview's loopback server (#535), if it ever started, stops.
+    /// preview's loopback server (#535), if it ever started, stops, and a
+    /// pending Slack sign-in ends — its CLI would otherwise wait an hour
+    /// for the browser with nobody to answer.
     func applicationWillTerminate(_ notification: Notification) {
         LocalPreviewServer.shared.stop()
+        AppState.shared.slackAccountsViewModel?.cancelConnect()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

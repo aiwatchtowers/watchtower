@@ -186,6 +186,56 @@ extension SlackAccountsViewModelTests {
         XCTAssertEqual(reloads, 0)
     }
 
+    /// The CLI waits up to an hour for the browser: a Cancel during a
+    /// running re-login ends it as `.cancelled` — no error, no restart, and
+    /// every button the busy state disabled is back.
+    func testCancelDuringAReloginEndsAsCancelled() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let stub = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\nexec /bin/sleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+
+        let (vm, daemon, pool) = try makeVM(cli: stub.path)
+        vm.loginEnvironment = { [:] }
+        let account = try await insertAccount(pool)
+        let flow = Task { await vm.relogin(account) }
+        let shown = await waitForCondition { vm.isSigningIn }
+        XCTAssertTrue(shown)
+        vm.cancelConnect()
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertFalse(vm.isSigningIn)
+
+        let outcome = await flow.value
+        XCTAssertEqual(outcome, .cancelled)
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertNil(vm.error)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    /// Cancel stops a sign-in only: a management command keeps its busy guard.
+    func testCancelConnectWithoutASignInIsANoOp() throws {
+        let (vm, _, _) = try makeVM(cli: "/usr/bin/true")
+        vm.isConnecting = true
+        vm.cancelConnect()
+        XCTAssertTrue(vm.isConnecting)
+    }
+
+    func testReloginReportsItsOutcome() async throws {
+        let (okVM, _, okPool) = try makeVM(cli: "/usr/bin/true")
+        let okAccount = try await insertAccount(okPool)
+        let succeeded = await okVM.relogin(okAccount)
+        XCTAssertEqual(succeeded, .succeeded)
+
+        let (badVM, _, badPool) = try makeVM(cli: "/usr/bin/false")
+        let badAccount = try await insertAccount(badPool)
+        let failed = await badVM.relogin(badAccount)
+        XCTAssertEqual(failed, .failed)
+        XCTAssertNotNil(badVM.error)
+    }
+
     func testFailedAddDoesNotRestartTheDaemon() async throws {
         let (vm, daemon, _) = try makeVM(cli: "/usr/bin/false")
         await vm.addAccount()
