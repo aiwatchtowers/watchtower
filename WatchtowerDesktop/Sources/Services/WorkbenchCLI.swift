@@ -19,6 +19,35 @@ struct WorkbenchTargetAdded: Decodable, Equatable {
     }
 }
 
+/// `watchtower targets delete N --json` output. The target is gone whenever
+/// the command exits 0; `filesOK == false` means only Watchtower's stored
+/// copies of its images could not all be removed (`filesError`, PROJ-02).
+/// A target outside a workbench sends no `files_*` keys: clean.
+struct WorkbenchTargetDeleted: Decodable, Equatable {
+    let id: Int64
+    let filesOK: Bool
+    let filesError: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case filesOK = "files_ok"
+        case filesError = "files_error"
+    }
+
+    init(id: Int64, filesOK: Bool = true, filesError: String = "") {
+        self.id = id
+        self.filesOK = filesOK
+        self.filesError = filesError
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int64.self, forKey: .id)
+        filesOK = try c.decodeIfPresent(Bool.self, forKey: .filesOK) ?? true
+        filesError = try c.decodeIfPresent(String.self, forKey: .filesError) ?? ""
+    }
+}
+
 /// `watchtower workbench delete N --json` envelope. The workbench rows are gone
 /// whenever the command exits 0; `removalOK == false` means only the folder
 /// cleanup failed, and `removalError` says why; `filesOK == false` means
@@ -733,6 +762,14 @@ struct WorkbenchCLI {
         args.append("--json")
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchTargetAdded.self, from: data).targetID
+    }
+
+    /// Deletes a board target as the owner: Go's `targets delete`, which also
+    /// removes the stored image copies no other target names (PROJ-02) and
+    /// rolls the parent's progress up. Its sub-targets move to the top level.
+    func deleteTarget(id: Int64) async throws -> WorkbenchTargetDeleted {
+        let data = try await runner.run(args: ["targets", "delete", String(id), "--json"])
+        return try JSONDecoder().decode(WorkbenchTargetDeleted.self, from: data)
     }
 
     /// Installs the skill, the SessionStart and Stop hooks and the local MCP

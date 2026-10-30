@@ -194,7 +194,8 @@ enum WorkbenchTargetNumber {
 /// Session) on every target, a group too (spec 2026-10-08; left out of the
 /// side panel's ⋯ menu, which has its own button), Open Group on a
 /// list row with children (spec 2026-10-06 Part 4), copy the number, and
-/// "Move to…" another target or the top level (board #186).
+/// "Move to…" another target or the top level (board #186), and Delete…,
+/// which the board confirms first.
 struct WorkbenchTargetMenu: View {
     let target: Target
     let vm: WorkbenchBoardViewModel
@@ -253,6 +254,9 @@ struct WorkbenchTargetMenu: View {
         }
         Button("Move to Top Level") { Task { await vm.move(target.id, under: nil) } }
             .disabled(!WorkbenchBoardOutline.canMove(target.id, under: nil, in: vm.roots))
+        Divider()
+        Button("Delete…", role: .destructive) { vm.deleteRequest = target }
+            .disabled(vm.removeTarget == nil || vm.deletingTargetIDs.contains(target.id))
     }
 
     /// Indented by depth so the menu reads as the board's tree (capped like

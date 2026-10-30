@@ -56,6 +56,25 @@ struct WorkbenchBoardView: View {
                 .sheet(item: Binding(get: { vm.newTargetRequest }, set: { vm.newTargetRequest = $0 })) { request in
                     WorkbenchNewTargetSheet(request: request, vm: vm, workbenchName: workbenchName)
                 }
+                .confirmationDialog(
+                    vm.deleteRequest.map(Self.deleteTitle) ?? "",
+                    isPresented: Binding(get: { vm.deleteRequest != nil }, set: { if !$0 { vm.deleteRequest = nil } }),
+                    titleVisibility: .visible,
+                    presenting: vm.deleteRequest
+                ) { target in
+                    Button("Delete", role: .destructive) {
+                        vm.deleteRequest = nil
+                        Task {
+                            guard await vm.deleteTarget(target.id) else { return }
+                            // Its chat stops with it, and a brief still waiting for it never runs.
+                            appState.targetAssistantCenter.drop(targetID: target.id)
+                            appState.targetBriefCenter.drop(targetID: target.id)
+                        }
+                    }
+                    Button("Cancel", role: .cancel) { vm.deleteRequest = nil }
+                } message: { target in
+                    Text(Self.deleteMessage(target, in: vm.roots))
+                }
             } else {
                 ProgressView()
             }
@@ -76,6 +95,7 @@ struct WorkbenchBoardView: View {
                             workbenchID: projectID, title: title, intent: intent, priority: priority, parentID: parentID
                         )
                     }
+                    vm.removeTarget = { id in try await cli.deleteTarget(id: id) }
                 }
                 vm.saveColumns = { [weak projects = appState.workbenchesViewModel, projectID] def in
                     guard let projects else { throw WorkbenchBoardColumnsError.cliUnavailable }
@@ -103,6 +123,25 @@ struct WorkbenchBoardView: View {
         .task(id: projectID) {
             await appState.workbenchesViewModel?.refreshDrift(projectID: projectID, force: true)
         }
+    }
+
+    /// The Delete… confirmation's title: the card's title, cut at 60 characters.
+    static func deleteTitle(_ target: Target) -> String {
+        let title = WorkbenchBoardCard.title(target.text)
+        let label = title.count > 60 ? String(title.prefix(60)) + "…" : title
+        return "Delete \(WorkbenchTargetNumber.label(target.id)) \"\(label)\"?"
+    }
+
+    /// Its comments, images and history go with it; its sub-tasks stay and
+    /// move to the top level (`parent_id ON DELETE SET NULL`).
+    static func deleteMessage(_ target: Target, in roots: [WorkbenchBoardNode]) -> String {
+        let children = WorkbenchBoardOutline.find(target.id, in: roots)?.children.count ?? 0
+        let subtasks = switch children {
+        case 0: ""
+        case 1: " Its sub-task moves to the top level."
+        default: " Its \(children) sub-tasks move to the top level."
+        }
+        return "Its comments, images and history are deleted too.\(subtasks) This cannot be undone."
     }
 
     private var archiveAfterDays: Int? {

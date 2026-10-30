@@ -896,6 +896,82 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isCreatingTarget)
     }
 
+    // MARK: - Delete
+
+    /// The writer gets the id; the deleted target and the parent the rollup
+    /// moved are reported as the owner's, the panel on it closes, its
+    /// sub-task is on the top level and its draft goes without a notice.
+    func testDeleteTargetWritesReportsAndClosesThePanel() async throws {
+        let (pid, parent, victim, child) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let parent = try Self.insertTarget(db, project: pid, text: "Feature", status: "in_progress")
+            let victim = try Self.insertTarget(db, project: pid, text: "Open part", parent: parent)
+            return (pid, parent, victim, try Self.insertTarget(db, project: pid, text: "Its child", parent: victim))
+        }
+        let vm = makeVM(project: pid)
+        var calls: [Int64] = []
+        let pool = dbManager.dbPool
+        vm.removeTarget = { id in
+            calls.append(id)
+            // Stands in for Go's `targets delete`: the parent rolls up.
+            try await pool.write { db in
+                try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id])
+                try db.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [parent])
+            }
+            return WorkbenchTargetDeleted(id: id)
+        }
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+        vm.select(Int(victim))
+        vm.beginDescriptionEdit(Int(victim))
+        vm.setDescriptionDraft("half-typed", for: Int(victim))
+
+        let deleted = await vm.deleteTarget(Int(victim))
+
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(calls, [victim])
+        XCTAssertEqual(reported, [.target(victim), .target(parent)])
+        XCTAssertNil(vm.selectedTargetID)
+        XCTAssertNil(vm.errorMessage, "the owner's own delete drops its draft unannounced")
+        XCTAssertNil(WorkbenchBoardOutline.find(Int(victim), in: vm.roots))
+        XCTAssertTrue(vm.roots.contains { $0.id == Int(child) }, "a sub-task moves to the top level")
+        XCTAssertTrue(vm.deletingTargetIDs.isEmpty)
+    }
+
+    /// No CLI or a failed write keeps the target and says why; a failed
+    /// image cleanup still deletes it and says so.
+    func testDeleteTargetFailuresSayWhy() async throws {
+        let (pid, id) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+
+        let noCLI = await vm.deleteTarget(Int(id))
+        XCTAssertFalse(noCLI)
+        XCTAssertNotNil(vm.errorMessage)
+
+        vm.dismissError()
+        vm.removeTarget = { _ in throw CocoaError(.fileWriteUnknown) }
+        let failed = await vm.deleteTarget(Int(id))
+        XCTAssertFalse(failed)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertNotNil(WorkbenchBoardOutline.find(Int(id), in: vm.roots))
+
+        vm.dismissError()
+        let pool = dbManager.dbPool
+        vm.removeTarget = { id in
+            try await pool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id]) }
+            return WorkbenchTargetDeleted(id: id, filesOK: false, filesError: "permission denied")
+        }
+        let partial = await vm.deleteTarget(Int(id))
+        XCTAssertTrue(partial)
+        XCTAssertNil(WorkbenchBoardOutline.find(Int(id), in: vm.roots))
+        XCTAssertEqual(vm.errorMessage, "Deleted #\(id), but could not remove its stored images: permission denied")
+    }
+
     // MARK: - New Task panel (AI-14 §2)
 
     nonisolated private static func insertColumn(

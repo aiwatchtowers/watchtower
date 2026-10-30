@@ -199,6 +199,15 @@ final class WorkbenchBoardViewModel {
     /// check and rollup are Go's. Set by the view; nil (no CLI) refuses.
     var addTarget: ((_ title: String, _ intent: String, _ priority: String, _ parentID: Int64?) async throws -> Int64)?
 
+    /// The owner's delete writer: Go's `targets delete`
+    /// (`WorkbenchCLI.deleteTarget`), which removes the target's stored image
+    /// copies too (PROJ-02). Set by the view; nil (no CLI) refuses.
+    var removeTarget: ((_ id: Int64) async throws -> WorkbenchTargetDeleted)?
+
+    /// The target the Delete… confirmation asks about, if any.
+    var deleteRequest: Target?
+    private(set) var deletingTargetIDs: Set<Int> = []
+
     /// The open New Task sheet, if any: its parent (nil = the top level).
     var newTargetRequest: WorkbenchNewTargetRequest?
     private(set) var isCreatingTarget = false
@@ -690,6 +699,55 @@ final class WorkbenchBoardViewModel {
             if let parentID { self?.collapsed.remove(parentID) }
         }
         return startWrite("move the target", target: id, onSuccess: expandParent, body)
+    }
+
+    // MARK: - Delete
+
+    /// Deletes a target through `removeTarget`, one delete per target at a
+    /// time and in turn with the board's other writes. Its sub-targets move
+    /// to the top level (`ON DELETE SET NULL`); its unsaved drafts go with
+    /// it, unannounced — the owner deleted it. The delete and every parent
+    /// the rollup moved (PROJ-05) are reported as the owner's write.
+    /// - Returns: whether the target was deleted (a failure sets
+    ///   `errorMessage`). A failed image cleanup still returns true — the
+    ///   target is gone — and says so in `errorMessage`.
+    @discardableResult
+    func deleteTarget(_ id: Int) async -> Bool {
+        guard !deletingTargetIDs.contains(id) else { return false }
+        guard let removeTarget else {
+            errorMessage = "Could not delete the target: the watchtower CLI is not available."
+            return false
+        }
+        deletingTargetIDs.insert(id)
+        defer { deletingTargetIDs.remove(id) }
+        let parent = WorkbenchBoardOutline.find(id, in: roots)?.target.parentId.map(Int64.init)
+        return await writes.run { [weak self] () async -> Bool in
+            guard let self else { return false }
+            let before = await self.chainStatuses(parent)
+            let result: WorkbenchTargetDeleted
+            do {
+                result = try await removeTarget(Int64(id))
+            } catch {
+                self.errorMessage = "Could not delete the target: \(error.localizedDescription)"
+                // A target deleted elsewhere leaves the board now.
+                self.load()
+                return false
+            }
+            self.descriptionDrafts[id] = nil
+            self.commentDrafts[id] = nil
+            self.errorMessage = nil
+            self.onOwnerWrite?(self.projectID, .target(Int64(id)))
+            let after = await self.chainStatuses(parent)
+            for changed in after.keys.sorted() where before[changed] != after[changed] {
+                self.onOwnerWrite?(self.projectID, .target(changed))
+            }
+            self.load()
+            if !result.filesOK {
+                let number = WorkbenchTargetNumber.label(id)
+                self.errorMessage = "Deleted \(number), but could not remove its stored images: \(result.filesError)"
+            }
+            return true
+        }
     }
 
     // MARK: - New target

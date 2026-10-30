@@ -129,6 +129,8 @@ action: nav:projects
 
 Drag a target onto another to nest it, or right-click a card for **Move to** and **Move to Top Level**. A target can never go under itself or its own sub-tasks.
 
+To remove a target for good, right-click its card (or open the **…** menu in its panel) and choose **Delete…**. Its comments, images and history go with it; its sub-tasks stay and move to the top level. A delete cannot be undone — to just put finished work away, mark it done and let the archive take it.
+
 To look at one feature alone, click **Open group** in its panel, double-click its Kanban lane header, or right-click it in the list for **Open Group**. A path bar reads **Board › #249 Title › #252 Title**; **Leave group** goes up one level.
 
 ### Control the archive
