@@ -707,10 +707,13 @@ final class WorkbenchBoardViewModel {
     /// time and in turn with the board's other writes. Its sub-targets move
     /// to the top level (`ON DELETE SET NULL`); its unsaved drafts go with
     /// it, unannounced — the owner deleted it. The delete and every parent
-    /// the rollup moved (PROJ-05) are reported as the owner's write.
-    /// - Returns: whether the target was deleted (a failure sets
-    ///   `errorMessage`). A failed image cleanup still returns true — the
-    ///   target is gone — and says so in `errorMessage`.
+    /// the rollup moved (PROJ-05) are reported as the owner's write; the
+    /// parent is read inside the write, since an agent or a write queued
+    /// earlier may have moved the target since the board last loaded.
+    /// - Returns: whether the target is gone. A failure sets `errorMessage`.
+    ///   A failed image cleanup still returns true and says so; so does an
+    ///   unreadable reply after exit 0 (the delete ran) and a target deleted
+    ///   elsewhere meanwhile, which is not reported as the owner's write.
     @discardableResult
     func deleteTarget(_ id: Int) async -> Bool {
         guard !deletingTargetIDs.contains(id) else { return false }
@@ -720,34 +723,66 @@ final class WorkbenchBoardViewModel {
         }
         deletingTargetIDs.insert(id)
         defer { deletingTargetIDs.remove(id) }
-        let parent = WorkbenchBoardOutline.find(id, in: roots)?.target.parentId.map(Int64.init)
+        let cachedParent = WorkbenchBoardOutline.find(id, in: roots)?.target.parentId.map(Int64.init)
         return await writes.run { [weak self] () async -> Bool in
             guard let self else { return false }
-            let before = await self.chainStatuses(parent)
-            let result: WorkbenchTargetDeleted
+            let target = Int64(id)
+            // A failed read falls back to the board's parent.
+            let parent: Int64?
             do {
-                result = try await removeTarget(Int64(id))
+                parent = try await self.dbPool.read { db in
+                    try Int64.fetchOne(db, sql: "SELECT parent_id FROM targets WHERE id = ?", arguments: [target])
+                }
             } catch {
-                self.errorMessage = "Could not delete the target: \(error.localizedDescription)"
-                // A target deleted elsewhere leaves the board now.
-                self.load()
-                return false
+                parent = cachedParent
             }
-            self.descriptionDrafts[id] = nil
-            self.commentDrafts[id] = nil
+            let before = await self.chainStatuses(parent)
+            var filesFailure: String?
+            do {
+                let result = try await removeTarget(target)
+                if !result.filesOK { filesFailure = result.filesError.isEmpty ? "unknown error" : result.filesError }
+            } catch is DecodingError {
+                // The command exited 0: the target is gone, its reply unreadable.
+            } catch {
+                guard await self.targetGone(target) else {
+                    self.load()
+                    // After the reload, whose own notices this replaces.
+                    self.errorMessage = "Could not delete the target: \(error.localizedDescription)"
+                    return false
+                }
+                // Deleted elsewhere meanwhile: what the owner asked for, not their write.
+                self.dropDrafts(id)
+                self.errorMessage = nil
+                self.load()
+                return true
+            }
+            self.dropDrafts(id)
             self.errorMessage = nil
-            self.onOwnerWrite?(self.projectID, .target(Int64(id)))
+            self.onOwnerWrite?(self.projectID, .target(target))
             let after = await self.chainStatuses(parent)
             for changed in after.keys.sorted() where before[changed] != after[changed] {
                 self.onOwnerWrite?(self.projectID, .target(changed))
             }
             self.load()
-            if !result.filesOK {
+            if let filesFailure {
                 let number = WorkbenchTargetNumber.label(id)
-                self.errorMessage = "Deleted \(number), but could not remove its stored images: \(result.filesError)"
+                self.errorMessage = "Deleted \(number), but could not remove its stored images: \(filesFailure)"
             }
             return true
         }
+    }
+
+    private func dropDrafts(_ id: Int) {
+        descriptionDrafts[id] = nil
+        commentDrafts[id] = nil
+    }
+
+    /// Whether `id` is no longer in the database; false on a failed read.
+    private func targetGone(_ id: Int64) async -> Bool {
+        let exists = try? await dbPool.read { db in
+            try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM targets WHERE id = ?)", arguments: [id])
+        }
+        return exists == false
     }
 
     // MARK: - New target

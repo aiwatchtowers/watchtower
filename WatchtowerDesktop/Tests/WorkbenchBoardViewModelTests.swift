@@ -939,14 +939,17 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertTrue(vm.deletingTargetIDs.isEmpty)
     }
 
-    /// No CLI or a failed write keeps the target and says why; a failed
-    /// image cleanup still deletes it and says so.
+    /// No CLI or a failed write keeps the target and its drafts, reports
+    /// nothing and says why; a failed image cleanup still deletes it and
+    /// says so.
     func testDeleteTargetFailuresSayWhy() async throws {
         let (pid, id) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
         vm.load()
 
         let noCLI = await vm.deleteTarget(Int(id))
@@ -954,11 +957,15 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.errorMessage)
 
         vm.dismissError()
+        vm.beginDescriptionEdit(Int(id))
+        vm.setDescriptionDraft("half-typed", for: Int(id))
         vm.removeTarget = { _ in throw CocoaError(.fileWriteUnknown) }
         let failed = await vm.deleteTarget(Int(id))
         XCTAssertFalse(failed)
-        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(vm.errorMessage?.hasPrefix("Could not delete the target:") ?? false)
         XCTAssertNotNil(WorkbenchBoardOutline.find(Int(id), in: vm.roots))
+        XCTAssertEqual(vm.descriptionDraft(for: Int(id))?.text, "half-typed", "a failed delete keeps the draft")
+        XCTAssertEqual(reported, [])
 
         vm.dismissError()
         let pool = dbManager.dbPool
@@ -970,6 +977,133 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertTrue(partial)
         XCTAssertNil(WorkbenchBoardOutline.find(Int(id), in: vm.roots))
         XCTAssertEqual(vm.errorMessage, "Deleted #\(id), but could not remove its stored images: permission denied")
+    }
+
+    /// Exit 0 with an unreadable reply: the delete ran, so it counts as
+    /// the owner's. A target deleted elsewhere meanwhile (Go's "not found")
+    /// is gone as asked, without an error and without an owner write.
+    func testDeleteTargetGoneDespiteAnErrorCountsAsDeleted() async throws {
+        let (pid, first, second) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            return (pid, try Self.insertTarget(db, project: pid, text: "One"), try Self.insertTarget(db, project: pid, text: "Two"))
+        }
+        let vm = makeVM(project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+        let pool = dbManager.dbPool
+
+        vm.removeTarget = { id in
+            try await pool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id]) }
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad json"))
+        }
+        let unreadable = await vm.deleteTarget(Int(first))
+        XCTAssertTrue(unreadable)
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(reported, [.target(first)])
+
+        reported = []
+        vm.beginDescriptionEdit(Int(second))
+        vm.setDescriptionDraft("half-typed", for: Int(second))
+        vm.removeTarget = { id in
+            try await pool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id]) }
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let elsewhere = await vm.deleteTarget(Int(second))
+        XCTAssertTrue(elsewhere)
+        XCTAssertNil(vm.errorMessage, "no failure and no dropped-draft notice for a target the owner deleted")
+        XCTAssertEqual(reported, [])
+        XCTAssertNil(WorkbenchBoardOutline.find(Int(second), in: vm.roots))
+    }
+
+    /// The parent comes from the database at write time: an agent moved
+    /// the target under another group after the board loaded, and that
+    /// group's rollup is the owner's. An unmoved parent is not reported.
+    func testDeleteTargetReportsTheParentItHasNow() async throws {
+        let (pid, old, new, victim) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let old = try Self.insertTarget(db, project: pid, text: "Old group", status: "in_progress")
+            let new = try Self.insertTarget(db, project: pid, text: "New group", status: "in_progress")
+            return (pid, old, new, try Self.insertTarget(db, project: pid, text: "Moving", parent: old))
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        let pool = dbManager.dbPool
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE targets SET parent_id = ? WHERE id = ?", arguments: [new, victim])
+        }
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.removeTarget = { id in
+            try await pool.write { db in
+                try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id])
+                try db.execute(sql: "UPDATE targets SET status = 'done' WHERE id = ?", arguments: [new])
+            }
+            return WorkbenchTargetDeleted(id: id)
+        }
+
+        let deleted = await vm.deleteTarget(Int(victim))
+
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(reported, [.target(victim), .target(new)])
+        XCTAssertFalse(reported.contains(.target(old)))
+    }
+
+    /// A second delete of the same target while one is under way is refused
+    /// and never reaches the writer.
+    func testDeleteTargetRunsOncePerTarget() async throws {
+        let (pid, id) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        var calls = 0
+        var release: CheckedContinuation<Void, Never>?
+        vm.removeTarget = { id in
+            calls += 1
+            await withCheckedContinuation { release = $0 }
+            return WorkbenchTargetDeleted(id: id)
+        }
+        let first = Task { await vm.deleteTarget(Int(id)) }
+        while release == nil { await Task.yield() }
+        XCTAssertEqual(vm.deletingTargetIDs, [Int(id)])
+        let second = await vm.deleteTarget(Int(id))
+        XCTAssertFalse(second)
+        release?.resume()
+        let firstResult = await first.value
+        XCTAssertTrue(firstResult)
+        XCTAssertEqual(calls, 1)
+        XCTAssertTrue(vm.deletingTargetIDs.isEmpty)
+    }
+
+    /// The confirmation names the target and how many sub-tasks move up.
+    func testDeleteConfirmationText() async throws {
+        let long = String(repeating: "a", count: 61)
+        let (pid, parent, lone, wide) = try await dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let parent = try Self.insertTarget(db, project: pid, text: long)
+            let child = try Self.insertTarget(db, project: pid, text: "Child", parent: parent)
+            _ = try Self.insertTarget(db, project: pid, text: "Grandchild", parent: child)
+            let wide = try Self.insertTarget(db, project: pid, text: "Wide")
+            _ = try Self.insertTarget(db, project: pid, text: "A", parent: wide)
+            _ = try Self.insertTarget(db, project: pid, text: "B", parent: wide)
+            return (pid, parent, try Self.insertTarget(db, project: pid, text: "Lone"), wide)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        func target(_ id: Int64) throws -> Target {
+            try XCTUnwrap(WorkbenchBoardOutline.find(Int(id), in: vm.roots)).target
+        }
+        XCTAssertEqual(WorkbenchBoardView.deleteTitle(try target(lone)), "Delete #\(lone) \"Lone\"?")
+        XCTAssertEqual(WorkbenchBoardView.deleteTitle(try target(parent)),
+                       "Delete #\(parent) \"\(String(repeating: "a", count: 60))…\"?")
+        XCTAssertEqual(WorkbenchBoardView.deleteMessage(try target(lone), in: vm.roots),
+                       "Its comments, images and history are deleted too. This cannot be undone.")
+        XCTAssertTrue(WorkbenchBoardView.deleteMessage(try target(parent), in: vm.roots)
+            .contains(" Its sub-task moves to the top level."), "only direct children count")
+        XCTAssertTrue(WorkbenchBoardView.deleteMessage(try target(wide), in: vm.roots)
+            .contains(" Its 2 sub-tasks move to the top level."))
     }
 
     // MARK: - New Task panel (AI-14 §2)
