@@ -51,6 +51,9 @@ public enum SecureTransportError: Error, Equatable {
     case noKeyboxRecipient(String)
     /// A hub echo (plain record name) with neither `sealed` info nor a payload `device_id` to seal it to.
     case noRelayRecipient(String)
+    /// A conditional write (`saveSealed(_: [ConditionalSave])`, `deleteSealed`) over an inner transport that is not
+    /// a `ConditionalTransport`.
+    case notConditional
 }
 
 /// Persisted wire → plain name map (F19): the hub passes its sidecar (`slice_state.wire_name`, Task 10/11), so a
