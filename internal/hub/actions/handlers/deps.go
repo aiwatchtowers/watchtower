@@ -68,6 +68,13 @@ type Deps struct {
 	Windows     SessionWindows
 	ChatWatches ChatWatches
 	Reports     ReportRequests
+	// Sealer seals the sidecar copy of a held phone line's action
+	// (held_session_lines.action); a line cannot be held without it.
+	Sealer LocalSealer
+	// LateEcho writes a later outcome of an action already echoed
+	// (actions.Processor.LateEcho): a held phone line that went, failed,
+	// expired or was cancelled.
+	LateEcho func(ctx context.Context, r actions.Request, o actions.Outcome) error
 }
 
 // Handlers is the registered handler set: its in-memory state (asks being
@@ -78,6 +85,7 @@ type Handlers struct {
 	mu        sync.Mutex
 	answering map[int64]bool
 	held      []heldAnswer
+	lines     lineState
 }
 
 // Register adds every handler kind of this plan to d and returns the set;
@@ -102,6 +110,7 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	}
 	h := &Handlers{d: deps, answering: map[int64]bool{}}
 	h.loadHeld()
+	h.startHeldLines()
 	reg := func(kind string, fn actions.Handler) {
 		if len(NudgeTable[kind]) == 0 {
 			panic("handlers: " + kind + " has no NudgeTable entry")
@@ -120,6 +129,12 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	// recording_upload is no action kind: the processor calls the intake for
 	// the upload records, and a received one refreshes the recording_job slice.
 	d.SetRecordings(h.IntakeRecording, []string{"recording_job"})
+	for _, k := range inputKinds {
+		reg(k, h.sessionInput)
+	}
+	for _, k := range startStopKinds {
+		reg(k, h.sessionStartStop)
+	}
 	return h
 }
 

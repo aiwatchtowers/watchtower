@@ -255,6 +255,7 @@ func (h *Handlers) deliverLine(ctx context.Context, line heldAnswer) string {
 	}
 	switch res.Outcome {
 	case DeliverSubmitted:
+		h.lines.noteSubmit(line.sessionID, h.d.Clock())
 		return deliverySubmitted
 	case DeliverTyped:
 		return deliveryTyped
@@ -374,6 +375,8 @@ func (h *Handlers) DeliverHeld(ctx context.Context) {
 			log.Printf("hub handlers: ask %d: held answer cannot be typed", line.askID)
 		}
 	}
+	// The held phone lines (PROJ-16) are tried after the answers.
+	h.deliverHeldLines(ctx)
 }
 
 // takeHeld removes line from the held set and hub_meta; false when it was no
