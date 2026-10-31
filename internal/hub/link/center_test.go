@@ -1029,3 +1029,38 @@ func TestALinkedPhoneRescanningKeepsItsLinkedKeybox(t *testing.T) {
 		t.Errorf("one row per phone: %d %v", len(grants), err)
 	}
 }
+
+// Publish runs after the center's lock is released: a callback that reads
+// the keyboxes synchronously (as a publisher may) never deadlocks.
+func TestPublishCallbackMayReadKeyboxes(t *testing.T) {
+	r := newRig(t)
+	var reads int
+	r.c.publish = func(...string) {
+		if _, err := r.c.Keyboxes(); err != nil {
+			t.Error(err)
+		}
+		reads++
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a, b := newPhone(t), newPhone(t)
+		code := r.issue()
+		r.handle(a, code.Nonce)
+		r.handle(b, code.Nonce)
+		_ = r.c.Confirm(b.id.String(), "", false)
+		_ = r.c.Confirm(a.id.String(), r.code(a), true)
+		_ = r.c.Allow(a.id.String(), GrantTyping, true)
+		_ = r.c.Unlink(a.id.String())
+		r.advance(time.Hour)
+		_ = r.c.Sweep()
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a Publish callback reading Keyboxes deadlocked")
+	}
+	if reads < 6 {
+		t.Errorf("published %d times", reads)
+	}
+}

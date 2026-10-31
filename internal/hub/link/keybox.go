@@ -26,7 +26,7 @@ import (
 // unlinked or swept first).
 func (c *Center) Confirm(device, code string, ok bool) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	now := c.now()
 	var (
 		request pendingDevice

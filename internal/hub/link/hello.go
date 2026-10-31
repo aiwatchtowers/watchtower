@@ -55,7 +55,7 @@ type openedHello struct {
 // left unanswered (no kept code opens it, or a check fails).
 func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	opened, err := c.openHello(zone, wireName, env)
 	if err != nil {
 		return Pending{}, err

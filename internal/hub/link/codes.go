@@ -32,7 +32,7 @@ type linkCode struct {
 // KeptCodes. It returns the payload and its URL and emits qr then waiting.
 func (c *Center) Issue() (wire.LinkPayload, string, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	raw := make([]byte, linkNonceLength)
 	if _, err := rand.Read(raw); err != nil {
 		return wire.LinkPayload{}, "", fmt.Errorf("link: random: %w", err)

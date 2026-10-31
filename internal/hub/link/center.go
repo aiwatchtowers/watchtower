@@ -120,6 +120,8 @@ type Center struct {
 	// interleaves with an unlink or a refusal of the same phone, and a
 	// keybox read never straddles an unlink's rotation.
 	mu sync.Mutex
+	// dirty: the locked section changed the device_grant slice (guarded by mu).
+	dirty bool
 	// beforeKeys is a test seam: run by Keyboxes between the device read
 	// and the key read.
 	beforeKeys func()
@@ -143,8 +145,17 @@ func NewCenter(c Config) *Center {
 // now is the clock in whole seconds, as the wire stamps it.
 func (c *Center) now() time.Time { return c.clock().Truncate(time.Second).UTC() }
 
-func (c *Center) changed() {
-	if c.publish != nil {
+// changed marks the device_grant slice dirty; the deciding method publishes
+// it from unlock, after c.mu is released, so a Publish callback may read
+// Keyboxes or Grants synchronously. Call with c.mu held.
+func (c *Center) changed() { c.dirty = true }
+
+// unlock releases c.mu, then publishes what the locked section changed.
+func (c *Center) unlock() {
+	dirty := c.dirty
+	c.dirty = false
+	c.mu.Unlock()
+	if dirty && c.publish != nil {
 		c.publish(KindDeviceGrant)
 	}
 }
@@ -157,7 +168,7 @@ func (c *Center) changed() {
 // nothing rotates). state.ErrNoDevice when neither.
 func (c *Center) Unlink(device string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	removed := false
 	err := c.keys.RotateWith(identity.ReasonUnlink, func(tx *sql.Tx) error {
 		ok, err := removeDevice(tx, device, c.now())
@@ -212,7 +223,7 @@ func (c *Center) Allow(device string, g Grant, on bool) error {
 		return fmt.Errorf("%w: %q", ErrUnknownGrant, g)
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE devices SET `+col+` = ?, decided_at = ? WHERE device_id = ? COLLATE NOCASE`,
 			on, secs(c.now()), device)
@@ -238,7 +249,7 @@ func (c *Center) Allow(device string, g Grant, on bool) error {
 // refusals and revoked rows past their lifetime are forgotten.
 func (c *Center) Sweep() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 	now := c.now()
 	var refused []pendingDevice
 	err := c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
