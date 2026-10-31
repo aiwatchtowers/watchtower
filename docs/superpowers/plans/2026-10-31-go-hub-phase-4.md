@@ -40,14 +40,16 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - **Branch rule (owner, 2026-10-31):** all Go hub work branches from `feature/go-hub` and merges into it; one PR goes from `feature/go-hub` to `main` when all four phases are done. Each task branch here starts from `feature/go-hub`.
 - **E2E red line for pushes:** the only bytes the hub hands `send_alert` are a `secure.Push` built by `Sealer.AlertPush`; `transport.Alerts.SendAlert` accepts no other type. No plaintext preview, title or count goes in any request field — the relay's own `"Watchtower"` placeholder is the only visible text.
 - **Push size:** relay `MAX_PAYLOAD_BYTES = 4096`, body overhead 67 bytes, base64 → envelope ≤ **3021** bytes. `AlertPush` pads the frame to the **1 KiB** bucket (envelope 68 + 1024 + 16 + 64 = 1172 bytes) and, when the payload does not fit that bucket, clips `body`, then `title`, on rune boundaries with `…` until it does; `WorkAlertPayload` keys and every other field stay as they are. The data-zone `ask_alert` record is not clipped (owner, ask #864).
-- **At most once per (alert key, phone):** a ledger row is written `pending` before the request and settled after; a row found `pending` at hub start is settled `expired` and never resent (owner, ask #864).
+- **At most once per (alert key, phone):** the ledger row is written `pending` at **enqueue**, before the item enters the queue (ids and timestamps only), and settled after the request; a row found `pending` at hub start — queued or in flight at a crash — is settled `expired` (reason `restart`) and never resent (owner, ask #864; review ask #866).
+- **Owner back at the Mac:** before every send, retries included, the pusher re-checks owner-away (`platform.Away`, the same input as the work-alert policy); if the owner is back, the push settles `expired` with reason `owner_back` and is not sent — the phase 1 anti-goal "don't buzz while I'm at the Mac" (review ask #866).
+- **Switch to CloudKit with alerts queued:** every queued or pending push settles `expired` (reason `switched`); each of those alerts whose stop is still open is re-signalled on CloudKit — its `ask_alert` record is saved there and its `sig-` signal written as for a new alert (Phase 3 Task 15), so a phone on CloudKit still gets it (review ask #866).
 - **Freshness window** `alerts.Freshness = 5 * time.Minute` from the alert's first save (owner, ask #864): retries (`RATE_LIMITED` after `retry_after_s`, default 1 s, capped 60 s; `transport.ErrUnavailable` after the client's own 30 s, on the next connect) stop at its end with outcome `expired`.
-- **Outcome classes** (ledger `outcome`, Desktop and logs): `sent | no_token | not_paying | forbidden | push_off | too_large | expired | failed`. Mapping from the relay at `3a99bd7`: `NOT_FOUND` → `no_token`; `ENTITLEMENT_INACTIVE` → `not_paying` (and one account-state refresh); `FORBIDDEN` → `forbidden`; `RECORD_TOO_LARGE` → `too_large` (a bug: logged once); `ERROR_CODE_UNSPECIFIED` with message `not implemented` → `push_off`; any other `UNSPECIFIED` → `failed`; `RATE_LIMITED`/`TRAFFIC_LIMIT_EXCEEDED` → retry; nothing else retried.
-- **No hub-side rate limit** beyond the relay's (token bucket per device, `MAX_ALERTS_PER_PHONE = 4` in flight, oldest cancelled): the work-alert policy already sends one push per stop and only while the owner is away. One sender goroutine per phone; the publisher never waits on a push (buffered queue, 64 per phone; overflow → `expired`).
-- **Measurements** (RC §10): sidecar table `latency_samples` holds `at`, `transport` (`cloudkit|relay`), `step` (`read_applied|applied_saved`), `ms` — nothing else; kept 7 days and at most **20 000** rows (pruned once a minute). Only actions applied on first read count (a held action measures the phone's gap, not the hub). An applied action with no slice save within 60 s leaves no `applied_saved` sample. Percentiles: nearest rank over the window. Nothing leaves the device.
-- **Indicators** (RC §10): "Relay unavailable" after **60 s** without a relay connection (RC §9's phone threshold, reused); quota from the last save error class, cleared by the next successful save of that zone kind; undelivered count = held actions + 1 for an open gap (`resend_requested_from` set) as the hub knows them.
+- **Outcome classes** (ledger `outcome`, Desktop and logs): `accepted | no_token | not_paying | forbidden | push_off | too_large | expired | failed`. `accepted` means the relay accepted the request (`Ok`), not that APNs delivered it; Desktop says "Sent to relay". Expired pushes carry a `reason`: `freshness | owner_back | restart | switched | overflow | stopped`. Mapping from the relay at `3a99bd7`: `NOT_FOUND` → `no_token`; `ENTITLEMENT_INACTIVE` → `not_paying` (and one account-state refresh); `FORBIDDEN` → `forbidden`; `RECORD_TOO_LARGE` → `too_large` (a bug: logged once); `ERROR_CODE_UNSPECIFIED` with message `not implemented` → `push_off`; any other `UNSPECIFIED` → `failed`; `RATE_LIMITED`/`TRAFFIC_LIMIT_EXCEEDED` → retry; nothing else retried.
+- **No hub-side rate limit** beyond the relay's (token bucket per device, `MAX_ALERTS_PER_PHONE = 4` in flight, oldest cancelled): the work-alert policy already sends one push per stop and only while the owner is away. One sender goroutine per phone; the publisher never waits on a push (buffered queue, 64 per phone; overflow → `expired` reason `overflow`, decided by agent; the count of overflow-expired pushes in the window is shown in Diagnostics so it is never silent).
+- **Measurements** (RC §10): sidecar table `latency_samples` holds `at`, `transport` (`cloudkit|relay`), `step` (`read_applied|applied_saved|read_saved`), `ms` — nothing else (`read_saved` = the per-action total, recorded together with `applied_saved`); kept 7 days and at most **20 000** rows (pruned once a minute). Only actions applied on first read count (a held action measures the phone's gap, not the hub). An applied action with no slice save within 60 s leaves no `applied_saved` or `read_saved` sample. The 500 ms line uses the p50 of `read_saved` on the relay, never a sum of two p50s. Percentiles: nearest rank over the window. Nothing leaves the device.
+- **Indicators** (RC §10): "Relay unavailable" after **60 s** without a relay connection (RC §9's phone threshold, reused); quota from the last save error class, cleared by the next successful save of that zone kind; undelivered count = held actions + 1 for an open gap (`resend_requested_from` set), i.e. what **this Mac's side** knows; Desktop labels it as such and never as the phone's queue.
 - **Desktop screens** (spec §12.4 and the workbench rule): every new or changed screen gets its mockup states in `docs/design/mockups/go-hub/index.html` (Task 1) and a `DesignShotCatalog` entry per state — **empty, loading, error with Retry, busy, narrow width** — on fixture data (`acme`, `example.com`); every UI string lives in its model and is pinned by a model test (view-source scan, as Phase 3 Task 23); colours only through `Tone`/semantic styles, `SettingsSection` + `.kitRow`, no row separators; after implementation `make desktop-shots DESKTOP_SHOTS=<dir>` is compared with the mockup and the PNGs go into the PR.
-- **Pinned copy** (RC §10 mockup, verbatim where it exists): "Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, or subscribe on <phone>."; "<N> actions from this phone were not delivered — it shows them with Retry." (`1 action … was not delivered`); "Relay unavailable for <N> min. Phones keep their changes and send them when it is back."; "Connected · last change delivered <age> ago"; "Content-free timings kept on this Mac only."; new: "This Mac's Relay storage is full. New changes are not sent until older recordings are removed.", "A phone's Relay mailbox is full. Its updates wait until it reads them.", "Notifications aren't set up on this iPhone. Open Watchtower on it once.", "Relay has no notifications configured.", "No timings yet. They appear after the first action from a phone.", "This Mac's part alone is over the 500 ms goal."
+- **Pinned copy** (RC §10 mockup, verbatim where it exists): "Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, or subscribe on <phone>."; "On this Mac's side, <N> actions from this phone are not applied yet." (`1 action from this phone is not applied yet`; replaces the mockup's "were not delivered — it shows them with Retry", which describes the phone's outbox, review ask #866); "Relay unavailable for <N> min. Phones keep their changes and send them when it is back."; "Connected · last change delivered <age> ago"; "Content-free timings kept on this Mac only."; "This Mac's Relay storage is full (5 GB). New changes are not sent until older recordings are removed." (verbatim, review ask #866); new: "A phone's Relay mailbox is full. Its updates wait until it reads them.", "Notifications aren't set up on this iPhone. Open Watchtower on it once.", "Relay has no notifications configured.", "No timings yet. They appear after the first action from a phone.", "This Mac's part alone is over the 500 ms goal.", "Last alert: sent to relay", "<N> alerts were dropped because too many were waiting." (`1 alert was dropped …`)
 - **Swift** follows the "Swift / Desktop conventions" of `docs/review/review-rules.md`; every Swift task runs `make lint-swift`.
 - Sidecar migrations continue from the newest file on `feature/go-hub` (`00010` expected after Phase 3's `00009_switch_epochs`; re-check when the task starts).
 - Inner loop only per task; the full gate (`make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`) runs once, in Task 11.
@@ -58,7 +60,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 2. **A crash between `send_alert` and the settle write.** The phone must not get the same alert twice after the restart. → Task 4 `TestPendingPushAtStartIsSettledExpiredNeverResent`.
 3. **A phone that stopped paying or lost its slot since the last account read.** Expect `not_paying`/`forbidden`, one account refresh, no retry loop, and the other phones still pushed. → Task 4 `TestEntitlementInactiveStopsRetriesAndRefreshesOnce`, `TestOnePhoneRefusedOthersStillSent`.
 4. **A burst of stops** (ten sessions end at once while away) against a rate-limiting relay. Publishing must never stall, retries honour `retry_after_s`, the leftovers expire after 5 min. → Task 5 `TestRateLimitedBurstNeverBlocksPublishing`.
-5. **A switch to CloudKit while pushes are queued.** No `send_alert` after the switch; the queued ones settle `expired`; signals take over. → Task 5 `TestSwitchToCloudKitStopsQueuedPushes`.
+5. **A switch to CloudKit while pushes are queued.** No `send_alert` after the switch; the queued ones settle `expired`; each still-open alert is re-signalled on CloudKit. → Task 5 `TestSwitchToCloudKitStopsQueuedPushes`, `TestSwitchToCloudKitResignalsOpenQueuedAlerts`.
 
 ---
 
@@ -162,12 +164,14 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   ```go
   package state
   // 00010: CREATE TABLE alert_pushes(alert_key TEXT NOT NULL, device_id TEXT NOT NULL,
-  //   outcome TEXT NOT NULL CHECK (outcome IN ('pending','sent','no_token','not_paying','forbidden','push_off','too_large','expired','failed')),
+  //   outcome TEXT NOT NULL CHECK (outcome IN ('pending','accepted','no_token','not_paying','forbidden','push_off','too_large','expired','failed')),
+  //   reason TEXT NOT NULL DEFAULT '' CHECK (reason IN ('','freshness','owner_back','restart','switched','overflow','stopped')),
   //   attempts INTEGER NOT NULL DEFAULT 0, first_at REAL NOT NULL, settled_at REAL, PRIMARY KEY (alert_key, device_id))
-  // ids, counters, timestamps and a class only (allowlist: alert_key = key, outcome = enum).
+  // ids, counters, timestamps and classes only (allowlist: alert_key = key, outcome = enum, reason = enum).
   func (s *Store) BeginAlertPush(key, device string, at time.Time) (bool, error) // false: a row exists (never twice)
-  func (s *Store) SettleAlertPush(key, device, outcome string, attempts int, at time.Time) error
-  func (s *Store) ExpirePendingAlertPushes(at time.Time) (int, error)            // at hub start
+  func (s *Store) SettleAlertPush(key, device, outcome, reason string, attempts int, at time.Time) error
+  func (s *Store) ExpirePendingAlertPushes(at time.Time) (int, error)            // at hub start, reason restart
+  func (s *Store) AlertPushOverflows(since time.Time) (int, error)               // expired with reason overflow
   func (s *Store) LastAlertOutcomes(since time.Time) (map[string]string, error)  // device → newest settled outcome
   func (s *Store) PruneAlertPushes(before time.Time) error                       // 7 days, with the alert lifetime
   package alerts
@@ -177,18 +181,20 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
       Store *state.Store; Sealer *secure.Sealer; Send transport.Alerts
       Targets func(ctx context.Context) ([]Target, error) // linked, relay id set, a hub reader, SlotHolder.paying
       RefreshAccount func(ctx context.Context)            // called once on not_paying / forbidden
+      Away func() bool                                    // platform.Away; checked before every send, retries included
       Clock func() time.Time
   }
   type Pusher struct{…}; func New(c Config) *Pusher
   func (p *Pusher) Start(ctx context.Context) error // ExpirePendingAlertPushes, then per-phone senders
-  func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time.Time) // never blocks
-  func (p *Pusher) Stop()                                                              // queued items settle expired
+  func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time.Time) // pending rows first (one short tx), then the queue; never waits on a send
+  func (p *Pusher) Abandon(reason string) []string                                   // settles queued/pending expired; returns their alert keys (switch)
+  func (p *Pusher) Stop()                                                              // queued items settle expired, reason stopped
   ```
 - **Depends on:** Task 3
 
-- [ ] **Step 1: Failing tests** (fake `transport.Alerts` with scripted answers, fake clock): `TestPushedOncePerKeyAndPhone` (two `Enqueue` of one key → one request per phone), `TestOnlyPayingReadersAreTargets`, `TestPendingPushAtStartIsSettledExpiredNeverResent` (Review Focus 2), `TestRateLimitedRetriesAfterRetryAfterWithinFreshness` (7 s answer → retry at 7 s; a key still failing at 5 min → `expired`), `TestEntitlementInactiveStopsRetriesAndRefreshesOnce` and `TestOnePhoneRefusedOthersStillSent` (Review Focus 3), `TestOutcomeClasses` (table: each error → its outcome), `TestQueueOverflowSettlesExpired`, `TestStopSettlesQueuedExpired`, `TestFILES01_PusherLogsIdsAndClassesOnly` (`logcanary` marker in title/body never in logs), `TestAlertPushLedgerHasNoContent` (canary: the sidecar file never contains the marker), state: `TestBeginAlertPushRefusesASecondRow`, `TestSidecarHasNoNewUnsealedContentColumns` (allowlist updated).
+- [ ] **Step 1: Failing tests** (fake `transport.Alerts` with scripted answers, fake clock): `TestPushedOncePerKeyAndPhone` (two `Enqueue` of one key → one request per phone), `TestOnlyPayingReadersAreTargets`, `TestPendingPushAtStartIsSettledExpiredNeverResent` (Review Focus 2), `TestRateLimitedRetriesAfterRetryAfterWithinFreshness` (7 s answer → retry at 7 s; a key still failing at 5 min → `expired`), `TestEntitlementInactiveStopsRetriesAndRefreshesOnce` and `TestOnePhoneRefusedOthersStillSent` (Review Focus 3), `TestOutcomeClasses` (table: each error → its outcome; `Ok` → `accepted`), `TestQueueOverflowSettlesExpired` (reason `overflow`, counted by `AlertPushOverflows`), `TestEnqueueWritesPendingBeforeTheQueue` (crash after `Enqueue`, before any send → the row exists and settles `expired`/`restart` at start), `TestOwnerBackBeforeSendSettlesExpired` and `TestOwnerBackBeforeRetrySettlesExpired` (away at enqueue, back before the first send / before a `RATE_LIMITED` retry → no request, reason `owner_back`), `TestStopSettlesQueuedExpired`, `TestFILES01_PusherLogsIdsAndClassesOnly` (`logcanary` marker in title/body never in logs), `TestAlertPushLedgerHasNoContent` (canary: the sidecar file never contains the marker), state: `TestBeginAlertPushRefusesASecondRow`, `TestSidecarHasNoNewUnsealedContentColumns` (allowlist updated).
 - [ ] **Step 2:** `go test ./internal/hub/alerts ./internal/hub/state` → FAIL.
-- [ ] **Step 3: Implement.** The payload stays in memory only, in the queue item; `BeginAlertPush` in its own short transaction before the request, `SettleAlertPush` after; no request inside a write transaction.
+- [ ] **Step 3: Implement.** The payload stays in memory only, in the queue item; `BeginAlertPush` for every target in one short transaction inside `Enqueue`, before the queue; `SettleAlertPush` after the request; no request inside a write transaction.
 - [ ] **Step 4:** → PASS; `make lint-diff`.
 - [ ] **Step 5: Commit** `hub/alerts: push work alerts to paying phones over send_alert, at most once`.
 
@@ -199,17 +205,20 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - Test: `internal/hub/slices/alert_push_test.go`, `internal/hub/alerts_wiring_test.go`, `internal/hub/interop_test.go` (local stand case)
 
 **Interfaces:**
-- Consumes: Task 4 `alerts.Pusher`; Phase 3 `switcher.Switcher.Active()`, `switcher.Config.Paying`; `relay.Transport.AccountState`.
+- Consumes: Task 4 `alerts.Pusher` (`Abandon`); Phase 3 `switcher.Switcher.Active()`, Phase 3 Task 15 signal path, `switcher.Config.Paying`; `relay.Transport.AccountState`.
 - Produces:
   ```go
   package slices
   // Config gains: OnAlertSaved func(key string, fields secure.WorkAlertFields, savedAt time.Time)
   // called once per alert key after its first successful save, only while the active transport is the relay;
   // on CloudKit the signal path (Phase 3) runs instead. Republishes and rotations never call it.
+  func (p *Publisher) Resignal(keys []string) // on a switch to CloudKit: for each key whose alert is still in the work-alert window,
+  //   save its ask_alert record on CloudKit and write its sig- signal as for a first save (once per key)
   ```
+  The runtime's switch hook (toward CloudKit) calls `Pusher.Abandon("switched")`, then `Publisher.Resignal` with the returned keys.
 - **Depends on:** Task 4
 
-- [ ] **Step 1: Failing tests:** `TestFirstSaveOfAnAlertEnqueuesAPushOnRelay`, `TestRepublishAndRotationNeverPushAgain`, `TestNoSendAlertOnCloudKit` (and no signal on the relay, Phase 3's test stays green), `TestSwitchToCloudKitStopsQueuedPushes` (Review Focus 5), `TestRateLimitedBurstNeverBlocksPublishing` (Review Focus 4: ten alerts, relay answers `RATE_LIMITED` 30 s; the next slice save still happens within the 150 ms spacing), `TestAccountRefreshUpdatesTargets` (a phone becomes paying after a `Control` → the next alert reaches it), `TestE2ECanary_AlertPushCarriesNoPlaintext` (canary markers in workbench name/title/body; the fake relay's captured `send_alert` frames contain none; the envelope opens with the alert key to the marker), interop (`make relay-interop RELAY=../relay`): `TestInterop_SendAlertOnTheLocalStandIsPushOff` (outcome `push_off`, no retry).
+- [ ] **Step 1: Failing tests:** `TestFirstSaveOfAnAlertEnqueuesAPushOnRelay`, `TestRepublishAndRotationNeverPushAgain`, `TestNoSendAlertOnCloudKit` (and no signal on the relay, Phase 3's test stays green), `TestSwitchToCloudKitStopsQueuedPushes` (Review Focus 5), `TestSwitchToCloudKitResignalsOpenQueuedAlerts` (two queued alerts, one resolved before the switch → one `sig-` signal on CloudKit for the open one, none for the resolved one, both pushes `expired`/`switched`), `TestRateLimitedBurstNeverBlocksPublishing` (Review Focus 4: ten alerts, relay answers `RATE_LIMITED` 30 s; the next slice save still happens within the 150 ms spacing), `TestAccountRefreshUpdatesTargets` (a phone becomes paying after a `Control` → the next alert reaches it), `TestE2ECanary_AlertPushCarriesNoPlaintext` (canary markers in workbench name/title/body; the fake relay's captured `send_alert` frames contain none; the envelope opens with the alert key to the marker), interop (`make relay-interop RELAY=../relay`): `TestInterop_SendAlertOnTheLocalStandIsPushOff` (outcome `push_off`, no retry).
 - [ ] **Step 2:** `go test ./internal/hub/... -run 'Alert|Push|SendAlert'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make relay-interop RELAY=../relay` once; `make lint-diff`.
@@ -228,7 +237,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   ```go
   package state
   // 00011: CREATE TABLE latency_samples(at REAL NOT NULL, transport TEXT NOT NULL CHECK (transport IN ('cloudkit','relay')),
-  //   step TEXT NOT NULL CHECK (step IN ('read_applied','applied_saved')), ms INTEGER NOT NULL CHECK (ms >= 0));
+  //   step TEXT NOT NULL CHECK (step IN ('read_applied','applied_saved','read_saved')), ms INTEGER NOT NULL CHECK (ms >= 0));
   //   CREATE INDEX latency_samples_at ON latency_samples(at)
   type LatencyRow struct{ Step, Transport string; P50, P90 time.Duration; Samples int }
   func (s *Store) AddLatencySamples(xs []LatencySample) error
@@ -241,10 +250,10 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   func (r *Recorder) Saved(transport string, kind string, startedAt, doneAt time.Time)    // resolves waiting applies of kind
   func (r *Recorder) Flush() error                                                         // batched write, once a second
   ```
-  `readAt` = when the transport handed the processor the record's batch. A waiting apply resolves at the first successful save of one of its kinds whose cycle started after `appliedAt`; none within `SaveWait` → no sample. Waiting applies are in memory, capped at 256 (oldest dropped).
+  `readAt` = when the transport handed the processor the record's batch. A waiting apply resolves at the first successful save of one of its kinds whose cycle started after `appliedAt`, writing `applied_saved` (done − applied) and `read_saved` (done − read) together; none within `SaveWait` → neither. Waiting applies are in memory, capped at 256 (oldest dropped).
 - **Depends on:** Task 0
 
-- [ ] **Step 1: Failing tests:** `TestAppliedActionGivesReadAppliedSample`, `TestHeldThenAppliedGivesNoSample`, `TestRepeatGivesNoSample`, `TestSliceSaveResolvesAppliedSaved` (an `ask_answer` → `owner_ask` save), `TestNoSaveWithin60sGivesNoSample`, `TestSamplesTaggedWithTheActiveTransport`, `TestLatencyStatsNearestRank` (table of known ms → p50/p90), `TestLatencySamplesAreContentFreeAndBoundedPrune` (20 001 rows → 20 000; 8-day-old row gone; column allowlist: `at`, `transport`, `step`, `ms`), `TestRecorderNeverWritesInsideAPassTransaction`.
+- [ ] **Step 1: Failing tests:** `TestAppliedActionGivesReadAppliedSample`, `TestHeldThenAppliedGivesNoSample`, `TestRepeatGivesNoSample`, `TestSliceSaveResolvesAppliedSaved` (an `ask_answer` → `owner_ask` save; `read_saved` = read → done of the same action), `TestNoSaveWithin60sGivesNoSample`, `TestSamplesTaggedWithTheActiveTransport`, `TestLatencyStatsNearestRank` (table of known ms → p50/p90), `TestLatencySamplesAreContentFreeAndBoundedPrune` (20 001 rows → 20 000; 8-day-old row gone; column allowlist: `at`, `transport`, `step`, `ms`; rules kept as decided by agent, shown to the owner on this review), `TestRecorderNeverWritesInsideAPassTransaction`.
 - [ ] **Step 2:** `go test ./internal/hub/measure ./internal/hub/state ./internal/hub/actions -run 'Latency|Sample|Recorder'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make lint-diff`.
@@ -258,7 +267,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - Test: `internal/hub/status_test.go`, `cmd/hub_test.go`
 
 **Interfaces:**
-- Consumes: Task 4 `LastAlertOutcomes`; Task 6 `LatencyStats`; `Store.HeldActions`, `Device.ResendRequestedFrom`; the relay transport's connection events and save errors.
+- Consumes: Task 4 `LastAlertOutcomes`, `AlertPushOverflows`; Task 6 `LatencyStats`; `Store.HeldActions`, `Device.ResendRequestedFrom`; the relay transport's connection events and save errors.
 - Produces (pinned `--json` keys, additive):
   ```go
   // hub.Status gains:
@@ -271,13 +280,13 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
       LastSavedAt string `json:"last_saved_at"` // RFC 3339 or ""
   }
   // hub phones --json rows gain: "paying" (true|false|null — null unless the hub runs on the relay),
-  //   "undelivered" (int), "alerts" ("" | an outcome class of the last 7 days)
-  // hub diagnostics [--days N] --json → {"window_days":7,"rows":[{"step","transport","p50_ms","p90_ms","samples"}]}
+  //   "undelivered" (int, this Mac's side), "alerts" ("" | an outcome class of the last 7 days)
+  // hub diagnostics [--days N] --json → {"window_days":7,"rows":[{"step","transport","p50_ms","p90_ms","samples"}],"push_overflow_expired":N}
   //   reads the sidecar through state.OpenReadOnly (no hub needed); --days 1..7
   ```
 - **Depends on:** Task 4, Task 6
 
-- [ ] **Step 1: Failing tests:** `TestRelayUnavailableAfter60s` (59 s → `connecting`, 60 s → `unavailable`, reconnect → `connected` and a `status` watch event), `TestQuotaClassSetAndClearedBySave`, `TestPayingPhonesOnlyOnRelay`, `TestHubStatusJSONKeys` (updated pinned set), `TestHubPhonesJSONKeys` (`paying`, `undelivered`, `alerts`), `TestUndeliveredCountsHeldAndGap`, `TestHubDiagnosticsJSONKeys`, `TestHubDiagnosticsWithoutSidecarIsEmpty`, `TestStatusFileHasNoContent` (canary).
+- [ ] **Step 1: Failing tests:** `TestRelayUnavailableAfter60s` (59 s → `connecting`, 60 s → `unavailable`, reconnect → `connected` and a `status` watch event), `TestQuotaClassSetAndClearedBySave`, `TestPayingPhonesOnlyOnRelay`, `TestHubStatusJSONKeys` (updated pinned set), `TestHubPhonesJSONKeys` (`paying`, `undelivered`, `alerts`), `TestUndeliveredCountsHeldAndGap`, `TestHubDiagnosticsJSONKeys` (incl. `read_saved` rows and `push_overflow_expired`), `TestHubDiagnosticsWithoutSidecarIsEmpty`, `TestStatusFileHasNoContent` (canary).
 - [ ] **Step 2:** `go test ./internal/hub ./cmd -run 'TestHub|TestRelayUnavailable|TestQuota|TestPaying|TestUndelivered|TestStatus'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make lint-diff`.
@@ -298,8 +307,8 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   struct RelayHealth: Decodable, Equatable { let state: String; let since: Date; let quota: String; let lastSavedAt: Date? }
   // MobileSettingsModel.PhoneRow gains:
   let updatesLine: String?      // free phone on a relay hub: the pinned "Doesn't get updates…" text with the phone's name
-  let undeliveredLine: String?  // N > 0: pinned singular/plural text
-  let alertsLine: String?       // "no_token" → "Notifications aren't set up on this iPhone. Open Watchtower on it once."
+  let undeliveredLine: String?  // N > 0: "On this Mac's side, N actions from this phone are not applied yet." (singular form for 1)
+  let alertsLine: String?       // "no_token" → "Notifications aren't set up on this iPhone. Open Watchtower on it once."; "accepted" → "Last alert: sent to relay"
   // MobileSettingsModel gains:
   var relayLine: (text: String, tone: Tone)? // connected (age), unavailable (minutes), "push_off" → "Relay has no notifications configured."
   var quotaLine: String?                      // hub / mailbox pinned texts
@@ -307,7 +316,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - **Depends on:** Task 1 (mockup approved), Task 7
 
 - [ ] **Step 1: DesignShots** (light/dark): `mobileSettingsRelayConnected`, `mobileSettingsRelayUnavailable`, `mobileSettingsQuotaFull`, `mobileSettingsFreePhoneOnRelay`, `mobileSettingsUndelivered`, `mobileSettingsNotificationsMissing`, each also narrow; the existing empty/loading/error/busy shots updated with the hub block.
-- [ ] **Step 2: Failing tests:** `testDecodesRelayHealthAndPayingPhones`, `testFreePhoneOnRelayLine` (`paying: false` on a relay hub → the line naming the phone; on CloudKit → none), `testUndeliveredSingularPlural` (1, 3), `testNoTokenLine`, `testRelayUnavailableMinutes` (since 2 min 30 s → "2 min"), `testQuotaLines`, `testPushOffLineWhenAllPhonesPushOff`, `testWatchStatusEventRefreshesLines`, `testEveryUIStringLivesInTheModel`.
+- [ ] **Step 2: Failing tests:** `testDecodesRelayHealthAndPayingPhones`, `testFreePhoneOnRelayLine` (`paying: false` on a relay hub → the line naming the phone; on CloudKit → none), `testUndeliveredSingularPlural` (1, 3), `testUndeliveredLineSaysThisMacsSide` (exact text, never "not delivered"), `testAcceptedReadsSentToRelay`, `testNoTokenLine`, `testRelayUnavailableMinutes` (since 2 min 30 s → "2 min"), `testQuotaLines` (hub text verbatim with "(5 GB)"), `testPushOffLineWhenAllPhonesPushOff`, `testWatchStatusEventRefreshesLines`, `testEveryUIStringLivesInTheModel`.
 - [ ] **Step 3:** `make test-swift FILTER='MobileSettingsModelTests|HubControlClientTests'` → FAIL.
 - [ ] **Step 4: Implement.**
 - [ ] **Step 5:** → PASS; `make desktop-shots DESKTOP_SHOTS=<dir>` compared with Task 1's page; `make lint-swift`.
@@ -326,9 +335,10 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   ```swift
   @MainActor @Observable final class MobileDiagnosticsModel {
       enum State: Equatable { case loading, empty, rows([Row]), error(String) }
-      struct Row: Equatable, Identifiable { let stepLabel: String /* "Phone action read → applied" | "Applied → slice saved" */; let transportLabel: String /* "Relay" | "iCloud" */; let p50: String; let p90: String; let samples: String }
+      struct Row: Equatable, Identifiable { let stepLabel: String /* "Phone action read → applied" | "Applied → slice saved" | "Phone action read → slice saved" */; let transportLabel: String /* "Relay" | "iCloud" */; let p50: String; let p90: String; let samples: String }
       var isRefreshing: Bool
-      var overGoalLine: String? // relay p50(read_applied) + p50(applied_saved) ≥ 500 ms → "This Mac's part alone is over the 500 ms goal."
+      var overGoalLine: String? // relay p50 of read_saved (per-action total) ≥ 500 ms → "This Mac's part alone is over the 500 ms goal."
+      var overflowLine: String? // push_overflow_expired > 0 → "N alerts were dropped because too many were waiting." (singular for 1)
       static let caption = "Content-free timings kept on this Mac only."
       static let emptyText = "No timings yet. They appear after the first action from a phone."
       func load() async; func retry() async
@@ -337,8 +347,8 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   Durations format: < 1 s as "38 ms", else "2.1 s".
 - **Depends on:** Task 1 (mockup approved), Task 7
 
-- [ ] **Step 1: DesignShots** (light/dark): `mobileDiagnosticsRows` (relay and iCloud rows), `mobileDiagnosticsEmpty`, `mobileDiagnosticsLoading`, `mobileDiagnosticsError` (with **Retry**), `mobileDiagnosticsBusy` (refresh in flight over rows), `mobileDiagnosticsNarrow`, `mobileDiagnosticsOverGoal`.
-- [ ] **Step 2: Failing tests:** `testRowsFromPinnedJSON`, `testDurationFormatting`, `testEmptyWhenNoRows`, `testErrorThenRetryLoads`, `testOverGoalLineOnlyOnRelay`, `testEveryUIStringLivesInTheModel`.
+- [ ] **Step 1: DesignShots** (light/dark): `mobileDiagnosticsRows` (relay and iCloud rows), `mobileDiagnosticsEmpty`, `mobileDiagnosticsLoading`, `mobileDiagnosticsError` (with **Retry**), `mobileDiagnosticsBusy` (refresh in flight over rows), `mobileDiagnosticsNarrow`, `mobileDiagnosticsOverGoal`, `mobileDiagnosticsOverflow`.
+- [ ] **Step 2: Failing tests:** `testRowsFromPinnedJSON`, `testDurationFormatting`, `testEmptyWhenNoRows`, `testErrorThenRetryLoads`, `testOverGoalLineOnlyOnRelay`, `testOverGoalUsesTheTotalNotASumOfMedians` (read_applied p50 300 + applied_saved p50 300 but read_saved p50 450 → no line), `testOverflowLineSingularPlural`, `testEveryUIStringLivesInTheModel`.
 - [ ] **Step 3:** `make test-swift FILTER=MobileDiagnosticsModelTests` → FAIL.
 - [ ] **Step 4: Implement.**
 - [ ] **Step 5:** → PASS; desktop shots vs the mockup; `make lint-swift`.
@@ -370,7 +380,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 
 - [ ] **Step 1: Full gate:** `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`, `make relay-interop RELAY=../relay` → all PASS.
 - [ ] **Step 2: Manual, real Mac + local stand:** Settings → Mobile on a relay hub shows Connected, then "Relay unavailable for 1 min" after stopping the stand ≥ 60 s, back to Connected on restart; a scripted `hubtest.Phone` action burst fills Diagnostics; `hub diagnostics --json` agrees with the screen; an away-time work alert gives one `alert_pushes` row `push_off` and no retry in `watchtower.log` (ids and classes only).
-- [ ] **Step 3: Measurement:** 200 scripted actions from a `hubtest.Phone` over the local stand on the same Mac: the hub's relay p50 `read_applied` + `applied_saved` written into the PR. Over 500 ms → stop and file an owner ask (the phone end-to-end goal cannot be met with this hub share).
+- [ ] **Step 3: Measurement:** 200 scripted actions from a `hubtest.Phone` over the local stand on the same Mac: the hub's relay p50 of `read_saved` (with `read_applied` and `applied_saved` for context) written into the PR. Over 500 ms → stop and file an owner ask (the phone end-to-end goal cannot be met with this hub share).
 - [ ] **Step 4:** Security review of the phase diff: `secure.Push` the only `send_alert` input, no payload in the ledger, logs, status file or samples.
 
 ### Task 12: Pushes end to end with a real phone — **blocked on relay client spec Phase 4, relay staging with APNs, vouched-hub `send_alert`**
@@ -391,10 +401,13 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 3. **Clipping for the push only.** An alert that would push the envelope past the 4096-byte APNs limit has its body, then its title, shortened with "…" in the push; the `ask_alert` record in the data zone keeps the full capped text.
 4. **The three extra indicators:** "Notifications aren't set up on this iPhone. Open Watchtower on it once." (from `NOT_FOUND`), "Relay has no notifications configured." (from `not implemented`), and the Diagnostics line "This Mac's part alone is over the 500 ms goal."
 
-Decided by agent:
+Decided by agent (shown to the owner on the review, ask #866):
 
-5. **What a sample counts.** Only actions applied on first read; kept 7 days, at most 20 000 rows; no sample when no slice was saved within 60 s (RC §10 fixes only "content-free, on the device, p50/p90 per transport").
+5. **What a sample counts.** Only actions applied on first read; kept 7 days, at most 20 000 rows; no sample when no slice was saved within 60 s (RC §10 fixes only "content-free, on the device, p50/p90 per transport"). The 500 ms line reads the p50 of the per-action total `read_saved`.
 6. **Protocol status text.** §4.8's relay paragraph and §11 item 5 move from "Proposed, not built" to "hub half built (phase 4)"; no wire change.
+7. **Push queue of 64 per phone;** overflow settles `expired` (reason `overflow`), and the overflow count is shown in Diagnostics.
+
+Review rulings (ask #866): queued pushes re-signalled on a switch to CloudKit; owner-away re-checked before every send; the pending row written at enqueue; `accepted` = accepted by the relay ("Sent to relay"); the 500 ms line from the per-action total; the undelivered count labelled "on this Mac's side"; the quota text verbatim from the mockup.
 
 No inventory contract changes: no `docs/inventory/` entry covers `ask_alert`, pushes or the hub's diagnostics; PROJ-16/21 and FEED-* are untouched.
 
@@ -402,6 +415,7 @@ No inventory contract changes: no `docs/inventory/` entry covers `ask_alert`, pu
 
 - The local stand has no APNs: CI and local runs see only `push_off`. Real pushes are checked once, in Task 12.
 - A free phone linked to a Mac that runs over Relay gets no updates and no alerts until it subscribes or the Mac switches back (RC §8), as Desktop now says.
+- `accepted` is the relay's `Ok`, not a delivery: the relay keeps at most 4 alerts in flight per phone (`MAX_ALERTS_PER_PHONE`) and cancels the oldest beyond that, and APNs may still drop one; the hub cannot see either.
 - Push timing on the phone (APNs delivery) is not measured by the hub; it is part of the phone's end-to-end sample.
 - An alert sealed in an epoch the phone's alert material no longer holds (more than one rotation since) does not open; the NSE shows the generic notification, as on CloudKit today.
 
