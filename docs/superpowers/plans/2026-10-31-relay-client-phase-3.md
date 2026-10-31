@@ -85,10 +85,14 @@ Phase 3a = Tasks 1–16. Phase 3b = Tasks 17–21. Each 3b task names its blocke
 
   Task 9's `testAnEmptyOriginBuildsNoRelayObject` pins this.
 
-  The only production-visible changes are:
-  - v4 link codes;
-  - the "works over Relay only" refusal;
-  - the time-based epoch retention and `epoch_ack` toward a Go hub.
+  What a Release build still runs, all of it, so Owner approval 1 is informed:
+  - **v4 link codes:** a Go hub's code on a Mac (when one ships) links over iCloud; a headless host's relay-only code is refused with "works over Relay only" (the one new screen a production phone can reach);
+  - **epoch keys:** the time-based retention (R8), the `supersededAt` stamp in `mergeKeys`, the NSE's alert material carrying every retained epoch, and `epoch_ack` toward an ordered (Go) hub;
+  - **rule 14 reseal** on `resend_from` toward an ordered hub (R10);
+  - **following a switch on CloudKit:** `RelayFeed` hands `transport_switched` and `hub_on_relay` to the follower, and the hydrator reads the transport marker. A switch to CloudKit is followed; a switch to the relay or `hub_on_relay` lists unechoed actions as Not delivered (R32). Only a Go hub writes these records, and only after a paying phone switched it (Go hub Phase 3 Task 18), which no production phone can do before Phase 4: in a Release build this code runs and finds nothing;
+  - **registry migration `v3-relay`** (Task 9) and the new optional `LinkRecord` keys, written as nil/absent for every CloudKit link.
+
+  Nothing else changes for a Release phone.
 - **CloudKit unchanged.** Every existing Kit, Desktop and phone test keeps its assertions. Contract tests that change are named in Owner approval. `CloudSyncTransport` keeps its three requirements.
 - **Desktop.** No behaviour change. A `WatchtowerDesktop/Sources` file may change only where the compiler requires it for `LinkPayload`'s optional v4 fields (Task 4), and only to keep today's values. `make test-swift FILTER='MobileLink|SeamTypesTests'` stays green.
 - **Go.** Phase 3a adds test-only Go files: the `device_hello` case in `internal/hub/wire`'s fixture test (Task 4) and `internal/hub/interop_kit_test.go` under `-tags interop` (Task 13). It changes no Go hub production file. `go test ./internal/hub/...` stays green.
@@ -145,7 +149,7 @@ Phase 3a = Tasks 1–16. Phase 3b = Tasks 17–21. Each 3b task names its blocke
    - Promote comes only after the keys arrived.
    - A failure before promote closes the slot and removes the hub's keys and session.
    - The slot limit is checked before `open_pairing`.
-   - `FORBIDDEN` on the data zone in the first 2 min after promote is "not a reader yet" and is never a revocation.
+   - `FORBIDDEN` on the data zone before the first successful read is "not a reader yet" and is never a revocation; a failure after promote resumes or ends the link with the farewell and `remove_slot`, never half-linked.
    - Tasks 5 and 10.
 4. **Epoch keys.**
    - No data or alert key is dropped earlier than 7 days after a newer epoch arrived.
@@ -171,7 +175,7 @@ Phase 3a = Tasks 1–16. Phase 3b = Tasks 17–21. Each 3b task names its blocke
 - **Joins:**
   - Task 9 after 1, 2, 3, 4;
   - Task 10 after 5, 8, 9;
-  - Task 11 after 6, 7, 8, 9;
+  - Task 11 after 6, 7, 8, 10 (sequential with Task 10: both edit `LinkingViewModel.swift`, `AppRoot.swift` and `HubSession.swift`);
   - Task 12 after 11;
   - Task 13 after 4 and 5, beside 9–12;
   - Task 14 after 13;
@@ -179,7 +183,7 @@ Phase 3a = Tasks 1–16. Phase 3b = Tasks 17–21. Each 3b task names its blocke
   - Task 16, the gate, after 1–15.
 - **Blocked (3b):** Task 17 waits for E5 and may run any time after Task 3 once E5 has landed. Tasks 18–21 wait for E2–E4.
 
-Each parallel lane runs in its own worktree and branch, merged by the controller. Tasks 1 and 2 both touch `WatchtowerMobile/project.yml`, so Task 2 rebases on Task 1 before `make mobile-gen`. Tasks 3 and 5 both touch `HostedRelayTransport`, so they run in one lane.
+Each parallel lane runs in its own worktree and branch, merged by the controller. The phone registry gets exactly one new migration, `v3-relay`, in Task 9; Tasks 10 and 11 add none (their state lives in `LinkRecord`'s JSON and in the tables `v3-relay` creates). Tasks 1 and 2 both touch `WatchtowerMobile/project.yml`, so Task 2 rebases on Task 1 before `make mobile-gen`. Tasks 3 and 5 both touch `HostedRelayTransport`, so they run in one lane.
 
 ---
 
@@ -452,7 +456,7 @@ public struct HostedRelayPairing: Sendable {
 - `retained(now:)` keeps:
   - the newest epoch;
   - every epoch whose `supersededAt` is nil (written before this build: stamped `now` on first merge after upgrade);
-  - every epoch superseded `< 7 days` ago (`HubLinkKeys.previousEpochGrace = 7 * 86_400`, ask #843).
+  - every epoch superseded `< 7 days` ago (`HubLinkKeys.previousEpochGrace = 7 * 86_400`). The owner chose "7 days everywhere" over sim rule 14's 14 days in ask #843 (q2); the protocol spec's Decisions and Go hub Phase 3's Global Constraints record it, and the hub retires an epoch after 7 days, so a phone keeping 14 would hold keys nobody uses. Task 15 replaces "≤ 14 days" in spec §9.
 
   Then the newest `maxEpochs`. `AlertMaterial` carries the same epochs, so the NSE opens an alert sealed in any retained epoch.
 - `epoch_ack{epoch: newest}`:
@@ -503,7 +507,7 @@ public struct HostedRelayPairing: Sendable {
 ```swift
 public enum TransportKind: String, Codable, Sendable { case cloudKit = "cloudkit", relay }   // moved here from Task 4's file if it landed first
 public struct FollowerState: Equatable, Sendable {
-    public var route: TransportKind; public var newestEpoch: UInt32; public var canUseRelay: Bool
+    public var route: TransportKind; public var newestEpoch: UInt32; public var canUseRelay: RelayUse   // enum RelayUse { case yes, no, unknown }
     public var leftTransport: TransportKind?          // a mailbox still to drain (rule 15)
     public var relayUnreachableSince: Date?
 }
@@ -531,7 +535,7 @@ public enum TransportFollowerPolicy {
 ```
 
 - A `switched` or `marker` whose epoch is not newer than `newestEpoch` is only marked handled. A second copy of a control is a repeat.
-- A `switched` to `.relay` while `canUseRelay` is false acts as `hubOnRelay`: no route move, and unechoed actions are listed as undelivered.
+- A `switched` to `.relay` while `canUseRelay == .no` acts as `hubOnRelay`: no route move, and unechoed actions are listed as undelivered. With `.unknown` (and for `hubOnRelay` too) the policy returns no command and no `markHandled`: the record stays and is decided on a later pass.
 - A `switched` without an opened keybox (it failed to open) moves nothing and is left unhandled. It is retried on the next pass, and the marker or the new transport's keybox recovers it.
 - A `marker` moves the route without merging keys. The keybox is read on the new route's data zone.
 - `relayReachable(false)` past 60 s on route `.relay` yields `pollOtherMailbox(.cloudKit)` every 30 s until the relay is reachable again.
@@ -542,6 +546,7 @@ public enum TransportFollowerPolicy {
     - `testAnOlderOrEqualEpochIsOnlyHandled`;
     - `testASecondCopyIsARepeat`;
     - `testSwitchToRelayOnAFreePhoneActsAsHubOnRelay`;
+    - `testUnknownPayingDecidesNothingAndKeepsTheControl`;
     - `testHubOnRelayListsUnechoedAsUndelivered`;
     - `testAMarkerNewerThanTheEpochIsFollowed`;
     - `testAMarkerIsNeverFollowedBackwards`;
@@ -569,9 +574,15 @@ public enum TransportFollowerPolicy {
 - **Error with Retry.** Each error has the failure screen's **Scan again** where `offersScan`:
   1. "build-box works over Relay only" / "Relay isn't available on this iPhone". This is the one state a production phone can reach in Phase 3, from a headless host's code.
   2. "Couldn't reach Relay" / "Check your connection and scan again".
-  3. "Relay already has 3 Macs" / "Unlink one in Settings → Macs, then scan again". No Scan again.
-  4. "Too many Mac changes on Relay" / "Relay allows 5 replacements in 30 days. Try again later".
+  3. **Three Macs in slots.** This is the existing section 6 frame "Add Mac" ("Your subscription already has 3 Macs. Remove one to add this Mac over Relay." / the three Macs with **Remove** / "Up to 5 replacements in 30 days. Or add this Mac over iCloud."), built in Phase 3 rather than redrawn. Task 8 extends that frame with its states instead of adding a new one:
+     - a slot whose Mac is not linked on this iPhone reads "A Mac not on this iPhone";
+     - **Remove** busy ("Removing…", the other rows disabled), and its error with **Try Again** ("Couldn't remove the Mac. Try again.");
+     - after a removal the link goes on with the same code (no new scan while it is valid);
+     - **Link over iCloud** appears as a button under the footnote only when the code offers iCloud; without it the footnote reads "Up to 5 replacements in 30 days.";
+     - narrow (iPhone SE width, largest Dynamic Type).
+  4. **Replacement limit.** "Too many Mac changes on Relay" / "Try again later", plus **Link over iCloud** when the code offers iCloud (spec §8). The relay's `Error.message` is not shown: `proto/README.md` says it is "for logs, never for users"; the text is the meaning of `SLOT_REPLACEMENT_LIMIT`.
   5. The existing "This code expired" for an expired pairing slot. No new copy.
+- **Linked, not readable yet:** "Linked to build-box" with the existing **Continue**; the hub's Now shows the existing "Waiting for build-box" status until the first data-zone read succeeds (R5). No new copy.
 - **Not delivered, narrow scope:** one row with the new sub line "Work Mac runs over Relay now" (R32), next to Phase 1's rows.
 - **Empty:** none is new; the Not delivered list keeps Phase 1's empty pop-back.
 
@@ -597,7 +608,7 @@ A note under the section says:
   - `AppRoot.swift`.
 - Modify:
   - `WatchtowerMobile/Sources/App/LinkStore.swift`: `LinkRecord` relay fields and `route`;
-  - `WatchtowerMobile/Sources/App/Hubs/HubRegistry.swift`: `savePendingFarewell` on a relay route; registry migration `v3-relay-route` adding `pending_farewells.route_kind TEXT` and `relay_mac_device_id TEXT`, both nullable;
+  - `WatchtowerMobile/Sources/App/Hubs/HubRegistry.swift`: `savePendingFarewell` on a relay route; the one registry migration of this phase, `v3-relay`: `pending_farewells.route_kind TEXT` and `relay_mac_device_id TEXT` (both nullable), and the table `pending_slot_removals (mac_device_id TEXT PRIMARY KEY, since REAL NOT NULL)` that Task 10 uses (ids and a date, no content). The follower's state (Task 11: `transport`, `switchedBy`, `switchedAt`, `leftTransport`) lives in `LinkRecord`'s JSON (`link_json`), not in columns;
   - `WatchtowerMobile/Sources/Features/Onboarding/CloudKitLinkAccess.swift`: `.hostedRelay` join and leave are no-ops; the relay's access is the pairing slot, R19.
 - Test: Modify `WatchtowerMobile/Tests/TransportFactoryTests.swift`, `HubRegistryTests.swift`, `HubBootTests.swift`; Create `WatchtowerMobile/Tests/RelayAvailabilityTests.swift`; `make mobile-gen`
 
@@ -615,6 +626,7 @@ struct LinkRecord {   // additions; all optional, absent in links saved before
     var relayAuthPub: String?
     var hubTransports: [String]?
     var switchedBy: String?; var switchedAt: Date?     // recorded for Phase 4's row (R13)
+    var leftTransport: TransportKind?      // a mailbox still to drain (Task 12)
     var route: HubRoute { transport == .relay ? .hostedRelay(macDeviceID: relayMacDeviceID!) : today's CloudKit scope }  // a relay transport without a Mac id never saves (precondition in `LinkRecord.init` and decode)
 }
 ```
@@ -658,9 +670,10 @@ struct LinkRecord {   // additions; all optional, absent in links saved before
   - `helloRecord`: `relayDeviceID`;
   - `complete(…)`: promote, then the hub route;
   - `endLink`: a relay hub's farewell, then `remove_slot`.
-- Modify: `LinkSeams.swift` (`LinkHost.preparePairing(macDeviceID:slot:hubID:) async throws -> any CloudSyncTransport`), `LinkFailure.swift` (new cases), `ScanView.swift`/the failure view if layout needs it, `AppRoot.swift` (the `LinkHost` side)
+- Create: `WatchtowerMobile/Sources/Features/Onboarding/RelaySlotsModel.swift`, `RelaySlotsView.swift`
+- Modify: `LinkSeams.swift` (`LinkHost.preparePairing(macDeviceID:slot:hubID:) async throws -> any CloudSyncTransport`), `LinkStore.swift` (`PendingLink.promotedSlot: String?`), `LinkFailure.swift` (new cases), `ScanView.swift`/the failure view if layout needs it, `AppRoot.swift` (the `LinkHost` side)
 - Modify: `WatchtowerMobile/Sources/App/DemoSeed.swift` and the tour (demo-only failure states reached from the tour)
-- Test: Modify `WatchtowerMobile/Tests/LinkingViewModelTests.swift`, `ScreenshotTourTests.swift`, `OrangeToneTests.swift`; Create `WatchtowerMobile/Tests/LinkRoutePolicyTests.swift`, `WatchtowerMobile/Tests/RelayLinkingTests.swift` (on `FakeHostedRelay` and a test hub that answers in the pair zone); `make mobile-gen`
+- Test: Modify `WatchtowerMobile/Tests/LinkingViewModelTests.swift`, `ScreenshotTourTests.swift`, `OrangeToneTests.swift`; Create `WatchtowerMobile/Tests/LinkRoutePolicyTests.swift`, `WatchtowerMobile/Tests/RelaySlotsModelTests.swift`, `WatchtowerMobile/Tests/RelayLinkingTests.swift` (on `FakeHostedRelay` and a test hub that answers in the pair zone); `make mobile-gen`
 
 **Interfaces:**
 ```swift
@@ -676,11 +689,9 @@ enum LinkRoutePolicy {
 - **v3, or v4 with `transport` absent or `cloudkit`:** `.cloudKit`, as today. The relay identity from a v4 code is kept on the `LinkRecord` for Phase 3b's upgrade.
 - **v4 with `transport == relay`:**
   - relay available and paying: `.relay`;
-  - else, if the code offers CloudKit: `.cloudKit`. The phone then gets `hub_on_relay` (Task 11);
-  - else (relay-only): `.refuse`, with this mapping:
-    - `.notConfigured`, `.unsupportedDevice` or not paying → `.needsRelay(macName)`;
-    - `.updateRequired` → `.updateApp`;
-    - `.unreachable` or `.attestationBackoff` → `.relayUnreachable`.
+  - relay available and the paying check failed (`accountState()` unreachable, attestation backoff): `.refuse(.relayUnreachable)`, whatever else the code offers. An unknown answer is never read as "not paying", so a paying phone is never sent to iCloud for a hub that then answers `hub_on_relay`;
+  - relay `.off`, or a definite `paying == false`: if the code offers CloudKit, `.cloudKit` (the phone then gets `hub_on_relay`, Task 11); else (relay-only) `.refuse(.needsRelay(macName))`;
+  - `.updateRequired` from the attestor: `.refuse(.updateApp)`.
 
 **The relay path in `connect`:**
 
@@ -691,11 +702,13 @@ enum LinkRoutePolicy {
 5. **Wait.** `waitForGrant` is unchanged: it reads the keybox in the pair zone, and the code check and SAS stay as today.
 6. **Keys arrive.** In order:
    - `vouch` (Phase 3a: `.notAvailable`, nothing sent);
-   - `promote(slot:)`. A refusal is the failure, and the slot is closed;
+   - `promote(slot:)`. A refusal is a failure before promote (point 8);
+   - right after a successful promote, `store.pending` records `promotedSlot` and the relay route, before anything else runs. From here the link is committed on the relay's side;
    - `host.prepare(route: .hostedRelay(mac), fresh: false)` on the same store;
-   - `linked(…)` with `transport = .relay`.
-7. **Grace.** For 2 min after promote, `FORBIDDEN` on `data/<mac>` is retried by the next pull and is never treated as removal (R5).
+   - `linked(…)` with `transport = .relay`, which clears `store.pending`.
+7. **Not a reader yet (R5).** Promote puts the hub in the phone's slots, and the Go hub adds the phone to `set_hub_readers` on its next readers sync; the relay sends neither side an event. Until the first data-zone read succeeds, a `FORBIDDEN` on `data/<mac>` is retried by the next pull (the transport's normal backoff) and changes nothing. Phase 3 never infers a removal from `FORBIDDEN`: a removal reaches the phone as today, through the hub's `revoked` keybox (`removedByMac`); a slot lost on the relay's side (`SLOT_REMOVED`, entitlement) is Phase 4's. Now shows the existing "Waiting for <Mac>" status meanwhile. There is no time window to tune.
 8. **Failure before promote.** `close(slot:)`, then today's `fail(…)`: the hub's keys, session and directory are removed.
+9. **Failure after promote** (`prepare` or `linked` throws, or the app is killed). The pending link with `promotedSlot` is resumed by `resumePendingLink` at the next launch and at the next scan, which retries `prepare` and `linked` with the keys already saved; a resume never writes a second hello and never promotes again. If it still fails after the code's lifetime (`deadline`), the phone ends the link the relay way so nothing is left half-linked: the farewell (the `unlinked` device record, sealed with the keys it holds) into the mailbox, then `remove_slot` (R14), then today's `fail(.local(reason))`. A `remove_slot` that fails is kept in `pending_slot_removals` and retried at launch; it is never dropped.
 
 **`LinkFailure` additions.** The copy lives in the model, from the Task 8 mockup:
 
@@ -703,16 +716,23 @@ enum LinkRoutePolicy {
 |---|---|---|---|
 | `.needsRelay(macName:)` | "\(macName) works over Relay only" | "Relay isn't available on this iPhone" | true |
 | `.relayUnreachable` | "Couldn't reach Relay" | "Check your connection and scan again" | true |
-| `.relaySlotsFull` | "Relay already has \(HostedRelayLimits.maxMacSlots) Macs" | "Unlink one in Settings → Macs, then scan again" | false |
-| `.relayReplacementLimit` | "Too many Mac changes on Relay" | "Relay allows 5 replacements in 30 days. Try again later" | true |
+| `.relayReplacementLimit(offersICloud:)` | "Too many Mac changes on Relay" | "Try again later" | true |
 
-`PAIRING_EXPIRED` maps to `.expired`.
+`.relayReplacementLimit` shows **Link over iCloud** when `offersICloud` (spec §8: "adding the Mac over iCloud stays possible"); the relay's `Error.message` is never shown (`proto/README.md`: "for logs, never for users"). `PAIRING_EXPIRED` maps to `.expired`.
+
+**Three Macs in slots (spec §8, mockup section 6).** Not a failure screen: `HostedRelayPairing.open` refuses `.slotsFull(macs:)` before any hello, and the phone shows the section 6 frame `RelaySlotsView` with `RelaySlotsModel`:
+
+- title "Your subscription already has \(HostedRelayLimits.maxMacSlots) Macs. Remove one to add this Mac over Relay.";
+- one row per Mac in slots: its name from the registry (`relayMacDeviceID` match), else "A Mac not on this iPhone"; each with **Remove**;
+- footnote "Up to 5 replacements in 30 days." plus " Or add this Mac over iCloud." and the **Link over iCloud** button when the code offers iCloud.
+
+**Remove** on a Mac linked on this iPhone runs that Mac's whole unlink (R14: farewell, then `remove_slot`), after the existing unlink confirmation; on a Mac not on this iPhone it calls `remove_slot` only. While it runs the row shows "Removing…" and the others are disabled; a failure shows "Couldn't remove the Mac. Try again." with **Try Again**. After a removal the link goes on with the same code while it is valid (else `.expired`). **Link over iCloud** (here and on the replacement-limit screen) runs today's CloudKit path with the same code. `SLOT_LIMIT` on promote (a slot taken meanwhile) shows the same screen.
 
 **Unlink of a relay hub (R14):**
 
 1. The farewell (the `unlinked` device record) goes into the mailbox, as today through the hub's transport.
 2. Once it has left the queue, or was kept per #143, the phone calls `remove_slot`. Phase 2's `UNAVAILABLE` retry runs within 30 s.
-3. A failure is logged and retried at the next launch from a kept `pending_slot_removals` registry row (migration `v4-slot-removals`; a Mac id and a date, no content).
+3. A failure is logged and retried at the next launch from a kept `pending_slot_removals` row (created by Task 9's `v3-relay`; a Mac id and a date, no content). The row goes only when the relay answers `Ok` or `NOT_FOUND`.
 
 - [ ] **Step 1: Failing tests:**
   - `LinkRoutePolicyTests` (table-driven, every row above):
@@ -727,16 +747,20 @@ enum LinkRoutePolicy {
     - `testSlotsFullRefusesBeforeAnyHello`;
     - `testAnExpiredSlotClosesAndAsksForANewCode`;
     - `testAPromoteRefusalClosesTheSlotAndRemovesTheKeys`;
-    - `testForbiddenRightAfterPromoteIsNotARemoval`;
+    - `testForbiddenBeforeTheFirstReadIsRetriedAndNeverARemoval`;
+    - `testAFailureAfterPromoteResumesWithoutASecondHelloOrPromote`;
+    - `testAFailureAfterPromotePastTheDeadlineSendsTheFarewellAndRemovesTheSlot`;
+    - `testAnUnknownPayingAnswerIsRelayUnreachableNeverICloud`;
+    - `testSlotsFullShowsTheMacsWithRemove`, `testRemovingALinkedMacUnlinksItThenLinksWithTheSameCode`, `testRemovingAnUnknownSlotCallsRemoveSlotOnly`, `testLinkOverICloudOnlyWhenTheCodeOffersIt`;
     - `testUnlinkingARelayHubSendsTheFarewellThenRemovesTheSlot`;
     - `testASlotRemovalThatFailedIsRetriedAtLaunch`;
     - `testARelayLinkNeedsNoICloudAccount`.
-  - `LinkingViewModelTests`: every existing test unchanged, plus `testFailureCopyMatchesTheMockup` for the four new cases.
+  - `LinkingViewModelTests`: every existing test unchanged, plus `testFailureCopyMatchesTheMockup` for the three new cases and `RelaySlotsModelTests` (create) for the slots screen's copy and states.
   - `OrangeToneTests`: the failure view's `toneUses`.
-  - `ScreenshotTourTests`: `link-needs-relay`, `link-relay-unreachable`, `link-relay-slots-full`, `link-relay-replacement-limit`, each in light, dark and narrow.
+  - `ScreenshotTourTests`: `link-needs-relay`, `link-relay-unreachable`, `link-relay-replacement-limit`, `relay-slots-full`, `relay-slots-removing`, `relay-slots-remove-error`, `relay-slots-no-icloud`, each in light, dark and narrow.
 - [ ] **Step 2: Run, expect failure:** `make mobile-gen`, then `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='LinkRoutePolicyTests|RelayLinkingTests|LinkingViewModelTests'`.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run:** the Step 2 filter plus `AppRootRelinkTests|WelcomeTests|ScreenshotTourTests|OrangeToneTests|HubRegistryTests`. All pass. Then run `make mobile-shots SIM='iPhone 17 Pro'` and compare the four shots (light, dark, narrow) with Task 8's frames; record any difference in the commit body.
+- [ ] **Step 4: Run:** the Step 2 filter plus `AppRootRelinkTests|WelcomeTests|ScreenshotTourTests|OrangeToneTests|HubRegistryTests`. All pass. Then run `make mobile-shots SIM='iPhone 17 Pro'` and compare the seven shots (light, dark, narrow) with Task 8's frames and section 6's "Add Mac" frame; record any difference in the commit body.
 - [ ] **Step 5: Lint and guard check.**
 - [ ] **Step 6: Commit:** `feat(mobile): link a hub over a Relay pairing slot; the new link failures (#1242)`
 
@@ -766,8 +790,8 @@ enum LinkRoutePolicy {
 - Test: Create `WatchtowerMobile/Tests/TransportFollowerWiringTests.swift`, `WatchtowerKit/Tests/WatchtowerSyncTests/TransportMarkerTests.swift`; extend `RelayFeedTests`, `NotDeliveredModelTests`, `ScreenshotTourTests`; `make mobile-gen`
 
 **Interfaces:**
-- `TransportFollower(hubID:, policy state from the row, outbox:, host:)`, with `func handle(_ input: FollowerInput) async -> Bool`. It returns `handled`. Its state persists in the registry row: route, `switchedBy`, `switchedAt`, and `left_transport` (a registry column added by migration `v5-follower`, a `TransportKind` raw value or NULL).
-- `canUseRelay` is `RelayAvailability == .available` and the account is paying. Paying is read from `HostedRelayPairing.accountState()` at the switch, and is false when the call fails.
+- `TransportFollower(hubID:, policy state from the row, outbox:, host:)`, with `func handle(_ input: FollowerInput) async -> Bool`. It returns `handled`. Its state persists in the registry row's `LinkRecord` JSON: `transport`, `switchedBy`, `switchedAt`, `leftTransport` (Task 9; no new migration).
+- `canUseRelay` is `RelayAvailability == .available` and the account is paying, read from `HostedRelayPairing.accountState()` at the switch. It is a three-way value: `.yes`, `.no` (relay `.off`, or the relay answered not paying), `.unknown` (the call failed: unreachable, attestation backoff). On `.unknown` the follower does nothing: the control is not marked handled and stays in the mailbox, the phone stays on its route, no action moves to Not delivered, and the next pass (the feed's normal cadence, at most every 30 s while active) asks again. Only `.no` acts as `hub_on_relay`.
 - On CloudKit the phone reads controls sealed `relayToPhone` with its own relay key. Another phone's controls in the shared zone fail to open and are left alone (contract point 2).
 
 - [ ] **Step 1: Failing tests:**
@@ -779,6 +803,7 @@ enum LinkRoutePolicy {
     - `testAnOlderMarkerIsIgnored`;
     - `testHubOnRelayListsUnechoedAsNotDelivered`;
     - `testSwitchedToRelayOnAFreePhoneActsAsHubOnRelay`;
+    - `testAFailedAccountStateKeepsThePhoneOnItsRouteAndRetries`;
     - `testARouteChangeSweepsSlicesTheNewTransportDidNotReturn`;
     - `testTheOutboxAndKeysSurviveARouteChange`;
     - `testALegacyPathPhoneFollowsToo` (a hub without `ordered_actions`);
@@ -811,7 +836,7 @@ enum LinkRoutePolicy {
 **Interfaces:**
 - `SideMailboxReader` exists only while the hub has both routes. A relay link from a code without CloudKit has no CloudKit route, so it never polls.
 - On route `.relay` with `relayUnreachableSince` older than 60 s, it pulls the CloudKit `RelayZone` every 30 s. It reads controls only, through the same `TransportFollower`, while the app is active.
-- After a route move with `left_transport` set, it drains that mailbox once the old transport is reachable, then clears `left_transport`. The relay mailbox of a lapsed or forbidden account can still be read and deleted (sim rule 16): a `FORBIDDEN`/`ENTITLEMENT_INACTIVE` on that delete is logged and stops the drain until the next launch.
+- After a route move with `leftTransport` set, it drains that mailbox once the old transport is reachable, then clears `leftTransport`. The relay mailbox of a lapsed or forbidden account can still be read and deleted (sim rule 16): a `FORBIDDEN`/`ENTITLEMENT_INACTIVE` on that delete is logged and stops the drain until the next launch.
 - It builds its transport through `TransportFactory` on that route's own store, never a second relay socket (it attaches to the shared session).
 
 - [ ] **Step 1: Failing tests:**
@@ -916,18 +941,15 @@ enum LinkRoutePolicy {
   - `grep -rn 'WatchtowerHostedRelay\|SwiftProtobuf' WatchtowerDesktop/Package.swift` prints nothing;
   - `grep -rn 'workers.dev\|relay-staging' -- . ':!*.lock'` finds no URL in tracked files outside the relay docs' placeholders.
 - [ ] **Step 7: Interop:** `make relay-interop-kit RELAY=<clean relay worktree at the VERSION commit>` and `make relay-interop-kit-hub RELAY=…`, both `exit=0`. These run locally; record them in the PR description.
-- [ ] **Step 8: Shots:** `make mobile-shots SIM='iPhone 17 Pro'`. Compare the five Phase 3 shots with the Task 8 mockup in light, dark and narrow; list the differences in the PR description.
-- [ ] **Step 9: Manual device check** (spec §11):
-  1. A Debug phone with a stand origin in the gitignored `Signing.xcconfig` (the Mac's LAN IP and a local ATS exception), and a Go hub in test mode on the same stand. The phone links over a pairing slot, answers an ask, sends two quick session lines that arrive in order, and unlinks; the slot is gone (`/dev/account`).
-  2. The same phone with the origin removed: the build makes no relay call (Console: no `HostedRelay` lines), and a CloudKit Mac links as before.
-  3. A Release-config build: the entitlement says `production` (`codesign -d --entitlements -` on the archive), and the origin is empty.
+- [ ] **Step 8: Shots:** `make mobile-shots SIM='iPhone 17 Pro'`. Compare the Phase 3 shots (Tasks 10 and 11) with the Task 8 mockup and section 6 in light, dark and narrow; list the differences in the PR description.
+- [ ] **Step 9: No manual device check.** The owner ruled that relay-client phases merge without a check on a live phone (ask #884); spec §11's "one manual device check per phase" is read with that ruling. What such a check would have shown is covered automatically: the link, ordered actions and unlink by Step 7's stand interop against the real Go hub; "no relay object without an origin" by Task 9's `testAnEmptyOriginBuildsNoRelayObject`; the Release origin and entitlement by Task 2's `testReleaseCarriesNoOrigin` and `testEntitlementsNameTheAppAttestEnvironmentPerConfiguration`. A real App Attest attestation cannot run in CI or on the stand (attestation off); it is first exercised on staging, a v1 limit in the feature note.
 - [ ] **Step 10: Commit:** gate fixes, if any: `fix: relay client Phase 3a gate (#1241, #1242, #1247)`
 
 ---
 
 ## Phase 3b — blocked tasks
 
-Each of these starts only when its dependency has landed. Its plan text is fixed now, so the owner approves it with this plan; the names of relay ops and codes are copied from the relay commit that ships them.
+**Draft, not approved with this plan.** Each task is an outline of what the dependency unlocks, so the 3a work leaves room for it. Op, field and error names are working names (relay ask #805 is not started). When a task's dependency lands, it is re-planned against the shipped relay commit and the Go hub code, and that plan goes to the owner for approval on its own. Task 17 is the exception: its dependency (relay PR #3) is written, so its text is final and its approval is item 10 below.
 
 ### Task 17: Move the proto pin to relay PR #3 and set `Changes.resync` (after relay PR #3 merges)
 
@@ -1015,11 +1037,7 @@ This also closes Go hub Phase 3 Task 27's interop step for the Kit phone.
 
 1. Rerun Task 16's suites.
 2. Run `make relay-interop-kit-hub` with vouching.
-3. **Device check on a relay with attestation on** (staging, when E7's staging is up; the owner's account entitled by the operator, never from the app). A TestFlight-config phone with the development App Attest environment:
-   - registers with a real attestation;
-   - links a vouched headless hub, or a Go-hub Mac;
-   - switches it to the relay and back;
-   - shows the switch line in the registry (the screen is Phase 4).
+3. No manual device check (ask #884). A run against staging with attestation on is done only if the owner asks for one; otherwise real attestation stays a v1 limit until Phase 4.
 4. Update `docs/features/relay-client.md`'s v1 limits.
 
 **Commit:** `fix: relay client Phase 3b gate (#1241, #1242, #1247)`
@@ -1050,8 +1068,8 @@ Decisions taken where the spec is silent, outdated, or contradicts the code or t
     A relay identity in a CloudKit code is kept for Phase 3b's upgrade.
   - Cost if wrong: one function (`LinkRoutePolicy`).
 - **R5. Promote comes only after the keys; slots are checked first.**
-  - Why: spec §8 orders vouch and promote after the owner's confirmation. `promote_pairing` can still be refused after the Mac linked the phone (`PAIRING_EXPIRED` past 600 s, `SLOT_REPLACEMENT_LIMIT`). The slot count is checked before `open_pairing` from `get_account_state`, so the common refusal never reaches the Mac. A data-zone `FORBIDDEN` within 2 min after promote is "not a reader yet": the Go hub syncs readers after a link with no relay event, as `interop_test.go`'s `eventually` shows.
-  - Cost if wrong: a refused promote leaves a linked phone on the Mac that never reads. The owner removes it with **Remove…** (v1 limit).
+  - Why: spec §8 orders vouch and promote after the owner's confirmation. `promote_pairing` can still be refused after the Mac linked the phone (`PAIRING_EXPIRED` past 600 s, `SLOT_REPLACEMENT_LIMIT`). The slot count is checked before `open_pairing` from `get_account_state`, so the common refusal never reaches the Mac. Until the first data-zone read succeeds, `FORBIDDEN` is "not a reader yet" and is retried on the transport's backoff with no time window: the Go hub syncs readers after a link with no relay event, as `interop_test.go`'s `eventually` shows. Phase 3 never infers a removal from `FORBIDDEN` at all (removals come through the hub's `revoked` keybox, as today). A failure after a successful promote resumes from `PendingLink.promotedSlot`; past the code's deadline it ends the link with the farewell and `remove_slot` (R14), so nothing is left half-linked.
+  - Cost if wrong: a refused promote leaves a linked phone on the Mac that never reads. The owner removes it with **Remove…** (v1 limit). A Go hub that is slow to sync readers keeps the phone on "Waiting for <Mac>" longer, never unlinked.
 - **R6. The Kit reads v3 and v4 and still issues v3.**
   - Why: the Swift hub issues v3 until the Go hub replaces it (Go hub Phase 3 Task 24). `container` and `owner_user` are optional only in v4. A v4 code's `relay_device_id` must equal the base32 SHA-256 of its `relay_auth_pub`: the phone vouches for that key and opens a slot for that id, and a mismatch would admit or address the wrong device.
   - Cost if wrong: a Go hub with a mismatched pair cannot be linked. The fixture now pins a coherent pair, and the Go hub derives both from one key (`HeadlessHost`).
@@ -1103,13 +1121,13 @@ Decisions taken where the spec is silent, outdated, or contradicts the code or t
 
 These contract and behaviour changes are not approved yet. Approving this plan's review ask approves them; a refused item changes what its line names.
 
-1. **Split and dark ship (R1, External dependencies).** Phase 3 splits into 3a, shippable now, and 3b, blocked on relay ask #805 and Go hub Phase 3. 3a ships with no Release relay origin, against spec §4's "default the production origin", until §12 p. 5. Refused → Phase 3 waits for E2 and E4 as one phase, and the origin needs a value.
-2. **The link route rule (R4).** A v4 code links over the hub's current transport. A free phone links a relay Mac over iCloud and then gets `hub_on_relay`; a relay-only hub is refused with "<hub> works over Relay only / Relay isn't available on this iPhone". This copy reaches production phones from headless-host codes. Refused → `LinkRoutePolicy` and the Task 8 copy change.
-3. **Pairing order and its residual (R5).** The slot pre-check comes before `open_pairing`, and promote only after the keys. A promote refused after the Mac confirmed leaves a linked phone on the Mac for the owner to remove. Refused → promote before the hello (against spec §8's order) or a farewell path through the hub; both are new contracts.
+1. **Split and dark ship (R1, External dependencies).** Phase 3 splits into 3a, shippable now, and 3b, blocked on relay ask #805 and Go hub Phase 3. 3a ships with no Release relay origin, against spec §4's "default the production origin", until §12 p. 5. What still runs in a Release build is listed in full under Global Constraints, "Dark ship" (v4 codes, epoch retention and `epoch_ack`, the rule 14 reseal, the follower on CloudKit that finds nothing until a Go hub can switch, one registry migration). The deviation from spec §4 is the author's: no production origin exists (E7), and the relay refuses pairing to a phone that cannot pay before Phase 4. Refused → Phase 3 waits for E2 and E4 as one phase, and the origin needs a value that does not exist yet.
+2. **The link route rule (R4).** A v4 code links over the hub's current transport. A free phone links a relay Mac over iCloud and then gets `hub_on_relay`; a relay-only hub is refused with "<hub> works over Relay only / Relay isn't available on this iPhone". This copy reaches production phones from headless-host codes. Also: a failed paying check refuses with "Couldn't reach Relay" instead of falling back to iCloud; three Macs in slots shows mockup section 6's "Add Mac" screen, with **Remove** (unlinks a Mac on this iPhone, or only frees an unknown slot) and **Link over iCloud** when the code offers it; the replacement limit shows its own text plus **Link over iCloud**, not the relay's message (`proto/README.md`: messages are for logs). Refused → `LinkRoutePolicy`, the slots screen and the Task 8 copy change.
+3. **Pairing order and its residual (R5).** The slot pre-check comes before `open_pairing`, and promote only after the keys. A promote refused after the Mac confirmed leaves a linked phone on the Mac for the owner to remove. After a successful promote the link resumes, and past the code's deadline ends with the farewell and `remove_slot`. `FORBIDDEN` is never read as a removal in Phase 3. Refused → promote before the hello (against spec §8's order) or a farewell path through the hub; both are new contracts.
 4. **Epoch keys (R8–R10).**
    - Retention: 7 days after a newer epoch arrived, at most 8 epochs (`HubLinkKeys.maxEpochs` 2 → 8); the NSE's alert material follows.
    - `epoch_ack` to ordered hubs.
-   - On `resend_from`, rows sealed in an older epoch are resealed with the same `action_seq`. This amends Phase 1's "resends are byte for byte" for those rows only.
+   - On `resend_from`, rows sealed in an older epoch are resealed with the same `action_seq`. This is sim rule 14 as written ("the phone reseals every outbox action from that seq that is older than its current epoch, with the same seq"), which spec §9 adopts ("implemented exactly as sim rules 8–16") and the protocol spec's Decisions confirm (ask #843). What needs approval is only that it amends Phase 1's "resends are byte for byte" for those rows; rule 13's switch resend stays byte for byte.
 
    Refused → Task 6 changes; a count-only cap cannot promise 7 days.
 5. **Shared fixture and contract tests (R6, R7).**
@@ -1127,10 +1145,10 @@ These contract and behaviour changes are not approved yet. Approving this plan's
    - No switch screen comes until Phase 4. Phase 1 Ruling 9 (switch controls left in the mailbox) ends.
 
    Refused → Tasks 11–12 change.
-7. **Unlink frees the relay slot (R14).** Unlinking a relay hub calls `remove_slot` after the farewell; a later add counts toward the relay's 5 replacements per 30 days. Refused → slots stay until Phase 4's slot screen.
+7. **Unlink frees the relay slot (R14).** Unlinking a relay hub calls `remove_slot` after the farewell; a later add of another Mac counts toward the relay's 5 replacements per 30 days (the relay's rule, Worker `slots.ts`). The guide's unlink line says so when the relay ships to users (Phase 4). Refused → slots stay until Phase 4's slot screen, and three linked-then-unlinked Macs fill the subscription.
 8. **Relay links without iCloud (R19).** A relay-only link needs no Apple ID, and an iCloud account change does not end relay links. Refused → step 2 stays for every link.
 9. **Cross-plan interop ownership (R15).** This plan's Task 13 adds `internal/hub/interop_kit_test.go` (Go, test only, `-tags interop`) and `scripts/relay-interop-kit-hub.sh`. It takes over the non-vouch half of Go hub Phase 2 Task 12, whose vouch half runs on this script. Refused → Task 13 shrinks to a Kit test against the Go phone emulator's expectations, and Go hub Phase 2 Task 12 keeps the whole interop.
-10. **Phase 3b's plan text (Tasks 17–21)** as written, including Task 19's model-only upgrade (vouch, `add_slot`, `transport_switch`) with its trigger in Phase 4. Refused → the blocked tasks are re-planned when their dependencies land.
+10. **Task 17 (proto pin to relay PR #3, `Changes.resync`)** runs as soon as PR #3 merges, without a new plan review. Refused → Task 17 is re-planned after the merge. Tasks 18–21 are drafts and are not approved here; each is re-planned and approved when its dependency lands.
 
 Already approved, listed for reference only:
 
