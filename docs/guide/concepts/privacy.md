@@ -140,6 +140,17 @@ Inbox items made from a deleted message or mail stay, with their text removed. I
 
 A company's configuration profile can restrict sources, iPhone sync, Quick Connections, AI providers and claude.ai tools. Such controls show **Managed by your organization**; nothing is deleted because of a rule. See [Managed by your organization](managed-by-your-organization.md).
 
+## On a Linux host or a Mac without the app
+<!-- learn: none -->
+
+A [headless host](../features/headless-host.md) keeps the same promise: everything it sends your phone is end-to-end encrypted, and the relay carries only ciphertext. A few things differ from the Mac app.
+
+- **The host's key is a file.** With no Keychain or Secure Enclave, the hub's identity is `~/.local/share/watchtower/.hub/identity.key`, readable only by your user (the folder is 0700, the file 0600). Anyone who can read your files as you can read it, so keep the box's disk and account to yourself.
+- **The session host's socket** is in `/run/user/<uid>` on Linux (else `~/.local/share/watchtower/.run`), never the shared `/tmp`, and only your user can reach it.
+- **No audit line in a system log.** Off macOS the content-free read line described above is not written. The read limits still hold.
+- **No organization policy.** A configuration profile exists only on macOS, so nothing is managed on a Linux host.
+- **The service holds no secret.** The systemd unit or LaunchAgent sets only `PATH`. The service's own output carries ids, counts and error classes, as Watchtower's logs do.
+
 ## Related
 
 - [Sources and accounts](sources-and-accounts.md)

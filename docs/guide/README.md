@@ -108,6 +108,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [iPhone: permission prompts and interrupts](features/iphone-agent-prompts.md) — allow or deny a Claude Code permission prompt and interrupt a working agent from your phone
 - [iPhone: the workchat](features/iphone-workbench.md) — follow a session's chat, answer what waits on you and write to the agent from your phone, even while it works
 - [iPhone: work alerts](features/iphone-alerts.md) — alerts when work stops while you are away from your Mac; tap one to open its ask or session
+- [Headless host](features/headless-host.md) — run your workbenches on a Linux box or a Mac without the app, as a service you drive from your iPhone over the relay
 - [Menu bar and updates](features/menu-bar-and-updates.md) — what the menu shows, what closing and quitting do, and how updates arrive
 - [Claude Code integration](features/claude-code-integration.md) — let your coding agent query Watchtower through a read-only MCP server and three skills
 

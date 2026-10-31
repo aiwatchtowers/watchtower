@@ -266,6 +266,7 @@ Apps & integration
 - iPhone: permission prompts and interrupts (features/iphone-agent-prompts.md)
 - iPhone: the workchat (features/iphone-workbench.md)
 - iPhone: work alerts (features/iphone-alerts.md)
+- Headless host (features/headless-host.md)
 - Menu bar and updates (features/menu-bar-and-updates.md)
 - Claude Code integration (features/claude-code-integration.md)
 
