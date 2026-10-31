@@ -96,7 +96,7 @@ func TestHubStatusCarriesRecordings(t *testing.T) {
 
 func TestDesktopHeartbeatRefusedOffDarwin(t *testing.T) {
 	dir := hubTestDir(t)
-	hubGOOS = "linux"
+	hubOnGOOS(t, "linux")
 	_, err := runHub(t, "desktop", "heartbeat")
 	require.Error(t, err)
 	assert.Equal(t, "there is no Watchtower app on Linux", err.Error())

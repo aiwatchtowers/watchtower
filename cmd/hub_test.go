@@ -40,6 +40,7 @@ func hubShortDir(t *testing.T) string {
 	for _, m := range agentEnvMarkers {
 		t.Setenv(m, "")
 	}
+	hubOnGOOS(t, "darwin")
 	return dir
 }
 
