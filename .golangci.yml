@@ -122,6 +122,9 @@ linters:
     # upstream wrote them); only our wt_*.go files there are linted.
     paths:
       - internal/sqlcipher/(backup|callback|convert|doc|error|sqlite3)[^/]*\.go$
+      # The hosted relay's Go client and proto, copied verbatim by
+      # `make relay-go` (pinned in internal/hub/transport/relay/VERSION).
+      - internal/hub/transport/relay/(client|relayv1)/
     rules:
       # MCP handlers deliberately return tool-level errors (errResult content
       # with IsError=true) and a nil Go error: a non-nil error is a

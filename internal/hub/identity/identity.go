@@ -80,8 +80,8 @@ func (i *Identity) complete() bool {
 }
 
 // RelayDeviceID is the hosted relay's device id for a relay_auth public key:
-// unpadded lowercase base32 of SHA-256(pub) (relay auth.DeviceID; the
-// vendored client's DeviceID replaces this in Task 8).
+// unpadded lowercase base32 of SHA-256(pub) (relay auth.DeviceID); kept equal
+// to the copied relay client's DeviceID by transport/relay's tests.
 func RelayDeviceID(pub ed25519.PublicKey) string {
 	sum := sha256.Sum256(pub)
 	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))

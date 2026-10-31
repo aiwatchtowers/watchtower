@@ -42,6 +42,7 @@ require (
 	github.com/alexaandru/go-sitter-forest/zig v1.9.4
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
+	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/dlclark/regexp2/v2 v2.5.2
 	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9
@@ -71,6 +72,7 @@ require (
 	golang.org/x/term v0.47.0
 	golang.org/x/text v0.43.0
 	golang.org/x/time v0.15.0
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 )
 

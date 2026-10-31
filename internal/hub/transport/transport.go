@@ -61,7 +61,10 @@ type SaveItem struct {
 
 // Stored is a record as the transport holds it. In a Save outcome's Conflict
 // and in a Changes batch Envelope carries the bytes; AttachmentID is the
-// record's uploaded asset, or "".
+// record's uploaded asset, or "". ServerAt is the transport's time of the
+// last write where it has one; on the hosted relay, which keeps none, it is
+// the writer's client_modified_at_ms, so a writer's skewed clock skews it —
+// never order records by it across writers.
 type Stored struct {
 	Zone, Name   string
 	Envelope     []byte
@@ -91,12 +94,17 @@ type DeleteItem struct {
 
 // Batch is one page of a zone's changes after a cursor: the live records that
 // changed and the names deleted, in change order. NewSeq is the cursor to pass
-// next; More says another page follows from it.
+// next; More says another page follows from it. Reset marks the first page of
+// a read from cursor 0 (a first pull, or the resync after ErrTokenExpired):
+// the pages up to More == false list the zone's whole live set, and tombstones
+// older than the expired cursor may be gone, so a consumer that mirrors the
+// zone drops what it holds for the zone and does not get back.
 type Batch struct {
 	Changed []Stored
 	Deleted []string
 	NewSeq  uint64
 	More    bool
+	Reset   bool
 }
 
 // ControlKind is a server control event (relay proto README, Control events).
@@ -139,11 +147,15 @@ type Transport interface {
 	Delete(ctx context.Context, zone string, items []DeleteItem) ([]Outcome, error)
 	// Changes returns one page of zone's changes after since (0 = from the
 	// start). ErrTokenExpired means since is no longer (or was never) valid:
-	// the caller resets the zone's cursor to 0 and pulls again.
+	// the caller resets the zone's cursor to 0 and pulls again. A consumer
+	// keeps one cursor per zone; where a transport stores zone cursors itself
+	// (the hosted relay's Pull) use that, not Changes, for the zone.
 	Changes(ctx context.Context, zone string, since uint64) (Batch, error)
 	// Events is the transport's live event stream; the same channel on
 	// every call.
 	Events() <-chan Event
-	// Download writes the attachment's (sealed) bytes to dst.
-	Download(ctx context.Context, attachmentID, dst string) error
+	// Download writes the (sealed) bytes of the attachment of a record in
+	// zone to dst, a hub-owned path (written 0600, replaced whole). The
+	// caller names the zone from the record it holds.
+	Download(ctx context.Context, zone, attachmentID, dst string) error
 }
