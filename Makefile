@@ -38,7 +38,7 @@ PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS)"
 
-.PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check relay-go relay-interop
+.PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check relay-go relay-proto relay-interop relay-interop-kit
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -337,6 +337,12 @@ REF ?=
 relay-go:
 	bash scripts/relay-go.sh "$(RELAY)" $(REF)
 
+# Copies the hosted relay's relay.proto into WatchtowerKit/Sources/WatchtowerRelayProto
+# and generates its Swift, pinned to the commit in that folder's VERSION (pass
+# REF=<commit> to move the pin). Needs buf; see scripts/relay-proto.sh.
+relay-proto:
+	bash scripts/relay-proto.sh "$(RELAY)" $(REF)
+
 # Runs the Go hub's interop tests (internal/hub/interop_test.go, build tag
 # interop) against the relay's local stand: `wrangler dev` from
 # $(RELAY)/worker in its own process group (needs Node and `npm ci` there),
@@ -344,6 +350,14 @@ relay-go:
 # warns when a git checkout is not at the vendored client's pin.
 relay-interop:
 	bash scripts/relay-interop.sh "$(RELAY)"
+
+# Runs the mobile Kit's relay interop tests (the *InteropTests classes of
+# WatchtowerKit, which skip without WATCHTOWER_RELAY_INTEROP_URL) against the
+# relay's local stand: `wrangler dev` from $(RELAY)/worker in its own process
+# group (needs Node; `npm ci` runs there when node_modules is missing), killed
+# and waited for on exit, failure and signal. See scripts/relay-interop-kit.sh.
+relay-interop-kit:
+	bash scripts/relay-interop-kit.sh "$(RELAY)"
 
 # Installs the repo's git hooks (scripts/git-hooks: pre-push runs leak-check)
 # for every worktree of this clone. Run once per clone.
