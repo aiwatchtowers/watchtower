@@ -25,4 +25,8 @@ var (
 	ErrUnsupportedVersion = errors.New("transport: unsupported protocol version")
 	// ErrRateLimited: too many requests; back off.
 	ErrRateLimited = errors.New("transport: rate limited")
+	// ErrNotVouched: the relay has not admitted this hub (HUB_NOT_VOUCHED):
+	// no phone holds it in a slot, so only its pairing zones are open to it.
+	// Never a reason to register again; wait for a slot (Go hub design §7).
+	ErrNotVouched = errors.New("transport: the relay has not admitted this hub")
 )
