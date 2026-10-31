@@ -549,3 +549,22 @@ func mapsEqual(a, b map[string]int64) bool {
 	}
 	return true
 }
+
+// The pass stops at the next feed once everything was dropped mid-pass
+// (Swift runDue's isCurrent check).
+func TestSessionChatPassStopsWhenDroppedMidPass(t *testing.T) {
+	r := newChatRig(t)
+	var s *SessionChatSource
+	s = r.source(func(context.Context, int64, string) ([]sessionfeed.Entry, error) {
+		s.dropAll()
+		return []sessionfeed.Entry{feedEntry(0, "hi")}, nil
+	}, ChatTiming{})
+	r.watch(7, "", "")
+	r.watch(8, "", "")
+	if got := s.RunDue(context.Background()); len(got) != 1 || r.callCount() != 1 {
+		t.Fatalf("attempted %v, %d reads: the pass went on after the drop", got, r.callCount())
+	}
+	if len(chatItems(t, s)) != 0 {
+		t.Fatal("the cut read stored a payload")
+	}
+}

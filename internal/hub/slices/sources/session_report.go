@@ -121,6 +121,8 @@ type SessionReportRunner struct {
 	// lastText is each session's state text as last resolved on a state
 	// change (the milestone text), for spotting a transition.
 	lastText map[int64]string
+	// seeded: lastText was loaded from the sidecar's milestones (Seed).
+	seeded bool
 	// statesChangedAt is when a state change was first reported that no
 	// pass has resolved yet; zero when none.
 	statesChangedAt time.Time
@@ -257,9 +259,61 @@ func (r *SessionReportRunner) Summary(workbenchID, sessionID int64) (ReportSumma
 	return s, ok
 }
 
+// Seed loads each session's newest stored state milestone as its last
+// resolved state text and marks the states changed, so the first pass sees
+// a change made while the hub was off as a transition (Swift observeStates
+// compares with the persisted milestone). It runs once; RunDue calls it
+// when it has not run.
+//
+// Ordering (runtime wiring): Seed must run before the session_timeline
+// source's first Observe or Items, which write the current state as the
+// newest milestone; seeded after them, the change would read as no change.
+func (r *SessionReportRunner) Seed(ctx context.Context) error {
+	r.mu.Lock()
+	done := r.seeded
+	r.mu.Unlock()
+	if done {
+		return nil
+	}
+	latest := map[int64]string{}
+	err := r.o.Store.ReadTx(ctx, func(tx *sql.Tx) error {
+		rows, err := state.Milestones(tx)
+		for _, m := range rows { // newest first per session
+			if _, ok := latest[m.SessionID]; ok {
+				continue
+			}
+			text, err := r.o.Sealer.OpenLocal(milestoneTextLabel, m.Text)
+			if err != nil {
+				continue // the timeline source deletes it on sight
+			}
+			latest[m.SessionID] = string(text)
+		}
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	if !r.seeded {
+		for id, text := range latest {
+			if _, ok := r.lastText[id]; !ok {
+				r.lastText[id] = text
+			}
+		}
+		r.seeded = true
+	}
+	r.mu.Unlock()
+	r.markStatesChanged()
+	return nil
+}
+
 // Run is the runner's loop until ctx ends. States may have changed while
-// the hub was off, so the first pass resolves them.
+// the hub was off, so the first pass resolves them against the sidecar's
+// milestones (Seed).
 func (r *SessionReportRunner) Run(ctx context.Context) error {
+	if err := r.Seed(ctx); err != nil {
+		log.Printf("hub slices: session report: reading the state milestones failed (%s)", errClass(err))
+	}
 	r.markStatesChanged()
 	for ctx.Err() == nil {
 		wait := r.o.Timing.Idle
@@ -290,6 +344,9 @@ func (r *SessionReportRunner) nextWait() time.Duration {
 // session the pass did not finish stays due. It returns the sessions whose
 // report was started.
 func (r *SessionReportRunner) RunDue(ctx context.Context) []int64 {
+	if err := r.Seed(ctx); err != nil {
+		log.Printf("hub slices: session report: reading the state milestones failed (%s)", errClass(err))
+	}
 	// Taken before the read: a change reported while the read is out stays
 	// pending for the next pass.
 	changedAt := r.takeStatesChanged()
@@ -308,13 +365,25 @@ func (r *SessionReportRunner) RunDue(ctx context.Context) []int64 {
 	for _, w := range listed {
 		ids[w.id] = true
 	}
-	if err := r.o.Store.WithTx(ctx, func(tx *sql.Tx) error { return state.KeepSessionReports(tx, ids) }); err != nil {
-		log.Printf("hub slices: session report: pruning the sidecar failed (%s)", errClass(err))
-	}
 	stored, err := r.storedIDs(ctx)
 	if err != nil {
 		log.Printf("hub slices: session report: reading the stored reports failed (%s)", errClass(err))
 		return nil
+	}
+	// A write transaction only when a session left the window.
+	for id := range stored {
+		if ids[id] {
+			continue
+		}
+		if err := r.o.Store.WithTx(ctx, func(tx *sql.Tx) error { return state.KeepSessionReports(tx, ids) }); err != nil {
+			log.Printf("hub slices: session report: pruning the sidecar failed (%s)", errClass(err))
+		}
+		for sid := range stored {
+			if !ids[sid] {
+				delete(stored, sid)
+			}
+		}
+		break
 	}
 	due := r.takeDue(listed, stored)
 	var attempted []int64

@@ -573,3 +573,55 @@ func TestSessionReportNeedsItsParts(t *testing.T) {
 		}
 	}
 }
+
+// I1 (Swift observeStates against the persisted milestone): a session that
+// finished while the hub was off, is not live now and has a stored report
+// runs once on the first pass, because its state text differs from the
+// newest stored milestone.
+func TestSessionReportAChangeWhileTheHubWasOffRunsOnTheFirstPass(t *testing.T) {
+	r := newReportRig(t)
+	_, session := r.seed()
+	r.setState(session, stateSeed{finished: true})
+	sealed, err := r.k.SealLocal(milestoneTextLabel, []byte("Working"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		return state.InsertMilestone(tx, session, r.now.Add(-time.Hour), sealed)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := r.runner(ReportTiming{}, nil)
+	ctx := context.Background()
+	if err := run.save(ctx, session, cliReport(t, session)); err != nil {
+		t.Fatal(err)
+	}
+	run.RunDue(ctx)
+	if c := r.callList(); len(c) != 1 || c[0].session != session || c[0].network {
+		t.Fatalf("the first pass after a restart: %v, want one offline run", c)
+	}
+	run.RunDue(ctx)
+	if n := len(r.callList()); n != 1 {
+		t.Fatalf("%d runs: the change ran more than once", n)
+	}
+
+	// Without a change (the milestone already says Finished) nothing runs.
+	r2 := newReportRig(t)
+	_, s2 := r2.seed()
+	r2.setState(s2, stateSeed{finished: true})
+	sealed2, err := r2.k.SealLocal(milestoneTextLabel, []byte("Finished"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r2.st.WithTx(ctx, func(tx *sql.Tx) error { return state.InsertMilestone(tx, s2, r2.now.Add(-time.Hour), sealed2) }); err != nil {
+		t.Fatal(err)
+	}
+	run2 := r2.runner(ReportTiming{}, nil)
+	if err := run2.save(ctx, s2, cliReport(t, s2)); err != nil {
+		t.Fatal(err)
+	}
+	run2.RunDue(ctx)
+	if n := len(r2.callList()); n != 0 {
+		t.Fatalf("an unchanged finished session ran %d times", n)
+	}
+}

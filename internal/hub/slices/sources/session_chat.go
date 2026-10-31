@@ -210,13 +210,20 @@ func (s *SessionChatSource) RunDue(ctx context.Context) []string {
 	gen, due := s.takeDue()
 	var attempted []string
 	for _, k := range due {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || !s.isCurrent(gen) {
 			break
 		}
 		attempted = append(attempted, k.id())
 		s.run(ctx, k, gen)
 	}
 	return attempted
+}
+
+// isCurrent: nothing was dropped since the pass of generation gen began.
+func (s *SessionChatSource) isCurrent(gen int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation == gen
 }
 
 // activeKeys is the open watches.
