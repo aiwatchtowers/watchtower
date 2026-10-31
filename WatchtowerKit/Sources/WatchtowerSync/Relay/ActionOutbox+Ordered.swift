@@ -38,6 +38,11 @@ extension ActionOutbox {
         self.hubID = linkedDeviceID(hubID)
     }
 
+    /// The phone's and the hub's ids as set now (nil until linked / set): the feed checks a hub control against them.
+    func linkIDs() -> (deviceID: String?, hubID: String?) {
+        (deviceID, hubID)
+    }
+
     /// The replica's sticky `ordered_actions` flag (Ruling 3).
     public func orderedActions() throws -> Bool {
         try store.orderedActionsEnabled()

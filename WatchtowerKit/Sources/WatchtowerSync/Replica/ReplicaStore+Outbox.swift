@@ -355,6 +355,15 @@ extension ReplicaStore {
         }
     }
 
+    /// Whether a hub control id was handled already. The feed reads this before handling a control and marks it
+    /// after, so a throw in between leaves it unhandled and the replayed batch handles it again.
+    func isControlHandled(id: String) throws -> Bool {
+        try writer.read { db in
+            try Bool.fetchOne(
+                db, sql: "SELECT EXISTS(SELECT 1 FROM handled_controls WHERE control_id = ?)", arguments: [id]) ?? false
+        }
+    }
+
     func pruneHandledControls(before date: Date) throws {
         try writer.write { db in try Self.pruneHandledControls(db, before: date) }
     }
