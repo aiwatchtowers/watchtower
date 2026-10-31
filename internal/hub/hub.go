@@ -42,8 +42,10 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/slices"
+	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/policy"
@@ -121,6 +123,9 @@ type Options struct {
 	Clock                           func() time.Time
 	Register                        func(*actions.Dispatcher)
 	Sources                         func(*state.Store) []slices.Source
+	// Sessions is the session-host port of the handlers; nil answers no
+	// session live (the real port is Plan 1b Task 15).
+	Sessions handlers.SessionPort
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)
@@ -136,7 +141,12 @@ type Options struct {
 	linkEvery    time.Duration
 	writeTimeout time.Duration
 	pairQueue    int // events one pairing stream may have waiting (0 = pairQueue)
-	sendBuffer   int // SO_SNDBUF of each accepted control connection (0 = the OS default)
+	trace        func(step string)
+	reportFetch  sources.ReportFetch // nil = the in-process report
+	gitFetch     sources.GitFetch    // nil = the in-process git status
+	laneBackstop time.Duration       // 0 = laneBackstop
+	runnerGap    time.Duration       // 0 = the runners' standard 5 s
+	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
 }
 
 func (o Options) withDefaults() Options {
