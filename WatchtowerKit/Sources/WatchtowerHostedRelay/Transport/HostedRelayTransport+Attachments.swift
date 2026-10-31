@@ -9,7 +9,8 @@ struct AssetMissing: Error {}
 /// record's attachment is `get_download` → GET capped at `maxAttachmentBytes` into the stash,
 /// before its page is buffered. Blob URLs are signed: never logged, never in an error.
 extension HostedRelayTransport {
-    /// Uploads `file` for a record of `zone`; returns the attachment id.
+    /// Uploads `file` for a record of `zone`; returns the attachment id. The upload URL must be
+    /// HTTPS (or loopback), and any non-2xx answer, a redirect included, fails it.
     func upload(_ file: URL, zone: CloudZoneID) async throws -> String {
         let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
         guard let size = (attributes?[.size] as? NSNumber)?.uint64Value else { throw AssetMissing() }
@@ -17,7 +18,10 @@ extension HostedRelayTransport {
         create.zone = zoneName(zone)
         create.size = size
         let upload = try await call(zone) { try await self.client.createUpload(create) }
-        guard let url = URL(string: upload.url) else { throw HostedRelayError.undecodable(status: 200) }
+        guard let url = URL(string: upload.url), Self.secureBlobURL(url) else {
+            Self.logger.error("relay upload: the URL leaves HTTPS, \(Self.kind(zone), privacy: .public)")
+            throw HostedRelayError.undecodable(status: 200)
+        }
         let status: Int
         do {
             status = try await client.http.put(url, file: file, headers: upload.headers)
@@ -43,7 +47,7 @@ extension HostedRelayTransport {
         request.zone = zoneName(zone)
         request.attachmentID = record.attachmentID
         let answer = try await call(zone) { try await self.client.getDownload(request) }
-        guard let url = URL(string: answer.url), Self.secureDownload(url) else {
+        guard let url = URL(string: answer.url), Self.secureBlobURL(url) else {
             Self.logger.error("relay download: the URL leaves HTTPS, \(Self.kind(zone), privacy: .public)")
             throw HostedRelayError.undecodable(status: 200)
         }
@@ -79,7 +83,7 @@ extension HostedRelayTransport {
     }
 
     /// HTTPS, or plain HTTP to this machine only (the local stand).
-    static func secureDownload(_ url: URL) -> Bool {
+    static func secureBlobURL(_ url: URL) -> Bool {
         switch url.scheme?.lowercased() {
         case "https": return true
         case "http": return ["127.0.0.1", "localhost", "::1"].contains(url.host?.lowercased() ?? "")

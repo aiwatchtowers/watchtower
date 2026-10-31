@@ -662,4 +662,33 @@ extension TransportStoreTests {
         try store.beginRelayResync(.data)
         XCTAssertEqual(try store.finishRelayResync(.data), ["a"], "b is no longer known")
     }
+
+    /// A store holding another route's state (here, a CloudKit send queue with no scope recorded) is not adopted.
+    func testARelayBindingRefusesAStoreWithState() throws {
+        let store = try TransportStore.inMemory()
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertThrowsError(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil)) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+
+        // A bound store keeps its binding once it holds state of its own.
+        let bound = try TransportStore.inMemory()
+        XCTAssertTrue(try bound.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+        try bound.enqueueSave([record("device-1", zone: .relay)])
+        XCTAssertFalse(try bound.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil))
+    }
+
+    /// A resync that expired partway is marked on its marker row; a new resync clears the mark.
+    func testAStalledResyncIsMarkedUntilTheNextResync() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertFalse(try store.relayResyncStalled(.data))
+        try store.beginRelayResync(.data)
+        try store.markRelayResyncStalled(.data)
+        XCTAssertTrue(try store.relayResyncStalled(.data))
+        XCTAssertTrue(try store.relayResyncPending(.data), "still a resync in progress")
+        XCTAssertFalse(try store.relayResyncStalled(.relay))
+        try store.beginRelayResync(.data)
+        XCTAssertFalse(try store.relayResyncStalled(.data))
+        XCTAssertTrue(try store.relayResyncPending(.data))
+    }
 }

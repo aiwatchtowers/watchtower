@@ -15,6 +15,9 @@ import WatchtowerSync
 /// every call answers without the attestor or the network until the deadline.
 public actor HostedRelayTransport: LiveTransport, ConditionalTransport, CompactingTransport {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
+    /// How long a resync the relay refused partway waits before it starts again (`start()` ends
+    /// the wait at once).
+    static let resyncStallHold: TimeInterval = 3_600
     /// Records asked for per `changes` page: the relay's own cap.
     static let pageLimit: UInt32 = 500
     /// `relayEvents` keeps the newest this many while nobody reads (the client's event buffer).
@@ -45,6 +48,14 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// The pull in flight and the zones it still owes (`HostedRelayTransport+Pull.swift`).
     var pullTask: Task<Void, any Error>?
     var zonesToPull: Set<CloudZoneID> = []
+    /// Until when a stalled resync of a zone waits (`HostedRelayTransport+Pull.swift`).
+    var resyncHolds: [CloudZoneID: Date] = [:]
+    /// The flush in flight and how many flushes have started (`HostedRelayTransport+Save.swift`).
+    var flushTask: Task<FlushStop?, any Error>?
+    var flushStarts = 0
+    /// `start()` asked for the socket and `stop()` has not: a socket that could not be dialed
+    /// then (an attestation backoff) is dialed after the next successful pull or flush.
+    var wantsSocket = false
 
     var eventHandler: (@Sendable (TransportEvent) -> Void)?
     var accountResetHandler: (@Sendable () -> Void)?
@@ -75,6 +86,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     deinit {
         relayEventSink.finish()
         socketReader?.cancel()
+        if let connection { Task { await connection.close() } }
     }
 
     // MARK: - CloudSyncTransport
@@ -107,24 +119,17 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     public func start() async {
         stoppedBy = nil
         loginNotBefore = nil
-        if connection == nil {
-            if await client.accountID == nil {
-                do {
-                    _ = try await call(nil) { try await self.client.register() }
-                } catch {
-                    Self.logger.error("relay start: register failed")
-                }
-            }
-            guard held() == nil else { return }
-            let connection = await client.connect(zones: [dataZone, mailboxZone])
-            self.connection = connection
-            let events = connection.events
-            socketReader = Task { [weak self] in
-                for await event in events {
-                    await self?.handle(event)
-                }
+        wantsSocket = true
+        for zone in CloudZoneID.allCases { resyncHolds[zone] = .distantPast }
+        if connection == nil, await client.accountID == nil {
+            do {
+                _ = try await call(nil) { try await self.client.register() }
+            } catch {
+                Self.logger.error("relay start: register failed")
             }
         }
+        guard held() == nil else { return }
+        await connectIfWanted()
         await sendNow()
         do {
             try await pull()
@@ -135,6 +140,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
 
     /// Closes the socket. Queued writes stay queued.
     public func stop() async {
+        wantsSocket = false
         await closeConnection()
     }
 
@@ -142,7 +148,11 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     public func sendNow() async {
         guard held() == nil else { return }
         do {
-            if let stop = try await flush() { await reread(stop.zone) }
+            if let stop = try await flush() {
+                await reread(stop.zone)
+            } else {
+                await connectIfWanted()
+            }
         } catch {
             Self.logger.error("relay flush: the send queue could not be read")
         }
@@ -154,6 +164,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         try gate()
         _ = try await flush()
         try await pullZones(Set(CloudZoneID.allCases))
+        await connectIfWanted()
     }
 
     /// One HTTPS `pull()`, joining one in flight. A held transport does nothing (as CloudKit's
@@ -210,6 +221,7 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         case .stopped(let error):
             connection = nil
             socketReader = nil
+            if error == .unsupportedVersion { wantsSocket = false }
             await note(error, zone: nil)
         }
     }
@@ -219,9 +231,27 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         guard held() == nil else { return }
         do {
             let state = try await call(nil) { try await self.client.accountState() }
-            if [.none, .expired, .revoked].contains(state.entitlement.state) { emit(.entitlementInactive) }
+            let inactive: [Relay_V1_EntitlementKind] = [Relay_V1_EntitlementKind.none, .expired, .revoked]
+            if inactive.contains(state.entitlement.state) { emit(.entitlementInactive) }
         } catch {
             Self.logger.error("relay account state failed")
+        }
+    }
+
+    /// Dials the socket when `start()` wants one and none is open, unless stopped or held.
+    func connectIfWanted() async {
+        guard wantsSocket, connection == nil, held() == nil else { return }
+        let connection = await client.connect(zones: [dataZone, mailboxZone])
+        guard wantsSocket, self.connection == nil else {
+            await connection.close()
+            return
+        }
+        self.connection = connection
+        let events = connection.events
+        socketReader = Task { [weak self] in
+            for await event in events {
+                await self?.handle(event)
+            }
         }
     }
 

@@ -882,10 +882,16 @@ public final class TransportStore: Sendable {
 /// and the relay Mac the store serves (`relay_binding`). Empty on a CloudKit
 /// store. Zones are keyed by `CloudZoneID`: a store serves one Mac.
 extension TransportStore {
-    /// `relay_resync_seen`'s marker row of a resync in progress. Record names are never empty,
-    /// so the marker never stands for a record; it makes a resync whose first page has not come
-    /// yet persist like one halfway through.
-    private static let resyncMarker = ""
+    /// A resync in progress is one marker row in `relay_resync_seen`, kept apart from the seen
+    /// names by its zone key (`<zone>#resync`, never a `CloudZoneID` raw value), so no record name
+    /// can stand for it. Its name says whether the resync runs or stalled (the relay refused a
+    /// middle page).
+    private static func resyncMarkerZone(_ zone: CloudZoneID) -> String {
+        zone.rawValue + "#resync"
+    }
+
+    private static let resyncRunning = "running"
+    private static let resyncStalled = "stalled"
 
     /// Binds the store to the relay Mac `macDeviceID` (and `hubID` when known). A store holds
     /// one route: one bound to a CloudKit scope, or to another Mac or hub, throws
@@ -893,7 +899,10 @@ extension TransportStore {
     package func adoptRelayBinding(macDeviceID: String, hubID: String?) throws -> Bool {
         try queue.write { db in
             if try Self.readBinding(db) != nil { throw TransportStoreError.boundToAnotherRoute }
-            if let row = try Row.fetchOne(db, sql: "SELECT mac_device_id, hub_id FROM relay_binding WHERE id = 1") {
+            let row = try Row.fetchOne(db, sql: "SELECT mac_device_id, hub_id FROM relay_binding WHERE id = 1")
+            // Unbound state (a CloudKit send queue or buffer from before scopes were recorded) is another route's.
+            if row == nil, try Self.holdsState(db) { throw TransportStoreError.boundToAnotherRoute }
+            if let row {
                 let storedHub: String? = row["hub_id"]
                 guard row["mac_device_id"] == macDeviceID else { throw TransportStoreError.boundToAnotherRoute }
                 if let hubID, let storedHub, hubID != storedHub { throw TransportStoreError.boundToAnotherRoute }
@@ -985,21 +994,43 @@ extension TransportStore {
     /// Starts a `TOKEN_EXPIRED` resync of `zone`: the cursor back to 0 and nothing seen yet, persisted.
     package func beginRelayResync(_ zone: CloudZoneID) throws {
         try queue.write { db in
-            try db.execute(sql: "DELETE FROM relay_resync_seen WHERE zone = ?", arguments: [zone.rawValue])
+            try db.execute(
+                sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
+                arguments: [zone.rawValue, Self.resyncMarkerZone(zone)])
             try db.execute(
                 sql: "INSERT INTO relay_resync_seen (zone, name) VALUES (?, ?)",
-                arguments: [zone.rawValue, Self.resyncMarker])
+                arguments: [Self.resyncMarkerZone(zone), Self.resyncRunning])
             try Self.writeRelayCursor(0, zone: zone, db)
         }
     }
 
-    /// Whether a resync of `zone` started and has not finished (a later pull resumes it).
+    /// Whether a resync of `zone` started and has not finished (a later pull resumes it), stalled or not.
     package func relayResyncPending(_ zone: CloudZoneID) throws -> Bool {
         try queue.read { db in
             try Bool.fetchOne(
                 db,
+                sql: "SELECT EXISTS (SELECT 1 FROM relay_resync_seen WHERE zone = ?)",
+                arguments: [Self.resyncMarkerZone(zone)]) ?? false
+        }
+    }
+
+    /// Marks the running resync of `zone` stalled (the relay refused a middle page); the next
+    /// `beginRelayResync` clears the mark.
+    package func markRelayResyncStalled(_ zone: CloudZoneID) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE relay_resync_seen SET name = ? WHERE zone = ?",
+                arguments: [Self.resyncStalled, Self.resyncMarkerZone(zone)])
+        }
+    }
+
+    /// Whether the resync of `zone` stalled (`markRelayResyncStalled`) and has not been started again.
+    package func relayResyncStalled(_ zone: CloudZoneID) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
                 sql: "SELECT EXISTS (SELECT 1 FROM relay_resync_seen WHERE zone = ? AND name = ?)",
-                arguments: [zone.rawValue, Self.resyncMarker]) ?? false
+                arguments: [Self.resyncMarkerZone(zone), Self.resyncStalled]) ?? false
         }
     }
 
@@ -1021,7 +1052,9 @@ extension TransportStore {
                 try db.execute(
                     sql: "DELETE FROM relay_records WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
             }
-            try db.execute(sql: "DELETE FROM relay_resync_seen WHERE zone = ?", arguments: [zone.rawValue])
+            try db.execute(
+                sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
+                arguments: [zone.rawValue, Self.resyncMarkerZone(zone)])
             return gone
         }
     }

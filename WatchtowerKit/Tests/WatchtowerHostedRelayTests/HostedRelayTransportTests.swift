@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 @testable import WatchtowerHostedRelay
 import WatchtowerHostedRelayTesting
 import WatchtowerRelayProto
@@ -308,6 +309,14 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         } catch {
             XCTAssertEqual(error as? HostedRelayError, .server(code: .notFound, retryAfter: nil))
         }
+
+        // R6 amendment: R6 asks for `.transient(code: "response_lost")` when the answer is lost after
+        // the request was sent. The client cannot tell that from a request never sent (both are
+        // `HostedRelayError.unreachable`), so today a lost answer is `.unreachable`.
+        try relay.crashAfterNext("save")
+        let lost = try await transport.save([ConditionalSave(record: mailboxRecord("b"), expect: .absent)])
+        XCTAssertEqual(lost, [.refused(.unreachable)], "response_lost")
+        try relay.restart()
     }
 
     /// A record-less `ZoneChanged` (the reconnect marker) is a pull, and so is a live one (R9).
@@ -436,10 +445,12 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
     }
 
     func testMalformedSaveAnswerIsAnError() async throws {
-        func answer(saved: [UInt64], conflicts: [UInt32]) -> Relay_V1_SaveResult {
+        func answer(saved: [UInt64], conflicts: [UInt32], names: [String] = ["a", "b"]) -> Relay_V1_SaveResult {
             var result = Relay_V1_SaveResult()
-            result.saved = saved.map { seq in
+            let savedNames = names.indices.filter { !conflicts.contains(UInt32($0)) }.map { names[$0] }
+            result.saved = saved.enumerated().map { position, seq in
                 var record = Relay_V1_Record()
+                record.name = position < savedNames.count ? savedNames[position] : "extra"
                 record.recordSeq = seq
                 return record
             }
@@ -454,12 +465,16 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
             "out of range": answer(saved: [1], conflicts: [5]),
             "repeated": answer(saved: [], conflicts: [0, 0]),
             "short": answer(saved: [1], conflicts: []),
-            "long": answer(saved: [1, 2, 3], conflicts: [])
+            "long": answer(saved: [1, 2, 3], conflicts: []),
+            "another record's name": answer(saved: [1, 2], conflicts: [], names: ["a", "c"])
         ]
+        let items = [mailboxRecord("a"), mailboxRecord("b")]
         for (name, result) in malformed {
-            XCTAssertNil(HostedRelayTransport.saveOutcomes(result, zones: [.relay, .relay]), name)
+            XCTAssertNil(HostedRelayTransport.saveOutcomes(result, items: items), name)
         }
-        XCTAssertNotNil(HostedRelayTransport.saveOutcomes(answer(saved: [4], conflicts: [0]), zones: [.relay, .relay]))
+        XCTAssertEqual(
+            HostedRelayTransport.saveOutcomes(answer(saved: [4], conflicts: [0]), items: items),
+            [.refused(.permanent(code: "gone")), .saved(recordSeq: 4)])
 
         // Through the transport: the reviewer's answer (2 items, conflict index 5, 1 saved).
         var http: InterceptingRelayHTTP?
@@ -789,5 +804,170 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         XCTAssertEqual(log.fetches, 1)
         let availability = await transport.availability()
         XCTAssertEqual(availability, .available)
+    }
+
+    // MARK: - Review round 1
+
+    /// Single-flight flush: two `sendNow()` at once send each queued row exactly once.
+    func testConcurrentSendNowSendsEachRowOnce() async throws {
+        let (mac, phone) = try await hub()
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        for name in ["r1", "r2", "r3"] { try await transport.save([mailboxRecord(name)]) }
+        async let first: Void = transport.sendNow()
+        async let second: Void = transport.sendNow()
+        _ = await (first, second)
+        XCTAssertEqual(try savedNames(), [["r1"], ["r2"], ["r3"]])
+        for name in ["r1", "r2", "r3"] { XCTAssertFalse(try store.isPending(recordName: name, zone: .relay), name) }
+    }
+
+    /// A save re-queued as a delete while it is in flight goes out as the delete after it, and the
+    /// save never comes back.
+    func testASaveRequeuedAsADeleteMidFlushIsNotResurrected() async throws {
+        var http: InterceptingRelayHTTP?
+        let (mac, phone) = try await hub { base in
+            let intercepting = InterceptingRelayHTTP(base)
+            http = intercepting
+            return intercepting
+        }
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        let requeued = OSAllocatedUnfairLock(initialState: false)
+        try XCTUnwrap(http).answer { request in
+            if case .save(let save) = request.op, save.items.first?.record.name == "x",
+               requeued.withLock({ done in defer { done = true }; return !done }) {
+                try store.enqueueDelete(recordNames: ["x"], zone: .relay)
+            }
+            return nil
+        }
+        try await transport.save([mailboxRecord("x")])
+        async let first: Void = transport.sendNow()
+        async let second: Void = transport.sendNow()
+        _ = await (first, second)
+        await transport.sendNow()
+        let writes = try relay.log.compactMap { op -> String? in
+            switch op {
+            case .save(let save): return "save " + save.items.map(\.record.name).joined(separator: ",")
+            case .delete(let delete): return "delete " + delete.items.map(\.name).joined(separator: ",")
+            default: return nil
+            }
+        }
+        XCTAssertEqual(writes, ["save x", "delete x"])
+        XCTAssertFalse(try store.isPending(recordName: "x", zone: .relay))
+    }
+
+    /// A resync that expires again after its first page (relay `records.ts` checks the floor on
+    /// middle pages) is marked stalled and held until a backoff or `start()`.
+    func testAResyncThatExpiresPartwayIsHeld() async throws {
+        let (mac, phone) = try await hub()
+        let zone = dataZone(mac)
+        for name in ["a", "b", "x"] { try await macSave(mac, zone, name) }
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.pull()
+        let floor = try buffered(store, .data).newToken
+
+        // x's purged tombstone (seq 4) is above the resync's first page boundary (seq 1).
+        try await macDelete(mac, zone, ["x"])
+        manualClock?.advance(by: .seconds(31 * 86_400))
+        var limits = try relay.limits
+        limits.changesPageBytes = 1
+        try relay.limits = limits
+        try await transport.pull()
+        XCTAssertTrue(try store.relayResyncStalled(.data))
+        XCTAssertTrue(try store.relayResyncPending(.data))
+        XCTAssertEqual(try store.relayCursor(zone: .data), 1)
+        XCTAssertEqual(try buffered(store, .data, since: floor).deletedRecordNames, [], "a stalled resync deletes nothing")
+
+        // Held: the next pull does not ask for the zone.
+        let asked = try changesSinces(zone).count
+        try await transport.pull()
+        XCTAssertEqual(try changesSinces(zone).count, asked, "held")
+
+        // After the backoff it tries again (and stalls again on this relay).
+        manualClock?.advance(by: .seconds(HostedRelayTransport.resyncStallHold + 1))
+        try await transport.pull()
+        let retried = try changesSinces(zone)
+        XCTAssertGreaterThan(retried.count, asked)
+        XCTAssertEqual(retried.suffix(2), [0, 1], "a fresh resync from 0")
+        let held = retried.count
+        try await transport.pull()
+        XCTAssertEqual(try changesSinces(zone).count, held, "held again")
+
+        // `start()` releases the hold.
+        await transport.start()
+        await eventually { ((try? self.changesSinces(zone).count) ?? 0) > held }
+    }
+
+    /// Upload URLs are checked like download URLs; a non-2xx PUT (a redirect included) fails.
+    func testUploadURLsAreCheckedLikeDownloads() async throws {
+        var http: InterceptingRelayHTTP?
+        let (mac, phone) = try await hub { base in
+            let intercepting = InterceptingRelayHTTP(base)
+            http = intercepting
+            return intercepting
+        }
+        let intercepting = try XCTUnwrap(http)
+        let asset = try directory().appendingPathComponent("sealed")
+        try Data(repeating: 1, count: 64).write(to: asset)
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: TransportStore.inMemory())
+
+        intercepting.answer { request in
+            guard case .createUpload = request.op else { return nil }
+            var response = Relay_V1_Response()
+            response.upload.attachmentID = "att"
+            response.upload.url = "http://relay.example.com/v1/blob/att"
+            return response
+        }
+        let plain = try await transport.save([ConditionalSave(record: mailboxRecord("u1", asset: asset), expect: .absent)])
+        XCTAssertEqual(plain, [.refused(.transient(code: "malformed_answer"))])
+        XCTAssertEqual(intercepting.puts, [], "no PUT to a URL that leaves HTTPS")
+
+        intercepting.answer(nil)
+        intercepting.upload { _ in 302 }
+        let redirected = try await transport.save([ConditionalSave(record: mailboxRecord("u2", asset: asset), expect: .absent)])
+        XCTAssertEqual(redirected, [.refused(.transient(code: "malformed_answer"))])
+        XCTAssertFalse(try savedNames().contains(["u2"]), "no save after a failed upload")
+    }
+
+    /// A `.retryLater` at `start()` leaves no socket; the first successful pull after the deadline dials it.
+    func testARetryLaterAtStartDialsAfterTheDeadline() async throws {
+        let (mac, _) = try await hub()
+        // The same phone in a new process: not registered here yet, no App Attest key in its store.
+        let phone = try await makeClient(kind: .phone, seed: 2, register: false)
+        fakeAttest(seed: 2).script(.generateKey, failures: [.serverUnavailable])
+        let (transport, log) = try await makeTransport(phone, mac: mac, store: TransportStore.inMemory())
+        await transport.start()
+        await waitForRelayEvent(log, .attestation(.retryLater(after: .seconds(1))))
+        XCTAssertFalse(try opNames().contains("subscribe"), "no socket before the deadline")
+
+        manualClock?.advance(by: .seconds(1))
+        try await transport.pull()
+        await eventually { (try? self.opNames().contains("subscribe")) == true }
+    }
+
+    /// `get_account_state` after a connect reports an entitlement that does not pay, and only that.
+    func testAccountStateReportsAnInactiveEntitlement() async throws {
+        var http: InterceptingRelayHTTP?
+        let (mac, phone) = try await hub { base in
+            let intercepting = InterceptingRelayHTTP(base)
+            http = intercepting
+            return intercepting
+        }
+        let intercepting = try XCTUnwrap(http)
+        let (transport, log) = try await makeTransport(phone, mac: mac, store: TransportStore.inMemory())
+        // The paying kinds first: an event they raised would come before the three expected ones.
+        let kinds: [Relay_V1_EntitlementKind] = [.active, .grace, Relay_V1_EntitlementKind.none, .expired, .revoked]
+        for kind in kinds {
+            intercepting.answer { request in
+                guard case .getAccountState = request.op else { return nil }
+                var response = Relay_V1_Response()
+                response.accountState.entitlement.state = kind
+                return response
+            }
+            await transport.readAccountState()
+        }
+        await eventually { log.relayEvents.filter { $0 == .entitlementInactive }.count >= 3 }
+        XCTAssertEqual(log.relayEvents.filter { $0 == .entitlementInactive }.count, 3, "none, expired and revoked only")
     }
 }

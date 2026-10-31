@@ -41,9 +41,14 @@ extension HostedRelayTransport {
     /// Pages `zone` from its cursor to the end; true when it buffered anything.
     private func pullZone(_ zone: CloudZoneID) async throws -> Bool {
         try gate()
+        if try store.relayResyncStalled(zone) {
+            // A stall from an earlier process holds too, from now.
+            let until = resyncHolds[zone] ?? holdResync(zone)
+            guard clock.now() >= until else { return false }
+            try store.beginRelayResync(zone)
+        }
         var resync = try store.relayResyncPending(zone)
         var since = try store.relayCursor(zone: zone)
-        var restarted = false
         var buffered = false
         while true {
             var request = Relay_V1_Changes()
@@ -54,11 +59,18 @@ extension HostedRelayTransport {
             let page: Relay_V1_ChangesResult
             do {
                 page = try await call(zone) { try await self.client.changes(request) }
-            } catch HostedRelayError.server(code: .tokenExpired, _) where since > 0 && !restarted {
-                // Once per pull: a resync that expires again waits for the next pull.
+            } catch HostedRelayError.server(code: .tokenExpired, _) where since > 0 {
+                if resync {
+                    // The relay refused a middle page of the resync (relay `records.ts` checks the
+                    // tombstone floor there too): starting again would stall at the same page.
+                    try store.markRelayResyncStalled(zone)
+                    holdResync(zone)
+                    Self.logger.error("relay resync stalled partway, held, \(Self.kind(zone), privacy: .public)")
+                    return buffered
+                }
                 Self.logger.info("relay pull: token expired, resyncing \(Self.kind(zone), privacy: .public)")
                 try store.beginRelayResync(zone)
-                (resync, restarted, since) = (true, true, 0)
+                (resync, since) = (true, 0)
                 continue
             }
             if page.more, page.newSeq <= since {
@@ -87,6 +99,14 @@ extension HostedRelayTransport {
             }
         }
         return buffered
+    }
+
+    /// Holds the stalled resync of `zone` for `resyncStallHold`; returns the deadline.
+    @discardableResult
+    private func holdResync(_ zone: CloudZoneID) -> Date {
+        let until = clock.now().addingTimeInterval(Self.resyncStallHold)
+        resyncHolds[zone] = until
+        return until
     }
 
     /// A server record as the buffer keeps it (R7: the writer's clock is `serverAt`; no author),

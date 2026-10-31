@@ -15,7 +15,36 @@ extension HostedRelayTransport {
     /// refusal that retrying may clear, leaving it and the rest queued; a `.permanent` refusal
     /// (or an asset file that is gone) drops that row and goes on, as `CloudKitTransport` drops a
     /// record CloudKit rejects alone. Throws only for local errors (the store).
+    ///
+    /// Single-flight: one pass at a time, so no row goes out twice and a save re-queued as a
+    /// delete mid-flight is never sent again after its delete. A caller waits for the pass in
+    /// flight (which may have read the queue before the caller's rows were added), then runs its
+    /// own, or joins one that started after it was called.
     func flush() async throws -> FlushStop? {
+        let calledAt = flushStarts
+        while let running = flushTask {
+            if flushStarts > calledAt { return try await running.value }
+            _ = try? await running.value
+        }
+        flushStarts += 1
+        let task = Task { try await self.flushPass() }
+        flushTask = task
+        return try await task.value
+    }
+
+    /// One pass over the queue; clears `flushTask` in the same actor step as its last check.
+    private func flushPass() async throws -> FlushStop? {
+        do {
+            let stop = try await sendQueue()
+            flushTask = nil
+            return stop
+        } catch {
+            flushTask = nil
+            throw error
+        }
+    }
+
+    private func sendQueue() async throws -> FlushStop? {
         while true {
             let batch = try store.pendingBatch(limit: 1)
             if let record = batch.saves.first {
@@ -54,7 +83,7 @@ extension HostedRelayTransport {
             save.items = [try await saveItem(record, expect: .none)]
             energy?.record(.sendBatch)
             let result = try await call(record.zone) { try await self.client.save(save) }
-            guard result.saved.count == 1, result.conflicts.isEmpty else {
+            guard Self.saveOutcomes(result, items: [record]) != nil, result.conflicts.isEmpty else {
                 Self.logger.error("relay flush: malformed save answer")
                 return .stopped(.transient(code: "malformed_answer"))
             }
@@ -108,7 +137,7 @@ extension HostedRelayTransport {
             for index in sending { save.items.append(try await saveItem(items[index].record, expect: items[index].expect)) }
             energy?.record(.sendBatch)
             let result = try await call(.relay) { try await self.client.save(save) }
-            if let answered = Self.saveOutcomes(result, zones: sending.map { items[$0].record.zone }) {
+            if let answered = Self.saveOutcomes(result, items: sending.map { items[$0].record }) {
                 for (position, index) in sending.enumerated() { outcomes[index] = answered[position] }
             } else {
                 Self.logger.error("relay save: malformed answer for \(sending.count) items")
@@ -172,21 +201,29 @@ extension HostedRelayTransport {
         return stop.refusal
     }
 
-    /// The outcomes of a save answer by index; nil when the answer does not cover the request
-    /// exactly (an index out of range or repeated, too few or too many saved). A conflict
-    /// without a live `current` is `.permanent(code: "gone")` (R6).
-    static func saveOutcomes(_ result: Relay_V1_SaveResult, zones: [CloudZoneID]) -> [SaveOutcome]? {
-        guard let conflicts = conflictsByIndex(result.conflicts.map { (Int($0.index), $0) }, count: zones.count),
-              conflicts.count + result.saved.count == zones.count
+    /// The outcomes of a save answer for `items`, by index; nil when the answer does not cover
+    /// the request exactly (an index out of range or repeated, too few or too many saved, a saved
+    /// record under another item's name). A conflict without a live `current` is
+    /// `.permanent(code: "gone")` (R6).
+    static func saveOutcomes(_ result: Relay_V1_SaveResult, items: [CloudRecord]) -> [SaveOutcome]? {
+        guard let conflicts = conflictsByIndex(result.conflicts.map { (Int($0.index), $0) }, count: items.count),
+              conflicts.count + result.saved.count == items.count
         else { return nil }
         var saved = result.saved.makeIterator()
-        return zones.indices.map { index in
-            if let conflict = conflicts[index] {
-                guard conflict.hasCurrent, !conflict.current.deleted else { return .refused(.permanent(code: "gone")) }
-                return .conflict(current: cloudRecord(conflict.current, zone: zones[index]))
+        var outcomes: [SaveOutcome] = []
+        for item in items.indices {
+            if let conflict = conflicts[item] {
+                guard conflict.hasCurrent, !conflict.current.deleted else {
+                    outcomes.append(.refused(.permanent(code: "gone")))
+                    continue
+                }
+                outcomes.append(.conflict(current: cloudRecord(conflict.current, zone: items[item].zone)))
+                continue
             }
-            return .saved(recordSeq: saved.next()?.recordSeq ?? 0)
+            guard let record = saved.next(), record.name == items[item].recordName else { return nil }
+            outcomes.append(.saved(recordSeq: record.recordSeq))
         }
+        return outcomes
     }
 
     /// The outcomes of a delete answer by index; nil for an index out of range or repeated. A
