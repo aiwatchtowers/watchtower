@@ -69,45 +69,67 @@ func mark(tx *sql.Tx, b mailbox, wireName string, o secure.Opened) error {
 // dropped unanswered (it carries no id to echo).
 func decodes(payload []byte, v any) bool { return json.Unmarshal(payload, v) == nil }
 
-// parseAction decodes an ordered action and binds it to its record: the
-// sender is b's phone and the frame names a-<sender>-<action_seq>. ok is
-// false for a record to drop unanswered (no decodable id to echo, or a
-// payload without action_seq, which takes the legacy path of Task 10).
+// parseAction decodes an ordered action and binds it to its record (see
+// bindAction). ok is false for a record to drop unanswered (no decodable id
+// to echo, or a payload without action_seq: a held action always has one).
 func parseAction(b mailbox, o secure.Opened) (a wire.ActionRequest, seq uint64, plain string, ok bool) {
 	if err := json.Unmarshal(o.Frame.Payload, &a); err != nil {
 		log.Printf("hub: undecodable action of device %s dropped", b.id)
 		return a, 0, "", false
 	}
+	seq, plain, ok = bindAction(b, o, a)
+	return a, seq, plain, ok
+}
+
+// bindAction binds an ordered action to its record: the sender is b's phone
+// and the frame names a-<sender>-<action_seq>.
+func bindAction(b mailbox, o secure.Opened, a wire.ActionRequest) (seq uint64, plain string, ok bool) {
 	if a.ActionSeq == nil {
-		return a, 0, "", false
+		return 0, "", false
 	}
 	seq = *a.ActionSeq
 	plain = actionName(b.id, seq)
 	if seq == 0 || o.Sender != b.id || o.Frame.ID != plain {
 		log.Printf("hub: action of device %s names another record: dropped", b.id)
-		return a, 0, "", false
+		return 0, "", false
 	}
-	return a, seq, plain, true
+	return seq, plain, true
 }
 
-// action places one ordered action: a repeat is echoed again, one ahead of
-// a gap is held, the next one is applied and then the held ones that follow.
+// action places one action. A payload without action_seq takes today's
+// unordered path (legacy.go). An ordered one: a repeat is echoed again, one
+// ahead of a gap is held, the next one is applied and then the held ones that
+// follow. The first ordered action a phone sends marks it ordered.
 func (p *Processor) action(ctx context.Context, b mailbox, r record, o secure.Opened, ps *pass) error {
-	a, seq, plain, ok := parseAction(b, o)
+	var a wire.ActionRequest
+	if !decodes(o.Frame.Payload, &a) {
+		log.Printf("hub: undecodable action of device %s dropped", b.id)
+		return nil
+	}
+	if a.ActionSeq == nil {
+		return p.legacyAction(ctx, b, r, o, a, ps)
+	}
+	seq, plain, ok := bindAction(b, o, a)
 	if !ok || a.Status != wire.StatusPending {
 		return nil
 	}
-	dev, linked, err := p.cfg.Store.Device(b.id.String())
+	device := b.id.String()
+	dev, linked, err := p.cfg.Store.Device(device)
 	if err != nil || !linked {
 		return err
 	}
 	if dev.LinkNonce != b.link {
 		return errRelinked
 	}
+	if !dev.Ordered {
+		if err := p.decide(ctx, b, func(tx *sql.Tx) error { return state.SetOrdered(tx, device) }); err != nil {
+			return err
+		}
+	}
 	last := dev.LastAppliedActionSeq
 	switch {
 	case seq <= last:
-		return p.repeat(ctx, b, r, o, a, plain, ps)
+		return p.repeat(ctx, b, r, o, a, b.ledger(plain), plain, ps)
 	case seq > last+1:
 		return p.hold(ctx, b, r, o, a, seq, dev, plain, ps)
 	}
@@ -138,8 +160,11 @@ func (p *Processor) ownReceived(ctx context.Context, b mailbox, rec transport.St
 		return nil
 	}
 	var a wire.ActionRequest
-	if !decodes(o.Frame.Payload, &a) || a.ActionSeq == nil || a.Status != wire.StatusReceived {
+	if !decodes(o.Frame.Payload, &a) || a.Status != wire.StatusReceived {
 		return nil
+	}
+	if a.ActionSeq == nil {
+		return p.legacyOwnReceived(ctx, b, rec, o, a, ps)
 	}
 	seq := *a.ActionSeq
 	plain := actionName(b.id, seq)
@@ -167,11 +192,12 @@ func (p *Processor) ownReceived(ctx context.Context, b mailbox, rec transport.St
 	return p.drainHeld(ctx, b, ps)
 }
 
-// repeat answers an action at or below the last applied seq with its stored
-// final echo (applied when the ledger has none: skipped or pruned), never
+// repeat answers an action already decided (ordered: at or below the last
+// applied seq; legacy: done in the ledger under key) with its stored final
+// echo (applied when the ledger has none: skipped or pruned), never
 // dispatching it again.
-func (p *Processor) repeat(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, plain string, ps *pass) error {
-	_, _, stored, err := p.cfg.Store.Phase(b.ledger(plain))
+func (p *Processor) repeat(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, key, plain string, ps *pass) error {
+	_, _, stored, err := p.cfg.Store.Phase(key)
 	if err != nil {
 		return err
 	}
@@ -245,11 +271,13 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 // non-idempotent kind is claimed begun first (with its received echo), the
 // handler runs outside any transaction, and one transaction marks the
 // record done, moves the phone's last applied seq, drops it from the held
-// actions and queues the final echo.
+// actions and queues the final echo. seq 0 is a legacy action (legacy.go):
+// keyed by its plain name, with no order to move.
 func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, seq uint64, plain string, ps *pass) error {
 	now := p.cfg.Clock()
 	reg, registered := p.cfg.Dispatcher.lookup(a.Kind)
-	phase, _, stored, err := p.cfg.Store.Phase(b.ledger(plain))
+	key := b.ledgerKey(plain, seq)
+	phase, _, stored, err := p.cfg.Store.Phase(key)
 	if err != nil {
 		return err
 	}
@@ -267,7 +295,7 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		out, run = p.gate(b, a, reg, registered, now)
 	}
 	if run && reg.opts.NonIdempotent {
-		claimed, err := p.claim(ctx, b, r, o, a, plain, reg.opts.ReceivedEcho, now, ps)
+		claimed, err := p.claim(ctx, b, r, o, a, key, plain, reg.opts.ReceivedEcho, now, ps)
 		if err != nil {
 			return err
 		}
@@ -276,7 +304,7 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		}
 	}
 	if run {
-		out = normalize(reg.handler(ctx, Request{Device: b.id, RecordName: plain, Action: a, ReceivedAt: now}))
+		out = normalize(reg.handler(ctx, Request{Device: b.id, Hub: p.cfg.Keys.HubID(), RecordName: plain, Action: a, ReceivedAt: now}))
 	}
 	if _, err := out.result(); err != nil {
 		out = unencodable(b.id)
@@ -291,14 +319,16 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 	}
 	device := b.id.String()
 	if err := p.decide(ctx, b, func(tx *sql.Tx) error {
-		if err := state.MarkDone(tx, b.ledger(plain), ledgerOutcome(out), stored, nil, p.cfg.Clock()); err != nil {
+		if err := state.MarkDone(tx, key, ledgerOutcome(out), stored, nil, p.cfg.Clock()); err != nil {
 			return err
 		}
-		if err := state.SetLastApplied(tx, device, seq); err != nil {
-			return err
-		}
-		if err := state.DropHeld(tx, device, seq); err != nil {
-			return err
+		if seq > 0 {
+			if err := state.SetLastApplied(tx, device, seq); err != nil {
+				return err
+			}
+			if err := state.DropHeld(tx, device, seq); err != nil {
+				return err
+			}
 		}
 		if err := mark(tx, b, r.name, o); err != nil { // the deciding commit for idempotent kinds
 			return err
@@ -331,10 +361,10 @@ func unencodable(device secure.ID) Outcome {
 	return failed(reasonWriteFailed, "")
 }
 
-// claim commits plain as begun with the rollback mark (and the received
-// echo, written at once so the phone sees it before the handler runs).
-// claimed is false when the ledger already holds the record.
-func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, plain string, received bool, now time.Time, ps *pass) (claimed bool, err error) {
+// claim commits the ledger key as begun with the rollback mark (and the
+// received echo, written at once so the phone sees it before the handler
+// runs). claimed is false when the ledger already holds the record.
+func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, key, plain string, received bool, now time.Time, ps *pass) (claimed bool, err error) {
 	var recv *queued
 	if received {
 		q, err := p.sealEcho(b, r.name, plain, a, Outcome{Status: wire.StatusReceived}, r.expect)
@@ -344,7 +374,7 @@ func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Ope
 		recv = &q
 	}
 	err = p.decide(ctx, b, func(tx *sql.Tx) error {
-		if err := state.Begin(tx, b.ledger(plain), now); err != nil {
+		if err := state.Begin(tx, key, now); err != nil {
 			return err
 		}
 		if err := mark(tx, b, r.name, o); err != nil {
@@ -497,72 +527,4 @@ func (p *Processor) reaskHeld(ctx context.Context, b mailbox, seq, from uint64) 
 		}
 		return state.SetResendRequested(tx, device, from)
 	})
-}
-
-// phoneControl handles a phone's control record. skip_to(m) (sim rule 6):
-// the phone no longer has the actions before m, so the order continues from
-// m — last becomes m-1 when that moves it forward — and the held actions that
-// are now next are applied. The control is deleted once handled (recipient
-// delete); a re-read one is harmless. The other phone controls are Task 10's.
-func (p *Processor) phoneControl(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, ps *pass) error {
-	var c wire.Control
-	if !decodes(o.Frame.Payload, &c) || c.ID == "" || o.Frame.ID != "c-"+c.ID {
-		log.Printf("hub: undecodable control of device %s dropped", b.id)
-		return nil
-	}
-	if c.Kind != wire.ControlSkipTo {
-		return nil
-	}
-	if c.Seq == nil || *c.Seq == 0 || c.DeviceID == nil || !sameID(*c.DeviceID, b.id) ||
-		(c.HubID != nil && !sameID(*c.HubID, p.cfg.Keys.HubID())) {
-		log.Printf("hub: skip_to of device %s without a seq or naming another device or hub: dropped", b.id)
-		return nil
-	}
-	m := *c.Seq
-	device := b.id.String()
-	dev, linked, err := p.cfg.Store.Device(device)
-	if err != nil || !linked {
-		return err
-	}
-	if dev.LinkNonce != b.link {
-		return errRelinked
-	}
-	if m > dev.LastAppliedActionSeq+1+MaxSkipAhead {
-		log.Printf("hub: skip_to of device %s jumps %d past the order window: dropped", b.id, m-dev.LastAppliedActionSeq)
-		return nil
-	}
-	if err := p.decide(ctx, b, func(tx *sql.Tx) error {
-		if err := mark(tx, b, rec.Name, o); err != nil {
-			return err
-		}
-		if m > dev.LastAppliedActionSeq+1 {
-			return state.SetLastApplied(tx, device, m-1)
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	if err := p.drainHeld(ctx, b, ps); err != nil {
-		return err
-	}
-	out, err := p.cfg.Transport.Delete(ctx, b.zone, []transport.DeleteItem{{
-		Name: rec.Name, Expect: transport.Expect{Mode: transport.ExpectSeq, Seq: rec.RecordSeq},
-	}})
-	if err != nil || len(out) != 1 || !out[0].Saved {
-		log.Printf("hub: skip_to of device %s not deleted (%s)", b.id, deleteClass(err, out))
-	}
-	return nil
-}
-
-func deleteClass(err error, out []transport.Outcome) string {
-	switch {
-	case err != nil:
-		return errClass(err)
-	case len(out) != 1:
-		return "no_outcome"
-	case out[0].Refused != nil:
-		return errClass(out[0].Refused)
-	default:
-		return "changed"
-	}
 }

@@ -57,11 +57,13 @@ var sessionRequestKinds = []string{
 	"session_input", "session_finish_request", "session_start", "session_chat_request", "automation_run",
 }
 
-// Request is one action handed to a handler: the authenticated sender, the
-// action's plain record name (a-<device>-<action_seq>), the decoded payload
-// and when the hub read it.
+// Request is one action handed to a handler: the authenticated sender, this
+// hub's id, the action's plain record name (a-<device>-<action_seq>, or a
+// legacy action's action-<uuid>), the decoded payload and when the hub read
+// it.
 type Request struct {
 	Device     secure.ID
+	Hub        secure.ID
 	RecordName string
 	Action     wire.ActionRequest
 	ReceivedAt time.Time
