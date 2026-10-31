@@ -113,18 +113,20 @@ gh release create "v<version>" \
 ```
 3. **Headless hub artifacts — only from the Go hub's launch release on**
    (before it, skip this step): the release build also wrote
-   `build/Watchtower-CLI-<version>-arm64.zip` (the signed CLI for a CLI-only
-   Mac, already in `checksums.txt`), and the tag's push started the
-   `linux-build` workflow, which builds the two Linux tarballs. The tag build
-   needs the repository variable `RELAY_ORIGIN` and `.env`'s
+   `build/Watchtower-CLI-<version><flavor suffix>-arm64.zip` (the signed CLI
+   for a CLI-only Mac, already in `checksums.txt`; the flavor suffix is
+   `-<BUILD_FLAVOR>`, empty for the default build), and the tag's push started
+   the `linux-build` workflow, which builds the two Linux tarballs. The tag
+   build needs the repository variable `RELAY_ORIGIN` and `.env`'s
    `WATCHTOWER_RELAY_ORIGIN_DEFAULT`; without them both builds refuse. Wait
-   for that run, download its artifacts and attach them:
+   for that run, download its artifacts and attach them (`gh run list
+   --branch` takes the tag name, `v<version>`, for a tag-triggered run):
 ```bash
 run_id=$(gh run list --workflow linux-build.yml --branch "v<version>" --limit 1 --json databaseId --jq '.[0].databaseId')
 gh run watch "$run_id" --exit-status
 gh run download "$run_id" --dir build/linux
 gh release upload "v<version>" \
-    "build/Watchtower-CLI-<version>-arm64.zip" \
+    "build/Watchtower-CLI-<version><flavor suffix>-arm64.zip" \
     build/linux/*/watchtower-v<version>-linux-*.tar.gz \
     build/linux/*/watchtower-v<version>-linux-*.tar.gz.sha256
 ```

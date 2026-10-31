@@ -8,14 +8,21 @@ name: Linux build
 # must be dispatchable alone for the smoke test and the Pi.
 #
 # Runners are ubuntu-22.04 on purpose (ask #881: native runners, not a
-# container): the build host's glibc is the binary's floor, and
-# scripts/check-glibc.sh holds it at 2.35 (Ubuntu 22.04+, Debian 12 /
-# Raspberry Pi OS bookworm). When GitHub retires the 22.04 image the floor is
+# container): the build host's glibc is the binary's floor (GLIBC_FLOOR in
+# scripts/build-linux.sh). When GitHub retires the 22.04 image the floor is
 # revisited then.
+#
+# A pull request touching the build runs it too, so both native builds are
+# proven before a merge; a PR run only uploads workflow artifacts.
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/linux-build.yml
+      - scripts/build-linux.sh
+      - scripts/check-glibc.sh
 
 permissions:
   contents: read
@@ -47,8 +54,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev binutils
 
       # A tag builds as itself (v<X.Y.Z>, which must pin RELAY_ORIGIN); a
-      # dispatch on a branch builds as dev-<sha>, whose relay origin may be
-      # empty.
+      # branch dispatch or a pull request builds as dev-<sha>, whose relay
+      # origin may be empty.
       - name: Build
         env:
           RELAY_ORIGIN: ${{ vars.RELAY_ORIGIN }}

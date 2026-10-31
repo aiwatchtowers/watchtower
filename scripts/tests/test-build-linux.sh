@@ -102,16 +102,16 @@ run_build() {
 }
 
 test_names_carry_version_and_arch() {
-    run_build names 1.2.3-dev STUB_GOARCH=amd64
+    run_build names dev-abc123 STUB_GOARCH=amd64
     if [ "$RUN_RC" -ne 0 ]; then
         note_fail "names: build-linux.sh exit $RUN_RC: $(cat "$WORK_DIR/names/output")"
         return
     fi
-    for f in watchtower-1.2.3-dev-linux-amd64.tar.gz watchtower-1.2.3-dev-linux-amd64.tar.gz.sha256; do
+    for f in watchtower-dev-abc123-linux-amd64.tar.gz watchtower-dev-abc123-linux-amd64.tar.gz.sha256; do
         [ -f "$RUN_OUT/$f" ] || { note_fail "names: $f missing (have: $(ls "$RUN_OUT"))"; return; }
     done
-    if ! grep -qE '  watchtower-1\.2\.3-dev-linux-amd64\.tar\.gz$' "$RUN_OUT/watchtower-1.2.3-dev-linux-amd64.tar.gz.sha256"; then
-        note_fail "names: the .sha256 file does not name the tarball by its bare name: $(cat "$RUN_OUT/watchtower-1.2.3-dev-linux-amd64.tar.gz.sha256")"
+    if ! grep -qE '  watchtower-dev-abc123-linux-amd64\.tar\.gz$' "$RUN_OUT/watchtower-dev-abc123-linux-amd64.tar.gz.sha256"; then
+        note_fail "names: the .sha256 file does not name the tarball by its bare name: $(cat "$RUN_OUT/watchtower-dev-abc123-linux-amd64.tar.gz.sha256")"
         return
     fi
     echo "ok: test_names_carry_version_and_arch"
@@ -160,7 +160,7 @@ test_unexpected_needed_library_fails() {
         return
     fi
     # The build fails with it too, and leaves no tarball.
-    run_build needed 1.2.3-dev STUB_NEEDED="libsqlite3.so.0 libc.so.6"
+    run_build needed dev-abc123 STUB_NEEDED="libsqlite3.so.0 libc.so.6"
     if [ "$RUN_RC" -eq 0 ]; then
         note_fail "needed: build-linux.sh passed with libsqlite3.so.0"
         return
@@ -173,14 +173,14 @@ test_unexpected_needed_library_fails() {
 }
 
 test_ldflags_carry_version() {
-    run_build ldver 1.2.3-dev
+    run_build ldver dev-abc123
     if [ "$RUN_RC" -ne 0 ]; then
         note_fail "ldflags: exit $RUN_RC: $(cat "$WORK_DIR/ldver/output")"
         return
     fi
     local args
     args=$(cat "$RUN_LOG.go")
-    for want in "-X watchtower/cmd.Version=1.2.3-dev" "-X watchtower/cmd.Commit=" "-X watchtower/cmd.BuildDate=" ; do
+    for want in "-X watchtower/cmd.Version=dev-abc123" "-X watchtower/cmd.Commit=" "-X watchtower/cmd.BuildDate=" ; do
         case "$args" in *"$want"*) ;; *) note_fail "ldflags: '$want' missing: $args"; return ;; esac
     done
     if ! printf '%s\n' "$args" | grep -qx -- '-tags'; then
@@ -204,7 +204,7 @@ test_ldflags_carry_the_relay_origin() {
         *"-X watchtower/internal/hub.DefaultRelayOrigin=https://relay.example.com"*) ;;
         *) note_fail "relay: the origin is not in the ldflags: $(cat "$RUN_LOG.go")"; return ;;
     esac
-    run_build ldrelaydev 1.2.3-dev
+    run_build ldrelaydev dev-abc123
     if [ "$RUN_RC" -ne 0 ]; then
         note_fail "relay: a dev version with no origin failed: $(cat "$WORK_DIR/ldrelaydev/output")"
         return
@@ -217,29 +217,34 @@ test_ldflags_carry_the_relay_origin() {
 }
 
 test_release_build_refuses_an_empty_relay_origin() {
-    run_build release v1.2.3
-    if [ "$RUN_RC" -ne 1 ]; then
-        note_fail "release: want exit 1, got $RUN_RC: $(cat "$WORK_DIR/release/output")"
-        return
-    fi
-    if ! grep -qF "RELAY_ORIGIN is empty: a release build must pin the relay origin" "$WORK_DIR/release/output"; then
-        note_fail "release: message missing: $(cat "$WORK_DIR/release/output")"
-        return
-    fi
-    if [ -e "$RUN_LOG.go" ] || ls "$RUN_OUT"/*.tar.gz >/dev/null 2>&1; then
-        note_fail "release: it built or wrote a tarball before refusing"
-        return
-    fi
+    local v name
+    # A prerelease counts as a release: the rule is a prefix match.
+    for v in v1.2.3 1.2.3 v1.2.3-rc1; do
+        name="release-$v"
+        run_build "$name" "$v"
+        if [ "$RUN_RC" -ne 1 ]; then
+            note_fail "release $v: want exit 1, got $RUN_RC: $(cat "$WORK_DIR/$name/output")"
+            return
+        fi
+        if ! grep -qF "RELAY_ORIGIN is empty: a release build must pin the relay origin" "$WORK_DIR/$name/output"; then
+            note_fail "release $v: message missing: $(cat "$WORK_DIR/$name/output")"
+            return
+        fi
+        if [ -e "$RUN_LOG.go" ] || ls "$RUN_OUT"/*.tar.gz >/dev/null 2>&1; then
+            note_fail "release $v: it built or wrote a tarball before refusing"
+            return
+        fi
+    done
     echo "ok: test_release_build_refuses_an_empty_relay_origin"
 }
 
 test_tarball_holds_only_the_binary() {
-    run_build tarball 1.2.3-dev
+    run_build tarball dev-abc123
     if [ "$RUN_RC" -ne 0 ]; then
         note_fail "tarball: exit $RUN_RC: $(cat "$WORK_DIR/tarball/output")"
         return
     fi
-    local tarball="$RUN_OUT/watchtower-1.2.3-dev-linux-arm64.tar.gz" listing
+    local tarball="$RUN_OUT/watchtower-dev-abc123-linux-arm64.tar.gz" listing
     listing=$("$REAL_TAR" -tvzf "$tarball")
     if [ "$(printf '%s\n' "$listing" | wc -l | tr -d ' ')" != "1" ]; then
         note_fail "tarball: want one entry, got: $listing"
@@ -252,7 +257,7 @@ test_tarball_holds_only_the_binary() {
     # Nothing but the tarball and its checksum is left in the output dir.
     local left
     left=$(cd "$RUN_OUT" && ls -A | sort | tr '\n' ' ')
-    if [ "$left" != "watchtower-1.2.3-dev-linux-arm64.tar.gz watchtower-1.2.3-dev-linux-arm64.tar.gz.sha256 " ]; then
+    if [ "$left" != "watchtower-dev-abc123-linux-arm64.tar.gz watchtower-dev-abc123-linux-arm64.tar.gz.sha256 " ]; then
         note_fail "tarball: the output dir holds more than the release files: $left"
         return
     fi
@@ -260,7 +265,7 @@ test_tarball_holds_only_the_binary() {
 }
 
 test_refuses_off_linux() {
-    run_build offlinux 1.2.3-dev STUB_GOOS=darwin
+    run_build offlinux dev-abc123 STUB_GOOS=darwin
     if [ "$RUN_RC" -eq 0 ]; then
         note_fail "offlinux: build-linux.sh ran with GOOS=darwin"
         return

@@ -167,12 +167,13 @@ VERSION="${VERSION:-0.2.0}"
 # BEGIN relay-origin-check (extracted verbatim by scripts/tests/test-build-app-relay.sh)
 # WATCHTOWER_RELAY_ORIGIN_DEFAULT (from the build profile) becomes the CLI's
 # build-time default relay origin, watchtower/internal/hub.DefaultRelayOrigin
-# (Go hub: the origin the relay session announces). A release build — a clean
-# X.Y.Z version without --dev — must pin it, and is refused here, before
-# anything is built; --dev and non-release versions may leave it empty.
+# (Go hub: the origin the relay session announces), checked here before
+# anything is built. A release version — one starting with [v]X.Y.Z, a
+# prerelease such as v1.2.3-rc1 included — must pin the relay origin; any
+# other version may leave it empty, and so may --dev.
 RELAY_ORIGIN_DEFAULT="${WATCHTOWER_RELAY_ORIGIN_DEFAULT:-}"
 if ! $DEV_MODE && [ -z "$RELAY_ORIGIN_DEFAULT" ] \
-    && printf '%s' "$VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+    && printf '%s' "$VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+'; then
     echo "ERROR: WATCHTOWER_RELAY_ORIGIN_DEFAULT is empty: a release build must pin the relay origin" >&2
     exit 1
 fi

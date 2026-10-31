@@ -2,7 +2,7 @@
 # Tests for the Go hub pieces of scripts/build-app.sh (Go hub phase 2, Task 2):
 #   - the CLI's go build carries -X watchtower/internal/hub.DefaultRelayOrigin
 #     from .env's WATCHTOWER_RELAY_ORIGIN_DEFAULT;
-#   - a release build (a clean X.Y.Z version, not --dev) with it empty is
+#   - a release build (a version starting with [v]X.Y.Z, prereleases too, not --dev) with it empty is
 #     refused before anything is built; --dev and non-release versions may
 #     leave it empty;
 #   - the CLI-only Mac zip (Watchtower-CLI-<version>-arm64.zip, the signed
@@ -63,7 +63,7 @@ run_check() {
 
 test_release_build_refuses_an_empty_relay_origin() {
     local v
-    for v in 1.2.3 v1.2.3; do
+    for v in 1.2.3 v1.2.3 v1.2.3-rc1; do
         run_check false "$v"
         if [ "$CHECK_RC" -ne 1 ]; then
             note_fail "release: version $v with no origin: want exit 1, got $CHECK_RC: $CHECK_OUT"
@@ -84,7 +84,7 @@ test_release_build_refuses_an_empty_relay_origin() {
         note_fail "release: --dev with no origin was refused: $CHECK_OUT"
         return
     fi
-    run_check false v1.2.3-4-gabcdef0-dirty
+    run_check false abcdef0-dirty
     if [ "$CHECK_RC" -ne 0 ]; then
         note_fail "release: a non-release version with no origin was refused: $CHECK_OUT"
         return

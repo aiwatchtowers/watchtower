@@ -248,8 +248,7 @@ jobs:
       - name: Test (hub, session host)
         run: go test ./internal/hub/... ./internal/sessionhost/... ./internal/sessionstart/...
 
-      # Task 8 of the phase 2 plan adds the Linux hub smoke test here as one
-      # more step: `make hub-smoke`.
+      # The Linux hub smoke test (`make hub-smoke`) goes here as one more step.
 
   # The race pass, split across three parallel jobs: grown past one job's
   # budget (2026-10-19: ~7.7k CPU-s on a 4-vCPU runner, the 40-minute step
