@@ -27,7 +27,9 @@ type Port struct {
 	d       Deps
 	deliver slot
 	control slot
-	closed  atomic.Bool
+	// list is Runs' connection: a plain dial, never a host start.
+	list   slot
+	closed atomic.Bool
 }
 
 // NewPort is the hub's session port (a handlers.SessionPort); client (may
@@ -53,6 +55,7 @@ func newPort(d Deps, client *sessionhost.Client) *Port {
 	p := &Port{d: d}
 	p.deliver = slot{socket: d.socket(), exe: d.CLIPath, c: client}
 	p.control = slot{socket: d.socket(), exe: d.CLIPath}
+	p.list = slot{socket: d.socket(), dialOnly: true}
 	return p
 }
 
@@ -69,6 +72,7 @@ func (p *Port) Close() error {
 	p.closed.Store(true)
 	p.deliver.close()
 	p.control.close()
+	p.list.close()
 	return nil
 }
 
@@ -85,16 +89,25 @@ func (p *Port) Live(ctx context.Context, sessionID int64) (handlers.LiveRun, boo
 	return l, true, nil
 }
 
+// ErrHostNotRunning is Runs' answer when no session host answers: nothing
+// runs (Runs never starts a host).
+var ErrHostNotRunning = errors.New("no session host answers")
+
 // Runs is every session of this workspace's scope that has a running launch
 // on the host, by row, with the newest running launch's start (the hub's
-// slice liveness: the same host list Live reads, in one call).
+// slice liveness: the same host list Live reads, in one call). It only dials
+// a host that runs, on its own connection — a poll never starts one (the
+// host's idle exit stays in force); none answering is ErrHostNotRunning.
 func (p *Port) Runs(ctx context.Context) (map[int64]time.Time, error) {
-	c, err := p.control.get(ctx)
+	c, err := p.list.get(ctx)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, errPortClosed) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %w", ErrHostNotRunning, err)
 	}
 	list, err := c.List(ctx)
-	p.control.done(c, err)
+	p.list.done(c, err)
 	if err != nil {
 		return nil, fmt.Errorf("listing the session host: %w", err)
 	}
@@ -223,6 +236,8 @@ func (p *Port) find(ctx context.Context, sessionID int64) (sessionhost.SessionIn
 // slot is one lazily dialled host connection.
 type slot struct {
 	socket, exe string
+	// dialOnly dials a host that runs and never starts one.
+	dialOnly bool
 
 	mu     sync.Mutex
 	c      *sessionhost.Client
@@ -241,7 +256,13 @@ func (s *slot) get(ctx context.Context) (*sessionhost.Client, error) {
 	if s.c != nil {
 		return s.c, nil
 	}
-	c, err := dialHost(ctx, s.socket, s.exe)
+	var c *sessionhost.Client
+	var err error
+	if s.dialOnly {
+		c, err = sessionhost.Dial(ctx, s.socket)
+	} else {
+		c, err = dialHost(ctx, s.socket, s.exe)
+	}
 	if err != nil {
 		return nil, err
 	}

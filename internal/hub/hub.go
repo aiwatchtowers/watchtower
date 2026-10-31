@@ -44,6 +44,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
@@ -156,6 +157,7 @@ type Options struct {
 	laneBackstop time.Duration       // 0 = laneBackstop
 	runnerGap    time.Duration       // 0 = the runners' standard 5 s
 	liveEvery    time.Duration       // 0 = livenessEvery
+	away         platform.Away       // nil = platform.NewAway(), the console's state
 	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
 }
 

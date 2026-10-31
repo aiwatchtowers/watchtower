@@ -18,9 +18,13 @@ const (
 	classSealed     = "sealed"          // an envelope or a SealLocal blob (identity in the clear at most)
 	classPlaintext  = "plaintext_today" // readable text, today's two columns only
 	classLabel      = "label"           // the owner's own phone or hub name, model; never source content
-	classLinkSecret = "link_secret"     // a link nonce, confirm nonce or four-digit code of a pairing
-	classPerKey     = "per_key"         // hub_meta.value: classed per key (hub's canary test pins the keys)
-	classSwiftOnly  = "swift_only"      // written only by the Swift hub; Go never writes it
+	// classLinkSecret is a link nonce, confirm nonce or four-digit code of a
+	// pairing: a request's row goes when it ends
+	// (link.TestLinkSecretsGoWhenTheRequestEnds); devices.link_nonce (an input
+	// of the relay keys) and link_codes.nonce (the code's identity) stay.
+	classLinkSecret = "link_secret"
+	classPerKey     = "per_key"    // hub_meta.value: classed per key (hub's canary test pins the keys)
+	classSwiftOnly  = "swift_only" // written only by the Swift hub; Go never writes it (the hub canary asserts them empty)
 )
 
 // sidecarColumns maps every TEXT/BLOB (or untyped) column of a migrated

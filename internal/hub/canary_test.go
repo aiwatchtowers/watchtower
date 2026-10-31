@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,9 +20,12 @@ import (
 	"watchtower/internal/agentlog"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/logcanary"
 	"watchtower/internal/sessionreport"
@@ -87,7 +91,45 @@ var (
 	mAnswerNote     = logcanary.Text("action.ask_answer")
 	mCommentAction  = logcanary.Text("action.comment")
 	mBrief          = logcanary.Text("action.brief")
+	mReplyAction    = logcanary.Text("action.comment_reply")
+	mTargetAction   = logcanary.Text("action.target_create")
+	mAlert          = logcanary.Text("alert.ask_title") // an ask filed while the owner is away
 )
+
+// sealedAt is where each marker must be found inside a sealed record the
+// phone opens (by the record's kind; the transcript text in its sealed
+// segments asset): proof each one reached the sealer. The session line, the
+// brief and the recording audio never become a record: they are checked
+// where they went (held_session_lines.line, the start request, the
+// recordings dir).
+var sealedAt = map[string]string{
+	mWorkbench:      "workbench",
+	mTarget:         "workbench_target",
+	mComment:        "workbench_comment",
+	mAskQuestion:    "owner_ask",
+	mAskAnswer:      "owner_ask",
+	mPermission:     "permission_request",
+	mSessionTitle:   "terminal_session",
+	mSessionError:   "session_timeline",
+	mFinishSummary:  "terminal_session",
+	mChat:           "session_chat",
+	mReportTitle:    "session_report",
+	mReportPhase:    "session_report",
+	mReportPRNote:   "session_report",
+	mCalendar:       "calendar_event",
+	mTranscriptName: "meeting_transcript",
+	mTranscriptText: "meeting_transcript",
+	mAlert:          "ask_alert",
+	mAnswerNote:     "owner_ask",
+	mCommentAction:  "workbench_comment",
+	mReplyAction:    "workbench_comment",
+	mTargetAction:   "workbench_target",
+}
+
+// alwaysAway is an owner who is away from the Mac (the work alerts push).
+type alwaysAway struct{}
+
+func (alwaysAway) Away() (bool, error) { return true, nil }
 
 // encodings is each marker as itself and as the protocol encodes bytes
 // elsewhere (the 1a interop test's set).
@@ -105,7 +147,7 @@ func encodings(markers []string) []string {
 type canaryDB struct {
 	d                         *db.DB
 	project, target, session  int64
-	ask, started              int64
+	ask, started, comment     int64
 	folder, home              string
 	sourceMarkers, allMarkers []string
 }
@@ -137,7 +179,7 @@ func seedCanaryDB(t *testing.T, home string) canaryDB {
 	c.project = id(`INSERT INTO projects (name, folder_path) VALUES (?, ?)`, mWorkbench, folder)
 	c.target = id(`INSERT INTO targets (text, level, custom_label, period_start, period_end, status, priority, ownership, source_type, project_id)
 VALUES (?, 'custom', 'project', '2026-09-29', '2026-09-29', 'todo', 'medium', 'mine', 'chat', ?)`, mTarget, c.project)
-	id(`INSERT INTO project_comments (project_id, target_id, author, body, status) VALUES (?, ?, 'agent', ?, 'open')`,
+	c.comment = id(`INSERT INTO project_comments (project_id, target_id, author, body, status) VALUES (?, ?, 'agent', ?, 'open')`,
 		c.project, c.target, mComment)
 	conv := "00000000-0000-4000-8000-00000000c0a1"
 	c.session = id(`INSERT INTO terminal_sessions (project_id, kind, title, target_id, folder_path, claude_session_id, last_active_at,
@@ -150,7 +192,7 @@ VALUES (?, 'claude', 'Second', ?, '00000000-0000-4000-8000-00000000c0a2', ?, ?)`
 	c.ask = id(`INSERT INTO owner_asks (project_id, session_id, kind, title, payload, status)
 VALUES (?, ?, 'question', ?, ?, 'open')`, c.project, c.session, mAskQuestion, fmt.Sprintf(questions, mAskQuestion))
 	id(`INSERT INTO owner_asks (project_id, session_id, kind, title, payload, status, answer, answered_at)
-VALUES (?, ?, 'question', 'Answered', '{}', 'answered', ?, ?)`, c.project, c.started, mAskAnswer, stamp(now))
+VALUES (?, ?, 'question', 'Answered', '{}', 'answered', ?, ?)`, c.project, c.started, `{"note":"`+mAskAnswer+`"}`, stamp(now))
 	id(`INSERT INTO permission_requests (terminal_session_id, workbench_id, tool_name, summary, status, created_at)
 VALUES (?, ?, 'Bash', ?, 'pending', ?)`, c.session, c.project, mPermission, stamp(now))
 	id(`INSERT INTO calendar_calendars (id, name) VALUES ('cal', 'Work')`)
@@ -172,8 +214,8 @@ VALUES (?, ?, ?, 60, ?, ?)`, mTranscriptName, mTranscriptText, segments, stamp(n
 	}
 
 	c.sourceMarkers = []string{mWorkbench, mTarget, mComment, mAskQuestion, mAskAnswer, mPermission, mSessionTitle, mSessionError,
-		mFinishSummary, mChat, mReportTitle, mReportPhase, mReportPRNote, mCalendar, mTranscriptText, mTranscriptName, mRecording}
-	c.allMarkers = append(slices.Clone(c.sourceMarkers), mLine, mAnswerNote, mCommentAction, mBrief)
+		mFinishSummary, mChat, mReportTitle, mReportPhase, mReportPRNote, mCalendar, mTranscriptText, mTranscriptName, mRecording, mAlert}
+	c.allMarkers = append(slices.Clone(c.sourceMarkers), mLine, mAnswerNote, mCommentAction, mBrief, mReplyAction, mTargetAction)
 	return c
 }
 
@@ -192,7 +234,7 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 	recordings := filepath.Join(t.TempDir(), "recordings")
 	e := runEndToEnd(t, "", func(o *Options) {
 		o.DB, o.Sessions, o.RecordingsDir = c.d, port, recordings
-		o.runnerGap = 100 * time.Millisecond
+		o.runnerGap, o.away = 100*time.Millisecond, alwaysAway{}
 		o.reportFetch = func(_ context.Context, _, sessionID int64, _ bool) (sessionreport.Report, error) {
 			return sessionreport.Report{
 				Session: sessionreport.Session{ID: sessionID, Title: mReportTitle, Kind: "claude"},
@@ -221,6 +263,14 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 	if a, err := ctl.Do(ControlRequest{Op: OpDesktopHeartbeat}); err != nil || !a.OK {
 		t.Fatalf("heartbeat: %+v, %v", a, err)
 	}
+	// The alert's ask: filed after the hub was enabled (an alert counts only
+	// newer asks; created_at has whole seconds, so in the next second), on the
+	// running session while the owner is away.
+	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)))
+	if _, err := c.d.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title, payload, status, created_at)
+VALUES (?, ?, 'question', ?, '{}', 'open', ?)`, c.project, c.session, mAlert, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
 
 	wb := json.RawMessage(strconv.FormatInt(c.project, 10))
 	text := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
@@ -247,9 +297,12 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 		"checklist": []any{}, "comments": []any{}, "note": mAnswerNote,
 	})
 	act("session_chat_request", entity(c.session), map[string]json.RawMessage{"session_id": json.RawMessage(*entity(c.session))})
+	act("session_report_request", entity(c.session), nil)
 	act("session_input", entity(c.session), map[string]json.RawMessage{"text": text(mLine)})
 	act("ask_answer", entity(c.ask), map[string]json.RawMessage{"workbench_id": wb, "answer": answer})
 	act("board_comment_add", entity(c.target), map[string]json.RawMessage{"workbench_id": wb, "body": text(mCommentAction)})
+	act("board_comment_reply", entity(c.comment), map[string]json.RawMessage{"workbench_id": wb, "body": text(mReplyAction)})
+	act("board_target_create", nil, map[string]json.RawMessage{"workbench_id": wb, "text": text(mTargetAction), "priority": text("medium")})
 	act("session_start", nil, map[string]json.RawMessage{"workbench_id": wb, "mode": text("new"),
 		"plan_first": json.RawMessage("false"), "bring_forward": json.RawMessage("false"), "brief": text(mBrief)})
 
@@ -276,10 +329,10 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 		}
 		return phone.UploadEchoes["u1"]["status"] == "received"
 	})
-	for i, s := range seqs {
+	for _, s := range seqs {
 		got := phone.Echoes[s]
 		want := wire.StatusApplied
-		if i == 1 { // the session line waits behind the owner's draft
+		if got.Kind == "session_input" { // the line waits behind the owner's draft
 			want = wire.StatusHeld
 		}
 		if got.Status != want {
@@ -295,35 +348,71 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 		t.Fatalf("the recording was not opened for the transcriber: %v", err)
 	}
 
-	// Every source published (the markers went through the sealer), the
-	// chat and the report after their runners; the permission request and
-	// the failed session's state milestone ("Error: " + mSessionError, sealed
-	// into session_milestones.text) through the session host's liveness.
-	kinds := []string{"workbench", "workbench_target", "workbench_comment", "terminal_session", "session_timeline", "owner_ask",
-		"permission_request",
-		"session_chat", "session_report", "calendar_event", "meeting_transcript", "recording_job"}
-	published := func(kind string) bool {
-		got, err := e.rig.storeHashes(kind)
-		return err == nil && len(got) > 0
-	}
-	eventually(t, 20*time.Second, "every source published", func() bool {
-		for _, k := range kinds {
-			if !published(k) {
-				return false
-			}
+	// Each marker has its positive control: sealedAt, or one of the three
+	// checked where they went (held line, start request, recordings dir).
+	for _, m := range c.allMarkers {
+		if _, ok := sealedAt[m]; !ok && m != mLine && m != mBrief && m != mRecording {
+			t.Errorf("marker %s has no positive control", m)
 		}
-		return true
-	})
+	}
+	assertEveryMarkerSealed(t, e.dir, phone, fake)
+	// The actions were applied with their text where it belongs.
+	for q, m := range map[string]string{
+		`SELECT COUNT(*) FROM project_comments WHERE body = ? AND author = 'owner' AND parent_id IS NULL`: mCommentAction,
+		`SELECT COUNT(*) FROM project_comments WHERE body = ? AND parent_id IS NOT NULL`:                  mReplyAction,
+		`SELECT COUNT(*) FROM targets WHERE text = ?`:                                                     mTargetAction,
+		`SELECT COUNT(*) FROM owner_asks WHERE status = 'answered' AND instr(answer, ?) > 0`:              mAnswerNote,
+	} {
+		var n int
+		if err := c.d.QueryRow(q, m).Scan(&n); err != nil || n != 1 {
+			t.Errorf("%s: %d rows (%v)", m, n, err)
+		}
+	}
 	if err := e.rig.stop(); err != nil {
 		t.Fatal(err)
 	}
-	// The running session's state milestone was stored (its text sealed):
-	// the only state it can have is the error one, which carries the marker.
+	// The running session's error milestone is stored, its text sealed.
 	if n := queryStrings(t, sidecarDB(t, e.dir), `SELECT COUNT(*) FROM session_milestones WHERE session_id = ?`, c.session); n[0] == "0" {
-		t.Error("no state milestone stored for the failed running session (positive control)")
+		t.Error("no state milestone stored for the failed running session")
 	}
 
-	all := encodings(c.allMarkers)
+	assertNothingReadableLeft(t, e.dir, fake, sink, encodings(c.allMarkers))
+}
+
+// assertEveryMarkerSealed: the phone opens the data zone with its keybox keys
+// and finds each sealedAt marker in a record of its kind, and every
+// published kind has a record (a source that publishes nothing fails) —
+// proof each marker reached the sealer.
+func assertEveryMarkerSealed(t *testing.T, dir string, phone *hubtest.Phone, fake *memfake.Fake) {
+	t.Helper()
+	status, err := ReadStatus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := transport.DataZone(status.RelayDeviceID)
+	kinds := []string{"workbench", "workbench_target", "workbench_comment", "terminal_session", "session_timeline", "owner_ask",
+		"permission_request", "ask_alert", "session_chat", "session_report", "calendar_event", "meeting_transcript", "recording_job"}
+	var missing []string
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		missing = missingSealed(t, phone, fake.Attachments(), data, kinds)
+		if len(missing) == 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(missing) > 0 {
+		t.Fatalf("not found sealed where expected: %v", missing)
+	}
+}
+
+// assertNothingReadableLeft: no marker (in any encoding) in a frame or
+// attachment on the fake, in the log, in a sidecar cell but today's two
+// plaintext columns, or in any file of the hub dir but the session line in
+// the sidecar's own files; the Swift-only columns stay empty, no pairing
+// request outlives its link, and every hub_meta key is a known one.
+func assertNothingReadableLeft(t *testing.T, dir string, fake *memfake.Fake, sink *logcanary.Sink, all []string) {
+	t.Helper()
 	// (a) Frames and attachments on the fake.
 	frames := fake.Frames()
 	if len(frames) == 0 {
@@ -364,7 +453,7 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 	// (c) The sidecar: no marker in any cell but held_session_lines.line and
 	// relay_processed.echo, and none at all in the file's bytes but the
 	// session line (the one action text such a column holds today).
-	cells := sidecarMarkerCells(t, e.dir, all)
+	cells := sidecarMarkerCells(t, dir, all)
 	for cell, marks := range cells {
 		if _, ok := plaintextToday[cell]; !ok {
 			t.Errorf("sidecar %s carries %v", cell, marks)
@@ -373,23 +462,48 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 	if !slices.Contains(cells["held_session_lines.line"], mLine) {
 		t.Errorf("the held line is not in held_session_lines.line (positive control): %v", cells)
 	}
+	// Every file in the hub dir (sidecar, its WAL, the staged sealed
+	// assets, the identity…): no marker but the session line, and that only
+	// in the sidecar's own files.
 	allowedRaw := encodings([]string{mLine})
-	for _, name := range []string{state.FileName, state.FileName + "-wal", state.FileName + "-shm"} {
-		b, err := os.ReadFile(filepath.Join(e.dir, name))
-		if os.IsNotExist(err) {
-			continue
+	var files []string
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			files = append(files, path)
 		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range files {
+		b, err := os.ReadFile(path) // #nosec G304 -- the test's own hub dir
 		if err != nil {
 			t.Fatal(err)
 		}
+		sidecar := strings.HasPrefix(filepath.Base(path), state.FileName)
 		for _, m := range all {
-			if !slices.Contains(allowedRaw, m) && bytes.Contains(b, []byte(m)) {
-				t.Errorf("the sidecar file %s carries %q", name, m)
+			if sidecar && slices.Contains(allowedRaw, m) {
+				continue
+			}
+			if bytes.Contains(b, []byte(m)) {
+				t.Errorf("%s carries %q", strings.TrimPrefix(path, dir), m)
 			}
 		}
 	}
+	// The Swift-only columns stay empty under the Go hub, and no pairing
+	// request's code or confirm nonce outlives the link.
+	sd := sidecarDB(t, dir)
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM phone_recordings WHERE audio_path IS NOT NULL OR error IS NOT NULL`,
+		`SELECT COUNT(*) FROM slice_assets`,
+		`SELECT COUNT(*) FROM pending_devices`,
+	} {
+		if n := queryStrings(t, sd, q); n[0] != "0" {
+			t.Errorf("%s = %s, want 0", q, n[0])
+		}
+	}
 	// Every hub_meta key is a known one (its value is no content).
-	for _, k := range sidecarMetaKeys(t, e.dir) {
+	for _, k := range sidecarMetaKeys(t, dir) {
 		if _, ok := hubMetaKeys[k]; !ok {
 			t.Errorf("hub_meta key %q is not in the allowlist", k)
 		}
@@ -501,15 +615,46 @@ func queryStrings(t *testing.T, d *db.DB, q string, args ...any) []string {
 	return out
 }
 
-// storeHashes is the running hub's published records of kind, read through a
-// read-only handle beside it.
-func (r *rig) storeHashes(kind string) (map[string]state.SliceRecord, error) {
-	st, err := state.OpenReadOnly(r.dir)
+// missingSealed opens the data zone as the phone does and lists what is
+// not there yet: a kind with no record ("kind:<k>"), or a marker absent from
+// every record of its sealedAt kind ("<marker>@<kind>"), a record's sealed
+// asset (decrypted with its descriptor) counting as its content.
+func missingSealed(t *testing.T, p *hubtest.Phone, atts map[string][]byte, zone string, kinds []string) []string {
+	t.Helper()
+	recs, err := p.OpenData(zone)
 	if err != nil {
-		return nil, err
+		t.Fatal(err)
 	}
-	defer func() { _ = st.Close() }()
-	return st.SliceHashes(kind)
+	content := map[string][][]byte{}
+	for _, r := range recs {
+		k := r.Frame.Kind
+		content[k] = append(content[k], r.Frame.Payload)
+		if r.Frame.Asset == nil {
+			continue
+		}
+		sealed, ok := atts[r.AttachmentID]
+		if !ok {
+			return []string{"asset of " + k}
+		}
+		plain, err := secure.DecryptAsset(sealed, *r.Frame.Asset)
+		if err != nil {
+			t.Fatalf("the %s asset does not open: %v", k, err)
+		}
+		content[k] = append(content[k], plain)
+	}
+	var missing []string
+	for _, k := range kinds {
+		if len(content[k]) == 0 {
+			missing = append(missing, "kind:"+k)
+		}
+	}
+	for m, k := range sealedAt {
+		if !slices.ContainsFunc(content[k], func(b []byte) bool { return bytes.Contains(b, []byte(m)) }) {
+			missing = append(missing, m+"@"+k)
+		}
+	}
+	slices.Sort(missing)
+	return missing
 }
 
 func deref(s *string) string {

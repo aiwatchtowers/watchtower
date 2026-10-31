@@ -623,3 +623,69 @@ func (p *Phone) SAS(confirmNonce string) (string, error) {
 	return secure.SAS(p.cfg.Hub, p.nonce, p.cfg.HubSig, p.cfg.HubKX, p.sig.Public().(ed25519.PublicKey),
 		p.kx.PublicKey(), confirm), nil
 }
+
+// DataRecord is one hub record of the data zone the phone opened: its wire
+// name, frame and attachment id ("" for none).
+type DataRecord struct {
+	Name, AttachmentID string
+	Frame              secure.InnerFrame
+}
+
+// OpenData opens every live hub record of the data zone (slices and alerts)
+// as a phone does: with the keybox's K_data / K_alert of the record's epoch,
+// checking the hub's signature and the wire name (the heartbeat keeps its
+// plain name). The keybox itself and the
+// payload-free alert signals are left out; a record that does not open is an
+// error.
+func (p *Phone) OpenData(zone string) ([]DataRecord, error) {
+	kb, ok, err := p.ReadKeybox(zone)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || kb.Keys == nil {
+		return nil, errors.New("hubtest: no keys in the data zone's keybox")
+	}
+	b64 := base64.RawURLEncoding
+	keys := map[uint32][2]string{kb.Keys.Epoch: {kb.Keys.DataKey, kb.Keys.AlertKey}}
+	if kb.Keys.PreviousEpoch != nil && kb.Keys.PreviousDataKey != nil && kb.Keys.PreviousAlertKey != nil {
+		keys[*kb.Keys.PreviousEpoch] = [2]string{*kb.Keys.PreviousDataKey, *kb.Keys.PreviousAlertKey}
+	}
+	var out []DataRecord
+	var since uint64
+	for {
+		b, err := p.cfg.Transport.Changes(context.Background(), zone, since)
+		if err != nil {
+			return nil, err
+		}
+		for _, rec := range b.Changed {
+			if strings.HasPrefix(rec.Name, "keybox-") || strings.HasPrefix(rec.Name, secure.SignalPrefix) {
+				continue
+			}
+			_, f, err := secure.OpenSymmetric(rec.Envelope, []secure.EnvelopeClass{secure.ClassData, secure.ClassAlert},
+				secure.Context{Zone: secure.ZoneData, WireName: rec.Name}, p.cfg.HubSig,
+				func(h secure.Header) ([]byte, error) {
+					k, ok := keys[h.Epoch]
+					if !ok {
+						return nil, fmt.Errorf("hubtest: no keys for epoch %d", h.Epoch)
+					}
+					raw := k[0]
+					if h.Class == secure.ClassAlert {
+						raw = k[1]
+					}
+					return b64.DecodeString(raw)
+				})
+			if err != nil {
+				return nil, fmt.Errorf("hubtest: opening %s: %w", rec.Name, err)
+			}
+			kind, id, _ := strings.Cut(f.ID, "-")
+			if f.ID != "heartbeat" && secure.RecordName(p.cfg.MetaKey, secure.ZoneData, kind, id) != rec.Name {
+				return nil, fmt.Errorf("hubtest: %s: %w", rec.Name, secure.ErrNameMismatch)
+			}
+			out = append(out, DataRecord{Name: rec.Name, AttachmentID: rec.AttachmentID, Frame: f})
+		}
+		if !b.More {
+			return out, nil
+		}
+		since = b.NewSeq
+	}
+}

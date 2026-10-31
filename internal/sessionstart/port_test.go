@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -345,4 +346,25 @@ func TestThePhonesStartEchoesTheLaunchCheck(t *testing.T) {
 	ok := newRelay(t, w, w.port())
 	e := ok.echo(ok.start("go"), "a launch that ran applied", func(e wire.ActionRequest) bool { return e.Status == wire.StatusApplied })
 	assert.JSONEq(t, `"starting"`, string(e.Result["stage"]))
+}
+
+// Runs only dials a host that runs: with none answering it is
+// ErrHostNotRunning, and no host was started (the CLI that would start one
+// leaves a mark when run).
+func TestPortRunsNeverStartsAHost(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ss")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	mark := filepath.Join(dir, "started")
+	cli := filepath.Join(dir, "watchtower")
+	writeScript(t, cli, "touch '"+mark+"'\nexit 1\n")
+	p := NewPort(Deps{Socket: filepath.Join(dir, "h.sock"), CLIPath: cli, DBPath: filepath.Join(dir, "watchtower.db")}, nil)
+	t.Cleanup(func() { _ = p.Close() })
+	for range 3 {
+		runs, err := p.Runs(context.Background())
+		require.ErrorIs(t, err, ErrHostNotRunning)
+		assert.Empty(t, runs)
+	}
+	_, err = os.Stat(mark)
+	assert.True(t, os.IsNotExist(err), "Runs started a session host (stat: %v)", err)
 }
