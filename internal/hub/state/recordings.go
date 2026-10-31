@@ -240,3 +240,61 @@ func recordingJobTx(tx *sql.Tx, uploadID string) (RecordingJob, error) {
 	}
 	return j, nil
 }
+
+// RecordingJobs lists every queue row, latest activity first (finished, else
+// claimed, else created; ties by upload id). It is the recording_job slice's
+// source: ids, statuses and error classes only.
+func (s *Store) RecordingJobs(ctx context.Context) ([]RecordingJob, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `SELECT upload_id, device_id, status, transcript_id, error_class, created_at, claimed_at, finished_at
+		FROM recording_jobs
+		ORDER BY COALESCE(finished_at, claimed_at, created_at) DESC, upload_id`)
+	if err != nil {
+		return nil, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	defer rows.Close()
+	var out []RecordingJob
+	for rows.Next() {
+		var (
+			j                 RecordingJob
+			tid               sql.NullInt64
+			class             sql.NullString
+			created           float64
+			claimed, finished sql.NullFloat64
+		)
+		if err := rows.Scan(&j.UploadID, &j.DeviceID, &j.Status, &tid, &class, &created, &claimed, &finished); err != nil {
+			return nil, fmt.Errorf("reading the recording queue: %w", err)
+		}
+		if tid.Valid {
+			j.TranscriptID = &tid.Int64
+		}
+		j.ErrorClass = class.String
+		j.CreatedAt = fromReal(created)
+		if claimed.Valid {
+			j.ClaimedAt = fromReal(claimed.Float64)
+		}
+		if finished.Valid {
+			j.FinishedAt = fromReal(finished.Float64)
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the recording queue: %w", err)
+	}
+	return out, nil
+}
+
+// UpdatedAt is the job's latest activity: finished, else claimed, else created.
+func (j RecordingJob) UpdatedAt() time.Time {
+	switch {
+	case !j.FinishedAt.IsZero():
+		return j.FinishedAt
+	case !j.ClaimedAt.IsZero():
+		return j.ClaimedAt
+	}
+	return j.CreatedAt
+}
