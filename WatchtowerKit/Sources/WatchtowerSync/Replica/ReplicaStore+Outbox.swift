@@ -1,0 +1,380 @@
+import Foundation
+import GRDB
+
+// MARK: - The ordered outbox (relay client Phase 1)
+//
+// For a hub whose grant carries `ordered_actions`, `pending_actions` is a real outbox: each row has its gapless
+// `action_seq`, the envelope epoch it was sealed in, the version of the phone's own last write (`record_seq`)
+// and where it stands on its way to the hub (`delivery`). A legacy row keeps all of these NULL and today's path.
+// The queued control records and the ids of the hub's handled controls live beside it. Like `pending_actions`,
+// none of it is dropped by the format wipe, and only sealed envelopes and ids/counters/states/times are kept.
+
+/// Where an ordered action stands: `queued` (not written, or put back by `resend_from`), `sent` (written, no
+/// final echo yet), `settled` (a final echo arrived), `undelivered` (listed under Not delivered).
+public enum Delivery: String, Sendable {
+    case queued, sent, settled, undelivered
+}
+
+/// Why a row is listed under Not delivered: the transport refused its write for good, or it was withdrawn after
+/// 24 h without an answer. A row already listed keeps its first reason.
+public enum UndeliveredReason: String, Sendable {
+    case refused
+    case noAnswer = "no_answer"
+}
+
+/// One ordered row as the flush reads it: the sealed envelope under its wire name, nothing in plaintext.
+public struct OutboxRow: Equatable, Sendable {
+    public let actionID: String
+    public let actionSeq: UInt64
+    public let epoch: UInt32
+    public let wireName: String
+    public let envelope: Data
+    public let delivery: Delivery
+    public let recordSeq: UInt64?
+    public let sentAt: Date?
+}
+
+/// A sealed control record waiting to be written (`skip_to`, say). `kind` is the control's raw wire kind.
+public struct QueuedControl: Equatable, Sendable {
+    public let id: String
+    public let kind: String
+    public let wireName: String
+    public let envelope: Data
+    public let queuedAt: Date
+}
+
+enum ReplicaOutboxError: Error, Equatable {
+    /// `replica_meta.action_seq_next` holds something that is not a seq: the counter cannot be trusted.
+    case unreadableCounter(String)
+    /// `setDelivery(.undelivered, …)`: a row is listed only through `markUndelivered`, with its reason and message.
+    case undeliveredNeedsAReason
+}
+
+extension ReplicaStore {
+    static let orderedActionsKey = "ordered_actions"
+    static let actionSeqNextKey = "action_seq_next"
+    /// How long a handled hub control id is remembered (sim "Bounded state").
+    static let handledControlRetention: TimeInterval = 15 * 86_400
+
+    /// The ordered columns of `pending_actions`, NULL on a legacy row.
+    static let outboxColumns: [(name: String, type: String)] = [
+        ("action_seq", "INTEGER"),
+        ("epoch", "INTEGER"),
+        ("record_seq", "INTEGER"),
+        ("sent_at", "REAL"),
+        ("delivery", "TEXT CHECK(delivery IN ('queued','sent','settled','undelivered'))"),
+        ("undelivered_reason", "TEXT CHECK(undelivered_reason IN ('refused','no_answer'))")
+    ]
+
+    static var outboxColumnsSQL: String {
+        outboxColumns.map { "\($0.name) \($0.type)" }.joined(separator: ",\n")
+    }
+
+    static let outboxTablesSQL = """
+        CREATE TABLE IF NOT EXISTS outbound_controls (
+            position INTEGER PRIMARY KEY AUTOINCREMENT,
+            control_id TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL,
+            wire_name TEXT NOT NULL,
+            envelope BLOB NOT NULL,
+            queued_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS handled_controls (
+            control_id TEXT PRIMARY KEY,
+            handled_at REAL NOT NULL
+        )
+        """
+
+    /// Adds the ordered columns to an overlay from before the outbox, in place, and the unique `action_seq` index.
+    func upgradeOutboxColumns(_ db: Database, existing: [String]) throws {
+        for column in Self.outboxColumns where !existing.contains(column.name) {
+            try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN \(column.name) \(column.type)")
+        }
+        try db.execute(sql: """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_actions_action_seq
+            ON pending_actions(action_seq) WHERE action_seq IS NOT NULL
+            """)
+    }
+
+    // MARK: Flag and counter
+
+    /// Whether this replica's hub runs ordered actions (`replica_meta.ordered_actions` = "1").
+    func orderedActionsEnabled() throws -> Bool {
+        try writer.read { db in try Self.meta(db, Self.orderedActionsKey) } == "1"
+    }
+
+    /// Turns ordered actions on for good (Ruling 3: sticky, never turned off by a later grant).
+    func enableOrderedActions() throws {
+        try writer.write { db in try Self.setMeta(db, Self.orderedActionsKey, "1") }
+    }
+
+    /// The seq the next ordered action gets: 1 when none was drawn yet.
+    func nextActionSeq() throws -> UInt64 {
+        try writer.read { db in try Self.nextActionSeq(db) }
+    }
+
+    /// Inserts the row (`queued`, its epoch) and moves the counter from `seq` to `seq + 1` only if it still reads
+    /// `seq`; false = lost the race, nothing written.
+    func insertOrderedAction(
+        _ action: ActionRequestPayload, entityRecordName: String?, sealed: CloudRecord, epoch: UInt32, seq: UInt64
+    ) throws -> Bool {
+        try writer.write { db in
+            guard try Self.nextActionSeq(db) == seq else { return false }
+            try db.execute(
+                sql: """
+                    INSERT INTO pending_actions
+                        (action_id, kind, entity_record_name, payload, wire_name, created_at, state,
+                         action_seq, epoch, delivery)
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, 'queued')
+                    """,
+                arguments: [
+                    action.id, action.kind.rawValue, entityRecordName, sealed.payload, sealed.recordName,
+                    action.createdAt.timeIntervalSince1970, Int64(clamping: seq), Int64(epoch)
+                ])
+            try Self.setMeta(db, Self.actionSeqNextKey, String(seq + 1))
+            return true
+        }
+    }
+
+    // MARK: Rows
+
+    /// The ordered rows in the given states, by `action_seq`.
+    func outboxRows(_ deliveries: Set<Delivery>) throws -> [OutboxRow] {
+        guard !deliveries.isEmpty else { return [] }
+        let states = deliveries.map(\.rawValue)
+        return try fetchOutboxRows(
+            where: "action_seq IS NOT NULL AND delivery IN (\(Self.placeholders(states.count)))",
+            arguments: StatementArguments(states))
+    }
+
+    /// The ordered rows with `fromSeq <= action_seq < below`, in any state, by `action_seq`.
+    func outboxRows(fromSeq: UInt64, below: UInt64) throws -> [OutboxRow] {
+        try fetchOutboxRows(
+            where: "action_seq >= ? AND action_seq < ?", arguments: [Int64(clamping: fromSeq), Int64(clamping: below)])
+    }
+
+    /// A written row: `sent` with the version of its write. Only a `queued` row moves — a row a `resend_from`
+    /// requeued meanwhile, or one an echo settled, is left as it is.
+    func markSent(actionID: String, recordSeq: UInt64?, at date: Date) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = ?
+                    WHERE action_id = ? AND delivery = 'queued'
+                    """,
+                arguments: [recordSeq.map { Int64(clamping: $0) }, date.timeIntervalSince1970, actionID])
+        }
+    }
+
+    /// Sets the delivery of ordered rows (legacy rows are never touched). Refuses `.undelivered` (that is
+    /// `markUndelivered`'s, with its reason). A row leaving Not delivered is pending again: its reason and the
+    /// local message go.
+    func setDelivery(_ delivery: Delivery, actionIDs: [String]) throws {
+        guard delivery != .undelivered else { throw ReplicaOutboxError.undeliveredNeedsAReason }
+        guard !actionIDs.isEmpty else { return }
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE pending_actions SET
+                        state = CASE WHEN delivery = 'undelivered' THEN 'pending' ELSE state END,
+                        error_message = CASE WHEN delivery = 'undelivered' THEN NULL ELSE error_message END,
+                        undelivered_reason = NULL,
+                        delivery = ?
+                    WHERE action_seq IS NOT NULL AND action_id IN (\(Self.placeholders(actionIDs.count)))
+                    """,
+                arguments: StatementArguments([delivery.rawValue] + actionIDs))
+        }
+    }
+
+    /// `sent` rows at or above `seq` become `queued` (keeping their `record_seq`); returns the first `queued` seq at
+    /// or above it, nil when none.
+    func requeue(fromSeq seq: UInt64) throws -> UInt64? {
+        let from = Int64(clamping: seq)
+        return try writer.write { db in
+            try db.execute(
+                sql: "UPDATE pending_actions SET delivery = 'queued' WHERE delivery = 'sent' AND action_seq >= ?",
+                arguments: [from])
+            let first = try Int64.fetchOne(
+                db,
+                sql: "SELECT MIN(action_seq) FROM pending_actions WHERE delivery = 'queued' AND action_seq >= ?",
+                arguments: [from])
+            return first.map { UInt64($0) }
+        }
+    }
+
+    /// Lists `queued` or `sent` rows under Not delivered: `state = failed`, `delivery = undelivered`, the local
+    /// message and why (Ruling 16). A row already listed (or settled) is left as it is, so it keeps its first
+    /// reason and message.
+    func markUndelivered(actionIDs: [String], reason: UndeliveredReason, message: String) throws {
+        guard !actionIDs.isEmpty else { return }
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE pending_actions
+                    SET state = 'failed', delivery = 'undelivered', undelivered_reason = ?, error_message = ?
+                    WHERE delivery IN ('queued','sent') AND action_id IN (\(Self.placeholders(actionIDs.count)))
+                    """,
+                arguments: StatementArguments([reason.rawValue, message] + actionIDs))
+        }
+    }
+
+    /// The Not delivered list, by `action_seq`, opened like the overlay (a locked keychain throws).
+    func undeliveredActions(from db: Database) throws -> [PendingAction] {
+        try decodePendingActions(try Row.fetchAll(
+            db,
+            sql: "SELECT * FROM pending_actions WHERE delivery = 'undelivered' ORDER BY action_seq"
+        ))
+    }
+
+    /// Waiting to send (`queued`) and Not delivered (`undelivered`) counts.
+    func outboxCounts(from db: Database) throws -> (queued: Int, undelivered: Int) {
+        let row = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT COALESCE(SUM(delivery = 'queued'), 0) AS queued,
+                       COALESCE(SUM(delivery = 'undelivered'), 0) AS undelivered
+                FROM pending_actions
+                """)
+        return (row?["queued"] ?? 0, row?["undelivered"] ?? 0)
+    }
+
+    /// The one delete of an overlay row (feature Dismiss, the list's Dismiss All, Retry's old row). Refuses a row
+    /// that is `queued` or `sent` (still on its way); unknown ids are a no-op. Returns whether a row went.
+    @discardableResult
+    public func dismissAction(id: String) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM pending_actions
+                    WHERE action_id = ? AND (delivery IS NULL OR delivery NOT IN ('queued','sent'))
+                    """,
+                arguments: [id])
+            return db.changesCount > 0
+        }
+    }
+
+    /// Dismiss All: removes every Not delivered row; returns how many went.
+    func dismissAllUndelivered() throws -> Int {
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM pending_actions WHERE delivery = 'undelivered'")
+            return db.changesCount
+        }
+    }
+
+    // MARK: Controls
+
+    /// Queues a sealed control behind those already queued; an id already queued is a no-op.
+    func enqueueControl(_ control: QueuedControl) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    INSERT OR IGNORE INTO outbound_controls (control_id, kind, wire_name, envelope, queued_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    control.id, control.kind, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
+                ])
+        }
+    }
+
+    /// The queued controls in insertion order.
+    func queuedControls() throws -> [QueuedControl] {
+        try writer.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM outbound_controls ORDER BY position").map { row in
+                QueuedControl(
+                    id: row["control_id"], kind: row["kind"], wireName: row["wire_name"], envelope: row["envelope"],
+                    queuedAt: Date(timeIntervalSince1970: row["queued_at"]))
+            }
+        }
+    }
+
+    /// The control is written: it leaves the queue.
+    func controlWritten(id: String) throws {
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM outbound_controls WHERE control_id = ?", arguments: [id])
+        }
+    }
+
+    /// true the first time a hub control id is handled; ids older than 15 days are pruned (sim "Bounded state").
+    func markControlHandled(id: String, at date: Date) throws -> Bool {
+        try writer.write { db in
+            try Self.pruneHandledControls(db, before: date.addingTimeInterval(-Self.handledControlRetention))
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO handled_controls (control_id, handled_at) VALUES (?, ?)",
+                arguments: [id, date.timeIntervalSince1970])
+            return db.changesCount > 0
+        }
+    }
+
+    func pruneHandledControls(before date: Date) throws {
+        try writer.write { db in try Self.pruneHandledControls(db, before: date) }
+    }
+
+    // MARK: Helpers
+
+    private func fetchOutboxRows(where predicate: String, arguments: StatementArguments) throws -> [OutboxRow] {
+        let rows = try writer.read { db in
+            try Row.fetchAll(
+                db, sql: "SELECT * FROM pending_actions WHERE \(predicate) ORDER BY action_seq", arguments: arguments)
+        }
+        var readable: [OutboxRow] = []
+        var badIDs: [String] = []
+        for row in rows {
+            if let outboxRow = Self.outboxRow(row) {
+                readable.append(outboxRow)
+            } else {
+                badIDs.append(row["action_id"])
+            }
+        }
+        let newBadIDs = badIDs
+        let firstSeen = corruptPending.withLock { seen -> [String] in
+            newBadIDs.filter { seen.insert($0).inserted }
+        }
+        for id in firstSeen {
+            logger.warning("unreadable ordered pending_actions row skipped: \(id, privacy: .public)")
+        }
+        return readable
+    }
+
+    private static func pruneHandledControls(_ db: Database, before date: Date) throws {
+        try db.execute(
+            sql: "DELETE FROM handled_controls WHERE handled_at < ?", arguments: [date.timeIntervalSince1970])
+    }
+
+    private static func nextActionSeq(_ db: Database) throws -> UInt64 {
+        guard let raw = try meta(db, actionSeqNextKey) else { return 1 }
+        guard let seq = UInt64(raw), seq >= 1 else { throw ReplicaOutboxError.unreadableCounter(raw) }
+        return seq
+    }
+
+    private static func meta(_ db: Database, _ key: String) throws -> String? {
+        try String.fetchOne(db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [key])
+    }
+
+    private static func setMeta(_ db: Database, _ key: String, _ value: String) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO replica_meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+            arguments: [key, value])
+    }
+
+    private static func placeholders(_ count: Int) -> String {
+        Array(repeating: "?", count: count).joined(separator: ", ")
+    }
+
+    /// nil for a row whose ordered columns do not read (never written so by this module).
+    private static func outboxRow(_ row: Row) -> OutboxRow? {
+        guard let seq = row["action_seq"] as Int64?, let epoch = row["epoch"] as Int64?,
+              let wireName = row["wire_name"] as String?,
+              let delivery = (row["delivery"] as String?).flatMap(Delivery.init(rawValue:)),
+              let envelope = row["payload"] as Data?
+        else { return nil }
+        return OutboxRow(
+            actionID: row["action_id"], actionSeq: UInt64(seq), epoch: UInt32(truncatingIfNeeded: epoch),
+            wireName: wireName, envelope: envelope, delivery: delivery,
+            recordSeq: (row["record_seq"] as Int64?).map { UInt64($0) },
+            sentAt: (row["sent_at"] as Double?).map(Date.init(timeIntervalSince1970:)))
+    }
+}

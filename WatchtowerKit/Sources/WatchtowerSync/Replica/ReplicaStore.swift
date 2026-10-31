@@ -126,7 +126,8 @@ public final class ReplicaStore: Sendable {
             guard stored != Self.format else { return false }
             // `pending_actions` (whose pre-E2E rows the `wire_name` upgrade
             // below drops), `phone_recordings` (with marks), the alert
-            // watermark and `envelope_seq_ceiling` (F29) stay.
+            // watermark, `envelope_seq_ceiling` (F29), the ordered-actions flag and counter, and the control
+            // tables (`outbound_controls`, `handled_controls`) stay.
             try db.execute(sql: "DROP TABLE IF EXISTS slice_records; DROP TABLE IF EXISTS slice_assets; DROP TABLE IF EXISTS data_seen")
             try db.execute(
                 sql: "DELETE FROM replica_meta WHERE key IN (?, ?)", arguments: [Self.dataTokenKey, Self.relayTokenKey])
@@ -163,8 +164,10 @@ public final class ReplicaStore: Sendable {
                     reason TEXT,
                     result BLOB,
                     echo_status TEXT,
-                    wire_name TEXT
+                    wire_name TEXT,
+                    \(Self.outboxColumnsSQL)
                 );
+                \(Self.outboxTablesSQL);
                 \(Self.phoneRecordingsTableSQL(name: "phone_recordings", ifNotExists: true));
                 CREATE TABLE IF NOT EXISTS phone_recording_marks (
                     recording_id TEXT NOT NULL
@@ -229,6 +232,7 @@ public final class ReplicaStore: Sendable {
         if !pendingColumns.contains("echo_status") {
             try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN echo_status TEXT")
         }
+        try upgradeOutboxColumns(db, existing: pendingColumns)
         // Mobile E2E: `payload` is the sealed envelope sent under `wire_name`. A row from before holds a
         // plaintext action for a hub the hard cut removed (no echo can ever come): dropped, so no plaintext
         // action stays at rest.
