@@ -69,6 +69,8 @@ type Options struct {
 	// afterReap runs once a child is reaped, before its output drains and
 	// its exit is recorded (tests only: holds the drain window open).
 	afterReap func()
+	// checkTimeout replaces CheckTimeout (tests only).
+	checkTimeout time.Duration
 }
 
 // Server owns hosted sessions and serves clients over a listener.
@@ -91,6 +93,9 @@ func NewServer(opts Options) *Server {
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.checkTimeout <= 0 {
+		opts.checkTimeout = CheckTimeout
 	}
 	return &Server{
 		opts:     opts,
@@ -312,8 +317,7 @@ func (s *Server) handle(c *conn) {
 				c.sendError("input: not attached to a session")
 				continue
 			}
-			bound.ownerInput(p)
-			if _, err := bound.ptmx.Write(p); err != nil {
+			if err := bound.writeOwnerInput(p); err != nil {
 				c.sendError(fmt.Sprintf("input: %v", err))
 			}
 		case Resize:
@@ -326,6 +330,10 @@ func (s *Server) handle(c *conn) {
 			s.inputTo(c, p)
 		case PromptHint:
 			s.promptHint(c, p)
+		case Deliver:
+			s.deliver(c, p)
+		case DeliverCheckReply:
+			c.answerCheck(p)
 		case Stop:
 			s.stop(c, p)
 		default:
@@ -454,7 +462,10 @@ func (s *Server) inputTo(c *conn, p []byte) {
 	if sess == nil {
 		return
 	}
-	if _, err := sess.ptmx.Write(req.Data); err != nil {
+	sess.wmu.Lock()
+	_, err := sess.ptmx.Write(req.Data)
+	sess.wmu.Unlock()
+	if err != nil {
 		c.sendError(fmt.Sprintf("input_to: %v", err))
 	}
 }
@@ -654,6 +665,10 @@ type conn struct {
 	finishing atomic.Bool
 	// bound: the connection launched or attached a session (Server.mu).
 	bound bool
+	// checks: this connection's deliveries waiting for a
+	// DeliverCheckReply, by request id.
+	checksMu sync.Mutex
+	checks   map[string]chan DeliverCheckReplyMsg
 }
 
 func newConn(nc net.Conn) *conn {

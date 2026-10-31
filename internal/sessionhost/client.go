@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -24,7 +25,7 @@ func (e *HostError) Error() string { return "sessionhost: " + e.Message }
 const v1Refusal = "(host speaks 1)"
 
 // Client is a non-attaching v2 client: it lists, launches detached, types
-// with InputTo, hints and stops, and never binds its connection to a
+// with InputTo, delivers lines (Deliver), hints and stops, and never binds its connection to a
 // session, so it never takes a pane over. Calls are serialised.
 type Client struct {
 	mu  sync.Mutex
@@ -214,12 +215,18 @@ func (c *Client) exchangeLocked(t FrameType, p []byte, want FrameType) (FrameTyp
 
 // readUntil reads until want (returned) or an Error (a *HostError).
 func (c *Client) readUntil(want FrameType) (FrameType, []byte, error) {
+	return c.readUntilAny(want)
+}
+
+// readUntilAny reads until one of want (returned) or an Error (a
+// *HostError).
+func (c *Client) readUntilAny(want ...FrameType) (FrameType, []byte, error) {
 	for {
 		ft, rp, err := ReadFrame(c.nc)
 		if err != nil {
 			return 0, nil, err
 		}
-		if ft == want {
+		if slices.Contains(want, ft) {
 			return ft, rp, nil
 		}
 		if ft == Error {

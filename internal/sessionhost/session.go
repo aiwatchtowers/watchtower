@@ -46,6 +46,12 @@ type session struct {
 	signal    func(pgid int, sig syscall.Signal) error // Stop's group signal
 	afterReap func()                                   // test hook: between reap and drain
 
+	// wmu orders writes to the PTY: an owner's Input (with its prompt
+	// update), an InputTo and a delivery's decide-then-write steps, so no
+	// owner key lands between a delivery's prompt read and its bytes. Never
+	// held while waiting for anything but the write; taken before mu.
+	wmu sync.Mutex
+
 	mu     sync.Mutex // guards the fields below
 	modes  ModeTracker
 	conn   *conn
@@ -145,6 +151,18 @@ func (s *session) wait() *int {
 		return nil
 	}
 	return &code
+}
+
+// writeOwnerInput records an attached client's Input in the prompt state and
+// writes it to the PTY, in one step under wmu.
+func (s *session) writeOwnerInput(b []byte) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	s.ownerInput(b)
+	if _, err := s.ptmx.Write(b); err != nil {
+		return err //nolint:wrapcheck // the caller names the operation
+	}
+	return nil
 }
 
 // ownerInput feeds one chunk of the owner's typing — an attached client's
