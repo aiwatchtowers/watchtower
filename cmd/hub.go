@@ -18,10 +18,10 @@ import (
 const hubDirEnv = hub.EnvHubDir
 
 // hubCmd is the `watchtower hub …` parent (Go hub spec §10). This file holds
-// the parent, the hub dir, and the two ways a verb writes the sidecar: under
-// the hub lock when no hub runs, or over the running hub's control socket
-// (hub_link.go). The recording verbs and the Desktop heartbeat are in
-// hub_recording.go.
+// the parent, the hub dir, and the one write rule every verb follows: under
+// the hub lock when no hub runs, else over the lock holder's control socket.
+// The link verbs are in hub_link.go, the recording verbs and the Desktop
+// heartbeat in hub_recording.go.
 var hubCmd = &cobra.Command{
 	Use:   "hub",
 	Short: "The phone hub (Go hub POC)",
@@ -46,47 +46,16 @@ func hubDir() (string, error) {
 	return dir, nil
 }
 
-// withHubState opens the sidecar under the hub lock for one write and
-// releases both. The control socket carries no recording or heartbeat op, so
-// while a hub holds the lock these verbs say so instead of writing beside it.
-func withHubState(fn func(dir string, st *state.Store) error) error {
-	dir, err := hubDir()
-	if err != nil {
-		return err
-	}
-	var lock *state.Lock
-	deadline := time.Now().Add(hubLockWait)
-	for {
-		lock, err = state.AcquireLock(dir)
-		if !errors.Is(err, state.ErrLocked) || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if errors.Is(err, state.ErrLocked) {
-		return errors.New("a hub holds this state dir and its control socket does not carry this verb")
-	}
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Release() }()
-	st, err := hubOpenState(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-	return fn(dir, st)
-}
-
-// hubWrite runs one owner write so the sidecar never has two writers: with
-// the hub lock in hand (no hub runs) direct writes the sidecar; on
-// ErrLocked req goes over <dir>/hub.sock to the hub that holds it. Another
+// hubWrite runs one write so the sidecar never has two writers: with the
+// hub lock in hand (no hub runs) direct writes the sidecar; on ErrLocked req
+// goes over <dir>/hub.sock to the process that holds it, which writes. Another
 // CLI's brief hold is retried until hubLockWait. A refusal (an answer's
-// error class, from the hub or from direct) comes back as an error.
-func hubWrite(req hub.ControlRequest, direct func(dir string, st *state.Store) (hub.ControlAnswer, error)) error {
+// error class, from the hub or from direct) comes back as an error beside
+// the answer.
+func hubWrite(req hub.ControlRequest, direct func(dir string, st *state.Store) (hub.ControlAnswer, error)) (hub.ControlAnswer, error) {
 	dir, err := hubDir()
 	if err != nil {
-		return err
+		return hub.ControlAnswer{}, err
 	}
 	deadline := time.Now().Add(hubLockWait)
 	for {
@@ -94,23 +63,23 @@ func hubWrite(req hub.ControlRequest, direct func(dir string, st *state.Store) (
 		if err == nil {
 			a, err := hubWriteDirect(dir, lock, direct)
 			if err != nil {
-				return err
+				return a, err
 			}
-			return hubAnswerError(a)
+			return a, hubAnswerError(a)
 		}
 		if !errors.Is(err, state.ErrLocked) {
-			return err
+			return hub.ControlAnswer{}, err
 		}
 		if c, derr := hub.Dial(dir); derr == nil {
 			a, err := c.Do(req)
 			_ = c.Close()
 			if err != nil {
-				return fmt.Errorf("the hub did not answer: %w", err)
+				return a, fmt.Errorf("the hub did not answer: %w", err)
 			}
-			return hubAnswerError(a)
+			return a, hubAnswerError(a)
 		}
 		if time.Now().After(deadline) {
-			return errors.New("the hub state dir is locked and no hub answers on its control socket")
+			return hub.ControlAnswer{}, errors.New("the hub state dir is locked and no hub answers on its control socket")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -138,8 +107,13 @@ func hubAnswerError(a hub.ControlAnswer) error {
 	case hub.ErrClassPolicyOff:
 		return errors.New("the MobileSync policy is off: the hub cannot be turned on")
 	case hub.ErrClassHubOff:
-		// The lock holder runs but its hub is off (disabled, policy, starting).
-		return errors.New("the hub is off: turn it on (hub enable) to change a phone")
+		return errors.New("the hub is not running")
+	case hub.ErrClassNoIdentity:
+		return errors.New("this hub dir has no hub identity: start the hub once to unlink the phone")
+	case hub.ErrClassNoJob:
+		return errors.New("no recording job with that upload id")
+	case hub.ErrClassJobState:
+		return errors.New("the recording job is not in a state that allows this")
 	case hub.ErrClassBadRequest:
 		return errors.New("the hub refused the request as malformed")
 	}

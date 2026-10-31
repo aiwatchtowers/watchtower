@@ -102,6 +102,10 @@ type (
 	}
 )
 
+// hubPairAfterConfirm bounds the wait for linked or refused once the
+// owner's answer is sent; past it the stream ends refused expired_code.
+var hubPairAfterConfirm = time.Minute
+
 // hubPairGrace is how long past the code's expiry a pairing with no phone
 // yet waits before it ends refused expired_code.
 var hubPairGrace = time.Minute
@@ -207,13 +211,10 @@ func runHubUnlink(cmd *cobra.Command, args []string) error {
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	device := strings.ToUpper(args[0])
-	err := hubWrite(hub.ControlRequest{Op: hub.OpUnlink, Device: device},
+	_, err := hubWrite(hub.ControlRequest{Op: hub.OpUnlink, Device: device},
 		func(dir string, st *state.Store) (hub.ControlAnswer, error) {
 			if err := hub.UnlinkOffline(dir, st, device, hubNow); err != nil {
-				if errors.Is(err, state.ErrNoDevice) {
-					return hub.ControlAnswer{Error: hub.ErrClassNoDevice}, nil
-				}
-				return hub.ControlAnswer{}, err
+				return hub.ControlAnswer{Error: hub.LinkErrClass(err)}, nil // worded as over the socket
 			}
 			return hub.ControlAnswer{OK: true, DeviceID: device}, nil
 		})
@@ -235,13 +236,10 @@ func runHubAllow(cmd *cobra.Command, args []string) error {
 	default:
 		return hubAnswerError(hub.ControlAnswer{Error: hub.ErrClassUnknownGrant})
 	}
-	err := hubWrite(hub.ControlRequest{Op: hub.OpAllow, Device: device, Grant: grant, On: on},
+	_, err := hubWrite(hub.ControlRequest{Op: hub.OpAllow, Device: device, Grant: grant, On: on},
 		func(_ string, st *state.Store) (hub.ControlAnswer, error) {
 			if err := hub.AllowOffline(st, device, link.Grant(grant), on, hubNow); err != nil {
-				if errors.Is(err, state.ErrNoDevice) {
-					return hub.ControlAnswer{Error: hub.ErrClassNoDevice}, nil
-				}
-				return hub.ControlAnswer{}, err
+				return hub.ControlAnswer{Error: hub.LinkErrClass(err)}, nil
 			}
 			return hub.ControlAnswer{OK: true}, nil
 		})
@@ -264,7 +262,7 @@ func runHubName(cmd *cobra.Command, args []string) error {
 	if name == "" || len([]rune(name)) > wire.MaxMacNameLength {
 		return fmt.Errorf("the hub name must be 1 to %d characters", wire.MaxMacNameLength)
 	}
-	err := hubWrite(hub.ControlRequest{Op: hub.OpName, Name: name},
+	_, err := hubWrite(hub.ControlRequest{Op: hub.OpName, Name: name},
 		func(_ string, st *state.Store) (hub.ControlAnswer, error) {
 			return hub.ControlAnswer{OK: true, Name: name}, st.SetMeta(state.MetaDisplayName, name)
 		})
@@ -288,7 +286,7 @@ func runHubSetEnabled(on bool) func(*cobra.Command, []string) error {
 		if on {
 			op = hub.OpEnable
 		}
-		err := hubWrite(hub.ControlRequest{Op: op},
+		_, err := hubWrite(hub.ControlRequest{Op: op},
 			func(_ string, st *state.Store) (hub.ControlAnswer, error) {
 				// The running hub's own rule: on is refused while the policy is off.
 				if on && policy.MobileSync() == policy.MobileOff {
@@ -353,6 +351,10 @@ func runHubPair(cmd *cobra.Command, _ []string) error {
 			if a.Error == hub.ErrClassHubOff {
 				return errors.New("the hub is not running")
 			}
+			if a.Op == hub.OpConfirm && (a.Error == hub.ErrClassNoCode || a.Error == hub.ErrClassNoRequest) {
+				// The request expired while the owner looked at the code.
+				return hubPrint(cmd, true, hubPairRefused{Event: link.EventRefused, Reason: wire.RefusedExpiredCode}, "")
+			}
 			if err := hubAnswerError(a); err != nil {
 				return err
 			}
@@ -386,6 +388,7 @@ func runHubPair(cmd *cobra.Command, _ []string) error {
 			if err := c.Send(hub.ControlRequest{Op: hub.OpConfirm, Device: device, Confirm: readPairConfirm(in)}); err != nil {
 				return fmt.Errorf("the hub closed the pairing: %w", err)
 			}
+			_ = c.SetReadDeadline(time.Now().Add(hubPairAfterConfirm))
 		case link.EventLinked:
 			if device == "" || !strings.EqualFold(a.DeviceID, device) {
 				continue

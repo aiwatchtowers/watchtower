@@ -57,7 +57,9 @@ func Open(dir string) (*Store, error) {
 // OpenReadOnly opens an existing <dir>/hubstate.db for reading only (the
 // CLI's `hub phones` beside a running hub): no dir or file is created, no
 // migration runs, and a statement that writes fails (query_only). A dir with
-// no sidecar yet returns an error wrapping fs.ErrNotExist.
+// no sidecar yet returns an error wrapping fs.ErrNotExist. Through
+// db.OpenExisting it also points this process's lock-metrics sink at the hub
+// dir (harmless: nothing query_only is timed).
 func OpenReadOnly(dir string) (*Store, error) {
 	path := filepath.Join(dir, FileName)
 	if _, err := os.Stat(path); err != nil {

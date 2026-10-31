@@ -411,3 +411,92 @@ func TestHubPairStreamEvents(t *testing.T) {
 		require.NoError(t, p.wait(t))
 	})
 }
+
+// countStateOpens counts direct sidecar opens for writing until the test ends.
+func countStateOpens(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var opens atomic.Int32
+	orig := hubOpenState
+	hubOpenState = func(d string) (*state.Store, error) { opens.Add(1); return orig(d) }
+	t.Cleanup(func() { hubOpenState = orig })
+	return &opens
+}
+
+// TestHubDesktopVerbsGoThroughRunningHub: spec §8 p. 4a — while a hub runs
+// it writes Desktop's heartbeat and the recording jobs, so the sidecar keeps
+// one writer.
+func TestHubDesktopVerbsGoThroughRunningHub(t *testing.T) {
+	dir := hubShortDir(t)
+	setHubMeta(t, dir, state.MetaEnabled, "1")
+	queueJob(t, dir, "u-1")
+	startTestHub(t, dir)
+	waitHubState(t, dir, hub.StateRunning)
+	opens := countStateOpens(t)
+
+	out, err := runHub(t, "desktop", "heartbeat", "--json")
+	require.NoError(t, err)
+	assert.NotEmpty(t, decodeKeys(t, out)["desktop_at"])
+	st, err := state.OpenReadOnly(dir)
+	require.NoError(t, err)
+	fresh, seen, err := st.DesktopHost(time.Now())
+	_ = st.Close()
+	require.NoError(t, err)
+	assert.True(t, fresh && seen, "the heartbeat landed")
+
+	out, err = runHub(t, "recording", "claim", "--upload", "u-1", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.Equal(t, state.RecordingClaimed, m["status"])
+	assert.Equal(t, filepath.Join(dir, "recordings", "u-1.m4a"), m["audio_path"])
+	out, err = runHub(t, "recording", "finish", "--upload", "u-1", "--transcript", "7", "--json")
+	require.NoError(t, err)
+	m = decodeKeys(t, out)
+	assert.Equal(t, state.RecordingDone, m["status"])
+	assert.EqualValues(t, 7, m["transcript_id"])
+	_, err = runHub(t, "recording", "claim", "--upload", "nope")
+	assert.ErrorContains(t, err, "no recording job")
+	assert.Zero(t, opens.Load(), "the CLI never opened the sidecar for writing")
+}
+
+// TestHubLinkVerbsWhileHubDisabled: the lock holder runs no hub (disabled),
+// so allow and unlink are decided offline by it — never hub_off, still one
+// writer.
+func TestHubLinkVerbsWhileHubDisabled(t *testing.T) {
+	dir := hubShortDir(t)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	ident, err := identity.New()
+	require.NoError(t, err)
+	require.NoError(t, identity.FileStore{Path: filepath.Join(dir, identity.FileName)}.Save(ident))
+	id := linkTestPhone(t, dir)
+	startTestHub(t, dir)
+	waitFor(t, "the hub off (disabled)", func() bool {
+		s, err := hub.ReadStatus(dir)
+		return err == nil && s.State == hub.StateOff && s.Reason == hub.ReasonDisabled
+	})
+	opens := countStateOpens(t)
+
+	out, err := runHub(t, "allow", id, "permissions", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, true, decodeKeys(t, out)["allowed"])
+	out, err = runHub(t, "unlink", id, "--json")
+	require.NoError(t, err)
+	assert.Equal(t, true, decodeKeys(t, out)["unlinked"])
+	_, err = runHub(t, "unlink", id)
+	assert.ErrorContains(t, err, "no such phone")
+	assert.Zero(t, opens.Load(), "the CLI never opened the sidecar for writing")
+	out, err = runHub(t, "phones", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "[]", strings.TrimSpace(out))
+}
+
+// TestHubUnlinkRefusalWordedAlikeOffline: the direct path words a refusal
+// through the socket's class, so both read the same.
+func TestHubUnlinkRefusalWordedAlikeOffline(t *testing.T) {
+	dir := hubTestDir(t)
+	linkTestPhone(t, dir) // no identity file
+	_, err := runHub(t, "unlink", "00000000-0000-0000-0000-000000000000")
+	assert.EqualError(t, err, hubAnswerError(hub.ControlAnswer{Error: hub.ErrClassNoDevice}).Error())
+	id := linkTestPhone(t, dir)
+	_, err = runHub(t, "unlink", id)
+	assert.EqualError(t, err, hubAnswerError(hub.ControlAnswer{Error: hub.ErrClassNoIdentity}).Error())
+}

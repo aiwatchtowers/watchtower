@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/hub"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/state"
 )
@@ -82,14 +83,32 @@ func runHubDesktopHeartbeat(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
-	now := hubNow()
-	return withHubState(func(_ string, st *state.Store) error {
-		if err := st.Heartbeat(now); err != nil {
-			return err
-		}
-		at := now.UTC().Format(time.RFC3339)
-		return hubPrint(cmd, asJSON, hubHeartbeatJSON{DesktopAt: at}, "desktop heartbeat at "+at)
+	a, err := hubWrite(hub.ControlRequest{Op: hub.OpDesktopHeartbeat}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
+		now := hubNow()
+		return hub.ControlAnswer{OK: true, At: &now}, st.Heartbeat(now)
 	})
+	if err != nil {
+		return err
+	}
+	if a.At == nil {
+		return errors.New("the hub did not say when it wrote the heartbeat")
+	}
+	at := a.At.UTC().Format(time.RFC3339)
+	return hubPrint(cmd, asJSON, hubHeartbeatJSON{DesktopAt: at}, "desktop heartbeat at "+at)
+}
+
+// hubJobAnswer is a recording job as the direct path answers it, in the
+// control socket's shape.
+func hubJobAnswer(job state.RecordingJob, err error) (hub.ControlAnswer, error) {
+	switch {
+	case errors.Is(err, state.ErrNoRecordingJob):
+		return hub.ControlAnswer{Error: hub.ErrClassNoJob}, nil
+	case errors.Is(err, state.ErrJobState):
+		return hub.ControlAnswer{Error: hub.ErrClassJobState}, nil
+	case err != nil:
+		return hub.ControlAnswer{}, err
+	}
+	return hub.ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}, nil
 }
 
 func runHubRecordingClaim(cmd *cobra.Command, _ []string) error {
@@ -101,15 +120,19 @@ func runHubRecordingClaim(cmd *cobra.Command, _ []string) error {
 	if upload == "" {
 		return errors.New("usage: watchtower hub recording claim --upload <id>")
 	}
-	return withHubState(func(dir string, st *state.Store) error {
-		job, err := st.ClaimRecording(upload, hubNow())
-		if err != nil {
-			return recordingJobError(upload, err)
-		}
-		path := handlers.RecordingAudioPath(handlers.RecordingsDirUnder(dir), job.UploadID)
-		return hubPrint(cmd, asJSON, hubClaimJSON{UploadID: job.UploadID, AudioPath: path, Status: job.Status},
-			"claimed "+job.UploadID+": "+path)
+	a, err := hubWrite(hub.ControlRequest{Op: hub.OpRecordingClaim, Upload: upload}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
+		return hubJobAnswer(st.ClaimRecording(upload, hubNow()))
 	})
+	if err != nil {
+		return err
+	}
+	dir, err := hubDir()
+	if err != nil {
+		return err
+	}
+	path := handlers.RecordingAudioPath(handlers.RecordingsDirUnder(dir), a.UploadID)
+	return hubPrint(cmd, asJSON, hubClaimJSON{UploadID: a.UploadID, AudioPath: path, Status: a.Status},
+		"claimed "+a.UploadID+": "+path)
 }
 
 func runHubRecordingFinish(cmd *cobra.Command, _ []string) error {
@@ -134,25 +157,19 @@ func runHubRecordingFinish(cmd *cobra.Command, _ []string) error {
 		}
 		tid = &v
 	}
-	return withHubState(func(_ string, st *state.Store) error {
-		job, err := st.FinishRecording(upload, tid, errClass, hubNow())
-		if err != nil {
-			return recordingJobError(upload, err)
-		}
-		line := "finished " + job.UploadID + ": " + job.Status
-		if job.TranscriptID != nil {
-			line += " (transcript " + strconv.FormatInt(*job.TranscriptID, 10) + ")"
-		}
-		return hubPrint(cmd, asJSON, hubFinishJSON{UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}, line)
-	})
-}
-
-func recordingJobError(upload string, err error) error {
-	switch {
-	case errors.Is(err, state.ErrNoRecordingJob):
-		return fmt.Errorf("no recording job %q", upload)
-	case errors.Is(err, state.ErrJobState):
-		return fmt.Errorf("recording job %q is not in a state that allows this", upload)
+	if errClass != "" {
+		errClass = state.ErrorClass(errClass) // only the class goes on: never text
 	}
-	return err
+	req := hub.ControlRequest{Op: hub.OpRecordingFinish, Upload: upload, TranscriptID: tid, ErrorClass: errClass}
+	a, err := hubWrite(req, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
+		return hubJobAnswer(st.FinishRecording(upload, tid, errClass, hubNow()))
+	})
+	if err != nil {
+		return err
+	}
+	line := "finished " + a.UploadID + ": " + a.Status
+	if a.TranscriptID != nil {
+		line += " (transcript " + strconv.FormatInt(*a.TranscriptID, 10) + ")"
+	}
+	return hubPrint(cmd, asJSON, hubFinishJSON{UploadID: a.UploadID, Status: a.Status, TranscriptID: a.TranscriptID}, line)
 }

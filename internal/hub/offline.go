@@ -13,9 +13,10 @@ import (
 	"watchtower/internal/hub/transport"
 )
 
-// The link changes a CLI makes while no hub runs (`hub unlink`, `hub allow`
-// with the hub lock in hand): the same link.Center decisions the running
-// hub makes, over the caller's store. Their device_grant records are
+// The link changes made while no hub runs: by a CLI holding the hub lock
+// (`hub unlink`, `hub allow`), or by a Run whose hub is off, for a request on
+// its control socket. The same link.Center decisions the running hub makes,
+// over the caller's store. Their device_grant records are
 // published by the next hub start, which publishes from the sidecar.
 
 // ErrIdentityMissing is returned when the dir has a linked phone but no hub
