@@ -48,7 +48,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         _ hubID: String,
         base: URL,
         transport: InMemoryCloudTransport = InMemoryCloudTransport(),
-        scope: CloudDatabaseScope? = nil,
+        route: HubRoute? = nil,
         clock: MutableClock = MutableClock(),
         remote: RemoteFetchRecorder? = nil,
         keys: PhoneKeys?? = nil,
@@ -76,7 +76,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
             defaults: try makeDefaults(),
             recordingsDirectory: paths.recordingsDirectory(hubID),
             hold: RecordingHold(directory: paths.holdDirectory),
-            databaseScope: scope,
+            route: route,
             startsActive: startsActive,
             makeRecorder: { uploader in
                 PhoneRecorderController(
@@ -202,9 +202,9 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let remoteA = RemoteFetchRecorder()
         let remoteB = RemoteFetchRecorder()
         let transportB = InMemoryCloudTransport()
-        let hubA = try makeSession(TestHub.hubA, base: base, scope: .private, remote: remoteA)
+        let hubA = try makeSession(TestHub.hubA, base: base, route: .cloudKit(.private), remote: remoteA)
         let hubB = try makeSession(
-            TestHub.hubB, base: base, transport: transportB, scope: .shared(ownerName: "_owner-acme"), remote: remoteB
+            TestHub.hubB, base: base, transport: transportB, route: .cloudKit(.shared(ownerName: "_owner-acme")), remote: remoteB
         )
         let env = try makeEnvironment([hubA, hubB])
         try await bootAll(env)
@@ -241,9 +241,9 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let base = try makeBase()
         let remoteA = RemoteFetchRecorder()
         let remoteB = RemoteFetchRecorder()
-        let hubA = try makeSession(TestHub.hubA, base: base, scope: .private, remote: remoteA, startsActive: false)
+        let hubA = try makeSession(TestHub.hubA, base: base, route: .cloudKit(.private), remote: remoteA, startsActive: false)
         let hubB = try makeSession(
-            TestHub.hubB, base: base, scope: .shared(ownerName: "_owner-acme"), remote: remoteB, startsActive: false
+            TestHub.hubB, base: base, route: .cloudKit(.shared(ownerName: "_owner-acme")), remote: remoteB, startsActive: false
         )
         let env = try makeEnvironment([hubA, hubB])
         let arrivedAt = Date()

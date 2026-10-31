@@ -72,20 +72,20 @@ final class HubRegistryTests: XCTestCase {
         do {
             let registry = try HubRegistry(path: path)
             try registry.savePendingFarewell(PendingFarewell(
-                hubID: "hub-a", scope: .shared(ownerName: "_owner-acme"), userRecordName: "_colleague-a", record: record, since: since
+                hubID: "hub-a", route: .cloudKit(.shared(ownerName: "_owner-acme")), userRecordName: "_colleague-a", record: record, since: since
             ))
             try registry.savePendingFarewell(PendingFarewell(
-                hubID: "hub-b", scope: .private, userRecordName: "_owner-acme", record: record, since: since.addingTimeInterval(1)
+                hubID: "hub-b", route: .cloudKit(.private), userRecordName: "_owner-acme", record: record, since: since.addingTimeInterval(1)
             ))
         }
         let reopened = try HubRegistry(path: path)
         let kept = try reopened.pendingFarewells()
         XCTAssertEqual(kept.map(\.hubID), ["hub-a", "hub-b"])
-        XCTAssertEqual(kept.first?.scope, .shared(ownerName: "_owner-acme"))
+        XCTAssertEqual(kept.first?.route, .cloudKit(.shared(ownerName: "_owner-acme")))
         XCTAssertEqual(kept.first?.userRecordName, "_colleague-a")
         XCTAssertEqual(kept.first?.record, record)
         XCTAssertEqual(kept.first?.since, since)
-        XCTAssertEqual(kept.last?.scope, .private)
+        XCTAssertEqual(kept.last?.route, .cloudKit(.private))
 
         try reopened.removePendingFarewell("hub-a")
         XCTAssertEqual(try reopened.pendingFarewells().map(\.hubID), ["hub-b"])
@@ -125,6 +125,45 @@ final class HubRegistryTests: XCTestCase {
         XCTAssertNil(try registry.activeHubID)
     }
 
+    private func farewell(_ hub: String, route: HubRoute, since: TimeInterval) -> PendingFarewell {
+        PendingFarewell(
+            hubID: hub, route: route, userRecordName: "_owner-acme",
+            record: CloudRecord(
+                recordName: "wire-\(hub)", zone: .relay, kind: "wt",
+                modifiedAt: Date(timeIntervalSince1970: 1), payload: Data([1])
+            ),
+            since: Date(timeIntervalSince1970: since)
+        )
+    }
+
+    func testAKeptFarewellReadsBackWithItsRoute() throws {
+        let registry = try HubRegistry.inMemory()
+        let shared = HubRoute.cloudKit(.shared(ownerName: "_owner-acme"))
+        try registry.savePendingFarewell(farewell("hub-a", route: .cloudKit(.private), since: 10))
+        try registry.savePendingFarewell(farewell("hub-b", route: shared, since: 20))
+        XCTAssertEqual(try registry.pendingFarewells().map(\.route), [.cloudKit(.private), shared])
+    }
+
+    func testAHostedRelayFarewellIsRefusedAndNothingIsKept() throws {
+        let registry = try HubRegistry.inMemory()
+        XCTAssertThrowsError(
+            try registry.savePendingFarewell(farewell("hub-a", route: .hostedRelay(macDeviceID: "mac-acme"), since: 10))
+        ) { XCTAssertEqual($0 as? HubRegistryError, .unsupportedRoute) }
+        XCTAssertTrue(try registry.pendingFarewells().isEmpty)
+    }
+
+    func testASavedLinkKeepsItsRoute() throws {
+        func decoded(_ scope: String) throws -> LinkRecord {
+            let json = """
+                {"hubID":"hub-a","macName":"Acme Mac","scope":"\(scope)","ownerName":"_owner-acme",
+                 "userRecordName":"_owner-acme","nonce":"n"}
+                """
+            return try JSONDecoder().decode(LinkRecord.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(try decoded("shared").route, .cloudKit(.shared(ownerName: "_owner-acme")))
+        XCTAssertEqual(try decoded("private").route, .cloudKit(.private))
+    }
+
     func testSharedScopeRoundTrips() throws {
         let registry = try HubRegistry.inMemory()
         let shared = LinkRecord(
@@ -134,7 +173,7 @@ final class HubRegistryTests: XCTestCase {
         )
         try registry.upsert(shared, now: Date())
         XCTAssertEqual(try registry.row("hub-home")?.link, shared)
-        XCTAssertEqual(try registry.row("hub-home")?.link.databaseScope, .shared(ownerName: "_owner-home"))
+        XCTAssertEqual(try registry.row("hub-home")?.link.route, .cloudKit(.shared(ownerName: "_owner-home")))
     }
 
     func testDuplicateMacNamesGetAHubSuffix() {

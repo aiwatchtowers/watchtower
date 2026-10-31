@@ -30,7 +30,7 @@ final class AppRootWiringTests: XCTestCase {
 
     /// Every session the factory built, with its database, hub and
     /// in-memory transport (nil over a persistent store).
-    private var built: [(session: HubSession, scope: CloudDatabaseScope, hubID: String, transport: InMemoryCloudTransport?)] = []
+    private var built: [(session: HubSession, route: HubRoute, hubID: String, transport: InMemoryCloudTransport?)] = []
     /// The factory gives sessions no keys (a test of a link made before E2E).
     private var withholdKeys = false
     /// Every session's recorder runs on this engine and clock: no audio.
@@ -106,7 +106,7 @@ final class AppRootWiringTests: XCTestCase {
         let keyStore = try XCTUnwrap(keyStore)
         let engine = engine
         let clock = clock
-        return HubSessionFactory { [weak self] _, hubID, scope, device in
+        return HubSessionFactory { [weak self] _, hubID, route, device in
             try paths.prepare(hubID)
             if self?.failingHubs.contains(hubID) == true {
                 throw CocoaError(.fileReadCorruptFile)
@@ -117,7 +117,7 @@ final class AppRootWiringTests: XCTestCase {
             if persistentTransport {
                 let store = try TransportStore(path: paths.transportStorePath(hubID))
                 transportStore = store
-                transport = CloudKitTransport(store: store, scope: scope, hubID: hubID, role: .phone)
+                transport = CloudKitTransport(store: store, scope: try XCTUnwrap(route.cloudKitScope), hubID: hubID, role: .phone)
             } else {
                 let created = InMemoryCloudTransport()
                 memory = created
@@ -136,7 +136,7 @@ final class AppRootWiringTests: XCTestCase {
                 defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory),
-                databaseScope: scope
+                route: route
             ) { uploader in
                 PhoneRecorderController(
                     uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil
@@ -150,7 +150,7 @@ final class AppRootWiringTests: XCTestCase {
                 await session?.shutDown()
                 session?.closeDatabases()
             }
-            self?.built.append((session, scope, hubID, memory))
+            self?.built.append((session, route, hubID, memory))
             return session
         }
     }
@@ -487,7 +487,7 @@ final class AppRootWiringTests: XCTestCase {
         let kept = try XCTUnwrap(try registry.pendingFarewells().first, "the farewell outlives the replica")
         let queued = try XCTUnwrap(farewellChecks.last?.record)
         XCTAssertEqual(kept.hubID, TestHub.acme)
-        XCTAssertEqual(kept.scope, .private)
+        XCTAssertEqual(kept.route, .cloudKit(.private))
         XCTAssertEqual(kept.userRecordName, "_owner-acme")
         XCTAssertEqual(kept.record.recordName, queued.recordName, "the sealed record the queue held")
         XCTAssertEqual(kept.record.payload, queued.payload)
@@ -515,9 +515,9 @@ final class AppRootWiringTests: XCTestCase {
 
         let sealed = CloudRecord(recordName: "wire", zone: .relay, kind: WireKind.envelope, modifiedAt: Date(), payload: Data([1]))
         try registry.savePendingFarewell(PendingFarewell(
-            hubID: TestHub.acme, scope: .private, userRecordName: "_owner-acme", record: sealed, since: Date()
+            hubID: TestHub.acme, route: .cloudKit(.private), userRecordName: "_owner-acme", record: sealed, since: Date()
         ))
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: true)
         try await root.linked(linkRecord(), device: device)
 
         XCTAssertTrue(try registry.pendingFarewells().isEmpty)
@@ -693,7 +693,7 @@ final class AppRootWiringTests: XCTestCase {
 
         let launch = root.launch { nil }
         XCTAssertNotNil(root.orphanPass, "kept before the launch's first await")
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: true)
 
         // The launch's account check (`resumeLink`) holds its own work.
         XCTAssertEqual(workBegun.filter { $0 == "hub-orphans" }, ["hub-orphans"], "the pass held background work")
@@ -958,7 +958,7 @@ final class AppRootWiringTests: XCTestCase {
 
     func testPreparingAnotherScopeRebuildsTheCandidateOnAnEmptyReplica() async throws {
         let root = try makeRoot()
-        let candidate = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        let candidate = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: false)
         let first = try session(root, TestHub.acme)
         XCTAssertTrue((candidate as? SecureTransport) === (first.linkTransport as? SecureTransport), "the session's sealed transport")
         XCTAssertNil(root.env.activeHubID, "a candidate is not on screen")
@@ -972,16 +972,16 @@ final class AppRootWiringTests: XCTestCase {
         _ = await first.refresh(.pull)
         try await poll { (try? self.sliceCount(first)) == 1 }
 
-        let samePrivate = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        let samePrivate = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: false)
         XCTAssertTrue(root.env.session(TestHub.acme) === first, "the running scope needs no new session")
         XCTAssertTrue((samePrivate as? SecureTransport) === (first.linkTransport as? SecureTransport))
 
-        let shared = try await root.prepare(scope: .shared(ownerName: "_owner-acme"), hubID: TestHub.acme, fresh: false)
+        let shared = try await root.prepare(route: .cloudKit(.shared(ownerName: "_owner-acme")), hubID: TestHub.acme, fresh: false)
 
         let second = try session(root, TestHub.acme)
         XCTAssertFalse(second === first)
         XCTAssertFalse(first.isLooping, "the other scope's session is shut down")
-        XCTAssertEqual(built.last?.scope, .shared(ownerName: "_owner-acme"))
+        XCTAssertEqual(built.last?.route, .cloudKit(.shared(ownerName: "_owner-acme")))
         XCTAssertTrue((shared as? SecureTransport) === (second.linkTransport as? SecureTransport), "the new session's")
         XCTAssertEqual(try sliceCount(second), 0, "another database's data is not kept")
         XCTAssertEqual(built.count, 2)
@@ -989,7 +989,7 @@ final class AppRootWiringTests: XCTestCase {
 
     func testPreparingAnotherHubAddsItsOwnSessionOnItsOwnReplica() async throws {
         let root = try makeRoot()
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: false)
         let acme = try session(root, TestHub.acme)
         let now = Date()
         try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
@@ -1000,14 +1000,14 @@ final class AppRootWiringTests: XCTestCase {
         _ = await acme.refresh(.pull)
         try await poll { (try? self.sliceCount(acme)) == 1 }
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.home, fresh: false)
 
         let home = try session(root, TestHub.home)
         XCTAssertFalse(home === acme, "another hub is another pair of zones")
         XCTAssertEqual(try sliceCount(home), 0, "another hub's data is not shared")
         XCTAssertTrue(root.env.session(TestHub.acme) === acme, "the first one is left alone")
         XCTAssertEqual(try sliceCount(acme), 1)
-        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.home, fresh: false)
         XCTAssertEqual(built.count, 2, "the running hub needs no new session")
     }
 
@@ -1016,7 +1016,7 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()], frozen: [TestHub.acme])
         let frozen = try session(root, TestHub.acme)
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: false)
 
         XCTAssertFalse(root.env.session(TestHub.acme) === frozen)
         XCTAssertNil(try registry.row(TestHub.acme), "removed first, with its recordings held")
@@ -1025,7 +1025,7 @@ final class AppRootWiringTests: XCTestCase {
 
     func testFetchKeyboxReadsThisPhonesHydratedKeyboxOfThatHub() async throws {
         let root = try makeRoot()
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: false)
         // The boot's own first fetch done: a fetch coalesced into it would not see the save below.
         try await poll { (try? self.session(root, TestHub.acme))?.isBootstrapped == true }
         let grant = DeviceGrant(
@@ -1056,7 +1056,7 @@ final class AppRootWiringTests: XCTestCase {
         try paths.prepare(TestHub.orphan)
         try await HubBoot.removeOrphans(registry: registry, paths: paths, keeping: nil, factory: try makeFactory())
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: false)
         let payload = root.devicePayload(hubID: TestHub.acme, for: device, linkNonce: "nonce-acme", unlinked: false, now: Date())
 
         XCTAssertTrue(payload.typingRequested)
@@ -1068,7 +1068,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(defaults.object(forKey: "hub.\(TestHub.acme).device.startSessions") as? Bool, false)
         XCTAssertNil(defaults.object(forKey: "hub.unlinked.device.typingRequested"), "used up by the link")
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.home, fresh: false)
         let next = root.devicePayload(hubID: TestHub.home, for: device, linkNonce: "nonce-home", unlinked: false, now: Date())
         XCTAssertFalse(next.typingRequested, "the unlinked choice went to the first link only")
         XCTAssertTrue(next.startSessions)
@@ -1078,7 +1078,7 @@ final class AppRootWiringTests: XCTestCase {
     /// puts it on screen.
     func testLinkedAddsTheRowAndActivatesTheHub() async throws {
         let root = try makeRoot(links: [linkRecord()])
-        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.home, fresh: false)
         let home = try session(root, TestHub.home)
         XCTAssertNil(home.linkedDevice)
 
@@ -1096,7 +1096,7 @@ final class AppRootWiringTests: XCTestCase {
     /// the registry.
     func testLinkedRefusesAFifthHub() async throws {
         let root = try makeRoot(links: (1...HubRegistry.limit).map { linkRecord("hub-\($0)") })
-        _ = try await root.prepare(scope: .private, hubID: TestHub.fifth, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.fifth, fresh: false)
 
         do {
             try await root.linked(linkRecord(TestHub.fifth), device: device)
@@ -1154,7 +1154,7 @@ final class AppRootWiringTests: XCTestCase {
         )
         XCTAssertEqual(list.inProgress.map(\.state), [.heldForMac(nil)])
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: false)
         try await root.linked(linkRecord(), device: device)
 
         XCTAssertEqual(root.env.activeHubID, TestHub.acme)
@@ -1177,7 +1177,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(try session(root, TestHub.home).hubName, "Home Mac")
         await root.env.waitForBoot()
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.work, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.work, fresh: false)
         try await root.linked(linkRecord(TestHub.work, macName: "Acme Mac"), device: device)
 
         XCTAssertEqual(try session(root, TestHub.acme).hubName, "Acme Mac · \(TestHub.acme.prefix(4))")
@@ -1192,7 +1192,7 @@ final class AppRootWiringTests: XCTestCase {
         let id = try await saveVoiceNote(root)
         _ = await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil)
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.studio, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.studio, fresh: false)
         try await root.linked(linkRecord(TestHub.studio, macName: "Acme Studio"), device: device)
 
         let uploads = try await relayUploads(in: try transport(TestHub.studio), hub: TestHub.studio)
@@ -1561,7 +1561,7 @@ final class AppRootWiringTests: XCTestCase {
         await env.sendNow()
         env.recorder.close()
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.home, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.home, fresh: false)
         try await root.linked(linkRecord(TestHub.home, macName: "Home Mac"), device: device)
         XCTAssertEqual(env.activeHubID, TestHub.home)
         XCTAssertTrue(env.activeSession === env.session(TestHub.home), "a new hub on screen ends the retained one")
@@ -1683,7 +1683,7 @@ final class AppRootWiringTests: XCTestCase {
 
         XCTAssertEqual(root.linking.phase, .waiting(macName: "Acme Mac"))
         XCTAssertEqual(built.last?.hubID, hubID, "the code's hub's session")
-        XCTAssertEqual(built.last?.scope, .private, "same Apple ID: the private database")
+        XCTAssertEqual(built.last?.route, .cloudKit(.private), "same Apple ID: the private database")
         XCTAssertTrue(root.showsOnboarding, "not linked yet")
         let macSide = try transport(hubID)
         let hellos = try await macSide.changes(in: .relay, since: nil).changed
@@ -1925,14 +1925,14 @@ final class AppRootWiringTests: XCTestCase {
         let ceiling = try first.envelopeSeqCeiling()
         XCTAssertGreaterThan(ceiling, 0)
 
-        _ = try await root.prepare(scope: .private, hubID: e2eHub, fresh: true)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: e2eHub, fresh: true)
         let second = try session(root, e2eHub)
         XCTAssertFalse(second === first, "a new pairing starts on an empty replica")
         XCTAssertNil(try registry.row(e2eHub), "the old link went first")
         XCTAssertGreaterThanOrEqual(try second.envelopeSeqCeiling(), ceiling, "the new replica stores the floor at once")
 
         _ = await root.removeHub(e2eHub, keepRecordings: true, farewell: nil)
-        _ = try await root.prepare(scope: .private, hubID: e2eHub, fresh: true)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: e2eHub, fresh: true)
         try await root.linked(linkRecord(e2eHub), device: device)
         let third = try session(root, e2eHub)
         try await third.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-2")
@@ -1943,7 +1943,7 @@ final class AppRootWiringTests: XCTestCase {
     /// hub and database on an empty replica.
     func testAFreshPrepareRebuildsTheSessionOnAnEmptyReplica() async throws {
         let root = try makeRoot()
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: false)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: false)
         let first = try session(root, TestHub.acme)
         let now = Date()
         try await TestHub.hub(over: transport(TestHub.acme), TestHub.acme).save(
@@ -1954,7 +1954,7 @@ final class AppRootWiringTests: XCTestCase {
         _ = await first.refresh(.pull)
         try await poll { (try? self.sliceCount(first)) == 1 }
 
-        _ = try await root.prepare(scope: .private, hubID: TestHub.acme, fresh: true)
+        _ = try await root.prepare(route: .cloudKit(.private), hubID: TestHub.acme, fresh: true)
 
         let second = try session(root, TestHub.acme)
         XCTAssertFalse(second === first)

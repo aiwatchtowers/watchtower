@@ -248,7 +248,7 @@ final class AppEnvironment {
     func handlePush(at arrival: Date? = nil, inForeground: Bool, scope: PushScope?) async -> FetchOutcome {
         var reached: [HubSession] = []
         for session in sessions.values {
-            if let scope, let own = session.databaseScope, PushScope(own) != scope {
+            if let scope, let own = session.route.flatMap(PushScope.init), own != scope {
                 session.noteForeignPush()
             } else {
                 reached.append(session)
@@ -341,7 +341,7 @@ final class AppEnvironment {
 
     /// Whether any linked Mac is shared with this phone (its alerts can be late).
     var anyHubShared: Bool {
-        sessions.values.contains { if case .shared = $0.databaseScope { true } else { false } }
+        sessions.values.contains { if case .cloudKit(.shared)? = $0.route { true } else { false } }
     }
 
     /// The phone-wide "When work stops" switch: every hub's settings follow, and each hub's push subscription is
@@ -524,7 +524,7 @@ final class AppEnvironment {
     static func makeSession(for row: HubRow, factory: HubSessionFactory, identity: DeviceIdentity) throws -> HubSession {
         let device = identity.linkedDevice(for: row.link)
         guard row.state == .unlinkedByMac else {
-            let session = try factory.make(row, row.hubID, row.link.databaseScope, device)
+            let session = try factory.make(row, row.hubID, row.link.route, device)
             // A hub without stored link keys (made before E2E) is built
             // stopped, before its boot runs: no engine, no fetch, no send;
             // the launch's `dropUnencryptedLinks` removes it.
@@ -533,7 +533,7 @@ final class AppEnvironment {
             }
             return session
         }
-        let session = try factory.make(row, row.hubID, row.link.databaseScope, nil)
+        let session = try factory.make(row, row.hubID, row.link.route, nil)
         session.stop()
         Task { await session.freeze(as: device) }
         return session

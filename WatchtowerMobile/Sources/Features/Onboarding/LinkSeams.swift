@@ -50,15 +50,15 @@ protocol LinkHost: AnyObject {
     func unreadableHubIDs() -> [String]
     /// Settings → Macs: `hubID` moves to `index` in the registry's order.
     func moveHub(_ hubID: String, to index: Int)
-    /// `hubID`'s transport in `scope`'s database, sealing with the phone's
-    /// keys for that hub: its session if one runs in that scope; else a new
-    /// session in its own directory (a row in another scope, or frozen, is
+    /// `hubID`'s transport on `route`, sealing with the phone's
+    /// keys for that hub: its session if one runs on that route; else a new
+    /// session in its own directory (a row on another route, or frozen, is
     /// removed first with its recordings held). `fresh` (a new pairing:
     /// the replica must not keep an old link's rollback marks, outbox or
     /// sealed recordings) removes a running session of the hub first too.
     /// A new session's seqs start above the ceiling a removal of the same
     /// hub left in this process (F29).
-    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport
+    func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport
     /// One fetch of `hubID`'s session, then this phone's keybox there
     /// (`device_grant-<device_id>`, the epoch keys included).
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox?

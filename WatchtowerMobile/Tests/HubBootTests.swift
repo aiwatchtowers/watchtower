@@ -109,7 +109,7 @@ final class HubBootTests: XCTestCase {
 
     /// In-memory sessions on `paths`, as the live factory lays them out.
     private func testFactory(_ paths: HubPaths, defaults: UserDefaults) -> HubSessionFactory {
-        HubSessionFactory { [weak self] _, hubID, scope, device in
+        HubSessionFactory { [weak self] _, hubID, route, device in
             try paths.prepare(hubID)
             self?.built.append(hubID)
             let engine = FakeAudioEngine()
@@ -124,7 +124,7 @@ final class HubBootTests: XCTestCase {
                 defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory),
-                databaseScope: scope,
+                route: route,
                 makeRecorder: { uploader in
                     PhoneRecorderController(
                         uploader: uploader, engine: engine, notificationCenter: NotificationCenter(),
@@ -441,7 +441,7 @@ final class HubBootTests: XCTestCase {
         XCTAssertEqual(env.order, [TestHub.acme, TestHub.home])
         XCTAssertEqual(env.activeHubID, TestHub.home)
         XCTAssertEqual(env.session(TestHub.acme)?.linkedDevice, device)
-        XCTAssertEqual(env.session(TestHub.home)?.databaseScope, .private)
+        XCTAssertEqual(env.session(TestHub.home)?.route, .cloudKit(.private))
         XCTAssertEqual(try registry.activeHubID, TestHub.home)
     }
 

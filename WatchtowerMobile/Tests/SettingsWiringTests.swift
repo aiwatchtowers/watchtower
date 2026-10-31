@@ -696,7 +696,7 @@ final class SettingsWiringTests: XCTestCase {
         try registry.setActive(active)
         let engine = FakeAudioEngine()
         let clock = FakeClock()
-        let factory = HubSessionFactory { _, hubID, scope, device in
+        let factory = HubSessionFactory { _, hubID, route, device in
             try paths.prepare(hubID)
             let session = try HubSession(
                 transport: InMemoryCloudTransport(),
@@ -708,7 +708,7 @@ final class SettingsWiringTests: XCTestCase {
                 defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory),
-                databaseScope: scope
+                route: route
             ) { uploader in
                 PhoneRecorderController(
                     uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil

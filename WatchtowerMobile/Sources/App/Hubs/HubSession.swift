@@ -182,9 +182,9 @@ final class HubSession {
     /// The hub whose zones this session syncs: held recordings of this hub
     /// are adopted here.
     let hubID: String
-    /// The database this session's link lives in, which a silent push
-    /// names (`AppEnvironment.handlePush`); nil for the demo.
-    let databaseScope: CloudDatabaseScope?
+    /// Where this session's link lives, which a silent push names
+    /// (`AppEnvironment.handlePush`); nil for the demo.
+    let route: HubRoute?
     /// Recordings a wipe carried over (board #63), outside the replica,
     /// shared by every hub; nil holds nothing.
     @ObservationIgnored let hold: RecordingHold?
@@ -370,7 +370,7 @@ final class HubSession {
     /// `startWork` then keeps the boot running and the replica usable until
     /// the boot ends (a launch into the background by a silent push).
     /// `hold` is the hold folder shared by every hub (nil holds nothing);
-    /// `databaseScope` is the link's database, which routes silent pushes.
+    /// `route` is the link's route, which routes silent pushes.
     init(
         transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
@@ -383,7 +383,7 @@ final class HubSession {
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
         hold: RecordingHold? = nil,
-        databaseScope: CloudDatabaseScope? = nil,
+        route: HubRoute? = nil,
         notifications: NotificationCenter = .default,
         subscriptionSaver: (any SubscriptionSaving)? = nil,
         alertCleaner: DeliveredAlertCleaner? = nil,
@@ -414,7 +414,7 @@ final class HubSession {
         self.transportKind = transportKind
         self.hubID = hubID
         self.hold = hold
-        self.databaseScope = databaseScope
+        self.route = route
         self.defaults = defaults
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
@@ -479,9 +479,9 @@ final class HubSession {
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
-            scope: databaseScope, transport: transport, saver: subscriptionSaver)
+            scope: route?.cloudKitScope, transport: transport, saver: subscriptionSaver)
         sharedAlerts = Self.makeSharedAlerts(
-            hubID: hubID, scope: databaseScope, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
+            hubID: hubID, route: route, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
         workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
@@ -514,13 +514,13 @@ final class HubSession {
     /// without keys. A private-scope hub never posts locally: its push subscription delivers.
     private static func makeSharedAlerts(
         hubID: String,
-        scope: CloudDatabaseScope?,
+        route: HubRoute?,
         keys: PhoneKeys?,
         store: ReplicaStore,
         defaults: UserDefaults,
         posting: LocalAlertPosting?
     ) -> SharedAlertPoster? {
-        guard case .shared = scope, let keys else { return nil }
+        guard case .cloudKit(.shared)? = route, let keys else { return nil }
         return SharedAlertPoster(hubID: hubID, store: store, keys: keys.store, defaults: defaults, posting: posting ?? .live)
     }
 
