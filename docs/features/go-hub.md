@@ -66,14 +66,15 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 
 | Verb | `--json` keys (pinned) |
 |---|---|
-| `hub status` | `state`, `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones` |
+| `hub status` | `state`, `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `recordings` (`on`/`off`) |
 | `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport` |
 | `hub unlink <device>` | `device_id`, `unlinked` |
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
 | `hub name <name>` | `name` |
 | `hub enable` / `hub disable` | `enabled` |
 | `hub pair [--stream]` | JSON lines: `{event: qr, url, expires_at}`, `{event: waiting}`, `{event: sas, device_id, name, code}`, `{event: linked, device_id}`, `{event: refused, reason}`; the owner's `{confirm: true\|false}` on stdin |
-| `hub desktop heartbeat` | `desktop_at` |
+| `hub desktop heartbeat` (darwin only) | `desktop_at` |
+| `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat) | `recordings`, `stored` |
 | `hub recording claim --upload <id>` | `upload_id`, `audio_path`, `status` |
 | `hub recording finish --upload <id> [--transcript N] [--error <class>]` | `upload_id`, `status`, `transcript_id` |
 
@@ -95,6 +96,8 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
 - `00003_pending_relay_id` — the relay device id a hello names, on the waiting request.
 - `00004_epoch_ack` — `devices.acked_epoch`.
 - `00005_recording_jobs` — the phone-recording job queue Desktop claims and finishes.
+- `00006_held_uploads` — held recording uploads (ids, first hold, outcome class), so the 7-day expiry and the
+  switch-off failure survive a restart.
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -117,8 +120,10 @@ and PROJ-21 list the Go guards (`docs/inventory/workbench.md`).
   terminal pairing UI and no Desktop wiring until phases 2–4. The Swift hub is the live hub.
 - Keys live in a 0600 file in the hub dir (the daemon-owned Keychain items are phase 3).
 - No `service install` (phase 2); the hub runs inside `watchtower sync --daemon` only.
-- Recording jobs are queued for Desktop (`hub recording claim|finish`); a host that never had a Desktop answers an
-  upload `not_supported`.
+- Recording jobs are queued for Desktop (`hub recording claim|finish`). The owner's recording switch (`hub_meta`
+  `recordings`, default on iff `desktop_seen_at` — the first Desktop heartbeat — is set) is published as the
+  heartbeat's `capabilities.recordings`; off answers an upload the final `failed`/`not_supported`, a held upload gets
+  `failed`/`expired` 7 days after its first hold, and the upload echo carries `reason` on a failure (protocol §7.7, §9).
 
 ## Measured cost
 

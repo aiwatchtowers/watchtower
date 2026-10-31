@@ -526,7 +526,9 @@ var hubMetaKeys = map[string]string{
 	state.MetaEnabled:             "flag",
 	state.MetaDisplayName:         "label", // the owner's own name for the hub
 	state.MetaDesktopAt:           "timestamp",
-	state.MetaDesktopSeen:         "flag",
+	state.MetaDesktopSeen:         "flag", // Plan 1b's; no longer written
+	state.MetaDesktopSeenAt:       "timestamp",
+	state.MetaRecordings:          "enum",
 	state.MetaSyncGeneration:      "counter",
 	state.MetaWorkAlertsStartedAt: "timestamp",
 	state.MetaWorkAlertsAwaySince: "timestamp",

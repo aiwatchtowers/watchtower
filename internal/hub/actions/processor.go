@@ -45,6 +45,8 @@ type Processor struct {
 	fault func(point string) error
 	// held is the uploads answered held, tried again each pass (recording.go).
 	held map[string]*heldUpload
+	// batch, when set (tests), replaces BatchLimit as a pass's budget.
+	batch int
 }
 
 // PassReport counts one pass: phone records read (opened), actions applied
@@ -131,6 +133,9 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ps := &pass{budget: BatchLimit}
+	if p.batch > 0 {
+		ps.budget = p.batch
+	}
 	boxes, err := p.mailboxes()
 	if err != nil {
 		return ps.report, err
@@ -145,6 +150,9 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 		}
 		if err == nil {
 			err = p.readMailbox(ctx, b, ps)
+		}
+		if errors.Is(err, errBudget) { // the rest is read next pass (Remaining counts it)
+			continue
 		}
 		if errors.Is(err, errRelinked) {
 			log.Printf("hub: device %s was re-linked or unlinked during a pass: its mailbox is read again next pass", b.id)

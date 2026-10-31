@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -46,6 +47,10 @@ type hubFinishJSON struct {
 // hubNow is the verbs' clock (a test seam).
 var hubNow = time.Now
 
+// hubGOOS is the host's OS (a test seam): the Desktop heartbeat is a Mac's
+// alone, so a Linux host never gets desktop_seen_at and never records.
+var hubGOOS = runtime.GOOS
+
 func init() {
 	desktop := &cobra.Command{Use: "desktop", Short: "Desktop's reports to the hub"}
 	beat := &cobra.Command{Use: "heartbeat", Short: "Tell the hub Desktop (the transcriber) is running", Args: cobra.NoArgs, RunE: runHubDesktopHeartbeat}
@@ -81,6 +86,9 @@ func hubPrint(cmd *cobra.Command, asJSON bool, v any, line string) error {
 func runHubDesktopHeartbeat(cmd *cobra.Command, _ []string) error {
 	if err := refuseUnderAgent(hubHeartbeatVerb); err != nil {
 		return err
+	}
+	if hubGOOS != "darwin" {
+		return errors.New("there is no Watchtower app on Linux")
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	a, err := hubWrite(hub.ControlRequest{Op: hub.OpDesktopHeartbeat}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {

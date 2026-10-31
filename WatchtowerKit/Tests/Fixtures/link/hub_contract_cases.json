@@ -312,5 +312,298 @@
       },
       "relay_coder": "{\"at\":1730000000.5,\"before\":-1.5,\"whole\":1730000000}"
     }
+  ],
+  "heartbeat": [
+    {
+      "name": "capabilities_on",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true
+      }
+    },
+    {
+      "name": "capabilities_off",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "off"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "off"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": false
+      }
+    },
+    {
+      "name": "capabilities_absent",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true
+      }
+    },
+    {
+      "name": "capabilities_unknown_value",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "partial"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "partial"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true
+      }
+    },
+    {
+      "name": "unknown_capability_key",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "off",
+          "screen_share": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "off"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": false
+      }
+    }
+  ],
+  "upload_echo": [
+    {
+      "name": "failed_not_supported",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "This host can't transcribe recordings. Your recording stays on your phone.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "reason": "not_supported",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "This host can't transcribe recordings. Your recording stays on your phone.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "reason": "not_supported",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "kit": {
+        "status": "failed",
+        "reason": "not_supported",
+        "keeps_audio": true
+      }
+    },
+    {
+      "name": "failed_expired",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "Your Mac's transcriber did not run for 7 days. Your recording stays on your phone.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "reason": "expired",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "Your Mac's transcriber did not run for 7 days. Your recording stays on your phone.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "reason": "expired",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "kit": {
+        "status": "failed",
+        "reason": "expired",
+        "keeps_audio": true
+      }
+    },
+    {
+      "name": "received",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "received"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "received"
+      },
+      "kit": {
+        "status": "received",
+        "reason": null,
+        "keeps_audio": false
+      }
+    },
+    {
+      "name": "failed_legacy_no_reason",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "Your Mac could not save this recording.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "Your Mac could not save this recording.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "kit": {
+        "status": "failed",
+        "reason": null,
+        "keeps_audio": true
+      }
+    }
   ]
 }

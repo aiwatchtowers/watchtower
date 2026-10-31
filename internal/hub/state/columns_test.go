@@ -129,6 +129,11 @@ var sidecarColumns = map[string]string{
 	"recording_jobs.device_id":   classID,
 	"recording_jobs.status":      classEnum,
 	"recording_jobs.error_class": classErrorClass,
+
+	// held_at and settled_at are REAL (no text, so not listed).
+	"held_uploads.upload_id": classID,
+	"held_uploads.device_id": classID,
+	"held_uploads.outcome":   classEnum,
 }
 
 // textual reports whether a declared column type may hold text or bytes

@@ -37,7 +37,17 @@ func hubTestDir(t *testing.T) string {
 	for _, m := range agentEnvMarkers { // the suite may itself run under an agent
 		t.Setenv(m, "")
 	}
+	hubOnGOOS(t, "darwin")
 	return dir
+}
+
+// hubOnGOOS runs the hub verbs as on goos for the test: the Desktop verbs
+// are a Mac's only, and the suite also runs on Linux CI.
+func hubOnGOOS(t *testing.T, goos string) {
+	t.Helper()
+	prev := hubGOOS
+	hubGOOS = goos
+	t.Cleanup(func() { hubGOOS = prev })
 }
 
 func queueJob(t *testing.T, dir, id string) {

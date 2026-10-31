@@ -102,6 +102,24 @@ type Heartbeat struct {
 	EnabledAt     Time               `json:"enabled_at"`
 	OwnerUser     string             `json:"owner_user"`
 	Sharing       string             `json:"sharing"`
+	// Capabilities is the host's switches (protocol §9); absent from an
+	// older hub, which the phone reads as every capability on.
+	Capabilities *HeartbeatCapabilities `json:"capabilities,omitempty"`
+}
+
+// HeartbeatCapabilities is the heartbeat's capabilities object. Recordings
+// is "on" or "off"; an unknown value reads as not off.
+type HeartbeatCapabilities struct {
+	Recordings string `json:"recordings,omitempty"`
+}
+
+// RecordingsCapability is the capabilities object for the switch: "on" or
+// "off". The phone offers recording unless it reads "off".
+func RecordingsCapability(on bool) *HeartbeatCapabilities {
+	if on {
+		return &HeartbeatCapabilities{Recordings: "on"}
+	}
+	return &HeartbeatCapabilities{Recordings: "off"}
 }
 
 // DevicePayload is the phone's link record (the hello's plain device part).

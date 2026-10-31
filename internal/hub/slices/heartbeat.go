@@ -27,7 +27,9 @@ const (
 
 // HeartbeatFacts is what the heartbeat carries besides its stamp. Accounts
 // reads the account rows (DBAccounts); LastPublishAt, LastRelayAt and
-// RelayBacklog may be nil (absent, absent, 0). Clock defaults to time.Now.
+// RelayBacklog may be nil (absent, absent, 0). Recordings reads the recording
+// switch (protocol §9); nil carries no capabilities. Clock defaults to
+// time.Now.
 type HeartbeatFacts struct {
 	HubID         string
 	MacName       string
@@ -38,13 +40,14 @@ type HeartbeatFacts struct {
 	LastPublishAt func() (time.Time, bool)
 	LastRelayAt   func() (time.Time, bool)
 	RelayBacklog  func() int
+	Recordings    func() bool
 	Clock         func() time.Time
 }
 
 // HeartbeatSource is the hub's liveness record, record "heartbeat". It is
-// restamped (updated_at and the counters read anew) when its accounts change
-// and at least every HeartbeatInterval; between those it returns the same
-// payload, so the 60 s full diff saves nothing. A failed accounts read keeps
+// restamped (updated_at and the counters read anew) when its accounts or the
+// recording switch change and at least every HeartbeatInterval; between
+// those it returns the same payload, so the 60 s full diff saves nothing. A failed accounts read keeps
 // the accounts last carried (none before the first). owner_user is "" and
 // sharing "none": a relay-only hub has no iCloud user and no share (gap 6).
 //
@@ -62,7 +65,8 @@ type heartbeatSource struct {
 	f HeartbeatFacts
 
 	mu       sync.Mutex
-	accounts []wire.HeartbeatAccount // what the current payload carries
+	accounts []wire.HeartbeatAccount    // what the current payload carries
+	caps     wire.HeartbeatCapabilities // what the current payload carries (zero = none)
 	payload  []byte
 	stamped  time.Time
 	failing  bool // the accounts read failed last time (logged once per streak)
@@ -86,12 +90,17 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 		h.failing = false
 		changed = !slices.Equal(accounts, h.accounts)
 	}
+	var caps wire.HeartbeatCapabilities
+	if h.f.Recordings != nil {
+		caps = *wire.RecordingsCapability(h.f.Recordings())
+	}
+	changed = changed || caps != h.caps
 	if h.payload == nil || changed || now.Sub(h.stamped) >= HeartbeatInterval {
-		payload, err := wire.Marshal(h.build(now, accounts))
+		payload, err := wire.Marshal(h.build(now, accounts, caps))
 		if err != nil {
 			return nil, fmt.Errorf("slices: encoding the heartbeat: %w", err)
 		}
-		h.payload, h.accounts, h.stamped = payload, accounts, now
+		h.payload, h.accounts, h.caps, h.stamped = payload, accounts, caps, now
 	}
 	return []Item{{Payload: h.payload}}, nil
 }
@@ -112,7 +121,7 @@ func (h *heartbeatSource) readAccounts(ctx context.Context) ([]wire.HeartbeatAcc
 	return out, nil
 }
 
-func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount) wire.Heartbeat {
+func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount, caps wire.HeartbeatCapabilities) wire.Heartbeat {
 	if accounts == nil {
 		accounts = []wire.HeartbeatAccount{} // the Kit's accounts is not optional: [] never null
 	}
@@ -120,6 +129,9 @@ func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount)
 		UpdatedAt: wire.Time{Time: now}, AppVersion: h.f.AppVersion, HubID: h.f.HubID,
 		MacName: wire.ClipMacName(h.f.MacName), Flavor: h.f.Flavor, Accounts: accounts,
 		EnabledAt: wire.Time{Time: h.f.EnabledAt}, OwnerUser: "", Sharing: wire.SharingNone,
+	}
+	if caps != (wire.HeartbeatCapabilities{}) {
+		hb.Capabilities = &caps
 	}
 	if h.f.LastPublishAt != nil {
 		if at, ok := h.f.LastPublishAt(); ok {
