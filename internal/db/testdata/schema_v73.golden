@@ -3047,7 +3047,7 @@ CREATE TABLE terminal_session_targets (
 session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
 target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
 first_at TEXT NOT NULL,
-last_at TEXT NOT NULL,
+last_at TEXT NOT NULL, status_at TEXT,
 PRIMARY KEY (session_id, target_id)
 )
 
@@ -6116,6 +6116,7 @@ GROUP BY up.ancestor
 1	target_id	INTEGER	notnull=1	dflt=NULL	pk=2
 2	first_at	TEXT	notnull=1	dflt=NULL	pk=0
 3	last_at	TEXT	notnull=1	dflt=NULL	pk=0
+4	status_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## terminal_session_worktrees
 0	session_id	INTEGER	notnull=1	dflt=NULL	pk=1

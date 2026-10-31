@@ -2867,6 +2867,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_targets (
     target_id  INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
     first_at   TEXT NOT NULL, -- UTC ISO-8601 seconds; kept by later links
     last_at    TEXT NOT NULL,
+    status_at  TEXT,          -- last status write or owner binding (00167); NULL = comment-only link
     PRIMARY KEY (session_id, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_session_targets(target_id);
