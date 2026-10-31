@@ -9,7 +9,8 @@ import XCTest
 /// subscription (Go names, line-by-line ports). The Go `newWorld(t, n)` is `simWorld()` plus
 /// `n` paying phones; `w.env.Stop`/`Start` are `relayDown`/`relayUp`, `ExpireEntitlement` and
 /// `ExpireAccount` are `expireEntitlement`, `waitHubControl` is `controlsDelivered(to: hubOwner)`.
-final class RelaySimSwitchTwins: HostedRelayScenarioCase {
+/// Not final: `RelaySimSwitchInteropTests` reruns it on the stand.
+class RelaySimSwitchTwins: HostedRelayScenarioCase {
     private static let fifteenDays = Duration.seconds(15 * 24 * 3600)
 
     func testSwitchToCloudKitDuringRelayOutage() async throws {

@@ -6,16 +6,116 @@ import WatchtowerHostedRelayTesting
 import WatchtowerRelayProto
 import XCTest
 
-/// Where scenario tests run: `.fake` builds a `FakeHostedRelay`; `.stand(URL)`
-/// (Task 12) the local stand.
+/// Where scenario tests run: `.fake` builds a `FakeHostedRelay`; `.stand` the local
+/// stand (`make relay-interop-kit`), reached through the production network seams.
 enum RelayBackend {
     case fake(FakeHostedRelay)
+    case stand(RelayStand)
+
+    /// The variable naming the stand's origin; unset (public CI) → every interop test skips.
+    static let interopVariable = "WATCHTOWER_RELAY_INTEROP_URL"
+
+    /// The stand of `WATCHTOWER_RELAY_INTEROP_URL`, or `XCTSkip` when it is unset.
+    static func standFromEnvironment() throws -> Self {
+        guard let origin = ProcessInfo.processInfo.environment[Self.interopVariable], !origin.isEmpty else {
+            throw XCTSkip("\(Self.interopVariable) is not set: run `make relay-interop-kit RELAY=<relay checkout>`")
+        }
+        return .stand(try RelayStand(origin: origin))
+    }
+
+    /// The origin the clients sign into register and login.
+    var origin: RelayOrigin {
+        get throws {
+            switch self {
+            case .fake: return try RelayOrigin(HostedRelayScenarioCase.origin)
+            case .stand(let stand): return stand.origin
+            }
+        }
+    }
+
+    var http: any RelayHTTP {
+        switch self {
+        case .fake(let relay): return relay.http
+        case .stand(let stand): return stand.http
+        }
+    }
+
+    var sockets: any RelaySocketDialer {
+        switch self {
+        case .fake(let relay): return relay.sockets
+        case .stand(let stand): return stand.sockets
+        }
+    }
+
+    /// The clients' clock: the fake's `ManualRelayClock`, real time on the stand.
+    var clock: any RelayClock {
+        switch self {
+        case .fake(let relay): return relay.clock
+        case .stand: return SystemRelayClock()
+        }
+    }
+
+    /// Every op the clients sent so far, in order: the fake's `log`, or what the stand's
+    /// recording seams saw.
+    var opLog: [Relay_V1_Request.OneOf_Op] {
+        switch self {
+        case .fake(let relay): return relay.log
+        case .stand(let stand): return stand.log.all
+        }
+    }
+
+    var control: any RelayStandControl {
+        switch self {
+        case .fake(let relay): return relay
+        case .stand(let stand): return stand.control
+        }
+    }
+
+    /// The signing key of the device of `seed`: the seed byte repeated on the fake; on the
+    /// stand, which keeps its state for the whole run, a key salted per backend, so every test
+    /// has devices (and zones) of its own.
+    func signer(seed: UInt8) throws -> Ed25519RelaySigner {
+        switch self {
+        case .fake:
+            return Ed25519RelaySigner(try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: seed, count: 32)))
+        case .stand(let stand):
+            let key = Data(SHA256.hash(data: stand.salt + [seed]))
+            return Ed25519RelaySigner(try Curve25519.Signing.PrivateKey(rawRepresentation: key))
+        }
+    }
+
+    /// Makes a Mac exempt from attestation on the fake (R18); the stand runs with
+    /// attestation off.
+    func exemptIfMac(_ kind: Relay_V1_DeviceKind, _ signer: Ed25519RelaySigner) {
+        guard kind == .mac, case .fake(let relay) = self, case .enforce(let exempt) = relay.attestMode else { return }
+        relay.attestMode = .enforce(exemptDeviceIDs: exempt.union([RelayAuthMessages.deviceID(publicKey: signer.publicKey)]))
+    }
+}
+
+/// The local stand: `URLSessionRelayHTTP`, `URLSessionRelaySocketDialer` (each recording the
+/// ops it carries) and its `/dev` endpoints, with a fresh device-key salt per test.
+struct RelayStand: Sendable {
+    let origin: RelayOrigin
+    let http: any RelayHTTP
+    let sockets: any RelaySocketDialer
+    let control: HTTPRelayStandControl
+    /// The ops this test's clients sent (the twin of the fake's `log`).
+    let log = StandOpLog()
+    let salt = Data(UUID().uuidString.utf8)
+
+    init(origin: String) throws {
+        self.origin = try RelayOrigin(origin)
+        http = RecordingRelayHTTP(base: URLSessionRelayHTTP(), log: log)
+        sockets = RecordingRelaySocketDialer(base: URLSessionRelaySocketDialer(), log: log)
+        control = HTTPRelayStandControl(origin: self.origin.url)
+    }
 }
 
 /// The base of the relay scenario classes: real `HostedRelayClient`s on a backend,
 /// devices from fixed seeds, the Go interop helpers (`hub`, `save`, `connect`).
-/// The base runs on `FakeHostedRelay` in enforce mode (test Macs exempt, R18);
-/// Task 12 subclasses it for the stand, where fake-only scenarios skip (R15).
+/// The base runs on `FakeHostedRelay` in enforce mode (test Macs exempt, R18); the
+/// interop classes (`Interop/`) override `makeBackend` with the stand, where fake-only
+/// scenarios skip (R15).
 class HostedRelayScenarioCase: XCTestCase {
     static let origin = "https://relay.example.com"
     /// The Go interop tests' `quickBackoff`.
@@ -47,7 +147,7 @@ class HostedRelayScenarioCase: XCTestCase {
         return madeBackend
     }
 
-    /// The backend of this class: the fake. Task 12's stand subclass overrides it.
+    /// The backend of this class: the fake. The interop classes override it with the stand.
     func makeBackend() throws -> RelayBackend {
         let clock = ManualRelayClock()
         manualClock = clock
@@ -56,15 +156,14 @@ class HostedRelayScenarioCase: XCTestCase {
 
     /// The server's `/dev` controls.
     var stand: any RelayStandControl {
-        switch backend {
-        case .fake(let relay): return relay
-        }
+        backend.control
     }
 
     /// The fake, or `XCTSkip` on the stand with `why` (R15).
     func requireFake(_ why: String) throws -> FakeHostedRelay {
         switch backend {
         case .fake(let relay): return relay
+        case .stand: throw XCTSkip(why)
         }
     }
 
@@ -97,21 +196,13 @@ class HostedRelayScenarioCase: XCTestCase {
         onGoingAway: (@Sendable () -> Void)? = nil
     ) async throws -> HostedRelayClient {
         let attest = fakeAttest(seed: seed)
-        let signer = Ed25519RelaySigner(try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: seed, count: 32)))
-        let http: any RelayHTTP
-        let sockets: any RelaySocketDialer
-        let clock: any RelayClock
-        switch backend {
-        case .fake(let relay):
-            http = relay.http
-            sockets = relay.sockets
-            clock = relay.clock
-            if kind == .mac, case .enforce(let exempt) = relay.attestMode {
-                relay.attestMode = .enforce(exemptDeviceIDs: exempt.union([RelayAuthMessages.deviceID(publicKey: signer.publicKey)]))
-            }
-        }
+        let signer = try backend.signer(seed: seed)
+        backend.exemptIfMac(kind, signer)
+        let http = backend.http
+        let sockets = backend.sockets
+        let clock = backend.clock
         let client = HostedRelayClient(
-            origin: try RelayOrigin(Self.origin),
+            origin: try backend.origin,
             signer: signer,
             kind: kind,
             attestor: RelayAttestor(attest: attest, keys: keys ?? InMemoryAppAttestKeyStore(), clock: clock),

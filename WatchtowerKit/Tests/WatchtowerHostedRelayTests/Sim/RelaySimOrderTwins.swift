@@ -7,7 +7,7 @@ import XCTest
 /// Twins of the relay@3a99bd7 `sim/sim_interop_test.go` tests of the outbox, the order of
 /// actions and control records (sim README rules 1–7a), with their Go names. Each body is a
 /// line-by-line port; the Go `settle` is `syncAll`, `send` is `act`, `hubSync` is `hub.sync()`.
-/// Not final: the interop suite (Task 12) reruns it on the stand.
+/// Not final: `RelaySimOrderInteropTests` reruns it on the stand.
 class RelaySimOrderTwins: HostedRelayScenarioCase {
     /// Rules 2 and 4: every action applied once and in order; a stale copy of an applied action
     /// is dropped as a repeat and still echoed, and the mailbox ends up empty. Go runs the

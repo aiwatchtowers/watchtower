@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 @testable import WatchtowerHostedRelay
 @testable import WatchtowerHostedRelayTesting
@@ -14,12 +13,11 @@ import XCTest
 /// Go: the Mac's socket and each paying phone's transport socket are live before `init` and
 /// `addPhone` return. Every leg of every device sits in its own `SimFaulty`
 /// (`fault(owner, kind)`, owner `hubOwner` or the phone's id). Devices come from fixed seeds:
-/// the Mac 1, phones 2, 3, ….
+/// the Mac 1, phones 2, 3, … (salted per test on the stand, `RelayBackend.signer`).
 ///
 /// The twins drive every pass themselves, one at a time (`syncAll`, or a device's `sync`
 /// between them); the model actors are never synced concurrently.
 final class SimWorld {
-    static let origin = "https://relay.example.com"
     static let macSeed: UInt8 = 1
     /// The hub's owner key in `fault(_:_:)`.
     static let hubOwner = "hub"
@@ -44,6 +42,8 @@ final class SimWorld {
         self.backend = backend
         switch backend {
         case .fake(let relay): clock = relay.clock
+        // The clients run on real time; this clock drives only the model's own timers.
+        case .stand: clock = ManualRelayClock(now: Date())
         }
         cloudKit = SimCloudKitLeg(clock: clock)
         mac = try await Self.client(backend, kind: .mac, seed: Self.macSeed)
@@ -61,9 +61,7 @@ final class SimWorld {
 
     /// The server's `/dev` controls.
     var stand: any RelayStandControl {
-        switch backend {
-        case .fake(let relay): return relay
-        }
+        backend.control
     }
 
     /// Links a new phone to the hub. A paying phone registers, pays, is paired with the Mac,
@@ -97,7 +95,7 @@ final class SimWorld {
             phoneClients[client.deviceID] = client
             await socketsReady()
         } else {
-            let id = RelayAuthMessages.deviceID(publicKey: try Self.signer(seed: seed).publicKey)
+            let id = RelayAuthMessages.deviceID(publicKey: try backend.signer(seed: seed).publicKey)
             phone = SimPhone(SimPhoneConfig(
                 id: id, clock: clock, transports: wrap(id, [.cloudkit: cloudKit]), mailbox: mailboxes(id, relay: false),
                 current: .cloudkit, dataZone: ""))
@@ -227,15 +225,29 @@ final class SimWorld {
         return wrapped
     }
 
-    /// Waits until every connected device has a live socket on the fake (5 s cap, pumping the
-    /// clock through reconnect waits).
+    /// Waits until every connected device has a live socket (5 s cap): on the fake as the
+    /// relay sees it (pumping the clock through reconnect waits), on the stand as each client
+    /// sees its own connection.
     private func socketsReady(file: StaticString = #filePath, line: UInt = #line) async {
-        guard case .fake(let relay) = backend else { return }
-        let ids = connected
-        await spin(file: file, line: line) {
-            if relay.locked({ ids.allSatisfy { relay.liveSocket(of: $0) != nil } }) { return true }
-            self.pump()
-            return false
+        switch backend {
+        case .fake(let relay):
+            let ids = connected
+            await spin(file: file, line: line) {
+                if relay.locked({ ids.allSatisfy { relay.liveSocket(of: $0) != nil } }) { return true }
+                self.pump()
+                return false
+            }
+        case .stand:
+            let deadline = Date().addingTimeInterval(5)
+            while true {
+                var live = hubRelay.isLive
+                for leg in phoneLegs where live {
+                    live = await leg.isLive
+                }
+                if live { return }
+                guard Date() < deadline else { return XCTFail("sim: sockets not live within 5 s", file: file, line: line) }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
         }
     }
 
@@ -247,7 +259,7 @@ final class SimWorld {
     private func fake(_ why: String) throws -> FakeHostedRelay {
         switch backend {
         case .fake(let relay): return relay
-        // Task 12: case .stand → throw XCTSkip(why)
+        case .stand: throw XCTSkip(why)
         }
     }
 
@@ -260,26 +272,16 @@ final class SimWorld {
         "ck/\(mac)"
     }
 
-    static func signer(seed: UInt8) throws -> Ed25519RelaySigner {
-        Ed25519RelaySigner(try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: seed, count: 32)))
-    }
-
     /// A registered, logged-in client of the device of `seed` on `backend`
     /// (`HostedRelayScenarioCase.makeClient`'s construction; a Mac is exempt from attestation on
     /// the fake, R18).
     static func client(_ backend: RelayBackend, kind: Relay_V1_DeviceKind, seed: UInt8) async throws -> HostedRelayClient {
-        let signer = try signer(seed: seed)
-        let relay: FakeHostedRelay
-        switch backend {
-        case .fake(let fake): relay = fake
-        }
-        if kind == .mac, case .enforce(let exempt) = relay.attestMode {
-            relay.attestMode = .enforce(exemptDeviceIDs: exempt.union([RelayAuthMessages.deviceID(publicKey: signer.publicKey)]))
-        }
+        let signer = try backend.signer(seed: seed)
+        backend.exemptIfMac(kind, signer)
         let client = HostedRelayClient(
-            origin: try RelayOrigin(origin), signer: signer, kind: kind,
-            attestor: RelayAttestor(attest: FakeAppAttest(), keys: InMemoryAppAttestKeyStore(), clock: relay.clock),
-            http: relay.http, sockets: relay.sockets, clock: relay.clock
+            origin: try backend.origin, signer: signer, kind: kind,
+            attestor: RelayAttestor(attest: FakeAppAttest(), keys: InMemoryAppAttestKeyStore(), clock: backend.clock),
+            http: backend.http, sockets: backend.sockets, clock: backend.clock
         ) { _ in .milliseconds(20) }
         _ = try await client.register()
         try await client.login()

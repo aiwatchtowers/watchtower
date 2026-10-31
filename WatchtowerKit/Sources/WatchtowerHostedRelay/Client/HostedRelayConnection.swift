@@ -109,6 +109,11 @@ public final class HostedRelayConnection: Sendable {
         stream
     }
 
+    /// Whether a socket is connected now (handshake done; zones may still be subscribing).
+    var isLive: Bool {
+        state.withLock { $0.live != nil }
+    }
+
     func start() {
         let runner = Task { await self.run() }
         state.withLock { $0.runner = runner }
