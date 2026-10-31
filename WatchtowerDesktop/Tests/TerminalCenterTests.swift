@@ -157,21 +157,59 @@ final class TerminalCenterTests: XCTestCase {
 
     private static let inertSignaller = ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
 
-    /// No session host: the default factory builds the local process, and
-    /// the pane is told the session stops with the app (board #496).
-    func testLaunchFallsBackToLocalWhenHostUnavailable() throws {
-        let local = FakeTerminalSession()
-        let center = TerminalCenter(makeLocalProcess: { local }, signaller: Self.inertSignaller)
+    /// PROJ-20 (ask #811): no session ever runs outside the host. A host
+    /// that could not be reached or started at launch is asked once more by
+    /// the session's start; when that fails too nothing is launched, the
+    /// run ends and the pane says why. The next start asks again, and runs
+    /// in the host once it answers.
+    func testProj20_NoSessionHostOpensNoSessionAndShowsTheReason() async throws {
+        var hostUp = false
+        var transports: [FakeSessionHostTransport] = []
+        let make = {
+            SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in
+                let transport = FakeSessionHostTransport()
+                if !hostUp { transport.openError = CocoaError(.fileNoSuchFile) }
+                transports.append(transport)
+                return transport
+            })
+        }
+        let center = TerminalCenter(signaller: Self.inertSignaller)
         center.shell = { "/bin/zsh" }
-        XCTAssertNil(center.sessionHost)
+        await center.connectSessionHost(make)
+        XCTAssertNil(center.sessionHost, "the host neither answered nor could be started")
+        var exits: [Int32?] = []
+        center.onSessionExit = { _, code, _ in exits.append(code) }
+
         let s = try row(kind: .shell)
         center.start(s, fresh: true)
-        XCTAssertTrue(center.process(for: s.id) === local)
-        XCTAssertEqual(local.launches.count, 1)
-        XCTAssertEqual(center.unprotected, [s.id])
-        local.exit(0)
+        let hosted = try XCTUnwrap(center.process(for: s.id) as? HostedTerminalSession,
+                                   "the session is the host's, never a process of the app")
+        await hosted.connecting?.value
+        XCTAssertTrue(transports.allSatisfy { $0.sent(.launch).isEmpty }, "nothing is launched")
+        XCTAssertEqual(center.states[s.id], .exited(nil))
+        XCTAssertEqual(exits, [nil])
+        let terminal = try XCTUnwrap(hosted.view as? PalettedTerminalView).getTerminal()
+        let text = (0..<terminal.rows).compactMap { terminal.getLine(row: $0)?.translateToString(trimRight: true) }.joined()
+        XCTAssertTrue(text.contains("[Watchtower] the session host is not running"), text)
+
+        hostUp = true
         center.start(s, fresh: false)
-        XCTAssertEqual(center.unprotected, [s.id], "a relaunch in the same local process stays unprotected")
+        await hosted.connecting?.value
+        XCTAssertEqual(center.states[s.id], .running)
+        let launch = try XCTUnwrap(transports.first { !$0.sent(.launch).isEmpty }?.sent(.launch).first)
+        XCTAssertEqual(try launch.decoded(SessionHostLaunchRequest.self).row, s.id, "the next start reaches the host")
+    }
+
+    /// No session host client at all (the connection was never begun): the
+    /// session does not open and says why.
+    func testStartWithoutASessionHostClientOpensNothing() throws {
+        let center = TerminalCenter(signaller: Self.inertSignaller)
+        center.shell = { "/bin/zsh" }
+        let s = try row(kind: .shell)
+        XCTAssertNil(center.start(s, fresh: true))
+        XCTAssertNil(center.process(for: s.id))
+        XCTAssertEqual(center.states[s.id], .unavailable(TerminalCenter.noSessionHostReason))
+        XCTAssertTrue(center.liveIDs.isEmpty)
     }
 
     func testLaunchRunsInTheHostWhenAvailable() async throws {
@@ -181,19 +219,12 @@ final class TerminalCenterTests: XCTestCase {
             transports.append(transport)
             return transport
         })
-        let center = TerminalCenter(
-            makeLocalProcess: {
-                XCTFail("no local process while the host is available")
-                return FakeTerminalSession()
-            },
-            signaller: Self.inertSignaller
-        )
+        let center = TerminalCenter(signaller: Self.inertSignaller)
         center.shell = { "/bin/zsh" }
         center.sessionHost = client
         let s = try row(kind: .shell)
         center.start(s, fresh: true)
         let hosted = try XCTUnwrap(center.process(for: s.id) as? HostedTerminalSession)
-        XCTAssertTrue(center.unprotected.isEmpty)
         await hosted.connecting?.value
         let launch = try XCTUnwrap(transports.first { !$0.sent(.launch).isEmpty }?.sent(.launch).first)
         XCTAssertEqual(try launch.decoded(SessionHostLaunchRequest.self).row, s.id)
@@ -213,7 +244,7 @@ final class TerminalCenterTests: XCTestCase {
         client.signalGroup = { hostSignals.append(($0, $1)) }
         let running = await client.ensureRunning()
         XCTAssertTrue(running)
-        let center = TerminalCenter(makeLocalProcess: { FakeTerminalSession() }, signaller: Self.inertSignaller)
+        let center = TerminalCenter(signaller: Self.inertSignaller)
         center.shell = { "/bin/zsh" }
         center.sessionHost = client
         let s = try row(kind: .shell)
@@ -240,7 +271,7 @@ final class TerminalCenterTests: XCTestCase {
 
     /// A quit that keeps sessions (PROJ-20): the hosted session is let go
     /// without any signal — its connection closes, nothing is forgotten in
-    /// the host — while the local fallback session is hung up as on any quit.
+    /// the host.
     func testDetachAllNeverSignals() async throws {
         var transports: [FakeSessionHostTransport] = []
         var hostSignals: [(pid_t, Int32)] = []
@@ -252,15 +283,10 @@ final class TerminalCenterTests: XCTestCase {
         client.signalGroup = { hostSignals.append(($0, $1)) }
         let running = await client.ensureRunning()
         XCTAssertTrue(running)
-        let local = FakeTerminalSession(pid: 555)
         var signals: [(pid_t, Int32)] = []
         let center = TerminalCenter(
-            makeLocalProcess: { local },
             signaller: ProcessGroupSignaller(
-                signal: { pid, sig in
-                    signals.append((pid, sig))
-                    if sig == SIGHUP, pid == local.pid { local.exit(nil) }
-                },
+                signal: { pid, sig in signals.append((pid, sig)) },
                 isAlive: { _ in true },
                 sleep: { _ in }
             )
@@ -277,31 +303,21 @@ final class TerminalCenterTests: XCTestCase {
             row: request.row, run: request.run, pid: 4321, startedAtMs: 1, exited: false, code: nil
         )))
         XCTAssertEqual(hosted.pid, 4321)
-
-        center.sessionHost = nil
-        let localRow = try row(kind: .shell)
-        center.start(localRow, fresh: true)
-        XCTAssertEqual(center.liveIDs, [hostedRow.id, localRow.id])
-        XCTAssertEqual(center.liveHostedCount, 1, "only the hosted session can be kept")
-        XCTAssertEqual(center.unprotected, [localRow.id])
+        XCTAssertEqual(center.liveHostedCount, 1)
 
         await center.detachAll()
 
-        XCTAssertFalse(signals.contains { $0.0 == 4321 }, "a kept session is never signalled")
+        XCTAssertTrue(signals.isEmpty, "a kept session is never signalled")
         XCTAssertTrue(hostSignals.isEmpty, "nor hung up through the host")
-        XCTAssertEqual(signals.map(\.0), [555])
-        XCTAssertEqual(signals.map(\.1), [SIGHUP], "the local session stops as on any quit")
-        XCTAssertTrue(local.detached)
         XCTAssertTrue(transport.closed, "the hosted run's connection is closed")
         XCTAssertTrue(transport.sent(.forget).isEmpty, "the host keeps the run")
         XCTAssertNil(center.process(for: hostedRow.id))
-        XCTAssertNil(center.process(for: localRow.id))
         XCTAssertTrue(center.states.isEmpty)
         XCTAssertEqual(center.liveHostedCount, 0)
     }
 
     func testConnectSessionHostMakesOneClient() async {
-        let center = TerminalCenter(makeLocalProcess: { FakeTerminalSession() }, signaller: Self.inertSignaller)
+        let center = TerminalCenter(signaller: Self.inertSignaller)
         var made = 0
         let make = {
             made += 1

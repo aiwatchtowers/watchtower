@@ -67,7 +67,9 @@ final class TerminalPaletteTests: XCTestCase {
     /// The background follows every appearance change, and the hosted
     /// margin mirrors the terminal layer.
     func testSessionLayerAndHostMarginFollowTheAppearance() throws {
-        let session = SwiftTermSession()
+        let session = HostedTerminalSession(client: SessionHostClient(
+            socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in FakeSessionHostTransport() }
+        ))
         let container = TerminalContainerView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         TerminalHostAttachment.attach(session.view, to: container)
         defer { session.detach() }

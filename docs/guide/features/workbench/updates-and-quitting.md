@@ -27,7 +27,7 @@ An update, log-out or restart never asks about sessions (only about a running re
 - **Stop Sessions and Quit** stops them.
 - **Cancel** stays in the app.
 
-**Reset All Data** (Settings → System) always stops them. If the helper cannot be reached when Watchtower starts, sessions run in the window instead: each says "This session stops when Watchtower quits." under its terminal, and the quit alert counts it as "unprotected". If the helper stops later, the next session start restarts it; if that fails, the terminal shows **[Watchtower] the session host is not running**.
+**Reset All Data** (Settings → System) always stops them. Sessions run only in the helper. If it is not running, starting a session starts it again; if that fails, the session does not start and its terminal shows **[Watchtower] the session host is not running** (or **[Watchtower] could not reach the session host: …**). Press **Restart** to try again.
 
 Sessions do not survive a Mac restart or log-out; use **Resume** after one. While Watchtower is closed, sessions send no notices and your phone sees no updates. A session that exited meanwhile shows its last output and reads as exited when you return.
 
@@ -41,8 +41,7 @@ Every Watchtower build on your Mac shares one helper. Two copies open on the sam
 
 ## When it's empty or wrong
 
-- **"This session stops when Watchtower quits."** The helper could not be reached at start; the session runs in the window and stops with it.
-- **[Watchtower] the session host is not running.** The helper stopped and starting it again failed. Quit and reopen Watchtower: if the helper still can't be reached, sessions run in the window instead.
+- **[Watchtower] the session host is not running.** The helper is not running and starting it again failed, so the session did not start. Press **Restart**; if it still fails, quit and reopen Watchtower.
 - **Another Watchtower window took this session over.** Two copies of Watchtower on one workspace share the helper. Use the session in the copy that holds it: restarting it here starts a second agent.
 
 ## Related

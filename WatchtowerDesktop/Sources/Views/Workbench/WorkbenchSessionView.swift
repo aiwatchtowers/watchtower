@@ -173,14 +173,6 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                     .padding(8)
                     Divider()
                 }
-                if let session, center.unprotected.contains(session.id) {
-                    Label(Self.unprotectedNote, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                    Divider()
-                }
                 host(center)
             case let .exited(code)?:
                 host(center)
@@ -205,9 +197,6 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             }
         }
     }
-
-    /// Over a session started outside the session host (board #496).
-    static var unprotectedNote: String { "This session stops when Watchtower quits." }
 
     private func pasteNote(copied: Bool, shared: Bool, agent: AgentKind?) -> String {
         if copied { return OwnerAsksViewModel.copiedNote }

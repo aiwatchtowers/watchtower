@@ -109,7 +109,6 @@ final class TerminalCenterReattachTests: XCTestCase {
         XCTAssertEqual(center.liveIDs, [row.id])
         XCTAssertEqual(center.startedAt[row.id], Date(timeIntervalSince1970: 1_760_000_000.25),
                        "the run's start is the host's, not the adoption's")
-        XCTAssertTrue(center.unprotected.isEmpty, "an adopted run lives in the host")
         XCTAssertEqual(factoryCalls, 0, "adoption builds no launch process")
         let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
         XCTAssertEqual(hosted.pid, 5150)
