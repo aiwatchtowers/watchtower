@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
+	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/wire"
 )
 
@@ -791,6 +792,9 @@ func TestSkipToOutsideTheWindowIgnored(t *testing.T) {
 	w.settle()
 	w.wantCalls("test_noop:1", "test_noop:2")
 }
+
+// The hosted relay transport owns its zone cursors: the processor must use its Pull.
+var _ Puller = (*relay.Transport)(nil)
 
 // puller keeps its own zone cursors, as the hosted relay transport does.
 type puller struct {
