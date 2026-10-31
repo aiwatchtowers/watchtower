@@ -194,6 +194,9 @@ public actor RelayFeed {
             // The phone's own link record (or its sealed hello) reflecting back; the Mac is its
             // consumer and answers through the `device_grant` slice / the keybox.
             break
+        case .control:
+            // Not routed yet (Task 7); skipped.
+            break
         case .recordingUpload:
             guard let upload = decode(RecordingUploadPayload.self, from: record) else { break }
             // A still-pending record is our OWN upload reflecting back —

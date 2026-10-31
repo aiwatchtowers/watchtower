@@ -43,7 +43,75 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(grant.typingAllowed, kit["typing_allowed"] as? Bool, name)
             XCTAssertEqual(grant.linkedAt?.timeIntervalSince1970, kit["linked_at"] as? Double, name)
             XCTAssertEqual(grant.decidedAt?.timeIntervalSince1970, kit["decided_at"] as? Double, name)
+            XCTAssertTrue(kit.keys.contains("ordered_actions"), name)
+            let ordered = kit["ordered_actions"] as? Int
+            XCTAssertEqual(grant.orderedActions, ordered, name)
+            XCTAssertEqual(grant.runsOrderedActions, (ordered ?? 0) >= 1, name)
         }
+    }
+
+    /// Equal as JSON objects (key order and number spelling aside).
+    private func assertSameJSON(_ data: Data, _ expected: Any, _ name: String) throws {
+        let got = try JSONSerialization.jsonObject(with: data) as? NSDictionary
+        XCTAssertEqual(got, expected as? NSDictionary, name)
+    }
+
+    /// The phone's action payloads: `action_seq` is read and written exactly as the Go `wire.ActionRequest`
+    /// does, and the re-encoding carries no key the Go struct lacks.
+    /// Compares with `expect` (the Go `wire.Marshal` re-encoding), which equals `json` minus dropped unknown keys.
+    func testActionCasesRoundTrip() throws {
+        let cases = try XCTUnwrap(load()["action"])
+        XCTAssertGreaterThanOrEqual(cases.count, 4)
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let action = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            let seq = (kit["action_seq"] as? NSNumber)?.uint64Value
+            XCTAssertEqual(action.actionSeq, seq, name)
+            XCTAssertEqual(action.status.rawValue, kit["status"] as? String, name)
+            let recordName: String
+            if let seq {
+                let device = try XCTUnwrap(action.deviceID.flatMap(UUID.init(uuidString:)), name)
+                recordName = ActionRequestPayload.orderedRecordName(deviceID: device, actionSeq: seq)
+            } else {
+                recordName = action.recordName
+            }
+            XCTAssertEqual(recordName, kit["record_name"] as? String, name)
+            try assertSameJSON(RelayCoder.makeEncoder().encode(action), try XCTUnwrap(fixtureCase["expect"]), name)
+        }
+    }
+
+    /// Control records decode whatever their kind; an unknown kind keeps its raw value, and the keybox inside
+    /// `transport_switched` is ignored in Phase 1.
+    func testControlCasesDecode() throws {
+        let cases = try XCTUnwrap(load()["control"])
+        XCTAssertGreaterThanOrEqual(cases.count, 5)
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let control = try RelayCoder.makeDecoder().decode(ControlPayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(control.kind.rawValue, kit["kind"] as? String, name)
+            XCTAssertEqual(control.deviceID, kit["device_id"] as? String, name)
+            XCTAssertEqual(control.hubID, kit["hub_id"] as? String, name)
+            XCTAssertEqual(control.seq, (kit["seq"] as? NSNumber)?.uint64Value, name)
+            XCTAssertEqual(control.epoch, (kit["epoch"] as? NSNumber)?.uint32Value, name)
+            XCTAssertEqual(control.target, kit["target"] as? String, name)
+            XCTAssertEqual(control.by, kit["by"] as? String, name)
+            XCTAssertEqual(control.at?.timeIntervalSince1970, kit["at"] as? Double, name)
+            XCTAssertEqual(control.reason, kit["reason"] as? String, name)
+            XCTAssertEqual(control.retryAfterS, (kit["retry_after_s"] as? NSNumber)?.uint32Value, name)
+            XCTAssertEqual(control.recordName, kit["record_name"] as? String, name)
+            // `expect` is Go's re-encoding; keys the Kit does not read yet (the keybox) are listed in `ignored_keys`.
+            var expected = try XCTUnwrap(fixtureCase["expect"] as? [String: Any], name)
+            for key in kit["ignored_keys"] as? [String] ?? [] {
+                expected.removeValue(forKey: key)
+            }
+            try assertSameJSON(RelayCoder.makeEncoder().encode(control), expected, name)
+        }
+        let unknown = try XCTUnwrap(cases.first { $0["name"] as? String == "unknown_kind" })
+        let decoded = try RelayCoder.makeDecoder().decode(ControlPayload.self, from: bytes(try XCTUnwrap(unknown["json"])))
+        XCTAssertFalse(decoded.kind.isKnown)
+        XCTAssertEqual(decoded.kind.rawValue, "future_control")
     }
 
     func testAV4LinkIsRefusedAsNewerByTodaysPhone() throws {

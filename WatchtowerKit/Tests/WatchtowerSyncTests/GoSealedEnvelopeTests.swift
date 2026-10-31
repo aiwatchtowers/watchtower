@@ -85,4 +85,20 @@ final class GoSealedEnvelopeTests: XCTestCase {
             }
         }
     }
+
+    /// The ordered action name the Kit builds is the one the Go hub reads and echoes (`relayToPhone` is the
+    /// echo of `a-<device>-1`), and its wire name under the fixture `K_meta` is the hub's.
+    func testTheOrderedActionNameMatchesTheGoHub() throws {
+        let k = try E2EFixtureKeys()
+        let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: Self.url))
+        let item = try XCTUnwrap(file.cases["relayToPhone"])
+        let name = ActionRequestPayload.orderedRecordName(deviceID: k.deviceID, actionSeq: 1)
+        XCTAssertEqual(name, item.id)
+        let parts = name.split(separator: "-", maxSplits: 1).map(String.init)
+        let zone = try XCTUnwrap(CloudZoneID(rawValue: item.zone))
+        XCTAssertEqual(
+            KeyDerivation.recordName(
+                metaKey: SymmetricKey(data: E2EFixtureKeys.metaKeyBytes), zone: zone, kind: parts[0], id: parts[1]),
+            item.wireName)
+    }
 }

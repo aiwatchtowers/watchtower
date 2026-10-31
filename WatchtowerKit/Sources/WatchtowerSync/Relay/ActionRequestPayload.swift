@@ -101,8 +101,18 @@ public struct ActionRequestPayload: Codable, Equatable {
     /// Its keys are verbatim: the coder's key strategy never rewrites
     /// dictionary keys.
     public var result: [String: JSONValue]?
+    /// The phone's order number for this action (relay client Phase 1), sealed inside the payload. nil is the
+    /// legacy unordered path and encodes to an absent key, so a legacy record's bytes are unchanged.
+    public var actionSeq: UInt64?
 
+    /// The legacy record name; an ordered action is named by `orderedRecordName(deviceID:actionSeq:)`.
     public var recordName: String { "action-\(id)" }
+
+    /// The plain name of an ordered action, `a-<DEVICE_ID>-<action_seq>`, with the canonical uppercase
+    /// `uuidString` — the name the Go hub reads and echoes under.
+    public static func orderedRecordName(deviceID: UUID, actionSeq: UInt64) -> String {
+        "a-\(deviceID.uuidString)-\(actionSeq)"
+    }
 
     // Explicit CodingKeys are required because:
     // - convertToSnakeCase encodes "entityID" as "entity_id" correctly.
@@ -120,6 +130,7 @@ public struct ActionRequestPayload: Codable, Equatable {
         case hubID = "hubId"
         case reason
         case result
+        case actionSeq
     }
 
     public init(
@@ -142,6 +153,7 @@ public struct ActionRequestPayload: Codable, Equatable {
         self.hubID = hubID
         self.reason = nil
         self.result = nil
+        self.actionSeq = nil
     }
 
     public init(from decoder: Decoder) throws {
@@ -157,5 +169,6 @@ public struct ActionRequestPayload: Codable, Equatable {
         hubID = try container.decodeIfPresent(String.self, forKey: .hubID)
         reason = try container.decodeIfPresent(String.self, forKey: .reason).flatMap(ActionReason.init(rawValue:))
         result = try container.decodeIfPresent([String: JSONValue].self, forKey: .result)
+        actionSeq = try container.decodeIfPresent(UInt64.self, forKey: .actionSeq)
     }
 }
