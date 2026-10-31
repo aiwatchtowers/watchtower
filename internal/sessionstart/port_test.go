@@ -74,6 +74,11 @@ func TestPortLiveSeesOnlyThisScope(t *testing.T) {
 	assert.Equal(t, handlers.LiveRun{SessionID: sid, Run: info.Launch, Agent: "claude",
 		StartedAt: time.UnixMilli(info.StartedAtMs)}, live)
 	assert.False(t, live.StartedAt.IsZero(), "the port fills the run's start")
+
+	runs, err := p.Runs(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, map[int64]time.Time{sid: time.UnixMilli(info.StartedAtMs)}, runs,
+		"Runs is this scope's running sessions only, with the run's start")
 }
 
 // The host's hold reaches the caller as is, and nothing is written.

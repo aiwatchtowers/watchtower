@@ -28,14 +28,16 @@ import (
 	"watchtower/internal/workbenchgit"
 )
 
-// canaryPort is a session host where every session is live and every line
+// canaryPort is a session host where every session is live for the
+// handlers and the seeded session runs for the sources (Runs), and every line
 // waits behind the owner's draft (held prompt_has_text), so a phone line is
 // stored in held_session_lines; starts are accepted.
 type canaryPort struct {
-	runAt  time.Time // the one run's start: a line is held for this launch
-	mu     sync.Mutex
-	starts []handlers.StartRequest
-	start  int64 // the row a start answers with
+	running int64     // the session Runs lists
+	runAt   time.Time // the one run's start: a line is held for this launch
+	mu      sync.Mutex
+	starts  []handlers.StartRequest
+	start   int64 // the row a start answers with
 }
 
 func (p *canaryPort) Live(_ context.Context, id int64) (handlers.LiveRun, bool, error) {
@@ -44,6 +46,10 @@ func (p *canaryPort) Live(_ context.Context, id int64) (handlers.LiveRun, bool, 
 
 func (*canaryPort) Deliver(context.Context, handlers.DeliverRequest) (handlers.DeliverResult, error) {
 	return handlers.DeliverResult{Outcome: handlers.DeliverHeld, Reason: "prompt_has_text"}, nil
+}
+
+func (p *canaryPort) Runs(context.Context) (map[int64]time.Time, error) {
+	return map[int64]time.Time{p.running: p.runAt}, nil
 }
 
 func (*canaryPort) Interrupt(context.Context, int64, uint64) error { return nil }
@@ -135,9 +141,9 @@ VALUES (?, 'custom', 'project', '2026-09-29', '2026-09-29', 'todo', 'medium', 'm
 		c.project, c.target, mComment)
 	conv := "00000000-0000-4000-8000-00000000c0a1"
 	c.session = id(`INSERT INTO terminal_sessions (project_id, kind, title, target_id, folder_path, claude_session_id, last_active_at,
-    agent_error, agent_failed_at)
-VALUES (?, 'claude', ?, ?, ?, ?, ?, ?, ?)`, c.project, mSessionTitle, c.target, folder, conv, db.AgentStateStamp(now),
-		mSessionError, db.AgentStateStamp(now))
+    agent_state, agent_state_at, agent_error, agent_failed_at)
+VALUES (?, 'claude', ?, ?, ?, ?, ?, 'waiting', ?, ?, ?)`, c.project, mSessionTitle, c.target, folder, conv, db.AgentStateStamp(now),
+		db.AgentStateStamp(now), mSessionError, db.AgentStateStamp(now)) // stopped on an error in its live run
 	c.started = id(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, finished_at, finish_summary)
 VALUES (?, 'claude', 'Second', ?, '00000000-0000-4000-8000-00000000c0a2', ?, ?)`, c.project, folder, stamp(now), mFinishSummary)
 	const questions = `{"questions":[{"id":"a","question":"%s","options":[{"label":"Yes"},{"label":"No"}]}]}`
@@ -182,7 +188,7 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	c := seedCanaryDB(t, home)
-	port := &canaryPort{start: c.started, runAt: time.Now().Add(-time.Minute)}
+	port := &canaryPort{start: c.started, running: c.session, runAt: time.Now().Add(-time.Minute)}
 	recordings := filepath.Join(t.TempDir(), "recordings")
 	e := runEndToEnd(t, "", func(o *Options) {
 		o.DB, o.Sessions, o.RecordingsDir = c.d, port, recordings
@@ -290,12 +296,11 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 	}
 
 	// Every source published (the markers went through the sealer), the
-	// chat and the report after their runners. permission_request and a
-	// failed session's state milestone (mPermission, mSessionError) need a
-	// live run in the sources' Liveness, which the hub does not wire yet
-	// (sources.Config.Live nil = nothing live): their markers are seeded so
-	// the check covers them once it does.
+	// chat and the report after their runners; the permission request and
+	// the failed session's state milestone ("Error: " + mSessionError, sealed
+	// into session_milestones.text) through the session host's liveness.
 	kinds := []string{"workbench", "workbench_target", "workbench_comment", "terminal_session", "session_timeline", "owner_ask",
+		"permission_request",
 		"session_chat", "session_report", "calendar_event", "meeting_transcript", "recording_job"}
 	published := func(kind string) bool {
 		got, err := e.rig.storeHashes(kind)
@@ -311,6 +316,11 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 	})
 	if err := e.rig.stop(); err != nil {
 		t.Fatal(err)
+	}
+	// The running session's state milestone was stored (its text sealed):
+	// the only state it can have is the error one, which carries the marker.
+	if n := queryStrings(t, sidecarDB(t, e.dir), `SELECT COUNT(*) FROM session_milestones WHERE session_id = ?`, c.session); n[0] == "0" {
+		t.Error("no state milestone stored for the failed running session (positive control)")
 	}
 
 	all := encodings(c.allMarkers)

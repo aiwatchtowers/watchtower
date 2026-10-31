@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -530,4 +531,80 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 		got := echo()
 		return got.Status == wire.StatusFailed && got.Reason != nil && *got.Reason == "device_not_allowed"
 	})
+}
+
+// livePort is a session host whose one session runs (Runs lists it, Live
+// reads it): the sources' liveness and the handlers' come from it.
+type livePort struct {
+	noSessionHost
+	session int64
+	at      time.Time
+}
+
+func (p livePort) Live(_ context.Context, id int64) (handlers.LiveRun, bool, error) {
+	if id != p.session {
+		return handlers.LiveRun{}, false, nil
+	}
+	return handlers.LiveRun{SessionID: id, Run: 1, Agent: "claude", StartedAt: p.at}, true, nil
+}
+
+func (p livePort) Runs(context.Context) (map[int64]time.Time, error) {
+	return map[int64]time.Time{p.session: p.at}, nil
+}
+
+// TestSourcesSeeTheSessionHostsLiveness: the sources' liveness is the
+// port's host list, so a pending permission request of a running session
+// is published (sealed: its summary is in no frame); a port that cannot list
+// leaves nothing live.
+func TestSourcesSeeTheSessionHostsLiveness(t *testing.T) {
+	d, project := fileDB(t)
+	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-000000000003')`, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := res.LastInsertId()
+	summary := "wt-permission-summary-of-the-live-session"
+	if _, err := d.Exec(`INSERT INTO permission_requests (terminal_session_id, workbench_id, tool_name, summary, status, created_at)
+VALUES (?, ?, 'Bash', ?, 'pending', ?)`, session, project, summary, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+
+	h, w := wiringRig(t, Options{DB: d, Sessions: livePort{session: session, at: time.Now().Add(-time.Minute)},
+		liveEvery: 50 * time.Millisecond})
+	if w.live == nil {
+		t.Fatal("a port that lists runs gave the sources no liveness")
+	}
+	p, err := hubtest.New(hubtest.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, p.Device()) }); err != nil {
+		t.Fatal(err)
+	}
+	fake := memfake.New(transport.KindRelay, nil)
+	h.pub = hubslices.NewPublisher(hubslices.Config{
+		Store: h.st, Transport: fake, Sealer: secure.NewSealer(h.kr), DataZone: "data/hubtest-acme", Sources: w.set.Sources,
+	})
+	runWiring(t, h, w)
+	eventually(t, 5*time.Second, "the permission request published", func() bool {
+		got, err := h.st.SliceHashes("permission_request")
+		return err == nil && len(got) == 1
+	})
+	if live := w.live.get(); !live.Settled || len(live.Runs) != 1 {
+		t.Fatalf("liveness %+v", live)
+	}
+	for i, f := range fake.Frames() {
+		if _, err := secure.ParseHeader(f); err != nil {
+			t.Fatalf("frame %d is not an envelope: %v", i, err)
+		}
+		if bytes.Contains(f, []byte(summary)) {
+			t.Fatalf("frame %d carries the summary in the clear", i)
+		}
+	}
+
+	_, none := wiringRig(t, Options{DB: d, Sessions: revokePort{}})
+	if none.live != nil {
+		t.Fatal("a port that cannot list runs gave the sources a liveness")
+	}
 }

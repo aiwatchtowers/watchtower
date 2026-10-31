@@ -85,6 +85,39 @@ func (p *Port) Live(ctx context.Context, sessionID int64) (handlers.LiveRun, boo
 	return l, true, nil
 }
 
+// Runs is every session of this workspace's scope that has a running launch
+// on the host, by row, with the newest running launch's start (the hub's
+// slice liveness: the same host list Live reads, in one call).
+func (p *Port) Runs(ctx context.Context) (map[int64]time.Time, error) {
+	c, err := p.control.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list, err := c.List(ctx)
+	p.control.done(c, err)
+	if err != nil {
+		return nil, fmt.Errorf("listing the session host: %w", err)
+	}
+	scope := p.d.scope()
+	runs := map[int64]time.Time{}
+	launches := map[int64]uint64{}
+	for _, info := range list {
+		if info.Scope != scope || info.Exited {
+			continue
+		}
+		if l, seen := launches[info.Row]; seen && l >= info.Launch {
+			continue
+		}
+		launches[info.Row] = info.Launch
+		var at time.Time
+		if info.StartedAtMs > 0 {
+			at = time.UnixMilli(info.StartedAtMs)
+		}
+		runs[info.Row] = at
+	}
+	return runs, nil
+}
+
 // Deliver types one line through the host's typed-never-submitted delivery
 // (PROJ-12): the caller's check runs once before the paste (its answer is
 // the request's SubmitIf: no Return unless the hooks reported and no dialog
