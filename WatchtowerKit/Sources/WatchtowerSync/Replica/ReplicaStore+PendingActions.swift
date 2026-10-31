@@ -37,13 +37,6 @@ extension ReplicaStore {
         }
     }
 
-    /// The old name of `dismissAction(id:)`, kept until its callers move (relay client Phase 1, Task 8).
-    @available(*, deprecated, renamed: "dismissAction(id:)")
-    @discardableResult
-    public func removePendingAction(id: String) throws -> Bool {
-        try dismissAction(id: id)
-    }
-
     /// ActionOutbox's write path (internal: the app enqueues via the outbox,
     /// never by inserting rows directly). Stores the sealed record exactly as
     /// it was sent (`sealed.payload` under `sealed.recordName`), so the overlay
