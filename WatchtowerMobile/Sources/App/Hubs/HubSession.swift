@@ -1396,6 +1396,8 @@ final class HubSession {
     func shutDown() async {
         stop()
         await bootstrapTask?.value
+        // The last outbox pass ends before the transport stops and the caller closes the replica.
+        await outboxWork?.value
         await liveTransport?.stop()
     }
 
