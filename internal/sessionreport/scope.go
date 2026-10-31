@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -100,9 +101,22 @@ func (b *board) hasDoneWork(e *boardEntry) bool {
 	return slices.ContainsFunc(b.leavesUnder(e.id()), func(l *boardEntry) bool { return l.target.Status == "done" })
 }
 
-// scope is a session's targets (spec Part 3): the session's own target
-// subtree, the targets its agent linked, and the subtrees of linked targets
-// that have children.
+// boundTarget is the entry of a session's bound target id when the binding
+// takes effect: on the board, not archived and not dismissed. Any other bound
+// target leaves the session on rule 2 and gives it no binding stamp.
+func (b *board) boundTarget(id int64) (*boardEntry, bool) {
+	e, ok := b.byID[id]
+	if id == 0 || !ok || e.archived || !e.counted() {
+		return nil, false
+	}
+	return e, true
+}
+
+// scope is a session's targets (board #1352). in is the wide set the report
+// lists: the session's own target subtree, the targets its agent linked, and
+// the subtrees of linked targets that have children. progress is the leaves
+// the progress line counts: the bound target's leaves (rule 1), else the
+// wide set's leaves minus those another session owns (rule 2).
 type scope struct {
 	b        *board
 	in       map[int64]bool
@@ -111,10 +125,10 @@ type scope struct {
 }
 
 // newScope builds the scope of session sessionID. in is the wide set (the
-// lists). The progress set is narrower (board #1352): a session bound to a
-// target on the board (present and not archived) counts that target's subtree leaves; any other session
-// counts the wide set minus leaves another session owns (owners: leaf id ->
-// owning session id).
+// lists). The progress set is narrower (board #1352): a session whose bound
+// target takes effect (boundTarget) counts that target's subtree leaves; any
+// other session counts the wide set minus leaves another session owns
+// (owners: leaf id -> owning session id, see leafOwners).
 func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []int64, owners map[int64]int64) scope {
 	s := scope{b: b, in: map[int64]bool{}, progress: map[int64]bool{}}
 	roots := slices.Clone(linked)
@@ -125,7 +139,7 @@ func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []i
 	for _, r := range roots {
 		b.walk(r, func(e *boardEntry) { s.in[e.id()] = true })
 	}
-	if bound, onBoard := b.byID[s.session]; s.session != 0 && onBoard && !bound.archived {
+	if _, ok := b.boundTarget(s.session); ok {
 		for _, e := range b.leavesUnder(s.session) {
 			s.progress[e.id()] = true
 		}
@@ -137,6 +151,44 @@ func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []i
 		}
 	}
 	return s
+}
+
+// leafOwners maps each owned leaf to its owning session: the latest of the
+// link status stamps (links) and the binding stamps (binds: every leaf under
+// a bound target that takes effect gets its session's binding time), a tie
+// going to the higher session id across both sources.
+func leafOwners(b *board, links map[int64]db.LeafStamp, binds []db.SessionBinding) map[int64]int64 {
+	best := maps.Clone(links)
+	for _, bd := range binds {
+		if _, ok := b.boundTarget(bd.TargetID); !ok {
+			continue
+		}
+		for _, e := range b.leavesUnder(bd.TargetID) {
+			cur, has := best[e.id()]
+			if !has || bd.At > cur.At || (bd.At == cur.At && bd.SessionID > cur.SessionID) {
+				best[e.id()] = db.LeafStamp{SessionID: bd.SessionID, At: bd.At}
+			}
+		}
+	}
+	out := make(map[int64]int64, len(best))
+	for id, st := range best {
+		out[id] = st.SessionID
+	}
+	return out
+}
+
+// loadOwners reads the stamps of workbench workbenchID and resolves the leaf
+// owners on board b.
+func loadOwners(d *db.DB, b *board, workbenchID int64) (map[int64]int64, error) {
+	links, err := d.SessionLeafOwners(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	binds, err := d.SessionBindings(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	return leafOwners(b, links, binds), nil
 }
 
 // targets is the counted in-scope targets, parents included, in board order.
@@ -239,7 +291,7 @@ func loadScope(ctx context.Context, d *db.DB, workbenchID, sessionID int64) (Ses
 	if err != nil {
 		return Session{}, scope{}, err
 	}
-	owners, err := d.SessionLeafOwners(workbenchID)
+	owners, err := loadOwners(d, b, workbenchID)
 	if err != nil {
 		return Session{}, scope{}, err
 	}
