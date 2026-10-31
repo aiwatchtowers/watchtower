@@ -139,7 +139,7 @@ The phone's replica keeps each row's plain `kind` and record name in the clear o
 ### 4.8 Alerts
 
 - **CloudKit (built).** An `ask_alert` slice record is sealed as class `alert` under `K_alert` (the only key the phone's notification extension holds, readable after first unlock). When an alert first reaches the zone the hub also writes a payload-free `WatchtowerSignal` named `sig-<wire name of the alert>`, deleted with the alert; a private-scope query subscription fires on its creation, and the extension fetches and opens the alert (`AlertOpener.open(wireName:envelope:)`). A republish gets no new signal. A `shared`-scope phone has no subscription and posts alerts locally after each fetch.
-- **Hosted relay (Proposed, RC §10).** The hub calls `send_alert` per paying phone with the sealed `ask_alert` envelope inline (relay design: ≤ ~3.5 KB); the extension opens it with the same `AlertOpener` under the fixed wire name **`alert-push`** in the AAD, no network. Reason: the relay pushes the envelope itself, so there is no record to fetch and no per-record wire name to bind. Neither side builds this yet.
+- **Hosted relay (Proposed, not built; source: RC §10, owner-approved in that spec, ask #799; it changes only together with that spec).** The hub calls `send_alert` per paying phone with the sealed `ask_alert` envelope inline (relay design: ≤ ~3.5 KB); the extension opens it with the same `AlertOpener` under the fixed wire name **`alert-push`** in the AAD, no network. Reason: the relay pushes the envelope itself, so there is no record to fetch and no per-record wire name to bind. Neither side builds this yet.
 
 ### 4.9 Local sealing on the hub
 
@@ -207,7 +207,8 @@ Fixture: `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json` `device_gra
 
 - **New link (Go hub built, phone Proposed):** the phone opens a pairing slot and writes its hello into `pair/<slot>`; the hub, told by `Control{PAIRING_OPENED}` (the slot id only), answers with the keybox in the same zone. After the SAS confirmation the phone sends **`vouch_hub{hub_device_id, auth_pub}`** with its App Attest assertion, then `promote_pairing`; the hub calls `set_hub_readers`. A hub is admitted to the relay only once a paying phone vouched for its `relay_auth` key (asks #800, #801). `vouch_hub` and `HUB_NOT_VOUCHED` are **pending on the relay side** (relay ask #805); until then a refused hub login is `ErrForbidden`.
 - **Upgrade of a CloudKit link (Proposed):** the hub publishes `relay_device_id` + `relay_auth_pub` in the phone's `device_grant`; the phone vouches and calls `add_slot`. No QR.
-- A refusal (`ATTESTATION_*`, slot limit) keeps the hub off the relay and the phone shows the server's reason.
+- A refusal (`ATTESTATION_*`, slot limit) keeps the hub off the relay and the phone surfaces the server's reason.
+- **Accepted residual risk (Go hub design §12a, PR #523; for the owner to see at this review).** The phone's `relay_device_id` in the hello is its own claim, not bound to its `relay_auth` key, and the hub publishes it to `set_hub_readers`. An owner-confirmed phone could therefore name another slotted phone of the same account as a reader of the hub's data zone; that phone would only ever see ciphertext (it holds no keys of this hub).
 
 ### 5.8 Headless linking (Proposed)
 
@@ -329,6 +330,10 @@ Age window: 7 days after `created_at`, 24 h for the session-request kinds (marke
 | `target_done`, `target_snooze`, `task_create` | | | | | always `unsupported_in_poc` | yes |
 | any other kind, or a kind with no handler | | | | | `unsupported_in_poc` | yes |
 
+**Held deliveries.**
+- An `ask_answer` stored with `delivery: held` waits for its session and is typed **at most once**: after a hub crash in the middle of its delivery it is not retried and may never reach the session. The answer itself is stored, so the agent still reads it through `get_ask` and the session brief (plan 1b ruling).
+- A held recording upload expires after 7 days with the final `failed`/`expired`, and is failed `not_supported` when the owner turns recording off (§7.7, Proposed).
+
 The Kit still lists the pre-POC Today kinds (`inbox_*`, `situation_*`, `day_plan_item_*`, `track_read`, `digest_read`, `stream_digest_read`); no hub registers them.
 
 ### 7.3 Statuses and reasons
@@ -362,7 +367,7 @@ RC §5 and relay sim rules 1–7a, 15. Same handlers and outcomes as §7.2; only
 4. **Outbox.** The phone writes queued actions in order with `expect: absent`, stops at the first failure and resumes next pass; a conflict resolves per sim rule 3.
 5. **Order.** The hub keeps `last_applied_action_seq` per phone. `last + 1` is applied, then any held actions that now follow; `≤ last` is a repeat (echoed again with the stored final outcome, never dispatched); `> last + 1` is held (echo `held`, no reason) and `resend_from(last + 1)` is written once per gap. Each pass applies or holds at most 200 actions.
 6. **Echo.** Every action record read gets an echo by overwrite with `expect: seq`. On a final echo the phone settles its outbox row and deletes the echo (`expect: seq`).
-7. **Skip.** A phone asked to resend from a seq it no longer has writes `skip_to(m)`; the hub moves `last` to `m − 1` when that moves it forward and applies what now follows. The hub drops a `skip_to` without `device_id` and `hub_id`, or with `m > last + 1 + 65536`. The phone lists each missing action as **Not delivered** with Retry (a new action at the end of the queue); nothing is dropped silently.
+7. **Skip.** A phone asked to resend from a seq it no longer has writes `skip_to(m)`; the hub moves `last` to `m − 1` when that moves it forward and applies what now follows. The hub drops a `skip_to` without `device_id` and `hub_id`, or with `m > last + 1 + 65536`. The phone must surface each missing action to the owner as not delivered and may offer to send it again as a new action at the end of the queue; nothing is dropped silently (UI: relay client spec).
 8. **Re-link** restarts the order at 1 and forgets held actions and marks; the ledger key of an ordered action is scoped to the link.
 9. **Accepted cost** (ask #796): on CloudKit a gap delays every later action of that phone until the missing one is resent.
 
@@ -384,7 +389,9 @@ Plain name `c-<uuid>`, frame kind `control`, sealed like an action in the sender
 
 Not an action: record `recupload-<upload id>`, kind `recording_upload`, no order and no handler table, its own ledger. Payload `{id, started_at, ended_at, duration_sec, title_hint?, sample_format, status, error_message?, event_id?, device_id?, hub_id?}`, the audio as a sealed asset (§4.4). No age window; a retry reuses the same name and bytes. The hub rewrites the record without the asset: `received`, or `failed` with an owner-facing `error_message` — the upload echo has **no `reason` key** (the class stays in the hub's ledger). The phone deletes its plain audio and ciphertext only on `received`; a `failed` echo keeps both. Progress then arrives as the `recording_job` slice.
 
-Go hub: a host that never had a Desktop heartbeat (headless) answers `failed` "This host can't transcribe recordings. Your recording stays on your phone." (ledger `not_supported`); a desktop host whose Desktop went quiet answers `held` "Your Mac's transcriber isn't running. The recording waits on your phone." and retries each pass. Today's Kit decodes `held` as `pending` and keeps waiting.
+Go hub: with the owner's recording switch `off` (§9) an upload is answered the final `failed` "This host can't transcribe recordings. Your recording stays on your phone." (ledger `not_supported`). With it `on`, a fresh Desktop transcriber heartbeat lets the upload be opened and answered `received`; otherwise it is answered `held` "Your Mac's transcriber isn't running. The recording waits on your phone." and retried each pass. Today's Kit decodes `held` as `pending` and keeps waiting.
+
+**Held-upload limit (Proposed).** A held upload is not held forever: 7 days after it was first held it gets the final `failed` with reason `expired`, and turning the switch `off` fails every held upload with `not_supported`. Either way the phone keeps its audio. (Today's Go intake keeps a held upload in memory only, with no expiry.)
 
 ### 7.8 Action flows
 
@@ -443,7 +450,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 
 ## 9. Capabilities (Proposed)
 
-**Need.** The owner wants recording to be a plain on/off function of a hub. A headless host cannot transcribe (the transcriber is Desktop's Swift ML stack), yet today's phone shows the record button for every hub and only learns after the upload.
+**Need.** The owner wants recording to be a plain on/off function of a hub (conversation 2026-10-31). A headless host cannot transcribe (the transcriber is Desktop's Swift ML stack), yet today's phone offers recording for every hub and only learns after the upload.
 
 **Proposal.** The hub publishes a `capabilities` object in its **heartbeat**, starting with one key:
 
@@ -451,21 +458,22 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 "capabilities": {"recordings": "on"}
 ```
 
-- `recordings: "on"` when the host has had a Desktop transcriber heartbeat (`watchtower hub desktop heartbeat`): a desktop host, even while Desktop is closed for a moment (uploads are then `held`). `"off"` otherwise: a headless host. This is the same rule the recording intake uses for `failed` (§7.7), so the button and the answer cannot disagree. A change of the value restamps the heartbeat at once (the existing facts check).
-- The phone shows the record button for a hub unless its heartbeat says `"off"`; with `"off"` it hides the button and shows a one-line reason in the hub's info ("This host can't transcribe recordings").
-- An upload that reaches an `off` hub anyway is still answered `failed` "This host can't transcribe recordings…". The phone keeps the audio.
-- Unknown capability keys are ignored. An unknown value of a known key reads as "not off" (today's behaviour), so a newer hub never hides a feature from an older phone by accident; the hub's answer stays the authority.
+- **An owner switch, not a derived value.** `recordings` is the value of a switch on the hub: `watchtower hub recordings on|off`, stored in the sidecar's `hub_meta`. Default: `on` for a desktop host, `off` for a headless host. A change restamps the heartbeat at once (the existing facts check).
+- **Never derived from the Desktop heartbeat.** The Desktop transcriber heartbeat (`watchtower hub desktop heartbeat`; a running Go hub receives it over its control socket, being added in plan 1a Task 15's fix round) only decides, while the switch is `on`, whether an upload is `received` (Desktop fresh) or `held` (Desktop away, §7.7). A missing Desktop heartbeat can never turn the capability `off`.
+- **Off.** With the switch `off`, every upload gets the final `failed` with reason `not_supported` ("This host can't transcribe recordings. Your recording stays on your phone."), and any upload held when the switch is turned off is failed the same way. The phone keeps its audio.
+- **The phone's contract.** It must not offer recording for a hub whose heartbeat says `"off"`, and it must surface a final `failed` of an upload to the owner. An absent `capabilities` (an older hub) means `on`. Unknown capability keys are ignored; an unknown value of a known key reads as "not off" (today's behaviour), so a newer hub never hides a feature from an older phone by accident; the hub's answer stays the authority.
+- Phone UI and its mockups: relay client spec.
 
 **Why the heartbeat, not `device_grant`.** Recording is a fact about the host, the same for every phone; the heartbeat is the hub's one self-description record (name, flavor, accounts, sharing), already republished at once when its facts change, and read by every linked phone. `device_grant` is per phone and carries this link's grants and keys: putting host facts there means re-sealing an HPKE keybox per phone for each change, up to 20 records. `transports` sits in `device_grant` because the phone needs it while linking, before it holds `K_data`; recording matters only after the link, when the heartbeat is readable.
 
 **Old and new sides.**
 
-| Phone \ Hub | Swift hub (no `capabilities`) | Go hub, desktop host (`on`) | Go hub, headless (`off`) |
+| Phone \ Hub | Swift hub (no `capabilities`) | Go hub, switch `on` | Go hub, switch `off` |
 |---|---|---|---|
-| Today's phone | button shown, works (as today) | key ignored, button shown, works | key ignored, button shown; upload `failed` with the message, audio kept |
-| New phone | absent = on: button shown | button shown | button hidden, reason shown |
+| Today's phone | offers recording, works (as today) | key ignored, works | key ignored, offers recording; upload `failed` with the message (no `reason` it can read), audio kept |
+| New phone | absent = on: offers recording | offers recording | does not offer recording; a stray upload is surfaced as `failed`/`not_supported` |
 
-**With it (Proposed, same change):** the upload echo gains an optional `reason` (`not_supported`, …) so the phone can tell "this host never transcribes" from a retryable failure without parsing text; old phones ignore it. The Kit's `ActionReason` gains `not_supported`. Pinned by a new `heartbeat` section in `hub_contract_cases.json` (on, off, absent, unknown value).
+**The upload echo's `reason` (Proposed, same change).** The upload echo gains an optional `reason` (`not_supported`, `expired`, `not_found`, …), and the Kit's `ActionReason` gains `not_supported`. Without it the phone cannot tell "this host does not record" from a retryable failure except by parsing text, which the owner's "let it get `not_supported`" requires. An old phone ignores the key and shows `error_message`, as today; an old hub (Swift) sends no `reason`, and a new phone then treats the failure as generic. Pinned by a new `heartbeat` section in `hub_contract_cases.json` (on, off, absent, unknown value) and upload-echo cases.
 
 ## 10. Fixtures and tests that pin the contract
 
@@ -485,13 +493,13 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 ## 11. Proposed changes in one list
 
 1. Kit reads `LinkPayload` v4 and sends `DeviceHello.relay_device_id` (RC §8) — so a phone can link a Go hub at all.
-2. Phone ordered path: `action_seq`, `a-` names, outbox states, echo deletes, `skip_to`, Not delivered, `epoch_ack` (RC §5) — the Go hub already runs its half.
+2. Phone ordered path: `action_seq`, `a-` names, outbox states, echo deletes, `skip_to`, surfacing undelivered actions, `epoch_ack` (RC §5) — the Go hub already runs its half.
 3. Hosted relay transport on the phone (RC §7) and `vouch_hub` on the relay and phone (relay ask #805).
 4. Transport switch: `transport_switched`, `hub_on_relay`, old-epoch retention (sim rules 8–16).
 5. Relay alerts: `send_alert` with the envelope opened under `alert-push` (RC §10).
 6. Conditional mailbox writes on CloudKit through the bridge (RC §3, Go hub design §6.2).
 7. Headless pairing in the terminal (`watchtower hub pair`).
-8. `capabilities.recordings` in the heartbeat, the upload echo's `reason`, and `ActionReason.not_supported` (§9).
+8. The owner's recording switch published as `capabilities.recordings` in the heartbeat, the upload echo's `reason`, `ActionReason.not_supported`, and the held-upload expiry (§7.7, §9).
 9. The Go hub's remaining kinds: `device` records, the session start/stop/input handlers, `session_report`, `session_chat`, `calendar_event`, `meeting_transcript`, `recording_job` sources.
 10. A shared hello case (`relay_device_id`) in `hub_contract_cases.json` (RC: Phase 3).
 
@@ -513,7 +521,12 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 - The phone states its own `relay_device_id` inside the hello — Go hub design §12a (existing code in `internal/hub/link`).
 - A headless hub runs relay-only and offers no recording — Go hub design §3, §7.3.
 - Recording intake: `held` while Desktop is away, `failed` on a host that never had Desktop — Go hub design §8 p. 4a (existing code).
-- Capabilities live in the heartbeat, starting with `recordings: on|off`; unknown values read as not off — conversation (this document, Proposed).
+- Capabilities live in the heartbeat; unknown values read as not off — conversation (this document, Proposed).
+- Recording is an owner on/off switch published in the heartbeat — conversation 2026-10-31, supersedes ask #827 N7 (owner confirms on this review).
+- Owner verbs go through `watchtower hub …` (a thin CLI later) — ask #827.
+- A held ask answer is delivered at most once; after a crash mid-delivery it stays readable via `get_ask` and the brief — plan 1b ruling.
+- A held upload expires after 7 days with `failed`/`expired`, the phone keeping its audio — review of this document (ask #831).
+- Phone UI and mockups are out of this document; they belong to the relay client spec — review of this document (ask #831).
 
 ## Open points
 
@@ -525,5 +538,5 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 6. **`hub_on_relay` carrier.** Relay design §4.2 p. 3 says the hub "publishes `hub_on_relay` in CloudKit"; RC §5 and Go `wire.Control` make it a control record in the free phone's mailbox. A control record needs the ordered path on that phone; a free phone on the legacy path would not read it.
 7. **Hub count.** The phone links up to 4 hubs (`HubRegistry.limit`); a relay subscription holds 3 hub slots. What the phone shows for a 4th hub on the relay is not specified.
 8. **`probe` without a nonce.** The Swift hub answers `failed`/`invalid_params`, the Go hub `applied`. Harmless (today's phone always sends one) but a divergence.
-9. **`not_supported` on the wire.** The Go hub's `failed(not_supported)` exists only in its ledger: the upload echo has no `reason`, and the Kit's `ActionReason` has no `not_supported`. §9 proposes adding both.
+9. **`not_supported` on the wire.** The Go hub's `failed(not_supported)` exists only in its ledger: the upload echo has no `reason`, and the Kit's `ActionReason` has no `not_supported`. §9 proposes adding both (kept as Proposed after review).
 10. **Shared hello fixture.** Go hub design §12a says the hello's `relay_device_id` is pinned by the shared fixture; `hub_contract_cases.json` has no hello section yet (RC: Phase 3).
