@@ -40,9 +40,8 @@ const (
 )
 
 // Protocol v2 frame types. InputTo, Deliver and PromptHint never bind the
-// connection to a session; Deliver/Delivered, DeliverCheck/DeliverCheckReply
-// and DeliveryEvent are declared for the typed-never-submitted delivery and
-// not served yet (an unknown frame is skipped).
+// connection to a session. Deliver/Delivered, DeliverCheck/DeliverCheckReply
+// and DeliveryEvent are the typed-never-submitted delivery (deliver.go).
 const (
 	InputTo           FrameType = 0x08
 	Deliver           FrameType = 0x09
