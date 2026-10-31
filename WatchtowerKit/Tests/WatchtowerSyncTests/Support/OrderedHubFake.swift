@@ -11,6 +11,8 @@ import WatchtowerE2ETesting
 /// - A phone `skip_to(m)` naming this phone and this hub, with `m <= last + 1 + 65536`, moves `last` to `m - 1` when
 ///   that moves it forward, then drains the held actions. Every control it reads is deleted under its version.
 ///
+/// It keeps no seen ids, unlike the Go hub's `RelaySeen`: a second copy of a `skip_to` is honoured again.
+///
 /// Its records are sealed by the test hub's keys. The Swift hub's `SecureTransport` neither seals nor opens
 /// `control` frames (the Desktop hub drops them), so controls go through `EnvelopeSealer` directly, with the same
 /// keys, names and envelope class the Go hub uses.
@@ -153,8 +155,10 @@ actor OrderedHubFake {
     /// Seals `control` to the phone as the Go hub's `sealControl` does and writes it (`.absent` by default; `.none`
     /// writes a second copy of the same id over the first).
     @discardableResult
-    func writeControl(_ control: ControlPayload, expect: WriteExpectation = .absent) async throws -> SaveOutcome? {
-        let plain = control.recordName
+    func writeControl(
+        _ control: ControlPayload, expect: WriteExpectation = .absent, frameID: String? = nil
+    ) async throws -> SaveOutcome? {
+        let plain = frameID ?? control.recordName
         let wire = try hub.wireName(plain: plain, zone: .relay)
         let frame = InnerFrame(
             kind: RelayRecordKind.control.rawValue, id: plain, payload: try RelayCoder.makeEncoder().encode(control))

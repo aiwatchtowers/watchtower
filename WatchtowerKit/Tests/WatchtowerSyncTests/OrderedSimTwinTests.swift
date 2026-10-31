@@ -133,8 +133,13 @@ final class OrderedSimTwinTests: XCTestCase {
         _ = try await refuseA2(rig)
         try await rig.hub.sync()
         await rig.inner.refuseNext(.unreachable, count: 1)
+        let before = await rig.recorder.conditionalSaves.count
 
         _ = try await rig.feed.pollOnce()
+
+        let refusedPass = await rig.recorder.conditionalSaves.dropFirst(before).map(\.names)
+        XCTAssertEqual(refusedPass.count, 1, "the refused skip_to alone")
+        XCTAssertFalse(refusedPass.contains([try rig.wire(3)]), "a3 is never written past the refused control")
 
         let control = try XCTUnwrap(try rig.store.queuedControls().first, "the refused skip_to stays queued")
         XCTAssertEqual(control.kind, .skipTo)

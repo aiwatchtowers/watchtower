@@ -143,6 +143,31 @@ extension RelayFeedTests {
         XCTAssertFalse(names.contains(try rig.wire(otherHub)))
     }
 
+    /// As Go's `readControl`: an empty id, or a frame id other than `c-<id>`, is dropped and deleted, unread.
+    func testAMalformedControlIsDropped() async throws {
+        let rig = try await OrderedRig.make()
+        try await rig.insert()
+        _ = try await rig.outbox.flush()
+        let noID = ControlPayload(
+            id: "", kind: .resendFrom, deviceID: TestE2E.deviceID.uuidString, hubID: TestE2E.hubID.uuidString, seq: 1)
+        let misnamed = await rig.hub.control(.resendFrom, seq: 1)
+        let otherName = "c-\(UUID().uuidString)"
+        try await rig.hub.writeControl(noID, frameID: "c-\(UUID().uuidString)")
+        try await rig.hub.writeControl(misnamed, frameID: otherName)
+        let before = await rig.recorder.conditionalSaves.count
+
+        _ = try await rig.feed.pollOnce()
+
+        let after = await rig.recorder.conditionalSaves.count
+        XCTAssertEqual(after, before, "nothing written again")
+        XCTAssertFalse(try rig.store.isControlHandled(id: misnamed.id))
+        let deletes = await rig.recorder.conditionalDeletes
+        XCTAssertEqual(deletes.flatMap(\.names).count, 2, "both deleted")
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertFalse(mailbox.contains(try rig.phone.wireName(plain: otherName, zone: .relay)))
+        XCTAssertEqual(mailbox, [try rig.wire(1)])
+    }
+
     /// Ruling 9: `transport_switched`, `hub_on_relay` and unknown kinds stay in the mailbox, unhandled (Phase 3 reads
     /// them); `transport_switch_rejected` is read and deleted.
     func testUnknownControlKindsStayInTheMailbox() async throws {

@@ -201,7 +201,7 @@ public actor RelayFeed {
             outcomes = try await transport.deleteSealed(items)
         } catch {
             logger.warning(
-                "relay deletes failed (\(items.count, privacy: .public) records, left to hygiene): \(String(describing: error), privacy: .public)")
+                "relay deletes failed (\(items.count, privacy: .public) records, left to hygiene): \(error.localizedDescription, privacy: .public)")
             return
         }
         for (item, outcome) in zip(items, outcomes) {
@@ -279,9 +279,11 @@ public actor RelayFeed {
         // The phone's own controls (`skip_to`) reflect back through the shared zone: the hub reads and deletes them.
         guard record.sealed?.envelopeClass == .relayToPhone else { return nil }
         let ids = await outbox.linkIDs()
-        guard Self.names(control.deviceID, ids.deviceID), Self.names(control.hubID, ids.hubID) else {
+        // As Go's `readControl`: an empty id, a frame id other than `c-<id>`, or ids naming another phone or hub.
+        guard !control.id.isEmpty, record.recordName == control.recordName,
+              Self.names(control.deviceID, ids.deviceID), Self.names(control.hubID, ids.hubID) else {
             logger.warning(
-                "control \(control.id, privacy: .public) (\(control.kind.rawValue, privacy: .public)) for another phone or hub dropped")
+                "control \(control.id, privacy: .public) (\(control.kind.rawValue, privacy: .public)) malformed or for another phone or hub, dropped")
             return Self.delete(record)
         }
         switch control.kind {
@@ -290,6 +292,9 @@ public actor RelayFeed {
             if try store.isControlHandled(id: control.id) { return Self.delete(record) }
             if control.kind == .resendFrom {
                 if let seq = control.seq {
+                    // Assumption: a `resend_from` arrives only after an ordered action stamped with `hub_id`, so
+                    // both ids are known here and `notLinked`/`noHubID` cannot happen in practice. An unlink drops
+                    // the hub's replica and its feed, so a stall on such a throw cannot outlive the link.
                     try await outbox.resendFrom(seq)
                 } else {
                     logger.warning("resend_from \(control.id, privacy: .public) without a seq dropped")
