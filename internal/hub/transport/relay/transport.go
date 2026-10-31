@@ -227,11 +227,12 @@ func (t *Transport) pump(conn *client.Conn) {
 			t.emit(transport.Event{Zone: ev.Err.Zone, Err: fmt.Errorf("relay: zone dropped: %w", MapError(ev.Err.Err))})
 		case ev.GetZoneChanged() != nil:
 			zc := ev.GetZoneChanged()
-			if zc.GetSeq() == 0 && zc.Record == nil {
+			resync := zc.GetSeq() == 0 && zc.Record == nil
+			if resync {
 				// The client's marker after a reconnect (or a folded overflow).
 				t.refreshAccount()
 			}
-			t.emit(transport.Event{Zone: zc.GetZone()})
+			t.emit(transport.Event{Zone: zc.GetZone(), Resync: resync})
 		case ev.GetControl() != nil:
 			c, ok := controlOf(ev.GetControl())
 			if !ok {

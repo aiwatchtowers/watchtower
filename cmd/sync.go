@@ -31,6 +31,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
+	"watchtower/internal/hub"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/issuekey"
@@ -1011,7 +1012,57 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)
+	// Go hub, phase 1: only behind WATCHTOWER_HUB_DIR in a hubtest-* workspace.
+	defer startGoHub(ctx, cfg, database, logger)()
 	return d.Run(ctx)
+}
+
+// startGoHub starts the Go hub beside the daemon when hub.FromEnv says so
+// and logs whether it did; the returned func stops it and waits. Its cycle
+// tick is the daemon's poll interval.
+func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (stop func()) {
+	o, ok, err := hub.FromEnv(cfg, database)
+	if err != nil {
+		logger.Printf("hub: off (%s)", hub.Refusal(err))
+		return func() {}
+	}
+	if !ok {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	interval := cfg.Sync.PollInterval
+	if interval < time.Minute {
+		interval = config.DefaultPollInterval
+	}
+	tick := make(chan struct{}, 1)
+	o.CycleTick = tick
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				select {
+				case tick <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	go func() {
+		defer close(done)
+		if err := hub.Run(ctx, o); err != nil {
+			logger.Printf("hub: off (%s)", hub.Refusal(err))
+		}
+	}()
+	logger.Printf("hub: started (dir set)")
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // openAgentLog opens the agentlog.db beside database's file and runs the

@@ -32,6 +32,32 @@ func TestRelayTransport_WatchPairZoneSubscribes(t *testing.T) {
 	}
 }
 
+func TestRelayTransport_WatchZoneSubscribesAMailbox(t *testing.T) {
+	h := newHarness(t)
+	box := "relay/" + h.tr.o.HubRelayID + "/phone1"
+	if err := h.tr.WatchZone(t.Context(), box); err == nil {
+		t.Fatal("watched a zone before Connect")
+	}
+	if err := h.tr.Connect(t.Context(), []string{h.data}); err != nil {
+		t.Fatal(err)
+	}
+	waitZoneEvent(t, h.tr, h.data)
+	if err := h.tr.WatchZone(t.Context(), box); err != nil {
+		t.Fatal(err)
+	}
+	h.relay.mu.Lock()
+	subscribed := slices.Clone(h.relay.subscribed)
+	h.relay.mu.Unlock()
+	if !slices.Contains(subscribed, box) {
+		t.Fatalf("mailbox not subscribed: %v", subscribed)
+	}
+	for _, bad := range []string{"", "pair/slot1"} {
+		if err := h.tr.WatchZone(t.Context(), bad); err == nil {
+			t.Errorf("zone %q accepted", bad)
+		}
+	}
+}
+
 // TestRelayTransport_SetLinkedReadersKeepsSlottedPhones: the relay refuses a
 // whole set_hub_readers naming a phone that does not hold the hub in a slot
 // (a phone confirmed but not yet promoted), so only slotted phones are sent,

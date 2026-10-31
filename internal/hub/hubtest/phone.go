@@ -36,6 +36,7 @@ import (
 type Config struct {
 	Hub        secure.ID
 	HubKX      *ecdh.PublicKey
+	HubSig     ed25519.PublicKey // checks the hub's keyboxes (ReadKeybox needs it)
 	MetaKey    []byte
 	Epoch      uint32
 	HubRelayID string
@@ -482,4 +483,124 @@ func newUUID() string {
 	id[6] = id[6]&0x0f | 0x40
 	id[8] = id[8]&0x3f | 0x80
 	return id.String()
+}
+
+// FromLink is a phone that scanned link code l: it knows the hub's id, keys
+// and relay device id from the code, and gets K_meta and the epoch from its
+// keybox once the owner confirmed (ReadKeybox). Its link nonce is the code's.
+func FromLink(l wire.LinkPayload, f *memfake.Fake, clock func() time.Time) (*Phone, error) {
+	hub, err := secure.ParseID(l.HubID)
+	if err != nil {
+		return nil, fmt.Errorf("hubtest: link hub id: %w", err)
+	}
+	b64 := base64.RawURLEncoding
+	kxRaw, err := b64.DecodeString(l.HubKX)
+	if err != nil {
+		return nil, fmt.Errorf("hubtest: link hub_kx: %w", err)
+	}
+	kx, err := ecdh.X25519().NewPublicKey(kxRaw)
+	if err != nil {
+		return nil, fmt.Errorf("hubtest: link hub_kx: %w", err)
+	}
+	sig, err := b64.DecodeString(l.HubSig)
+	if err != nil || len(sig) != ed25519.PublicKeySize {
+		return nil, errors.New("hubtest: link hub_sig is not an Ed25519 key")
+	}
+	nonce, err := b64.DecodeString(l.Nonce)
+	if err != nil {
+		return nil, fmt.Errorf("hubtest: link nonce: %w", err)
+	}
+	p, err := New(Config{Hub: hub, HubKX: kx, HubSig: ed25519.PublicKey(sig), HubRelayID: l.RelayDeviceID, Transport: f, Clock: clock})
+	if err != nil {
+		return nil, err
+	}
+	p.nonce = nonce
+	return p, nil
+}
+
+// HelloName is the wire name of the phone's hello (and, with "keybox-",
+// of the hub's answer).
+func (p *Phone) HelloName() string { return "hello-" + p.id.String() }
+
+// Hello writes the phone's hello into zone (a pairing slot's pair/<slot>):
+// its device payload and keys sealed to hub_kx under the link nonce, signed,
+// naming its own relay device id.
+func (p *Phone) Hello(zone string) error {
+	b64 := base64.RawURLEncoding
+	h := wire.DeviceHello{
+		Device: wire.DevicePayload{
+			DeviceID: p.id.String(), Name: "Test Phone", Model: "iPhone18,1", AppVersion: "0.0.0-test",
+			Scope: wire.ScopePrivate, StartSessions: true, UpdatedAt: wire.Time{Time: p.cfg.Clock()},
+		},
+		SigningKey:    b64.EncodeToString(p.sig.Public().(ed25519.PublicKey)),
+		AgreementKey:  b64.EncodeToString(p.kx.PublicKey().Bytes()),
+		RelayDeviceID: p.relayID,
+	}
+	payload, err := wire.Marshal(h)
+	if err != nil {
+		return err
+	}
+	name := p.HelloName()
+	env, err := secure.SealHPKE(secure.InnerFrame{Kind: "hello", ID: name, Payload: payload}, secure.ClassHello,
+		p.cfg.HubKX, secure.HelloInfo(p.cfg.Hub, p.nonce), p.cfg.Hub, p.id, 1, 1,
+		secure.Context{Zone: secure.ZoneRelay, WireName: name}, p.sig)
+	if err != nil {
+		return err
+	}
+	_, err = p.cfg.Transport.Write(zone, name, env, transport.Expect{})
+	return err
+}
+
+// ReadKeybox reads the hub's keybox for this phone from zone (a pair zone
+// or the data zone), checking the hub's signature. A keybox with keys gives
+// the phone K_meta and the current epoch. ok is false when there is none.
+func (p *Phone) ReadKeybox(zone string) (wire.Keybox, bool, error) {
+	if len(p.cfg.HubSig) != ed25519.PublicKeySize {
+		return wire.Keybox{}, false, errors.New("hubtest: no hub signing key to check a keybox")
+	}
+	want := "keybox-" + p.id.String()
+	var since uint64
+	for {
+		b, err := p.cfg.Transport.Changes(context.Background(), zone, since)
+		if err != nil {
+			return wire.Keybox{}, false, err
+		}
+		for _, rec := range b.Changed {
+			if rec.Name != want {
+				continue
+			}
+			_, f, err := secure.OpenHPKE(rec.Envelope, secure.ClassKeybox, p.kx, secure.KeyboxInfo(p.cfg.Hub, p.id),
+				secure.Context{Zone: secure.ZoneData, WireName: rec.Name}, p.cfg.HubSig)
+			if err != nil {
+				return wire.Keybox{}, false, fmt.Errorf("hubtest: opening the keybox: %w", err)
+			}
+			var kb wire.Keybox
+			if err := json.Unmarshal(f.Payload, &kb); err != nil {
+				return wire.Keybox{}, false, fmt.Errorf("hubtest: unreadable keybox: %w", err)
+			}
+			if kb.Keys != nil {
+				meta, err := base64.RawURLEncoding.DecodeString(kb.Keys.MetaKey)
+				if err != nil {
+					return wire.Keybox{}, false, fmt.Errorf("hubtest: keybox meta key: %w", err)
+				}
+				p.cfg.MetaKey, p.cfg.Epoch = meta, kb.Keys.Epoch
+			}
+			return kb, true, nil
+		}
+		if !b.More {
+			return wire.Keybox{}, false, nil
+		}
+		since = b.NewSeq
+	}
+}
+
+// SAS is the four-digit code the phone shows for an awaiting keybox's
+// confirm nonce: the hub's code must equal it.
+func (p *Phone) SAS(confirmNonce string) (string, error) {
+	confirm, err := base64.RawURLEncoding.DecodeString(confirmNonce)
+	if err != nil {
+		return "", fmt.Errorf("hubtest: confirm nonce: %w", err)
+	}
+	return secure.SAS(p.cfg.Hub, p.nonce, p.cfg.HubSig, p.cfg.HubKX, p.sig.Public().(ed25519.PublicKey),
+		p.kx.PublicKey(), confirm), nil
 }
