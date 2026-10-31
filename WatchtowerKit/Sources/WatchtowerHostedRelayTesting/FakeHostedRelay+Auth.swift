@@ -14,11 +14,6 @@ extension FakeHostedRelay {
     /// A register nonce issued this far ahead of the clock still counts (Worker `register-nonce.ts`).
     private static let maxNonceSkew: TimeInterval = 60
 
-    private var relayOrigin: RelayOrigin {
-        guard let origin = try? RelayOrigin(origin) else { preconditionFailure("FakeHostedRelay: invalid origin") }
-        return origin
-    }
-
     /// The attestation rules apply to this device (README: off on dev; exempt probe devices).
     private func attests(_ deviceID: String) -> Bool {
         switch state.attestMode {

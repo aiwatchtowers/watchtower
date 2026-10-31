@@ -36,7 +36,9 @@ public final class FakeHostedRelay: @unchecked Sendable {
         public init() {}
     }
 
+    /// The server origin as configured (README: signed into the register and login hashes).
     public let origin: String
+    let relayOrigin: RelayOrigin
     let clock: ManualRelayClock
     private let lock = NSLock()
     /// Guarded by `lock`; only touched inside `locked`.
@@ -47,7 +49,10 @@ public final class FakeHostedRelay: @unchecked Sendable {
         attest: AttestMode = .enforce(exemptDeviceIDs: []),
         clock: ManualRelayClock
     ) {
-        self.origin = origin
+        // A test bug, not a runtime condition: the fake's origin is a literal in the test.
+        guard let parsed = try? RelayOrigin(origin) else { preconditionFailure("FakeHostedRelay: invalid origin") }
+        self.origin = parsed.string
+        relayOrigin = parsed
         self.clock = clock
         state = State(attestMode: attest)
     }
@@ -87,6 +92,14 @@ public final class FakeHostedRelay: @unchecked Sendable {
     public var attestMode: AttestMode {
         get { locked { state.attestMode } }
         set { locked { state.attestMode = newValue } }
+    }
+
+    /// Off (the default): a revocation counts as delivered at once, so a repeated `remove_slot`
+    /// answers `Ok`, as on the stand. On: revocations stay pending, and a repeat answers
+    /// `UNAVAILABLE` until `markRevocationsDelivered()`.
+    public var holdRevocations: Bool {
+        get { locked { state.holdRevocations } }
+        set { locked { state.holdRevocations = newValue } }
     }
 
     public var limits: Limits {
@@ -224,6 +237,9 @@ extension FakeHostedRelay {
     struct State {
         var attestMode: AttestMode
         var limits = Limits()
+        var holdRevocations = false
+        /// Phones that registered a push token (`send_alert` needs one).
+        var pushPhones: Set<String> = []
         var log: [Relay_V1_Request.OneOf_Op] = []
         /// The register nonces' HMAC key (stateless nonces, Worker `register-nonce.ts`).
         let nonceKey = SymmetricKey(size: .bits256)

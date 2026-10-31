@@ -104,8 +104,10 @@ extension FakeHostedRelay {
     }
 
     /// README "Slots (`remove_slot`)": by the phone or the Mac itself. The revocation is
-    /// remembered 24 h; a repeat answers `UNAVAILABLE` until `markRevocationsDelivered()`,
-    /// then `Ok`; `NOT_FOUND` when the Mac has no slot and no recent revocation.
+    /// remembered 24 h and a repeat answers `Ok`; with `holdRevocations` it answers
+    /// `UNAVAILABLE` until `markRevocationsDelivered()`. `NOT_FOUND` when the Mac has no slot
+    /// and no recent revocation. The phone loses its place among the Mac's hub readers
+    /// (Worker `zone.ts`, R34): only a new `set_hub_readers` restores it.
     private func removeSlot(_ op: Relay_V1_RemoveMacSlot, _ session: Session) throws -> Relay_V1_Response {
         guard session.deviceID == op.phoneDeviceID || session.deviceID == op.macDeviceID else { throw RelayFailure.forbidden }
         guard !op.phoneDeviceID.isEmpty, let accountID = accountOfPhone(op.phoneDeviceID),
@@ -116,7 +118,8 @@ extension FakeHostedRelay {
         defer { state.accounts[accountID] = account }
         if account.macs.remove(op.macDeviceID) != nil {
             account.removals.append(now)
-            account.revocations.append(Account.Revocation(macID: op.macDeviceID, at: now))
+            account.revocations.append(Account.Revocation(macID: op.macDeviceID, at: now, delivered: !state.holdRevocations))
+            dropHubReader(account.phoneID, of: op.macDeviceID)
             sendControl(.slotRemoved, op.macDeviceID, to: account.phoneID)
             sendControl(.slotRemoved, account.phoneID, to: op.macDeviceID)
             return Self.okResponse()
@@ -190,16 +193,30 @@ extension FakeHostedRelay {
         _ = try requirePhone(session)
         let hex = op.token.count.isMultiple(of: 2) && op.token.allSatisfy(\.isHexDigit)
         guard op.env != .unspecified, !op.token.isEmpty, op.token.count <= 200, hex else { throw RelayFailure.invalid }
+        state.pushPhones.insert(session.deviceID)
         return Self.okResponse()
     }
 
-    /// A Mac alerts a phone whose account holds it in a slot (no push is sent).
+    /// Worker `push.ts` `alertSender`: the phone's account must slot the Mac (`FORBIDDEN`) and pay
+    /// (`ENTITLEMENT_INACTIVE`), the phone must read the Mac's data zone (`FORBIDDEN`), the alert must
+    /// fit a 4096-byte push (`RECORD_TOO_LARGE`), and the phone needs a push token (`NOT_FOUND`).
+    /// No push is sent.
     private func sendAlert(_ op: Relay_V1_SendAlert, _ session: Session) throws -> Relay_V1_Response {
-        guard session.kind == .mac,
-              let accountID = accountOfPhone(op.phoneDeviceID),
-              state.accounts[accountID]?.macs.contains(session.deviceID) == true
+        guard session.kind == .mac else { throw RelayFailure.forbidden }
+        guard let accountID = accountOfPhone(op.phoneDeviceID), let account = state.accounts[accountID],
+              account.macs.contains(session.deviceID)
         else { throw RelayFailure.forbidden }
+        guard account.paying else { throw RelayFailure.entitlementInactive }
+        guard state.zones["data/\(session.deviceID)"]?.readers.contains(op.phoneDeviceID) == true else { throw RelayFailure.forbidden }
+        let body = #"{"aps":{"mutable-content":1,"alert":{"title":"Watchtower"}},"e":""# + op.envelope.base64EncodedString() + #""}"#
+        guard body.utf8.count <= 4_096 else { throw RelayFailure(.recordTooLarge, "record too large") }
+        guard state.pushPhones.contains(op.phoneDeviceID) else { throw RelayFailure.notFound }
         return Self.okResponse()
+    }
+
+    /// R34: a phone whose account no longer slots the Mac leaves the Mac's hub readers.
+    private func dropHubReader(_ phoneID: String, of macID: String) {
+        state.zones["data/\(macID)"]?.readers.remove(phoneID)
     }
 
     /// README `get_account_state`: a phone's entitlement, `moved` and slots; a Mac's slot holders.
@@ -247,25 +264,36 @@ extension FakeHostedRelay {
     }
 
     /// The subscription of `fromPhone` moves to `toPhone` (README "Subscriptions": the App Store
-    /// path, which the fake does not run). The old account keeps nothing: its slots are revoked
-    /// (remembered 24 h like `remove_slot`), it reports `moved`, and its phone gets
-    /// `SUBSCRIPTION_MOVED`. The new phone must re-pair its Macs.
+    /// path, which the fake does not run), as Worker `account.ts` `moved` + `slots.ts` `adoptSlotsTx`:
+    /// the old account's pairings close, its slots are revoked (remembered 24 h like
+    /// `remove_slot`, no replacement counted, no `SLOT_REMOVED`), it reports `moved` with no
+    /// entitlement, and its phone gets `SUBSCRIPTION_MOVED`. The new account takes the
+    /// entitlement and adopts the Macs in id order up to the slot limit; its phone reads a Mac's
+    /// data zone only after the Mac names it a reader again (re-pairing by QR).
     public func moveSubscription(fromPhone: String, toPhone: String) throws {
         try locked {
-            guard let fromID = accountOfPhone(fromPhone), let toID = accountOfPhone(toPhone),
+            guard let fromID = accountOfPhone(fromPhone), let toID = accountOfPhone(toPhone), fromID != toID,
                   var from = state.accounts[fromID]
             else { throw RelayStandError.notFound }
             let entitlement = from.entitlement
             let until = from.until
-            for mac in from.macs.sorted() { from.revocations.append(Account.Revocation(macID: mac, at: now)) }
+            let macs = from.macs.sorted()
+            for mac in macs {
+                from.revocations.append(Account.Revocation(macID: mac, at: now, delivered: !state.holdRevocations))
+                dropHubReader(fromPhone, of: mac)
+            }
             from.macs = []
+            from.pairings = [:]
             from.entitlement = .none
             from.until = nil
             from.expiredAt = nil
             from.moved = true
             state.accounts[fromID] = from
-            applyEntitlement(entitlement, until: until, to: toID)
             sendControl(.subscriptionMoved, "", to: fromPhone)
+            applyEntitlement(entitlement, until: until, to: toID)
+            for mac in macs where state.accounts[toID].map({ $0.macs.count < state.limits.maxMacSlots }) == true {
+                state.accounts[toID]?.macs.insert(mac)
+            }
         }
     }
 }
@@ -275,10 +303,11 @@ extension FakeHostedRelay: RelayStandControl {
         let states: [String: Relay_V1_EntitlementKind] = ["active": .active, "grace": .grace, "expired": .expired, "revoked": .revoked]
         guard let next = states[name] else { throw RelayStandError.invalid }
         let paying = next == .active || next == .grace
-        guard !paying || duration > .zero else { throw RelayStandError.invalid }
+        guard duration >= .zero, !paying || duration > .zero else { throw RelayStandError.invalid }
         try locked {
             guard let account = state.accounts[accountID] else { throw RelayStandError.notFound }
-            applyEntitlement(next, until: paying ? now.addingTimeInterval(Self.seconds(duration)) : account.until, to: accountID)
+            let until = duration > .zero ? now.addingTimeInterval(Self.seconds(duration)) : account.until
+            applyEntitlement(next, until: until, to: accountID)
         }
     }
 
@@ -308,8 +337,9 @@ extension FakeHostedRelay: RelayStandControl {
             for zone in zones {
                 guard case .mailbox = ZoneName(zone) else { throw RelayStandError.invalid }
             }
+            let now = now
             for zone in zones {
-                expireMailbox(zone, before: now.addingTimeInterval(Self.seconds(elapsed) - RelayTTL.mailbox))
+                expireMailbox(zone, before: now.addingTimeInterval(Self.seconds(elapsed) - RelayTTL.mailbox)) { _ in now }
             }
         }
     }

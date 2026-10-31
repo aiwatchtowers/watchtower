@@ -139,7 +139,8 @@ extension FakeHostedRelay {
     /// become tombstones; tombstones older than 30 days are purged and raise the floor.
     private func tidy(_ name: String) {
         if case .mailbox = ZoneName(name) {
-            expireMailbox(name, before: now.addingTimeInterval(-RelayTTL.mailbox))
+            // Stamped when the Worker's alarm would have expired it, so the purge below runs on time.
+            expireMailbox(name, before: now.addingTimeInterval(-RelayTTL.mailbox)) { $0.updatedAt.addingTimeInterval(RelayTTL.mailbox) }
         }
         guard var zone = state.zones[name] else { return }
         let horizon = now.addingTimeInterval(-RelayTTL.tombstone)
@@ -150,12 +151,12 @@ extension FakeHostedRelay {
         state.zones[name] = zone
     }
 
-    /// Tombstones the live records of a mailbox last written before `before` (mailbox TTL).
-    func expireMailbox(_ name: String, before: Date) {
+    /// Tombstones the live records of a mailbox last written before `before` (mailbox TTL),
+    /// in name order (Worker `expireRecords`), each stamped with `stamp(record)`.
+    func expireMailbox(_ name: String, before: Date, stamp: (Zone.Record) -> Date) {
         guard var zone = state.zones[name] else { return }
-        let now = now
         for record in zone.records.values.sorted(by: { $0.name < $1.name }) where !record.deleted && record.updatedAt < before {
-            zone.tombstone(record.name, at: now)
+            zone.tombstone(record.name, at: stamp(record))
         }
         state.zones[name] = zone
     }
@@ -171,6 +172,8 @@ extension FakeHostedRelay {
         case .data:
             if usage + bytes > limits.hubQuotaBytes { throw RelayFailure(.hubQuotaExceeded, "hub quota exceeded") }
         case .mailbox(_, let phone):
+            let mailboxes = state.zones.keys.filter { if case .mailbox(_, phone)? = ZoneName($0) { true } else { false } }
+            for mailbox in mailboxes { tidy(mailbox) }
             let all = state.zones.reduce(0) { sum, entry in
                 guard case .mailbox(_, phone)? = ZoneName(entry.key) else { return sum }
                 return sum + entry.value.usage
@@ -208,8 +211,9 @@ extension FakeHostedRelay {
         var updated: [String: Zone] = [:]
         for group in groups {
             var zone = state.zones[group.zone] ?? Zone()
+            var replaced: [String] = []
             for (index, item) in group.items {
-                if case .conflict(let current) = try saveOne(item, into: &zone) {
+                if case .conflict(let current) = try saveOne(item, into: &zone, replaced: &replaced) {
                     var conflict = Relay_V1_SaveConflict()
                     conflict.index = UInt32(index)
                     if let current { conflict.current = Self.proto(current, zone: group.zone, envelope: true) }
@@ -218,6 +222,8 @@ extension FakeHostedRelay {
                     result.saved.append(Self.proto(saved, zone: group.zone, envelope: false))
                 }
             }
+            // Released after the whole group (Worker `saveRecords`), so a later item may take it.
+            for attachment in replaced { zone.release(attachment) }
             updated[group.zone] = zone
         }
         state.zones.merge(updated) { _, new in new }
@@ -232,7 +238,8 @@ extension FakeHostedRelay {
         case conflict(Zone.Record?)
     }
 
-    private func saveOne(_ item: Relay_V1_SaveItem, into zone: inout Zone) throws -> SaveOutcome {
+    /// `replaced` collects the attachment an overwrite stopped referencing.
+    private func saveOne(_ item: Relay_V1_SaveItem, into zone: inout Zone, replaced: inout [String]) throws -> SaveOutcome {
         let record = item.record
         let current = zone.records[record.name]
         let live = current.map { !$0.deleted } ?? false
@@ -255,7 +262,7 @@ extension FakeHostedRelay {
             name: record.name, envelope: record.envelope, modifiedMs: record.clientModifiedAtMs, seq: zone.lastSeq,
             attachmentID: attachment, deleted: false, updatedAt: now
         )
-        if live, let old = current?.attachmentID, old != attachment { zone.release(old) }
+        if live, let old = current?.attachmentID, old != attachment { replaced.append(old) }
         return .saved
     }
 

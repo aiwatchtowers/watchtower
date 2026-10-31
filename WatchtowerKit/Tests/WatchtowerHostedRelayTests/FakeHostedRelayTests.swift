@@ -212,6 +212,7 @@ final class FakeHostedRelayTests: XCTestCase {
 
     func testRemoveSlotAnswersUnavailableUntilDelivered() async throws {
         let (relay, mac, phone) = try await pairedWorld()
+        relay.holdRevocations = true
         _ = controls(relay, phone)
         _ = controls(relay, mac)
         var remove = Relay_V1_RemoveMacSlot()
@@ -229,6 +230,181 @@ final class FakeHostedRelayTests: XCTestCase {
         clock.advance(by: .seconds(86_401))
         try await login(relay, phone)
         XCTAssertEqual(try errorCode(relay, phone, .removeSlot(remove)), .notFound, "remembered for 24 h only")
+    }
+
+    func testRetriedRemoveSlotAnswersOkByDefault() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))))
+        XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))), "delivered at once, as on the stand")
+        XCTAssertNil(try errorCode(relay, mac, .removeSlot(removeOp(phone, mac))))
+    }
+
+    func testRemovedSlotDropsTheHubReader() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        XCTAssertNil(try errorCode(relay, phone, changesOp(zone, since: 0)))
+        XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))))
+        XCTAssertNil(try errorCode(relay, phone, addSlotOp(mac)))
+        XCTAssertEqual(try errorCode(relay, phone, changesOp(zone, since: 0)), .forbidden, "back in the slots, not a reader")
+        var readers = Relay_V1_SetHubReaders()
+        readers.phoneDeviceIds = [phone.id]
+        XCTAssertNil(try errorCode(relay, mac, .setHubReaders(readers)))
+        XCTAssertNil(try errorCode(relay, phone, changesOp(zone, since: 0)))
+    }
+
+    func testLazyMailboxExpiryPurgesAtTheStandsTime() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let mailbox = "relay/\(mac.id)/\(phone.id)"
+        _ = try saveResult(relay, mac, [item(mailbox, "c-1", "hub"), item(mailbox, "c-2", "hub")])
+        let seen = try changes(relay, phone, mailbox, since: 0).newSeq
+        // Expired at day 14, so purged at day 44, though nobody looked at the zone in between.
+        clock.advance(by: .seconds(44 * 86_400 + 1))
+        try await login(relay, phone)
+        XCTAssertEqual(try errorCode(relay, phone, changesOp(mailbox, since: seen)), .tokenExpired)
+    }
+
+    func testSlotLimit() async throws {
+        let relay = makeRelay()
+        let phone = try await onboard(relay, .phone, seed: 2)
+        try await pay(relay, phone)
+        for seed: UInt8 in 10...12 {
+            let mac = try await onboard(relay, .mac, seed: seed)
+            XCTAssertNil(try errorCode(relay, phone, addSlotOp(mac)))
+        }
+        let fourth = try await onboard(relay, .mac, seed: 13)
+        XCTAssertEqual(try errorCode(relay, phone, addSlotOp(fourth)), .slotLimit)
+    }
+
+    func testSlotReplacementLimit() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        for _ in 0..<5 {
+            XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))))
+            XCTAssertNil(try errorCode(relay, phone, addSlotOp(mac)))
+        }
+        XCTAssertNil(try errorCode(relay, phone, .removeSlot(removeOp(phone, mac))))
+        XCTAssertEqual(try errorCode(relay, phone, addSlotOp(mac)), .slotReplacementLimit)
+    }
+
+    func testRecordTooLargeAndTheBodyLimit() async throws {
+        let (relay, mac, _) = try await pairedWorld()
+        var limits = relay.limits
+        limits.maxRecordBytes = 1_024
+        relay.limits = limits
+        let zone = "data/\(mac.id)"
+        XCTAssertEqual(try errorCode(relay, mac, saveOp([item(zone, "a", String(repeating: "x", count: 1_025))])), .recordTooLarge)
+        let (status, response) = relay.handle(request(saveOp([item(zone, "a", String(repeating: "x", count: 70 << 10))])), bearer: mac.token)
+        XCTAssertEqual(status, 413)
+        XCTAssertEqual(code(response), .recordTooLarge)
+    }
+
+    func testMailboxQuotaSpansThePhonesMailboxes() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let other = try await onboard(relay, .mac, seed: 5)
+        try await relay.pair(mac: other.id, phones: [phone.id])
+        var limits = relay.limits
+        limits.mailboxQuotaBytes = 100
+        relay.limits = limits
+        let body = String(repeating: "m", count: 60)
+        XCTAssertNil(try errorCode(relay, phone, saveOp([item("relay/\(mac.id)/\(phone.id)", "a-1", body)])))
+        XCTAssertEqual(
+            try errorCode(relay, phone, saveOp([item("relay/\(other.id)/\(phone.id)", "a-1", body)])), .mailboxQuotaExceeded
+        )
+    }
+
+    func testHubQuota() async throws {
+        let (relay, mac, _) = try await pairedWorld()
+        var limits = relay.limits
+        limits.hubQuotaBytes = 100
+        relay.limits = limits
+        let zone = "data/\(mac.id)"
+        XCTAssertNil(try errorCode(relay, mac, saveOp([item(zone, "a", String(repeating: "h", count: 60))])))
+        XCTAssertEqual(try errorCode(relay, mac, saveOp([item(zone, "b", String(repeating: "h", count: 60))])), .hubQuotaExceeded)
+        XCTAssertEqual(try errorCode(relay, mac, uploadOp(zone, size: 50)), .hubQuotaExceeded, "attachments count too")
+    }
+
+    func testAttachmentRules() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        XCTAssertEqual(try errorCode(relay, mac, uploadOp(zone, size: 0)), .unspecified)
+        XCTAssertEqual(try errorCode(relay, mac, uploadOp(zone, size: UInt64(100 << 20) + 1)), .attachmentTooLarge)
+        XCTAssertEqual(try errorCode(relay, phone, uploadOp(zone, size: 10)), .forbidden, "the phone cannot write the data zone")
+        let x = try upload(relay, mac, zone)
+        XCTAssertEqual(x.url, "https://relay.example.com/v1/blob/\(x.attachmentID)")
+        XCTAssertEqual(try errorCode(relay, mac, saveOp([item(zone, "a", "1", attachment: "missing")])), .notFound)
+        _ = try saveResult(relay, mac, [item(zone, "a", "1", attachment: x.attachmentID)])
+        XCTAssertEqual(try errorCode(relay, mac, saveOp([item(zone, "b", "2", attachment: x.attachmentID)])), .conflict, "one live record")
+        XCTAssertNil(try errorCode(relay, phone, downloadOp(zone, x.attachmentID)))
+        _ = try saveResult(relay, mac, [item(zone, "a", "3")])
+        XCTAssertEqual(try errorCode(relay, phone, downloadOp(zone, x.attachmentID)), .notFound, "the overwrite dropped it")
+    }
+
+    func testAttachmentMovesBetweenRecordsInOneSave() async throws {
+        let (relay, mac, _) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        let x = try upload(relay, mac, zone)
+        _ = try saveResult(relay, mac, [item(zone, "a", "1", attachment: x.attachmentID)])
+        let moved = try saveResult(relay, mac, [item(zone, "a", "2"), item(zone, "b", "3", attachment: x.attachmentID)])
+        XCTAssertEqual(moved.saved.map(\.attachmentID), ["", x.attachmentID])
+        XCTAssertNil(try errorCode(relay, mac, downloadOp(zone, x.attachmentID)), "b holds it, so it stays")
+    }
+
+    func testSendAlert() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        var alert = Relay_V1_SendAlert()
+        alert.phoneDeviceID = phone.id
+        alert.envelope = Data(repeating: 1, count: 100)
+        XCTAssertEqual(try errorCode(relay, mac, .sendAlert(alert)), .notFound, "no push token")
+        var push = Relay_V1_RegisterPushToken()
+        push.token = "ab12"
+        push.env = .sandbox
+        XCTAssertNil(try errorCode(relay, phone, .registerPush(push)))
+        XCTAssertNil(try errorCode(relay, mac, .sendAlert(alert)))
+        alert.envelope = Data(repeating: 1, count: 3_100)
+        XCTAssertEqual(try errorCode(relay, mac, .sendAlert(alert)), .recordTooLarge, "over the 4096-byte push")
+    }
+
+    func testSetEntitlementDurations() async throws {
+        let relay = makeRelay()
+        let phone = try await onboard(relay, .phone, seed: 2)
+        do {
+            try await relay.setEntitlement(accountID: phone.accountID, state: "active", for: .seconds(-1))
+            XCTFail("a negative duration is the stand's 400")
+        } catch {
+            XCTAssertEqual(error as? RelayStandError, .invalid)
+        }
+        try await relay.setEntitlement(accountID: phone.accountID, state: "expired", for: .seconds(86_400))
+        guard case .accountState(let state) = try ok(relay, phone, .getAccountState(.init())).result else { return XCTFail("state") }
+        XCTAssertEqual(state.entitlement.state, .expired)
+        XCTAssertEqual(state.entitlement.untilMs, ms(clock.now()) + 86_400_000)
+    }
+
+    func testMoveSubscription() async throws {
+        let relay = makeRelay()
+        let from = try await onboard(relay, .phone, seed: 2)
+        let target = try await onboard(relay, .phone, seed: 3)
+        try await pay(relay, from)
+        try await pay(relay, target)
+        let macs = [try await onboard(relay, .mac, seed: 10), try await onboard(relay, .mac, seed: 11)]
+        for mac in macs { try await relay.pair(mac: mac.id, phones: [from.id]) }
+        for seed: UInt8 in 12...13 { try await relay.pair(mac: try await onboard(relay, .mac, seed: seed).id, phones: [target.id]) }
+        var open = Relay_V1_OpenPairingSlot()
+        open.macDeviceID = macs[0].id
+        guard case .pairingSlot(let slot) = try ok(relay, from, .openPairing(open)).result else { return XCTFail("want a slot") }
+        _ = controls(relay, from)
+
+        try relay.moveSubscription(fromPhone: from.id, toPhone: target.id)
+        XCTAssertEqual(controls(relay, from), [control(.subscriptionMoved, "")])
+        guard case .accountState(let old) = try ok(relay, from, .getAccountState(.init())).result else { return XCTFail("state") }
+        XCTAssertTrue(old.moved)
+        XCTAssertEqual(old.entitlement.state, .none)
+        XCTAssertEqual(old.macDeviceIds, [])
+        guard case .accountState(let new) = try ok(relay, target, .getAccountState(.init())).result else { return XCTFail("state") }
+        XCTAssertEqual(new.macDeviceIds.count, 3, "adopted up to the slot limit")
+        XCTAssertEqual(new.entitlement.state, .active)
+        var close = Relay_V1_ClosePairingSlot()
+        close.slotID = slot.slotID
+        XCTAssertEqual(try errorCode(relay, from, .closePairing(close)), .notFound, "the move closed the pairing")
+        XCTAssertEqual(try errorCode(relay, from, changesOp("data/\(macs[0].id)", since: 0)), .forbidden)
     }
 
     func testEntitlementExpiredControlNamesThePhoneForMacs() async throws {
@@ -556,15 +732,50 @@ final class FakeHostedRelayTests: XCTestCase {
         return op
     }
 
-    private func item(_ zone: String, _ name: String, _ body: String, mustNotExist: Bool = false, expectedSeq: UInt64? = nil) -> Relay_V1_SaveItem {
+    private func item(
+        _ zone: String, _ name: String, _ body: String, mustNotExist: Bool = false, expectedSeq: UInt64? = nil, attachment: String = ""
+    ) -> Relay_V1_SaveItem {
         var item = Relay_V1_SaveItem()
         item.record.zone = zone
         item.record.name = name
         item.record.envelope = Data(body.utf8)
         item.record.clientModifiedAtMs = 1
+        item.record.attachmentID = attachment
         if mustNotExist { item.mustNotExist = true }
         if let expectedSeq { item.expectedSeq = expectedSeq }
         return item
+    }
+
+    private func removeOp(_ phone: Device, _ mac: Device) -> Relay_V1_RemoveMacSlot {
+        var remove = Relay_V1_RemoveMacSlot()
+        remove.phoneDeviceID = phone.id
+        remove.macDeviceID = mac.id
+        return remove
+    }
+
+    private func addSlotOp(_ mac: Device) -> Relay_V1_Request.OneOf_Op {
+        var add = Relay_V1_AddMacSlot()
+        add.macDeviceID = mac.id
+        return .addSlot(add)
+    }
+
+    private func uploadOp(_ zone: String, size: UInt64) -> Relay_V1_Request.OneOf_Op {
+        var upload = Relay_V1_CreateUpload()
+        upload.zone = zone
+        upload.size = size
+        return .createUpload(upload)
+    }
+
+    private func downloadOp(_ zone: String, _ attachmentID: String) -> Relay_V1_Request.OneOf_Op {
+        var download = Relay_V1_GetDownload()
+        download.zone = zone
+        download.attachmentID = attachmentID
+        return .getDownload(download)
+    }
+
+    private func upload(_ relay: FakeHostedRelay, _ device: Device, _ zone: String) throws -> Relay_V1_Upload {
+        guard case .upload(let upload) = try ok(relay, device, uploadOp(zone, size: 10)).result else { throw Failure.unexpected("not an upload") }
+        return upload
     }
 
     private func deleteItem(_ name: String, expectedSeq: UInt64? = nil) -> Relay_V1_DeleteItem {
