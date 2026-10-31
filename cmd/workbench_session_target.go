@@ -18,7 +18,8 @@ var workbenchSessionTargetCmd = &cobra.Command{
 		"workbench): the session's progress line counts that target's leaves and finish_session\n" +
 		"gates on its subtree. --session S --clear removes the binding. Exactly one of --target\n" +
 		"and --clear is required. The workbench is the one S belongs to. --json prints one line\n" +
-		"{\"session_id\":N,\"target_id\":M,\"stamped\":K} (target_id 0 when cleared). A refusal\n" +
+		"{\"session_id\":N,\"target_id\":M,\"stamped\":K} (target_id 0 when cleared; K = the\n" +
+		"leaves under the bound target the binding takes, 0 when cleared). A refusal\n" +
 		"(unknown session, shell session, archived, dismissed or foreign target) exits non-zero\n" +
 		"with the reason on stderr. The owner's verb: refused under an AI agent, which has the\n" +
 		"set_session_target tool.",
@@ -88,7 +89,7 @@ func runWorkbenchSessionTarget(cmd *cobra.Command, _ []string) error {
 	if targetID == 0 {
 		_, err = fmt.Fprintf(w, "session %d: target cleared\n", sessionID)
 	} else {
-		_, err = fmt.Fprintf(w, "session %d bound to target %d (%d stamped)\n", sessionID, targetID, stamped)
+		_, err = fmt.Fprintf(w, "session %d bound to target %d (%d leaves)\n", sessionID, targetID, stamped)
 	}
 	return err
 }
