@@ -71,20 +71,15 @@ fi
 grep -qF 'Neither the name of the ZETETIC LLC nor the' "$NOTICES" || fail "THIRD_PARTY_NOTICES.md lacks the SQLCipher licence"
 [ "$rc" -eq 0 ] && echo "ok: SQLite engine versions and licence present"
 
-# Other Go modules whose notice we carry by owner ruling (go-qrcode: go-hub
-# plan 2 Task 6, ask #881): each is listed with the version go.mod requires,
-# with its copyright line.
-for m in 'github.com/skip2/go-qrcode|Copyright (c) 2014 Tom Harwood'; do
-    mod=${m%%|*}
-    copyright=${m#*|}
-    ver=$(awk -v mod="$mod" '$1 == mod { print $2 } $1 == "require" && $2 == mod { print $3 }' "$ROOT/go.mod" | head -n 1)
-    if [ -z "$ver" ]; then
-        fail "go.mod does not require $mod"
-        continue
-    fi
-    grep -qE "^\| [^|]+ \| \`${mod//./\\.}\` \| ${ver//./\\.} \| MIT \|" "$NOTICES" \
-        || fail "THIRD_PARTY_NOTICES.md does not list $mod at $ver (go.mod) under Other Go modules"
-    grep -qF "$copyright" "$NOTICES" || fail "THIRD_PARTY_NOTICES.md lacks $mod's copyright line: $copyright"
-done
-[ "$rc" -eq 0 ] && echo "ok: other Go modules listed at their go.mod versions"
+# go-qrcode, carried by owner ruling (go-hub plan 2 Task 6, ask #881): listed
+# under Other Go modules at the version go.mod requires, with its copyright.
+qr_ver=$(awk '$1 == "github.com/skip2/go-qrcode" { print $2 }' "$ROOT/go.mod")
+if [ -z "$qr_ver" ]; then
+    fail "go.mod does not require github.com/skip2/go-qrcode"
+else
+    grep -qF "| \`github.com/skip2/go-qrcode\` | $qr_ver | MIT |" "$NOTICES" \
+        || fail "THIRD_PARTY_NOTICES.md does not list github.com/skip2/go-qrcode at $qr_ver (go.mod)"
+fi
+grep -qF 'Copyright (c) 2014 Tom Harwood' "$NOTICES" || fail "THIRD_PARTY_NOTICES.md lacks go-qrcode's copyright line"
+[ "$rc" -eq 0 ] && echo "ok: go-qrcode listed at its go.mod version"
 exit $rc

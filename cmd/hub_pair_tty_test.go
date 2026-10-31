@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -29,6 +30,15 @@ func TestSanitizeForTerminal(t *testing.T) {
 		{"isolate controls", "a\u2066b\u2067c\u2068d\u2069e", "abcde"},
 		{"bidi marks", "a\u200eb\u200fc\u061cd", "abcd"},
 		{"CSI clear screen", "x\x1b[2Jy", "x[2Jy"},
+		{"line and paragraph separators", "a\u2028b\u2029c", "abc"},
+		{"zero-width space and joiner", "a\u200bb\u200cc\u200dd\u2060e", "abcde"},
+		{"byte order mark, soft hyphen, Mongolian vowel separator", "\ufeffa\u00adb\u180ec", "abc"},
+		{"tag characters", "a\U000E0001\U000E0041\U000E007Fb", "ab"},
+		{"combining marks capped at two per base", "e\u0301\u0302\u0303\u0304x\u0300", "e\u0301\u0302x\u0300"},
+		{"Zalgo flood", "Z" + strings.Repeat("\u0336", 5000) + "a", "Z\u0336\u0336a"},
+		{"64 runes kept as is", strings.Repeat("ж", 64), strings.Repeat("ж", 64)},
+		{"10 000-rune name cut with an ellipsis", strings.Repeat("ж", 10000), strings.Repeat("ж", 63) + "…"},
+		{"dropped runes do not count toward the cap", strings.Repeat("\u200b", 100) + "ab", "ab"},
 		{"empty", "", ""},
 	}
 	for _, c := range cases {
