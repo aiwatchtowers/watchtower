@@ -1,10 +1,10 @@
-# Go hub (phase 1 — the core on the relay, dev flag only)
+# Go hub (phase 1 core on the relay, phase 2 headless hosts)
 
 The phone hub rewritten in Go and run by the daemon: it links phones, applies their actions in order, publishes the
 slices on change and starts, types into and stops workbench sessions through `watchtower session-host`. In phase 1 it
 runs **only** in a separate `hubtest-*` test workspace behind environment variables; the Swift hub in the Desktop
-(`docs/features/mobile-companion.md`) is still the live hub. Phases 2–4 take it to headless hosts, move the Mac onto it
-and delete the Swift hub.
+(`docs/features/mobile-companion.md`) is still the live hub. Phase 2 runs it live on headless hosts — Linux and a Mac
+without the app ("Phase 2 — headless hosts" below); phases 3–4 move the Mac onto it and delete the Swift hub.
 
 - Spec: [`docs/superpowers/specs/2026-10-31-go-hub-design.md`](../superpowers/specs/2026-10-31-go-hub-design.md)
   (approved, ask #819). Phone ↔ hub protocol:
@@ -66,7 +66,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 
 | Verb | `--json` keys (pinned) |
 |---|---|
-| `hub status` | `state`, `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `recordings` (`on`/`off`) |
+| `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`) |
 | `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport` |
 | `hub unlink <device>` | `device_id`, `unlinked` |
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
@@ -77,6 +77,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 | `hub recordings on\|off` (owner; `on` refused "this host has no transcriber" before any Desktop heartbeat) | `recordings`, `stored` |
 | `hub recording claim --upload <id>` | `upload_id`, `audio_path`, `status` |
 | `hub recording finish --upload <id> [--transcript N] [--error <class>]` | `upload_id`, `status`, `transcript_id` |
+| `service install\|uninstall\|status` (phase 2, `cmd/service.go`; install/uninstall are owner verbs) | `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`) |
 
 `watchtower workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto]`
 answers at once (instant start, `session_id`, `state`, `folder_path`, `worktree_branch`) and a detached hidden
@@ -119,7 +120,7 @@ and PROJ-21 list the Go guards (`docs/inventory/workbench.md`).
 - Relay only: no CloudKit bridge, no adoption of the Swift hub's sidecar or keys, no transport switch, no pushes, no
   terminal pairing UI and no Desktop wiring until phases 2–4. The Swift hub is the live hub.
 - Keys live in a 0600 file in the hub dir (the daemon-owned Keychain items are phase 3).
-- No `service install` (phase 2); the hub runs inside `watchtower sync --daemon` only.
+- The hub runs inside `watchtower sync --daemon` only (on a headless host under `watchtower service install`, phase 2).
 - Recording jobs are queued for Desktop (`hub recording claim|finish`). The owner's recording switch (`hub_meta`
   `recordings`, default on iff `desktop_seen_at` — the first Desktop heartbeat — is set) is published as the
   heartbeat's `capabilities.recordings`; off answers an upload the final `failed`/`not_supported`, a held upload gets
@@ -168,10 +169,12 @@ Recorded for the owner; each was a review ruling during phase 1.
 3. **The phase 3 Desktop→hub inputs are deferred to phase 3**: the Desktop's Undo batch (sessions pending a PROJ-17
    delete), `displayOver`, and the owner-write notice from the history actor. Until then the phone may show a session
    that waits for an Undo on the Mac.
-4. **The hub runs only in a `hubtest-*` test workspace** (`WATCHTOWER_HUB_TEST_WORKSPACE`) until phases 2 and 3 give it
-   real hosts.
-5. **The refusing session port.** Unless `WATCHTOWER_SESSION_HOST_SOCKET` is set the hub uses a port that refuses every
-   session start, stop, line and Interrupt (no session host), so a test workspace never reaches the Desktop's host.
+4. **Test mode is a `hubtest-*` test workspace** (`WATCHTOWER_HUB_TEST_WORKSPACE`). Since phase 2 a headless host also
+   runs the live mode (see "Phase 2 — headless hosts"); a desktop host gets the Go hub only in phase 3.
+5. **The refusing session port (test mode only).** In test mode, unless `WATCHTOWER_SESSION_HOST_SOCKET` is set, the hub
+   uses a port that refuses every session start, stop, line and Interrupt (no session host), so a test workspace never
+   reaches the Desktop's host. The live mode (phase 2) uses `sessionhost.DefaultSocket()` (the override still wins
+   when set).
 
 ## Testing
 
@@ -185,5 +188,76 @@ Recorded for the owner; each was a review ruling during phase 1.
   re-echoed once (`TestIdenticalRecordRedeliveredAfterTheCursorMovedIsSame`).
 - `make relay-interop RELAY=<relay checkout>` — the hub and the Go phone against the relay's local stand: linking over a
   pairing slot, ordered actions with echoes, reconnect and resubscribe after a stand restart, no plaintext on the wire.
-- Linux: the Go Test job of the PR's CI runs on ubuntu. A local `GOOS=linux go build` cannot run on a Mac (SQLCipher is
-  cgo); phase 2 Task 2 adds a native arm64 CI job.
+- Linux: the Go Test job of the PR's CI runs on ubuntu, and `go-linux-arm64` on `ubuntu-24.04-arm` (phase 2). A local
+  `GOOS=linux go build` cannot run on a Mac (SQLCipher is cgo); every Linux build runs on a native Linux runner.
+- `make hub-smoke` (phase 2: `go test -tags smoke ./cmd -run TestHeadlessSmoke -timeout 5m`,
+  `cmd/hub_headless_smoke_test.go`) — the headless smoke test: daemon, terminal-free pairing, a stub session, a typed
+  line, the `needs_relay` pause; live mode on Linux, the test workspace on darwin. CI runs it in the Go Test job and in
+  `go-linux-arm64`.
+
+## Phase 2 — headless hosts
+
+Plan [`2026-10-31-go-hub-phase-2.md`](../superpowers/plans/2026-10-31-go-hub-phase-2.md) (approved ask #838; owner
+rulings asks #827, #881, #883). The hub leaves the test workspace for real data on a **headless host**: Linux
+(arm64, amd64) or a Mac with only the CLI. Guide: [`docs/guide/features/headless-host.md`](../guide/features/headless-host.md).
+
+- **Live mode beside the test mode.** `hub.Resolve(cfg, db, probe)` is the daemon's only entry: `WATCHTOWER_HUB_DIR`
+  set → Plan 1a's test mode, unchanged; else `hostkind.Detect` — Linux is always headless; a Mac is a desktop host when
+  `/Applications` or `~/Applications` holds `Watchtower.app` with bundle id `com.watchtower.desktop`, or
+  `config.AppSupportDir()/MobileHub` exists. A desktop host stays off with reason `desktop_host` and nothing under the
+  hub dir or `MobileHub/` is created, opened or read (existence checks only). The check runs once, at hub start
+  (ask #827): no stop or hand-over when the app is installed later. Headless → `<data root>/.hub` (0700, files 0600,
+  the 0600 `identity.key`), live only after `hub enable`; off reasons `disabled`, `policy_off`, `no_relay_origin`,
+  `run_dir_unusable`. Daemon log lines `hub: started (live, headless)`, `hub: started (test workspace)`,
+  `hub: off (<reason>)`. The CLI verbs resolve their dir through `hub.Dir`; on a desktop host every verb but `status`
+  exits 1 with "Mobile on this Mac is run by the Watchtower app.". `hub status --json` gains `host` and `mode`.
+- **Relay origin**: `WATCHTOWER_RELAY_ORIGIN` > config `hub.relay_origin` > ldflags `hub.DefaultRelayOrigin` (release
+  builds: `scripts/build-linux.sh` from `RELAY_ORIGIN`, `scripts/build-app.sh` from `WATCHTOWER_RELAY_ORIGIN_DEFAULT`;
+  a release tag with it empty refuses to build). `https://host[:port]` only, `http://` for loopback; `hub status`
+  prints "Set the relay: watchtower config set hub.relay_origin <origin>" for `no_relay_origin`.
+- **Relay only** (spec §7.3): `transports: ["relay"]` in the QR and every `device_grant`, no shares, no CloudKit bridge,
+  `transport_switch_rejected`. `PayingWatch` (`internal/hub/paying.go`): with no phone `paying` in
+  `get_account_state` the hub is `paused`/`needs_relay` — `Publisher.Pause`, `Processor.SetPaused(true)`, state kept,
+  no handler run, sessions untouched; re-read every 5 min (`NeedsRelayPoll`) and at once on `ENTITLEMENT_EXPIRED`,
+  `SLOT_REMOVED` or `ENTITLEMENT_INACTIVE`; pairing is never paused. Resume publishes one full diff.
+- **Session host under a service manager** (PROJ-20 amended for Linux, ask #827): socket dir `/run/user/<uid>` or
+  `<data root>/.run` (see Linux behaviour); on Linux `sessionhost.Ensure` always starts the host as the transient unit
+  `watchtower-session-host` (`systemd-run --user --collect --quiet --property=UMask=0077`, `--setenv` of `PATH` and the
+  socket override only), never a detached child; a failure is `ErrNoUserManager` with class `no_user_bus` |
+  `not_found` | `exit_<code>`, and `session start` fails "the session host is not running: no systemd user manager
+  (<class>)". darwin keeps Plan 1b's detached spawn (the LaunchAgent sets `AbandonProcessGroup`).
+- **`watchtower service install|uninstall|status`** (`internal/service`): systemd user unit `watchtower.service`
+  (`ExecStart=<exe> sync --daemon`, `Restart=on-failure`, `UMask=0077`, only `PATH`) or the LaunchAgent
+  `com.watchtower.daemon` (stdout/stderr `/dev/null`, `gui/<uid>` else `user/<uid>`); goldens in
+  `internal/service/testdata`. Install: agent marker refused, desktop host refused, `systemctl --user show-environment`
+  must work, `initWorkspace(…, headless)`, `hub enable`, unit written only when it differs, linger hint (never runs
+  `sudo`). `--json` keys `manager`, `installed`, `running`, `linger` (null on darwin or without `loginctl`).
+  `workspace init --headless` turns off every non-core feature with a `ConfigKey` in a config it creates.
+- **Terminal pairing**: `hub pair` without `--json` (`cmd/hub_pair_tty.go`, `internal/termqr` over
+  `github.com/skip2/go-qrcode`, ask #881) prints a half-block QR, the link and expiry, the pinned SAS prompt
+  `Confirm code 1234 on your phone? [y/N] `; needs stdin and stdout terminals (exit 2 otherwise); phone strings pass
+  `sanitizeForTerminal`. Copy reviewed in `docs/design/mockups/go-hub/hub-pair-terminal.html` (ask #883).
+- **Recording switch** (protocol §7.7, §9): see v1 limits; a Linux host never has `desktop_seen_at`, so it always
+  publishes `capabilities.recordings: "off"` (`hub desktop heartbeat` is refused off darwin).
+- **Builds**: `.github/workflows/linux-build.yml` on native `ubuntu-22.04` / `ubuntu-22.04-arm` (glibc floor 2.35,
+  `scripts/check-glibc.sh`, `libcrypto.so.3`) → `watchtower-<v>-linux-<arch>.tar.gz` + `.sha256`; `build-app.sh` adds
+  `Watchtower-CLI-<v>-arm64.zip` after notarization. Supported Linux: 64-bit, glibc ≥ 2.35, `libssl3`.
+- **Short link retry after pairing** (`internal/hub/runtime.go`): a link change (a phone linked or unlinked) opens a
+  window in which the link check runs every 2 s (`linkSoonEvery`) for at most 2 min (`linkSoonFor`) until every linked
+  phone holds the hub in a slot — `promote_pairing` sends the hub no event, so otherwise it waited for the next
+  minute-long `linkEvery`. Each tick reads `get_account_state` first; the full link check (keyboxes, readers,
+  subscriptions, a pass) runs only on the window's first tick and when the slotted set changed. When the window
+  settles or runs out, `PayingWatch` re-reads, so a paused headless hub resumes as soon as a paying phone is there.
+  In the smoke test the admission after linking takes about 1.6 s instead of up to a minute.
+- **Owner verbs** (AGENT-07 changelog, ask #827): `hub …` and `service …` writes are refused under every agent marker
+  and confirmed by the terminal; the Desktop-confirmed gestures stay refused on Linux.
+
+### Known limits (phase 2)
+
+- Desktop detection looks only at the two app paths and `MobileHub/`: an app elsewhere, or installed but never run, is
+  not seen (owner ruling after ask #827).
+- Phase 3 does not migrate a CLI-only Mac's `<data root>/.hub` into the desktop hub; its phones link again.
+- A Linux host without a systemd user manager is not supported (`service install` refuses, `session start` fails).
+- A CLI-only Mac runs the daemon only after a GUI login (LaunchAgent; no linger equivalent without sudo, ask #881).
+- Vouching (`not_vouched`, `vouch_revoked`) needs relay ask #805; until it ships the hub registers as a Mac with no
+  attestation, which only the local stand accepts.
