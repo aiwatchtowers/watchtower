@@ -31,4 +31,14 @@ var NudgeTable = map[string][]slices.Kind{
 	"session_interrupt":      {"terminal_session"},
 	"session_report_request": {"session_report"},
 	"session_chat_request":   {"session_chat"},
+	// A phone line, its cancel, a start or a stop moves the session's row
+	// and its timeline.
+	"session_input":          sessionSlices,
+	"session_finish_request": sessionSlices,
+	"session_input_cancel":   sessionSlices,
+	"session_start":          sessionSlices,
+	"session_stop":           sessionSlices,
 }
+
+// sessionSlices are the records a session action changes.
+var sessionSlices = []slices.Kind{"terminal_session", "session_timeline"}

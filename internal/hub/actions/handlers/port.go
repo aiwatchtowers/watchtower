@@ -54,11 +54,17 @@ type LiveRun struct {
 	Exited    bool
 }
 
-// StartRequest starts an agent session on a workbench (Task 3/15).
+// StartRequest starts an agent session on a workbench (Task 3/15). Brief ""
+// is the work-on prompt; PlanFirst follows the brief (or that prompt) with
+// TerminalLaunch.planFirstSuffix; OpenExisting answers (and resumes) the
+// target's session when it has one, sending neither. Refusals:
+// ErrStartNotOnBoard, ErrStartInProgress, ErrStartCleaningUp,
+// *AgentNotFoundError.
 type StartRequest struct {
-	Workbench           int64
-	Target              *int64
-	Agent, Place, Brief string
+	Workbench               int64
+	Target                  *int64
+	Agent, Place, Brief     string
+	PlanFirst, OpenExisting bool
 }
 
 // StartResult is the started row and its state.
