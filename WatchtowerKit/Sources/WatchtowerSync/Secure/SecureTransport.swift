@@ -32,6 +32,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     private static let helloPrefix = "\(RelayRecordKind.hello.rawValue)-"
     private static let rolledBackReason = "rolledBack"
 
+    /// Internal only for `SecureTransport+Conditional.swift`; nothing else writes past the sealing layer.
     let inner: any CloudSyncTransport & Sendable
     private let keys: any SecureKeyProvider
     private let rollback: any RollbackGuard
