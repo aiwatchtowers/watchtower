@@ -57,12 +57,20 @@ func upsertStatusLink(q execer, sessionID, targetID int64, now string) error {
 	return nil
 }
 
-// SessionLeafOwners maps target id to the id of the claude/codex session of
-// workbench workbenchID that owns it: the one with the latest status_at, a tie
+// LeafStamp is the latest status stamp of a target: the session that wrote
+// it and when (RFC 3339 UTC).
+type LeafStamp struct {
+	SessionID int64
+	At        string
+}
+
+// SessionLeafOwners maps target id to the latest link status stamp among the
+// claude/codex sessions of workbench workbenchID: the latest status_at, a tie
 // going to the higher session id. A link with NULL status_at owns nothing.
-func (db *DB) SessionLeafOwners(workbenchID int64) (map[int64]int64, error) {
-	rows, err := db.Query(`SELECT target_id, session_id FROM (
-			SELECT l.target_id, l.session_id,
+// Binding stamps (SessionBindings) are folded in by the session report.
+func (db *DB) SessionLeafOwners(workbenchID int64) (map[int64]LeafStamp, error) {
+	rows, err := db.Query(`SELECT target_id, session_id, status_at FROM (
+			SELECT l.target_id, l.session_id, l.status_at,
 				ROW_NUMBER() OVER (PARTITION BY l.target_id ORDER BY l.status_at DESC, l.session_id DESC) AS rn
 			FROM terminal_session_targets l
 			JOIN terminal_sessions s ON s.id = l.session_id
@@ -72,13 +80,14 @@ func (db *DB) SessionLeafOwners(workbenchID int64) (map[int64]int64, error) {
 		return nil, fmt.Errorf("reading leaf owners of workbench %d: %w", workbenchID, err)
 	}
 	defer rows.Close()
-	out := map[int64]int64{}
+	out := map[int64]LeafStamp{}
 	for rows.Next() {
-		var target, session int64
-		if err := rows.Scan(&target, &session); err != nil {
+		var target int64
+		var st LeafStamp
+		if err := rows.Scan(&target, &st.SessionID, &st.At); err != nil {
 			return nil, fmt.Errorf("reading leaf owners of workbench %d: %w", workbenchID, err)
 		}
-		out[target] = session
+		out[target] = st
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("reading leaf owners of workbench %d: %w", workbenchID, err)
@@ -86,24 +95,58 @@ func (db *DB) SessionLeafOwners(workbenchID int64) (map[int64]int64, error) {
 	return out, nil
 }
 
+// SessionBinding is a claude/codex session's bound target and its binding
+// stamp: target_bound_at when Go re-bound it after launch, else created_at
+// (the launch target counts as a binding at launch).
+type SessionBinding struct {
+	SessionID int64
+	TargetID  int64
+	At        string
+}
+
+// SessionBindings is the binding of every claude/codex session of workbench
+// workbenchID that has a target, in session id order.
+func (db *DB) SessionBindings(workbenchID int64) ([]SessionBinding, error) {
+	rows, err := db.Query(`SELECT id, target_id, COALESCE(target_bound_at, created_at) FROM terminal_sessions
+		WHERE project_id = ? AND kind IN ('claude', 'codex') AND target_id IS NOT NULL ORDER BY id`, workbenchID)
+	if err != nil {
+		return nil, fmt.Errorf("reading session bindings of workbench %d: %w", workbenchID, err)
+	}
+	defer rows.Close()
+	var out []SessionBinding
+	for rows.Next() {
+		var b SessionBinding
+		if err := rows.Scan(&b.SessionID, &b.TargetID, &b.At); err != nil {
+			return nil, fmt.Errorf("reading session bindings of workbench %d: %w", workbenchID, err)
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading session bindings of workbench %d: %w", workbenchID, err)
+	}
+	return out, nil
+}
+
 // SetSessionTarget binds session sessionID to targetID (invalid = clear; links
-// stay) and, for a valid target, stamps the target and every id in stampLeaves
-// as status-written by the session now, all in one transaction.
-func (db *DB) SetSessionTarget(sessionID int64, targetID sql.NullInt64, stampLeaves []int64) error {
+// stay) in one transaction: target_id plus target_bound_at = now (NULL when
+// cleared) and, for a valid target, one status-stamped link of the target
+// itself. It writes no link row per leaf: the binding stamp on the session is
+// what takes the subtree's leaves for the progress count.
+func (db *DB) SetSessionTarget(sessionID int64, targetID sql.NullInt64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+	boundAt := sql.NullString{String: now, Valid: targetID.Valid}
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("binding terminal session %d: %w", sessionID, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`UPDATE terminal_sessions SET target_id = ? WHERE id = ?`, targetID, sessionID); err != nil {
+	if _, err := tx.Exec(`UPDATE terminal_sessions SET target_id = ?, target_bound_at = ? WHERE id = ?`,
+		targetID, boundAt, sessionID); err != nil {
 		return fmt.Errorf("binding terminal session %d: %w", sessionID, err)
 	}
 	if targetID.Valid {
-		for _, id := range append([]int64{targetID.Int64}, stampLeaves...) {
-			if err := upsertStatusLink(tx, sessionID, id, now); err != nil {
-				return err
-			}
+		if err := upsertStatusLink(tx, sessionID, targetID.Int64, now); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {

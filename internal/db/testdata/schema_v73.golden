@@ -3086,7 +3086,7 @@ agent_background_at TEXT,
 chat_question TEXT,
 chat_question_at TEXT,
 agent_turns TEXT,
-agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
+agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 )
@@ -6157,6 +6157,7 @@ GROUP BY up.ancestor
 29	worktree_branch	TEXT	notnull=0	dflt=NULL	pk=0
 30	worktree_base	TEXT	notnull=0	dflt=NULL	pk=0
 31	automation_run_id	INTEGER	notnull=0	dflt=NULL	pk=0
+32	target_bound_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=1	dflt=NULL	pk=1
