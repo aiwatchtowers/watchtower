@@ -21,6 +21,10 @@ const readChunk = 32 << 10
 // holds the terminal keeps the stream open, so the wait is bounded.
 const drainGrace = 250 * time.Millisecond
 
+// stopGrace is how long a Stop request waits after SIGHUP before it kills the
+// session's process group (the same 3 s as the app's Stop Sessions).
+const stopGrace = 3 * time.Second
+
 type sessionKey struct {
 	row int64
 	run string
@@ -30,6 +34,8 @@ type sessionKey struct {
 type session struct {
 	key       sessionKey
 	scope     string
+	agent     string
+	launch    uint64
 	pid       int
 	startedAt time.Time
 	ptmx      *os.File
@@ -37,15 +43,20 @@ type session struct {
 	ring      *Ring
 	readDone  chan struct{}
 
-	mu     sync.Mutex // guards modes, conn, exited, code
+	mu     sync.Mutex // guards the fields below
 	modes  ModeTracker
 	conn   *conn
 	exited bool
 	code   *int
+	// requested: a Stop request signalled the group; the Exit says so.
+	requested bool
+	// dialog: the last PromptHint said a permission dialog is up.
+	dialog   bool
+	killTime *time.Timer
 }
 
 // startSession launches req under a fresh PTY with exactly req.Env.
-func startSession(req LaunchReq, ringSize int, now time.Time) (*session, error) {
+func startSession(req LaunchReq, launch uint64, ringSize int, now time.Time) (*session, error) {
 	if req.Executable == "" {
 		return nil, errors.New("launch: empty executable")
 	}
@@ -61,6 +72,8 @@ func startSession(req LaunchReq, ringSize int, now time.Time) (*session, error) 
 	return &session{
 		key:       sessionKey{row: req.Row, run: req.Run},
 		scope:     req.Scope,
+		agent:     req.Agent,
+		launch:    launch,
 		pid:       cmd.Process.Pid,
 		startedAt: now,
 		ptmx:      ptmx,
@@ -130,7 +143,35 @@ func (s *session) infoLocked() SessionInfo {
 		Exited:      s.exited,
 		Code:        s.code,
 		Scope:       s.scope,
+		Launch:      s.launch,
+		Agent:       s.agent,
 	}
+}
+
+// stop signals the process group SIGHUP and kills it after stopGrace unless
+// the child exited by then. It marks the run requested, so its Exit carries
+// Requested. A run that already exited is left alone (its exit was natural).
+func (s *session) stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.exited {
+		return nil
+	}
+	s.requested = true
+	if s.killTime != nil {
+		return nil // a stop is already under way
+	}
+	if err := syscall.Kill(-s.pid, syscall.SIGHUP); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("stop: signal group: %w", err)
+	}
+	s.killTime = time.AfterFunc(stopGrace, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.exited {
+			_ = syscall.Kill(-s.pid, syscall.SIGKILL) // ESRCH: the group is already gone
+		}
+	})
+	return nil
 }
 
 // resize sets the window size and signals the process group even when the

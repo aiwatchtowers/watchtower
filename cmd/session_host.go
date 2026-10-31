@@ -31,7 +31,7 @@ var sessionHostCmd = &cobra.Command{
 detached; it owns each workbench terminal's PTY so the session keeps running
 while the app quits or updates, and exits on its own after 60 s with no
 sessions and no attached terminal. A host already running on the socket makes this a
-no-op (exit 0).`,
+no-op (exit 0). Without --socket, WATCHTOWER_SESSION_HOST_SOCKET names it.`,
 	Args: cobra.NoArgs,
 	// No config or database: the host only serves terminals.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
@@ -45,8 +45,12 @@ func init() {
 }
 
 func runSessionHost(cmd *cobra.Command, _ []string) error {
-	if flagSessionHostSocket == "" {
-		return usageError("session-host: --socket is required")
+	socket := flagSessionHostSocket
+	if socket == "" {
+		socket = os.Getenv(sessionhost.SocketEnv)
+	}
+	if socket == "" {
+		return usageError("session-host: --socket (or " + sessionhost.SocketEnv + ") is required")
 	}
 	// Leave the launching app's session so its exit does not reach us. A
 	// process already leading a group cannot do this; it carries on.
@@ -55,7 +59,7 @@ func runSessionHost(cmd *cobra.Command, _ []string) error {
 	}
 	defer sessionhost.DiscardHangup()()
 
-	l, err := sessionhost.Listen(flagSessionHostSocket)
+	l, err := sessionhost.Listen(socket)
 	if errors.Is(err, sessionhost.ErrHostRunning) {
 		return nil
 	}

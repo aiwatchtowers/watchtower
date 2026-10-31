@@ -1,0 +1,14 @@
+{
+  "socket": [
+    {"bundle_id": "com.watchtower.desktop", "temp_dir": "/var/folders/xx/T/", "want": "/var/folders/xx/T/watchtower-sh-0e9113c5.sock"},
+    {"bundle_id": "com.watchtower.desktop", "temp_dir": "/var/folders/xx/T", "want": "/var/folders/xx/T/watchtower-sh-0e9113c5.sock"},
+    {"bundle_id": "com.example.app", "temp_dir": "/tmp", "want": "/tmp/watchtower-sh-8a464e05.sock"}
+  ],
+  "scope": [
+    {"db_path": "/wt-fixture/acme/watchtower.db", "want": "c7c13c98dbd3bd43"},
+    {"db_path": "/wt-fixture/acme/./watchtower.db", "want": "c7c13c98dbd3bd43"},
+    {"db_path": "/wt-fixture/other/../acme/watchtower.db", "want": "c7c13c98dbd3bd43"},
+    {"db_path": "/wt-fixture/acme//watchtower.db", "want": "c7c13c98dbd3bd43"},
+    {"db_path": "/wt-fixture/other/watchtower.db", "want": "9466c38972d9496b"}
+  ]
+}
