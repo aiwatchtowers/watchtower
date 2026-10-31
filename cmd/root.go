@@ -99,9 +99,11 @@ func Execute() int {
 		// shows a failed command's stderr), so CLI stderr and HTTP bodies
 		// show in full (logredact.Full) — except in the detached daemon,
 		// whose stderr is watchtower.log.
-		if os.Getenv(daemon.DetachEnvKey) == "1" {
+		switch {
+		case err.Error() == "": // errQuietExit: the exit code says it all
+		case os.Getenv(daemon.DetachEnvKey) == "1":
 			fmt.Fprintln(os.Stderr, err)
-		} else {
+		default:
 			fmt.Fprintln(os.Stderr, logredact.Full(err))
 		}
 		var ec *exitCodeError

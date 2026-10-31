@@ -493,3 +493,54 @@ func TestHubPairNarrowWindowPrintsTheWidenHint(t *testing.T) {
 	code, _ := r.wait(t)
 	assert.Equal(t, 130, code)
 }
+
+// TestHubPairCtrlCAfterTheAnswerIsQuiet: the yes is with the hub and the
+// phone may still link, so Ctrl-C exits 130 without saying it did not.
+func TestHubPairCtrlCAfterTheAnswerIsQuiet(t *testing.T) {
+	dir := hubShortDir(t)
+	_, before := fakePairOpening(t, time.Now().Add(10*time.Minute), "iPhone")
+	f := startFakePairHub(t, dir, before, nil) // the hub never answers
+	r := startPairTTY(t, 120)
+	r.waitFor(t, "[y/N] ")
+	r.typeLine(t, "y\n")
+	assert.True(t, (<-f.confirms).Confirm)
+	r.sigs <- os.Interrupt
+	code, err := r.wait(t)
+	assert.Equal(t, 130, code)
+	require.ErrorIs(t, err, errQuietExit)
+	assert.Empty(t, err.Error(), "Execute prints no line for it")
+	assert.NotContains(t, r.out.String(), hubPairCancelled)
+}
+
+// TestHubPairTTYTimeouts: a hub that never answers after the owner's answer
+// is not an expired code; before any phone, the code's run-out is.
+func TestHubPairTTYTimeouts(t *testing.T) {
+	t.Run("after the answer", func(t *testing.T) {
+		orig := hubPairAfterConfirm
+		hubPairAfterConfirm = 200 * time.Millisecond
+		t.Cleanup(func() { hubPairAfterConfirm = orig })
+		dir := hubShortDir(t)
+		_, before := fakePairOpening(t, time.Now().Add(10*time.Minute), "iPhone")
+		f := startFakePairHub(t, dir, before, nil)
+		r := startPairTTY(t, 120)
+		r.waitFor(t, "[y/N] ")
+		r.typeLine(t, "y\n")
+		<-f.confirms
+		code, err := r.wait(t)
+		assert.Equal(t, 1, code)
+		assert.EqualError(t, err, "Not linked (timeout).")
+	})
+	t.Run("before any phone", func(t *testing.T) {
+		orig := hubPairGrace
+		hubPairGrace = 200 * time.Millisecond
+		t.Cleanup(func() { hubPairGrace = orig })
+		dir := hubShortDir(t)
+		url, _ := fakePairOpening(t, time.Now(), "iPhone")
+		exp := time.Now()
+		startFakePairHub(t, dir, []hub.ControlAnswer{{Event: link.EventQR, URL: url, ExpiresAt: &exp}, {Event: link.EventWaiting}}, nil)
+		r := startPairTTY(t, 120)
+		code, err := r.wait(t)
+		assert.Equal(t, 1, code)
+		assert.EqualError(t, err, "This code expired. Run watchtower hub pair for a new one.")
+	})
+}

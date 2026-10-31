@@ -75,6 +75,10 @@ const (
 	hubPairWaiting    = "Waiting for your phone… (Ctrl-C cancels)"
 )
 
+// errQuietExit ends a command with its exit code and no line: Execute
+// prints nothing for an empty error.
+var errQuietExit = errors.New("")
+
 // hubPairRefusalLines are the refused event's lines, one per reason.
 var hubPairRefusalLines = map[string]string{
 	wire.RefusedUsedCode:        "This code was already used. Run watchtower hub pair for a new one.",
@@ -114,13 +118,14 @@ func hubPairTerminal(cmd *cobra.Command) (in, out *os.File, ok bool) {
 // pairTTY is one `hub pair` in a terminal: the hub's pairing stream on one
 // side, the owner's keyboard and Ctrl-C on the other.
 type pairTTY struct {
-	c       *hub.ControlClient
-	in      *bufio.Reader
-	out     *os.File
-	expires time.Time // the code's expiry, from the qr event
-	device  string    // the phone whose code is shown, once a sas came
-	name    string    // that phone's name, made safe
-	asking  bool      // the SAS prompt was just printed
+	c        *hub.ControlClient
+	in       *bufio.Reader
+	out      *os.File
+	expires  time.Time // the code's expiry, from the qr event
+	device   string    // the phone whose code is shown, once a sas came
+	name     string    // that phone's name, made safe
+	asking   bool      // the SAS prompt was just printed
+	answered bool      // the owner's answer was sent to the hub
 }
 
 type pairNext struct {
@@ -166,10 +171,15 @@ func runHubPairTTY(cmd *cobra.Command) error {
 	for {
 		select {
 		case <-interrupts:
+			p.println()
+			if p.answered {
+				// The answer is with the hub and the phone may still link:
+				// no line that says it did not.
+				return &exitCodeError{code: 130, err: errQuietExit}
+			}
 			if answer != nil {
 				_ = c.Send(hub.ControlRequest{Op: hub.OpConfirm, Device: p.device, Confirm: false})
 			}
-			p.println()
 			return &exitCodeError{code: 130, err: errors.New(hubPairCancelled)} //nolint:staticcheck // ST1005: the owner's line (ask #883)
 		case yes := <-answer:
 			answer, expiry = nil, nil
@@ -186,7 +196,13 @@ func runHubPairTTY(cmd *cobra.Command) error {
 			if n.err != nil {
 				var ne net.Error
 				if errors.As(n.err, &ne) && ne.Timeout() {
-					return &exitCodeError{code: 1, err: errors.New(hubPairRefusal(wire.RefusedExpiredCode))}
+					// Before an answer the code ran out; after one the hub
+					// never said how the pairing ended.
+					reason := wire.RefusedExpiredCode
+					if p.answered {
+						reason = "timeout"
+					}
+					return &exitCodeError{code: 1, err: errors.New(hubPairRefusal(reason))}
 				}
 				return fmt.Errorf("the hub closed the pairing: %w", n.err)
 			}
@@ -309,6 +325,7 @@ func (p *pairTTY) confirm(yes bool) error {
 	if err := p.c.Send(hub.ControlRequest{Op: hub.OpConfirm, Device: p.device, Confirm: yes}); err != nil {
 		return fmt.Errorf("the hub closed the pairing: %w", err)
 	}
+	p.answered = true
 	_ = p.c.SetReadDeadline(time.Now().Add(hubPairAfterConfirm))
 	return nil
 }
