@@ -1,3 +1,4 @@
+import CloudKit
 import GRDB
 import XCTest
 @testable import WatchtowerSync
@@ -527,6 +528,140 @@ final class TransportStoreTests: XCTestCase {
         let reopened = try TransportStore(path: path)
         XCTAssertEqual(try reopened.storedHubID(), "hub-a")
         XCTAssertFalse(try reopened.adoptScope(.private, hubID: "hub-a"))
+    }
+
+    /// Relay client Phase 1 (Task 2): every system-fields write is a new local version of the record, and a
+    /// fetched event names the version its batch stored.
+    func testRecordSeqBumpsWithEachSystemFieldsWrite() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay))
+
+        try store.saveSystemFields(Data("garbage".utf8), recordName: "c-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay)?.changeTag, "no decodable tag")
+
+        try store.bufferFetched(
+            changed: [record("c-1", zone: .relay)],
+            systemFields: [(name: "c-1", zone: .relay, data: Data("again".utf8))],
+            deleted: [:])
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 2)
+        XCTAssertEqual(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, 2)
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.first?.recordSeq, 2)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .data), "zone scoped")
+
+        try store.deleteSystemFields(recordNames: ["c-1"], zone: .relay)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay))
+        try store.bufferDeleted(recordNames: ["c-1"], zone: .relay)
+        XCTAssertNil(try store.latestEvent(recordName: "c-1", zone: .relay), "a deletion is no current record")
+    }
+
+    /// The phone fetching its own write back (the same change tag) is not a new version.
+    func testReBufferingTheSameChangeTagKeepsTheRecordSeq() throws {
+        let store = try TransportStore.inMemory()
+        let tagged = FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "c-1")), changeTag: "tag-1")
+        let archive = CloudKitTransport.archivedSystemFields(of: tagged)
+        XCTAssertEqual(try store.saveSystemFields(archive, recordName: "c-1", zone: .relay), 1)
+        try store.bufferFetched(
+            changed: [record("c-1", zone: .relay)], systemFields: [(name: "c-1", zone: .relay, data: archive)], deleted: [:])
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.changeTag, "tag-1")
+        XCTAssertEqual(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+
+        let newer = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(tagged, changeTag: "tag-2"))
+        XCTAssertEqual(try store.saveSystemFields(newer, recordName: "c-1", zone: .relay), 2)
+    }
+
+    /// Only relay records (RelayZone, or an `a-`/`c-` name) pay the archive decode at write: the hub's DataZone
+    /// buffering stores no `change_tag`, and a read still finds the tag in the archive.
+    func testOnlyRelayRecordsStoreTheirChangeTag() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+        let archive = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "x")), changeTag: "tag-1"))
+        let store = try TransportStore(path: path)
+        try store.saveSystemFields(archive, recordName: "target-1", zone: .data)
+        try store.saveSystemFields(archive, recordName: "a-1", zone: .data)
+        try store.saveSystemFields(archive, recordName: "wire-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "target-1", zone: .data)?.changeTag, "tag-1", "read from the archive")
+        try store.close()
+
+        let stored = try DatabaseQueue(path: path).read { db in
+            try Dictionary(uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT record_name, change_tag FROM system_fields")
+                .map { ($0["record_name"] as String, $0["change_tag"] as String?) })
+        }
+        XCTAssertEqual(stored["target-1"], .some(nil), "no decode for a DataZone record")
+        XCTAssertEqual(stored["a-1"], "tag-1")
+        XCTAssertEqual(stored["wire-1"], "tag-1")
+    }
+
+    /// A row from before `change_tag` reads the tag out of its archive.
+    func testALegacyRowReadsItsChangeTagFromTheArchive() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+        let archive = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "c-1")), changeTag: "tag-9"))
+        do {
+            let legacy = try DatabaseQueue(path: path)
+            try legacy.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE system_fields (
+                        record_name TEXT NOT NULL, zone TEXT NOT NULL, data BLOB NOT NULL,
+                        PRIMARY KEY (record_name, zone)
+                    )
+                    """)
+                try db.execute(sql: "INSERT INTO system_fields (record_name, zone, data) VALUES ('c-1', 'RelayZone', ?)",
+                               arguments: [archive])
+            }
+        }
+        let store = try TransportStore(path: path)
+        let version = try XCTUnwrap(try store.recordVersion(recordName: "c-1", zone: .relay))
+        XCTAssertEqual(version.recordSeq, 0)
+        XCTAssertEqual(version.changeTag, "tag-9")
+    }
+
+    func testAStoreFromBeforeRecordSeqOpensWithZero() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+
+        do {
+            let legacy = try DatabaseQueue(path: path)
+            try legacy.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE system_fields (
+                        record_name TEXT NOT NULL,
+                        zone TEXT NOT NULL,
+                        data BLOB NOT NULL,
+                        PRIMARY KEY (record_name, zone)
+                    );
+                    INSERT INTO system_fields (record_name, zone, data) VALUES ('c-1', 'RelayZone', x'00');
+                    CREATE TABLE events (
+                        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                        zone TEXT NOT NULL,
+                        record_name TEXT NOT NULL,
+                        kind TEXT NOT NULL DEFAULT '',
+                        modified_at REAL NOT NULL DEFAULT 0,
+                        payload BLOB,
+                        deleted INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT INTO events (zone, record_name, kind, payload) VALUES ('RelayZone', 'c-1', 'envelope', x'01');
+                    """)
+            }
+        }
+
+        let store = try TransportStore(path: path)
+        let version = try XCTUnwrap(try store.recordVersion(recordName: "c-1", zone: .relay))
+        XCTAssertEqual(version.recordSeq, 0)
+        XCTAssertNil(version.changeTag)
+        XCTAssertNil(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, "an old event names no version")
+        try store.saveSystemFields(Data("next".utf8), recordName: "c-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
     }
 
     func testAdoptingABrandNewStoreReportsNoWipe() throws {

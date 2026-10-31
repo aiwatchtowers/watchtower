@@ -1,6 +1,6 @@
 # iPhone
 
-The Watchtower iPhone app is a window onto your Mac. It shows what is waiting for you, lets you answer asks, edit the Workbench board and start sessions, and records meetings you attend away from your desk. It works through your own iCloud, so nothing goes through a Watchtower server.
+The Watchtower iPhone app is a window onto your Mac. It shows what is waiting for you, lets you answer asks, edit the Workbench board and start sessions, and records meetings you attend away from your desk. It works through your own iCloud, not a Watchtower server.
 
 ## Why use it
 
@@ -8,11 +8,11 @@ You step away from your desk while a Workbench session waits on a question. The 
 
 ## How it works
 
-The Mac is the **hub**. With **Sync with iPhone** on, it publishes a slice of your data (asks, Workbench boards and sessions, calendar, recaps) into your iCloud. The phone reads that slice and sends its changes back as requests, which the Mac applies when it is awake.
+The Mac is the **hub**. With **Sync with iPhone** on, it publishes a slice of your data (asks, Workbench boards and sessions, calendar, recaps) into your iCloud. The phone reads that slice and sends its changes back as requests. The Mac applies them in the order they were made, when it is awake; see [not delivered](iphone-not-delivered.md).
 
-Everything is sealed with keys exchanged when you link, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; the one exception is a session's chat (below).
+Everything is sealed with keys exchanged at linking, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; the one exception is a session's chat (below).
 
-An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps, and applies on wake. The Mac checks for phone requests every 30 seconds, or every 3 seconds for five minutes after the last one, and writes a heartbeat every 15 minutes.
+An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps. The Mac checks for requests every 30 seconds (every 3 for five minutes after the last) and writes a heartbeat every 15 minutes.
 
 A phone links to up to four Macs and switches between them; each Mac is its own hub with its own data.
 
@@ -20,7 +20,7 @@ A phone links to up to four Macs and switches between them; each Mac is its own 
 
 iCloud keeps a Development and a Production environment, and records saved in one never reach the other. The downloaded (Developer ID) Mac app and a TestFlight or App Store phone build are both Production and pair.
 
-A phone run from Xcode is Development, and only pairs with a Mac built for Development. Mixed pairs fail silently: the phone never sees the Mac.
+A phone run from Xcode is Development and pairs only with a Development Mac. Mixed pairs fail silently: the phone never sees the Mac.
 
 A Mac build without iCloud signing shows **Needs a signed build** and cannot turn sync on. An unsigned phone build runs a demo.
 
@@ -142,7 +142,7 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.
 - **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit Watchtower. Closing the window is fine; the app keeps running in the menu bar.
 
-Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
+Not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 
 ## Related
 

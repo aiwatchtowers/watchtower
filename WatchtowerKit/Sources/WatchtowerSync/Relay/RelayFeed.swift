@@ -18,6 +18,12 @@ public enum DesktopReachability: Equatable, Sendable {
 /// - `action` echoes → `ActionOutbox.applyEcho` (own still-`pending`
 ///   enqueues reflecting back are skipped),
 /// - `recording_upload` echoes → the `RecordingUploadAcking` seam,
+/// - hub `control` records (relay client Phase 1) → `resend_from` to
+///   `ActionOutbox.resendFrom`, `transport_switch_rejected` logged; both read
+///   once (`handled_controls`) and deleted. `transport_switched`,
+///   `hub_on_relay` and unknown kinds stay in the mailbox for Phase 3
+///   (Ruling 9). One naming another phone or hub is dropped and deleted; the
+///   phone's own controls reflecting back are left for the hub,
 /// - `heartbeat` → ignored: the heartbeat lives in DataZone (mobile POC
 ///   spec §4.1), so a relay-zone copy is never trusted for liveness,
 /// - `device` → ignored (the phone's own link record; the Mac consumes it),
@@ -31,6 +37,12 @@ public enum DesktopReachability: Equatable, Sendable {
 /// throw replays the batch next cycle (all routing is idempotent), while an
 /// undecodable payload never wedges the feed — it is logged, skipped, and
 /// left behind by the advancing token.
+///
+/// Deletes (Rulings 8/9): a final ordered echo and a read hub control are
+/// deleted under the version read, in one `deleteSealed` call after the token
+/// is stored. Best effort: one try per read, the outcome logged by class, and
+/// a delete never fails the cycle; the hub's hygiene and the relay TTL are the
+/// fallbacks.
 ///
 /// Buffer retention: once the token advances, the consumed relay events are
 /// compacted through `SecureTransport`'s `CompactingTransport` conformance
@@ -73,6 +85,8 @@ public actor RelayFeed {
     /// — harmless for the hydrate-nudge purpose (a spurious re-hydration is
     /// an idempotent no-op).
     private let onActionApplied: (@Sendable () async -> Void)?
+    /// When a hub control is marked handled (its id is kept 15 days).
+    private let now: @Sendable () -> Date
     private var loopTask: Task<Void, Never>?
     /// The currently-running cycle, if any. Concurrent `pollOnce` callers
     /// await this instead of starting their own — see `pollOnce`.
@@ -80,6 +94,8 @@ public actor RelayFeed {
     /// Unknown record kinds already warned about — log once per kind per feed
     /// instance (a newer desktop may ship kinds this build does not know).
     private(set) var loggedUnknownKinds: Set<String> = []
+    /// Hub control kinds left in the mailbox, logged once per kind per feed instance (Ruling 9).
+    private(set) var loggedControlKinds: Set<String> = []
     private let logger = Logger(subsystem: "WatchtowerKit", category: "RelayFeed")
     private static let staticLogger = Logger(subsystem: "WatchtowerKit", category: "RelayFeed")
 
@@ -89,7 +105,8 @@ public actor RelayFeed {
         outbox: ActionOutbox,
         uploads: (any RecordingUploadAcking)? = nil,
         pull: (@Sendable () async throws -> Void)? = nil,
-        onActionApplied: (@Sendable () async -> Void)? = nil
+        onActionApplied: (@Sendable () async -> Void)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.store = store
@@ -97,6 +114,7 @@ public actor RelayFeed {
         self.uploads = uploads
         self.pull = pull
         self.onActionApplied = onActionApplied
+        self.now = now
     }
 
     // MARK: - One cycle
@@ -138,13 +156,16 @@ public actor RelayFeed {
 
         var echoes = 0
         var appliedEchoRouted = false
+        var deletes: [ConditionalDelete] = []
         for record in batch.changed {
             let outcome = try await route(record)
             echoes += outcome.echoes
             if outcome.appliedEcho { appliedEchoRouted = true }
+            if let delete = outcome.delete { deletes.append(delete) }
         }
 
         if try store.setRelayToken(batch.newToken) {
+            await deleteRead(deletes)
             await compactConsumedRelay(keepSince: batch.newToken)
         }
         if appliedEchoRouted, let onActionApplied {
@@ -172,19 +193,52 @@ public actor RelayFeed {
         }
     }
 
+    /// Deletes the records this cycle read and settled (Rulings 8/9): one call, one try, never failing the cycle.
+    private func deleteRead(_ items: [ConditionalDelete]) async {
+        guard !items.isEmpty else { return }
+        let outcomes: [DeleteOutcome]
+        do {
+            outcomes = try await transport.deleteSealed(items)
+        } catch {
+            logger.warning(
+                "relay deletes failed (\(items.count, privacy: .public) records, left to hygiene): \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        for (item, outcome) in zip(items, outcomes) {
+            switch outcome {
+            case .deleted:
+                break
+            case .conflict:
+                logger.notice("relay record \(item.recordName, privacy: .public) changed since read, not deleted")
+            case .refused(let refusal):
+                let reason = String(describing: refusal)
+                logger.notice(
+                    "relay record \(item.recordName, privacy: .public) not deleted (\(reason, privacy: .public)), left to hygiene")
+            }
+        }
+    }
+
+    /// What routing one record did. `delete` is the record's own conditional delete, sent after the token is stored.
+    private struct Routed {
+        var echoes = 0
+        var appliedEcho = false
+        var delete: ConditionalDelete?
+    }
+
     /// Routes ONE relay record to its consumer; every path is idempotent
     /// (the batch replays on a mid-batch throw — see `performPoll`).
     /// `appliedEcho` is true only for a desktop `applied` action verdict —
     /// the trigger for the post-batch hydrate nudge.
-    private func route(_ record: CloudRecord) async throws -> (echoes: Int, appliedEcho: Bool) {
+    private func route(_ record: CloudRecord) async throws -> Routed {
         switch RelayRecordKind(rawValue: record.kind) {
         case .action:
             guard let action = decode(ActionRequestPayload.self, from: record) else { break }
             // A still-pending record is our OWN enqueue reflecting back
             // through the shared zone — not a desktop verdict. Skip.
             guard action.status != .pending else { break }
-            try await outbox.applyEcho(action)
-            return (echoes: 1, appliedEcho: action.status == .applied)
+            // A final echo of an ordered action is deleted under the version read; a legacy echo never is.
+            let final = try await outbox.applyEcho(action)
+            return Routed(echoes: 1, appliedEcho: action.status == .applied, delete: final ? Self.delete(record) : nil)
         case .heartbeat:
             // Kept for wire compatibility only. The heartbeat lives in
             // DataZone (spec §4.1); RelayZone is writable by a share
@@ -195,8 +249,8 @@ public actor RelayFeed {
             // consumer and answers through the `device_grant` slice / the keybox.
             break
         case .control:
-            // Not routed yet (Task 7); skipped.
-            break
+            guard let control = decode(ControlPayload.self, from: record) else { break }
+            return Routed(delete: try await read(control, record: record))
         case .recordingUpload:
             guard let upload = decode(RecordingUploadPayload.self, from: record) else { break }
             // A still-pending record is our OWN upload reflecting back —
@@ -207,13 +261,71 @@ public actor RelayFeed {
                 break
             }
             try await uploads.applyEcho(upload)
-            return (echoes: 1, appliedEcho: false)
+            return Routed(echoes: 1)
         case nil:
             if loggedUnknownKinds.insert(record.kind).inserted {
                 logger.warning("unknown relay record kind ignored: \(record.kind, privacy: .public)")
             }
         }
-        return (echoes: 0, appliedEcho: false)
+        return Routed()
+    }
+
+    /// Handles one control record; returns its delete, or nil to leave it in the mailbox.
+    ///
+    /// Read once: the handled id is checked first and marked only after the handling, so a `resend_from` whose
+    /// handling throws (`notLinked`, `noHubID`, a store error) fails the cycle unmarked and the token stays — the
+    /// hub writes one per gap, and a lost one would stall the order.
+    private func read(_ control: ControlPayload, record: CloudRecord) async throws -> ConditionalDelete? {
+        // The phone's own controls (`skip_to`) reflect back through the shared zone: the hub reads and deletes them.
+        guard record.sealed?.envelopeClass == .relayToPhone else { return nil }
+        let ids = await outbox.linkIDs()
+        // As Go's `readControl`: an empty id, a frame id other than `c-<id>`, or ids naming another phone or hub.
+        guard !control.id.isEmpty, record.recordName == control.recordName,
+              Self.names(control.deviceID, ids.deviceID), Self.names(control.hubID, ids.hubID) else {
+            logger.warning(
+                "control \(control.id, privacy: .public) (\(control.kind.rawValue, privacy: .public)) malformed or for another phone or hub, dropped")
+            return Self.delete(record)
+        }
+        switch control.kind {
+        case .resendFrom, .transportSwitchRejected:
+            // A second copy of a control already handled is deleted unread.
+            if try store.isControlHandled(id: control.id) { return Self.delete(record) }
+            if control.kind == .resendFrom {
+                if let seq = control.seq {
+                    // Assumption: a `resend_from` arrives only after an ordered action stamped with `hub_id`, so
+                    // both ids are known here and `notLinked`/`noHubID` cannot happen in practice. An unlink drops
+                    // the hub's replica and its feed, so a stall on such a throw cannot outlive the link.
+                    try await outbox.resendFrom(seq)
+                } else {
+                    logger.warning("resend_from \(control.id, privacy: .public) without a seq dropped")
+                }
+            } else {
+                // Phase 1 never asks for a switch, so there is nothing to stop waiting for.
+                logger.notice("transport_switch_rejected \(control.id, privacy: .public) read; no switch was asked")
+            }
+            _ = try store.markControlHandled(id: control.id, at: now())
+            return Self.delete(record)
+        default:
+            // `transport_switched`, `hub_on_relay` (Phase 3) and kinds this build does not know: left in the mailbox.
+            if loggedControlKinds.insert(control.kind.rawValue).inserted {
+                logger.notice("control kind \(control.kind.rawValue, privacy: .public) left in the mailbox")
+            }
+            return nil
+        }
+    }
+
+    /// The control names `ours`: an absent id names nobody; while ours is unknown it cannot be told apart, so the
+    /// handling decides (and `resendFrom` throws until the link is set).
+    private static func names(_ theirs: String?, _ ours: String?) -> Bool {
+        guard let theirs, let id = UUID(uuidString: theirs) else { return false }
+        guard let ours else { return true }
+        return UUID(uuidString: ours) == id
+    }
+
+    /// The conditional delete of an opened record under the version read; nil when either is unknown.
+    private static func delete(_ record: CloudRecord) -> ConditionalDelete? {
+        guard let wireName = record.sealed?.wireName, let version = record.recordSeq else { return nil }
+        return ConditionalDelete(recordName: wireName, zone: .relay, expect: .seq(version))
     }
 
     /// Decodes a relay payload of a KNOWN kind; a failure is logged and

@@ -32,12 +32,13 @@ public struct OutboxRow: Equatable, Sendable {
     public let delivery: Delivery
     public let recordSeq: UInt64?
     public let sentAt: Date?
+    public let createdAt: Date
 }
 
-/// A sealed control record waiting to be written (`skip_to`, say). `kind` is the control's raw wire kind.
+/// A sealed control record waiting to be written (`skip_to`, say).
 public struct QueuedControl: Equatable, Sendable {
     public let id: String
-    public let kind: String
+    public let kind: ControlKind
     public let wireName: String
     public let envelope: Data
     public let queuedAt: Date
@@ -166,6 +167,54 @@ extension ReplicaStore {
         }
     }
 
+    /// The flush rewrote a held echo with the action (Task 6): the version of that write. A `queued` or `sent` row
+    /// moves to `sent`; a row an echo settled or listed meanwhile is left as it is.
+    func markRewritten(actionID: String, recordSeq: UInt64, at date: Date) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = ?
+                    WHERE action_id = ? AND delivery IN ('queued','sent')
+                    """,
+                arguments: [Int64(clamping: recordSeq), date.timeIntervalSince1970, actionID])
+        }
+    }
+
+    /// Whether the overlay row `id` is an ordered one (`action_seq` set); false for a legacy or unknown id.
+    func isOrderedAction(id: String) throws -> Bool {
+        try writer.read { db in
+            try Bool.fetchOne(
+                db, sql: "SELECT action_seq IS NOT NULL FROM pending_actions WHERE action_id = ?", arguments: [id])
+        } ?? false
+    }
+
+    /// The hub's `applied` echo of an ordered row, in any delivery state (it is the hub's word, not a Dismiss): the
+    /// row goes. Legacy rows and unknown ids are left alone. Returns whether a row went.
+    func removeAppliedAction(id: String) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: "DELETE FROM pending_actions WHERE action_id = ? AND action_seq IS NOT NULL", arguments: [id])
+            return db.changesCount > 0
+        }
+    }
+
+    /// The hub's `failed`/`expired`/`cancelled` echo of an ordered row, in any delivery state: `settled` and
+    /// `failed` with the echo's message, reason and result; a Not delivered row leaves the list (its reason goes).
+    func settleFailedAction(
+        id: String, errorMessage: String, reason: ActionReason?, result: [String: JSONValue]?
+    ) throws {
+        let resultData = try result.map { try JSONEncoder().encode($0) }
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE pending_actions SET state = 'failed', error_message = ?, reason = ?, result = ?,
+                        delivery = 'settled', undelivered_reason = NULL
+                    WHERE action_id = ? AND action_seq IS NOT NULL
+                    """,
+                arguments: [errorMessage, reason?.rawValue, resultData, id])
+        }
+    }
+
     /// Sets the delivery of ordered rows (legacy rows are never touched). Refuses `.undelivered` (that is
     /// `markUndelivered`'s, with its reason). A row leaving Not delivered is pending again: its reason and the
     /// local message go.
@@ -227,7 +276,7 @@ extension ReplicaStore {
     }
 
     /// Waiting to send (`queued`) and Not delivered (`undelivered`) counts.
-    func outboxCounts(from db: Database) throws -> (queued: Int, undelivered: Int) {
+    public func outboxCounts(from db: Database) throws -> (queued: Int, undelivered: Int) {
         let row = try Row.fetchOne(
             db,
             sql: """
@@ -254,7 +303,8 @@ extension ReplicaStore {
     }
 
     /// Dismiss All: removes every Not delivered row; returns how many went.
-    func dismissAllUndelivered() throws -> Int {
+    @discardableResult
+    public func dismissAllUndelivered() throws -> Int {
         try writer.write { db in
             try db.execute(sql: "DELETE FROM pending_actions WHERE delivery = 'undelivered'")
             return db.changesCount
@@ -272,7 +322,7 @@ extension ReplicaStore {
                     VALUES (?, ?, ?, ?, ?)
                     """,
                 arguments: [
-                    control.id, control.kind, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
+                    control.id, control.kind.rawValue, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
                 ])
         }
     }
@@ -282,13 +332,13 @@ extension ReplicaStore {
         try writer.read { db in
             try Row.fetchAll(db, sql: "SELECT * FROM outbound_controls ORDER BY position").map { row in
                 QueuedControl(
-                    id: row["control_id"], kind: row["kind"], wireName: row["wire_name"], envelope: row["envelope"],
+                    id: row["control_id"], kind: ControlKind(rawValue: row["kind"]), wireName: row["wire_name"], envelope: row["envelope"],
                     queuedAt: Date(timeIntervalSince1970: row["queued_at"]))
             }
         }
     }
 
-    /// The control is written: it leaves the queue.
+    /// The control leaves the queue: written, or (hosted relay only) dropped past the mailbox TTL.
     func controlWritten(id: String) throws {
         try writer.write { db in
             try db.execute(sql: "DELETE FROM outbound_controls WHERE control_id = ?", arguments: [id])
@@ -303,6 +353,15 @@ extension ReplicaStore {
                 sql: "INSERT OR IGNORE INTO handled_controls (control_id, handled_at) VALUES (?, ?)",
                 arguments: [id, date.timeIntervalSince1970])
             return db.changesCount > 0
+        }
+    }
+
+    /// Whether a hub control id was handled already. The feed reads this before handling a control and marks it
+    /// after, so a throw in between leaves it unhandled and the replayed batch handles it again.
+    func isControlHandled(id: String) throws -> Bool {
+        try writer.read { db in
+            try Bool.fetchOne(
+                db, sql: "SELECT EXISTS(SELECT 1 FROM handled_controls WHERE control_id = ?)", arguments: [id]) ?? false
         }
     }
 
@@ -375,6 +434,7 @@ extension ReplicaStore {
             actionID: row["action_id"], actionSeq: UInt64(seq), epoch: UInt32(truncatingIfNeeded: epoch),
             wireName: wireName, envelope: envelope, delivery: delivery,
             recordSeq: (row["record_seq"] as Int64?).map { UInt64($0) },
-            sentAt: (row["sent_at"] as Double?).map(Date.init(timeIntervalSince1970:)))
+            sentAt: (row["sent_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+            createdAt: Date(timeIntervalSince1970: row["created_at"]))
     }
 }

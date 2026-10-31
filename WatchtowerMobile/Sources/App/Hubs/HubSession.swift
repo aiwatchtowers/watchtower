@@ -174,6 +174,14 @@ final class HubSession {
     @ObservationIgnored private let alertSweepCache = ReplicaDecodeCache()
     /// The calendar slices as the Calendar and Now tabs draw them.
     let calendarReplica = CalendarReplicaModel()
+    /// The ordered outbox as the phone shows it (relay client Phase 1): waiting and Not delivered counts, and
+    /// whether the outbox's last flush stopped on a refusal. Always empty for a hub on today's path.
+    private(set) var outboxBacklog = OutboxBacklog.empty
+    @ObservationIgnored private var backlogObservation: ResilientObservation?
+    /// The last flush (and sweep) the session started without waiting for it (`startOutboxWork`).
+    @ObservationIgnored private(set) var outboxWork: Task<Void, Never>?
+    /// How long `shutDown()` waits for the outbox's chain before it goes on; tests shorten it.
+    @ObservationIgnored var outboxDrainCap: Duration = .seconds(10)
     /// The phone recorder (record a meeting or a voice note), owned for the
     /// app's lifetime so a capture survives any navigation.
     let recorder: PhoneRecorderController
@@ -446,7 +454,10 @@ final class HubSession {
             Task { @MainActor in keyboxSignal.handler?() }
         })
         self.hydrator = hydrator
-        let outbox = ActionOutbox(transport: secure, store: store, deviceID: device?.deviceID)
+        // The route decides a queued control's outer bound (the hosted relay's mailbox TTL; none on CloudKit); the
+        // session's clock times the 24 h withdrawal.
+        let outbox = ActionOutbox(
+            transport: secure, store: store, deviceID: device?.deviceID, route: route ?? .cloudKit(.private), now: now)
         self.outbox = outbox
         reportRequests = SessionReportRequester.sending(through: outbox)
         chatRequests = SessionChatRequester.sending(through: outbox, store: store)
@@ -489,6 +500,7 @@ final class HubSession {
         workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
+        observeOutboxBacklog()
 
         startBoot(startWork, notifications: notifications)
     }
@@ -611,6 +623,14 @@ final class HubSession {
         }
     }
 
+    /// The backlog's counts follow the replica for the session's lifetime.
+    private func observeOutboxBacklog() {
+        backlogObservation = OutboxBacklog.observe(store: store) { [weak self] counts in
+            self?.outboxBacklog.queued = counts.queued
+            self?.outboxBacklog.undelivered = counts.undelivered
+        }
+    }
+
     /// Starts the boot. It writes the replica (the held recordings'
     /// adoption, the launch fetch, the outbox sweep, launch recovery): held
     /// from here, before a push can end its own work, until it is done.
@@ -669,6 +689,13 @@ final class HubSession {
 
     /// Demo seed or engine start: everything before the first fetch.
     private func startTransport() async {
+        // Before any fetch: the feed's `resend_from` needs both ids (with the device id the init set), or it
+        // throws and the feed keeps its token, stalling every later action.
+        await outbox.setHubID(hubID)
+        // Every flush's outcome, the ones an enqueue or a `resend_from` starts included.
+        await outbox.setFlushReportObserver { [weak self] report in
+            Task { @MainActor in self?.outboxBacklog.lastFlushStopped = report.stoppedOn != nil }
+        }
         // Before any fetch, so no applied echo goes unseen: an ask answer's
         // delivery, a start's session id.
         await outbox.setAppliedObserver(
@@ -966,12 +993,15 @@ final class HubSession {
         lastFetchError = nil
         sweepDeliveredAlerts(fetchedAt: fetchedAt)
         await postSharedAlerts()
+        await adoptOrderedActions()
         var routed = 0
         do {
             routed = try await feed.pollOnce()
         } catch {
             Self.logger.error("relay fetch failed: \(error.localizedDescription, privacy: .public)")
         }
+        // Once per fetch cycle, so a phone that stays up still withdraws an unanswered action after 24 h.
+        startOutboxWork(sweep: true)
         readHeartbeat()
         onFetched?()
         return hydrated.applied + hydrated.deleted + routed > 0 ? .newData : .noData
@@ -1007,11 +1037,13 @@ final class HubSession {
         lastSyncAt = appliedAt
         sweepDeliveredAlerts(fetchedAt: appliedAt)
         await postSharedAlerts()
+        await adoptOrderedActions()
         do {
             _ = try await feed.pollOnce()
         } catch {
             Self.logger.error("relay apply failed: \(error.localizedDescription, privacy: .public)")
         }
+        startOutboxWork(sweep: false)
         readHeartbeat()
         onFetched?()
     }
@@ -1046,6 +1078,7 @@ final class HubSession {
         // Review Focus 1: rows a locked background hydrate stored open now (the unlock signal may have passed
         // while the app was suspended), before the return's fetch.
         indexStoredRows()
+        startOutboxWork(sweep: false)
         Task { [deviceSettings] in await deviceSettings.touchIfStale() }
         // A subscription save or delete that failed earlier is retried; one already applied costs no CloudKit call.
         if isBootstrapped, let alertRegistrar {
@@ -1109,6 +1142,7 @@ final class HubSession {
         }
         await readoptHeldIfNeeded()
         await recorder.uploadPending()
+        startOutboxWork(sweep: false)
     }
 
     /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed
@@ -1120,6 +1154,8 @@ final class HubSession {
             if indexed.contains(where: { $0.kind == .deviceGrant }) {
                 keyboxSignal.handler?()
             }
+            // A grant stored while locked opens now; any other pass costs one read.
+            Task { [weak self] in await self?.adoptOrderedActions() }
         } catch {
             Self.logger.error("indexing stored rows failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -1151,7 +1187,63 @@ final class HubSession {
         let sendingID = writesAllowed ? device?.deviceID : nil
         await outbox.setDeviceID(sendingID)
         await uploader.setDeviceID(sendingID)
+        // The grant the link flow just read may already carry `ordered_actions`.
+        await adoptOrderedActions()
         await recorder.uploadPending()
+    }
+
+    // MARK: - The ordered outbox (relay client Phase 1)
+
+    /// A linked grant whose hub runs ordered actions turns the outbox's ordered path on for good: the flag is
+    /// sticky in the replica, so a later grant without it, or a restart, never turns it off. Runs after every
+    /// hydrate (which is what applies a keybox), at every indexing pass (a grant stored while locked) and when the
+    /// link changes. A read that fails (a locked keychain) waits for the next one.
+    private func adoptOrderedActions() async {
+        guard let deviceID = linkedDevice?.deviceID else { return }
+        let recordName = SliceKind.deviceGrant.recordName(id: deviceID)
+        do {
+            let grant = try await store.reader.read { [store] db in
+                try SettingsSnapshot.decode(DeviceGrant.self, recordName: recordName, store: store, from: db)
+            }
+            guard let grant, grant.linked, grant.revoked != true, grant.runsOrderedActions,
+                  try await !outbox.orderedActions() else { return }
+            try await outbox.enableOrderedActions()
+            Self.logger.notice("the hub runs ordered actions: the ordered path is on")
+        } catch {
+            Self.logger.notice("ordered-actions grant check skipped: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// One flush pass, then (`sweep`, once per fetch cycle) the 24 h sweep, as one task nobody waits for: on
+    /// CloudKit a flush writes one record per call, and a save that hangs must never hold up a fetch, an
+    /// activation or the unlock. Both run on the outbox's serial chain. For a hub on today's path (no flag, no
+    /// queued control) the flush returns at once without reaching the transport. Kept in `outboxWork` (tests).
+    private func startOutboxWork(sweep: Bool) {
+        guard !stopped else { return }
+        outboxWork = Task { [outbox] in
+            do {
+                _ = try await outbox.flush()
+            } catch {
+                Self.logger.warning("outbox flush failed: \(error.localizedDescription, privacy: .public)")
+            }
+            guard sweep else { return }
+            do {
+                try await outbox.sweepSilentPending()
+            } catch {
+                Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Retry on a failed or Not delivered action: a new action with its kind, entity and params at the end of the
+    /// queue, then the old row's Dismiss.
+    func retry(actionID: String) async throws {
+        _ = try await outbox.retry(id: actionID)
+    }
+
+    /// Dismiss All on the Not delivered list.
+    func dismissAllUndelivered() throws {
+        try store.dismissAllUndelivered()
     }
 
     /// The transport the link flow writes this phone's hello and `device`
@@ -1306,7 +1398,33 @@ final class HubSession {
     func shutDown() async {
         stop()
         await bootstrapTask?.value
+        // The last outbox pass ends before the transport stops and the caller closes the replica: the session's
+        // own pass, then whatever else sits on the outbox's chain (an enqueue's flush, a resend, a withdrawal).
+        await outboxWork?.value
+        await Self.drain(outbox, cap: outboxDrainCap)
         await liveTransport?.stop()
+    }
+
+    /// `outbox.drain()`, raced against `cap`: a hung save never holds a shutdown. A write cut off this way is
+    /// left `queued` or `sent` in the replica and heals at the next launch (its flush, `resend_from` or the 24 h
+    /// rule).
+    private static func drain(_ outbox: ActionOutbox, cap: Duration) async {
+        let finished = OSAllocatedUnfairLock(initialState: false)
+        var timer: Task<Void, Never>?
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let finish: @Sendable () -> Void = {
+                if finished.withLock({ done in defer { done = true }; return !done }) { continuation.resume() }
+            }
+            Task { await outbox.drain(); finish() }
+            timer = Task {
+                try? await Task.sleep(for: cap)
+                if !Task.isCancelled {
+                    logger.notice("outbox drain cut off at shutdown")
+                }
+                finish()
+            }
+        }
+        timer?.cancel()
     }
 
     /// Closes the replica and the transport store, after `shutDown()` and

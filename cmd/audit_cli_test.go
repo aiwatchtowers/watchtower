@@ -422,6 +422,7 @@ var cliNoContentCommands = map[string]bool{
 	"workbench review start":           true,
 	"workbench session-probe":          true,
 	"workbench session-report":         true,
+	"workbench session-target":         true,
 	"workbench session-state":          true,
 	"workbench spec-review run":        true, // detached reviewer child: prints nothing, writes only the DB
 	"workbench spec-review reveal":     true, // hidden, called by the Desktop: prints nothing, writes only the loop row

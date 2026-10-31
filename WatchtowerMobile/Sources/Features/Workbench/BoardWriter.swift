@@ -47,7 +47,7 @@ final class BoardWriter {
             enqueue: { kind, entity, params in
                 try await outbox.enqueue(kind: kind, entityRecordName: entity, params: params)
             },
-            remove: { try store.removePendingAction(id: $0) },
+            remove: { try store.dismissAction(id: $0) },
             failedRows: { kind, entity in
                 try store.pendingActions(forEntity: entity)
                     .filter { $0.state == .failed && $0.action.kind == kind }
