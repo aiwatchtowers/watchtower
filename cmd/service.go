@@ -130,7 +130,7 @@ func runServiceInstall(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	inst.HostCheck = func() error {
-		if k, _ := hostkind.Detect(hubProbe()); k == hostkind.Desktop {
+		if k, _ := hostkind.Detect(hostProbe()); k == hostkind.Desktop {
 			return errServiceDesktopHost
 		}
 		return nil
