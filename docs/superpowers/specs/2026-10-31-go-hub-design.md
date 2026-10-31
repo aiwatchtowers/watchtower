@@ -212,7 +212,7 @@ The phone/Kit side (relay client spec, `feature/relay-client`) and the Go hub me
 - **Bridge**: a contract test drives the bridge with a fake `CloudSyncTransport`; one manual check against real CloudKit per phase that touches it.
 - **Ported guards**: PROJ-16/21 and every Swift hub test with a behavioural assertion gets a Go twin before the Swift file is deleted; the deletion PR lists the mapping.
 - **Linux**: CI already runs on ubuntu; add `GOARCH=arm64` build and a hub smoke test (start daemon, pair against the fake relay, start a session with a stub agent, echo a typed line).
-- **Device**: a real headless host (a Pi) run is the phase gate of §14 phase 2.
+- **Device**: a real Linux host (e.g. a Pi) and a CLI-only Mac, each driven from a real phone, are the phase gate of §14 phase 2.
 
 ## 14. Phases
 
