@@ -38,12 +38,16 @@ protocol TerminalSessionProcess: AnyObject {
     /// it calls `open`. A number `lookUp` finds nothing for is no link.
     func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void)
     /// Whether the session host runs the process, so it outlives the app
-    /// (board #496); a local process dies when the app quits.
+    /// (board #496). Every real session is hosted; test fakes are not.
     var isHosted: Bool { get }
+    /// The current run never reached a process (the session host could
+    /// not be reached or started): its exit is not the session's own.
+    var neverStarted: Bool { get }
 }
 
 extension TerminalSessionProcess {
     var isHosted: Bool { false }
+    var neverStarted: Bool { false }
 
     var onOwnerFocus: (() -> Void)? {
         get { nil }
@@ -160,27 +164,28 @@ final class TerminalCenter {
     /// The row each process was started from, so a project's sessions can be
     /// found (and closed) after the project's rows are gone.
     @ObservationIgnored private var rows: [Int64: TerminalSession] = [:]
-    /// Builds each session's process. By default a `HostedTerminalSession`
-    /// while `sessionHost` is set, else `makeLocalProcess`.
     /// Sessions an automation run let go of (a refused launch's row): no
     /// later launch carries the run marker, whatever copy of the row the
     /// caller holds.
     @ObservationIgnored private var droppedRunMarkers: Set<Int64> = []
-    @ObservationIgnored var makeProcess: () -> any TerminalSessionProcess
-    /// The local fallback process (`SwiftTermSession`). A seam for tests.
-    @ObservationIgnored var makeLocalProcess: () -> any TerminalSessionProcess
-    /// The session host new sessions launch in (board #496); nil while no
-    /// host is available — they then run locally and stop with the app.
+    /// Builds each session's process: by default a `HostedTerminalSession`
+    /// on the session host's client — every session runs in the host, never
+    /// in the app. nil when there is no client to launch through (the
+    /// connection was never begun): the session does not open.
+    @ObservationIgnored var makeProcess: () -> (any TerminalSessionProcess)?
+    /// The session host whose runs a reattach adopts (board #496): the
+    /// client once it answered at launch, nil while it has not.
     @ObservationIgnored var sessionHost: SessionHostClient?
     /// The current workspace's session host scope
     /// (`SessionHostPaths.scope`): hosted launches carry it, and a reattach
     /// touches only runs of it ("" from an older host counts as it).
     @ObservationIgnored var sessionHostScope = ""
-    /// The one client `connectSessionHost` made, answering or not.
+    /// The one client `connectSessionHost` made, answering or not. New
+    /// sessions launch through it even when it did not answer at launch:
+    /// each launch asks it to connect (or respawn the host) once more, and
+    /// a launch it cannot make ends with the reason in the pane
+    /// (`HostedTerminalSession`).
     @ObservationIgnored private var sessionHostClient: SessionHostClient?
-    /// Sessions whose current process runs locally, not in the session
-    /// host: the pane says they stop when Watchtower quits.
-    private(set) var unprotected: Set<Int64> = []
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
     @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
@@ -202,8 +207,10 @@ final class TerminalCenter {
     @ObservationIgnored private(set) var missingAgent: [Int64: AgentKind] = [:]
     /// Every process exit, after `states` records it (the VM's resume-failure
     /// check and placed-session cleanup): session id, exit code, and whether
-    /// Watchtower caused it by closing the terminal (`close`/`closeAll`,
-    /// which drop the process before signalling it). One subscriber.
+    /// it is not the session's own exit — Watchtower closed the terminal
+    /// (`close`/`closeAll`, which drop the process before signalling it), or
+    /// the run never started (`neverStarted`: the session host could not
+    /// be reached), so no PROJ-18 cleanup follows it. One subscriber.
     @ObservationIgnored var onSessionExit: ((_ id: Int64, _ code: Int32?, _ closedByApp: Bool) -> Void)?
     /// Every process exit too, by session row id, for a subscriber that
     /// outlives the workbench view model (`AutomationSessionCenter`).
@@ -223,27 +230,23 @@ final class TerminalCenter {
     @ObservationIgnored var onAskLink: ((Int64, Int64) -> Void)?
     @ObservationIgnored private let signaller: ProcessGroupSignaller
 
-    // A closure literal used as a default *argument* value does not inherit
-    // this class's @MainActor isolation the way one written in a method body
-    // would, so `{ SwiftTermSession() }` as a default value fails to compile
-    // ("main actor-isolated initializer in a synchronous nonisolated
-    // context"). Defaulting to nil and building the closure inside the
-    // (MainActor) init body sidesteps that.
     init(
-        makeProcess: (() -> any TerminalSessionProcess)? = nil,
-        makeLocalProcess: (() -> any TerminalSessionProcess)? = nil,
+        makeProcess: (() -> (any TerminalSessionProcess)?)? = nil,
         signaller: ProcessGroupSignaller = .live
     ) {
-        self.makeLocalProcess = makeLocalProcess ?? { SwiftTermSession() }
         // A placeholder: the default factory below captures `self`, which
         // needs every stored property initialised first.
-        self.makeProcess = { SwiftTermSession() }
+        self.makeProcess = { nil }
         self.signaller = signaller
         self.makeProcess = makeProcess ?? { [weak self] in
-            guard let self else { return SwiftTermSession() }
-            return sessionHost.map { self.makeHosted($0) } ?? self.makeLocalProcess()
+            guard let self, let client = sessionHost ?? sessionHostClient else { return nil }
+            return makeHosted(client)
         }
     }
+
+    /// The pane's text for a session that could not open because no
+    /// session host client exists to launch it through.
+    static let noSessionHostReason = "[Watchtower] \(HostedTerminalSession.hostNotRunningReason)"
 
     /// The connection `startSessionHost` began; a reattach waits for it.
     @ObservationIgnored private(set) var sessionHostConnection: Task<Void, Never>?
@@ -924,7 +927,11 @@ final class TerminalCenter {
             states[id] = .unavailable("Codex cannot be launched without its launch arguments.")
             return nil
         }
-        run(session, mode: mode, codex: codex, setup: setup)
+        guard let process = processes[id] ?? makeProcess() else {
+            states[id] = .unavailable(Self.noSessionHostReason)
+            return nil
+        }
+        run(session, process: process, mode: mode, codex: codex, setup: setup)
         return mode
     }
 
@@ -954,8 +961,13 @@ final class TerminalCenter {
         }
     }
 
-    private func run(_ session: TerminalSession, mode: TerminalLaunch.Mode, codex: CodexLaunchArgs?, setup: String?) {
-        let process = processes[session.id] ?? makeProcess()
+    private func run(
+        _ session: TerminalSession,
+        process: any TerminalSessionProcess,
+        mode: TerminalLaunch.Mode,
+        codex: CodexLaunchArgs?,
+        setup: String?
+    ) {
         wire(process, session: session, startedAt: now())
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: session.id, codex: codex, setup: setup,
                             automationRunID: droppedRunMarkers.contains(session.id) ? nil : session.automationRunID))
@@ -969,7 +981,7 @@ final class TerminalCenter {
         rows[id] = session
         process.onExit = { [weak self, weak process] code in
             guard let self else { return }
-            let closedByApp = process.map { self.processes[id] !== $0 } ?? true
+            let closedByApp = process.map { self.processes[id] !== $0 || $0.neverStarted } ?? true
             states[id] = .exited(code)
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
@@ -979,7 +991,6 @@ final class TerminalCenter {
         // A click into one terminal of a split makes it the active session.
         process.onOwnerFocus = { [weak self] in self?.focus(id) }
         processes[id] = process
-        if process.isHosted { unprotected.remove(id) } else { unprotected.insert(id) }
         if let workbenchID = session.projectID {
             // ⌘-click on `path:line` in a workbench session opens Files;
             // the path resolves in the session's code root (board #565).
@@ -1020,13 +1031,13 @@ final class TerminalCenter {
         if let hosted = processes[session.id] as? HostedTerminalSession {
             process = hosted
         } else {
-            // A local process of an earlier, ended run: its view leaves
-            // the pane for the adopted one.
-            if let local = processes.removeValue(forKey: session.id) {
-                local.onExit = nil
-                local.onOwnerInput = nil
-                local.onOwnerFocus = nil
-                local.detach()
+            // A process of an earlier, ended run that is not the host's
+            // client's: its view leaves the pane for the adopted one.
+            if let earlier = processes.removeValue(forKey: session.id) {
+                earlier.onExit = nil
+                earlier.onOwnerInput = nil
+                earlier.onOwnerFocus = nil
+                earlier.detach()
             }
             process = makeHosted(host)
         }
@@ -1157,8 +1168,8 @@ final class TerminalCenter {
     /// Lets go of every session for a quit that keeps them (an update, a
     /// logout, the owner's Keep Sessions and Quit; PROJ-20): a hosted
     /// session's connection closes and the host keeps its process running —
-    /// it is never signalled — for the next launch to reattach; a local
-    /// fallback session is closed as `closeAll` closes it.
+    /// it is never signalled — for the next launch to reattach; any other
+    /// process is closed as `closeAll` closes it.
     func detachAll() async {
         for (id, process) in processes {
             guard let hosted = process as? HostedTerminalSession else { continue }
@@ -1199,7 +1210,6 @@ final class TerminalCenter {
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
-        unprotected.remove(sessionID)
         focusOrder.removeAll { $0 == sessionID }
     }
 
@@ -1384,7 +1394,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         allowMouseReporting = getTerminal().mouseMode != .off
     }
 
-    /// The process's output, for the local and the hosted path alike.
+    /// The process's output, as the session host sends it.
     func feedOutput(_ bytes: ArraySlice<UInt8>) {
         feed(byteArray: bytes)
         syncMouseReporting()
@@ -1753,75 +1763,9 @@ private final class AskLinkHoverTracker: NSResponder {
     override func mouseExited(with event: NSEvent) { view?.closeAskCard() }
 }
 
-/// The real session: a SwiftTerm `LocalProcessTerminalView` running the
-/// launch in a pty. Keystrokes, copy/paste and resize are SwiftTerm's own
-/// (no Accessibility, no event monitors — no TCC prompt).
-@MainActor
-final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerminalViewDelegate {
-    private let terminal: PalettedTerminalView
-    var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (([UInt8]) -> Void)? {
-        get { terminal.onOwnerInput }
-        set { terminal.onOwnerInput = newValue }
-    }
-    var onOwnerFocus: (() -> Void)? {
-        get { terminal.onOwnerFocus }
-        set { terminal.onOwnerFocus = newValue }
-    }
-
-    override init() {
-        terminal = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
-        super.init()
-        terminal.processDelegate = self
-        terminal.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    }
-
-    var view: NSView { terminal }
-    var pid: pid_t { terminal.process?.shellPid ?? 0 }
-
-    func start(_ launch: TerminalLaunch) {
-        terminal.startProcess(
-            executable: launch.executable,
-            args: launch.args,
-            environment: launch.processEnvironment,
-            execName: nil,
-            currentDirectory: launch.currentDirectory
-        )
-    }
-
-    func detach() {
-        terminal.removeFromSuperview()
-    }
-
-    /// SwiftTerm's own input path (`TerminalView.send(data:)` →
-    /// `LocalProcess.send`), on the main actor as it requires.
-    func sendInput(_ bytes: [UInt8]) {
-        terminal.sendAppInput(bytes)
-    }
-
-    var bracketedPasteMode: Bool { terminal.getTerminal().bracketedPasteMode }
-
-    func setPathLinkHandler(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void) {
-        terminal.setPathLinks(folder: folder, open: open)
-    }
-
-    func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {
-        terminal.setAskLinks(lookUp: lookUp, open: open)
-    }
-
-    nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
-    nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
-    nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-
-    nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
-        // LocalProcess delivers on the main queue (its default dispatch queue).
-        MainActor.assumeIsolated { onExit?(exitCode) }
-    }
-}
-
 extension TerminalLaunch {
-    /// The environment the launch's process starts with, locally or in the
-    /// session host: SwiftTerm's terminal basics (`TERM=xterm-256color`,
+    /// The environment the launch's process starts with in the session
+    /// host: SwiftTerm's terminal basics (`TERM=xterm-256color`,
     /// the locale, the owner's `USER`/`HOME`), `SHELL`, then the launch's
     /// own entries.
     var processEnvironment: [String] {

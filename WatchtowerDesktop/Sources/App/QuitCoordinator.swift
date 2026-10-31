@@ -51,7 +51,7 @@ enum QuitCoordinator {
             await closeChatSessions()
             if choice == .quitKeepingSessions {
                 // PROJ-20: hosted sessions keep running in the session host
-                // (no signal); local fallback ones stop as below.
+                // (no signal).
                 await detachTerminals()
             } else {
                 // Workbench terminals: SIGHUP to each process group, SIGKILL

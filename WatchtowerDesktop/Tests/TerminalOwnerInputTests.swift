@@ -10,7 +10,9 @@ import XCTest
 @MainActor
 final class TerminalOwnerInputTests: XCTestCase {
     func testOnlyTheOwnersInputIsReported() throws {
-        let session = SwiftTermSession()
+        let session = HostedTerminalSession(client: SessionHostClient(
+            socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { _ in FakeSessionHostTransport() }
+        ))
         let terminal = try XCTUnwrap(session.view as? PalettedTerminalView)
         var reported = 0
         var bytes: [[UInt8]] = []

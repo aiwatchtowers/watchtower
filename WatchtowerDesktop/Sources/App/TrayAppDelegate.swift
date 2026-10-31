@@ -267,8 +267,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             quitReason: Self.currentQuitReason(),
             recording: app.meetingRecorderCenter.isBusy,
             askDrafts: app.workbenchesViewModel?.asks.drafts.count ?? 0,
-            liveSessions: app.terminalCenter.liveHostedCount,
-            unprotectedSessions: app.terminalCenter.liveIDs.intersection(app.terminalCenter.unprotected).count
+            liveSessions: app.terminalCenter.liveHostedCount
         )
         return Self.terminateDecision(
             managesLifecycle: managesLifecycle,
@@ -418,24 +417,14 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// `unprotectedSessions` (live local-fallback sessions, which stop on
-    /// any quit) is mentioned only next to the hosted sessions' choice.
-    static func quitPrompt(
-        recording: Bool, askDrafts: Int, liveSessions: Int = 0, unprotectedSessions: Int = 0
-    ) -> QuitPrompt? {
+    static func quitPrompt(recording: Bool, askDrafts: Int, liveSessions: Int = 0) -> QuitPrompt? {
         let drafts = askDrafts == 1 ? "1 unsent ask answer" : "\(askDrafts) unsent ask answers"
         let sessions = liveSessions == 1
             ? "1 workbench session is running"
             : "\(liveSessions) workbench sessions are running"
-        let unprotected = switch unprotectedSessions {
-        case 0: ""
-        case 1: " 1 unprotected session will stop."
-        default: " \(unprotectedSessions) unprotected sessions will stop."
-        }
-        let sessionsChoice = (liveSessions == 1
+        let sessionsChoice = liveSessions == 1
             ? "Keep it running and Watchtower reattaches when you open it again, or stop it now."
-            : "Keep them running and Watchtower reattaches when you open it again, or stop them now.")
-            + unprotected
+            : "Keep them running and Watchtower reattaches when you open it again, or stop them now."
         let base: QuitPrompt
         if recording {
             base = QuitPrompt(
@@ -502,16 +491,14 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         quitReason: OSType?,
         recording: Bool,
         askDrafts: Int,
-        liveSessions: Int,
-        unprotectedSessions: Int = 0
+        liveSessions: Int
     ) -> QuitPlan {
         let keeps = !stopsSessions && (forUpdate || quitReason.map(systemSessionEndReasons.contains) == true)
         let asksAboutSessions = !keeps && !stopsSessions
         return QuitPlan(
             prompt: quitPrompt(
                 recording: recording, askDrafts: askDrafts,
-                liveSessions: asksAboutSessions ? liveSessions : 0,
-                unprotectedSessions: unprotectedSessions
+                liveSessions: asksAboutSessions ? liveSessions : 0
             ),
             keepsSessions: keeps
         )

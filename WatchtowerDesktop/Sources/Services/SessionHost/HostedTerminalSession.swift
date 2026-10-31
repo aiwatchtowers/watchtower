@@ -4,8 +4,8 @@ import os
 import WatchtowerCore
 
 /// A terminal session whose process the session host owns (board #496), so
-/// it outlives the app. The view is the same `PalettedTerminalView` as a
-/// local session's — SwiftTerm still parses every byte here, so bracketed
+/// it outlives the app. The view is a `PalettedTerminalView` — SwiftTerm
+/// still parses every byte here, so bracketed
 /// paste, links, owner input and focus behave as before — but its input and
 /// size go to the host, and the host's output is fed into it. One host
 /// connection per process run; a relaunch (`start` after an exit) opens a
@@ -65,6 +65,12 @@ final class HostedTerminalSession: TerminalSessionProcess {
         set { terminal.onOwnerFocus = newValue }
     }
     var isHosted: Bool { true }
+    /// The current run has not reached the host yet: no Launched or
+    /// Attached since the last `start` or `attach`. An exit while it holds
+    /// (the host could not be reached or started) means the run never ran.
+    private(set) var neverStarted = false
+    /// The pane's reason when the host cannot be reached or started.
+    static let hostNotRunningReason = "the session host is not running"
 
     init(client: SessionHostClient, scope: @escaping () -> String = { "" }) {
         self.client = client
@@ -79,7 +85,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
     var bracketedPasteMode: Bool { terminal.getTerminal().bracketedPasteMode }
 
     /// Launches `launch` in the host under a fresh run token, with the
-    /// environment a local session gets (`processEnvironment`) and the
+    /// launch's environment (`processEnvironment`) and the
     /// view's size when the request goes out. A launch with no row has no
     /// host key: it is reported as an exit at once.
     func start(_ launch: TerminalLaunch) {
@@ -91,6 +97,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         let key = SessionHostAttachRequest(row: row, run: UUID().uuidString.lowercased())
         pid = 0
         reattachesLeft = 1
+        neverStarted = true
         terminal.dropsTerminalReplies = false
         let scope = scope()
         connect(key) { [terminal] in
@@ -108,6 +115,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// replies are dropped until `replayQuietPeriod` after Attached.
     func attach(_ info: SessionHostSessionInfo) {
         reattachesLeft = 1
+        neverStarted = true
         reattach(info)
     }
 
@@ -167,7 +175,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
             let running = await client.ensureRunning()
             guard let self, self.transport === transport else { return }
             guard running else {
-                runLost(transport, reason: "the session host is not running")
+                runLost(transport, reason: Self.hostNotRunningReason)
                 return
             }
             do {
@@ -199,6 +207,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
             guard let info = try? frame.decoded(SessionHostSessionInfo.self) else { return }
             pid = info.exited ? 0 : pid_t(info.pid)
             bound = true
+            neverStarted = false
             if hangUpOnBind, pid > 0 {
                 hangUpOnBind = false
                 client.signalGroup(pid, SIGHUP)
@@ -210,6 +219,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         case .output:
             terminal.feedOutput(frame.payload[...])
         case .exit:
+            neverStarted = false // the host ran it
             let code = (try? frame.decoded(SessionHostExit.self))?.code
             finishRun(code: code.map { Int32(clamping: $0) }, forget: true)
         case .error:
