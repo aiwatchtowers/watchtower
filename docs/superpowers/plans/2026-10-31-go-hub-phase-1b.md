@@ -247,12 +247,12 @@ All of Plan 1a's Global Constraints hold (byte compatibility, zone bytes, E2E re
   type ChangeWatch struct{…}
   func NewChangeWatch(conn *sql.Conn, tables map[string][]Kind, touched func() time.Time, clock func() time.Time) *ChangeWatch // dedicated read connection
   func (w *ChangeWatch) Run(ctx context.Context, dirty func(kinds ...Kind)) error // 250 ms while touched() within 10 min, else 1 s; on a data_version change marks every DB-backed kind dirty
-  const ActivePoll = 250 * time.Millisecond; const IdlePoll = time.Second; const ActiveWindow = 10 * time.Minute; const MaxDebounceWait = time.Second
+  const ActivePoll = 250 * time.Millisecond; const IdlePoll = time.Second; const ActiveWindow = 10 * time.Minute // MaxDebounceWait (1 s) is Plan 1a Task 13's publisher constant
   ```
   In-process writes need no hook: the daemon's other pool connections bump `data_version` too (spec §9 allows "where cheap"); the nudge after apply covers the hub's own handlers immediately.
 - **Depends on:** Task 9
 
-- [ ] **Step 1: Failing tests:** `TestAWriteByAnotherConnectionPublishesWithinOnePoll`, `TestPollIs250msWhileAPhoneWasInTouchElse1s`, `TestNudgeAfterApplyPublishesTheMappedKinds`, `TestFullDiffEvery60sCatchesClockValues`, `TestContinuousWritesStillPublishWithinOneSecond` (Review Focus 5: a write every 100 ms for 3 s still yields a cycle at least every `MaxDebounceWait`), `TestAKindIsSavedAtMostOncePerSpacing` (relay 150 ms, with the real sources).
+- [ ] **Step 1: Failing tests:** `TestAWriteByAnotherConnectionPublishesWithinOnePoll`, `TestPollIs250msWhileAPhoneWasInTouchElse1s`, `TestNudgeAfterApplyPublishesTheMappedKinds`, `TestFullDiffEvery60sCatchesClockValues`, `TestContinuousWritesStillPublishWithinOneSecond` (Review Focus 5: a write every 100 ms for 3 s still yields a cycle at least every `slices.MaxDebounceWait`, the 1a constant, now with the real DB sources), `TestAKindIsSavedAtMostOncePerSpacing` (relay 150 ms, with the real sources).
 - [ ] **Step 2:** `go test ./internal/hub/slices` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; measure the idle poll cost once (CPU of an idle daemon with a linked memfake phone, 5 min, `ps -o %cpu`) and write the number into the commit message (the spec's "measured before the phase ends").

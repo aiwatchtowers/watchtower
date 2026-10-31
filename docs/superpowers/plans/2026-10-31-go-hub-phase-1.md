@@ -4,7 +4,7 @@
 
 **Goal:** A Go hub inside the daemon that is byte-compatible with the Kit, owns its own sidecar, talks to the hosted relay, links a phone, and applies that phone's actions in order exactly once with echoes and a durable control queue — verified against an in-memory relay fake and the relay's local stand, in a separate test workspace, beside the Swift hub and touching none of its state.
 
-**Architecture:** New packages under `internal/hub/`: `wire` (sealed JSON payloads), `secure` (Go port of the Kit's hub-side `Secure/`, the single sealing choke point), `identity` (keys + keyring), `state` (`hubstate.db`, own goose provider through `db.OpenSidecar`, single writer, hub lock), `transport` (neutral interface, `memfake`, `relay` over a pinned copy of the relay repo's Go client and generated proto), `actions` (processor, order, echoes, control queue, dispatcher), `link` (QR v4, hello, SAS, keybox, grants), `slices` (publisher core with `device_grant` + `heartbeat`), `hubtest` (Go phone emulator), and the runtime `hub.Run` started by `runSyncDaemon` only when `WATCHTOWER_HUB_DIR` is set. `watchtower hub …` CLI on top. Plan 1b (`2026-10-31-go-hub-phase-1b.md`) plugs handlers, DB-backed slices, publishing on change, `session-host` v2 and Go session start into the seams this plan fixes.
+**Architecture:** New packages under `internal/hub/`: `wire` (sealed JSON payloads), `secure` (Go port of the Kit's hub-side `Secure/`, the single sealing choke point), `identity` (keys + keyring), `state` (`hubstate.db`, own goose provider through `db.OpenSidecar`, single writer, hub lock), `transport` (neutral interface, `memfake`, `relay` over a pinned copy of the relay repo's Go client and generated proto), `actions` (processor, order, echoes, control queue, dispatcher), `link` (QR v4, hello, SAS, keybox, grants), `slices` (publisher core with `device_grant` + `heartbeat`), `hubtest` (Go phone emulator), and the runtime `hub.Run` started by `runSyncDaemon` only when `WATCHTOWER_HUB_DIR` is set. `watchtower hub …` CLI on top; its writes reach a running hub over the control socket `<dir>/hub.sock` described in spec §4 (0600, peer UID check), which goes to the security review with the phase-1a PR. Plan 1b (`2026-10-31-go-hub-phase-1b.md`) plugs handlers, DB-backed slices, publishing on change, `session-host` v2 and Go session start into the seams this plan fixes.
 
 **Tech Stack:** Go 1.26 (`crypto/ecdh`, `crypto/ed25519`, `crypto/hkdf`, `crypto/hpke`, `golang.org/x/crypto/chacha20poly1305`), goose via `db.OpenSidecar`, `github.com/coder/websocket` + `google.golang.org/protobuf` (new direct deps, from the relay client), cobra; Swift only for Kit vector generation (`make kit-test FILTER=…`) and one Desktop vector (`make test-swift FILTER=…`).
 
@@ -25,7 +25,7 @@ Phase 1 is ~33 reviewable tasks, too many for one controller run. **Seam:** 1a e
 - **Publishing cadence (pinned now, exercised fully in 1b):** debounce 150 ms trailing; full diff every 60 s; minimum spacing per transport 150 ms on the relay (~2 s on CloudKit, phase 3); `data_version` poll 250 ms while a phone was in touch in the last 10 minutes, else 1 s; mailbox pass on the relay = on the WebSocket event.
 - Relay client behaviour = RC §7 (already in the copied Go client): `Relay-Protocol-Version: 1`, ping 30 s / pong 10 s, backoff ≤ 60 s with jitter, 1–3 s after 1001, `UNAVAILABLE` retries 0.5 s doubling to 8 s within 30 s, `TOKEN_EXPIRED` → reset that zone's `since_seq` to 0 and pull, resubscribe one by one, pull every zone after reconnect.
 - **E2E red line** (spec §3 anti-goals, §13, ask #807): nothing leaves the hub process unless it passed `secure.Sealer`; no key in logs, keys zeroed after use where Go allows, hub dir 0700, files 0600; the identity file refuses looser permissions.
-- **Phase-1 isolation** (spec §14 row 1): the hub starts only when `WATCHTOWER_HUB_DIR` is set (absolute, not under `config.AppSupportDir()/MobileHub`) and `WATCHTOWER_RELAY_ORIGIN` is set; never imports, reads or writes the Swift hub's `MobileHub/`, Keychain items or CloudKit state; one hub per state dir (`hub.lock`).
+- **Phase-1 isolation** (spec §14 row 1): the hub starts only when `WATCHTOWER_HUB_DIR` is set (absolute, not under `config.AppSupportDir()/MobileHub`), `WATCHTOWER_RELAY_ORIGIN` is set, **and** `WATCHTOWER_HUB_TEST_WORKSPACE` names the daemon's own active workspace (enforced, not assumed: so every DB read — heartbeat accounts in 1a, slices and handlers in 1b — comes from the test workspace's database); never imports, reads or writes the Swift hub's `MobileHub/`, Keychain items or CloudKit state; one hub per state dir (`hub.lock`).
 - `FILES-01`: log lines carry ids, counts and error classes only (`logredact`), never payload text, names or keys.
 - **Public-repo hygiene:** fixtures use the Kit's synthetic `a..b` byte runs, `example.com`, `acme`; no real ids, names, hostnames or absolute local paths; relay paths are `RELAY=../relay`.
 - **Migrations:** the sidecar is **not** `watchtower.db`: its schema lives in `internal/hub/state/migrations/*.sql` as its own goose provider (like `internal/agentlogdb`); no Go migration files; nothing in `internal/db/migrations`, `schema.sql` or the Desktop test schema changes in this plan.
@@ -38,7 +38,7 @@ Failure modes no existing test covers; each test lands in the named task.
 1. **Unsealed bytes reaching a transport.** A zero-value `secure.Record`, or a payload built outside the sealer, must be refused by every transport before any I/O. → Task 4 `TestRecord_ZeroValueIsNotSealed`, Task 7 `TestMemfake_RefusesUnsealedRecord`, Task 8 `TestRelayTransport_RefusesUnsealedRecord`.
 2. **Crash windows in the ledger.** A crash after a non-idempotent apply but before the echo, or between the ledger write and the per-phone order write, must never re-apply or skip. → Task 9 `TestCrashMidApplyEchoesOutcomeUnknownOnce`, `TestOrderAndLedgerCommitInOneTransaction`.
 3. **A full resync replays the mailbox.** `TOKEN_EXPIRED` (or a lost zone token) resets `since_seq` to 0 and every surviving record comes back: all must be repeats. → Task 9 `TestTokenExpiredResyncAppliesNothingTwice`.
-4. **Two hubs, or a phase-1 hub on real state.** → Task 14 `TestSecondHubRefusedWhileLocked`, `TestDevFlagRefusesSwiftHubDir`, `TestHubOffWithoutRelayOrigin`.
+4. **Two hubs, or a phase-1 hub on real state.** → Task 14 `TestSecondHubRefusedWhileLocked`, `TestDevFlagRefusesSwiftHubDir`, `TestHubOffWithoutRelayOrigin`, `TestHubRefusesWithoutMatchingTestWorkspace`, `TestHubStartWaitsForACLIHoldingTheLock`.
 5. **Keys sealed for a phone the owner did not confirm.** A confirm that races an expired code, an unlink or a refusal must seal no `KeyboxKeys`. → Task 11 `TestConfirmAfterExpiryOrUnlinkSealsNoKeys`.
 
 ---
@@ -207,7 +207,7 @@ Failure modes no existing test covers; each test lands in the named task.
   func (s *Sealer) Keybox(zone string, device ID, payload []byte) (Record, error)                                              // HPKE to KeyboxRecipient(device)
   type Opened struct{ Sender ID; Epoch uint32; Seq uint64; Frame InnerFrame; Verdict Verdict }
   type Opener struct{…}; func NewOpener(k KeySource, g RollbackGuard) *Opener
-  func (o *Opener) FromPhone(zone, wireName string, envelope []byte) (Opened, error) // relayToHub, accepted epoch, rollback Check then Record
+  func (o *Opener) FromPhone(zone, wireName string, envelope []byte) (Opened, error) // relayToHub, accepted epoch, rollback Check only — never Record: the processor records the mark inside its own transaction (Task 9)
   func (o *Opener) OwnEcho(zone, wireName string, envelope []byte) (Opened, error)   // the hub's own relayToPhone record read back
   func (o *Opener) Hello(zone, wireName string, envelope []byte, linkNonce []byte) (Header, InnerFrame, error)
   var ErrUnsealed = errors.New("secure: record did not pass the sealer")
@@ -215,6 +215,7 @@ Failure modes no existing test covers; each test lands in the named task.
 - **Depends on:** Task 3
 
 - [ ] **Step 1: Failing tests:**
+  - `TestOpener_FromPhoneNeverRecords` (two `FromPhone` calls on the same record both return `Newer`; `relay_seen` untouched).
   - `TestHPKE_RFC9180A21` (the existing `hpke-rfc9180-a21.json`), `TestKitVectors_HelloAndKeyboxOpen` (`hpke-envelope.json`: hello opens with `hub_kx` + `HelloInfo`; keybox opens with `dev_kx` + `KeyboxInfo`, verifies `hub_sig`; moved wire name → `ErrAuthenticationFailed`).
   - `TestRecord_ZeroValueIsNotSealed` (`secure.Record{}.Sealed() == false`) — Review Focus 1.
   - `TestSealer_WireNames` (`heartbeat` → `heartbeat`, `device_grant-<id>` → `keybox-<id>`, `hello-<id>` → itself, `target-7` → `RecordName(meta, data, "target", "7")`, a delete by plain name maps to the same wire name).
@@ -234,7 +235,7 @@ Failure modes no existing test covers; each test lands in the named task.
 - Test: `internal/hub/state/state_test.go`, `internal/hub/state/lock_test.go`, `internal/hub/state/swift_file_test.go`
 
 **Interfaces:**
-- Consumes: `db.OpenSidecar(path string, migrations fs.FS) (*db.DB, error)`.
+- Consumes: `db.OpenSidecar(path string, migrations fs.FS) (*sql.DB, error)`.
 - Produces:
   ```go
   package state
@@ -262,6 +263,7 @@ Failure modes no existing test covers; each test lands in the named task.
   func Enqueue(tx *sql.Tx, c Control) error; func (s *Store) PendingControls(mailbox string) ([]Control, error); func (s *Store) ControlDone(id int64) error; func (s *Store) ControlFailed(id int64, class string) error // writes last_error_class
   func (s *Store) HoldAction(device string, seq uint64, record string, envelope []byte) error; func (s *Store) HeldActions(device string) ([]Held, error); func DropHeld(tx *sql.Tx, device string, seq uint64) error
   func (s *Store) ZoneToken(zone string) (uint64, error); func (s *Store) SetZoneToken(zone string, since uint64) error
+  func RecordSeen(tx *sql.Tx, wire, sender string, epoch uint32, seq uint64) error // relay_seen inside the caller's transaction (the rollback mark)
   ```
 - **Depends on:** none
 
@@ -417,11 +419,11 @@ Failure modes no existing test covers; each test lands in the named task.
   var ReceivedEchoKinds = []string{"session_start","session_input","board_target_create"}
   var RefusedKinds = []string{"target_done","target_snooze","task_create"}
   ```
-  **Algorithm (one record, ordered path):** open (`FromPhone`; an unopenable record from no linked key is dropped with no answer, D9; a record naming another `device_id` → `failed device_not_linked`); `seq := action.ActionSeq`; in one `WithTx`: if `seq <= last` → repeat: re-echo the stored `done` echo (or `applied` if none) with `expect: seq`; if `seq > last+1` → `HoldAction`, echo `held`, and when `resend_requested_from != last+1` enqueue one `resend_from(last+1)` control and set it; if `seq == last+1` → `Begin` (non-idempotent kinds), commit, run the handler outside any transaction, then one `WithTx`: `MarkDone` + `SetLastApplied(seq)` + `DropHeld` + enqueue the final echo as a sealed control-queue row; after it, drain held actions `last+1…` the same way. Kinds in `ReceivedEchoKinds` get a `received` echo before the handler runs. Echoes go out through the control queue (Task 10), never fire-and-forget.
+  **Algorithm (one record, ordered path):** open (`FromPhone`; an unopenable record from no linked key is dropped with no answer, D9; a record naming another `device_id` → `failed device_not_linked`); `seq := action.ActionSeq`; in one `WithTx`: if `seq <= last` → repeat: re-echo the stored `done` echo (or `applied` if none) with `expect: seq`; if `seq > last+1` → `HoldAction`, echo `held`, and when `resend_requested_from != last+1` enqueue one `resend_from(last+1)` control and set it; if `seq == last+1` → `Begin` (non-idempotent kinds), commit, run the handler outside any transaction, then one `WithTx`: `MarkDone` + `SetLastApplied(seq)` + `DropHeld` + enqueue the final echo as a sealed control-queue row; **the rollback mark (`state.RecordSeen`) is written in the first transaction that commits a decision about the record — the repeat echo, the hold, `Begin`, or for idempotent kinds the done transaction — never before it**, so a crash between open and that commit leaves the record new; after it, drain held actions `last+1…` the same way. Kinds in `ReceivedEchoKinds` get a `received` echo before the handler runs. Echoes go out through the control queue (Task 10), never fire-and-forget.
 - **Depends on:** Task 4, Task 5, Task 6, Task 7
 
-- [ ] **Step 1: Failing sim twins** (memfake relay kind; names match the relay `sim` tests): `TestActionsAppliedInOrderOnce` (a1..a3 applied once in order; a stale copy of a3 echoed, mailbox ends empty after the phone deletes echoes), `TestGapTriggersResendFrom` (a3 before a2: a3 held, one `resend_from(2)`; a2 resent with the same bytes → a2 then a3 applied), `TestSkipToMarksUndelivered` (hub side: `skip_to(4)` → `last` jumps to 3, held a4 applied).
-- [ ] **Step 2: Failing hub tests:** `TestCrashMidApplyEchoesOutcomeUnknownOnce` (handler panics after `Begin` → next pass echoes `failed`/`outcome_unknown`, handler call count stays 1) and `TestOrderAndLedgerCommitInOneTransaction` (fault-inject the commit of the done transaction: neither `relay_processed.done` nor `last_applied_action_seq` moved) — Review Focus 2; `TestTokenExpiredResyncAppliesNothingTwice` (after 3 applies, `ExpireBefore` + pass from 0 → 0 handler calls, 3 repeat echoes) — Review Focus 3; `TestResendFromWrittenOncePerGap`; `TestHandlerFailureEchoesFailedWithClass`; `TestActionOlderThan7DaysExpires`; `TestClockSkewOver300sFails`; `TestRefusedKindsFailWithoutHandler`.
+- [ ] **Step 1: Failing sim twins**, each run as a subtest on **both** memfake kinds (`relay` with `record_seq`, `cloudkit` with change tags; names match the relay `sim` tests): `TestActionsAppliedInOrderOnce` (a1..a3 applied once in order; a stale copy of a3 echoed, mailbox ends empty after the phone deletes echoes), `TestGapTriggersResendFrom` (a3 before a2: a3 held, one `resend_from(2)`; a2 resent with the same bytes → a2 then a3 applied), `TestSkipToMarksUndelivered` (hub side: `skip_to(4)` → `last` jumps to 3, held a4 applied).
+- [ ] **Step 2: Failing hub tests:** `TestCrashMidApplyEchoesOutcomeUnknownOnce` (handler panics after `Begin` → next pass echoes `failed`/`outcome_unknown`, handler call count stays 1) and `TestOrderAndLedgerCommitInOneTransaction` (fault-inject the commit of the done transaction: neither `relay_processed.done` nor `last_applied_action_seq` moved) — Review Focus 2; `TestTokenExpiredResyncAppliesNothingTwice` (after 3 applies, `ExpireBefore` + pass from 0 → 0 handler calls, 3 repeat echoes) — Review Focus 3; `TestCrashBetweenOpenAndBeginRedeliveryIsApplied` (fault injected after `FromPhone` and before the deciding transaction: no `relay_seen` row; the redelivered record is applied once, not dropped as a repeat); `TestResendFromWrittenOncePerGap`; `TestHandlerFailureEchoesFailedWithClass`; `TestActionOlderThan7DaysExpires`; `TestClockSkewOver300sFails`; `TestRefusedKindsFailWithoutHandler`.
 - [ ] **Step 3:** `go test ./internal/hub/actions` → FAIL.
 - [ ] **Step 4: Implement** (handlers run with the context of the pass; a handler never sees a transaction).
 - [ ] **Step 5:** `go test ./internal/hub/actions` → PASS; `make lint-diff`.
@@ -440,10 +442,10 @@ Failure modes no existing test covers; each test lands in the named task.
   const ControlResendFrom, ControlSkipTo, ControlEpochAck, ControlSwitch, ControlSwitched, ControlSwitchRejected, ControlHubOnRelay = "resend_from","skip_to","epoch_ack","transport_switch","transport_switched","transport_switch_rejected","hub_on_relay"
   func RegisterProbe(d *Dispatcher) // "probe" → applied {}
   ```
-  Phone-written `c-*` (`skip_to`, `epoch_ack`) are handled once and deleted by the hub (recipient delete); a second copy of the same control id is deleted unread. Switch kinds are **parsed and refused** (`transport_switch_rejected` is not written; logged as "switch: phase 3") — phase 3 implements sim rules 8–16.
+  Phone-written `c-*` (`skip_to`, `epoch_ack`) are handled once and deleted by the hub (recipient delete); a second copy of the same control id is deleted unread. A phone's `transport_switch` is answered at once with `transport_switch_rejected` carrying the reason "not supported yet" (no `retry_after` beyond what the proto's field already means; queued like any control, so it is retried until written), and the control is deleted — a phone never waits on a hub that cannot switch. Phase 3 implements sim rules 8–16.
 - **Depends on:** Task 9
 
-- [ ] **Step 1: Failing tests:** `TestHubResendFromRetriedUntilWritten` (sim twin: first two saves fail unreachable, third lands; one record), `TestEchoOwedIsRetriedEveryPass`, `TestPhoneControlsDeletedOnceRead`, `TestLegacyActionWithoutSeqTakesTodaysPath` (UUID record `action-<uuid>`, today's echo statuses, `ordered` stays false, no control records), `TestOrderedModeStartsAtFirstSeq` (`ordered` true from the first payload with `action_seq`), `TestEpochAckRecorded`, `TestProbeApplied`, `TestUnknownRecordKindIgnored`.
+- [ ] **Step 1: Failing tests:** `TestHubResendFromRetriedUntilWritten` (sim twin on both memfake kinds: first two saves fail unreachable, third lands; one record), `TestEchoOwedIsRetriedEveryPass`, `TestPhoneControlsDeletedOnceRead`, `TestLegacyActionWithoutSeqTakesTodaysPath` (UUID record `action-<uuid>`, today's echo statuses, `ordered` stays false, no control records), `TestOrderedModeStartsAtFirstSeq` (`ordered` true from the first payload with `action_seq`), `TestEpochAckRecorded`, `TestTransportSwitchIsRejectedNotSupportedYet` (one `transport_switch_rejected` with that reason in the phone's mailbox, the request deleted, the hub's transport unchanged), `TestProbeApplied`, `TestUnknownRecordKindIgnored`.
 - [ ] **Step 2:** `go test ./internal/hub/actions` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** `go test ./internal/hub/actions` → PASS; `make lint-diff`.
@@ -496,7 +498,7 @@ Failure modes no existing test covers; each test lands in the named task.
   func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slot string) error // read hello in pair/<slot>, answer keybox there
   func (c *Center) SyncReaders(ctx context.Context, set func(context.Context, []string) error) error // linked phones' relay ids → set_hub_readers
   ```
-  Vouching (`vouch_hub`) is the phone's call; the hub only reports the server's state. `HUB_NOT_VOUCHED` is not in the relay proto yet (gap 1): until it is, a refused login/register maps to `ErrForbidden` and `hub status` says "not admitted by the relay".
+  Vouching (`vouch_hub`) is the phone's call; the hub only reports the server's state. `HUB_NOT_VOUCHED` is not in the relay proto yet (gap 1): until it is, a refused login/register maps to `ErrForbidden` and `hub status` says "not admitted by the relay". **Phase-2 dependency:** the spec §13 vouch-branch tests (vouch accepted; refused with `ATTESTATION_*`, slot limit, `HUB_NOT_VOUCHED`) are written when the relay proto carries those codes and `vouch_hub`, in phase 2's plan.
 - **Depends on:** Task 8, Task 11
 
 - [ ] **Step 1: Failing tests:** `TestPairingOpenedAnswersKeyboxInPairZone`, `TestPromotedPhoneBecomesReader` (after Confirm, `SyncReaders` called with the phone's relay id), `TestRemovedPhoneLeavesReaders`, `TestPairZoneCarriesNoAttachments`.
@@ -525,15 +527,15 @@ Failure modes no existing test covers; each test lands in the named task.
   func (p *Publisher) PublishSoon(kinds ...Kind)         // marks dirty; debounced 150 ms
   func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error) // diff by payload hash, seal, save, delete gone records
   func (p *Publisher) Run(ctx context.Context) error     // debounce + 60 s full diff + spacing
-  const Debounce = 150 * time.Millisecond; const FullDiffEvery = 60 * time.Second; const RelaySpacing = 150 * time.Millisecond; const CloudKitSpacing = 2 * time.Second
+  const Debounce = 150 * time.Millisecond; const MaxDebounceWait = time.Second /* a trailing debounce never holds a dirty kind longer */; const FullDiffEvery = 60 * time.Second; const RelaySpacing = 150 * time.Millisecond; const CloudKitSpacing = 2 * time.Second
   var UrgentKinds = []Kind{"owner_ask", "ask_alert", "device_grant", "permission_request", "session_chat"}
   var UnlinkedKinds = []Kind{"device_grant"}
   func GrantSource(c *link.Center) Source
-  func HeartbeatSource(f HeartbeatFacts) Source // record "heartbeat"; owner_user "" and sharing "none" on a relay-only hub (gap 6); accounts ≤ 20 from the DB
+  func HeartbeatSource(f HeartbeatFacts) Source // record "heartbeat"; owner_user "" and sharing "none" on a relay-only hub (gap 6); accounts ≤ 20 read from the daemon's database — in phase 1 that is always the test workspace's, because the hub refuses to start in any other workspace (Task 14)
   ```
 - **Depends on:** Task 1, Task 4, Task 5, Task 7, Task 11
 
-- [ ] **Step 1: Failing tests:** `TestUnchangedPayloadIsNotResaved`, `TestGoneRecordIsDeleted`, `TestOnlyUnlinkedKindsWhileNoPhone`, `TestAKindIsSavedAtMostOncePerSpacing` (the rewritten battery rule: relay 150 ms; the CloudKit 2 s value is asserted on the constant here and exercised in phase 3), `TestDebounceCoalescesBurst` (5 `PublishSoon` within 100 ms → one cycle), `TestOversizedRecordIsSkippedAndLogged` (> 900 000 bytes sealed), `TestHeartbeatPayloadDecodesInKitShape` (keys equal the Kit `HeartbeatPayload` coding keys).
+- [ ] **Step 1: Failing tests:** `TestUnchangedPayloadIsNotResaved`, `TestGoneRecordIsDeleted`, `TestOnlyUnlinkedKindsWhileNoPhone`, `TestAKindIsSavedAtMostOncePerSpacing` (the rewritten battery rule: relay 150 ms; the CloudKit 2 s value is asserted on the constant here and exercised in phase 3), `TestDebounceCoalescesBurst` (5 `PublishSoon` within 100 ms → one cycle), `TestDebounceMaxWaitBoundsAContinuousBurst` (`PublishSoon` every 100 ms for 3 s → a cycle at least every `MaxDebounceWait`; Plan 1b Task 10 repeats it with the real DB sources), `TestOversizedRecordIsSkippedAndLogged` (> 900 000 bytes sealed), `TestHeartbeatPayloadDecodesInKitShape` (keys equal the Kit `HeartbeatPayload` coding keys).
 - [ ] **Step 2:** `go test ./internal/hub/slices` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make lint-diff`.
@@ -551,11 +553,12 @@ Failure modes no existing test covers; each test lands in the named task.
 - Produces:
   ```go
   package hub
-  type Options struct{ Dir, RelayOrigin, RecordingsDir string /* <Dir>/recordings in phase 1 */; DB *db.DB; Clock func() time.Time; Register func(*actions.Dispatcher); Sources func(*state.Store) []slices.Source }
-  func FromEnv(db *db.DB) (Options, bool, error) // WATCHTOWER_HUB_DIR (absolute; refused under AppSupportDir()/MobileHub) + WATCHTOWER_RELAY_ORIGIN
+  type Options struct{ Dir, RelayOrigin, RecordingsDir string /* <Dir>/recordings in phase 1 */; DB *db.DB; CycleTick <-chan struct{}; Clock func() time.Time; Register func(*actions.Dispatcher); Sources func(*state.Store) []slices.Source }
+  func FromEnv(cfg *config.Config, db *db.DB) (Options, bool, error) // WATCHTOWER_HUB_DIR (absolute; refused under AppSupportDir()/MobileHub) + WATCHTOWER_RELAY_ORIGIN + WATCHTOWER_HUB_TEST_WORKSPACE == cfg.ActiveWorkspace (else ErrNotTestWorkspace, hub off)
   func Run(ctx context.Context, o Options) error // lock → state → identity → keyring → transport → link/processor/publisher; returns on ctx cancel, releases the lock
+  // Lock: AcquireLock retried every 1 s for up to 30 s, then once per daemon cycle (Options.CycleTick <-chan struct{}); meanwhile status is state "starting", reason "locked" (a CLI write holds the lock for milliseconds).
   type Status struct{ State, Reason, HubID, RelayDeviceID, Transport, Impl, Dir string; Phones int }
-  func ReadStatus(dir string) (Status, error) // read-only; reasons: "disabled", "policy_off", "locked", "sidecar_unreadable", "not_admitted", "relay_unreachable"
+  func ReadStatus(dir string) (Status, error) // read-only; reasons: "disabled", "policy_off", "locked" (with state "starting" while retrying), "not_test_workspace", "sidecar_unreadable", "not_admitted", "relay_unreachable"
   // Control socket <dir>/hub.sock (0600, peer UID checked), served while Run holds the lock: one JSON request per line, JSON answers/events per line.
   type ControlRequest struct{ Op string /* unlink|allow|name|enable|disable|pair|confirm */; Device, Grant, Name string; On, Confirm bool }
   func Dial(dir string) (*ControlClient, error)
@@ -563,7 +566,7 @@ Failure modes no existing test covers; each test lands in the named task.
   `hub_meta.enabled` = `1` is the on switch (Desktop's `mobileSyncEnabled` moves here in phase 3); MDM `off` stops the hub and deletes what it published from the data zone but leaves `enabled` (POLICY-03); `workbench_only` restricts the sources 1b registers. The runtime writes `hub_impl = go` on first start.
 - **Depends on:** Task 8, Task 10, Task 12, Task 13
 
-- [ ] **Step 1: Failing tests:** `TestSecondHubRefusedWhileLocked` (two `Run` on one dir: the second returns `state.ErrLocked`, status `locked`), `TestDevFlagRefusesSwiftHubDir` (dir = `<AppSupportDir>/MobileHub` or below → error, nothing created there), `TestHubOffWithoutRelayOrigin` — Review Focus 4; `TestPolicy03_OffStopsHubKeepsSetting` and `TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` (Go twins of `MobileHubPolicyTests.testOffStopsHubKeepsSetting` / `testLooseningDoesNotStartHubWhenSettingOff`, same meaning), `TestSidecarUnreadableKeepsHubOffAndSaysSo`, `TestRunReleasesLockOnCancel`, `TestControlSocketIsPrivateAndChecksPeer` (0600; a request from another UID is closed — simulated through the peer-credential seam), `TestEndToEndOverMemfake` (`hubtest.Phone` links, sends probe a1..a2, gets `applied` echoes and a `device_grant` with `ordered_actions:1`).
+- [ ] **Step 1: Failing tests:** `TestSecondHubRefusedWhileLocked` (two `Run` on one dir: the second never opens the sidecar for writing and reports `starting`/`locked` while the first runs), `TestHubStartWaitsForACLIHoldingTheLock` (a CLI-style holder keeps the lock 2.5 s: status `starting: locked`, then the hub starts within the next 1 s retry; past 30 s it retries on `CycleTick`), `TestHubRefusesWithoutMatchingTestWorkspace` (variable unset or naming another workspace → hub off, reason `not_test_workspace`, nothing created in the dir), `TestDevFlagRefusesSwiftHubDir` (dir = `<AppSupportDir>/MobileHub` or below → error, nothing created there), `TestHubOffWithoutRelayOrigin` — Review Focus 4; `TestPolicy03_OffStopsHubKeepsSetting` and `TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` (Go twins of `MobileHubPolicyTests.testOffStopsHubKeepsSetting` / `testLooseningDoesNotStartHubWhenSettingOff`, same meaning), `TestSidecarUnreadableKeepsHubOffAndSaysSo`, `TestRunReleasesLockOnCancel`, `TestControlSocketIsPrivateAndChecksPeer` (0600; a request from another UID is closed — simulated through the peer-credential seam), `TestEndToEndOverMemfake` (`hubtest.Phone` links, sends probe a1..a2, gets `applied` echoes and a `device_grant` with `ordered_actions:1`).
 - [ ] **Step 2:** `go test ./internal/hub` → FAIL.
 - [ ] **Step 3: Implement**; in `runSyncDaemon` add only the start call and the log line `hub: started (dir set)` / `hub: off (<reason>)`.
 - [ ] **Step 4:** `go test ./internal/hub` and `go test ./cmd -run 'TestSyncDaemon'` → PASS; `make lint-diff`.
@@ -585,10 +588,10 @@ Failure modes no existing test covers; each test lands in the named task.
   - `hub pair --json --stream` → JSON lines `{"event":"qr","url","expires_at"}`, `{"event":"waiting"}`, `{"event":"sas","device_id","name","code"}`, reads `{"confirm":true|false}` from stdin, then `{"event":"linked","device_id"}` or `{"event":"refused","reason"}` (reasons = `LinkRefusal` raw values). The terminal QR and `[y/N]` prompt are phase 2.
   - `hub name <name> [--json]` → `{"name"}` (≤ 60 characters, `hub_meta.display_name`)
   - `hub enable|disable [--json]` → `{"enabled"}`
-  Every command refuses under an agent marker for owner verbs (`unlink`, `allow`, `pair`, `enable`) as the other owner-only CLIs do; all need `WATCHTOWER_HUB_DIR` in phase 1.
+  Every write is an owner verb refused under an agent marker, as the other owner-only CLIs do: `unlink`, `allow`, `pair`, `enable`, `disable`, `name` (the only writes allowed under a marker are Plan 1b's `hub desktop heartbeat` and `hub recording claim|finish`, which Desktop calls); all need `WATCHTOWER_HUB_DIR` in phase 1.
 - **Depends on:** Task 11, Task 14
 
-- [ ] **Step 1: Failing tests:** `TestHubStatusJSONKeys`, `TestHubPhonesJSONKeys`, `TestHubAllowJSONKeys`, `TestHubPairStreamEvents` (scripted stdin, memfake phone: `qr` → `waiting` → `sas` → confirm → `linked`; and the refusal path), `TestHubOwnerVerbsRefusedUnderAgent`, `TestHubCLIWriteGoesThroughRunningHub` (with a running `hub.Run`, `hub allow` lands over the socket and the CLI never opens the sidecar for writing), `TestHubEnableWritesDirectlyWhenNoHubRuns`, `TestHubPairWithoutRunningHubFails`.
+- [ ] **Step 1: Failing tests:** `TestHubStatusJSONKeys`, `TestHubPhonesJSONKeys`, `TestHubAllowJSONKeys`, `TestHubPairStreamEvents` (scripted stdin, memfake phone: `qr` → `waiting` → `sas` → confirm → `linked`; and the refusal path), `TestHubOwnerVerbsRefusedUnderAgent` (each of the six verbs, one table), `TestHubCLIWriteGoesThroughRunningHub` (with a running `hub.Run`, `hub allow` lands over the socket and the CLI never opens the sidecar for writing), `TestHubEnableWritesDirectlyWhenNoHubRuns`, `TestHubPairWithoutRunningHubFails`.
 - [ ] **Step 2:** `go test ./cmd -run 'TestHub'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make lint-diff`.
