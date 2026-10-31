@@ -169,4 +169,51 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(model(snapshot, at: now.addingTimeInterval(12)).chip.tone, .green)
         XCTAssertEqual(model(snapshot, at: now.addingTimeInterval(2_160)).chip.text, "Acme Mac · asleep · last seen 36 min ago")
     }
+
+    // MARK: - The outbox (relay client Phase 1, mockup 5a)
+
+    func testWaitingToSendShowsOnlyWhenAFlushStopped() throws {
+        let snapshot = try demoSnapshot(now: now)
+        let quiet = NowModel(
+            snapshot: snapshot, linked: true, now: now, outbox: OutboxBacklog(queued: 3, undelivered: 0, lastFlushStopped: false))
+        XCTAssertNil(quiet.outbox, "a queue the flush is still working through is not shown")
+        let stopped = NowModel(
+            snapshot: snapshot, linked: true, now: now, outbox: OutboxBacklog(queued: 3, undelivered: 0, lastFlushStopped: true))
+        XCTAssertEqual(stopped.outbox?.waitingTitle, "Waiting to send")
+        XCTAssertEqual(stopped.outbox?.waitingCount, 3)
+        XCTAssertNil(stopped.outbox?.notDeliveredText)
+        let empty = NowModel(
+            snapshot: snapshot, linked: true, now: now, outbox: OutboxBacklog(queued: 0, undelivered: 0, lastFlushStopped: true))
+        XCTAssertNil(empty.outbox, "nothing queued, nothing shown")
+        XCTAssertNil(NowModel(snapshot: snapshot, linked: true, now: now).outbox, "a hub on today's path shows neither")
+    }
+
+    func testWaitingToSendListsTheQueuedActionsOldestFirst() throws {
+        let snapshot = try demoSnapshot(now: now)
+        func queued(_ id: String, seq: UInt64, minutesAgo: Double) -> OutboxItem {
+            OutboxItem(
+                id: id, kind: .sessionStop, entityRecordName: "terminal_session-10", params: [:],
+                createdAt: now.addingTimeInterval(-minutesAgo * 60), seq: seq, delivery: .queued, reason: nil)
+        }
+        let rows = try XCTUnwrap(NowOutboxRows(
+            backlog: OutboxBacklog(queued: 4, undelivered: 0, lastFlushStopped: true),
+            items: [queued("b", seq: 2, minutesAgo: 90), queued("a", seq: 1, minutesAgo: 120), queued("c", seq: 3, minutesAgo: 60),
+                    queued("d", seq: 4, minutesAgo: 30)],
+            snapshot: snapshot, now: now, calendar: .current))
+        XCTAssertEqual(rows.queued.map(\.id), ["a", "b", "c"], "the first \(NowOutboxRows.queuedLimit)")
+        XCTAssertEqual(rows.queued.first?.summary, "Stop “Session report”")
+        XCTAssertEqual(rows.queued.first?.time, "Today 10:00")
+        XCTAssertEqual(rows.moreText, "1 more")
+    }
+
+    func testNotDeliveredRowShowsTheCount() throws {
+        let model = NowModel(
+            snapshot: try demoSnapshot(now: now), linked: true, now: now,
+            outbox: OutboxBacklog(queued: 2, undelivered: 2, lastFlushStopped: false))
+        let outbox = try XCTUnwrap(model.outbox)
+        XCTAssertEqual(outbox.notDeliveredText, "Not delivered · 2")
+        XCTAssertNil(outbox.waitingCount, "the flush has not stopped")
+        XCTAssertTrue(model.toneUses.contains { $0.element == "not delivered row" && $0.tone == .red && $0.role == .status })
+        XCTAssertFalse(model.toneUses.contains { $0.element.hasPrefix("not delivered") && $0.tone == .orange })
+    }
 }

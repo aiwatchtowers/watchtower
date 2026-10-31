@@ -43,6 +43,17 @@ final class OrangeToneTests: XCTestCase {
             )).toneUses
         }
 
+        uses += NowModel(
+            snapshot: snapshot, linked: true, now: now, outbox: OutboxBacklog(queued: 3, undelivered: 2, lastFlushStopped: true)
+        ).toneUses
+        let undelivered = OutboxItem(
+            id: "a", kind: .sessionStop, entityRecordName: "terminal_session-10", params: [:], createdAt: now, seq: 1,
+            delivery: .undelivered, reason: .noAnswer)
+        uses += NotDeliveredModel(
+            items: [undelivered], snapshot: snapshot, macName: "Acme Mac", now: now, calendar: .current,
+            retrying: ["a"], errors: ["a": NotDeliveredModel.lockedRetryError]
+        ).toneUses
+
         let orange = uses.filter { $0.tone == .orange }
         XCTAssertFalse(orange.isEmpty, "the demo must draw orange somewhere, or this test proves nothing")
         for use in orange {
