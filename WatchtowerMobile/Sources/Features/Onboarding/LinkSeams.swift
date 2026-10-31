@@ -1,19 +1,22 @@
 import Foundation
 import WatchtowerSync
 
-/// The phone's iCloud identity and the zone shares the link flow accepts
-/// (spec §2.3 steps 2–3). `CloudKitLinkContainer` is the live one.
-protocol LinkContainer: Sendable {
-    func accountStatus() async -> CloudAvailability
+/// The phone's account identity and the access a hub's route needs before
+/// it can be read (spec §2.3 steps 2–3). `CloudKitLinkAccess` is the live one.
+protocol LinkAccess: Sendable {
+    func availability() async -> CloudAvailability
     /// `CKContainer.userRecordID().recordName`.
-    func userRecordName() async throws -> String
-    /// Fetches every URL's share metadata, then accepts them all; throws if
-    /// any metadata fetch or accept fails, or if the shares are not exactly
-    /// `hubID`'s two zone-wide shares owned by `ownerName` (nothing accepted).
-    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws
-    /// Leaves the Mac's shares: deletes the accepted zone-wide share records
-    /// of `hubID`'s two zones from this phone's shared database.
-    func leaveShares(ownerName: String, hubID: String) async throws
+    func identity() async throws -> String
+    /// CloudKit shared route: fetches both share URLs' metadata, then accepts
+    /// them; throws if any fetch or accept fails, or if the shares are not
+    /// exactly `hubID`'s two zone-wide shares owned by the route's owner
+    /// (nothing accepted). Private route: nothing. Hosted relay:
+    /// `UnsupportedRouteError`.
+    func join(_ invitation: LinkInvitation, route: HubRoute, hubID: String) async throws
+    /// CloudKit shared route: deletes the accepted zone-wide share records of
+    /// `hubID`'s two zones from this phone's shared database. Private route:
+    /// nothing. Hosted relay: `UnsupportedRouteError`.
+    func leave(route: HubRoute, hubID: String) async throws
 }
 
 /// The link flow's clock: the grant wait and the expiry check run on it.

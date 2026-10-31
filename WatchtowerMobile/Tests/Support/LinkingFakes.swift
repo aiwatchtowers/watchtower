@@ -70,16 +70,16 @@ final class LinkEventLog {
 
 /// The phone's iCloud identity and share accept, scripted.
 @MainActor
-final class FakeLinkContainer: LinkContainer {
+final class FakeLinkAccess: LinkAccess {
     var status: CloudAvailability = .available
     var userRecordNameValue = "_owner-acme"
     var acceptError: (any Error)?
     var leaveError: (any Error)?
     private(set) var accepted: [[URL]] = []
     private(set) var left: [String] = []
-    /// The hub of each `leaveShares`, in call order.
+    /// The hub of each `leave`, in call order.
     private(set) var leftHubIDs: [String] = []
-    /// Runs inside `leaveShares`, before it returns: what arrives while the
+    /// Runs inside `leave`, before it returns: what arrives while the
     /// Mac's zones go away.
     var onLeave: (@MainActor () async -> Void)?
     let log: LinkEventLog
@@ -88,17 +88,19 @@ final class FakeLinkContainer: LinkContainer {
         self.log = log
     }
 
-    func accountStatus() async -> CloudAvailability { status }
+    func availability() async -> CloudAvailability { status }
 
-    func userRecordName() async throws -> String { userRecordNameValue }
+    func identity() async throws -> String { userRecordNameValue }
 
-    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws {
+    func join(_ invitation: LinkInvitation, route: HubRoute, hubID: String) async throws {
+        let urls = [invitation.dataShare, invitation.relayShare].compactMap { $0.flatMap(URL.init(string:)) }
         log.append("accept \(urls.count)")
         if let acceptError { throw acceptError }
         accepted.append(urls)
     }
 
-    func leaveShares(ownerName: String, hubID: String) async throws {
+    func leave(route: HubRoute, hubID: String) async throws {
+        guard case let .cloudKit(.shared(ownerName)) = route else { return }
         log.append("leave \(ownerName)")
         if let leaveError { throw leaveError }
         left.append(ownerName)
