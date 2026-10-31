@@ -348,30 +348,44 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// runHubPair is `hub pair --json --stream`: one connection to the running
-// hub for the whole pairing, so the confirm is checked against the code this
-// stream showed. The terminal QR and its [y/N] prompt are phase 2.
+// hubPairDial opens the pairing stream: one connection to the running hub
+// for the whole pairing, so the confirm is checked against the code this
+// stream showed.
+func hubPairDial() (*hub.ControlClient, error) {
+	dir, err := hubDir()
+	if err != nil {
+		return nil, err
+	}
+	c, err := hub.Dial(dir)
+	if err != nil {
+		return nil, errors.New("the hub is not running")
+	}
+	if err := c.Send(hub.ControlRequest{Op: hub.OpPair}); err != nil {
+		_ = c.Close()
+		return nil, errors.New("the hub is not running")
+	}
+	return c, nil
+}
+
+// runHubPair is `hub pair --json --stream` for scripts and the Desktop, or,
+// with neither flag, the terminal flow (runHubPairTTY).
 func runHubPair(cmd *cobra.Command, _ []string) error {
 	if err := refuseUnderAgent(hubPairVerb); err != nil {
 		return err
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	stream, _ := cmd.Flags().GetBool("stream")
-	if !asJSON || !stream {
-		return errors.New("only `hub pair --json --stream` is available in this phase")
+	if !asJSON && !stream {
+		return runHubPairTTY(cmd)
 	}
-	dir, err := hubDir()
+	if !asJSON || !stream {
+		return usageError("hub pair takes --json and --stream together")
+	}
+	c, err := hubPairDial()
 	if err != nil {
 		return err
 	}
-	c, err := hub.Dial(dir)
-	if err != nil {
-		return errors.New("the hub is not running")
-	}
 	defer func() { _ = c.Close() }()
-	if err := c.Send(hub.ControlRequest{Op: hub.OpPair}); err != nil {
-		return errors.New("the hub is not running")
-	}
 	in := bufio.NewScanner(cmd.InOrStdin())
 	var device string // the phone whose code was shown, once a sas came
 	for {

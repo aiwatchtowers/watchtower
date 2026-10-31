@@ -403,7 +403,7 @@ func TestHubPairWithoutRunningHubFails(t *testing.T) {
 	_, err := runHub(t, "pair", "--json", "--stream")
 	assert.ErrorContains(t, err, "the hub is not running")
 	_, err = runHub(t, "pair")
-	assert.Error(t, err, "the terminal flow is phase 2")
+	assert.Error(t, err, "not a terminal")
 }
 
 func TestHubCLIWriteGoesThroughRunningHub(t *testing.T) {
