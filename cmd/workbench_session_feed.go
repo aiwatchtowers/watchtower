@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentkind"
-	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/sessionfeed"
 )
@@ -158,7 +157,7 @@ func requireAgentSession(sess *db.TerminalSession) error {
 func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *sessionfeed.Cursor, lookup sessionfeed.AskLookup, sub string) (sessionFeedJSON, error) {
 	out := sessionFeedJSON{SessionID: id, Entries: []sessionFeedEntryJSON{}, Subagents: []sessionFeedEntryJSON{}, UnknownRecords: map[string]int{}}
 	if sub != "" {
-		res, path, err := sessionFeedSubagent(convs, sub)
+		res, path, err := sessionfeed.FindSubagent(convs, sub)
 		if err != nil {
 			return out, err
 		}
@@ -212,79 +211,13 @@ func sessionFeedConversations(ctx context.Context, database *db.DB, sess *db.Ter
 		sessionfeed.Dirs{ClaudeProjects: filepath.Join(agentsClaudeDir(), "projects"), CodexHome: terminalCodexHome()})
 }
 
-// sessionFeedAskLookup resolves asks of the session's own workbench only.
-// Reading never marks an ask delivered.
+// sessionFeedAskLookup resolves asks of the session's own workbench only
+// (sessionfeed.AskLookupFor). Reading never marks an ask delivered.
 func sessionFeedAskLookup(database *db.DB, workbench sql.NullInt64) sessionfeed.AskLookup {
 	if !workbench.Valid {
 		return nil
 	}
-	return func(id int64) (string, string, bool) {
-		a, err := database.GetOwnerAsk(workbench.Int64, id)
-		if err != nil {
-			return "", "", false
-		}
-		if a.Status != "answered" && a.Status != "delivered" {
-			return a.Title, "", true
-		}
-		text, _, err := asks.RenderStored(a.Kind, a.Payload, a.Answer)
-		if err != nil {
-			return a.Title, "", true
-		}
-		return a.Title, text, true
-	}
-}
-
-const sessionFeedMaxSubagentDepth = 8
-
-// sessionFeedSubagent finds the subagent started by tool call toolUseID in
-// any conversation of the tab (or nested in another subagent) and returns
-// its feed, nested markers resolved, with the path of its transcript file. A one-off drill-in: it parses every
-// subagent on the way, correctness over speed.
-func sessionFeedSubagent(convs []sessionfeed.Conversation, toolUseID string) (*sessionfeed.Result, string, error) {
-	for _, c := range convs {
-		feed, err := sessionfeed.Build([]sessionfeed.Conversation{c}, nil, nil)
-		if err != nil {
-			return nil, "", err
-		}
-		dir := strings.TrimSuffix(c.Path, ".jsonl")
-		res, path, err := findSubagent(dir, feed.Entries, toolUseID, 0)
-		if err != nil {
-			return nil, "", err
-		}
-		if res != nil {
-			return res, path, nil
-		}
-	}
-	return nil, "", fmt.Errorf("subagent %s not found", toolUseID)
-}
-
-func findSubagent(sessionDir string, entries []sessionfeed.Entry, toolUseID string, depth int) (*sessionfeed.Result, string, error) {
-	for _, e := range entries {
-		ref := e.Subagent
-		if e.Kind != sessionfeed.KindSubagent || ref == nil || ref.AgentID == "" {
-			continue
-		}
-		match := ref.ToolUseID == toolUseID
-		if !match && depth >= sessionFeedMaxSubagentDepth {
-			continue
-		}
-		path := filepath.Join(sessionDir, "subagents", "agent-"+ref.AgentID+".jsonl")
-		res, err := sessionfeed.ParseSubagent(path, ref.ParentReport)
-		if err != nil {
-			if match {
-				return nil, "", err
-			}
-			continue // an unreadable subagent file hides only its own nesting
-		}
-		sessionfeed.ResolveSubagents(sessionDir, res.Entries)
-		if match {
-			return res, path, nil
-		}
-		if found, foundPath, err := findSubagent(sessionDir, res.Entries, toolUseID, depth+1); err != nil || found != nil {
-			return found, foundPath, err
-		}
-	}
-	return nil, "", nil
+	return sessionfeed.AskLookupFor(database, workbench.Int64)
 }
 
 func printSessionFeed(w io.Writer, entries []sessionFeedEntryJSON) {

@@ -141,6 +141,7 @@ type rawMilestone struct {
 // windowed is one session of the report and timeline window.
 type windowed struct {
 	id           int64
+	workbenchID  int64
 	createdAt    *time.Time
 	lastActiveAt time.Time
 	state        sessionState
@@ -197,13 +198,19 @@ func (s *TimelineSource) Items(ctx context.Context) ([]hubslices.Item, error) {
 	return items, nil
 }
 
-// window is SessionReportSlice.window: the terminal_session window's
+// window is sessionWindow over this source's database and sessions.
+func (s *TimelineSource) window(ctx context.Context, now time.Time, withRows bool) ([]windowed, error) {
+	return sessionWindow(ctx, s.d, s.o.Sessions, now, withRows)
+}
+
+// sessionWindow is SessionReportSlice.window, the window of both
+// session_report and session_timeline: the terminal_session window's
 // sessions that are live or were active in the last 7 days, with their row
 // milestones when withRows.
-func (s *TimelineSource) window(ctx context.Context, now time.Time, withRows bool) ([]windowed, error) {
+func sessionWindow(ctx context.Context, d *db.DB, sessions *TerminalSessionSource, now time.Time, withRows bool) ([]windowed, error) {
 	var window []windowed
-	err := readTx(ctx, s.d, func(tx *sql.Tx) error {
-		published, err := s.o.Sessions.published(ctx, tx)
+	err := readTx(ctx, d, func(tx *sql.Tx) error {
+		published, err := sessions.published(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -216,7 +223,7 @@ func (s *TimelineSource) window(ctx context.Context, now time.Time, withRows boo
 			if !p.state.live && last.Before(cutoff) {
 				continue
 			}
-			w := windowed{id: p.id, lastActiveAt: last, state: p.state}
+			w := windowed{id: p.id, workbenchID: p.workbenchID, lastActiveAt: last, state: p.state}
 			if t := parseDate(p.createdAt); t != nil {
 				w.createdAt = &t.Time
 			}

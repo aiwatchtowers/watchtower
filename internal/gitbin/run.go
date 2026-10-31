@@ -222,11 +222,24 @@ func ExecEnv(ctx context.Context, dir string, extraEnv []string, stdin []byte, n
 	return run(ctx, dir, extraEnv, stdin, false, name, args...)
 }
 
-// run is ExecEnv; group puts the process in its own process group, killed
-// whole when ctx ends.
+// groupKey marks a context under which every process runs in its own
+// process group (WithProcessGroup).
+type groupKey struct{}
+
+// WithProcessGroup is ctx under which every process this package starts runs
+// in its own process group: when ctx ends the whole group is killed — the
+// children git starts included — and then waited for (WaitDelay). A
+// long-lived caller with its own deadline per call (the Go hub's git
+// refresher) uses it so a timed-out read leaves nothing behind.
+func WithProcessGroup(ctx context.Context) context.Context {
+	return context.WithValue(ctx, groupKey{}, true)
+}
+
+// run is ExecEnv; group (or a WithProcessGroup ctx) puts the process in its
+// own process group, killed whole when ctx ends.
 func run(ctx context.Context, dir string, extraEnv []string, stdin []byte, group bool, name string, args ...string) (stdout, stderr []byte, err error) {
 	c := exec.CommandContext(ctx, name, args...)
-	if group {
+	if group || ctx.Value(groupKey{}) != nil {
 		c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
 	}
