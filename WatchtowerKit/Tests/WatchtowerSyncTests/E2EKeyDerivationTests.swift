@@ -8,6 +8,7 @@ struct KDFVectors: Codable, Equatable {
     var relayKeys: [String: String]
     var recordNames: [String: String]
     var sas: String
+    var linkCodeTag: String
 
     init(keys k: E2EFixtureKeys) throws {
         deviceID = k.deviceID.uuidString
@@ -29,6 +30,7 @@ struct KDFVectors: Codable, Equatable {
             "relay/action/\(actionID)": KeyDerivation.recordName(metaKey: meta, zone: .relay, kind: "action", id: actionID)
         ]
         sas = k.sas()
+        linkCodeTag = KeyDerivation.linkCodeTag(linkNonce: k.linkNonce)
     }
 }
 
@@ -98,6 +100,16 @@ final class E2EKeyDerivationTests: XCTestCase {
         let k = try E2EFixtureKeys()
         XCTAssertEqual(KeyDerivation.deviceID(signingPublicKey: k.devSig.publicKey), k.deviceID)
         XCTAssertNotEqual(KeyDerivation.deviceID(signingPublicKey: k.hubSig.publicKey), k.deviceID)
+    }
+
+    /// The frozen `linkCodeTag` of the fixture link nonce (0xA0...0xBF).
+    func testLinkCodeTagVector() throws {
+        let k = try E2EFixtureKeys()
+        try E2EFixtures.check(try KDFVectors(keys: k), file: "kdf")
+        let url = E2EFixtures.directory.appendingPathComponent("kdf.json")
+        let frozen = try JSONDecoder().decode(KDFVectors.self, from: Data(contentsOf: url))
+        XCTAssertEqual(frozen.linkCodeTag, KeyDerivation.linkCodeTag(linkNonce: k.linkNonce))
+        XCTAssertEqual(WireBytes.fromBase64URL(frozen.linkCodeTag)?.count, 16)
     }
 
     func testDerivationsMatchTheFrozenVectors() throws {

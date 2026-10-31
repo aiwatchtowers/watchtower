@@ -38,7 +38,7 @@ PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS)"
 
-.PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check
+.PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -146,6 +146,14 @@ test-swift:
 # no ML stack.
 kit-test:
 	cd WatchtowerKit && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# The Kit E2E vectors the Go hub's golden tests read (WatchtowerKit/Tests/Fixtures/e2e/*.json).
+# The first run regenerates them (each vector test fails with "regenerated" on
+# purpose, so its exit code is ignored); the second run verifies the new files.
+E2E_VECTOR_TESTS := E2EPaddingVectorTests|HPKEEnvelopeVectorTests|EnvelopeTests|E2EKeyDerivationTests
+e2e-vectors:  ## regenerate the Kit E2E vectors (expected XCTFail "regenerated"), then verify
+	-WT_E2E_REGENERATE=1 $(MAKE) kit-test FILTER='$(E2E_VECTOR_TESTS)'
+	$(MAKE) kit-test FILTER='$(E2E_VECTOR_TESTS)'
 
 # iPhone app (WatchtowerMobile, an xcodegen project). Simulator device for
 # the mobile targets; override: make mobile-run SIM="iPhone 17e".
