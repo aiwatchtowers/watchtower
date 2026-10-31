@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/features"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -38,9 +39,15 @@ directory and database are ensured; --name is ignored. The global
 recorded in config.yaml only when the file names no workspace yet. A Slack login made
 afterwards writes into this same workspace instead of creating a second one.
 
+With --headless (a Linux box or a CLI-only Mac running only the workbenches
+and the phone hub), a config file this run creates turns off every feature
+that has a switch, so only the core features run; an existing config keeps
+its feature settings.
+
 Flags:
-  --name  workspace name to create when none exists (default "default")
-  --json  print {"workspace", "db_path", "created"} as one JSON object`,
+  --name      workspace name to create when none exists (default "default")
+  --headless  turn off every non-core feature in a newly created config
+  --json      print {"workspace", "db_path", "created"} as one JSON object`,
 	Args: cobra.NoArgs,
 	RunE: runWorkspaceInit,
 }
@@ -50,6 +57,7 @@ func init() {
 	workspaceCmd.AddCommand(workspaceInitCmd)
 	workspaceInitCmd.Flags().String("name", defaultWorkspaceName, "workspace name to create when none exists")
 	workspaceInitCmd.Flags().Bool("json", false, "print the result as one JSON object")
+	workspaceInitCmd.Flags().Bool("headless", false, "turn off every non-core feature in a newly created config")
 }
 
 // workspaceInitResult is `workspace init --json`'s output.
@@ -57,13 +65,17 @@ type workspaceInitResult struct {
 	Workspace string `json:"workspace"`
 	DBPath    string `json:"db_path"`
 	Created   bool   `json:"created"`
+	// KeptFeatures: --headless met a config that already existed, so no
+	// feature switch was touched. Not part of the pinned --json keys.
+	KeptFeatures bool `json:"-"`
 }
 
 func runWorkspaceInit(cmd *cobra.Command, _ []string) error {
 	name, _ := cmd.Flags().GetString("name")
 	asJSON, _ := cmd.Flags().GetBool("json")
+	headless, _ := cmd.Flags().GetBool("headless")
 
-	res, err := initWorkspace(flagConfig, flagWorkspace, name)
+	res, err := initWorkspace(flagConfig, flagWorkspace, name, headless)
 	if err != nil {
 		return err
 	}
@@ -77,6 +89,9 @@ func runWorkspaceInit(cmd *cobra.Command, _ []string) error {
 	} else {
 		fmt.Fprintf(out, "Workspace %q already set up: %s\n", res.Workspace, res.DBPath)
 	}
+	if res.KeptFeatures {
+		fmt.Fprintln(out, "Kept your feature settings.")
+	}
 	return nil
 }
 
@@ -85,8 +100,16 @@ func runWorkspaceInit(cmd *cobra.Command, _ []string) error {
 // name. It creates the directory and the migrated database and records
 // active_workspace in the config file when the file names no workspace yet. Several workspaces holding a database with none
 // selected is refused, like every other command (a guess could split data
-// across two databases).
-func initWorkspace(configPath, override, name string) (*workspaceInitResult, error) {
+// across two databases). With headless, a config file this call creates gets
+// the headless profile (every non-core feature off); an existing file keeps
+// its feature settings.
+func initWorkspace(configPath, override, name string, headless bool) (*workspaceInitResult, error) {
+	_, cfgStatErr := os.Stat(configPath)
+	if cfgStatErr != nil && !errors.Is(cfgStatErr, fs.ErrNotExist) {
+		return nil, fmt.Errorf("checking config: %w", cfgStatErr)
+	}
+	newConfig := cfgStatErr != nil
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
@@ -124,11 +147,39 @@ func initWorkspace(configPath, override, name string) (*workspaceInitResult, err
 		return nil, fmt.Errorf("closing database: %w", err)
 	}
 
-	if err := writeWorkspaceScaffold(configPath, cfg.ActiveWorkspace, false); err != nil {
+	// The headless profile goes into the same write as the scaffold, so a
+	// created config never exists without it.
+	var profile map[string]any
+	if headless && newConfig {
+		profile = headlessProfile()
+	}
+	if err := writeWorkspaceScaffold(configPath, cfg.ActiveWorkspace, false, profile); err != nil {
 		return nil, err
 	}
-	return &workspaceInitResult{Workspace: cfg.ActiveWorkspace, DBPath: dbPath, Created: created}, nil
+	return &workspaceInitResult{
+		Workspace:    cfg.ActiveWorkspace,
+		DBPath:       dbPath,
+		Created:      created,
+		KeptFeatures: headless && !newConfig,
+	}, nil
 }
+
+// headlessProfile turns off every registry feature that has a switch and is
+// not core.
+func headlessProfile() map[string]any {
+	out := map[string]any{}
+	for _, f := range features.All() {
+		if f.Core || f.ConfigKey == "" {
+			continue
+		}
+		out[f.ConfigKey] = false
+	}
+	return out
+}
+
+// writeConfigFile is writeConfigAtomic behind a seam, so a test can count the
+// scaffold's writes.
+var writeConfigFile = writeConfigAtomic
 
 // writeWorkspaceScaffold records workspace as active_workspace in the config
 // file and fills in the sync/digest defaults a fresh install needs, leaving
@@ -138,7 +189,10 @@ func initWorkspace(configPath, override, name string) (*workspaceInitResult, err
 // force=true always writes, which the Slack login path needs to switch to a
 // team-named workspace. A missing file starts empty; any other read failure
 // is returned, so an unreadable file is never overwritten with defaults.
-func writeWorkspaceScaffold(configPath, workspace string, force bool) error {
+//
+// profile's keys are set whatever the file holds: workspace init --headless
+// passes the headless profile for a config it creates, nil elsewhere.
+func writeWorkspaceScaffold(configPath, workspace string, force bool, profile map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
@@ -156,6 +210,9 @@ func writeWorkspaceScaffold(configPath, workspace string, force bool) error {
 		return nil
 	}
 	v.Set("active_workspace", workspace)
+	for key, val := range profile {
+		v.Set(key, val)
+	}
 
 	defaults := map[string]any{
 		"ai.context_budget":         config.DefaultAIContextBudget,
@@ -173,5 +230,5 @@ func writeWorkspaceScaffold(configPath, workspace string, force bool) error {
 		}
 	}
 
-	return writeConfigAtomic(v, configPath)
+	return writeConfigFile(v, configPath)
 }

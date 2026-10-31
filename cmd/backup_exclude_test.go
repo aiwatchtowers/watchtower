@@ -76,7 +76,7 @@ func TestBackup01_WorkspaceInitApplies(t *testing.T) {
 		return inner(dirs)
 	}
 
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	require.Len(t, *calls, 1)
 	assert.Equal(t, []string{root, as}, (*calls)[0])
@@ -97,7 +97,7 @@ func TestBackup01_DBMigrateApplies(t *testing.T) {
 func TestBackup01_DaemonStartApplies(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 	root, as := backupRootAndAS(t)
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	cfg, err := config.Load(configPath)
 	require.NoError(t, err)
