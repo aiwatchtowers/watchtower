@@ -19,9 +19,7 @@ func TestRelayTransport_WatchPairZoneSubscribes(t *testing.T) {
 	if err := h.tr.WatchPairZone(t.Context(), "slot1"); err != nil {
 		t.Fatal(err)
 	}
-	h.relay.mu.Lock()
-	subscribed := slices.Clone(h.relay.subscribed)
-	h.relay.mu.Unlock()
+	subscribed := h.relay.Subscribed()
 	if !slices.Contains(subscribed, "pair/slot1") {
 		t.Fatalf("pair zone not subscribed: %v", subscribed)
 	}
@@ -45,9 +43,7 @@ func TestRelayTransport_WatchZoneSubscribesAMailbox(t *testing.T) {
 	if err := h.tr.WatchZone(t.Context(), box); err != nil {
 		t.Fatal(err)
 	}
-	h.relay.mu.Lock()
-	subscribed := slices.Clone(h.relay.subscribed)
-	h.relay.mu.Unlock()
+	subscribed := h.relay.Subscribed()
 	if !slices.Contains(subscribed, box) {
 		t.Fatalf("mailbox not subscribed: %v", subscribed)
 	}
@@ -64,31 +60,31 @@ func TestRelayTransport_WatchZoneSubscribesAMailbox(t *testing.T) {
 // read from a fresh account state.
 func TestRelayTransport_SetLinkedReadersKeepsSlottedPhones(t *testing.T) {
 	h := newHarness(t)
-	h.relay.account = &relayv1.AccountState{Phones: []*relayv1.SlotHolder{
+	h.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{
 		{PhoneDeviceId: "p1", Paying: true}, {PhoneDeviceId: "p3", Paying: false},
-	}}
+	}})
 	if err := h.tr.SetLinkedReaders(t.Context(), []string{"p3", "p2", "p1"}); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(h.relay.requests("get_account_state")); n != 1 {
+	if n := len(h.relay.Requests("get_account_state")); n != 1 {
 		t.Fatalf("account state reads: %d", n)
 	}
-	if got := h.relay.readers; len(got) != 1 || !slices.Equal(got[0], []string{"p1", "p3"}) {
+	if got := h.relay.Readers(); len(got) != 1 || !slices.Equal(got[0], []string{"p1", "p3"}) {
 		t.Fatalf("readers: %v", got)
 	}
 	// No linked phone: the set is cleared.
 	if err := h.tr.SetLinkedReaders(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.relay.readers; len(got) != 2 || len(got[1]) != 0 {
+	if got := h.relay.Readers(); len(got) != 2 || len(got[1]) != 0 {
 		t.Fatalf("readers after clearing: %v", got)
 	}
 	// A failed account read sends nothing.
-	h.relay.failNext("get_account_state", relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
+	h.relay.FailNext("get_account_state", relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
 	if err := h.tr.SetLinkedReaders(t.Context(), []string{"p1"}); err == nil {
 		t.Fatal("no error when the account state could not be read")
 	}
-	if got := h.relay.readers; len(got) != 2 {
+	if got := h.relay.Readers(); len(got) != 2 {
 		t.Fatalf("readers sent without an account state: %v", got)
 	}
 }

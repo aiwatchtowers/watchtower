@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/relaytest"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -71,7 +72,7 @@ func (k *testKeys) KeyboxRecipient(secure.ID) (*ecdh.PublicKey, error) {
 
 // harness is one hub's transport over a fake relay.
 type harness struct {
-	relay    *fakeRelay
+	relay    *relaytest.Server
 	store    *state.Store
 	sealer   *secure.Sealer
 	key      ed25519.PrivateKey
@@ -91,7 +92,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	h := &harness{relay: newFakeRelay(t), store: st, sealer: secure.NewSealer(newTestKeys(t)), key: key, assetDir: t.TempDir()}
+	h := &harness{relay: relaytest.Start(t), store: st, sealer: secure.NewSealer(newTestKeys(t)), key: key, assetDir: t.TempDir()}
 	h.tr = h.newTransport(t)
 	h.data = transport.DataZone(h.tr.c.DeviceID())
 	return h
@@ -166,12 +167,12 @@ func waitZoneEvent(t *testing.T, tr *Transport, zone string) {
 
 func TestRelayTransport_RefusesUnsealedRecord(t *testing.T) {
 	h := newHarness(t)
-	before := h.relay.hits.Load()
+	before := h.relay.Hits()
 	items := []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}, {Record: secure.Record{}}}
 	if _, err := h.tr.Save(t.Context(), items); !errors.Is(err, secure.ErrUnsealed) {
 		t.Fatalf("save: %v, want ErrUnsealed", err)
 	}
-	if n := h.relay.hits.Load() - before; n != 0 {
+	if n := h.relay.Hits() - before; n != 0 {
 		t.Fatalf("%d requests reached the relay", n)
 	}
 }
@@ -184,7 +185,7 @@ func TestRelayTransport_SaveConditionalOutcomes(t *testing.T) {
 	if err != nil || len(out) != 2 || !out[0].Saved || !out[1].Saved || out[0].RecordSeq != 1 || out[1].RecordSeq != 2 {
 		t.Fatalf("first save: %+v, %v", out, err)
 	}
-	saved := h.relay.requests("save")[0].GetSave().GetItems()
+	saved := h.relay.Requests("save")[0].GetSave().GetItems()
 	if saved[0].GetMustNotExist() != true || saved[1].GetExpect() != nil || saved[0].GetRecord().GetClientModifiedAtMs() != 1_700_000_000_000 {
 		t.Fatalf("wire items: %v", saved)
 	}
@@ -222,9 +223,9 @@ func TestRelayTransport_ZoneTokensPersist(t *testing.T) {
 	h := newHarness(t)
 	ctx := t.Context()
 	for i := range 3 {
-		h.relay.put(h.data, fmt.Sprintf("n%d", i), []byte{byte(i)})
+		h.relay.Put(h.data, fmt.Sprintf("n%d", i), []byte{byte(i)})
 	}
-	h.relay.pageLimit = 2
+	h.relay.SetPageLimit(2)
 	var got []string
 	apply := func(b transport.Batch) error {
 		for _, s := range b.Changed {
@@ -242,7 +243,7 @@ func TestRelayTransport_ZoneTokensPersist(t *testing.T) {
 		t.Fatalf("stored token %d, %v", tok, err)
 	}
 	// A failed apply keeps the token where it was.
-	h.relay.put(h.data, "n3", []byte{3})
+	h.relay.Put(h.data, "n3", []byte{3})
 	if err := h.tr.Pull(ctx, h.data, func(transport.Batch) error { return errors.New("boom") }); err == nil {
 		t.Fatal("apply error swallowed")
 	}
@@ -254,7 +255,7 @@ func TestRelayTransport_ZoneTokensPersist(t *testing.T) {
 	if err := h.newTransport(t).Pull(ctx, h.data, apply); err != nil {
 		t.Fatal(err)
 	}
-	reqs := h.relay.requests("changes")
+	reqs := h.relay.Requests("changes")
 	if last := reqs[len(reqs)-1].GetChanges(); last.GetSinceSeq() != 3 || !slices.Equal(got, []string{"n3"}) {
 		t.Fatalf("resumed from %d, got %v", last.GetSinceSeq(), got)
 	}
@@ -266,7 +267,7 @@ func TestRelayTransport_ZoneTokensPersist(t *testing.T) {
 func TestRelayTransport_TokenExpiredResetsZoneToZero(t *testing.T) {
 	h := newHarness(t)
 	ctx := t.Context()
-	h.relay.put(h.data, "n0", []byte{0})
+	h.relay.Put(h.data, "n0", []byte{0})
 	if err := h.store.SetZoneToken(h.data, 7); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +293,7 @@ func TestRelayTransport_TokenExpiredResetsZoneToZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sinces []uint64
-	for _, r := range h.relay.requests("changes") {
+	for _, r := range h.relay.Requests("changes") {
 		sinces = append(sinces, r.GetChanges().GetSinceSeq())
 	}
 	if !slices.Equal(resets, []bool{true}) {
@@ -309,7 +310,7 @@ func TestRelayTransport_TokenExpiredResetsZoneToZero(t *testing.T) {
 func TestRelayTransport_SaveErrorRereadsZone(t *testing.T) {
 	h := newHarness(t)
 	box := transport.MailboxZone(h.tr.c.DeviceID(), "phone1")
-	h.relay.failNext("save", relayv1.ErrorCode_ERROR_CODE_HUB_QUOTA_EXCEEDED)
+	h.relay.FailNext("save", relayv1.ErrorCode_ERROR_CODE_HUB_QUOTA_EXCEEDED)
 	r2, err := h.sealer.Data(box, "target-2", "", []byte(`{}`), nil, "")
 	if err != nil {
 		t.Fatal(err)
@@ -383,11 +384,11 @@ func TestRelayTransport_ErrorMapping(t *testing.T) {
 	}
 	// Through the transport: an op error comes back mapped.
 	h := newHarness(t)
-	h.relay.failNext("changes", relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
+	h.relay.FailNext("changes", relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
 	if _, err := h.tr.Changes(t.Context(), h.data, 0); !errors.Is(err, transport.ErrForbidden) {
 		t.Errorf("changes forbidden: %v", err)
 	}
-	h.relay.failNext("set_hub_readers", relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE)
+	h.relay.FailNext("set_hub_readers", relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE)
 	if err := h.tr.SetHubReaders(t.Context(), []string{"p"}); !errors.Is(err, transport.ErrEntitlementInactive) {
 		t.Errorf("set_hub_readers: %v", err)
 	}
@@ -395,7 +396,7 @@ func TestRelayTransport_ErrorMapping(t *testing.T) {
 
 func TestRelayTransport_ConnectRegistersSubscribesAndPulls(t *testing.T) {
 	h := newHarness(t)
-	h.relay.account = &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "phone1", Paying: true}}}
+	h.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "phone1", Paying: true}}})
 	box := transport.MailboxZone(h.tr.c.DeviceID(), "phone1")
 	if h.tr.Admitted() {
 		t.Fatal("admitted before any account state")
@@ -403,7 +404,7 @@ func TestRelayTransport_ConnectRegistersSubscribesAndPulls(t *testing.T) {
 	if err := h.tr.Connect(t.Context(), []string{h.data, box}); err != nil {
 		t.Fatal(err)
 	}
-	reg := h.relay.requests("register")
+	reg := h.relay.Requests("register")
 	if len(reg) != 1 || reg[0].GetRegister().GetDeviceKind() != relayv1.DeviceKind_DEVICE_KIND_MAC || reg[0].GetRegister().GetAttestation() != nil {
 		t.Fatalf("register: %v", reg)
 	}
@@ -414,11 +415,11 @@ func TestRelayTransport_ConnectRegistersSubscribesAndPulls(t *testing.T) {
 	if !seen[h.data] || !seen[box] {
 		t.Fatalf("initial pulls: %v", seen)
 	}
-	if !h.tr.Admitted() || len(h.relay.requests("get_account_state")) != 1 {
+	if !h.tr.Admitted() || len(h.relay.Requests("get_account_state")) != 1 {
 		t.Fatal("account state not read at connect")
 	}
-	if !slices.Contains(h.relay.opsSeen(), "ws:subscribe") {
-		t.Fatalf("no subscribe: %v", h.relay.opsSeen())
+	if !slices.Contains(h.relay.Ops(), "ws:subscribe") {
+		t.Fatalf("no subscribe: %v", h.relay.Ops())
 	}
 	if err := h.tr.Connect(t.Context(), nil); err == nil {
 		t.Fatal("a second Connect was accepted")
@@ -432,7 +433,7 @@ func TestRelayTransport_ConnectRefusesOtherHubID(t *testing.T) {
 	if err := tr.Connect(t.Context(), []string{h.data}); err == nil {
 		t.Fatal("connect with a mismatched hub relay id")
 	}
-	if h.relay.hits.Load() != 0 {
+	if h.relay.Hits() != 0 {
 		t.Fatal("requests sent")
 	}
 }
@@ -443,28 +444,28 @@ func TestRelayTransport_ZoneChangedWithoutRecordMeansPull(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitZoneEvent(t, h.tr, h.data) // the initial pull
-	states := len(h.relay.requests("get_account_state"))
+	states := len(h.relay.Requests("get_account_state"))
 	// The client's reconnect marker: a record-less ZoneChanged with seq 0.
-	h.relay.push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{Zone: h.data}}})
+	h.relay.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{Zone: h.data}}})
 	ev := nextEvent(t, h.tr)
 	if ev.Zone != h.data || ev.Control != nil || ev.Err != nil || !ev.Resync {
 		t.Fatalf("event: %+v", ev)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for len(h.relay.requests("get_account_state")) == states {
+	for len(h.relay.Requests("get_account_state")) == states {
 		if time.Now().After(deadline) {
 			t.Fatal("account state not re-read after a record-less ZoneChanged")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	// A ZoneChanged with a record is a pull too (the record is not trusted as the state).
-	h.relay.push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{
+	h.relay.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{
 		Zone: h.data, Seq: 4, Record: &relayv1.Record{Zone: h.data, Name: "n", RecordSeq: 4}}}})
 	if ev := nextEvent(t, h.tr); ev.Zone != h.data || ev.Resync {
 		t.Fatalf("event: %+v", ev)
 	}
 	// Controls come through, mapped.
-	h.relay.push(t, &relayv1.Event{Kind: &relayv1.Event_Control{Control: &relayv1.Control{
+	h.relay.Push(t, &relayv1.Event{Kind: &relayv1.Event_Control{Control: &relayv1.Control{
 		Kind: relayv1.ControlKind_CONTROL_KIND_PAIRING_OPENED, Detail: "slot1"}}})
 	ev = nextEvent(t, h.tr)
 	if ev.Control == nil || ev.Control.Kind != transport.PairingOpened || ev.Control.Detail != "slot1" {
@@ -484,18 +485,18 @@ func TestRelayTransport_UploadThenSaveWithAttachment(t *testing.T) {
 	if err != nil || len(out) != 1 || !out[0].Saved {
 		t.Fatalf("save: %+v, %v", out, err)
 	}
-	ops := h.relay.opsSeen()
+	ops := h.relay.Ops()
 	if i, j := slices.Index(ops, "create_upload"), slices.Index(ops, "save"); i < 0 || j < i {
 		t.Fatalf("op order %v", ops)
 	}
-	up := h.relay.uploads[0]
+	up := h.relay.Uploads()[0]
 	if up.GetZone() != h.data || up.GetSize() != uint64(len(want)) {
 		t.Fatalf("create_upload: %v", up)
 	}
-	if !bytes.Equal(h.relay.blobs["att-1"], want) || h.relay.blobHeaders[0].Get("X-Test-Upload") != "yes" {
+	if blob, _ := h.relay.Blob("att-1"); !bytes.Equal(blob, want) || h.relay.BlobHeaders()[0].Get("X-Test-Upload") != "yes" {
 		t.Fatal("the PUT did not carry the sealed file with the upload's headers")
 	}
-	saved := h.relay.requests("save")[0].GetSave().GetItems()[0].GetRecord()
+	saved := h.relay.Requests("save")[0].GetSave().GetItems()[0].GetRecord()
 	if saved.GetAttachmentId() != "att-1" || bytes.Contains(saved.GetEnvelope(), want[:64]) {
 		t.Fatalf("save record: attachment %q", saved.GetAttachmentId())
 	}
@@ -536,9 +537,7 @@ func TestRelayTransport_DownloadCappedAndRedirectsChecked(t *testing.T) {
 	}
 	h.tr.o.MaxAttachmentBytes = info.Size() - 1
 	for _, hide := range []bool{false, true} { // with and without Content-Length
-		h.relay.mu.Lock()
-		h.relay.hideLength = hide
-		h.relay.mu.Unlock()
+		h.relay.SetHideLength(hide)
 		dir := t.TempDir()
 		dst := filepath.Join(dir, "out")
 		if err := h.tr.Download(ctx, h.data, "att-1", dst); !errors.Is(err, transport.ErrRecordTooLarge) {
@@ -559,9 +558,7 @@ func TestRelayTransport_DownloadCappedAndRedirectsChecked(t *testing.T) {
 		http.Redirect(w, r, plain, http.StatusFound)
 	}))
 	t.Cleanup(tlsSrv.Close)
-	h.relay.mu.Lock()
-	h.relay.downloadBase = tlsSrv.URL
-	h.relay.mu.Unlock()
+	h.relay.SetDownloadBase(tlsSrv.URL)
 	tr := New(NewClient(h.relay.URL, h.key), Options{Origin: h.relay.URL, Store: h.store, HTTP: tlsSrv.Client()})
 	t.Cleanup(func() { _ = tr.Close() })
 	dst := filepath.Join(t.TempDir(), "out")
@@ -580,9 +577,7 @@ func TestRelayTransport_DownloadCappedAndRedirectsChecked(t *testing.T) {
 		http.Redirect(w, r, loop.URL+"/again", http.StatusFound)
 	}))
 	t.Cleanup(loop.Close)
-	h.relay.mu.Lock()
-	h.relay.downloadBase = loop.URL
-	h.relay.mu.Unlock()
+	h.relay.SetDownloadBase(loop.URL)
 	if err := h.tr.Download(ctx, h.data, "att-1", dst); err == nil || !strings.Contains(err.Error(), "too many redirects") {
 		t.Fatalf("redirect loop: %v", err)
 	}
@@ -603,7 +598,7 @@ func TestRelayTransport_MalformedSaveAnswerIsAnError(t *testing.T) {
 	}
 	// Through the transport: the reviewer's answer (2 items, conflict index 5, 1 saved).
 	h := newHarness(t)
-	h.relay.saveOverride = &relayv1.SaveResult{Conflicts: []*relayv1.SaveConflict{{Index: 5}}, Saved: []*relayv1.Record{{RecordSeq: 1}}}
+	h.relay.OverrideNextSave(&relayv1.SaveResult{Conflicts: []*relayv1.SaveConflict{{Index: 5}}, Saved: []*relayv1.Record{{RecordSeq: 1}}})
 	items := []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}, {Record: h.seal(t, "target-2", `{}`)}}
 	if _, err := h.tr.Save(t.Context(), items); err == nil {
 		t.Fatal("a malformed save answer was accepted")
@@ -630,14 +625,14 @@ func TestRelayTransport_AssetOutsideSealerDirRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := h.relay.hits.Load()
+	before := h.relay.Hits()
 	for name, rec := range map[string]secure.Record{"outside": outside, "symlink": linked} {
 		items := []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}, {Record: rec}}
 		if _, err := h.tr.Save(t.Context(), items); !errors.Is(err, secure.ErrUnsealed) {
 			t.Errorf("%s: %v, want ErrUnsealed", name, err)
 		}
 	}
-	if h.relay.hits.Load() != before {
+	if h.relay.Hits() != before {
 		t.Fatal("requests sent for a refused asset")
 	}
 	// No asset dir configured: every asset is refused.
@@ -659,7 +654,7 @@ func TestRelayTransport_PairZoneAttachmentRefused(t *testing.T) {
 	if out[0].Saved || !errors.Is(out[0].Refused, transport.ErrForbidden) || !out[1].Saved || out[1].RecordSeq != 1 {
 		t.Fatalf("outcomes: %+v", out)
 	}
-	if len(h.relay.uploads) != 0 || len(h.relay.requests("save")[0].GetSave().GetItems()) != 1 {
+	if len(h.relay.Uploads()) != 0 || len(h.relay.Requests("save")[0].GetSave().GetItems()) != 1 {
 		t.Fatal("the pairing-zone asset went out")
 	}
 }
@@ -669,10 +664,10 @@ func TestRelayTransport_SetHubReadersAndAccountState(t *testing.T) {
 	if err := h.tr.SetHubReaders(t.Context(), []string{"p1", "p2"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.relay.readers; len(got) != 1 || !slices.Equal(got[0], []string{"p1", "p2"}) {
+	if got := h.relay.Readers(); len(got) != 1 || !slices.Equal(got[0], []string{"p1", "p2"}) {
 		t.Fatalf("readers: %v", got)
 	}
-	h.relay.account = &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "p1", Paying: false}}}
+	h.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "p1", Paying: false}}})
 	st, err := h.tr.AccountState(t.Context())
 	if err != nil || len(st.GetPhones()) != 1 {
 		t.Fatalf("account state: %v, %v", st, err)
