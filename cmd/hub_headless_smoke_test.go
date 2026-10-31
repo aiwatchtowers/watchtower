@@ -39,10 +39,14 @@ import (
 	"watchtower/internal/sessionhost/sessionhosttest"
 )
 
-// smokeStep bounds one wait of the smoke test. The longest is the admission
-// after promote_pairing: the relay sends the hub no event for it, so the hub
-// sees it at its next link upkeep (linkEvery, one minute).
-const smokeStep = 2 * time.Minute
+// smokeStep bounds one wait of the smoke test; admitWait bounds the admission
+// after promote_pairing, which the relay announces to the hub by no event:
+// the hub's short link retry after a pairing (every 2 s) must see it, not
+// the minute backstop.
+const (
+	smokeStep = 2 * time.Minute
+	admitWait = 30 * time.Second
+)
 
 // smoke is one run: the binary, its environment and the fake relay.
 type smoke struct {
@@ -179,14 +183,23 @@ func TestHeadlessSmoke_PairStartTypeEcho(t *testing.T) {
 		}
 	}
 
-	// The phone stops paying: a headless hub pauses (needs_relay); the test
-	// mode has no relay-only rules and reads as not admitted.
-	reason := hub.ReasonNeedsRelay
-	if !live {
+	// The phone stops paying. The two modes answer differently by design:
+	//  - live (linux): a headless hub runs the relay-only rules (spec §7.3), so
+	//    with no paying phone it pauses — state paused, reason needs_relay;
+	//  - test mode (darwin): the phase-1 hub has no relay-only rules (they are
+	//    live-mode only), so it keeps running and reports the relay's answer:
+	//    the hub is in no paying phone's slot, reason not_admitted.
+	var offStatus func(hub.Status) bool
+	var reason string
+	if live {
+		reason = hub.ReasonNeedsRelay
+		offStatus = func(st hub.Status) bool { return st.State == hub.StatePaused && st.Reason == reason }
+	} else {
 		reason = hub.ReasonNotAdmitted
+		offStatus = func(st hub.Status) bool { return st.State == hub.StateRunning && st.Reason == reason }
 	}
 	s.srv.SetPaying(phone.RelayDeviceID(), false)
-	s.waitStatus("reason "+reason, func(st hub.Status) bool { return st.Reason == reason })
+	s.waitStatus("reason "+reason, offStatus)
 }
 
 // pair links a fresh phone through `hub pair --json --stream`, the way a
@@ -294,7 +307,7 @@ func (s *smoke) pair() *hubtest.Phone {
 	if err := store.PromotePairing(t.Context(), slot); err != nil {
 		t.Fatal(err)
 	}
-	st := s.waitStatus("the hub running with one phone", func(st hub.Status) bool {
+	st := s.waitStatusWithin(admitWait, "the hub running with one phone", func(st hub.Status) bool {
 		return st.State == hub.StateRunning && st.Reason == "" && st.Phones == 1
 	})
 	data := transport.DataZone(st.RelayDeviceID)
@@ -371,8 +384,14 @@ func (s *smoke) startDaemon() {
 // waitStatus polls `hub status --json` until ok accepts it.
 func (s *smoke) waitStatus(what string, ok func(hub.Status) bool) hub.Status {
 	s.t.Helper()
+	return s.waitStatusWithin(smokeStep, what, ok)
+}
+
+// waitStatusWithin is waitStatus bounded by d.
+func (s *smoke) waitStatusWithin(d time.Duration, what string, ok func(hub.Status) bool) hub.Status {
+	s.t.Helper()
 	var st hub.Status
-	s.eventually(what, func() bool {
+	s.within(d, what, func() bool {
 		var cur hub.Status
 		cmd := exec.Command(s.bin, "hub", "status", "--json")
 		cmd.Env = s.env
@@ -388,7 +407,13 @@ func (s *smoke) waitStatus(what string, ok func(hub.Status) bool) hub.Status {
 
 func (s *smoke) eventually(what string, cond func() bool) {
 	s.t.Helper()
-	deadline := time.Now().Add(smokeStep)
+	s.within(smokeStep, what, cond)
+}
+
+// within polls cond until it holds, failing the test after d.
+func (s *smoke) within(d time.Duration, what string, cond func() bool) {
+	s.t.Helper()
+	deadline := time.Now().Add(d)
 	for !cond() {
 		if time.Now().After(deadline) {
 			s.t.Fatalf("timed out waiting for %s", what)
