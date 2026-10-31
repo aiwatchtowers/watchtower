@@ -183,6 +183,9 @@ type Options struct {
 	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
 	// payTimer is the PayingWatch's poll timer (nil = a real one).
 	payTimer func(time.Duration) (<-chan time.Time, func())
+	// soonTimer is the link check's short retry after a link change (nil =
+	// a real one).
+	soonTimer func(time.Duration) (<-chan time.Time, func())
 }
 
 func (o Options) withDefaults() Options {
@@ -215,6 +218,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.linkEvery <= 0 {
 		o.linkEvery = linkEvery
+	}
+	if o.soonTimer == nil {
+		o.soonTimer = realTimer
 	}
 	if o.writeTimeout <= 0 {
 		o.writeTimeout = controlWriteTimeout

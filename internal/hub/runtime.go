@@ -37,6 +37,14 @@ const (
 	// linkEvery is the backstop for the readers, the pair keyboxes and the
 	// mailbox subscriptions: no event fires after promote_pairing.
 	linkEvery = time.Minute
+	// linkSoonEvery and linkSoonFor: after a link change (a phone linked or
+	// unlinked) the link check runs every linkSoonEvery until every linked
+	// phone holds the hub in a slot, for at most linkSoonFor, so a phone
+	// promoted after its link (promote_pairing sends the hub no event) is a
+	// reader, and in live mode ends the pause, within seconds instead of at
+	// the next linkEvery.
+	linkSoonEvery = 2 * time.Second
+	linkSoonFor   = 2 * time.Minute
 	// houseEvery is the housekeeping backstop between daemon cycles: link
 	// sweep, epoch rotation, the daily hygiene (which gates itself).
 	houseEvery = 10 * time.Minute
@@ -109,6 +117,8 @@ type hubRuntime struct {
 	admitted bool
 
 	passKick, linkKick, houseKick chan struct{}
+	// soonKick opens the link check's short-retry window (linkSoonFor).
+	soonKick chan struct{}
 
 	mu          sync.Mutex
 	unreachable bool
@@ -192,6 +202,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	h := &hubRuntime{
 		sup: s, st: st, mode: mode, name: name, id: id, watched: map[string]bool{}, subRetry: map[string]*subRetry{},
 		passKick: make(chan struct{}, 1), linkKick: make(chan struct{}, 1), houseKick: make(chan struct{}, 1),
+		soonKick: make(chan struct{}, 1),
 	}
 	ok := false
 	defer func() {
@@ -248,6 +259,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		Publish: func(kinds ...string) {
 			pub.PublishSoon(toKinds(kinds)...)
 			h.kick(h.linkKick)
+			h.kick(h.soonKick)
 			if h.paying != nil {
 				// A link changed: a newly promoted phone may pay.
 				h.paying.Recheck()
@@ -530,6 +542,11 @@ func (h *hubRuntime) work(ctx context.Context) {
 	defer links.Stop()
 	house := time.NewTicker(houseEvery)
 	defer house.Stop()
+	// The short-retry window of the link check (worker only).
+	var soon <-chan time.Time
+	stopSoon := func() {}
+	defer func() { stopSoon() }()
+	var soonUntil time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -544,6 +561,18 @@ func (h *hubRuntime) work(ctx context.Context) {
 			h.linkUpkeep(ctx)
 		case <-links.C:
 			h.linkUpkeep(ctx)
+		case <-h.soonKick:
+			soonUntil = h.sup.o.Clock().Add(linkSoonFor)
+			if soon == nil {
+				soon, stopSoon = h.sup.o.soonTimer(linkSoonEvery)
+			}
+		case <-soon:
+			stopSoon()
+			soon, stopSoon = nil, func() {}
+			h.linkUpkeep(ctx)
+			if !h.linksSettled(ctx) && h.sup.o.Clock().Before(soonUntil) {
+				soon, stopSoon = h.sup.o.soonTimer(linkSoonEvery)
+			}
 		case <-h.houseKick:
 			h.housekeeping(ctx)
 		case <-house.C:
@@ -657,6 +686,41 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	}
 	h.pass(ctx)
 	h.sup.poke()
+}
+
+// linksSettled reports whether every linked phone with a relay id holds the
+// hub in a slot (a fresh account state read): the end of the link check's
+// short-retry window. Settled, the PayingWatch re-reads at once, so a
+// headless hub paused for want of a paying phone resumes. A transport with no
+// account state has nothing to wait for.
+func (h *hubRuntime) linksSettled(ctx context.Context) bool {
+	as, ok := h.tr.(accountStater)
+	if !ok {
+		return true
+	}
+	devices, err := h.st.Devices()
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	st, err := as.AccountState(ctx)
+	cancel()
+	if err != nil {
+		return false
+	}
+	slotted := map[string]bool{}
+	for _, p := range st.GetPhones() {
+		slotted[p.GetPhoneDeviceId()] = true
+	}
+	for _, d := range devices {
+		if d.RelayDeviceID != "" && !slotted[d.RelayDeviceID] {
+			return false
+		}
+	}
+	if h.paying != nil {
+		h.paying.Recheck()
+	}
+	return true
 }
 
 // subRetry is one refused zone subscription: how often it failed in a row

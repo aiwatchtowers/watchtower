@@ -769,3 +769,37 @@ func TestPublisherSaveInactiveRereadsAtOnce(t *testing.T) {
 		t.Fatal("paused without a re-read")
 	}
 }
+
+// A phone promoted after its link (promote_pairing sends the hub no event):
+// the link check's short retry after the link sees it within one
+// linkSoonEvery, so the paused headless hub resumes without waiting for
+// linkEvery or the 5-minute poll, and the retry stops once every linked
+// phone is slotted.
+func TestPhonePromotedAfterItsLinkIsSeenWithinSeconds(t *testing.T) {
+	soon := newPayClock()
+	r := startRelayOnly(t, true, nil, false, func(o *Options) {
+		o.soonTimer = soon.Timer
+		o.linkEvery = time.Hour
+	})
+	r.waitState(StatePaused, ReasonNeedsRelay)
+	phone, _ := r.pair(nil)
+	r.settled()
+	if s, err := ReadStatus(r.dir); err != nil || s.State != StatePaused {
+		t.Fatalf("status before promote_pairing: %+v, %v", s, err)
+	}
+	r.fake.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{
+		{PhoneDeviceId: phone.RelayDeviceID(), Paying: true},
+	}})
+	eventually(t, 10*time.Second, "the hub resumed by the short link retry", func() bool {
+		soon.Advance(linkSoonEvery)
+		s, err := ReadStatus(r.dir)
+		return err == nil && s.State == StateRunning && s.Reason == ""
+	})
+	r.settled()
+	soon.mu.Lock()
+	pending := len(soon.timers)
+	soon.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("%d link retries still armed after every phone is slotted", pending)
+	}
+}
