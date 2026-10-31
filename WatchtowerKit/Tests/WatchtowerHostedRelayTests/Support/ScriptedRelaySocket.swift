@@ -306,11 +306,14 @@ func spin(file: StaticString = #filePath, line: UInt = #line, _ condition: () ->
 
 /// Reads a connection's events, each read capped like `spin`: a read that gets no
 /// event within 5 s fails the test and returns nil (the read is cancelled).
+/// `pump`, when given, runs on every wait step (a scenario moves its manual clock there).
 final class EventProbe: @unchecked Sendable {
     private var iterator: AsyncStream<HostedRelayClientEvent>.Iterator
+    private let pump: (@Sendable () -> Void)?
 
-    init(_ connection: HostedRelayConnection) {
+    init(_ connection: HostedRelayConnection, pump: (@Sendable () -> Void)? = nil) {
         iterator = connection.events.makeAsyncIterator()
+        self.pump = pump
     }
 
     func next(file: StaticString = #filePath, line: UInt = #line) async -> HostedRelayClientEvent? {
@@ -319,7 +322,12 @@ final class EventProbe: @unchecked Sendable {
             let event = await self.advance()
             result.withLock { $0 = .some(event) }
         }
-        guard await spin(file: file, line: line, { result.withLock { $0 != nil } }) else {
+        let ready = await spin(file: file, line: line) {
+            if result.withLock({ $0 != nil }) { return true }
+            pump?()
+            return false
+        }
+        guard ready else {
             read.cancel()
             await read.value
             return nil
