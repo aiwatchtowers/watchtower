@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The client's HTTPS seam: `URLSessionRelayHTTP` in production, a scripted
 /// stub in tests. Headers carry the session token, so a conformer never logs them.
@@ -12,7 +13,9 @@ public protocol RelayHTTP: Sendable {
     func get(_ url: URL, to file: URL, maxBytes: Int64, headers: [String: String]) async throws -> Int
 }
 
-/// `RelayHTTP` over `URLSession`, with the Go client's 30 s request timeout.
+/// `RelayHTTP` over `URLSession`, with the Go client's 30 s request timeout. Every request
+/// carries a task delegate that decides its redirects: `POST /v1/op` follows none (the 3xx is
+/// the answer, and fails), a blob GET or PUT follows the Go `checkRedirect` rule.
 public struct URLSessionRelayHTTP: RelayHTTP {
     /// The Go client's `http.Client{Timeout: 30 * time.Second}`.
     public static let requestTimeout: TimeInterval = 30
@@ -33,13 +36,13 @@ public struct URLSessionRelayHTTP: RelayHTTP {
     public func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
         var request = Self.request(url, method: "POST", headers: headers)
         request.httpBody = body
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request, delegate: NoRedirects())
         return (try Self.status(response), data)
     }
 
     public func put(_ url: URL, file: URL, headers: [String: String]) async throws -> Int {
         let request = Self.request(url, method: "PUT", headers: headers)
-        let (_, response) = try await session.upload(for: request, fromFile: file)
+        let (_, response) = try await session.upload(for: request, fromFile: file, delegate: BlobRedirects())
         return try Self.status(response)
     }
 
@@ -47,7 +50,7 @@ public struct URLSessionRelayHTTP: RelayHTTP {
     /// (removing what it wrote) as soon as it passes `maxBytes`.
     public func get(_ url: URL, to file: URL, maxBytes: Int64, headers: [String: String]) async throws -> Int {
         let request = Self.request(url, method: "GET", headers: headers)
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await session.bytes(for: request, delegate: BlobRedirects())
         let status = try Self.status(response)
         guard (200..<300).contains(status) else { return status }
         if response.expectedContentLength > maxBytes { throw URLError(.dataLengthExceedsMaximum) }
@@ -90,5 +93,59 @@ public struct URLSessionRelayHTTP: RelayHTTP {
     private static func status(_ response: URLResponse) throws -> Int {
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         return http.statusCode
+    }
+}
+
+/// `POST /v1/op`: no redirect is followed, so a 3xx comes back as the final status.
+private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
+/// A blob GET or PUT, the Go `checkRedirect` (`internal/hub/transport/relay/attachments.go`):
+/// at most `maxRequests` requests in all (two redirects), and every hop HTTPS or plain HTTP to
+/// loopback. A redirect past the rule is not followed: its 3xx comes back and fails.
+private final class BlobRedirects: NSObject, URLSessionTaskDelegate {
+    /// Go's `maxRedirects`, which counts the requests already made (`len(via)`).
+    static let maxRequests = 3
+
+    private let requests = OSAllocatedUnfairLock(initialState: 1)
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        let made = requests.withLock { made in
+            defer { made += 1 }
+            return made
+        }
+        guard made < Self.maxRequests, let url = request.url, Self.allowedHop(url) else { return completionHandler(nil) }
+        completionHandler(request)
+    }
+
+    /// HTTPS, or plain HTTP to this machine only (the local stand).
+    static func allowedHop(_ url: URL) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "https": return true
+        case "http": return RelayLoopback.contains(url)
+        default: return false
+        }
+    }
+}
+
+/// The hosts plain HTTP may reach for blobs and their redirects: this machine.
+enum RelayLoopback {
+    static func contains(_ url: URL) -> Bool {
+        ["127.0.0.1", "localhost", "::1"].contains(url.host?.lowercased() ?? "")
     }
 }

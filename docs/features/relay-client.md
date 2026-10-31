@@ -59,7 +59,7 @@ These are the Go client's rules with the Go client's numbers. Twins of Go tests 
 - **HTTPS ops.** `register` and `login` carry an attestation. Concurrent callers share one login in flight. An `UNAVAILABLE` answer is retried from 0.5 s, doubling to 8 s, within 30 s in total, and then fails. `UNAUTHENTICATED` triggers one relogin.
 - **Session token.** The token lives only in the actor's memory. Tokens, keys, envelopes and attestation bytes are never logged, never written to disk, and never put in an error. Logs (`os.Logger`, category `HostedRelay`) carry op names, codes, zone kinds and counts only.
 - **Reconnect backoff.** `defaultBackoff` starts at 500 ms and doubles to 60 s, with jitter in the upper half of the window. A connection that reaches `HelloOk` resets it.
-- **Opening a socket.** The client dials `GET /v1/ws` with the bearer token, then sends `Hello{1, token}` and waits for `HelloOk`. It then subscribes each zone one by one: a refused zone is dropped and reported, and a subscribe with no answer within 10 s cuts the connection. After every connect the client emits a record-less `zoneChanged` for each subscribed zone.
+- **Opening a socket.** The client dials `GET /v1/ws` with the bearer token, then sends `Hello{1, token}` and waits for `HelloOk`. It then subscribes each zone one by one: a refused zone is dropped and reported. A subscribe with no answer within 10 s, or answered "try again later" (`UNAVAILABLE`, `RATE_LIMITED`, `TRAFFIC_LIMIT_EXCEEDED`), cuts the connection and keeps the zone; such cuts in a row redial on a growing `defaultBackoff`, so no zone goes quiet for good. After every connect the client emits a record-less `zoneChanged` for each subscribed zone.
 - **Keepalive.** The client pings every 30 s. With no pong within 10 s it closes the socket and reconnects.
 
 How the connection reacts to each upgrade answer and close code:
@@ -145,9 +145,15 @@ There is no `MailboxAddressing`, because the phone has exactly one mailbox per h
 
 **`TOKEN_EXPIRED` (R10).** The zone resyncs from 0. The resync's progress — its cursor and the names seen so far — is kept page by page in `relay_resync_seen`, so after a restart an interrupted resync resumes where it stopped. Only after the last page does the transport buffer a deletion for each name in `relay_records` that the resync did not return. A record this device never saw from the server is never deleted by the diff. If the relay refuses a middle page, the resync is marked stalled and the zone is held for `resyncStallHold` (1 h). `start()` ends the hold at once.
 
-**Socket events (R9).** A `zoneChanged`, with or without a record, means "pull this zone". After a connect, the transport reads `get_account_state`; an entitlement that does not pay is reported.
+**Socket events (R9).** A `zoneChanged`, with or without a record, means "pull this zone". After a connect, the transport reads `get_account_state` (an entitlement that does not pay is reported) and flushes the plain queue, so a row saved while the socket could not be dialed goes out then. A push wake (`fetchForPush`) runs its own pull of both zones: it joins a pull in flight, a socket's one-zone pull included, with both zones owed.
 
-**Attachments.** A save uploads its asset first: `create_upload`, then a PUT of the file; the save names the `attachment_id`. A pulled record's attachment is fetched with `get_download` and a GET, capped at `maxAttachmentBytes`, into the stash before its page is buffered. Blob URLs must be HTTPS (plain HTTP only to loopback, for the stand). A redirect or any non-2xx answer fails. Signed URLs are never logged.
+**Attachments.** A save uploads its asset first: `create_upload`, then a PUT of the file; the save names the `attachment_id`. A pulled record's attachment is fetched with `get_download` and a GET, capped at `maxAttachmentBytes`, into the stash before its page is buffered. What is enforced on blob URLs:
+
+- the URL the relay hands out must be HTTPS; plain HTTP is allowed only to loopback, or to the origin's own host when the origin is plain HTTP itself (a stand), and is checked before any request;
+- `URLSessionRelayHTTP` gives every request a task delegate. `POST /v1/op` follows no redirect. A blob GET or PUT follows one only under the Go `checkRedirect` rule: at most three requests in all (two redirects), each hop HTTPS or plain HTTP to loopback;
+- a redirect that is not followed comes back as its 3xx, and any non-2xx answer fails.
+
+Signed URLs are never logged.
 
 **Error mapping (R6 as amended).** `HostedRelayTransport+Errors.swift` holds the whole table, pinned by `testErrorMapping`:
 
@@ -255,4 +261,5 @@ Task 12's run against the stand at `3a99bd7`: 44 passed, 20 skipped, 0 failed.
 - **Close codes (R13).** The WebSocket runs on `URLSessionWebSocketTask`, and close codes are read from `closeCode.rawValue`. The stand confirms that 4000 and 4001 survive. If an OS release breaks this, `URLSessionRelaySocketDialer` moves to Network.framework behind the same `RelaySocketDialer` seam.
 - **The fake follows the README; where the stand disagrees, the stand wins (R20).** Task 12 found no protocol difference in the scenarios that run on both. The only stand-only difference is the register rate limit, which the fake does not model and the script raises. `send_alert` (the stand has no APNs key) and multi-page resyncs past the tombstone floor are not exercised on the stand.
 - **Fake-only proof (R15).** The outage, deploy, crash and 1001/4001 fault scenarios are proven against the fake only. Phase 3's relay CI job, which builds the Kit client against the real server (spec §12 p. 4), will cover them.
+- **A permanently failing attachment stops its zone's pull.** A download that can never succeed (`NOT_FOUND` from `get_download`, a 403/404 from the blob store, or `ATTACHMENT_TOO_LARGE` over `maxAttachmentBytes`) fails its page, so the zone's cursor stays put and every later pull of that zone stops at the same record. The only trace is one log line per attempt (category `HostedRelay`, zone kind only).
 - **Smaller parked items.** A pull after a terminal stop redials the socket each time. A `ZoneChanged` that carries a record still costs one `changes` round trip (R9).

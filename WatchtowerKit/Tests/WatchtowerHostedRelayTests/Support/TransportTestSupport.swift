@@ -54,10 +54,11 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
     }
 
     func release() {
-        state.withLock { state -> CheckedContinuation<Void, Never>? in
+        let held = state.withLock { state -> CheckedContinuation<Void, Never>? in
             defer { state.held = nil }
             return state.held
-        }?.resume()
+        }
+        held?.resume()
     }
 
     var puts: [URL] {

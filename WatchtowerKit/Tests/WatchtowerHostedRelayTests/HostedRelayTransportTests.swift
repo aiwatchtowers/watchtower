@@ -1023,4 +1023,26 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         try await wake.value
         XCTAssertEqual(try buffered(store, .data).changed.map(\.recordName), ["d"], "the data zone is pulled too")
     }
+
+    /// Plain HTTP blobs: on loopback, or on the host of an origin that is itself plain HTTP
+    /// (a stand on the LAN); never under an HTTPS origin elsewhere.
+    func testBlobSchemeFollowsTheOrigin() throws {
+        let secure = try RelayOrigin("https://relay.example.com")
+        let lan = try RelayOrigin("http://stand.example.lan:8787")
+        let cases: [(String, RelayOrigin, Bool)] = [
+            ("https://blobs.example.net/a", secure, true),
+            ("http://relay.example.com/a", secure, false),
+            ("http://127.0.0.1:9000/a", secure, true),
+            ("http://localhost/a", lan, true),
+            ("http://stand.example.lan:8787/v1/blob/a", lan, true),
+            ("http://stand.example.lan:9000/a", lan, true),
+            ("http://other.example.lan:8787/a", lan, false),
+            ("https://other.example.lan/a", lan, true),
+            ("ftp://stand.example.lan/a", lan, false)
+        ]
+        for (string, origin, allowed) in cases {
+            let url = try XCTUnwrap(URL(string: string))
+            XCTAssertEqual(HostedRelayTransport.secureBlobURL(url, origin: origin), allowed, "\(string) under \(origin.string)")
+        }
+    }
 }

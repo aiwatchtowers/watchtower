@@ -17,7 +17,8 @@ public actor HostedRelayClient {
 
     nonisolated public let deviceID: String
 
-    private let origin: RelayOrigin
+    /// Also the transport's blob scheme rule (`HostedRelayTransport+Attachments.swift`).
+    let origin: RelayOrigin
     private let opURL: URL
     /// `GET /v1/ws` on the origin, `wss`/`ws` for `https`/`http`.
     let socketURL: URL

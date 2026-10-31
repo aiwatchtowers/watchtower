@@ -8,9 +8,15 @@ struct AssetMissing: Error {}
 /// Attachments: `create_upload` → PUT of the file → the save names `attachment_id`; a pulled
 /// record's attachment is `get_download` → GET capped at `maxAttachmentBytes` into the stash,
 /// before its page is buffered. Blob URLs are signed: never logged, never in an error.
+///
+/// What is enforced on a blob URL: the URL the relay hands out passes `secureBlobURL` (HTTPS;
+/// plain HTTP only on loopback or on the host of a plain-HTTP origin) before any request; then
+/// `URLSessionRelayHTTP` follows a redirect only under the Go `checkRedirect` rule (at most
+/// three requests in all, each hop HTTPS or plain HTTP to loopback). A redirect it does not
+/// follow comes back as a 3xx, and any non-2xx answer fails.
 extension HostedRelayTransport {
-    /// Uploads `file` for a record of `zone`; returns the attachment id. The upload URL must be
-    /// HTTPS (or loopback), and any non-2xx answer, a redirect included, fails it.
+    /// Uploads `file` for a record of `zone`; returns the attachment id. The upload URL must pass
+    /// `secureBlobURL`, and any non-2xx answer (a redirect not followed included) fails it.
     func upload(_ file: URL, zone: CloudZoneID) async throws -> String {
         let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
         guard let size = (attributes?[.size] as? NSNumber)?.uint64Value else { throw AssetMissing() }
@@ -18,7 +24,7 @@ extension HostedRelayTransport {
         create.zone = zoneName(zone)
         create.size = size
         let upload = try await call(zone) { try await self.client.createUpload(create) }
-        guard let url = URL(string: upload.url), Self.secureBlobURL(url) else {
+        guard let url = URL(string: upload.url), Self.secureBlobURL(url, origin: client.origin) else {
             Self.logger.error("relay upload: the URL leaves HTTPS, \(Self.kind(zone), privacy: .public)")
             throw HostedRelayError.undecodable(status: 200)
         }
@@ -40,14 +46,14 @@ extension HostedRelayTransport {
     }
 
     /// Downloads `record`'s attachment into the store's stash (a temporary file for a store
-    /// without one). A URL that leaves HTTPS, a non-2xx answer (a redirect included) or a body
-    /// past `maxAttachmentBytes` fails the page; nothing is left on disk then.
+    /// without one). A URL `secureBlobURL` refuses, a non-2xx answer (a redirect not followed
+    /// included) or a body past `maxAttachmentBytes` fails the page; nothing is left on disk then.
     func download(_ record: Relay_V1_Record, zone: CloudZoneID) async throws -> URL {
         var request = Relay_V1_GetDownload()
         request.zone = zoneName(zone)
         request.attachmentID = record.attachmentID
         let answer = try await call(zone) { try await self.client.getDownload(request) }
-        guard let url = URL(string: answer.url), Self.secureBlobURL(url) else {
+        guard let url = URL(string: answer.url), Self.secureBlobURL(url, origin: client.origin) else {
             Self.logger.error("relay download: the URL leaves HTTPS, \(Self.kind(zone), privacy: .public)")
             throw HostedRelayError.undecodable(status: 200)
         }
@@ -82,12 +88,18 @@ extension HostedRelayTransport {
         return HostedRelayError.unreachable
     }
 
-    /// HTTPS, or plain HTTP to this machine only (the local stand).
-    static func secureBlobURL(_ url: URL) -> Bool {
+    /// HTTPS; plain HTTP only to this machine, or to the origin's own host when the origin is
+    /// plain HTTP itself (a stand), so a blob never drops below the origin's scheme elsewhere.
+    static func secureBlobURL(_ url: URL, origin: RelayOrigin) -> Bool {
         switch url.scheme?.lowercased() {
-        case "https": return true
-        case "http": return ["127.0.0.1", "localhost", "::1"].contains(url.host?.lowercased() ?? "")
-        default: return false
+        case "https":
+            return true
+        case "http":
+            if RelayLoopback.contains(url) { return true }
+            guard origin.url.scheme?.lowercased() == "http", let host = url.host?.lowercased() else { return false }
+            return host == origin.url.host?.lowercased()
+        default:
+            return false
         }
     }
 }
