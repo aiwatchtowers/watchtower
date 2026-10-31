@@ -71,8 +71,9 @@ type Stored struct {
 }
 
 // Outcome is one item's result, in the order of the items. Saved is true when
-// the write (or delete) took effect, with the record's new RecordSeq (0 for a
-// delete). Saved false with Refused nil is a
+// the write (or delete) took effect, with the record's new RecordSeq (a
+// delete's may be 0: the hosted relay gives a tombstone a real record_seq,
+// other transports may not). Saved false with Refused nil is a
 // failed precondition: Conflict is the current record, or nil when there is
 // none. Refused is a per-item refusal (a quota, a too-large record).
 type Outcome struct {

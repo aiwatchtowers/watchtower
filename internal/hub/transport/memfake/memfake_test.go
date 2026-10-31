@@ -519,6 +519,19 @@ func TestMemfake_AttachmentRoundTrip(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Error("downloaded bytes differ from the sealed file")
 		}
+		atts := f.Attachments()
+		if len(atts) != 1 || !bytes.Equal(atts[b.Changed[0].AttachmentID], want) {
+			t.Errorf("Attachments(): %d entries", len(atts))
+		}
+		atts[b.Changed[0].AttachmentID][0] ^= 0xff
+		if !bytes.Equal(f.Attachments()[b.Changed[0].AttachmentID], want) {
+			t.Error("Attachments() exposes the fake's own bytes")
+		}
+		for _, fr := range f.Frames() {
+			if bytes.Equal(fr, want) {
+				t.Error("an asset landed in Frames()")
+			}
+		}
 		if info, err := os.Stat(out); err != nil || info.Mode().Perm() != 0o600 {
 			t.Errorf("download mode: %v, %v", info, err)
 		}
@@ -535,6 +548,92 @@ func TestMemfake_AttachmentRoundTrip(t *testing.T) {
 			t.Errorf("pair zone attachment: %+v, %v", out2, err)
 		}
 	})
+}
+
+func TestMemfake_ChangesPageByteCap(t *testing.T) {
+	for _, k := range kinds {
+		t.Run(string(k), func(t *testing.T) {
+			f := New(k, clock)
+			big := bytes.Repeat([]byte{'x'}, PageBytes*3/8) // two fit a page, three do not
+			for i := range 5 {
+				if _, err := f.Write(box, fmt.Sprintf("r-%d", i), big, absent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A record larger than the cap still makes a page of one.
+			if _, err := f.Write(box, "huge", bytes.Repeat([]byte{'y'}, PageBytes+1), absent); err != nil {
+				t.Fatal(err)
+			}
+			var sizes []int
+			since := uint64(0)
+			for {
+				b := changes(t, f, box, since)
+				sizes = append(sizes, len(b.Changed))
+				since = b.NewSeq
+				if !b.More {
+					break
+				}
+			}
+			if fmt.Sprint(sizes) != "[2 2 1 1]" {
+				t.Errorf("page sizes %v, want [2 2 1 1]", sizes)
+			}
+		})
+	}
+}
+
+// Like the relay's Go client, the fake never drops an event: beyond the
+// channel's buffer zone events fold per zone and controls are kept.
+func TestMemfake_EventsNeverDropped(t *testing.T) {
+	f := New(transport.KindRelay, clock)
+	for i := range eventBuffer {
+		if _, err := f.Write(fmt.Sprintf("relay/h/p%d", i), "a-1", []byte("x"), absent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 10 {
+		if _, err := f.Write(box, fmt.Sprintf("a-%d", i), []byte("x"), absent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.SlotRemoved, Detail: "phone"}})
+	f.SendEvent(transport.Event{Err: transport.ErrUnavailable})
+	// The first overflow event may already be in the pump's hands when the
+	// next one for its zone arrives, so the 10 box writes fold into one or two.
+	var tail []transport.Event
+	timeout := time.After(5 * time.Second)
+	for n := 0; len(tail) == 0 || tail[len(tail)-1].Err == nil; n++ {
+		select {
+		case e := <-f.Events():
+			if n >= eventBuffer {
+				tail = append(tail, e)
+			}
+		case <-timeout:
+			t.Fatalf("lost events: overflow tail %+v", tail)
+		}
+	}
+	boxes := 0
+	for _, e := range tail[:len(tail)-2] {
+		if e.Zone == box {
+			boxes++
+		}
+	}
+	ctl := tail[len(tail)-2].Control
+	if boxes < 1 || boxes > 2 || boxes != len(tail)-2 || ctl == nil || ctl.Kind != transport.SlotRemoved ||
+		!errors.Is(tail[len(tail)-1].Err, transport.ErrUnavailable) {
+		t.Errorf("overflow events out of order, lost or not folded: %+v", tail)
+	}
+	// Drained: events go straight to the channel again.
+	if _, err := f.Write(box, "b-1", []byte("x"), absent); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case e := <-f.Events():
+		if e.Zone != box {
+			t.Errorf("after drain: %+v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event after drain")
+	}
 }
 
 func TestZoneNames(t *testing.T) {

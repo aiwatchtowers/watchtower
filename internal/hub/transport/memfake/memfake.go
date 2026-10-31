@@ -32,8 +32,14 @@ import (
 // PageLimit is the most changes one Changes call returns (the hub's batch limit).
 const PageLimit = 200
 
-// eventBuffer is the Events channel's capacity; an event beyond it is dropped,
-// like a slow consumer's socket on the relay — consumers keep a backstop pull.
+// PageBytes caps the envelope bytes of one Changes page (the relay's 4 MiB);
+// a page always holds at least one record.
+const PageBytes = 4 << 20
+
+// eventBuffer is the Events channel's capacity. Like the relay's Go client the
+// fake never drops an event: beyond the buffer, events wait in a queue that a
+// pump goroutine delivers in order, a zone event folding into one already
+// waiting for the same zone, controls and errors each kept.
 const eventBuffer = 256
 
 // The op names FailNext takes.
@@ -65,6 +71,8 @@ type Fake struct {
 	attachments map[string][]byte
 	tagCounter  uint64
 	attCounter  uint64
+	pending     []transport.Event // events waiting for room in the channel
+	pumping     bool              // a pump goroutine owns pending
 }
 
 var _ transport.Transport = (*Fake)(nil)
@@ -141,7 +149,20 @@ func (f *Fake) ExpireBefore(zone string, seq uint64) {
 	}
 }
 
-// SendEvent puts e on the Events stream (a server control, a transport error).
+// Attachments is a copy of every uploaded attachment's bytes, keyed by
+// attachment id (canary capture; Frames stays envelope-only).
+func (f *Fake) Attachments() map[string][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string][]byte, len(f.attachments))
+	for id, b := range f.attachments {
+		out[id] = bytes.Clone(b)
+	}
+	return out
+}
+
+// SendEvent puts e on the Events stream (a server control, a transport error);
+// it is never dropped.
 func (f *Fake) SendEvent(e transport.Event) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -179,11 +200,6 @@ func (f *Fake) Save(ctx context.Context, items []transport.SaveItem) ([]transpor
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.gate("save"); err != nil {
-		return nil, err
-	}
 	assets := make([][]byte, len(items))
 	for i, it := range items {
 		if p := it.Record.AssetPath(); p != "" && !isPairZone(it.Record.Zone()) {
@@ -193,6 +209,11 @@ func (f *Fake) Save(ctx context.Context, items []transport.SaveItem) ([]transpor
 			}
 			assets[i] = b
 		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.gate("save"); err != nil {
+		return nil, err
 	}
 	out := make([]transport.Outcome, len(items))
 	for i, it := range items {
@@ -274,9 +295,17 @@ func (f *Fake) Changes(ctx context.Context, zone string, since uint64) (transpor
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].change < recs[j].change })
 	b := transport.Batch{NewSeq: z.counter}
-	if len(recs) > PageLimit {
-		recs = recs[:PageLimit]
-		b.More, b.NewSeq = true, recs[PageLimit-1].change
+	n, size := 0, 0
+	for n < len(recs) && n < PageLimit {
+		size += len(recs[n].stored.Envelope)
+		if n > 0 && size > PageBytes {
+			break
+		}
+		n++
+	}
+	if n < len(recs) {
+		recs = recs[:n]
+		b.More, b.NewSeq = true, recs[n-1].change
 	}
 	for _, r := range recs {
 		if r.deleted {
@@ -360,11 +389,45 @@ func (f *Fake) nextTag() uint64 {
 	}
 }
 
-// emit sends e without blocking; f.mu is held.
+// emit queues e for delivery without blocking; f.mu is held. While nothing
+// waits it goes straight into the channel; otherwise it joins pending (a zone
+// event already waiting for its zone absorbs it) and the pump delivers it.
 func (f *Fake) emit(e transport.Event) {
-	select {
-	case f.events <- e:
-	default:
+	if !f.pumping {
+		select {
+		case f.events <- e:
+			return
+		default:
+		}
+	}
+	if e.Zone != "" && e.Control == nil && e.Err == nil {
+		for _, p := range f.pending {
+			if p.Zone == e.Zone && p.Control == nil && p.Err == nil {
+				return
+			}
+		}
+	}
+	f.pending = append(f.pending, e)
+	if !f.pumping {
+		f.pumping = true
+		go f.pump()
+	}
+}
+
+// pump delivers pending in order, blocking on the channel, and exits once the
+// queue is empty, so a drained fake holds no goroutine.
+func (f *Fake) pump() {
+	for {
+		f.mu.Lock()
+		if len(f.pending) == 0 {
+			f.pumping = false
+			f.mu.Unlock()
+			return
+		}
+		e := f.pending[0]
+		f.pending = f.pending[1:]
+		f.mu.Unlock()
+		f.events <- e
 	}
 }
 
