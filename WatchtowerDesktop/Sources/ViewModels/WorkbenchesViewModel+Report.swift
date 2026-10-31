@@ -61,13 +61,17 @@ extension WorkbenchesViewModel {
     func sessionRowsAppeared(projectID: Int64) async {
         sessionReports?.refresh(workbench: projectID)
         await loadSessions(projectID: projectID)
-        await loadSessionTargetRoots(projectID: projectID)
     }
 
-    /// The board tree behind the row menu's **Session Target ▸**.
-    private func loadSessionTargetRoots(projectID: Int64) async {
-        let roots = try? await dbPool.read { try WorkbenchQueries.board($0, projectID: projectID) }
-        if let roots { sessionTargetRoots[projectID] = roots }
+    /// The board tree behind the row menu's **Session Target ▸**; a failed
+    /// read keeps the last tree.
+    func loadSessionTargetRoots(projectID: Int64) async {
+        do {
+            sessionTargetRoots[projectID] = try await dbPool.read { try WorkbenchQueries.board($0, projectID: projectID) }
+        } catch {
+            NSLog("WorkbenchesViewModel: could not read the board of workbench %lld for the session target menu: %@",
+                  projectID, error.localizedDescription)
+        }
     }
 
     /// **Session Target ▸** (board #1352): binds `session` to `targetID`

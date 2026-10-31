@@ -79,4 +79,31 @@ final class WorkbenchesViewModelSessionTargetTests: XCTestCase {
         await vm.setSessionTarget(session, targetID: 7)
         XCTAssertEqual(vm.sessionTargetError, SessionTargetMenu.failureLine("target 7 is not on this board"))
     }
+
+    func testARefreshFollowsTheBoard() async throws {
+        let vm = makeVM(Runner())
+        let pid = try XCTUnwrap(session.projectID)
+        let ids = try await pool.write { db -> [Int64] in
+            let a = try TestDatabase.insertTarget(db, text: "A")
+            let b = try TestDatabase.insertTarget(db, text: "B")
+            for id in [a, b] {
+                try db.execute(sql: "UPDATE targets SET project_id = ? WHERE id = ?", arguments: [pid, id])
+            }
+            return [a, b]
+        }
+        await vm.loadSessions(projectID: pid)
+        XCTAssertEqual(vm.sessionTargetRoots[pid]?.map(\.target.text).sorted(), ["A", "B"])
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE targets SET status = 'dismissed' WHERE id = ?", arguments: [ids[0]])
+            let c = try TestDatabase.insertTarget(db, text: "C")
+            try db.execute(sql: "UPDATE targets SET project_id = ? WHERE id = ?", arguments: [pid, c])
+        }
+        await vm.loadSessions(projectID: pid)
+        let items = SessionTargetMenu.items(roots: vm.sessionTargetRoots[pid] ?? [], current: nil)
+        let titles = items.compactMap { item -> String? in
+            if case let .target(_, title, _, _) = item { return title }
+            return nil
+        }
+        XCTAssertEqual(titles.sorted(), ["B", "C"])
+    }
 }

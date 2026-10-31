@@ -10,7 +10,7 @@ With several sessions running, the terminals say nothing until you open each one
 
 A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs.
 
-Copying from inside the terminal works as in your own terminal: when Claude Code, vim or tmux copies text, it lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so shown output cannot pull in what you copied. Programs you run can still read it their own way (for example `pbpaste`).
+Copying from inside the terminal works as in your own terminal: when Claude Code, vim or tmux copies text, it lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so a file or tool output cannot pull in what you copied. Programs you run can still read it (for example `pbpaste`). Paste with ⌘V.
 
 Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](updates-and-quitting.md).
 
@@ -52,7 +52,7 @@ A line under the caption shows the agent's place: **main folder · main**, or **
 
 ### Sessions an automation opens
 
-A workbench automation can start an agent session to do part of its work, such as a review round. It shows in SESSIONS titled "⚙ <name> · run #N" and starts in the background. You can watch it, type into it, stop it or resume it.
+A workbench automation can start an agent session, such as for a review round. It shows in SESSIONS titled "⚙ <name> · run #N" and starts in the background, without taking the page from you. You can watch it, type into it, stop it or resume it.
 
 The run waits until the session finishes. If you stop it or it exits, the run goes on, knowing it stopped. If Watchtower was not open when the automation asked, the session starts the next time it is.
 
@@ -116,9 +116,9 @@ action: nav:projects
 
 - A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers whether it is open. A session you are looking at never jumps.
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.
-- Right-click an agent session, then **Session Target**, to pick the target its progress counts; **None — Count What It Touched** undoes it.
+- Right-click an agent session, then **Session Target**, to pick the target its progress counts; **None — Count What It Touched** resets it.
 - Hover a **Ready to check** session for **Review Branch**, which opens its [Branch review](diff-review.md); the right-click menu has it for every session.
-- Hover a session that is finished, stopped, failed or not running to get a **✕**. One click deletes it, no dialog. Any other session (working, agents working, ready to check, waiting, asking for a permission, or with no state yet) needs **Delete…**.
+- Hover a session that is finished, stopped, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session (working, agents working, ready to check, waiting, asking for a permission, or with no state yet) needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
 - If you quit before the bar goes away, the delete still happens. When the database is busy this can hold the quit for a few seconds, with a small "Finishing session deletes…" window.
 - When you delete a workbench session the dialog first checks what it left behind and may offer **Delete and Clean Up**. See [Worktrees and cleanup](worktrees-and-cleanup.md).
@@ -133,7 +133,7 @@ Workchat is a session's second mode: its dialog as a chat that you can write to,
 
 ### Get notified
 
-While Watchtower is in the background, a running session that stops, needs approval, hits an error or finishes sends one notice. A session waiting on an ask sends none; the ask already did. **Agents working** sends nothing. **Settings → Features → Notifications → Workbench notifications** turns this on and off; it is on by default.
+While Watchtower is in the background, a running session that stops, needs approval, hits an error or finishes sends one notice. A session waiting on an ask sends none. **Agents working** sends nothing. **Settings → Features → Notifications → Workbench notifications** turns this on and off; it is on by default.
 
 ## When it's empty or wrong
 
