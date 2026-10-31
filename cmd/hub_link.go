@@ -128,19 +128,31 @@ func init() {
 	}
 }
 
+// hubRelayOriginRemedy is `hub status`'s line for a live hub with no relay
+// origin.
+const hubRelayOriginRemedy = "Set the relay: watchtower config set hub.relay_origin <origin>"
+
+// runHubStatus prints the hub's status. A desktop host's is off,
+// desktop_host (no live hub there); an off hub shows the reason the daemon's
+// would stay off before writing a status.
 func runHubStatus(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
-	dir, err := hubDir()
-	if err != nil {
+	dir, mode, host, err := hub.Dir(hostProbe())
+	var s hub.Status
+	switch {
+	case errors.Is(err, hub.ErrDesktopHost):
+		s = hub.Status{State: hub.StateOff, Reason: hub.ReasonDesktopHost}
+	case err != nil:
 		return err
+	default:
+		if s, err = hub.ReadStatus(dir); err != nil {
+			return err
+		}
+		if r := hubOffReason(mode); s.State == hub.StateOff && r != "" {
+			s.Reason = r
+		}
 	}
-	s, err := hub.ReadStatus(dir)
-	if err != nil {
-		return err
-	}
-	if s.State == hub.StateOff && !hubTestWorkspaceOK() {
-		s.Reason = hub.ReasonNotTestWorkspace
-	}
+	s.Host, s.Mode = string(host), string(mode)
 	line := "hub: " + s.State
 	if s.Reason != "" {
 		line += " (" + s.Reason + ")"
@@ -148,11 +160,16 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	if s.State == hub.StateRunning {
 		line += fmt.Sprintf(", %s, %d phone(s)", s.Transport, s.Phones)
 	}
-	rec, err := hubRecordingsValue(dir)
-	if err != nil {
-		return err
+	rec := state.RecordingsOff // a desktop host has no hub dir here
+	if dir != "" {
+		if rec, err = hubRecordingsValue(dir); err != nil {
+			return err
+		}
 	}
 	line += ", recordings " + rec
+	if mode == hub.ModeLive && s.Reason == hub.ReasonNoRelayOrigin {
+		line += "\n" + hubRelayOriginRemedy
+	}
 	return hubPrint(cmd, asJSON, hubStatusJSON{Status: s, Recordings: rec}, line)
 }
 

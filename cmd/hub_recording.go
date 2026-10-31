@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"strconv"
 	"time"
@@ -89,6 +90,11 @@ func runHubDesktopHeartbeat(cmd *cobra.Command, _ []string) error {
 	}
 	if hubGOOS != "darwin" {
 		return errors.New("there is no Watchtower app on Linux")
+	}
+	// Only a test-mode hub has a Desktop beside it: a live hub runs on a
+	// headless host, where nothing may claim to be the app.
+	if os.Getenv(hubDirEnv) == "" {
+		return fmt.Errorf("%s is not set: the Desktop heartbeat goes to a test-mode hub only", hubDirEnv)
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	a, err := hubWrite(hub.ControlRequest{Op: hub.OpDesktopHeartbeat}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {

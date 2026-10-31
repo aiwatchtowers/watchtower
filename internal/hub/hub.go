@@ -4,11 +4,13 @@
 // running hub inside the watchtower daemon, and serves the local control
 // socket the `watchtower hub …` CLI writes through.
 //
-// Phase 1 (spec §14 row 1): the daemon starts the hub only when FromEnv says
-// so — WATCHTOWER_HUB_DIR (absolute, never the Swift hub's MobileHub dir),
-// WATCHTOWER_RELAY_ORIGIN, and WATCHTOWER_HUB_TEST_WORKSPACE naming the
-// daemon's own active workspace, which must be a hubtest-* one. A headless
-// host runs relay-only.
+// The daemon starts a hub only through Resolve. Its test mode (phase 1,
+// spec §14 row 1) is FromEnv: WATCHTOWER_HUB_DIR (absolute, never the Swift
+// hub's MobileHub dir), WATCHTOWER_RELAY_ORIGIN, and
+// WATCHTOWER_HUB_TEST_WORKSPACE naming the daemon's own active workspace,
+// which must be a hubtest-* one. Its live mode (phase 2, spec §7.3) runs in
+// DefaultDir on a headless host only (hostkind), never beside the Swift hub
+// on a Mac with the app (§12.1). Every hub runs relay-only.
 //
 // One hub per state dir: Run holds <dir>/hub.lock from before it opens the
 // sidecar until it returns, so a second Run (or a CLI writing directly)
@@ -43,6 +45,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
@@ -83,7 +86,7 @@ var (
 	ErrDirNotAbsolute    = errors.New("hub: WATCHTOWER_HUB_DIR is not an absolute path")
 	ErrSwiftHubDir       = errors.New("hub: the hub dir is the Swift hub's MobileHub dir")
 	ErrNotTestWorkspace  = errors.New("hub: not a hubtest-* test workspace named by WATCHTOWER_HUB_TEST_WORKSPACE")
-	ErrNoRelayOrigin     = errors.New("hub: WATCHTOWER_RELAY_ORIGIN is not set to an http(s) origin")
+	ErrNoRelayOrigin     = errors.New("hub: no relay origin is set (WATCHTOWER_RELAY_ORIGIN, hub.relay_origin or the build's default)")
 	ErrSidecarUnreadable = errors.New("hub: the hub state is unreadable")
 	// ErrStartFailed: a start step other than reading the sidecar failed
 	// (the identity file, a first-start write, the asset dir); retried.
@@ -107,7 +110,15 @@ func Refusal(err error) string {
 	case errors.Is(err, ErrSwiftHubDir):
 		return "swift_hub_dir"
 	case errors.Is(err, ErrNoRelayOrigin):
-		return "no_relay_origin"
+		return ReasonNoRelayOrigin
+	case errors.Is(err, ErrDesktopHost):
+		return ReasonDesktopHost
+	case errors.Is(err, ErrHubDisabled):
+		return ReasonDisabled
+	case errors.Is(err, ErrPolicyOff):
+		return ReasonPolicyOff
+	case errors.Is(err, sessionhost.ErrRunDirUnusable):
+		return ReasonRunDirUnusable
 	case errors.Is(err, context.Canceled):
 		return "stopped"
 	default:
@@ -136,6 +147,10 @@ type Options struct {
 	// the hub with no session host), the CLI path and cmd's seams
 	// (launch-args, the worktree integration, the default agent).
 	SessionStart sessionstart.Deps
+	// Mode and Host are what Resolve found (shown by `hub status`; zero in
+	// a hub started without Resolve).
+	Mode Mode
+	Host hostkind.Kind
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)
@@ -506,7 +521,7 @@ func (s *supervisor) wipeStopped(ctx context.Context) {
 }
 
 // hostName is the name the hub shows phones: hub_meta.display_name, else
-// the host name.
+// the host name up to its first '.' (pi-acme.local shows as pi-acme).
 func (s *supervisor) hostName() string {
 	v, ok, err := s.st.Meta(state.MetaDisplayName)
 	if err != nil {
@@ -515,8 +530,17 @@ func (s *supervisor) hostName() string {
 	if ok && v != "" {
 		return v
 	}
-	n, err := os.Hostname()
+	return shortHostName(os.Hostname)
+}
+
+// shortHostName is hostname() up to its first '.', or "Watchtower hub" when
+// it fails or is empty.
+func shortHostName(hostname func() (string, error)) string {
+	n, err := hostname()
 	if err != nil {
+		return "Watchtower hub"
+	}
+	if n, _, _ = strings.Cut(n, "."); n == "" {
 		return "Watchtower hub"
 	}
 	return n
@@ -552,7 +576,7 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 // the lock while another live run's status is there; the report hook then
 // sees every one (after the file, so a reader that saw it reads it there).
 func (s *supervisor) setStatus(st Status) {
-	st.Dir = s.o.Dir
+	st.Dir, st.Host, st.Mode = s.o.Dir, string(s.o.Host), string(s.o.Mode)
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	if st == s.status {

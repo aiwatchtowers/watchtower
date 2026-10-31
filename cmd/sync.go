@@ -1017,20 +1017,22 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	return d.Run(ctx)
 }
 
-// startGoHub starts the Go hub beside the daemon when hub.FromEnv says so
+// startGoHub starts the Go hub beside the daemon when hub.Resolve says so
 // and logs whether it did; the returned func stops it and waits. Its cycle
 // tick is the daemon's poll interval.
 func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (stop func()) {
-	o, ok, err := hub.FromEnv(cfg, database)
+	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
-		logger.Printf("hub: off (%s)", hub.Refusal(err))
+		var desktop *hub.DesktopHostError
+		if errors.As(err, &desktop) {
+			logger.Printf("hub: off (%s, %s)", hub.Refusal(err), desktop.Signal)
+		} else {
+			logger.Printf("hub: off (%s)", hub.Refusal(err))
+		}
 		return func() {}
 	}
-	if !ok {
-		return func() {}
-	}
-	// The session port's seams; the socket stays FromEnv's (the override
-	// only: phase 1 never reaches the Desktop's host).
+	// The session port's seams; the socket stays Resolve's (test mode: the
+	// override only, never the Desktop's host; live: the default socket).
 	sd := sessionStartDeps(cfg, database)
 	sd.Socket = o.SessionStart.Socket
 	o.SessionStart = sd
@@ -1063,7 +1065,11 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 			logger.Printf("hub: off (%s)", hub.Refusal(err))
 		}
 	}()
-	logger.Printf("hub: started (dir set)")
+	if o.Mode == hub.ModeLive {
+		logger.Printf("hub: started (live, headless)")
+	} else {
+		logger.Printf("hub: started (test workspace)")
+	}
 	return func() {
 		cancel()
 		<-done

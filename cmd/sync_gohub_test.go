@@ -16,6 +16,8 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/hostkind"
+	"watchtower/internal/hub/state"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -40,16 +42,23 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 	_, err = os.Stat(dir)
 	assert.True(t, errors.Is(err, fs.ErrNotExist), "a refused hub creates nothing")
 
+	// No hub dir: the live mode, off on a headless host until enabled.
 	buf.Reset()
 	t.Setenv(hub.EnvHubDir, "")
+	t.Setenv("HOME", base)
+	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})
 	startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, logger)()
-	assert.Empty(t, buf.String(), "no hub dir: nothing to say")
+	assert.Contains(t, buf.String(), "hub: off (disabled)")
+	live, err := hub.DefaultDir()
+	require.NoError(t, err)
+	_, err = os.Stat(live)
+	assert.True(t, errors.Is(err, fs.ErrNotExist), "an off live hub creates nothing")
 
 	buf.Reset()
 	t.Setenv(hub.EnvHubDir, dir)
 	t.Setenv(hub.EnvTestWorkspace, "hubtest-a")
 	stop := startGoHub(context.Background(), &config.Config{ActiveWorkspace: "hubtest-a"}, nil, logger)
-	assert.Contains(t, buf.String(), "hub: started (dir set)")
+	assert.Contains(t, buf.String(), "hub: started (test workspace)")
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		s, err := hub.ReadStatus(dir)
@@ -65,4 +74,57 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, hub.StateOff, s.State)
 	assert.Empty(t, s.Reason, "a stopped hub reads off with no reason")
+}
+
+func setGoHubProbe(t *testing.T, p hostkind.Probe) {
+	t.Helper()
+	orig := hostProbe
+	hostProbe = func() hostkind.Probe { return p }
+	t.Cleanup(func() { hostProbe = orig })
+}
+
+// TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly: with no hub dir the daemon
+// starts the live hub on a headless host once it is enabled and has a relay
+// origin, and never on a desktop host.
+func TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly(t *testing.T) {
+	policytest.Set(t, nil)
+	base, err := os.MkdirTemp("/tmp", "hubd")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	t.Setenv("HOME", base)
+	t.Setenv(hub.EnvHubDir, "")
+	t.Setenv(hub.EnvRelayOrigin, "http://127.0.0.1:1")
+	live, err := hub.DefaultDir()
+	require.NoError(t, err)
+	st, err := state.Open(live)
+	require.NoError(t, err)
+	require.NoError(t, st.SetMeta(state.MetaEnabled, "1"))
+	require.NoError(t, st.Close())
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	setGoHubProbe(t, hostkind.Probe{GOOS: "darwin", Home: base, Stat: os.Stat, ReadFile: func(p string) ([]byte, error) {
+		if p == "/Applications/Watchtower.app/Contents/Info.plist" {
+			return []byte("<key>CFBundleIdentifier</key><string>" + hostkind.BundleID + "</string>"), nil
+		}
+		return nil, fs.ErrNotExist
+	}})
+	startGoHub(context.Background(), &config.Config{}, nil, logger)()
+	assert.Contains(t, buf.String(), "hub: off (desktop_host, app_bundle)")
+
+	buf.Reset()
+	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})
+	stop := startGoHub(context.Background(), &config.Config{}, nil, logger)
+	assert.Contains(t, buf.String(), "hub: started (live, headless)")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		s, err := hub.ReadStatus(live)
+		require.NoError(t, err)
+		if s.State == hub.StateStarting && s.Mode == string(hub.ModeLive) && s.Host == string(hostkind.Headless) {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "the live hub never reported starting: %+v", s)
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
 }

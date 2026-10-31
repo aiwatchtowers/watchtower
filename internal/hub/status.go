@@ -33,6 +33,13 @@ const (
 	// ReasonStartFailed: a start step failed that is neither the sidecar
 	// nor the relay (state starting, retried with backoff).
 	ReasonStartFailed = "start_failed"
+	// ReasonDesktopHost: a Mac with the Watchtower app (or the Swift hub's
+	// state) never runs a live hub.
+	ReasonDesktopHost = "desktop_host"
+	// ReasonNoRelayOrigin: no (valid) relay origin is set.
+	ReasonNoRelayOrigin = "no_relay_origin"
+	// ReasonRunDirUnusable: the session-host socket folder is unusable.
+	ReasonRunDirUnusable = "run_dir_unusable"
 )
 
 // Status is what `hub status` shows. Its JSON keys are the CLI's pinned keys.
@@ -45,6 +52,10 @@ type Status struct {
 	Impl          string `json:"impl"`
 	Dir           string `json:"dir"`
 	Phones        int    `json:"phones"`
+	// Host is the host kind (desktop, headless; "" when not known) and
+	// Mode the hub's mode (test, live; "" = off).
+	Host string `json:"host"`
+	Mode string `json:"mode"`
 }
 
 // statusFile is the status as the runtime writes it, with its pid so a
