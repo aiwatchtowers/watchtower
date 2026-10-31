@@ -249,7 +249,7 @@ Package layout under `internal/hub`, the bridge's frame schema, the systemd unit
 - Every hub is admitted to the relay by the vouching of a paying attested phone; App Attest only on phones — asks #800, #801
 - The relay client spec's hub half is written in Go here; its phone and Kit half stays there — ask #802
 - `session-host` gets a non-attaching list/input operation; PROJ-20 amended and PROJ-16's live/same-run checks redefined on it with the same meaning; — ask #807
-- Desktop's local-PTY fallback (terminal inside the app when `session-host` is unavailable) is removed; every session on every host runs in `session-host` — owner, conversation 2026-10-31
+- Desktop's local-PTY fallback (terminal inside the app when `session-host` is unavailable) is removed; every session on every host runs in `session-host`; PROJ-20 amended — owner, conversation 2026-10-31 and ask #811 (done separately as board #1281)
 - Hub keys on the Mac in daemon-owned Keychain items; if that fails without prompts, a 0600 file as on a headless host; the bridge never holds keys — ask #807
 - E2E is the red line: vectors, plaintext canaries on everything leaving the hub, one sealing choke point, two-way Kit interop — ask #807
 Author's decisions, for the owner's approval in the review (each marked "my call" in the text):
