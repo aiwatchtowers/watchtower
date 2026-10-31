@@ -740,11 +740,12 @@ func occupies(branch, folder, cwd, workbenchFolder string) bool {
 // hostDownReason is the row's reason when no host answers: a Linux start
 // that systemd-run refused names its class (no detached spawn follows).
 func hostDownReason(err error) string {
+	const down = "the session host is not running"
 	var um *sessionhost.UserManagerError
 	if errors.As(err, &um) {
-		return "the session host is not running: no systemd user manager (" + um.Class + ")"
+		return down + ": no systemd user manager (" + um.Class + ")"
 	}
-	return "the session host is not running"
+	return down
 }
 
 func (s *newStart) markFailed(ctx context.Context, reason string) {

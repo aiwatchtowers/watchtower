@@ -88,18 +88,14 @@ func productionLauncher(goos string, lookPath func(string) (string, error)) laun
 	if goos == "linux" {
 		return &systemdRun{lookPath: lookPath, run: runCommand, getenv: os.Getenv}
 	}
-	return &detached{spawn: spawnDetached}
+	return &detached{}
 }
 
 // detached starts the host in its own session (darwin; on a CLI-only Mac the
 // daemon's LaunchAgent sets AbandonProcessGroup, so a restart spares it).
-type detached struct {
-	spawn func(exe, socket string) error
-}
+type detached struct{}
 
-func (d *detached) launch(_ context.Context, exe, socket string) error { return d.spawn(exe, socket) }
-
-func spawnDetached(exe, socket string) error {
+func (*detached) launch(_ context.Context, exe, socket string) error {
 	cmd := exec.Command(exe, "session-host", "--socket", socket) // our own CLI binary
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -158,9 +154,20 @@ func (s *systemdRun) launch(ctx context.Context, exe, socket string) error {
 	}
 }
 
+// systemdRunCommand runs systemd-run itself under LC_ALL=C, so the messages
+// launch matches ("already exists", "failed to connect to … bus") are the
+// untranslated ones. The unit's own environment is set by --setenv only.
+func systemdRunCommand(ctx context.Context, argv []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // systemd-run, from PATH
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd
+}
+
 func runCommand(ctx context.Context, argv []string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput() // systemd-run, from PATH
+	out, err := systemdRunCommand(ctx, argv).CombinedOutput()
 	if err != nil {
+		// %w keeps the *exec.ExitError in the chain for launch's errors.As;
+		// launch replaces this message with its own class.
 		return out, fmt.Errorf("systemd-run: %w", err)
 	}
 	return out, nil

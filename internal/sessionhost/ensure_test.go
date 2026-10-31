@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -193,22 +194,42 @@ func TestEnsureOnDarwinSpawnsDetached(t *testing.T) {
 	if !ok {
 		t.Fatalf("productionLauncher(darwin) = %T, want *detached", l)
 	}
-	socket := socketPath(t)
-	var spawned [][2]string
-	l.spawn = func(exe, sock string) error {
-		spawned = append(spawned, [2]string{exe, sock})
-		serveOn(t, sock)
-		return nil
-	}
-	useLauncher(t, l)
-	if err := Ensure(ctxT(t), socket, "/opt/watchtower/watchtower"); err != nil {
+	exe, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if want := [][2]string{{"/opt/watchtower/watchtower", socket}}; !reflect.DeepEqual(spawned, want) {
-		t.Fatalf("spawned %q, want %q", spawned, want)
+	t.Setenv(asHostEnv, "1") // the test binary runs as `session-host --socket`
+	socket := socketPath(t)
+	useLauncher(t, l)
+	ctx := ctxT(t)
+	if err := Ensure(ctx, socket, exe); err != nil {
+		t.Fatal(err)
+	}
+	cl, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := cl.Pid()
+	_ = cl.Close()
+	t.Cleanup(func() { reap(t, pid) }) // setsid: the host leads its own group
+	if pid == os.Getpid() || pid <= 0 {
+		t.Fatalf("host pid = %d, want a started process", pid)
+	}
+	if pgid, err := syscall.Getpgid(pid); err != nil || pgid != pid {
+		t.Fatalf("host pgid = %d (%v), want its own session %d", pgid, err, pid)
 	}
 	if looked != 0 {
 		t.Fatal("darwin looked up systemd-run")
+	}
+}
+
+// systemd-run itself runs under LC_ALL=C so launch's message matches hold in
+// any locale; the unit's environment stays the --setenv list.
+func TestSystemdRunRunsUnderTheCLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	cmd := systemdRunCommand(context.Background(), []string{"/usr/bin/systemd-run", "--user"})
+	if n := len(cmd.Env); n == 0 || cmd.Env[n-1] != "LC_ALL=C" {
+		t.Fatalf("systemd-run env ends with %q, want LC_ALL=C last (it wins)", cmd.Env)
 	}
 }
 
