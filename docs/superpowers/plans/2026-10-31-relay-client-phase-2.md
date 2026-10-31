@@ -8,7 +8,7 @@
 
 **Tech Stack:** Swift 5.10 language mode, Swift concurrency (actors), CryptoKit (Ed25519, SHA-256), DeviceCheck (`DCAppAttestService`), Foundation `URLSession` (HTTPS, `URLSessionWebSocketTask`), `apple/swift-protobuf` (new, pinned exactly), GRDB (via `TransportStore`), XCTest; `buf` + `protoc-gen-swift` for regeneration (developer machine only); Go for the auth vector generator; Node/`wrangler` for the local stand (developer machine only).
 
-**Spec:** `docs/superpowers/specs/2026-10-29-relay-client-design.md` (amended with this plan; the amendment awaits the owner's approval, Task 0) — §3 (seam, optional protocols), §4 (identity, App Attest, amended 2026-10-31), §7 (hosted relay transport), §11 (testing), §12 (relay repository), §13 row 2 (board #1239, #1240), §14 (docs). Contract: relay `main` at `3a99bd72758687e1393c3ab036484ac03cee98b1` (below "relay@3a99bd7") — `proto/relay/v1/relay.proto`, `proto/README.md` (incl. "Attestation (App Attest)"), `sim/README.md`, `client/client.go`, `client/ws.go`, `worker/README.md` "Local stand". Go parity: `internal/hub/transport/relay` (copy pinned to the same commit, `VERSION`), `scripts/relay-go.sh`.
+**Spec:** `docs/superpowers/specs/2026-10-29-relay-client-design.md` (amended with this plan; the owner approves the amended items with this plan's review, section "Owner approval") — §3 (seam, optional protocols), §4 (identity, App Attest, amended 2026-10-31), §7 (hosted relay transport), §11 (testing), §12 (relay repository), §13 row 2 (board #1239, #1240), §14 (docs). Contract: relay `main` at `3a99bd72758687e1393c3ab036484ac03cee98b1` (below "relay@3a99bd7") — `proto/relay/v1/relay.proto`, `proto/README.md` (incl. "Attestation (App Attest)"), `sim/README.md`, `client/client.go`, `client/ws.go`, `worker/README.md` "Local stand". Go parity: `internal/hub/transport/relay` (copy pinned to the same commit, `VERSION`), `scripts/relay-go.sh`.
 
 ## Global Constraints
 
@@ -66,9 +66,21 @@ Decisions this plan takes where the spec is silent, outdated or contradicts the 
 - **R19. The phone app links nothing new in Phase 2.** No phone code uses the client before Phase 3; the iOS build of the new targets is checked in the gate by `xcodebuild … -scheme WatchtowerHostedRelay -destination 'generic/platform=iOS Simulator' build` inside `WatchtowerKit`, and `make mobile-build` confirms the app still resolves the Kit with its new dependency. — Cost: none.
 - **R20. `FakeHostedRelay` follows `proto/README.md`; where the stand disagrees, the stand wins.** Task 12's interop runs the same scenarios on both; a difference is fixed in the fake in the same task and noted in the feature note. — Cost: one interop round.
 
+## Owner approval
+
+The spec amendment committed with this plan changes an approved spec, and some rulings narrow what ask #799 approved. Approving this plan's review ask approves the items below; a refused item changes what its line names.
+
+1. App Attest on the phone (spec §4; R2): required by relay@3a99bd7, the shape is ours — Kit seam and attestor now, Keychain key id and entitlement in Phase 3. Refused shape → Tasks 3–4 change.
+2. Relay targets are separate Kit products linked by the phone only; the Desktop gets no protobuf (spec §7; R3). Refused → Task 1 makes `WatchtowerSync` depend on them.
+3. No `MailboxAddressing` and no `PagedChanges` in the Kit, although ask #799 approved them for a Swift hub that ask #802 moved to Go (R4, R5). Refused → one more task builds them on `HostedRelayTransport`.
+4. No new `TransportEvent` quota cases; relay-only signals on `relayEvents` (R11). Refused → Task 8 adds the cases and updates the phone's exhaustive switches.
+5. On the relay `origin.serverAt` is the writer's clock; the relay keeps no server time (spec §3 row; R7). Refused → none possible without a relay change; Task 8 would leave `serverAt` nil on the relay.
+6. The `pair/<slot>` mapping comes with Phase 3's linking (R4). Refused → Task 8 adds a pairing zone to the transport.
+7. Outage, deploy and crash scenarios run against the fake until Phase 3's relay CI job (R15); a phone and its Mac on a real attesting relay wait for relay ask #805 and Phase 3's vouching (R18). Refused → Task 12 gains a stand restart control in `scripts/relay-interop.sh`.
+8. Two write paths ordered by flushing the plain queue before each conditional call (R8); deletions only after a complete `TOKEN_EXPIRED` resync (R10). Refused → Task 8's write path or resync rule changes.
+
 ## Lanes
 
-- Task 0 (owner approval) comes before every lane.
 - Lane A (proto → client): Task 1 → {Task 2, Task 3} (parallel) → Task 4 → Task 5.
 - Lane C (fake server): Task 6 after Tasks 2 and 3, parallel with Tasks 4–5.
 - Join: Task 7 (after 5, 6) → Task 8 (after 7, and after the controller has merged Phase 1 Task 1 from `relay-client/phase-1`, R6) → Task 9 → {Task 10, Task 11} (parallel) → Task 12 → Task 13 → Task 14 (gate).
@@ -76,23 +88,6 @@ Decisions this plan takes where the spec is silent, outdated or contradicts the 
 Parallel lanes run in their own worktrees and branches, merged by the controller; Task 1 changes `Package.swift`, so lane C rebases on it before touching the manifest.
 
 ---
-
-### Task 0: Owner approval of the spec amendment
-
-**Depends on:** none. **Blocks:** every other task.
-
-The spec amendment committed with this plan (relay-client spec §3 row, §4 App Attest, §7, §11, §12, §13, and the Decisions lines marked "pending owner approval") changes an approved spec, and several rulings narrow what ask #799 approved. None of it is approved yet.
-
-- [ ] **Step 1:** The controller files one `ask_owner` (`doc_type: spec`) on `docs/superpowers/specs/2026-10-29-relay-client-design.md`, its body listing each item with its ruling and what changes if it is refused:
-  1. App Attest on the phone (spec §4; R2): required by relay@3a99bd7 `proto/README.md`, not optional; the owner decides the shape — the Kit seam and attestor now, the Keychain key id and the entitlement in Phase 3. Refused shape → Tasks 3–4 change.
-  2. The relay targets are separate Kit products linked by the phone only; the Desktop gets no protobuf (spec §7; R3). Refused → Task 1 makes `WatchtowerSync` depend on them.
-  3. No `MailboxAddressing` and no `PagedChanges` in the Kit, although ask #799 approved them — they served a Swift hub, which ask #802 moved to Go (R4, R5). Refused → one more task builds them on `HostedRelayTransport`.
-  4. No new `TransportEvent` quota cases; relay-only signals on `relayEvents` (R11). Refused → Task 8 adds the cases and updates the phone's exhaustive switches.
-  5. On the relay `origin.serverAt` is the writer's clock, because the relay keeps no server time (spec §3 row; R7). This is the contract's fact; confirming it.
-  6. The `pair/<slot>` mapping comes with Phase 3's linking (R4).
-  7. The relay's outage, deploy and crash scenarios run against the fake until Phase 3's relay CI job (R15); a phone and its Mac on a real attesting relay wait for relay ask #805 and Phase 3's vouching (R18).
-  8. Two write paths on the relay transport, ordered by flushing the plain queue before each conditional call (R8); deletions after a complete `TOKEN_EXPIRED` resync only (R10).
-- [ ] **Step 2:** On the answer, the controller applies each refusal to the named rulings and tasks, moves the approved Decisions lines in the spec from "pending owner approval" to the ask's number, and commits that before Task 1 is dispatched.
 
 ### Task 1: The proto and generated Swift in the Kit, pinned to relay@3a99bd7
 
