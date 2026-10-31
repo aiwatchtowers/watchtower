@@ -47,7 +47,12 @@
         "link_code_tag": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
         "revoked": null,
         "may_start_sessions": true,
-        "permissions_allowed": false
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": false,
+        "linked_at": null,
+        "decided_at": null
       }
     },
     {
@@ -97,7 +102,12 @@
         "link_code_tag": null,
         "revoked": null,
         "may_start_sessions": true,
-        "permissions_allowed": true
+        "permissions_allowed": true,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": true,
+        "linked_at": 1730000000,
+        "decided_at": 1730000001.5
       }
     },
     {
@@ -131,7 +141,12 @@
         "link_code_tag": null,
         "revoked": true,
         "may_start_sessions": true,
-        "permissions_allowed": false
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": false,
+        "linked_at": null,
+        "decided_at": 1730000100
       }
     },
     {
@@ -163,7 +178,12 @@
         "link_code_tag": null,
         "revoked": null,
         "may_start_sessions": true,
-        "permissions_allowed": false
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": true,
+        "linked_at": 1730000000,
+        "decided_at": null
       }
     },
     {
@@ -194,7 +214,12 @@
         "link_code_tag": null,
         "revoked": null,
         "may_start_sessions": true,
-        "permissions_allowed": false
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": false,
+        "linked_at": null,
+        "decided_at": null
       }
     }
   ],
@@ -263,6 +288,29 @@
       "url": "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmV4YW1wbGUud2F0Y2h0b3dlciIsImV4cCI6MTczMDAwMDYwMCwiaHViX2lkIjoiQUFBQUFBQUEtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiaHViX2t4IjoiWVdKalpHVm1aMmhwYW10c2JXNXZjSEZ5YzNSMWRuZDRlWHA3ZkgxLWY0QSIsImh1Yl9zaWciOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiaWF0IjoxNzMwMDAwMDAwLCJtYWNfbmFtZSI6IlRlc3QgTWFjIiwibm9uY2UiOiJJU0lqSkNVbUp5Z3BLaXNzTFM0dk1ERXlNelExTmpjNE9UbzdQRDAtUDBBIiwib3duZXJfdXNlciI6Il9vd25lcjAwMDAiLCJ0cmFuc3BvcnRzIjpbInJlbGF5Il0sInYiOjR9",
       "kit": "not_asserted",
       "error": "bad_hub_key"
+    }
+  ],
+  "encoding": [
+    {
+      "name": "strings",
+      "kind": "strings",
+      "value": {
+        "b": "x/y <&>",
+        "a": "line\n\"q\"\t\u0001\u001f é ",
+        "c": "z"
+      },
+      "relay_coder": "{\"a\":\"line\\n\\\"q\\\"\\t\\u0001\\u001f é \",\"b\":\"x\\/y <&>\",\"c\":\"z\"}",
+      "link_encoder": "{\"a\":\"line\\n\\\"q\\\"\\t\\u0001\\u001f é \",\"b\":\"x/y <&>\",\"c\":\"z\"}"
+    },
+    {
+      "name": "dates",
+      "kind": "dates",
+      "value": {
+        "whole": 1730000000,
+        "at": 1730000000.5,
+        "before": -1.5
+      },
+      "relay_coder": "{\"at\":1730000000.5,\"before\":-1.5,\"whole\":1730000000}"
     }
   ]
 }

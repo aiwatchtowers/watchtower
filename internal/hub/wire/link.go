@@ -48,10 +48,13 @@ type LinkPayload struct {
 	Transports    []string `json:"transports,omitempty"`
 }
 
-var requiredLinkKeys = []string{"hub_id", "mac_name", "nonce", "iat", "exp", "hub_sig", "hub_kx"}
+// Keys the Kit's decoder reads (after the version) in its order: the two hub
+// keys first, then the rest. A key that is absent or null is missing.
+var restLinkKeys = []string{"hub_id", "mac_name", "nonce", "iat", "exp"}
 
-// ClipMacName clips to MaxMacNameLength runes (the Kit clips grapheme
-// clusters; hub names are plain host names).
+// ClipMacName clips to MaxMacNameLength runes. The Kit clips grapheme
+// clusters, so a name with combining marks can differ; hub names are plain
+// host names (known gap).
 func ClipMacName(s string) string {
 	r := []rune(s)
 	if len(r) > MaxMacNameLength {
@@ -63,7 +66,7 @@ func ClipMacName(s string) string {
 // URL renders the code.
 func (p LinkPayload) URL() (string, error) {
 	p.MacName = ClipMacName(p.MacName)
-	b, err := Marshal(p)
+	b, err := MarshalUnescapedSlashes(p)
 	if err != nil {
 		return "", err
 	}
@@ -88,12 +91,15 @@ func ParseLinkURL(s string) (LinkPayload, error) {
 	if json.Unmarshal(raw, &keys) != nil {
 		return zero, ErrBadEncoding
 	}
-	vRaw, ok := keys["v"]
-	if !ok {
+	present := func(k string) bool {
+		r, ok := keys[k]
+		return ok && string(r) != "null"
+	}
+	if !present("v") {
 		return zero, fmt.Errorf("%w: v", ErrMissingField)
 	}
 	var v int
-	if json.Unmarshal(vRaw, &v) != nil {
+	if json.Unmarshal(keys["v"], &v) != nil {
 		return zero, ErrBadEncoding
 	}
 	if v > LinkPayloadVersion {
@@ -102,17 +108,29 @@ func ParseLinkURL(s string) (LinkPayload, error) {
 	if v < LinkPayloadVersion {
 		return zero, ErrOlderVersion
 	}
-	for _, k := range requiredLinkKeys {
-		if _, ok := keys[k]; !ok {
+	// The Kit's order: both hub keys present, both valid, then the rest.
+	for _, k := range []string{"hub_sig", "hub_kx"} {
+		if !present(k) {
+			return zero, fmt.Errorf("%w: %s", ErrMissingField, k)
+		}
+	}
+	for _, k := range []string{"hub_sig", "hub_kx"} {
+		var key string
+		if json.Unmarshal(keys[k], &key) != nil {
+			return zero, ErrBadEncoding
+		}
+		if !validHubKey(key) {
+			return zero, ErrBadHubKey
+		}
+	}
+	for _, k := range restLinkKeys {
+		if !present(k) {
 			return zero, fmt.Errorf("%w: %s", ErrMissingField, k)
 		}
 	}
 	var p LinkPayload
 	if json.Unmarshal(raw, &p) != nil {
 		return zero, ErrBadEncoding
-	}
-	if !validHubKey(p.HubSig) || !validHubKey(p.HubKX) {
-		return zero, ErrBadHubKey
 	}
 	p.MacName = ClipMacName(p.MacName)
 	return p, nil

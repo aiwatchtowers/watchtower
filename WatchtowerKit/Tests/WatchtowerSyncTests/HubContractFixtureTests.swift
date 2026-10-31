@@ -38,6 +38,11 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(grant.revoked, kit["revoked"] as? Bool, name)
             XCTAssertEqual(grant.mayStartSessions, kit["may_start_sessions"] as? Bool, name)
             XCTAssertEqual(grant.permissionsAllowed, kit["permissions_allowed"] as? Bool, name)
+            XCTAssertEqual(grant.name, kit["name"] as? String, name)
+            XCTAssertEqual(grant.scope.rawValue, kit["scope"] as? String, name)
+            XCTAssertEqual(grant.typingAllowed, kit["typing_allowed"] as? Bool, name)
+            XCTAssertEqual(grant.linkedAt?.timeIntervalSince1970, kit["linked_at"] as? Double, name)
+            XCTAssertEqual(grant.decidedAt?.timeIntervalSince1970, kit["decided_at"] as? Double, name)
         }
     }
 
@@ -51,5 +56,38 @@ final class HubContractFixtureTests: XCTestCase {
             checked += 1
         }
         XCTAssertGreaterThanOrEqual(checked, 3) // v4_desktop, v4_headless, v5_newer
+    }
+
+    private struct Stamps: Codable {
+        let whole: Date
+        let at: Date
+        let before: Date
+    }
+
+    /// The exact bytes the Kit's encoders write (RelayCoder escapes "/", the link encoder does not); the Go
+    /// `wire.Marshal` / `wire.MarshalUnescapedSlashes` are pinned to the same strings.
+    func testEncoderBytesMatchFixture() throws {
+        let cases = try XCTUnwrap(load()["encoding"])
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let value = try XCTUnwrap(fixtureCase["value"])
+            let relay: Data
+            var link: Data?
+            switch fixtureCase["kind"] as? String {
+            case "strings":
+                let strings = try XCTUnwrap(value as? [String: String], name)
+                relay = try RelayCoder.makeEncoder().encode(strings)
+                link = try LinkPayload.makeEncoder().encode(strings)
+            case "dates":
+                let stamps = try RelayCoder.makeDecoder().decode(Stamps.self, from: bytes(value))
+                relay = try RelayCoder.makeEncoder().encode(stamps)
+            default:
+                return XCTFail("unknown kind in \(name)")
+            }
+            XCTAssertEqual(String(bytes: relay, encoding: .utf8), fixtureCase["relay_coder"] as? String, name)
+            if let link {
+                XCTAssertEqual(String(bytes: link, encoding: .utf8), fixtureCase["link_encoder"] as? String, name)
+            }
+        }
     }
 }

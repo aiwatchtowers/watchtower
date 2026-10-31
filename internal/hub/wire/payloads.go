@@ -53,17 +53,32 @@ type ActionRequest struct {
 	ActionSeq *uint64 `json:"action_seq,omitempty"`
 }
 
-// Control is the sealed body of a control record. Provisional: the field set
-// follows the relay client spec §5 and may grow with the actions package.
+// Control is the sealed body of a control record `c-<uuid>` (relay design
+// §4.2, sim rules 9-12; relay client spec §5). Fields by kind:
+//
+//	resend_from, skip_to           Seq
+//	epoch_ack                      Epoch
+//	transport_switch               Target (phone -> hub; Reason on entitlement_expired)
+//	transport_switched             Target, Epoch, By, At, Keybox (the new epoch's keybox)
+//	transport_switch_rejected      Reason, RetryAfterS
+//	hub_on_relay                   none
 type Control struct {
-	ID         string  `json:"id"`
-	Kind       string  `json:"kind"`
-	DeviceID   *string `json:"device_id,omitempty"`
-	HubID      *string `json:"hub_id,omitempty"`
-	Seq        *uint64 `json:"seq,omitempty"`
-	Epoch      *uint32 `json:"epoch,omitempty"`
-	Reason     *string `json:"reason,omitempty"`
-	RetryAfter *int    `json:"retry_after,omitempty"`
+	ID       string  `json:"id"`
+	Kind     string  `json:"kind"`
+	DeviceID *string `json:"device_id,omitempty"`
+	HubID    *string `json:"hub_id,omitempty"`
+	Seq      *uint64 `json:"seq,omitempty"`
+	Epoch    *uint32 `json:"epoch,omitempty"`
+	// Target is a transport: TransportRelay or TransportCloudKit.
+	Target *string `json:"target,omitempty"`
+	// By is the device id of the phone whose switch this answers.
+	By *string `json:"by,omitempty"`
+	At *Time   `json:"at,omitempty"`
+	// Keybox carries the new epoch's keys inside transport_switched.
+	Keybox *Keybox `json:"keybox,omitempty"`
+	Reason *string `json:"reason,omitempty"`
+	// RetryAfterS is whole seconds (the relay proto's retry_after_s).
+	RetryAfterS *uint32 `json:"retry_after_s,omitempty"`
 }
 
 // HeartbeatAccount is one read-only account row: label and status only.
