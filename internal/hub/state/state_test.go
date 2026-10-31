@@ -474,3 +474,18 @@ func TestSliceHashesIncludesTheBareKindName(t *testing.T) {
 		t.Fatalf("SliceHashes(digest_topic) = %+v", got)
 	}
 }
+
+// A CloudKit change tag uses all 64 bits: the queue keeps it bit for bit.
+func TestControlQueueKeepsA64BitRecordVersion(t *testing.T) {
+	s := openTest(t)
+	const tag = uint64(0x9109_5c27_1d4a_33c1)
+	if err := s.WithTx(context.Background(), func(tx *sql.Tx) error {
+		return Enqueue(tx, Control{Mailbox: "m", RecordName: "c1", Kind: "echo", Envelope: []byte{1}, Expect: ExpectSeq, ExpectSeq: tag})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PendingControls("m")
+	if err != nil || len(got) != 1 || got[0].ExpectSeq != tag {
+		t.Fatalf("PendingControls = %+v %v", got, err)
+	}
+}

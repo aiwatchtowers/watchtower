@@ -26,26 +26,8 @@ import (
 	"watchtower/internal/logcanary"
 )
 
-// keySource is Task 4's secure.KeySource, copied until that lane lands: the
-// method set the Keyring must keep (the assertion moves to
-// `var _ secure.KeySource = (*Keyring)(nil)` then).
-type keySource interface {
-	HubID() secure.ID
-	CurrentEpoch() (uint32, error)
-	NextSeq() (uint64, error)
-	DataKey(epoch uint32) ([]byte, error)
-	AlertKey(epoch uint32) ([]byte, error)
-	MetaKey() ([]byte, error)
-	RelayKey(dir secure.Direction, device secure.ID, epoch uint32) ([]byte, error)
-	AcceptsRelayEpoch(epoch uint32, device secure.ID) (bool, error)
-	RelayDevices() ([]secure.ID, error)
-	Signer() ed25519.PrivateKey
-	Agreement() *ecdh.PrivateKey
-	KeyboxRecipient(device secure.ID) (*ecdh.PublicKey, error)
-}
-
 var (
-	_ keySource            = (*Keyring)(nil)
+	_ secure.KeySource     = (*Keyring)(nil)
 	_ secure.RollbackGuard = (*Keyring)(nil)
 )
 
