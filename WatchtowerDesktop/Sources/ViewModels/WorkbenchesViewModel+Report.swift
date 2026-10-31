@@ -61,6 +61,42 @@ extension WorkbenchesViewModel {
     func sessionRowsAppeared(projectID: Int64) async {
         sessionReports?.refresh(workbench: projectID)
         await loadSessions(projectID: projectID)
+        await loadSessionTargetRoots(projectID: projectID)
+    }
+
+    /// The board tree behind the row menu's **Session Target ▸**.
+    private func loadSessionTargetRoots(projectID: Int64) async {
+        let roots = try? await dbPool.read { try WorkbenchQueries.board($0, projectID: projectID) }
+        if let roots { sessionTargetRoots[projectID] = roots }
+    }
+
+    /// **Session Target ▸** (board #1352): binds `session` to `targetID`
+    /// (nil = back to counting what it touched) through the CLI, then the
+    /// rows and the report lines reload. A refusal lands in `sessionTargetError`.
+    func setSessionTarget(_ session: TerminalSession, targetID: Int64?) async {
+        guard let cli else {
+            sessionTargetError = SessionTargetMenu.failureLine(Self.cliMissingMessage)
+            return
+        }
+        do {
+            try await cli.setSessionTarget(sessionID: session.id, targetID: targetID)
+            sessionTargetError = nil
+        } catch {
+            sessionTargetError = SessionTargetMenu.failureLine(Self.sessionTargetStderr(error))
+            return
+        }
+        if let projectID = session.projectID {
+            sessionReports?.refresh(workbench: projectID)
+            await loadSessions(projectID: projectID)
+        }
+    }
+
+    private static func sessionTargetStderr(_ error: Error) -> String {
+        if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
+            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? "watchtower exited with code \(code)" : text
+        }
+        return error.localizedDescription
     }
 
     // MARK: - Session view
