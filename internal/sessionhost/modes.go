@@ -12,8 +12,11 @@ const maxPendingSeq = 32
 // trackedModes maps each tracked DEC private mode to its power-on default.
 var trackedModes = map[int]bool{
 	1: false, 25: true, 47: false, 1000: false, 1002: false, 1003: false,
-	1004: false, 1006: false, 1047: false, 1049: false, 2004: false,
+	1004: false, 1006: false, 1047: false, 1049: false, bracketedPasteMode: false,
 }
+
+// bracketedPasteMode is DEC private mode 2004: bracketed paste.
+const bracketedPasteMode = 2004
 
 // ModeTracker is not safe for concurrent use. It follows DEC private mode changes (CSI ? Pm h|l) in an output
 // stream so a fresh terminal can be put back into the same state.
@@ -86,6 +89,15 @@ func (m *ModeTracker) parse(s []byte) (int, bool) {
 		}
 	}
 	return j + 1, true
+}
+
+// On reports whether a tracked mode is set, its power-on default until the
+// output changed it. An untracked mode reads as off.
+func (m *ModeTracker) On(mode int) bool {
+	if v, ok := m.state[mode]; ok {
+		return v
+	}
+	return trackedModes[mode]
 }
 
 // ReplayPrefix returns the escape sequences that restore every tracked mode

@@ -35,6 +35,7 @@ type session struct {
 	key       sessionKey
 	scope     string
 	agent     string
+	profile   Profile // ProfileFor(agent)
 	launch    uint64
 	pid       int
 	startedAt time.Time
@@ -55,8 +56,8 @@ type session struct {
 	reaped bool
 	// requested: a Stop request's SIGHUP reached the group; the Exit says so.
 	requested bool
-	// dialog: the last PromptHint said a permission dialog is up.
-	dialog   bool
+	// prompt: what the agent's prompt holds not submitted (Deliver's input).
+	prompt   promptState
 	killTime *time.Timer
 }
 
@@ -78,6 +79,7 @@ func startSession(req LaunchReq, launch uint64, ringSize int, now time.Time) (*s
 		key:       sessionKey{row: req.Row, run: req.Run},
 		scope:     req.Scope,
 		agent:     req.Agent,
+		profile:   ProfileFor(req.Agent),
 		launch:    launch,
 		pid:       cmd.Process.Pid,
 		startedAt: now,
@@ -143,6 +145,40 @@ func (s *session) wait() *int {
 		return nil
 	}
 	return &code
+}
+
+// ownerInput feeds one chunk of client input (an attached client's Input or
+// any client's InputTo) into the prompt state. The caller writes the chunk to
+// the PTY after this returns, so a delivery that checks the state under s.mu
+// sees the draft before its bytes land.
+func (s *session) ownerInput(b []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompt.ownerInput(b, s.profile)
+}
+
+// setDialog records a PromptHint: whether a permission dialog is up.
+func (s *session) setDialog(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompt.dialog = on
+}
+
+// promptHoldsText reports whether the prompt holds text not submitted (the
+// owner's draft, a line left typed, or a line in its pause).
+func (s *session) promptHoldsText() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.prompt.holdsText()
+}
+
+// bracketedPaste reports whether the session's terminal has bracketed paste
+// on (DEC mode 2004, read from its output). Without it a delivery types
+// nothing (no_paste_mode).
+func (s *session) bracketedPaste() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modes.On(bracketedPasteMode)
 }
 
 // infoLocked returns the session's list entry. The caller holds s.mu.

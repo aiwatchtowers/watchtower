@@ -312,6 +312,7 @@ func (s *Server) handle(c *conn) {
 				c.sendError("input: not attached to a session")
 				continue
 			}
+			bound.ownerInput(p)
 			if _, err := bound.ptmx.Write(p); err != nil {
 				c.sendError(fmt.Sprintf("input: %v", err))
 			}
@@ -438,7 +439,8 @@ func (s *Server) running(c *conn, op string, row int64, run string, launch uint6
 }
 
 // inputTo writes to a session's PTY without binding the connection: the
-// attached client (if any) keeps its session and sees the echo. Nothing is
+// attached client (if any) keeps its session and sees the echo. The bytes are
+// fed into the prompt state like an attached client's Input. Nothing is
 // answered on success.
 func (s *Server) inputTo(c *conn, p []byte) {
 	var req InputToReq
@@ -450,13 +452,15 @@ func (s *Server) inputTo(c *conn, p []byte) {
 	if sess == nil {
 		return
 	}
+	sess.ownerInput(req.Data)
 	if _, err := sess.ptmx.Write(req.Data); err != nil {
 		c.sendError(fmt.Sprintf("input_to: %v", err))
 	}
 }
 
-// promptHint records whether a permission dialog is up in a session. Nothing
-// is answered on success.
+// promptHint records whether a permission dialog is up in a session; input
+// while it is changes nothing in the prompt state. Nothing is answered on
+// success.
 func (s *Server) promptHint(c *conn, p []byte) {
 	var m PromptHintMsg
 	if err := json.Unmarshal(p, &m); err != nil {
@@ -468,9 +472,7 @@ func (s *Server) promptHint(c *conn, p []byte) {
 		c.sendError(fmt.Sprintf("prompt_hint: no session row %d run %q", m.Row, m.Run))
 		return
 	}
-	sess.mu.Lock()
-	sess.dialog = m.Dialog
-	sess.mu.Unlock()
+	sess.setDialog(m.Dialog)
 }
 
 // stop answers Stopping once the session's group was signalled; the Exit
