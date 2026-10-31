@@ -397,7 +397,11 @@ func (p *Publisher) sourcesOf(k Kind) []Source {
 }
 
 // pushed is a record saved this cycle, recorded once the save succeeded.
-type pushed struct{ name, wire, hash string }
+// signal is a new alert's signal record (zero when it has none).
+type pushed struct {
+	name, wire, hash string
+	signal           secure.Record
+}
 
 // publishKind diffs one kind; wrote is true when it saved or deleted a record.
 func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep *CycleReport) (wrote bool, err error) {
@@ -459,8 +463,16 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 			p.warnOnce(name, hash, fmt.Sprintf("not sealed (%s), payload %d bytes", errClass(err), len(it.Payload)))
 			continue
 		}
+		pu := pushed{name: name, wire: rec.WireName(), hash: hash}
+		if _, published := known[name]; k == KindAskAlert && !published && p.alertSignals() {
+			if pu.signal, err = p.c.Sealer.Signal(rec); err != nil {
+				rep.Skipped = append(rep.Skipped, name)
+				p.warnOnce(name, hash, "without a signal ("+errClass(err)+")")
+				continue
+			}
+		}
 		saves = append(saves, transport.SaveItem{Record: rec})
-		pending = append(pending, pushed{name: name, wire: rec.WireName(), hash: hash})
+		pending = append(pending, pu)
 	}
 
 	if len(saves) > 0 {
@@ -486,6 +498,9 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 				why = errClass(o.Refused)
 			}
 			p.warnOnce(pending[i].name, pending[i].hash, "refused by the transport ("+why+")")
+		}
+		if done, err = p.saveSignals(ctx, done, rep); err != nil {
+			return true, err
 		}
 		if len(done) > 0 {
 			wrote = true
@@ -535,6 +550,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 		}
 		dels = append(dels, transport.DeleteItem{Name: w})
 	}
+	dels = p.withSignalDeletes(k, dels)
 	outs, err := p.c.Transport.Delete(ctx, p.c.DataZone, dels)
 	if err != nil {
 		return wrote, fmt.Errorf("slices: deleting %s: %w", k, err)
@@ -542,8 +558,9 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	if len(outs) != len(dels) {
 		return wrote, fmt.Errorf("slices: deleting %s: %d outcomes for %d records", k, len(outs), len(dels))
 	}
+	logSignalDeletes(outs[len(gone):])
 	var deleted []string
-	for i, o := range outs {
+	for i, o := range outs[:len(gone)] {
 		if o.Saved {
 			deleted = append(deleted, gone[i])
 		} else {
@@ -566,6 +583,91 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	}
 	rep.Deleted += len(deleted)
 	return wrote, nil
+}
+
+// alertSignals reports whether new alerts get a signal record: on CloudKit,
+// where a query subscription fires on it (the Swift AskAlertSignal). The
+// hosted relay pushes an alert through send_alert instead (spec §12a), so no
+// signal is written there.
+func (p *Publisher) alertSignals() bool {
+	return p.c.Transport != nil && p.c.Transport.Kind() == transport.KindCloudKit
+}
+
+// withSignalDeletes adds each gone alert's signal to its deletes (on a
+// transport that writes signals); their outcomes are not the alerts'.
+func (p *Publisher) withSignalDeletes(k Kind, dels []transport.DeleteItem) []transport.DeleteItem {
+	if k != KindAskAlert || !p.alertSignals() {
+		return dels
+	}
+	n := len(dels)
+	for _, d := range dels[:n] {
+		dels = append(dels, transport.DeleteItem{Name: secure.SignalName(d.Name)})
+	}
+	return dels
+}
+
+// logSignalDeletes logs a signal delete not done (a signal never written
+// reports nothing to delete, which counts as done).
+func logSignalDeletes(outs []transport.Outcome) {
+	for _, o := range outs {
+		if !o.Saved {
+			log.Printf("hub slices: delete of an alert's signal not done (%s)", errClass(o.Refused))
+		}
+	}
+}
+
+// saveSignals saves the signals of the alerts in done that first reached
+// the zone (after the alerts, as the Swift hub's batch orders them), each on
+// the condition that it is absent: one that exists already counts as saved
+// and is never re-created. An alert whose signal was refused is dropped from
+// done, so its hash is not recorded and the next cycle tries both again.
+func (p *Publisher) saveSignals(ctx context.Context, done []pushed, rep *CycleReport) ([]pushed, error) {
+	var (
+		sigs  []transport.SaveItem
+		owner []int
+	)
+	for i, d := range done {
+		if d.signal.Sealed() {
+			// Absent only: a signal already in the zone (saved by a cycle
+			// whose hash write then failed) is never written again. The
+			// phone's subscription fires on record creation only
+			// (AskAlertSubscription, firesOnRecordCreation), so one stop
+			// of work never buzzes twice.
+			sigs = append(sigs, transport.SaveItem{Record: d.signal, Expect: transport.Expect{Mode: transport.ExpectAbsent}})
+			owner = append(owner, i)
+		}
+	}
+	if len(sigs) == 0 {
+		return done, nil
+	}
+	outs, err := p.c.Transport.Save(ctx, sigs)
+	if err != nil {
+		return nil, fmt.Errorf("slices: saving alert signals: %w", err)
+	}
+	if len(outs) != len(sigs) {
+		return nil, fmt.Errorf("slices: saving alert signals: %d outcomes for %d records", len(outs), len(sigs))
+	}
+	refused := map[int]bool{}
+	for j, o := range outs {
+		if o.Saved || o.Refused == nil {
+			// Saved, or a failed precondition: the signal already exists.
+			continue
+		}
+		d := done[owner[j]]
+		refused[owner[j]] = true
+		rep.Skipped = append(rep.Skipped, d.name)
+		p.warnOnce(d.name, d.hash, "signal refused by the transport ("+errClass(o.Refused)+")")
+	}
+	if len(refused) == 0 {
+		return done, nil
+	}
+	kept := done[:0:0]
+	for i, d := range done {
+		if !refused[i] {
+			kept = append(kept, d)
+		}
+	}
+	return kept, nil
 }
 
 // seal builds the sendable record: a device_grant as the phone's keybox, an

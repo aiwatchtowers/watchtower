@@ -784,3 +784,26 @@ func TestRelayMaterialWipeLeavesNothing(t *testing.T) {
 		t.Fatal("wipe left material reachable")
 	}
 }
+
+// A rotation moves the work alerts with the sync generation, as the Swift
+// hub's wipeForRotation does: a pushed alert stays published under the new
+// epoch.
+func TestRotateMovesWorkAlertsToTheNewGeneration(t *testing.T) {
+	c := newClock()
+	st := openStore(t)
+	k := newKeyring(t, st, c)
+	ctx := context.Background()
+	if _, _, err := st.NoteWorkAlerts(ctx, []string{"ask-1"}, map[string]bool{"ask-1": true}, c.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Rotate(ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	gen, marks, err := st.NoteWorkAlerts(ctx, nil, nil, c.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen != 1 || marks["ask-1"].Generation != 1 {
+		t.Fatalf("after rotation: gen %d, mark %+v", gen, marks["ask-1"])
+	}
+}

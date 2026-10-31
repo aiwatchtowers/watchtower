@@ -28,8 +28,12 @@ const (
 
 // Liveness is what only the session host knows: the sessions whose process
 // runs, each with its run's start (SessionLiveness.liveIDs + startedAt).
+// Settled is false until the host's runs were listed once: before it a
+// running session may be missing from Runs, so nothing may be written over
+// a session for not being live (the permission requests' expiry).
 type Liveness struct {
-	Runs map[int64]time.Time
+	Runs    map[int64]time.Time
+	Settled bool
 }
 
 // ReportSummary is a session's line of `workbench session-report --summary`

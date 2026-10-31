@@ -172,6 +172,33 @@ func (s *Sealer) Alert(zone, plain string, payload []byte) (Record, error) {
 	return s.signedSymmetric(zone, plain, InnerFrame{Kind: alertKind, ID: plain, Payload: payload}, ClassAlert, "")
 }
 
+// SignalPrefix starts a signal record's wire name (the Kit's WireKind.signal
+// "sig" and a '-').
+const SignalPrefix = "sig-"
+
+// Signal is the payload-free companion of a sealed alert (the Swift
+// AskAlertSignal, F12): "sig-<the alert's wire name>" in the alert's zone,
+// with an empty envelope, which the Kit's SecureTransport passes through
+// unsealed so a CloudKit subscription can fire on it. It names only the
+// alert's opaque record and carries no content. Only an alert this Sealer
+// sealed (class alert, signed) gets one.
+func (s *Sealer) Signal(alert Record) (Record, error) {
+	if !alert.sealed || alert.zone == "" {
+		return Record{}, ErrUnsealed
+	}
+	h, err := parseHeader(alert.envelope)
+	if err != nil {
+		return Record{}, err
+	}
+	if h.Class != ClassAlert {
+		return Record{}, fmt.Errorf("%w: a signal is only for an alert", ErrWrongClass)
+	}
+	return Record{zone: alert.zone, wireName: SignalName(alert.wireName), sealed: true}, nil
+}
+
+// SignalName is the signal record's wire name for an alert's wire name.
+func SignalName(alertWireName string) string { return SignalPrefix + alertWireName }
+
 func (s *Sealer) signedSymmetric(zone, plain string, f InnerFrame, c EnvelopeClass, assetPath string) (Record, error) {
 	if zone == "" {
 		return Record{}, errors.New("secure: record without a zone")

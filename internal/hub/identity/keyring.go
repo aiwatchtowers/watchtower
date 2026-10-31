@@ -575,8 +575,9 @@ func (k *Keyring) Record(wireName string, sender secure.ID, epoch uint32, seq ui
 
 // Rotate begins the next epoch: fresh K_data/K_alert sealed here, the
 // current epoch retired, the new one inserted (first_seq = the seq ceiling
-// now) and the slice hashes wiped, in one transaction. The previous epoch
-// stays readable for PreviousEpochGrace.
+// now), the slice hashes wiped and the work alerts moved to the bumped sync
+// generation (state.MoveWorkAlertsForRotation), in one transaction. The
+// previous epoch stays readable for PreviousEpochGrace.
 func (k *Keyring) Rotate(r Reason) error { return k.RotateWith(r, nil) }
 
 // ErrSkipRotation is returned by RotateWith's also to end the rotation with
@@ -623,7 +624,10 @@ func (k *Keyring) RotateWith(r Reason, also func(*sql.Tx) error) error {
 		if err := k.insertEpoch(tx, next, at); err != nil {
 			return err
 		}
-		return state.WipeSliceHashes(tx)
+		if err := state.WipeSliceHashes(tx); err != nil {
+			return err
+		}
+		return state.MoveWorkAlertsForRotation(tx)
 	})
 	if errors.Is(err, ErrSkipRotation) {
 		return nil
