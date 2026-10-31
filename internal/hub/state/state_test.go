@@ -451,3 +451,26 @@ func TestWipeSliceHashesKeepsWireNames(t *testing.T) {
 		t.Fatalf("slice state = %+v err %v", got, err)
 	}
 }
+
+// The heartbeat's record is the bare kind name; a bare name of another kind
+// and a longer kind sharing the prefix stay out.
+func TestSliceHashesIncludesTheBareKindName(t *testing.T) {
+	s := openTest(t)
+	if err := s.WithTx(context.Background(), func(tx *sql.Tx) error {
+		for _, name := range []string{"heartbeat", "heartbeat-x", "heartbeat_more-1", "digest"} {
+			if err := SetSliceState(tx, name, "w", "h", time.Now()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SliceHashes("heartbeat")
+	if _, bare := got["heartbeat"]; err != nil || len(got) != 2 || !bare || got["heartbeat-x"].Hash != "h" {
+		t.Fatalf("SliceHashes(heartbeat) = %+v %v", got, err)
+	}
+	if got, _ := s.SliceHashes("digest_topic"); len(got) != 0 {
+		t.Fatalf("SliceHashes(digest_topic) = %+v", got)
+	}
+}
