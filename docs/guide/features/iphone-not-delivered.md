@@ -16,7 +16,7 @@ since: next
 -->
 
 - **Waiting to send** lists the oldest changes still queued, each with the time you made it, with a count and "2 more" past the first three. It shows while the phone is holding changes back, and they go out in order as soon as the Mac can take them.
-- **Not delivered · 2** appears when a change never reached the Mac: the Mac refused it for good, or gave no answer for 24 hours ("No answer from Work Mac for 24 hours"). Tap it to open the list, oldest first.
+- **Not delivered · 2** appears when a change never reached the Mac: iCloud refused to carry it for good, or the Mac gave no answer for 24 hours ("No answer from Work Mac for 24 hours"). Tap it to open the list, oldest first.
 
 ### Retry or dismiss
 Each row in the **Not delivered** list has **Retry**, which sends that change again, after anything you did since. While it runs the button is off. If it fails, the reason shows under that row: "Unlock your iPhone to retry." or "Couldn't retry. Try again."
