@@ -423,7 +423,7 @@ func (s *Server) serveOp(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	b, _ := proto.Marshal(resp)
 	w.Header().Set("Content-Type", "application/x-protobuf")
-	_, _ = w.Write(b) //nolint:gosec // a protobuf answer of a test server, not HTML
+	_, _ = w.Write(b)
 }
 
 // handle answers one op of caller (a device id, "" before login) and queues
