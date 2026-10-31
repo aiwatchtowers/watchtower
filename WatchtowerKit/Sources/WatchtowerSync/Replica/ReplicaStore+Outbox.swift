@@ -46,6 +46,8 @@ public struct QueuedControl: Equatable, Sendable {
 enum ReplicaOutboxError: Error, Equatable {
     /// `replica_meta.action_seq_next` holds something that is not a seq: the counter cannot be trusted.
     case unreadableCounter(String)
+    /// `setDelivery(.undelivered, …)`: a row is listed only through `markUndelivered`, with its reason and message.
+    case undeliveredNeedsAReason
 }
 
 extension ReplicaStore {
@@ -164,13 +166,20 @@ extension ReplicaStore {
         }
     }
 
-    /// Sets the delivery of ordered rows (legacy rows are never touched).
+    /// Sets the delivery of ordered rows (legacy rows are never touched). Refuses `.undelivered` (that is
+    /// `markUndelivered`'s, with its reason). A row leaving Not delivered is pending again: its reason and the
+    /// local message go.
     func setDelivery(_ delivery: Delivery, actionIDs: [String]) throws {
+        guard delivery != .undelivered else { throw ReplicaOutboxError.undeliveredNeedsAReason }
         guard !actionIDs.isEmpty else { return }
         try writer.write { db in
             try db.execute(
                 sql: """
-                    UPDATE pending_actions SET delivery = ?
+                    UPDATE pending_actions SET
+                        state = CASE WHEN delivery = 'undelivered' THEN 'pending' ELSE state END,
+                        error_message = CASE WHEN delivery = 'undelivered' THEN NULL ELSE error_message END,
+                        undelivered_reason = NULL,
+                        delivery = ?
                     WHERE action_seq IS NOT NULL AND action_id IN (\(Self.placeholders(actionIDs.count)))
                     """,
                 arguments: StatementArguments([delivery.rawValue] + actionIDs))
@@ -308,7 +317,23 @@ extension ReplicaStore {
             try Row.fetchAll(
                 db, sql: "SELECT * FROM pending_actions WHERE \(predicate) ORDER BY action_seq", arguments: arguments)
         }
-        return rows.compactMap(Self.outboxRow)
+        var readable: [OutboxRow] = []
+        var badIDs: [String] = []
+        for row in rows {
+            if let outboxRow = Self.outboxRow(row) {
+                readable.append(outboxRow)
+            } else {
+                badIDs.append(row["action_id"])
+            }
+        }
+        let newBadIDs = badIDs
+        let firstSeen = corruptPending.withLock { seen -> [String] in
+            newBadIDs.filter { seen.insert($0).inserted }
+        }
+        for id in firstSeen {
+            logger.warning("unreadable ordered pending_actions row skipped: \(id, privacy: .public)")
+        }
+        return readable
     }
 
     private static func pruneHandledControls(_ db: Database, before date: Date) throws {

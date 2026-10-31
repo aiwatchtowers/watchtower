@@ -323,7 +323,39 @@ final class ReplicaOutboxTests: XCTestCase {
                     """)
             }
             XCTFail("a second row with action_seq 1 was accepted")
-        } catch {}
+        } catch let error as DatabaseError {
+            XCTAssertEqual(error.resultCode, .SQLITE_CONSTRAINT)
+        }
+    }
+
+    func testSetDeliveryRefusesUndeliveredAndALeavingRowIsPendingAgain() async throws {
+        let phone = try makePhone()
+        try await insertOrdered(2, phone)
+        XCTAssertThrowsError(try phone.store.setDelivery(.undelivered, actionIDs: ["a1"]))
+        XCTAssertEqual(try deliveries(phone.store), ["a1": .queued, "a2": .queued])
+
+        try phone.store.markUndelivered(actionIDs: ["a1"], reason: .refused, message: "Not delivered to your Mac.")
+        try phone.store.setDelivery(.sent, actionIDs: ["a1"])
+        let row = try XCTUnwrap(try phone.store.pendingActions().first { $0.id == "a1" })
+        XCTAssertEqual(row.delivery, .sent)
+        XCTAssertEqual(row.state, .pending)
+        XCTAssertNil(row.undeliveredReason)
+        XCTAssertNil(row.errorMessage)
+    }
+
+    /// An ordered row with no wire name (never written so by this module) cannot be sent.
+    func testAnUnreadableOrderedRowIsSkippedAndNotedOnce() async throws {
+        let phone = try makePhone()
+        try await insertOrdered(1, phone)
+        try await phone.store.writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO pending_actions (action_id, kind, payload, created_at, state, action_seq, delivery)
+                VALUES ('broken', 'target_done', X'00', 0, 'pending', 2, 'queued')
+                """)
+        }
+        XCTAssertEqual(try phone.store.outboxRows(fromSeq: 1, below: 3).map(\.actionID), ["a1"])
+        XCTAssertEqual(try phone.store.outboxRows(fromSeq: 1, below: 3).map(\.actionID), ["a1"])
+        XCTAssertEqual(phone.store.corruptPending.withLock { $0 }, ["broken"])
     }
 
     func testTheOrderedFlagAndCounterSurviveTheFormatWipe() async throws {
