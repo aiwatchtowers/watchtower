@@ -406,3 +406,16 @@ func TestADeletedWorkbenchLeavesTheZoneWithItsTargetsAndComments(t *testing.T) {
 		t.Errorf("comment hashes = %v", comments)
 	}
 }
+
+// Quick run orders by localizedCaseInsensitiveCompare: a name with a
+// diacritic sorts by its letter, not its UTF-8 bytes.
+func TestAutomationsSortByCollation(t *testing.T) {
+	d := db.OpenTestDB(t)
+	acme := insertWorkbench(t, d, "Acme", home+"/Projects/acme")
+	insertAutomation(t, d, "zeta", "zeta", "manual", `{"manual":true}`, &acme, nil)
+	insertAutomation(t, d, "eclair", "Éclair", "manual", `{"manual":true}`, &acme, nil)
+	list, _ := only(t, payloads(t, workbenchSrc(d, nil)))["automations"].([]any)
+	if len(list) != 2 || list[0].(map[string]any)["name"] != "Éclair" {
+		t.Errorf("automations = %v", list)
+	}
+}

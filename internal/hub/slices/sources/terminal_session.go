@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
@@ -516,7 +517,7 @@ func (st sessionState) caption() string {
 		}
 		return agents
 	case kindFailed:
-		words := strings.Trim(strings.ReplaceAll(st.err, "_", " "), " \t")
+		words := strings.TrimFunc(strings.ReplaceAll(st.err, "_", " "), isSwiftWhitespace)
 		if words == "" {
 			return "Stopped on an error"
 		}
@@ -547,3 +548,7 @@ func asksOpen(n int) string {
 	}
 	return strconv.Itoa(n) + " asks open"
 }
+
+// isSwiftWhitespace is CharacterSet.whitespaces: the space separators (Zs)
+// and the tab, never a line break.
+func isSwiftWhitespace(r rune) bool { return r == '\t' || unicode.Is(unicode.Zs, r) }

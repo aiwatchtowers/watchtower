@@ -63,16 +63,40 @@ func newTimelineRig(t *testing.T) *timelineRig {
 	return &timelineRig{sessionRig: newSessionRig(t), st: openSidecar(t), k: newSealer(t), live: map[int64]time.Time{}}
 }
 
-func (r *timelineRig) source() hubslices.Source {
+func (r *timelineRig) source() *TimelineSource {
+	r.t.Helper()
 	clock := func() time.Time { return r.now }
 	sessions := TerminalSessions(r.d, TerminalSessionOptions{
 		Liveness: func() Liveness { return Liveness{Runs: r.live} },
 		Now:      clock,
 	})
-	return SessionTimeline(r.d, TimelineOptions{
+	src, err := SessionTimeline(r.d, TimelineOptions{
 		Sessions: sessions, Store: r.st, Sealer: r.k, Now: clock,
 		Reports: func(context.Context) (map[int64]sessionreport.Report, error) { return r.reports, nil },
 	})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return src
+}
+
+// rawMilestones reads the sidecar's milestone rows as stored.
+func (r *timelineRig) rawMilestones(session int64) [][]byte {
+	r.t.Helper()
+	var out [][]byte
+	err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		all, err := state.Milestones(tx)
+		for _, m := range all {
+			if m.SessionID == session {
+				out = append(out, m.Text)
+			}
+		}
+		return err
+	})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return out
 }
 
 // seedSession is a workbench with one session created an hour ago and
@@ -91,11 +115,13 @@ func (r *timelineRig) addMilestone(session int64, at time.Time, text string) {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	err = r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO session_milestones (session_id, at, kind, text, ref) VALUES (?, ?, 'state', ?, NULL)`,
-			session, toReal(at), sealed)
-		return err
-	})
+	r.addRawMilestone(session, at, sealed)
+}
+
+// addRawMilestone stores a milestone's text bytes as given.
+func (r *timelineRig) addRawMilestone(session int64, at time.Time, text []byte) {
+	r.t.Helper()
+	err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.InsertMilestone(tx, session, at, text) })
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -130,27 +156,12 @@ func field(list []map[string]any, key string) []any {
 func (r *timelineRig) stored(session int64) []string {
 	r.t.Helper()
 	var texts []string
-	err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT text FROM session_milestones WHERE session_id = ? ORDER BY at DESC, rowid DESC`, session)
+	for _, sealed := range r.rawMilestones(session) {
+		plain, err := r.k.OpenLocal(milestoneTextLabel, sealed)
 		if err != nil {
-			return err
+			r.t.Fatal(err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var sealed []byte
-			if err := rows.Scan(&sealed); err != nil {
-				return err
-			}
-			plain, err := r.k.OpenLocal(milestoneTextLabel, sealed)
-			if err != nil {
-				return err
-			}
-			texts = append(texts, string(plain))
-		}
-		return rows.Err()
-	})
-	if err != nil {
-		r.t.Fatal(err)
+		texts = append(texts, string(plain))
 	}
 	return texts
 }
@@ -411,24 +422,9 @@ func TestMilestoneTextIsSealedInTheSidecar(t *testing.T) {
 	if _, err := r.source().Items(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var raw [][]byte
-	err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT text FROM session_milestones WHERE session_id = ?`, session)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var b []byte
-			if err := rows.Scan(&b); err != nil {
-				return err
-			}
-			raw = append(raw, b)
-		}
-		return rows.Err()
-	})
-	if err != nil || len(raw) != 1 {
-		t.Fatalf("%d rows, %v", len(raw), err)
+	raw := r.rawMilestones(session)
+	if len(raw) != 1 {
+		t.Fatalf("%d rows", len(raw))
 	}
 	if bytes.Contains(raw[0], []byte("Needs approval")) {
 		t.Error("milestone text stored in the clear")
@@ -438,5 +434,68 @@ func TestMilestoneTextIsSealedInTheSidecar(t *testing.T) {
 	}
 	if _, err := r.k.OpenLocal("session_reports.payload", raw[0]); err == nil {
 		t.Error("the value opens under another column's label")
+	}
+}
+
+// A state shorter than a publish cycle (a 20 s Needs approval between two
+// full ticks) becomes a milestone at the time the fast lane saw it, through
+// Observe.
+func TestAShortStateBetweenTwoFullTicksBecomesAMilestone(t *testing.T) {
+	r := newTimelineRig(t)
+	_, session := r.seedSession()
+	r.live[session] = r.started
+	src := r.source()
+	r.setState(session, stateSeed{state: ptr("working")})
+	payloads(t, src) // full tick
+	seen := r.now.Add(5 * time.Second)
+	r.setState(session, stateSeed{state: ptr("approval"), at: 2 * time.Second})
+	if err := src.Observe(context.Background(), seen); err != nil {
+		t.Fatal(err)
+	}
+	back := seen.Add(20 * time.Second)
+	r.setState(session, stateSeed{state: ptr("working"), at: 3 * time.Second})
+	if err := src.Observe(context.Background(), back); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(time.Minute)
+	list := milestones(t, payloads(t, src)[session]) // the next full tick
+	if fmt.Sprint(field(list, "text")) != "[Working Needs approval Working]" {
+		t.Fatalf("milestones = %v", field(list, "text"))
+	}
+	if !near(float(list[1]["at"]), seen) || !near(float(list[0]["at"]), back) {
+		t.Errorf("stamped %v and %v, want %v and %v", list[1]["at"], list[0]["at"], seen, back)
+	}
+}
+
+// An adopted Swift sidecar's plaintext milestone is deleted on first sight:
+// it neither stays on disk nor counts toward the 100-per-session trim.
+func TestAPlaintextMilestoneIsDeletedOnSight(t *testing.T) {
+	r := newTimelineRig(t)
+	_, session := r.seedSession()
+	r.addRawMilestone(session, r.now.Add(-time.Hour), []byte("Working"))
+	r.addMilestone(session, r.now.Add(-time.Minute), "Stopped")
+	if _, err := r.source().Items(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.stored(session); fmt.Sprint(got) != "[Stopped]" {
+		t.Errorf("stored = %v", got)
+	}
+}
+
+func TestSessionTimelineNeedsItsInputs(t *testing.T) {
+	d := db.OpenTestDB(t)
+	sessions := TerminalSessions(d, TerminalSessionOptions{})
+	st, k := openSidecar(t), newSealer(t)
+	for name, o := range map[string]TimelineOptions{
+		"sessions": {Store: st, Sealer: k},
+		"store":    {Sessions: sessions, Sealer: k},
+		"sealer":   {Sessions: sessions, Store: st},
+	} {
+		if _, err := SessionTimeline(d, o); err == nil {
+			t.Errorf("no %s: no error", name)
+		}
+	}
+	if _, err := SessionTimeline(d, TimelineOptions{Sessions: sessions, Store: st, Sealer: k}); err != nil {
+		t.Errorf("complete options: %v", err)
 	}
 }

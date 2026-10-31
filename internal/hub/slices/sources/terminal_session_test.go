@@ -293,7 +293,11 @@ func TestCodexRowsIncludedInSlices(t *testing.T) {
 	if got := countsOf(t, r.d, src)[project]; got.Working != 1 || got.NotRunning != 1 {
 		t.Errorf("counts = %+v", got)
 	}
-	tl := payloads(t, SessionTimeline(r.d, TimelineOptions{Sessions: src, Store: openSidecar(t), Sealer: newSealer(t)}))
+	timeline, err := SessionTimeline(r.d, TimelineOptions{Sessions: src, Store: openSidecar(t), Sealer: newSealer(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl := payloads(t, timeline)
 	if len(tl) != 2 || tl[codex] == nil || tl[fresh] == nil {
 		t.Errorf("timeline window = %v", tl)
 	}
@@ -383,5 +387,20 @@ func TestWorkbenchSessionCountsComeFromTheSessionSource(t *testing.T) {
 	counts, _ := p["session_counts"].(map[string]any)
 	if num(counts["working"]) != 1 || num(counts["not_running"]) != 0 {
 		t.Errorf("session_counts = %v", counts)
+	}
+}
+
+// The error caption trims like Swift's .whitespaces: Unicode spaces and
+// tabs, never a line break.
+func TestFailedCaptionTrimsSwiftWhitespace(t *testing.T) {
+	cases := map[string]string{
+		" rate_limit\t": "Error: rate limit",
+		" ":             "Stopped on an error",
+		"oops\n":        "Error: oops\n",
+	}
+	for in, want := range cases {
+		if got := (sessionState{kind: kindFailed, err: in}).caption(); got != want {
+			t.Errorf("caption(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

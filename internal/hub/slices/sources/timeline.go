@@ -3,9 +3,9 @@ package sources
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
-	"math"
 	"sort"
 	"strconv"
 	"sync"
@@ -72,19 +72,35 @@ type TimelineOptions struct {
 //
 // No subagent events and never the transcript or terminal text (I-4). Wire
 // shape: the Kit mirror WatchtowerKit.SessionTimeline.
-func SessionTimeline(d *db.DB, o TimelineOptions) hubslices.Source {
+//
+// Both Items and Observe write the sidecar (session_milestones): only the
+// hub, holding the hub lock (state.AcquireLock), may call them — never a CLI
+// or preview path. Sessions, Store and Sealer are required.
+func SessionTimeline(d *db.DB, o TimelineOptions) (*TimelineSource, error) {
+	switch {
+	case d == nil:
+		return nil, errors.New("hub slices: session_timeline needs the database")
+	case o.Sessions == nil:
+		return nil, errors.New("hub slices: session_timeline needs the terminal_session source")
+	case o.Store == nil:
+		return nil, errors.New("hub slices: session_timeline needs the hub state")
+	case o.Sealer == nil:
+		return nil, errors.New("hub slices: session_timeline needs a sealer")
+	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &timelineSource{d: d, o: o}
+	return &TimelineSource{d: d, o: o}, nil
 }
 
-type timelineSource struct {
+// TimelineSource is the session_timeline source (SessionTimeline).
+type TimelineSource struct {
 	d *db.DB
 	o TimelineOptions
 }
 
-func (s *timelineSource) Kind() hubslices.Kind { return "session_timeline" }
+// Kind is "session_timeline".
+func (s *TimelineSource) Kind() hubslices.Kind { return "session_timeline" }
 
 // Milestone kinds: the Kit's SessionTimeline.Milestone.Kind values, and
 // nothing beyond them (no subagent kind).
@@ -132,37 +148,26 @@ type windowed struct {
 	rows         []rawMilestone
 }
 
-func (s *timelineSource) Items(ctx context.Context) ([]hubslices.Item, error) {
+// Observe records a state milestone for each windowed session whose state
+// text changed since its newest stored one, the transition stamped
+// changedAt (when the hub first saw the change; the newest stored time if
+// that is later). The runtime calls it on a session-state change seen on the
+// fast lane, so a state shorter than a publish cycle still becomes a
+// milestone at its own time; Items observes too, as the fallback. It also
+// prunes the sidecar (14 days, 100 per session).
+func (s *TimelineSource) Observe(ctx context.Context, changedAt time.Time) error {
+	window, err := s.window(ctx, s.o.Now(), false)
+	if err != nil {
+		return err
+	}
+	_, err = s.observe(ctx, window, changedAt)
+	return err
+}
+
+// Items publishes the window's timelines, observing the states first.
+func (s *TimelineSource) Items(ctx context.Context) ([]hubslices.Item, error) {
 	now := s.o.Now()
-	var window []windowed
-	err := readTx(ctx, s.d, func(tx *sql.Tx) error {
-		published, err := s.o.Sessions.published(ctx, tx)
-		if err != nil {
-			return err
-		}
-		cutoff := now.Add(-reportWindow)
-		for _, p := range published {
-			last := time.Unix(0, 0).UTC()
-			if t := parseDate(p.lastActiveAt); t != nil {
-				last = t.Time
-			}
-			if !p.state.live && last.Before(cutoff) {
-				continue
-			}
-			w := windowed{id: p.id, lastActiveAt: last, state: p.state}
-			if t := parseDate(p.createdAt); t != nil {
-				w.createdAt = &t.Time
-			}
-			if p.stateAt != nil {
-				w.stateAt = &p.stateAt.Time
-			}
-			if w.rows, err = rowMilestones(ctx, tx, w); err != nil {
-				return err
-			}
-			window = append(window, w)
-		}
-		return nil
-	})
+	window, err := s.window(ctx, now, true)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +195,44 @@ func (s *timelineSource) Items(ctx context.Context) ([]hubslices.Item, error) {
 		items = append(items, hubslices.Item{ID: strconv.FormatInt(w.id, 10), Payload: b})
 	}
 	return items, nil
+}
+
+// window is SessionReportSlice.window: the terminal_session window's
+// sessions that are live or were active in the last 7 days, with their row
+// milestones when withRows.
+func (s *TimelineSource) window(ctx context.Context, now time.Time, withRows bool) ([]windowed, error) {
+	var window []windowed
+	err := readTx(ctx, s.d, func(tx *sql.Tx) error {
+		published, err := s.o.Sessions.published(ctx, tx)
+		if err != nil {
+			return err
+		}
+		cutoff := now.Add(-reportWindow)
+		for _, p := range published {
+			last := time.Unix(0, 0).UTC()
+			if t := parseDate(p.lastActiveAt); t != nil {
+				last = t.Time
+			}
+			if !p.state.live && last.Before(cutoff) {
+				continue
+			}
+			w := windowed{id: p.id, lastActiveAt: last, state: p.state}
+			if t := parseDate(p.createdAt); t != nil {
+				w.createdAt = &t.Time
+			}
+			if p.stateAt != nil {
+				w.stateAt = &p.stateAt.Time
+			}
+			if withRows {
+				if w.rows, err = rowMilestones(ctx, tx, w); err != nil {
+					return err
+				}
+			}
+			window = append(window, w)
+		}
+		return nil
+	})
+	return window, err
 }
 
 // timelineOf is SessionTimelineSlice.payload: newest first (ties keep their
@@ -249,36 +292,37 @@ var unreadableMilestones sync.Once
 // observe records a state milestone for each windowed session whose state
 // text differs from its newest stored one, prunes the milestones past 14
 // days and past a session's newest 100, and returns every stored state
-// milestone by session, newest first — one sidecar transaction.
-func (s *timelineSource) observe(ctx context.Context, window []windowed, now time.Time) (map[int64][]rawMilestone, error) {
+// milestone by session, newest first — one sidecar transaction. at is the
+// transition time (when the change was seen).
+func (s *TimelineSource) observe(ctx context.Context, window []windowed, at time.Time) (map[int64][]rawMilestone, error) {
 	out := map[int64][]rawMilestone{}
 	err := s.o.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		stored, err := s.storedMilestones(ctx, tx)
+		stored, err := s.storedMilestones(tx)
 		if err != nil {
 			return err
 		}
-		cutoff := now.Add(-milestoneLifetime)
+		cutoff := s.o.Now().Add(-milestoneLifetime)
 		for _, w := range window {
 			text := stateText(w.state)
 			if text == "" {
 				continue
 			}
-			var at time.Time
+			var when time.Time
 			if prev := stored[w.id]; len(prev) > 0 {
 				if prev[0].text == text {
 					continue
 				}
-				at = now
-				if prev[0].at.After(now) {
-					at = prev[0].at
+				when = at
+				if prev[0].at.After(at) {
+					when = prev[0].at
 				}
 			} else {
 				// First sighting: the state's own time.
-				at = w.lastActiveAt
+				when = w.lastActiveAt
 				if w.stateAt != nil {
-					at = *w.stateAt
+					when = *w.stateAt
 				}
-				if at.Before(cutoff) {
+				if when.Before(cutoff) {
 					continue
 				}
 			}
@@ -286,25 +330,14 @@ func (s *timelineSource) observe(ctx context.Context, window []windowed, now tim
 			if err != nil {
 				return fmt.Errorf("sealing a milestone: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO session_milestones (session_id, at, kind, text, ref) VALUES (?, ?, 'state', ?, NULL)`,
-				w.id, toReal(at), sealed); err != nil {
-				return fmt.Errorf("storing a milestone: %w", err)
+			if err := state.InsertMilestone(tx, w.id, when, sealed); err != nil {
+				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM session_milestones WHERE at < ?`, toReal(cutoff)); err != nil {
-			return fmt.Errorf("pruning milestones: %w", err)
+		if err := state.PruneMilestones(tx, cutoff, milestonesPerSession); err != nil {
+			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-DELETE FROM session_milestones WHERE rowid IN (
-    SELECT rowid FROM (
-        SELECT rowid, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY at DESC, rowid DESC) AS rank
-        FROM session_milestones
-    ) WHERE rank > ?
-)`, milestonesPerSession); err != nil {
-			return fmt.Errorf("trimming milestones: %w", err)
-		}
-		if stored, err = s.storedMilestones(ctx, tx); err != nil {
+		if stored, err = s.storedMilestones(tx); err != nil {
 			return err
 		}
 		for id, list := range stored {
@@ -317,44 +350,28 @@ DELETE FROM session_milestones WHERE rowid IN (
 	return out, err
 }
 
-// storedMilestones reads every state milestone by session, newest first.
-// A text that does not open (an adopted Swift row in plaintext, another
-// hub's key) is left out.
-func (s *timelineSource) storedMilestones(ctx context.Context, tx *sql.Tx) (map[int64][]storedMilestone, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT session_id, at, text FROM session_milestones ORDER BY session_id, at DESC, rowid DESC`)
+// storedMilestones reads every state milestone by session, newest first,
+// opened. A text that does not open (an adopted Swift sidecar's plaintext
+// row, another hub's key) is deleted on sight, so it neither hides behind a
+// first sighting nor counts toward the 100-per-session trim.
+func (s *TimelineSource) storedMilestones(tx *sql.Tx) (map[int64][]storedMilestone, error) {
+	rows, err := state.Milestones(tx)
 	if err != nil {
-		return nil, fmt.Errorf("reading milestones: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 	out := map[int64][]storedMilestone{}
-	for rows.Next() {
-		var (
-			id     int64
-			at     float64
-			sealed []byte
-		)
-		if err := rows.Scan(&id, &at, &sealed); err != nil {
-			return nil, fmt.Errorf("reading milestones: %w", err)
-		}
-		text, err := s.o.Sealer.OpenLocal(milestoneTextLabel, sealed)
+	for _, m := range rows {
+		text, err := s.o.Sealer.OpenLocal(milestoneTextLabel, m.Text)
 		if err != nil {
-			unreadableMilestones.Do(func() { log.Printf("hub slices: a stored milestone does not open; left out") })
+			unreadableMilestones.Do(func() { log.Printf("hub slices: stored milestones that do not open are deleted") })
+			if err := state.DeleteMilestone(tx, m.RowID); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		out[id] = append(out[id], storedMilestone{at: fromReal(at), text: string(text)})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading milestones: %w", err)
+		out[m.SessionID] = append(out[m.SessionID], storedMilestone{at: m.At, text: string(text)})
 	}
 	return out, nil
-}
-
-// toReal and fromReal are the sidecar's time column: REAL seconds since 1970.
-func toReal(t time.Time) float64 { return float64(t.UnixNano()) / 1e9 }
-
-func fromReal(f float64) time.Time {
-	sec, frac := math.Modf(f)
-	return time.Unix(int64(sec), int64(math.Round(frac*1e9))).UTC()
 }
 
 // rowMilestones is SessionTimelineSlice.rowMilestones: the asks, target

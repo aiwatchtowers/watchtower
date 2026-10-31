@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/text/collate"
+	"golang.org/x/text/language"
+
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/slices"
@@ -352,6 +355,7 @@ WHERE a.removed_at IS NULL AND a.scope = 'workbench' AND a.project_id IS NOT NUL
 	defer rows.Close()
 	type row struct {
 		a         workbenchAutomation
+		name      string // the full name the order compares
 		project   int64
 		scheduled bool
 	}
@@ -373,6 +377,7 @@ WHERE a.removed_at IS NULL AND a.scope = 'workbench' AND a.project_id IS NOT NUL
 		if name == "" {
 			name = slug
 		}
+		r.name = name
 		r.a.Name, r.a.NameClipped = clipText(name, maxWorkbenchTxt)
 		switch trigger {
 		case "schedule", "event":
@@ -411,13 +416,16 @@ WHERE a.removed_at IS NULL AND a.scope = 'workbench' AND a.project_id IS NOT NUL
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("reading the automations: %w", err)
 	}
+	// localizedCaseInsensitiveCompare as closely as Go allows: the root
+	// collation, case ignored (diacritics still count, as in Swift).
+	order := collate.New(language.Und, collate.IgnoreCase)
 	sort.SliceStable(all, func(i, j int) bool {
 		l, r := all[i], all[j]
 		if l.scheduled != r.scheduled {
 			return !l.scheduled
 		}
-		if ln, rn := strings.ToLower(l.a.Name), strings.ToLower(r.a.Name); ln != rn {
-			return ln < rn
+		if c := order.CompareString(l.name, r.name); c != 0 {
+			return c < 0
 		}
 		return l.a.ID < r.a.ID
 	})
