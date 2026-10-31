@@ -194,8 +194,11 @@ package struct TerminalLaunch: Equatable, Sendable {
 
     /// `claude`'s usage documents no `--` before the prompt, so a prompt
     /// starting with "-" gets a leading space and is never read as a flag.
+    /// The first scalar is checked, not the first character: "-" with a
+    /// combining mark is one character, but an argv parser sees the dash
+    /// (same as Go `positionalPrompt`).
     package static func positionalPrompt(_ prompt: String) -> String {
-        prompt.hasPrefix("-") ? " " + prompt : prompt
+        prompt.unicodeScalars.first == "-" ? " " + prompt : prompt
     }
 
     /// Lowercase canonical UUID only, any version (Claude Code's v4, Codex's

@@ -1,0 +1,485 @@
+[
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : false
+    },
+    "name" : "auto, free, git ok",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "name" : "auto, free, status unread",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : false,
+      "git_available" : false,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "auto, free, no git binary",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : false,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "auto, free, not a repository",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "auto, free, status failed",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : true
+    },
+    "name" : "auto, free, unborn",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : false
+    },
+    "name" : "auto, occupied, git ok",
+    "occupied" : true,
+    "want" : {
+      "worktree" : true
+    }
+  },
+  {
+    "choice" : "auto",
+    "name" : "auto, occupied, status unread",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: the folder's git status could not be read.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : false,
+      "git_available" : false,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "auto, occupied, no git binary",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: git is not available.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : false,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "auto, occupied, not a repository",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: the folder is not in a git repository.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "auto, occupied, status failed",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: the folder's git status could not be read.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "auto",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : true
+    },
+    "name" : "auto, occupied, unborn",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: the repository has no commit yet.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : false
+    },
+    "name" : "folder, free, git ok",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "name" : "folder, free, status unread",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : false,
+      "git_available" : false,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "folder, free, no git binary",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : false,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "folder, free, not a repository",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "folder, free, status failed",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : true
+    },
+    "name" : "folder, free, unborn",
+    "occupied" : false,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : false
+    },
+    "name" : "folder, occupied, git ok",
+    "occupied" : true,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "name" : "folder, occupied, status unread",
+    "occupied" : true,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : false,
+      "git_available" : false,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "folder, occupied, no git binary",
+    "occupied" : true,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : false,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "folder, occupied, not a repository",
+    "occupied" : true,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "folder, occupied, status failed",
+    "occupied" : true,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "folder",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : true
+    },
+    "name" : "folder, occupied, unborn",
+    "occupied" : true,
+    "want" : {
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : false
+    },
+    "name" : "worktree, free, git ok",
+    "occupied" : false,
+    "want" : {
+      "worktree" : true
+    }
+  },
+  {
+    "choice" : "worktree",
+    "name" : "worktree, free, status unread",
+    "occupied" : false,
+    "want" : {
+      "note" : "Started in the folder: the folder's git status could not be read.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : false,
+      "git_available" : false,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "worktree, free, no git binary",
+    "occupied" : false,
+    "want" : {
+      "note" : "Started in the folder: git is not available.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : false,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "worktree, free, not a repository",
+    "occupied" : false,
+    "want" : {
+      "note" : "Started in the folder: the folder is not in a git repository.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "worktree, free, status failed",
+    "occupied" : false,
+    "want" : {
+      "note" : "Started in the folder: the folder's git status could not be read.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : true
+    },
+    "name" : "worktree, free, unborn",
+    "occupied" : false,
+    "want" : {
+      "note" : "Started in the folder: the repository has no commit yet.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : false
+    },
+    "name" : "worktree, occupied, git ok",
+    "occupied" : true,
+    "want" : {
+      "worktree" : true
+    }
+  },
+  {
+    "choice" : "worktree",
+    "name" : "worktree, occupied, status unread",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: the folder's git status could not be read.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : false,
+      "git_available" : false,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "worktree, occupied, no git binary",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: git is not available.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : false,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "worktree, occupied, not a repository",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: the folder is not in a git repository.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : false,
+      "unborn" : false
+    },
+    "name" : "worktree, occupied, status failed",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: the folder's git status could not be read.",
+      "worktree" : false
+    }
+  },
+  {
+    "choice" : "worktree",
+    "git" : {
+      "git" : true,
+      "git_available" : true,
+      "status_ok" : true,
+      "unborn" : true
+    },
+    "name" : "worktree, occupied, unborn",
+    "occupied" : true,
+    "want" : {
+      "note" : "Started in the folder: the repository has no commit yet.",
+      "worktree" : false
+    }
+  }
+]

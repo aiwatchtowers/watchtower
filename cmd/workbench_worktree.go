@@ -69,7 +69,7 @@ func worktreeTarget(ctx context.Context) (id int64, o workbenchgit.Options, refu
 	if err != nil {
 		return 0, o, "", "", err
 	}
-	refused, detail = folderRefusal(folder, resolveErr)
+	refused, detail = workbenchgit.FolderRefusal(folder, resolveErr)
 	return id, o, refused, detail, nil
 }
 

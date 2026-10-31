@@ -238,3 +238,18 @@ func mappedRoot(top, wbTop, wbReal string) string {
 	}
 	return top
 }
+
+// FolderRefusal is why a branches, switch or create call may not use the
+// folder asked for: a folder that could not be read, a failed worktree
+// listing or a folder outside the repository's worktrees. "" = go ahead.
+func FolderRefusal(folder ResolvedFolder, resolveErr error) (refused, detail string) {
+	switch {
+	case errors.Is(resolveErr, ErrFolderUnreadable):
+		return RefusedFolderUnreadable, resolveErr.Error()
+	case resolveErr != nil:
+		return RefusedGitFailed, "listing the worktrees: " + resolveErr.Error()
+	case folder.OutsideTheRepository():
+		return RefusedFolderNotAWorktree, string(folder.Scope)
+	}
+	return "", ""
+}

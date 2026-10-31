@@ -1,0 +1,836 @@
+[
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude new, no prompt",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "prompt" : "Set up this Watchtower workbench using the watchtower-workbench skill.",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude new, first-run prompt",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6 \"$WATCHTOWER_FIRST_PROMPT\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT=Set up this Watchtower workbench using the watchtower-workbench skill."
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "prompt" : "Say \"hi\" and 'bye'\n$HOME `x`",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude new, prompt with quotes and a newline",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6 \"$WATCHTOWER_FIRST_PROMPT\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT=Say \"hi\" and 'bye'\n$HOME `x`"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "prompt" : "-p evil",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude new, prompt starting with a dash",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6 \"$WATCHTOWER_FIRST_PROMPT\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT= -p evil"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "prompt" : "-́p",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude new, prompt starting with a dash and a combining mark",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6 \"$WATCHTOWER_FIRST_PROMPT\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT= -́p"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "prompt" : "",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude new, empty prompt",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6 \"$WATCHTOWER_FIRST_PROMPT\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT="
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "prompt" : "hello",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude new, no row",
+    "row" : 0,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6 \"$WATCHTOWER_FIRST_PROMPT\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_FIRST_PROMPT=hello"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 0
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "resume" : true,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude resume",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec claude --resume 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "codex" : {
+      "args" : [
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        "mcp_servers.w.args=['mcp']"
+      ],
+      "binary" : "/opt/co'dex/bin/codex",
+      "path_prepend" : "/opt/co'dex/bin"
+    },
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "codex new, no prompt",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'eval \"$WATCHTOWER_CODEX_COMMAND\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']'"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "codex" : {
+      "args" : [
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        "mcp_servers.w.args=['mcp']"
+      ],
+      "binary" : "/opt/co'dex/bin/codex",
+      "path_prepend" : "/opt/co'dex/bin"
+    },
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "prompt" : "-p not a flag",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "codex new, prompt starting with a dash",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'eval \"$WATCHTOWER_CODEX_COMMAND\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' -- \"$WATCHTOWER_FIRST_PROMPT\"",
+        "WATCHTOWER_FIRST_PROMPT=-p not a flag"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "codex" : {
+      "args" : [
+
+      ],
+      "binary" : "/usr/local/bin/codex",
+      "path_prepend" : ""
+    },
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "prompt" : "go",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "codex new, no path prepend",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'eval \"$WATCHTOWER_CODEX_COMMAND\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_CODEX_COMMAND=exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/usr/local/bin/codex' -- \"$WATCHTOWER_FIRST_PROMPT\"",
+        "WATCHTOWER_FIRST_PROMPT=go"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "codex" : {
+      "args" : [
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        "mcp_servers.w.args=['mcp']"
+      ],
+      "binary" : "/opt/co'dex/bin/codex",
+      "path_prepend" : "/opt/co'dex/bin"
+    },
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "resume" : true,
+      "session_id" : "019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b"
+    },
+    "name" : "codex resume",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'eval \"$WATCHTOWER_CODEX_COMMAND\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' resume '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b'"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "prompt" : "go",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "codex new without launch args",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exit 127"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT=go"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "resume" : true,
+      "session_id" : "019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b"
+    },
+    "name" : "codex resume without launch args",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exit 127"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "shell",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "shell, relative login shell",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "zsh",
+    "want" : {
+      "args" : [
+        "-l"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "claude new, empty login shell",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 41,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "shell ignores setup and the automation run",
+    "row" : 7,
+    "setup" : "npm ci && echo 'ready'",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "prompt" : "hello",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "setup before a new claude",
+    "row" : 7,
+    "setup" : "npm ci && echo 'ready'",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "/bin/sh -c 'echo \"watchtower: running the worktree setup command…\"; ( eval \"$WATCHTOWER_WORKTREE_SETUP\" ); s=$?; [ \"$s\" -eq 0 ] || echo \"watchtower: the worktree setup command failed (exit $s); starting the agent anyway.\"'; exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6 \"$WATCHTOWER_FIRST_PROMPT\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT=hello",
+        "WATCHTOWER_WORKTREE_SETUP=npm ci && echo 'ready'"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "setup before a new claude without a prompt",
+    "row" : 7,
+    "setup" : "npm ci && echo 'ready'",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "/bin/sh -c 'echo \"watchtower: running the worktree setup command…\"; ( eval \"$WATCHTOWER_WORKTREE_SETUP\" ); s=$?; [ \"$s\" -eq 0 ] || echo \"watchtower: the worktree setup command failed (exit $s); starting the agent anyway.\"'; exec claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_WORKTREE_SETUP=npm ci && echo 'ready'"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "codex" : {
+      "args" : [
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        "mcp_servers.w.args=['mcp']"
+      ],
+      "binary" : "/opt/co'dex/bin/codex",
+      "path_prepend" : "/opt/co'dex/bin"
+    },
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "prompt" : "hello",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "setup before a new codex",
+    "row" : 7,
+    "setup" : "npm ci && echo 'ready'",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "/bin/sh -c 'echo \"watchtower: running the worktree setup command…\"; ( eval \"$WATCHTOWER_WORKTREE_SETUP\" ); s=$?; [ \"$s\" -eq 0 ] || echo \"watchtower: the worktree setup command failed (exit $s); starting the agent anyway.\"'; exec /bin/sh -c 'eval \"$WATCHTOWER_CODEX_COMMAND\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' -- \"$WATCHTOWER_FIRST_PROMPT\"",
+        "WATCHTOWER_FIRST_PROMPT=hello",
+        "WATCHTOWER_WORKTREE_SETUP=npm ci && echo 'ready'"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "resume" : true,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "setup never before a resume",
+    "row" : 7,
+    "setup" : "npm ci && echo 'ready'",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec claude --resume 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "codex" : {
+      "args" : [
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        "mcp_servers.w.args=['mcp']"
+      ],
+      "binary" : "/opt/co'dex/bin/codex",
+      "path_prepend" : "/opt/co'dex/bin"
+    },
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "resume" : true,
+      "session_id" : "019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b"
+    },
+    "name" : "setup never before a codex resume",
+    "row" : 7,
+    "setup" : "npm ci && echo 'ready'",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'eval \"$WATCHTOWER_CODEX_COMMAND\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']' resume '019a1b2c-3d4e-7f50-8a6b-7c8d9e0f1a2b'"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "blank setup is no setup",
+    "row" : 7,
+    "setup" : " \n\t",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 0,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "prompt" : "go",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "setup needs codex launch args",
+    "row" : 7,
+    "setup" : "npm ci && echo 'ready'",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exit 127"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT=go"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 41,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "prompt" : "go",
+      "resume" : false,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "automation run on a new claude",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6 \"$WATCHTOWER_FIRST_PROMPT\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_FIRST_PROMPT=go",
+        "WATCHTOWER_AUTOMATION_RUN_ID=41"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 41,
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "claude",
+      "resume" : true,
+      "session_id" : "0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+    },
+    "name" : "automation run on a resume",
+    "row" : 7,
+    "setup" : "",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "exec claude --resume 0e5c5d2a-1b3c-4d5e-8f90-a1b2c3d4e5f6"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_AUTOMATION_RUN_ID=41"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  },
+  {
+    "automation_run_id" : 41,
+    "codex" : {
+      "args" : [
+        "--no-daemon",
+        "-c",
+        "check_for_update_on_startup=false",
+        "-c",
+        "mcp_servers.w.args=['mcp']"
+      ],
+      "binary" : "/opt/co'dex/bin/codex",
+      "path_prepend" : "/opt/co'dex/bin"
+    },
+    "folder" : "/work/acme",
+    "mode" : {
+      "agent" : "codex",
+      "resume" : false,
+      "session_id" : ""
+    },
+    "name" : "automation run on a codex start with setup",
+    "row" : 7,
+    "setup" : "npm ci && echo 'ready'",
+    "shell" : "/bin/zsh",
+    "want" : {
+      "args" : [
+        "-l",
+        "-c",
+        "/bin/sh -c 'echo \"watchtower: running the worktree setup command…\"; ( eval \"$WATCHTOWER_WORKTREE_SETUP\" ); s=$?; [ \"$s\" -eq 0 ] || echo \"watchtower: the worktree setup command failed (exit $s); starting the agent anyway.\"'; exec /bin/sh -c 'eval \"$WATCHTOWER_CODEX_COMMAND\"'"
+      ],
+      "dir" : "/work/acme",
+      "env" : [
+        "WATCHTOWER_TERMINAL_SESSION_ID=7",
+        "WATCHTOWER_CODEX_COMMAND=PATH='/opt/co'\\''dex/bin':\"$PATH\" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '/opt/co'\\''dex/bin/codex' '--no-daemon' '-c' 'check_for_update_on_startup=false' '-c' 'mcp_servers.w.args=['\\''mcp'\\'']'",
+        "WATCHTOWER_WORKTREE_SETUP=npm ci && echo 'ready'",
+        "WATCHTOWER_AUTOMATION_RUN_ID=41"
+      ],
+      "executable" : "/bin/zsh",
+      "row" : 7
+    }
+  }
+]
