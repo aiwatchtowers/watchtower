@@ -15,11 +15,13 @@ type SliceRecord struct {
 }
 
 // SliceHashes maps record name → last pushed state for every record of kind
-// (record names "<kind>-…", as the Swift hub's hashes(forKind:)).
+// (record names "<kind>-…", as the Swift hub's hashes(forKind:), plus the
+// bare name "<kind>": the heartbeat's record is "heartbeat"; no other kind
+// writes a bare name).
 func (s *Store) SliceHashes(kind string) (map[string]SliceRecord, error) {
 	esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(kind)
 	rows, err := s.db.Query(`SELECT record_name, payload_hash, wire_name FROM slice_state
-		WHERE record_name LIKE ? ESCAPE '\'`, esc+"-%")
+		WHERE record_name LIKE ? ESCAPE '\' OR record_name = ?`, esc+"-%", kind)
 	if err != nil {
 		return nil, fmt.Errorf("reading slice state: %w", err)
 	}
