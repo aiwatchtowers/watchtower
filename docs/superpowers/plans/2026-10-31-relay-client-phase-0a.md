@@ -1,0 +1,443 @@
+# Relay client Phase 0a — CloudKit leaks above the transport seam Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Move every CloudKit-specific type and call above `CloudSyncTransport` behind neutral types (`RecordOrigin`, `TransportAuthorPolicy`, `HubRoute`, `PhoneAccessService`, `LinkAccess`, `PushWake`, `LiveTransport`, the two transport factories), so Phase 1 and Phase 2 can plug in the hosted relay — with no behaviour change on CloudKit and no relay code.
+
+**Architecture:** The neutral types live in the Kit (`WatchtowerSync/Sync/`, `WatchtowerSync/Link/`); every CloudKit implementation lives in `WatchtowerSync/CloudKitTransport/` (Kit), in `CloudKit*`-named files on the Desktop and the phone, and in the two factories. Today's bodies move unchanged behind the new protocols; callers switch from `CloudDatabaseScope` to `HubRoute`, from `CloudKitTransport` casts to `LiveTransport`, from direct construction to a factory. `HubRoute.hostedRelay` and `AlertSource.inline` exist as cases only: every 0a path that meets them refuses with a typed error.
+
+**Tech Stack:** Swift 5.10 language mode, SwiftUI, GRDB (SQLCipher fork), CloudKit / CKSyncEngine; packages `WatchtowerKit` (`WatchtowerSync`), `WatchtowerDesktop`, `WatchtowerMobile` (xcodegen, iOS 17), XCTest.
+
+**Spec:** `docs/superpowers/specs/2026-10-29-relay-client-design.md` — §3 "Layers today and the seam" (the leak table) and §13 row 0a (board #1237). Feature note: `docs/features/mobile-companion.md`.
+
+## Global Constraints
+
+- **No behaviour change on CloudKit.** Every moved body is today's body; every existing test keeps its assertions. A test may change only where it constructs a renamed type or passes a renamed argument.
+- `CloudSyncTransport` keeps exactly its three requirements (`save`, `delete(recordNames:in:)`, `changes(in:since:)`); new surface comes only through optional protocols (spec Decisions, ask #799). `InMemoryCloudTransport` and the phone's test transports conform to nothing new.
+- Not in 0a (§13): `ConditionalTransport`, `MailboxAddressing`, `PagedChanges`, `CloudRecord.recordSeq`, `LinkPayload` v4, `TransportKind`, any `HostedRelay*` type, the `route_kind` column (Phase 3 adds it with its first writer).
+- Existing "Relay" names keep their meaning (§2): `RelayZone`, `RelayProcessor`, `RelayFeed`, `CloudZoneID.relay`, `KeyDerivation.zoneByte` — untouched. Wire names, AAD bytes, `TransportStore` columns (`events.creator`, `events.server_modified_at`) and every persisted value keep their exact bytes.
+- Inventory guards stay byte-identical: `WatchtowerDesktop/Tests/MobileHub/SessionInputHandlersTests.swift`, `PermissionAnswerHandlersTests.swift`, `PermissionRequestSliceTests.swift`, `WatchtowerKit/Tests/WatchtowerSyncTests/PermissionAllowRuleTests.swift`, `WatchtowerMobile/Tests/PermissionCardTests.swift`, `WatchtowerMobile/Tests/SessionInputWiringTests.swift` (PROJ-16, PROJ-21). Every task ends with `git diff --stat origin/main -- <those six files>` printing nothing.
+- Test fakes keep their call logs: a fake that implements a renamed protocol keeps the log strings it writes today (`FakeShareService`: `accountStatus`, `ensureShares`, `setPublicLink:<bool>`, `participants:<zone>`, `removeParticipants:<zone>`; `FakeLinkContainer`'s `accepted`/`left`/`leftHubIDs`), so no assertion changes.
+- A `.hostedRelay` route met by any 0a code throws `UnsupportedRouteError(route:)`; it never falls back to CloudKit.
+- New phone source or test files: run `make mobile-gen` and commit the regenerated `WatchtowerMobile/WatchtowerMobile.xcodeproj` in the same task.
+- Inner loop only per task: `make kit-test FILTER=…`, `make test-swift FILTER=…`, `make mobile-test MOBILE_FILTER=…`, `make lint-swift` (`make lint-diff` is Go-only). The full gate runs once, in Task 11.
+- Public repo: fixtures use `acme`, `example.com`, `_owner-acme`, `_colleague-a`; no real ids.
+
+## Review Focus
+
+1. **Records with no origin** (an event buffered before the `creator`/`server_modified_at` columns, the in-memory transport): `author == nil` must still pass the `private` gate and fail the `shared` one, and hygiene must age by `modifiedAt`. Task 1 `testAnEventWithoutOriginReadsBackAsUnknown`, Task 3 `testAnUnknownAuthorPassesPrivateOnly`.
+2. **Rows written before the upgrade** (a kept farewell with `owner_name` NULL or set, a `link_json` with `scope`/`ownerName`) must read back as the same route with no migration. Task 6 `testAKeptFarewellReadsBackWithItsRoute`, `testASavedLinkKeepsItsRoute`.
+3. **A `.hostedRelay` route reaching 0a code** (registry write, transport factory, link join/leave, alert subscribe) must refuse loudly, never build a CloudKit transport for it. Tests in Tasks 6, 7, 8, 9.
+4. **The public-link writer and sweep after the rename** (single writer, timeout per call, the deferred sweep standing down between the two zones, `superseded`): the per-lane calls stay, so `MobileLinkCenterTests`, `MobileLinkSweepRetryTests`, `MobileLinkCenterTests+SharedLink` run unchanged. Task 4 runs them; its reviewer checks no `share {}` call was merged across zones.
+5. **Push routing**: a shared-database push fetches only shared sessions, a non-CloudKit payload wakes nothing on the Mac and fetches every phone session, the NSE fills only a private-scope query notification. Task 9 `testOriginOfANonCloudKitPayloadIsNil`, `testAlertSourceOfANonCloudKitPayloadIsNil`; Task 10 runs `MultiHubEnvironmentTests` unchanged.
+
+---
+
+## Lanes
+
+Kit first (Tasks 1, 2 in parallel), then three chains: Desktop 3 → 4 → 5; phone 6 → {7, 8}; PushWake 9 (after 2) → 10 (after 5, 7, 9). Task 11 is the gate.
+
+### Task 1: `RecordOrigin` on `CloudRecord` and `UnopenableRecord`
+
+**Depends on:** none
+
+**Files:**
+- Modify: `WatchtowerKit/Sources/WatchtowerSync/Sync/CloudSyncTransport.swift:35-102` (`CloudRecord`)
+- Modify: `WatchtowerKit/Sources/WatchtowerSync/Secure/SecureKeyProvider.swift:63-79` (`UnopenableRecord`)
+- Modify: `WatchtowerKit/Sources/WatchtowerSync/Secure/SecureTransport.swift:258-272,335-380`
+- Modify: `WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport/CloudKitTransport+Mapping.swift:125-136`, `CloudKitTransport+Engine.swift:375-386`, `TransportStore.swift:335-345,390-401`
+- Modify (call sites only): `WatchtowerDesktop/Sources/Services/MobileHub/RelayProcessor.swift:232-241,776-813`, `MobileLinkCenter.swift:692,752-758` (read `record.origin.author` in place of `record.creatorUserRecordName`; Task 3 replaces these reads)
+- Test: `WatchtowerKit/Tests/WatchtowerSyncTests/TransportStoreTests.swift:55-67,270-287`, `SecureTransportTests.swift`; Desktop test helpers `WatchtowerDesktop/Tests/MobileHub/MobileHubTestSupport.swift:455-459,661-666`, `MobileLinkCenterTests.swift:270-274,829-833`, `RelayProcessorTests.swift:336-340`, `RelayProcessorRecordingUploadTests.swift:273-276`
+
+**Interfaces:**
+- Produces (Kit, in `CloudSyncTransport.swift`):
+  `public struct RecordOrigin: Equatable, Sendable { public let author: String?; public let serverAt: Date?; public init(author: String? = nil, serverAt: Date? = nil); public static let unknown: RecordOrigin }`
+- Produces: `CloudRecord.origin: RecordOrigin` replacing `creatorUserRecordName` and `serverModifiedAt`; the memberwise init takes `origin: RecordOrigin = .unknown` in their place (between `assetFileURL` and `asset`). Doc comment: read-only server metadata, never sent on a save; CloudKit fills `author` from `creatorUserRecordID.recordName` and `serverAt` from `modificationDate`.
+- Produces: `UnopenableRecord.origin: RecordOrigin` replacing `serverModifiedAt`; init `init(wireName:modifiedAt:reason:origin: RecordOrigin = .unknown)`.
+
+- [ ] **Step 1: Write the failing tests**
+  - `TransportStoreTests.testAnEventKeepsItsOrigin` (rewrite of the creator test at :55-67): buffer one record with `origin: RecordOrigin(author: "_colleague-a", serverAt: t)` and one without; `XCTAssertEqual(changed.map(\.origin), [RecordOrigin(author: "_colleague-a", serverAt: t), .unknown])`.
+  - `TransportStoreTests.testAnEventWithoutOriginReadsBackAsUnknown`: a row inserted with `creator` and `server_modified_at` NULL reads back with `origin == .unknown`.
+  - The server-date test at :270-287 compares `origin.serverAt` instead of `serverModifiedAt`.
+  - `SecureTransportTests.testOpeningKeepsTheRecordOrigin`: a sealed relay record carrying `origin` opens with the same `origin`; `testTheHygieneScanCarriesTheOriginOfUnopenableRecords`: a record no key opens lands in `relayHygieneScan().unopenable` with the record's `origin`.
+- [ ] **Step 2: Run them, expect compile failure**
+  Run: `make kit-test FILTER='TransportStoreTests|SecureTransportTests'` — Expected: FAIL, "value of type 'CloudRecord' has no member 'origin'".
+- [ ] **Step 3: Implement** `RecordOrigin`, the two fields and every reader/writer above. `TransportStore` keeps its column names and maps `creator` ↔ `origin.author`, `server_modified_at` ↔ `origin.serverAt`. Desktop: `RelayProcessor` hygiene ages by `record.origin.serverAt ?? record.modifiedAt` (:799, :813); its `Origin` struct reads `record.origin.author`.
+- [ ] **Step 4: Run Kit and Desktop tests**
+  Run: `make kit-test FILTER='TransportStoreTests|SecureTransportTests|CloudKitTransportMappingTests|TransportAssetTests'` then `make test-swift FILTER='RelayProcessorTests|RelayProcessorRecordingUploadTests|MobileLinkCenterTests'` — Expected: PASS.
+- [ ] **Step 5: Lint and guard check** — `make lint-swift`; `git diff --stat origin/main --` the six guard files prints nothing.
+- [ ] **Step 6: Commit** — `refactor(kit): RecordOrigin replaces the CloudKit creator and server date on CloudRecord (#1237)`
+
+### Task 2: Kit seam types — `HubRoute`, `LinkInvitation`, `LiveTransport`
+
+**Depends on:** none
+
+**Files:**
+- Create: `WatchtowerKit/Sources/WatchtowerSync/Sync/HubRoute.swift`
+- Create: `WatchtowerKit/Sources/WatchtowerSync/Sync/LiveTransport.swift`
+- Create: `WatchtowerKit/Sources/WatchtowerSync/Link/LinkInvitation.swift`
+- Create: `WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport/CloudKitTransport+Live.swift` (the conformance)
+- Test: `WatchtowerKit/Tests/WatchtowerSyncTests/SeamTypesTests.swift`
+
+**Interfaces:**
+- Produces:
+  - `public enum HubRoute: Equatable, Sendable { case cloudKit(CloudDatabaseScope); case hostedRelay(macDeviceID: String); public var cloudKitScope: CloudDatabaseScope? }`
+  - `public struct UnsupportedRouteError: Error, Equatable, Sendable { public let route: HubRoute; public init(route: HubRoute) }`
+  - `public struct LinkInvitation: Equatable, Sendable { public let dataShare: String?; public let relayShare: String?; public init(dataShare: String?, relayShare: String?); public static let none: LinkInvitation }` — the Mac hands it out, the phone joins with it; on CloudKit the two `CKShare.url` strings.
+  - `public protocol LiveTransport: CloudSyncTransport, Sendable` with exactly the members the phone casts for today: `start() async`, `stop() async`, `sendNow() async`, `pull() async throws`, `fetchForPush(since: Date, grace: TimeInterval, pollOnFallback: Bool) async throws`, `availability() async -> CloudAvailability`, `setEventHandler(_: (@Sendable (TransportEvent) -> Void)?) async`, `setAccountResetHandler(_: (@Sendable () -> Void)?) async`, `setEngineFetchedHandler(_: (@Sendable () -> Void)?) async`.
+  - `extension CloudKitTransport: LiveTransport {}` (no new code: every member exists in `CloudKitTransport.swift:254-282`, `+Lifecycle.swift:17,73,99,273`, `+HubZones.swift:13`, `+PushFetch.swift:24`).
+
+- [ ] **Step 1: Write the failing tests** (`SeamTypesTests`)
+  - `testHubRouteExposesItsCloudKitScope`: `.cloudKit(.shared(ownerName: "_owner-acme")).cloudKitScope == .shared(ownerName: "_owner-acme")`; `.hostedRelay(macDeviceID: "mac-acme").cloudKitScope == nil`.
+  - `testLinkInvitationNoneCarriesNoShares`: both fields nil.
+  - `testTheCloudKitTransportIsALiveTransportAndTheFakeIsNot`: a `CloudKitTransport` built the way `CloudKitTransportStopTests` builds one (internal init, `FakeSyncEngine`) `is any LiveTransport`; `InMemoryCloudTransport()` is not.
+- [ ] **Step 2: Run, expect failure** — `make kit-test FILTER=SeamTypesTests` — FAIL ("cannot find 'HubRoute' in scope").
+- [ ] **Step 3: Implement** the four files. No caller changes in this task.
+- [ ] **Step 4: Run** — `make kit-test FILTER='SeamTypesTests|CloudKitTransportStopTests'` — PASS.
+- [ ] **Step 5: Lint** — `make lint-swift`.
+- [ ] **Step 6: Commit** — `refactor(kit): HubRoute, LinkInvitation and LiveTransport seam types (#1237)`
+
+### Task 3: `TransportAuthorPolicy` on the hub
+
+**Depends on:** Task 1
+
+**Files:**
+- Create: `WatchtowerDesktop/Sources/Services/MobileHub/TransportAuthorPolicy.swift` (protocol, no CloudKit)
+- Create: `WatchtowerDesktop/Sources/Services/MobileHub/CloudKitAuthorPolicy.swift` (today's bodies)
+- Modify: `WatchtowerDesktop/Sources/Services/MobileHub/HubSyncState+Linking.swift:1,22-68` (drop `accepts(creator:)` and `import CloudKit`; the `userRecordName` doc comment points to the policy)
+- Modify: `WatchtowerDesktop/Sources/Services/MobileHub/RelayProcessor.swift:51-57,147-165,232-241,428-435` (`Origin.author`, injected policy in `admitsDevice`)
+- Modify: `WatchtowerDesktop/Sources/Services/MobileHub/MobileLinkCenter.swift:1,247-260,690-694,749-758` (injected policy; `creatorMatches` removed; `import CloudKit` removed)
+- Modify: `WatchtowerDesktop/Sources/App/AppState+MobileHub.swift:300-304` only if the processor init needs the argument (it has a default)
+- Test: Create `WatchtowerDesktop/Tests/MobileHub/TransportAuthorPolicyTests.swift`; Modify `MobileLinkCenterTests+LinkData.swift:66-77`
+
+**Interfaces:**
+- Consumes: `RecordOrigin` (Task 1).
+- Produces:
+  ```swift
+  protocol TransportAuthorPolicy: Sendable {
+      /// The device gate's author check (spec §5.2 rule 4), defense in depth behind the key.
+      func accepts(origin: RecordOrigin, device: HubSyncState.LinkedDevice) -> Bool
+      /// A linked phone's `device` record rewrite: written by the user its payload claims.
+      func acceptsRewrite(origin: RecordOrigin, payload: DevicePayload,
+                          ownerUser: @escaping @MainActor @Sendable () async -> String?) async -> Bool
+  }
+  struct CloudKitAuthorPolicy: TransportAuthorPolicy
+  ```
+  `accepts` = today's `LinkedDevice.accepts(creator:)` body (`HubSyncState+Linking.swift:64-68`) over `origin.author`; `acceptsRewrite` = today's `MobileLinkCenter.creatorMatches` body (`:752-758`), calling `ownerUser()` where it called `resolveOwnerUser()`.
+- Produces: `RelayProcessor.init(…, authorPolicy: any TransportAuthorPolicy = CloudKitAuthorPolicy(), now:)` and `MobileLinkCenter.init(…, authorPolicy: any TransportAuthorPolicy = CloudKitAuthorPolicy(), …)` (parameter after `keyring`). `handleLinkedRewrite` keeps its order: scope equality, then `authorPolicy.accepts`, then `await authorPolicy.acceptsRewrite(…, ownerUser: { await self.resolveOwnerUser() })`.
+
+- [ ] **Step 1: Write the failing tests** (`TransportAuthorPolicyTests`, on `CloudKitAuthorPolicy()`)
+  - `testSharedScopeAcceptsOnlyThePhonesOwnUser`: device `scope: .shared, userRecordName: "_colleague-a"` — author `"_colleague-a"` true; `"_owner-acme"`, `CKCurrentUserDefaultName`, nil false.
+  - `testPrivateScopeAcceptsTheDefaultOwnerAndTheStoredOwner`: device `scope: .private, userRecordName: "_owner-acme"` — `"_owner-acme"` true, `CKCurrentUserDefaultName` true, `"_claimed-acme"` false.
+  - `testAnUnknownAuthorPassesPrivateOnly`: author nil — private true, shared false; a private device with `userRecordName: ""` accepts only `CKCurrentUserDefaultName` and nil.
+  - `testARewriteInPrivateScopeIsCheckedAgainstTheResolvedOwner`: payload `.private`, author `"_owner-acme"` with `ownerUser` returning `"_owner-acme"` → true, returning `"_other-acme"` → false; author `CKCurrentUserDefaultName` → true without calling `ownerUser` (a counting closure stays 0).
+  - `testARewriteInSharedScopeMustBeWrittenByTheClaimedUser`: payload `.shared, userRecordName: "_colleague-a"` — author `"_colleague-a"` true, nil false.
+  - `MobileLinkCenterTests+LinkData.testAPrivatePhoneIsCheckedAgainstTheOwnerNotTheNameItSent`: the three `device.accepts(creator:)` lines become `CloudKitAuthorPolicy().accepts(origin: RecordOrigin(author: …), device: device)` with the same three expectations.
+- [ ] **Step 2: Run, expect failure** — `make test-swift FILTER=TransportAuthorPolicyTests` — FAIL (no type).
+- [ ] **Step 3: Implement** the two files and the injections above.
+- [ ] **Step 4: Run** — `make test-swift FILTER='TransportAuthorPolicyTests|MobileLinkCenterTests|RelayProcessorTests|SessionInputHandlersTests|PermissionAnswerHandlersTests'` — PASS (the last two are PROJ-16/21 guards, unchanged).
+- [ ] **Step 5: Lint and guard check** — `make lint-swift`; guard-file diff empty.
+- [ ] **Step 6: Commit** — `refactor(hub): TransportAuthorPolicy carries the CloudKit creator checks (#1237)`
+
+### Task 4: `PhoneAccessService` replaces `ShareService`
+
+**Depends on:** Task 2, Task 3
+
+**Files:**
+- Create: `WatchtowerDesktop/Sources/Services/MobileHub/PhoneAccessService.swift` (protocol, `PhoneParticipant`, `PhoneAccessError`; no CloudKit)
+- Rename + modify: `ShareService.swift` → `CloudKitPhoneAccessService.swift` (today's `CloudKitShareService` body, renamed type)
+- Modify: `WatchtowerDesktop/Sources/Services/MobileHub/MobileLinkCenter.swift:204,247-262,276-280,308-316,370-386,516-534,600-640,755-775,1068-1087,1280-1293`
+- Modify: `WatchtowerDesktop/Sources/Services/MobileHub/MobileHubService.swift:62-65,119` (`MobileHubStorage.shares` → `phoneAccess`)
+- Test: `WatchtowerDesktop/Tests/MobileHub/MobileLinkCenterTests.swift:24-160,1401-1410,1530-1540` (fake + the two CloudKit service tests), `MobileHubTestSupport.swift` (convenience init), `MobileHubServiceTests.swift:1045`, `MobileSettingsTestSupport.swift`
+
+**Interfaces:**
+- Consumes: `LinkInvitation` (Task 2), `CloudAvailability`, `CloudZoneID`.
+- Produces:
+  ```swift
+  struct PhoneParticipant: Equatable, Sendable { let accountID: String?; let accepted: Bool }
+  protocol PhoneAccessService: Sendable {
+      func availability() async -> CloudAvailability                       // was accountStatus()
+      func ensureInvitation() async throws -> LinkInvitation               // was ensureShares() -> ShareURLs
+      func setInvitationOpen(_ open: Bool) async throws                    // was setPublicLink(open:)
+      func participants(in lane: CloudZoneID) async throws -> [PhoneParticipant]
+      func remove(in lane: CloudZoneID, where shouldRemove: @escaping @Sendable (PhoneParticipant) -> Bool) async throws
+  }
+  enum PhoneAccessError: Error, LocalizedError  // today's ShareServiceError cases and messages, renamed
+  struct CloudKitPhoneAccessService: PhoneAccessService  // init(hubID:entitlementCheck:) as today
+  ```
+  The lanes stay as parameters on purpose: `MobileLinkCenter` bounds each call by `shareTimeout` and the deferred sweep stands down between the two zones (`MobileLinkCenter.swift:527-531`); one call per lane keeps both. Spec §3's `reconcile(keep:)` is today's sweep loop and stays in the center (see the plan's spec notes).
+- Produces: `MobileLinkCenter.init(sidecar:access:macName:ownerUser:keyring:authorPolicy:nudge:now:sleep:shareTimeout:answerGrace:confirmNonce:)`; `MobileHubStorage.phoneAccess: (any PhoneAccessService)?`; test-only `extension MobileLinkCenter { convenience init(sidecar:shares:macName:ownerUser:keyring:nudge:now:sleep:shareTimeout:answerGrace:confirmNonce:) }` in `MobileHubTestSupport.swift` forwarding `shares` to `access`, so `SessionInputHandlersTests.swift:471-473` (a PROJ-16 guard) compiles unchanged.
+- `issueCode()` passes `invitation?.dataShare` / `invitation?.relayShare` to `LinkPayload.issue`; `hasAcceptedBothShares` keeps its name and its per-zone loop over `participants(in:)` matching `accountID`.
+
+- [ ] **Step 1: Adapt the fake first (the failing step)**: `FakeShareService` conforms to `PhoneAccessService`; its internal `Share.participants` become `[PhoneParticipant]`; every method keeps the log string it writes today (`"accountStatus"`, `"ensureShares"`, `"setPublicLink:\(open)"`, `"participants:\(zone.rawValue)"`, `"removeParticipants:\(zone.rawValue)"`), with a doc line saying so. `testTheCloudKitShareServiceAddressesTheHubsOwnZones` and `testWithoutTheEntitlementTheCloudKitShareServiceTouchesNoContainer` build `CloudKitPhoneAccessService` and catch `PhoneAccessError.noEntitlement`; their names stay.
+- [ ] **Step 2: Run, expect failure** — `make test-swift FILTER=MobileLinkCenterTests` — FAIL ("cannot find type 'PhoneAccessService'").
+- [ ] **Step 3: Implement** the protocol, the renamed service and the center/storage changes. No logic moves between the center and the service.
+- [ ] **Step 4: Run the linking suites** — `make test-swift FILTER='MobileLinkCenterTests|MobileLinkSweepRetryTests|MobileLinkPairingCodeTests|MobileLinkSheetViewModelTests|MobileSettingsViewModelTests|MobileHubServiceTests|HubHeartbeatTests|SessionInputHandlersTests'` — PASS with no assertion edited (`git diff` on those test files shows only construction/type lines).
+- [ ] **Step 5: Lint and guard check** — `make lint-swift`; guard-file diff empty.
+- [ ] **Step 6: Commit** — `refactor(hub): PhoneAccessService replaces ShareService (#1237)`
+
+### Task 5: `HubTransportFactory` on the Mac
+
+**Depends on:** Task 4
+
+**Files:**
+- Create: `WatchtowerDesktop/Sources/Services/MobileHub/HubTransportFactory.swift`
+- Modify: `WatchtowerDesktop/Sources/Services/MobileHub/MobileHubService.swift:41,46-132` (`extension CloudKitTransport: HubTransport {}` and `registerForCloudKitPushes` move to the factory file; `MobileHubStorage.live` builds through the factory; storage gains `authorPolicy`)
+- Modify: `WatchtowerDesktop/Sources/Services/MobileHub/MobileLinkCenter.swift:276-280` (`forRun` passes `storage.authorPolicy`), `WatchtowerDesktop/Sources/App/AppState+MobileHub.swift:300-304` (processor gets `storage.authorPolicy`)
+- Modify: `WatchtowerDesktop/Sources/ViewModels/MobileSettingsViewModel.swift:125-127,163`
+- Test: Create `WatchtowerDesktop/Tests/MobileHub/HubTransportFactoryTests.swift`
+
+**Interfaces:**
+- Consumes: `HubTransport` (`MobileHubService.swift:11-39`, unchanged), `PhoneAccessService` (Task 4), `TransportAuthorPolicy` (Task 3).
+- Produces:
+  ```swift
+  struct HubTransportFactory: Sendable {
+      /// This build can run the transport (CloudKit: the iCloud entitlement, `CloudKitTransport.entitlementPresent()`).
+      let isAvailable: @Sendable () -> Bool
+      let makeTransport: @Sendable (_ store: TransportStore, _ hubID: String) -> any HubTransport
+      let makeAccess: @Sendable (_ hubID: String) -> any PhoneAccessService
+      let authorPolicy: any TransportAuthorPolicy
+      let ownerUser: @Sendable () async -> String?          // CloudKit: HubIdentity.iCloudUserRecordName
+      let registerForPushes: @MainActor @Sendable () -> Void
+      static let cloudKit: HubTransportFactory
+  }
+  ```
+  `MobileHubStorage.live(directory: URL = directory(), factory: HubTransportFactory = .cloudKit) throws -> Self`: the keyring is built only when `factory.isAvailable()` (today's `entitlementPresent()` gate at :110); `authorPolicy: any TransportAuthorPolicy = CloudKitAuthorPolicy()` is a new `MobileHubStorage` field set from the factory. `MobileSettingsViewModel.init(entitlementPresent: Bool = HubTransportFactory.cloudKit.isAvailable(), …)`.
+
+- [ ] **Step 1: Write the failing tests** (`HubTransportFactoryTests`)
+  - `testTheLiveStorageIsBuiltFromTheFactory`: a fake factory (stub `HubTransport` from `MobileHubTestSupport`, `FakeShareService`, `isAvailable: { false }`) and a temp directory: `storage.transport` is the stub, `storage.phoneAccess` is the fake, `storage.keyring == nil`, `storage.secure == nil`, `hubstate.db` and `transport.db` exist in the directory.
+  - `testTheCloudKitFactoryIsUnavailableInTheUnsignedTestHost`: `HubTransportFactory.cloudKit.isAvailable() == CloudKitTransport.entitlementPresent()` (false in the test host).
+  - `testCloudKitImportsStayInTheirFiles`: walks `WatchtowerDesktop/Sources` (from `#filePath`) and lists every `.swift` file with a line starting `import CloudKit`; it must equal the allowlist `{CloudKitPhoneAccessService.swift, CloudKitAuthorPolicy.swift, HubTransportFactory.swift, HubIdentity.swift, MobileHubService.swift, TrayAppDelegate.swift}` (MobileHubService: `isDefinitelyRefused`'s `CKError`, Phase 2; TrayAppDelegate: removed in Task 10).
+- [ ] **Step 2: Run, expect failure** — `make test-swift FILTER=HubTransportFactoryTests` — FAIL.
+- [ ] **Step 3: Implement** the factory and the storage/settings changes.
+- [ ] **Step 4: Run** — `make test-swift FILTER='HubTransportFactoryTests|MobileHubServiceTests|MobileSettingsViewModelTests|MobileHubPolicyTests'` — PASS.
+- [ ] **Step 5: Lint and guard check** — `make lint-swift`; guard-file diff empty.
+- [ ] **Step 6: Commit** — `refactor(hub): HubTransportFactory builds the hub's transport and phone access (#1237)`
+
+### Task 6: The phone addresses hubs by `HubRoute`
+
+**Depends on:** Task 2
+
+**Files:**
+- Modify: `WatchtowerMobile/Sources/App/LinkStore.swift:33-36` (`databaseScope` → `route`)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/HubRegistry.swift:30-46,286-320` (`PendingFarewell.route`; read/write)
+- Modify: `WatchtowerMobile/Sources/Features/Onboarding/LinkSeams.swift:50-59` (`LinkHost.prepare(route:hubID:fresh:)`)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/HubBoot.swift:9-48` (`HubSessionFactory.make(row, hubID, route, device)`; the live closure takes `route.cloudKitScope` or throws `UnsupportedRouteError`)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/HubSession.swift:187,371-386,417,478-486,514-525,536-570` (`databaseScope` → `route: HubRoute?`; `makeSharedAlerts` guards `case .cloudKit(.shared)? = route`; the registrar still gets `route?.cloudKitScope` until Task 10)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/SessionCadence.swift:43-52` (`PushScope.init?(_ route: HubRoute)`: nil for `.hostedRelay`)
+- Modify: `WatchtowerMobile/Sources/App/AppEnvironment.swift:248-252,342-345,525-537`
+- Modify: `WatchtowerMobile/Sources/App/AppRoot.swift:58-61,636-640,762-775` (`saveDirectly` gets `farewell.route.cloudKitScope` or throws `UnsupportedRouteError`; Task 7 moves it into the factory)
+- Modify: `WatchtowerMobile/Sources/Features/Onboarding/LinkingViewModel.swift:263-326,460-465,806-815,958-980`
+- Test: `WatchtowerMobile/Tests/Support/LinkingFakes.swift:160-180,231,320-330,400-430`, `AppRootWiringTests.swift:115-125,520,696,961`, `HubRegistryTests.swift`, the six `databaseScope:` sites in `WatchtowerMobile/Tests`
+
+**Interfaces:**
+- Consumes: `HubRoute`, `UnsupportedRouteError` (Task 2).
+- Produces: `LinkRecord.route: HubRoute` (computed from the stored `scope`/`ownerName`; `link_json` is unchanged); `PendingFarewell.route: HubRoute`; `LinkHost.prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport`; `HubSessionFactory.make: @MainActor (HubRow?, String, HubRoute, LinkedDevice?) throws -> HubSession`; `HubSession.init(…, route: HubRoute? = nil, …)` and `HubSession.route: HubRoute?`; `HubRegistryError.unsupportedRoute`.
+- `HubRegistry.savePendingFarewell` writes `owner_name` = the shared owner, NULL for `.cloudKit(.private)`, and throws `.unsupportedRoute` for `.hostedRelay` before any write. `pendingFarewells()` reads `owner_name` NULL → `.cloudKit(.private)`, else `.cloudKit(.shared(ownerName:))`.
+- `LinkingViewModel.connect` builds `.cloudKit(.private)` or `.cloudKit(.shared(ownerName: payload.ownerUser))` exactly where it builds the scope today; the `leaveShares` calls stay inside `if case let .cloudKit(.shared(ownerName)) = …`.
+
+- [ ] **Step 1: Write the failing tests**
+  - `HubRegistryTests.testAKeptFarewellReadsBackWithItsRoute`: save one farewell with `.cloudKit(.private)` and one with `.cloudKit(.shared(ownerName: "_owner-acme"))` (two hubs); `pendingFarewells().map(\.route)` equals both, in `since` order.
+  - `HubRegistryTests.testAHostedRelayFarewellIsRefusedAndNothingIsKept`: `savePendingFarewell` with `.hostedRelay(macDeviceID: "mac-acme")` throws `HubRegistryError.unsupportedRoute`; `pendingFarewells()` is empty.
+  - `HubRegistryTests.testASavedLinkKeepsItsRoute`: a `LinkRecord` JSON as today's build writes it (`"scope":"shared","ownerName":"_owner-acme"`) decodes with `route == .cloudKit(.shared(ownerName: "_owner-acme"))`; `"scope":"private"` → `.cloudKit(.private)`.
+  - Existing `AppRootWiringTests.testPreparingAnotherScopeRebuildsTheCandidateOnAnEmptyReplica` and the two other `prepare` sites call `prepare(route: .cloudKit(.private), …)`; assertions unchanged.
+- [ ] **Step 2: Run, expect failure** — `make mobile-test MOBILE_FILTER=HubRegistryTests` — FAIL (no `route`).
+- [ ] **Step 3: Implement** every file above; tests and fakes switch `CloudDatabaseScope` to `HubRoute` where they pass it (`LinkingFakes.prepared: [HubRoute]`, `farewells: [(route: HubRoute, hubID: String)]`, `transport(for route:)`, `deviceWrites(in route:)`, `describe(_ route:)`).
+- [ ] **Step 4: Run** — `make mobile-test MOBILE_FILTER='HubRegistryTests|HubBootTests|AppRootWiringTests|AppRootRelinkTests|LinkingViewModelTests|MultiHubEnvironmentTests|SharedAlertWiringTests|SettingsWiringTests|PermissionCardTests|SessionInputWiringTests'` — PASS.
+- [ ] **Step 5: Lint and guard check** — `make lint-swift`; guard-file diff empty.
+- [ ] **Step 6: Commit** — `refactor(mobile): hubs are addressed by HubRoute (#1237)`
+
+### Task 7: `LiveTransport` and `TransportFactory` on the phone
+
+**Depends on:** Task 6
+
+**Files:**
+- Create: `WatchtowerMobile/Sources/App/Hubs/TransportFactory.swift`
+- Modify: `WatchtowerMobile/Sources/App/Hubs/HubBoot.swift:12-48` (`HubSessionFactory.live(paths:keys:transports: TransportFactory = .cloudKit)`)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/HubSession.swift:400-405,435-440,571-576,604-619,715-736,1293-1318` (the six `CloudKitTransport` casts/checks)
+- Modify: `WatchtowerMobile/Sources/App/AppRoot.swift:42-63,193-197`
+- Modify: `WatchtowerMobile/Sources/App/BatteryDiagnostics.swift:25-27`
+- Test: Create `WatchtowerMobile/Tests/TransportFactoryTests.swift`; regenerate the project (`make mobile-gen`)
+
+**Interfaces:**
+- Consumes: `LiveTransport`, `HubRoute`, `UnsupportedRouteError` (Task 2); `HubSession.route` (Task 6).
+- Produces:
+  ```swift
+  struct TransportFactory: Sendable {
+      /// The build can run this transport (CloudKit: `CloudKitTransport.entitlementPresent()`).
+      let isAvailable: @Sendable () -> Bool
+      /// A phone-role transport for `route` on `store`; `.hostedRelay` throws `UnsupportedRouteError`.
+      let make: @Sendable (_ route: HubRoute, _ store: TransportStore, _ hubID: String, _ energy: EnergyCounter?) throws -> any LiveTransport
+      /// One record saved outside any engine (the kept farewell, #143): CloudKit's `saveDirectly(_:scope:hubID:)`.
+      let sendDirectly: @Sendable (_ record: CloudRecord, _ route: HubRoute, _ hubID: String) async throws -> Void
+      static let cloudKit: TransportFactory
+  }
+  ```
+- `HubSession` keeps `transport: any CloudSyncTransport & Sendable`; it stores `liveTransport: (any LiveTransport)?` (= `transport as? any LiveTransport`) and reads it at every former cast: the demo precondition (`!(liveTransport != nil && transportKind == .inMemoryDemo)`), `liveSaver` (`liveTransport != nil && TransportFactory.cloudKit.isAvailable()`), `cloudReach`, the boot's handler setup and `start()`, `sendNow()`, `shutDown()`. `RemoteFetchDepth` maps onto `pull()` / `fetchForPush(since:grace:pollOnFallback:)` as today.
+- `AppRoot.live()` guards `TransportFactory.cloudKit.isAvailable()`; `Delivery.live.resend` calls `TransportFactory.cloudKit.sendDirectly(farewell.record, farewell.route, farewell.hubID)`; `BatteryDiagnostics.live()` reads `TransportFactory.cloudKit.isAvailable()`.
+
+- [ ] **Step 1: Write the failing tests** (`TransportFactoryTests`)
+  - `testACloudKitRouteBuildsAPhoneTransportOnItsScope`: `make(.cloudKit(.shared(ownerName: "_owner-acme")), store, "hub-acme", nil)` returns a `CloudKitTransport` whose `scope == .shared(ownerName: "_owner-acme")`.
+  - `testAHostedRelayRouteIsRefused`: `make(.hostedRelay(macDeviceID: "mac-acme"), …)` throws `UnsupportedRouteError(route: .hostedRelay(macDeviceID: "mac-acme"))`; `sendDirectly` with that route throws the same before any CloudKit call.
+  - `testAvailabilityIsTheEntitlementCheck`: `TransportFactory.cloudKit.isAvailable() == CloudKitTransport.entitlementPresent()`.
+- [ ] **Step 2: Run, expect failure** — `make mobile-gen` then `make mobile-test MOBILE_FILTER=TransportFactoryTests` — FAIL.
+- [ ] **Step 3: Implement** the factory and the call-site changes; `grep -n 'CloudKitTransport' WatchtowerMobile/Sources` afterwards finds only `TransportFactory.swift` and doc comments.
+- [ ] **Step 4: Run** — `make mobile-test MOBILE_FILTER='TransportFactoryTests|FetchCadenceWiringTests|BackgroundWorkTests|AppRootWiringTests|AppRootRelinkTests|BatteryDiagnosticsTests|HubBootTests'` — PASS.
+- [ ] **Step 5: Lint and guard check** — `make lint-swift`; guard-file diff empty.
+- [ ] **Step 6: Commit** — `refactor(mobile): LiveTransport and TransportFactory replace CloudKitTransport casts (#1237)`
+
+### Task 8: `LinkAccess` replaces `LinkContainer`
+
+**Depends on:** Task 6
+
+**Files:**
+- Modify: `WatchtowerMobile/Sources/Features/Onboarding/LinkSeams.swift:4-17`
+- Rename + modify: `WatchtowerMobile/Sources/Features/Onboarding/CloudKitLinkContainer.swift` → `CloudKitLinkAccess.swift`
+- Modify: `WatchtowerMobile/Sources/Features/Onboarding/LinkingViewModel.swift:84,101-107,232-240,272-284,786-790,806-815,832-836,972-978`
+- Modify: `WatchtowerMobile/Sources/App/AppRoot.swift:234,268`
+- Test: `WatchtowerMobile/Tests/Support/LinkingFakes.swift:73-130`, `AppRootWiringTests.swift:42,194`; Create `WatchtowerMobile/Tests/CloudKitLinkAccessTests.swift`; `make mobile-gen`
+
+**Interfaces:**
+- Consumes: `HubRoute`, `LinkInvitation`, `UnsupportedRouteError` (Task 2).
+- Produces:
+  ```swift
+  protocol LinkAccess: Sendable {
+      func availability() async -> CloudAvailability          // was accountStatus()
+      func identity() async throws -> String                  // was userRecordName()
+      /// CloudKit shared route: today's acceptShares over the invitation's two URLs, owner = the route's owner.
+      /// Private route: nothing. Hosted relay: UnsupportedRouteError.
+      func join(_ invitation: LinkInvitation, route: HubRoute, hubID: String) async throws
+      /// CloudKit shared route: today's leaveShares. Private route: nothing. Hosted relay: UnsupportedRouteError.
+      func leave(route: HubRoute, hubID: String) async throws
+  }
+  enum LinkAccessError: Error, Equatable { case invalidInvitation }   // a share URL missing or not a URL
+  struct CloudKitLinkAccess: LinkAccess   // init(containerID:) as today
+  ```
+- `LinkingViewModel.init(access:store:identity:keys:…)`; the URL guard at `:272-275` stays before `join` (so `.cannotShare` comes before any call, as today); `join` re-checks and throws `invalidInvitation` on its own.
+- The fake (`FakeLinkContainer`, renamed `FakeLinkAccess`) keeps `accepted: [[URL]]` (the invitation's two URLs), `left` (the route's owner name), `leftHubIDs`, `onLeave`, and its `LinkEventLog` strings.
+
+- [ ] **Step 1: Write the failing tests** (`CloudKitLinkAccessTests`, no CloudKit call reached)
+  - `testAHostedRelayRouteIsRefused`: `join(.none, route: .hostedRelay(macDeviceID: "mac-acme"), hubID: "hub-acme")` and `leave(route: .hostedRelay(…), hubID:)` throw `UnsupportedRouteError`.
+  - `testAnInvitationWithoutShareURLsIsRefusedBeforeAnyCall`: `join(LinkInvitation(dataShare: nil, relayShare: "https://www.icloud.com/share/x"), route: .cloudKit(.shared(ownerName: "_owner-acme")), hubID: "hub-acme")` throws `LinkAccessError.invalidInvitation`.
+  - `testAPrivateRouteJoinsAndLeavesWithoutACall`: both return without throwing.
+- [ ] **Step 2: Run, expect failure** — `make mobile-gen` then `make mobile-test MOBILE_FILTER=CloudKitLinkAccessTests` — FAIL.
+- [ ] **Step 3: Implement** the protocol, the renamed service and the view-model/root changes.
+- [ ] **Step 4: Run** — `make mobile-test MOBILE_FILTER='CloudKitLinkAccessTests|LinkingViewModelTests|AppRootWiringTests|AppRootRelinkTests|WelcomeTests'` — PASS, no assertion edited.
+- [ ] **Step 5: Lint and guard check** — `make lint-swift`; guard-file diff empty.
+- [ ] **Step 6: Commit** — `refactor(mobile): LinkAccess replaces LinkContainer (#1237)`
+
+### Task 9: `PushWake` in the Kit; the CloudKit alert code moves into `CloudKitTransport/`
+
+**Depends on:** Task 2
+
+**Files:**
+- Create: `WatchtowerKit/Sources/WatchtowerSync/Sync/PushWake.swift` (no CloudKit)
+- Move: `WatchtowerKit/Sources/WatchtowerSync/Secure/AskAlertSubscription.swift` → `WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport/AskAlertSubscription.swift` (`git mv`, body unchanged)
+- Create: `WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport/CloudKitPushWake.swift` (with `SubscriptionSaving` and `CloudKitSubscriptionSaver` moved from `WatchtowerMobile/Sources/App/Hubs/AlertSubscriptionRegistrar.swift:6-32`, made `public`, bodies unchanged)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/AlertSubscriptionRegistrar.swift:6-32` (the moved types deleted)
+- Test: Create `WatchtowerKit/Tests/WatchtowerSyncTests/CloudKitPushWakeTests.swift`, `WatchtowerKit/Tests/WatchtowerSyncTests/SeamBoundaryTests.swift`
+
+**Interfaces:**
+- Consumes: `HubRoute`, `UnsupportedRouteError` (Task 2).
+- Produces (`PushWake.swift`):
+  ```swift
+  public enum PushOrigin: Equatable, Sendable { case `private`, shared }   // today's phone PushScope, moved
+  public struct AlertRecordRef: Equatable, Sendable { public let hubID: String; public let wireName: String; public let zoneName: String; public let ownerName: String }
+  public enum AlertSource: Equatable, Sendable {
+      case fetchRecord(AlertRecordRef)            // CloudKit: fetch the sealed ask_alert the signal names
+      case inline(hubID: String, envelope: Data)  // hosted relay (Phase 4): the envelope rides in the push
+      public static let inlineWireName = "alert-push"   // spec §10
+      public var hubID: String { get }
+      public var wireName: String { get }          // .inline → inlineWireName
+  }
+  public protocol PushWake: Sendable {
+      /// Registers the hub's work-alert push; false when the route has none (CloudKit shared scope, D14).
+      func subscribeAlerts(hubID: String, route: HubRoute) async throws -> Bool
+      func unsubscribeAlerts(hubID: String, route: HubRoute) async throws
+      /// Which sessions a silent push reaches; nil = not a database push of this transport (every session fetches).
+      func origin(ofRemoteNotification userInfo: [AnyHashable: Any]) -> PushOrigin?
+      /// The Mac's wake test: any push of this transport.
+      func isTransportWake(_ userInfo: [AnyHashable: Any]) -> Bool
+      /// The NSE's alert, nil when the payload is not a work-alert push.
+      func alertSource(for userInfo: [AnyHashable: Any]) -> AlertSource?
+      /// The sealed envelope for `source`, fetched within `timeout` when it must be.
+      func envelope(for source: AlertSource, timeout: TimeInterval) async throws -> Data?
+  }
+  extension HubRoute { public var pushOrigin: PushOrigin? }   // nil for .hostedRelay
+  ```
+- Produces (`CloudKitPushWake.swift`): `public struct CloudKitPushWake: PushWake { public init(containerID: String = WatchtowerCloud.containerID, saver: (any SubscriptionSaving)? = nil); public static func errorCode(_ error: any Error) -> String? }` — `saver` nil means `CloudKitSubscriptionSaver(containerID:)`, built only when a subscribe/unsubscribe runs. Bodies, each today's code:
+  - `subscribeAlerts`: `.cloudKit(scope)` → `AskAlertSubscription.subscription(for: scope, hubID:)`, nil → `false`, else `saver.save` → `true`; `.hostedRelay` → throws.
+  - `unsubscribeAlerts`: deletes `subscriptionID(hubID:)` only when `subscription(for: scope, hubID:) != nil` (today's `AlertSubscriptionRegistrar.swift:81-83`); `.hostedRelay` → throws.
+  - `origin`: today's `PushScope.init?(remoteNotification:)` (`SessionCadence.swift:55-62`).
+  - `isTransportWake`: `CKNotification(fromRemoteNotificationDictionary:) != nil` (today's `TrayAppDelegate.swift:211`).
+  - `alertSource`: today's NSE guard (`NotificationService.swift:28-36`: query notification, private database, `alertReference(forSignal:)`) → `.fetchRecord`.
+  - `envelope(for:timeout:)`: `.inline` → its bytes, no network; `.fetchRecord` → today's `NotificationService.fetch` (`:87-93`, the configuration's two timeouts = `timeout`) then `AskAlertSubscription.envelope(of:)`.
+  - `errorCode`: `"CKError \(code.rawValue)"` for a `CKError`, else nil.
+
+- [ ] **Step 1: Write the failing tests**
+  - `CloudKitPushWakeTests` (a recording `SubscriptionSaving` fake):
+    - `testAPrivateRouteSavesTheSubscription`: `subscribeAlerts(hubID: "hub-acme", route: .cloudKit(.private))` → true; the fake saved one subscription with id `"ask-alert-hub-acme"`.
+    - `testASharedRouteSavesNothing`: → false; nothing saved; `unsubscribeAlerts` on that route deletes nothing.
+    - `testAPrivateRouteUnsubscribeDeletesTheID`: one delete of `"ask-alert-hub-acme"`.
+    - `testAHostedRelayRouteIsRefused`: subscribe and unsubscribe throw `UnsupportedRouteError`; the fake saw nothing.
+    - `testOriginOfANonCloudKitPayloadIsNil`: `origin(ofRemoteNotification: ["aps": ["content-available": 1]])` is nil and `isTransportWake` of it is false.
+    - `testAlertSourceOfANonCloudKitPayloadIsNil`.
+    - `testAnInlineSourceNeedsNoFetch`: `envelope(for: .inline(hubID: "hub-acme", envelope: Data([1, 2])), timeout: 1)` returns `Data([1, 2])`; `AlertSource.inline(…).wireName == "alert-push"`.
+    - `testRoutesMapToPushOrigins`: `.cloudKit(.private).pushOrigin == .private`, `.cloudKit(.shared(ownerName: "_owner-acme")).pushOrigin == .shared`, `.hostedRelay(…).pushOrigin == nil`.
+  - `SeamBoundaryTests.testOnlyTheCloudKitFolderImportsCloudKit`: walks `WatchtowerKit/Sources` (from `#filePath`); every `.swift` file with a line starting `import CloudKit` has `/CloudKitTransport/` in its path.
+- [ ] **Step 2: Run, expect failure** — `make kit-test FILTER='CloudKitPushWakeTests|SeamBoundaryTests'` — FAIL.
+- [ ] **Step 3: Implement** `PushWake.swift`, the move and `CloudKitPushWake.swift`, and delete the phone's own `SubscriptionSaving` / `CloudKitSubscriptionSaver` (`AlertSubscriptionRegistrar.swift:6-32`): the registrar, `HubSession` and `AlertSubscriptionTests` now resolve the Kit's public types of the same name and API, so no other phone line changes in this task.
+- [ ] **Step 4: Run** — `make kit-test FILTER='CloudKitPushWakeTests|SeamBoundaryTests|AskAlertSubscriptionTests|AlertOpenerTests|WorkAlertContentTests'` — PASS; `make mobile-build` succeeds.
+- [ ] **Step 5: Lint** — `make lint-swift`.
+- [ ] **Step 6: Commit** — `refactor(kit): PushWake; the CloudKit alert subscription moves behind it (#1237)`
+
+### Task 10: Pushes go through `PushWake` (phone, NSE, Mac)
+
+**Depends on:** Task 5, Task 7, Task 9
+
+**Files:**
+- Modify: `WatchtowerMobile/Sources/App/Hubs/AlertSubscriptionRegistrar.swift:1,39-91` (drops `import CloudKit`; `init(hubID:route:wake:)`)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/HubSession.swift:378-392,478-486,536-576` (`subscriptionSaver:` → `pushWake: (any PushWake)?`; `liveSaver` removed)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/TransportFactory.swift` (adds `wake: any PushWake`, `CloudKitPushWake()` in `.cloudKit`), `HubBoot.swift` (`pushWake: transports.isAvailable() ? transports.wake : nil`)
+- Modify: `WatchtowerMobile/Sources/App/Hubs/SessionCadence.swift:1,41-63` (`PushScope` deleted; `import CloudKit` dropped)
+- Modify: `WatchtowerMobile/Sources/App/AppEnvironment.swift:248-252` (`handlePush(at:inForeground:scope: PushOrigin?)`, compares `session.route?.pushOrigin`), `WatchtowerMobile/Sources/App/WatchtowerMobileApp.swift:121,188`
+- Modify: `WatchtowerMobile/NotifyService/NotificationService.swift` (no `import CloudKit`: `CloudKitPushWake().alertSource(for:)` → `envelope(for:timeout: fetchTimeout)` → `AlertOpener(material:).open(wireName: source.wireName, envelope:)`; `errorCode` asks `CloudKitPushWake.errorCode` first)
+- Modify: `WatchtowerDesktop/Sources/Services/MobileHub/HubTransportFactory.swift` (adds `wake: any PushWake`), `WatchtowerDesktop/Sources/App/TrayAppDelegate.swift:1-2,207-212` (`HubTransportFactory.cloudKit.wake.isTransportWake(userInfo)`; no `import CloudKit`)
+- Test: `WatchtowerMobile/Tests/AlertSubscriptionTests.swift` (construction only), `WatchtowerDesktop/Tests/MobileHub/HubTransportFactoryTests.swift` (allowlist minus `TrayAppDelegate.swift`)
+
+**Interfaces:**
+- Consumes: `PushWake`, `PushOrigin`, `AlertSource`, `CloudKitPushWake`, `SubscriptionSaving` (Task 9); `TransportFactory` (Task 7); `HubTransportFactory` (Task 5).
+- Produces: `AlertSubscriptionRegistrar.init(hubID: String, route: HubRoute, wake: any PushWake)`; its `applyDesired` keeps today's state machine: enabled → `guard try await wake.subscribeAlerts(…) else { return }` (applied stays as it was, as today's early return), disabled → `try await wake.unsubscribeAlerts(…)`, then `applied = wanted`.
+- Produces: `HubSession.init(…, pushWake: (any PushWake)? = nil, …)`; `makeAlertRegistrar` returns nil unless `kind == .cloudKit`, a route and a wake are present.
+- Produces: `TransportFactory.wake: any PushWake`, `HubTransportFactory.wake: any PushWake`.
+
+- [ ] **Step 1: Adapt the tests (the failing step)**: `AlertSubscriptionTests` builds `AlertSubscriptionRegistrar(hubID:route: .cloudKit(.private) / .cloudKit(.shared(ownerName: "_owner-acme")), wake: CloudKitPushWake(saver: fake))`, its fake conforming to the Kit's `SubscriptionSaving`; assertions unchanged. `HubTransportFactoryTests.testCloudKitImportsStayInTheirFiles` drops `TrayAppDelegate.swift` from the allowlist.
+- [ ] **Step 2: Run, expect failure** — `make mobile-test MOBILE_FILTER=AlertSubscriptionTests` and `make test-swift FILTER=HubTransportFactoryTests` — FAIL.
+- [ ] **Step 3: Implement** the phone, NSE and Mac changes; `grep -rln '^import CloudKit' WatchtowerMobile/Sources WatchtowerMobile/NotifyService` prints only `CloudKitLinkAccess.swift`.
+- [ ] **Step 4: Run** — `make mobile-test MOBILE_FILTER='AlertSubscriptionTests|MultiHubEnvironmentTests|FetchCadenceWiringTests|BackgroundWorkTests|SharedAlertWiringTests|NotificationRouterTests|SettingsWiringTests'`, `make mobile-build` (builds the NSE target), `make test-swift FILTER='HubTransportFactoryTests|MobileHubServiceTests'` — PASS; `MultiHubEnvironmentTests` unchanged (its `scope: .shared` literals now type-check as `PushOrigin`).
+- [ ] **Step 5: Lint and guard check** — `make lint-swift`; guard-file diff empty.
+- [ ] **Step 6: Commit** — `refactor: silent pushes and work alerts go through PushWake (#1237)`
+
+### Task 11: Phase gate and the feature note
+
+**Depends on:** Tasks 1–10
+
+**Files:**
+- Modify: `docs/features/mobile-companion.md` — line 12 (the seam: the neutral types and where the CloudKit implementations live), line 95 (`CloudRecord.origin.serverAt`, buffered in `events.server_modified_at`), line 243 (the registrar over `PushWake`, `CloudKitPushWake`), lines 303–307 (`PhoneAccessService` / `CloudKitPhoneAccessService`, `FakeShareService` kept; drop the stale `deleteShares()`), lines 309 and 332 (the author check in `CloudKitAuthorPolicy` over `origin.author`), the Transport section's **Creator** and **Direct save and close** bullets (`origin.author`; `TransportFactory.sendDirectly`), and one new bullet under Architecture: "**Transport seam (relay client Phase 0a, #1237).**" naming `RecordOrigin`, `TransportAuthorPolicy`, `HubRoute`, `PhoneAccessService`, `LinkAccess`, `PushWake`, `LiveTransport`, `HubTransportFactory` / `TransportFactory`, the `.hostedRelay` refusal and the two import guards (`SeamBoundaryTests`, `HubTransportFactoryTests.testCloudKitImportsStayInTheirFiles`).
+
+- [ ] **Step 1: Desktop + Kit suite** — `make test-swift > "${TMPDIR:-/tmp}/0a-swift.log" 2>&1; echo "exit=$?"` — Expected: `exit=0` (runs the Desktop suite, then the Kit suite).
+- [ ] **Step 2: Phone suite** — `make mobile-test > "${TMPDIR:-/tmp}/0a-mobile.log" 2>&1; echo "exit=$?"` — Expected: `exit=0`.
+- [ ] **Step 3: Lint** — `make lint-all` — Expected: no new issues.
+- [ ] **Step 4: Guard files** — `git diff --stat origin/main -- WatchtowerDesktop/Tests/MobileHub/SessionInputHandlersTests.swift WatchtowerDesktop/Tests/MobileHub/PermissionAnswerHandlersTests.swift WatchtowerDesktop/Tests/MobileHub/PermissionRequestSliceTests.swift WatchtowerKit/Tests/WatchtowerSyncTests/PermissionAllowRuleTests.swift WatchtowerMobile/Tests/PermissionCardTests.swift WatchtowerMobile/Tests/SessionInputWiringTests.swift` — Expected: empty.
+- [ ] **Step 5: Update the feature note** as listed above (English, no ids).
+- [ ] **Step 6: Manual device check** (spec §11: one per phase that touches the phone): on a signed phone linked to a signed Mac — scan and link, send a session line, receive a work alert with its title filled by the NSE, pull to refresh, unlink. Each behaves as before.
+- [ ] **Step 7: Commit** — `docs(mobile): the transport seam after relay client Phase 0a (#1237)`
+
+---
+
+## Spec notes (decisions this plan takes where the code differs from §3)
+
+- **`PhoneAccessService` keeps lanes and two more calls.** §3 lists `ensureInvitation()`, `participants()`, `remove(where:)`, `reconcile(keep:)`. The center also needs the account status (`MobileLinkCenter.swift:308-316`) and the public-link writer's open/close (`:620-640`); and it bounds every share call by `shareTimeout` (`:1280-1293`) while the deferred sweep stands down between the two zones (`:527-531`). Merging the lanes would change both, so 0a keeps `participants(in:)` / `remove(in:where:)` and adds `availability()` / `setInvitationOpen(_:)`. `reconcile(keep:)` belongs to Phase 3, when the relay's `set_hub_readers` gives it a real one-call meaning.
+- **`LinkAccess.join`/`leave` take the route.** CloudKit needs the share owner (`LinkSeams.swift:13-16`), which lives in `HubRoute.cloudKit(.shared(ownerName:))`.
+- **No `route_kind` column in 0a.** The registry keeps a hub's link as JSON (`HubRegistry.swift:89-99`, `link_json`), from which the route is derived; only `pending_farewells.owner_name` is a column (`:104-116`). Nothing writes a relay route before Phase 3, which adds the column with its writer.
+- **Leaks outside the §3 table:** `CloudKitTransport.saveDirectly` in `AppRoot.swift:60` (goes into `TransportFactory.sendDirectly`, Task 7); `MobileHubService.isDefinitelyRefused`'s `CKError` set (`MobileHubService.swift:580-593`) and the CloudKit-only `HubTransport` requirements (`deleteHubZones`, `removeLegacyZones`, `setDataZoneResetHandler`, `:11-39`) stay for Phase 2, allowlisted in the import guard.
