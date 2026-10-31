@@ -129,3 +129,33 @@ func TestOrderedModeStartsAtFirstSeq(t *testing.T) {
 		w.wantEcho(seq, wire.StatusApplied, "")
 	})
 }
+
+func TestLegacyRepeatEchoesOnlyToTheOwner(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.disp.Register("secret", func(context.Context, Request) Outcome {
+			return Outcome{Status: wire.StatusApplied, Result: map[string]any{"secret": "a's"}}
+		}, KindOptions{})
+		mine := w.sendLegacy("secret")
+		w.settle()
+		w.wantLegacyEcho(mine.ID, wire.StatusApplied, "")
+
+		other := w.addPhone()
+		a := other.NewAction("secret")
+		a.ID = mine.ID // another linked phone reuses the id
+		if _, err := other.SendLegacy(a); err != nil {
+			t.Fatal(err)
+		}
+		w.pass()
+		w.sync(other)
+		if e, ok := other.LegacyEchoes[mine.ID]; ok {
+			t.Fatalf("the other phone got a foreign outcome: %s", mustJSON(t, e.Result))
+		}
+		// The owner still gets its stored outcome on a re-read.
+		delete(w.phone.LegacyEchoes, mine.ID)
+		if err := w.phone.WriteLegacyCopy(mine.ID); err != nil {
+			t.Fatal(err)
+		}
+		w.settle()
+		w.wantLegacyEcho(mine.ID, wire.StatusApplied, "")
+	})
+}

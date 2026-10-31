@@ -22,7 +22,11 @@ func legacyName(a wire.ActionRequest) string { return "action-" + a.ID }
 
 // legacyAction handles one action without action_seq. A pending (or
 // received) action is applied; one the ledger already holds as done is
-// echoed again with its stored outcome, never dispatched again.
+// echoed again with its stored outcome, never dispatched again — but only to
+// the phone that sent it. The ledger key (action-<uuid>, the Swift hub's)
+// names no device, so ownership is the record's rollback mark from this
+// sender, written by the decision: another phone reusing the id gets no
+// foreign outcome; its record is dropped unanswered.
 func (p *Processor) legacyAction(ctx context.Context, b mailbox, r record, o secure.Opened, a wire.ActionRequest, ps *pass) error {
 	plain := legacyName(a)
 	if a.ID == "" || o.Sender != b.id || o.Frame.ID != plain {
@@ -37,6 +41,14 @@ func (p *Processor) legacyAction(ctx context.Context, b mailbox, r record, o sec
 		return err
 	}
 	if phase == state.PhaseDone {
+		_, _, own, err := p.cfg.Store.RelaySeen(r.name, b.id.String())
+		if err != nil {
+			return err
+		}
+		if !own {
+			log.Printf("hub: legacy action of device %s reuses another phone's id: dropped", b.id)
+			return nil
+		}
 		return p.repeat(ctx, b, r, o, a, plain, plain, ps)
 	}
 	return p.apply(ctx, b, r, o, a, 0, plain, ps)

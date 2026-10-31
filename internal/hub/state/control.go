@@ -93,6 +93,21 @@ func (s *Store) ControlDone(id int64) error {
 	})
 }
 
+// DropResendFrom removes a resend_from that can never be written and forgets
+// that its gap was asked (resend_requested_from = 0), in one transaction, so
+// the next held action asks for the gap again.
+func (s *Store) DropResendFrom(id int64, device string) error {
+	return s.write(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM control_queue WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("removing a control: %w", err)
+		}
+		if err := SetResendRequested(tx, device, 0); err != nil && !errors.Is(err, ErrNoDevice) {
+			return err
+		}
+		return nil
+	})
+}
+
 // ControlFailed counts a failed write and keeps its error class (a class
 // only, never error text) for the next pass's retry.
 func (s *Store) ControlFailed(id int64, class string) error {

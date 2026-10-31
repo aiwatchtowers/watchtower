@@ -1,12 +1,14 @@
 package actions
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"testing"
 	"time"
 
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 )
 
@@ -300,5 +302,48 @@ func TestHygieneSweepsStaleRecordsOnCloudKitOnly(t *testing.T) {
 		if rep, err := w.proc.Hygiene(w.ctx); err != nil || rep.Ran {
 			t.Fatalf("second run the same day %+v, %v", rep, err)
 		}
+	})
+}
+
+// failSave refuses the save call number n (1-based) with err.
+type failSave struct {
+	*memfake.Fake
+	calls, n int
+	err      error
+}
+
+func (f *failSave) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	f.calls++
+	if f.calls == f.n {
+		return nil, f.err
+	}
+	return f.Fake.Save(ctx, items)
+}
+
+func TestResendFromRefusedForGoodAsksTheGapAgain(t *testing.T) {
+	eachKind(t, func(t *testing.T, w *world) {
+		w.act("test_noop")
+		w.settle()
+		if _, err := w.phone.Queue(w.phone.NewAction("test_noop")); err != nil { // 2 never reaches the mailbox
+			t.Fatal(err)
+		}
+		w.act("test_noop")
+		// The pass saves the held echo of 3, then resend_from(2): refuse that one for good.
+		w.proc.cfg.Transport = &failSave{Fake: w.fake, n: 2, err: transport.ErrForbidden}
+		w.pass()
+		if w.pending() != 0 {
+			t.Fatalf("%d rows still queued", w.pending())
+		}
+		if d := w.device(w.phone); d.ResendRequestedFrom != 0 {
+			t.Fatalf("resend_requested_from %d: the gap stays marked asked", d.ResendRequestedFrom)
+		}
+		w.sync(w.phone)
+		w.act("test_noop") // 4: held, and the gap is asked again
+		w.settle()
+		w.wantCalls(noops(1, 2, 3, 4)...)
+		if got := w.controls(wire.ControlResendFrom); len(got) != 1 || *got[0].Seq != 2 {
+			t.Fatalf("resend_from %v, want one for 2", got)
+		}
+		w.wantEmptyMailbox()
 	})
 }

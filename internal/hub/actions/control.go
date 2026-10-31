@@ -268,7 +268,7 @@ func (p *Processor) flushMailbox(ctx context.Context, b mailbox) (written, faile
 			}
 			continue
 		}
-		landed, err := p.writeQueued(ctx, c, rec)
+		landed, err := p.writeQueued(ctx, b, c, rec)
 		if err != nil {
 			return written, failed, err
 		}
@@ -290,10 +290,12 @@ func refusedForGood(err error) bool {
 	return errors.Is(err, transport.ErrRecordTooLarge) || errors.Is(err, transport.ErrForbidden)
 }
 
-// writeQueued saves one queued row; landed is false when it must wait for
-// the next pass (the row is marked failed with its error class). A dropped
-// row counts as landed: it is gone from the queue.
-func (p *Processor) writeQueued(ctx context.Context, c state.Control, rec secure.Record) (landed bool, err error) {
+// writeQueued saves one of b's queued rows; landed is false when it must
+// wait for the next pass (the row is marked failed with its error class). A
+// dropped row counts as landed: it is gone from the queue. A resend_from
+// dropped for good also forgets that its gap was asked, so the gap is asked
+// again rather than stalled.
+func (p *Processor) writeQueued(ctx context.Context, b mailbox, c state.Control, rec secure.Record) (landed bool, err error) {
 	expect := transport.Expect{Mode: transport.ExpectNone}
 	switch c.Expect {
 	case state.ExpectAbsent:
@@ -315,6 +317,9 @@ func (p *Processor) writeQueued(ctx context.Context, c state.Control, rec secure
 			}
 			if refusedForGood(err) {
 				log.Printf("hub: dropping queued %s %d, refused for good: %s", c.Kind, c.ID, errClass(err))
+				if c.Kind == wire.ControlResendFrom {
+					return true, p.cfg.Store.DropResendFrom(c.ID, b.id.String())
+				}
 				return true, p.cfg.Store.ControlDone(c.ID)
 			}
 			return false, p.cfg.Store.ControlFailed(c.ID, errClass(err))
