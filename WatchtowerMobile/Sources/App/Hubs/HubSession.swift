@@ -180,6 +180,8 @@ final class HubSession {
     @ObservationIgnored private var backlogObservation: ResilientObservation?
     /// The last flush (and sweep) the session started without waiting for it (`startOutboxWork`).
     @ObservationIgnored private(set) var outboxWork: Task<Void, Never>?
+    /// How long `shutDown()` waits for the outbox's chain before it goes on; tests shorten it.
+    @ObservationIgnored var outboxDrainCap: Duration = .seconds(10)
     /// The phone recorder (record a meeting or a voice note), owned for the
     /// app's lifetime so a capture survives any navigation.
     let recorder: PhoneRecorderController
@@ -1399,8 +1401,30 @@ final class HubSession {
         // The last outbox pass ends before the transport stops and the caller closes the replica: the session's
         // own pass, then whatever else sits on the outbox's chain (an enqueue's flush, a resend, a withdrawal).
         await outboxWork?.value
-        await outbox.drain()
+        await Self.drain(outbox, cap: outboxDrainCap)
         await liveTransport?.stop()
+    }
+
+    /// `outbox.drain()`, raced against `cap`: a hung save never holds a shutdown. A write cut off this way is
+    /// left `queued` or `sent` in the replica and heals at the next launch (its flush, `resend_from` or the 24 h
+    /// rule).
+    private static func drain(_ outbox: ActionOutbox, cap: Duration) async {
+        let finished = OSAllocatedUnfairLock(initialState: false)
+        var timer: Task<Void, Never>?
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let finish: @Sendable () -> Void = {
+                if finished.withLock({ done in defer { done = true }; return !done }) { continuation.resume() }
+            }
+            Task { await outbox.drain(); finish() }
+            timer = Task {
+                try? await Task.sleep(for: cap)
+                if !Task.isCancelled {
+                    logger.notice("outbox drain cut off at shutdown")
+                }
+                finish()
+            }
+        }
+        timer?.cancel()
     }
 
     /// Closes the replica and the transport store, after `shutDown()` and

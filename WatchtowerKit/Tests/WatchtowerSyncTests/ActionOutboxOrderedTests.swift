@@ -551,10 +551,22 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(try row(phone, one.id)?.recordSeq, now?.recordSeq)
     }
 
-    /// On CloudKit: the hub's held echo was fetched (a newer stored version) and the feed compacted it away, so the
-    /// local buffer holds no current copy. The resend reads the echo from the server and rewrites it; the row is
-    /// never listed as Not delivered (a Retry would apply it twice).
-    func testAResendOnCloudKitAfterTheHeldEchoWasCompactedRewritesIt() async throws {
+    private struct CloudKitPhone {
+        let outbox: ActionOutbox
+        let replica: ReplicaStore
+        let database: FakeConditionalDatabase
+        let written: OutboxRow
+        let clock: OSAllocatedUnfairLock<Date>
+
+        func row() throws -> OutboxRow? {
+            try replica.outboxRows([.queued, .sent, .settled, .undelivered]).first { $0.actionID == written.actionID }
+        }
+    }
+
+    /// An ordered phone over `CloudKitTransport` whose one action was written (stored version 1), then the hub's
+    /// held echo fetched over it (stored version 2), applied by the feed and compacted out of the buffer: the
+    /// local buffer holds no current copy of the record.
+    private func cloudKitPhoneWithACompactedHeldEcho() async throws -> CloudKitPhone {
         let transportStore = try TransportStore.inMemory()
         let database = FakeConditionalDatabase()
         let cloudKit = CloudKitTransport.conditionalTesting(store: transportStore, database: database)
@@ -562,7 +574,8 @@ final class ActionOutboxOrderedTests: XCTestCase {
         let keys = try TestE2E.phoneStore()
         let secure = TestE2E.phoneTransport(try TestE2E.phone(store: keys), inner: cloudKit)
         let replica = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
-        let outbox = ActionOutbox(transport: secure, store: replica, deviceID: device) { [base] in base }
+        let clock = OSAllocatedUnfairLock(initialState: base)
+        let outbox = ActionOutbox(transport: secure, store: replica, deviceID: device) { clock.withLock { $0 } }
         try await outbox.enableOrderedActions()
         await outbox.setHubID(hubID)
 
@@ -588,13 +601,35 @@ final class ActionOutboxOrderedTests: XCTestCase {
         // The feed applied it, then compacted the buffer.
         try await outbox.applyOrderedEcho(held)
         try transportStore.compactEvents(in: .relay, keepSince: try transportStore.changes(in: .relay, since: nil).newToken)
+        return CloudKitPhone(outbox: outbox, replica: replica, database: database, written: written, clock: clock)
+    }
 
-        try await outbox.resendFrom(1)
+    /// On CloudKit, after the held echo was compacted: the resend reads the echo from the server and rewrites it;
+    /// the row is never listed as Not delivered (a Retry would apply it twice).
+    func testAResendOnCloudKitAfterTheHeldEchoWasCompactedRewritesIt() async throws {
+        let phone = try await cloudKitPhoneWithACompactedHeldEcho()
 
-        let after = try XCTUnwrap(replica.outboxRows([.queued, .sent, .settled, .undelivered]).first { $0.actionID == id })
-        XCTAssertEqual(after.delivery, .sent, "never listed as Not delivered")
-        XCTAssertEqual(database.record(named: written.wireName)?.encryptedValues["payload"] as? Data, written.envelope,
-                       "the held echo is rewritten with the action")
+        try await phone.outbox.resendFrom(1)
+
+        XCTAssertEqual(try phone.row()?.delivery, .sent, "never listed as Not delivered")
+        XCTAssertEqual(phone.database.record(named: phone.written.wireName)?.encryptedValues["payload"] as? Data,
+                       phone.written.envelope, "the held echo is rewritten with the action")
+    }
+
+    /// On CloudKit, after the held echo was compacted, the record is gone on the server (hub hygiene): the 24 h
+    /// withdrawal counts it as deleted and lists the row once, instead of retrying at every sweep.
+    func testAWithdrawalOnCloudKitOfARecordGoneOnTheServerListsTheRow() async throws {
+        let phone = try await cloudKitPhoneWithACompactedHeldEcho()
+        let id = try XCTUnwrap(phone.database.record(named: phone.written.wireName)?.recordID)
+        _ = try await phone.database.modify(saving: [], deleting: [id])
+        phone.clock.withLock { $0 = $0.addingTimeInterval(25 * 3600) }
+
+        let swept = try await phone.outbox.sweepSilentPending()
+
+        XCTAssertEqual(swept, [phone.written.actionID])
+        let after = try XCTUnwrap(try phone.row())
+        XCTAssertEqual(after.delivery, .undelivered)
+        XCTAssertEqual(try phone.replica.pendingActions().first?.undeliveredReason, .noAnswer)
     }
 
     func testAResendOverwriteThatMeetsAFinalEchoSettlesTheRow() async throws {

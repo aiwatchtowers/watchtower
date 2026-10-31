@@ -178,7 +178,7 @@ final class CloudKitConditionalTests: XCTestCase {
     }
 
     func testAStaleSeqAfterCompactionOfARecordGoneOnTheServerIsGone() async throws {
-        let (transport, database, _) = try compactedAfterTwoVersions()
+        let (transport, database, store) = try compactedAfterTwoVersions()
         let id = try XCTUnwrap(database.record(named: "a-1")?.recordID)
         _ = try await database.modify(saving: [], deleting: [id])
 
@@ -186,7 +186,8 @@ final class CloudKitConditionalTests: XCTestCase {
         let delete = try await transport.delete([ConditionalDelete(recordName: "a-1", zone: .relay, expect: .seq(1))])
 
         XCTAssertEqual(save, [.refused(.permanent(code: "gone"))])
-        XCTAssertEqual(delete, [.refused(.permanent(code: "gone"))])
+        XCTAssertEqual(delete, [.deleted], "already gone counts as deleted, as for unknownItem")
+        XCTAssertNil(try store.recordVersion(recordName: "a-1", zone: .relay), "stored fields dropped")
     }
 
     func testAFailedFetchAfterCompactionIsARefusal() async throws {

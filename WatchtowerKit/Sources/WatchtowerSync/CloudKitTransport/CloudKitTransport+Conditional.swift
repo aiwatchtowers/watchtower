@@ -181,6 +181,10 @@ extension CloudKitTransport: ConditionalTransport {
                   version.recordSeq == expected, version.changeTag != nil else {
                 switch try await staleSave(item.recordName) {
                 case .conflict(let current): return .answer(.conflict(current: current))
+                case .refused(.permanent(let code)) where code == Self.goneCode:
+                    // No record on the server: the seam's idempotent delete, as `unknownItem` in `settleDelete`.
+                    try store.deleteSystemFields(recordNames: [item.recordName], zone: .relay)
+                    return .answer(.deleted)
                 case .refused(let refusal): return .answer(.refused(refusal))
                 case .saved: return .answer(.refused(.permanent(code: "unknownVersion")))
                 }
