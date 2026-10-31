@@ -92,6 +92,13 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	}
 	if deps.DesktopHost == nil {
 		deps.DesktopHost = func() bool { return false }
+		if deps.Store != nil {
+			// The single desktop-host signal: a fresh Desktop heartbeat.
+			deps.DesktopHost = func() bool {
+				fresh, _, err := deps.Store.DesktopHost(deps.Clock())
+				return err == nil && fresh
+			}
+		}
 	}
 	h := &Handlers{d: deps, answering: map[int64]bool{}}
 	h.loadHeld()
