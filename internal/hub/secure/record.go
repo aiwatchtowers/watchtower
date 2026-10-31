@@ -417,14 +417,33 @@ func (o *Opener) OwnEcho(_, wireName string, envelope []byte) (Opened, error) {
 }
 
 // Requeue rebuilds the Record of a relayToPhone envelope the hub sealed
-// earlier and kept (the control queue holds sealed envelopes, not Records):
-// it must open as the hub's own record under wireName, exactly as OwnEcho
-// opens it, so bytes the Sealer never produced can never become a Record.
-func (o *Opener) Requeue(zone, wireName string, envelope []byte) (Record, error) {
+// earlier for device and kept (the control queue holds sealed envelopes, not
+// Records): it must open as the hub's own record under wireName with
+// device's h2p key — the device whose mailbox zone names — so bytes the
+// Sealer never produced, or produced for another phone, never become a Record
+// for this zone.
+func (o *Opener) Requeue(zone string, device ID, wireName string, envelope []byte) (Record, error) {
 	if zone == "" {
 		return Record{}, errors.New("secure: record without a zone")
 	}
-	if _, err := o.OwnEcho(zone, wireName, envelope); err != nil {
+	h, err := o.header(envelope)
+	if err != nil {
+		return Record{}, err
+	}
+	if h.Class != ClassRelayToPhone {
+		return Record{}, fmt.Errorf("%w: %d", ErrWrongClass, h.Class)
+	}
+	if h.Sender != h.Hub {
+		return Record{}, ErrWrongSender
+	}
+	opened, f, err := o.openRelay(envelope, wireName, ClassRelayToPhone, HubToPhone, device, h.Epoch)
+	if errors.Is(err, ErrAuthenticationFailed) || errors.Is(err, ErrEpochNotAccepted) {
+		return Record{}, ErrNoRelayKey
+	}
+	if err != nil {
+		return Record{}, err
+	}
+	if _, err := o.accept(wireName, opened, f); err != nil {
 		return Record{}, err
 	}
 	return Record{zone: zone, wireName: wireName, envelope: bytes.Clone(envelope), sealed: true}, nil

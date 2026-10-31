@@ -242,25 +242,29 @@ func (p *Processor) flushAll(ctx context.Context) (written, failed int, err erro
 	if err != nil {
 		return 0, 0, err
 	}
+	var errs []error
 	for _, b := range boxes {
-		w, f, err := p.flushMailbox(ctx, b.zone)
+		w, f, err := p.flushMailbox(ctx, b)
 		written, failed = written+w, failed+f
 		if err != nil {
-			return written, failed, err
+			// One phone's failure never holds back the others' queues.
+			log.Printf("hub: flushing device %s's mailbox: %s", b.id, errClass(err))
+			errs = append(errs, err)
 		}
 	}
-	return written, failed, nil
+	return written, failed, errors.Join(errs...)
 }
 
-// flushMailbox writes zone's queue in order; failed counts rows that did not
+// flushMailbox writes b's queue in order; failed counts rows that did not
 // land this time (the first one stops the mailbox).
-func (p *Processor) flushMailbox(ctx context.Context, zone string) (written, failed int, err error) {
+func (p *Processor) flushMailbox(ctx context.Context, b mailbox) (written, failed int, err error) {
+	zone := b.zone
 	rows, err := p.cfg.Store.PendingControls(zone)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, c := range rows {
-		rec, err := p.cfg.Opener.Requeue(zone, c.RecordName, c.Envelope)
+		rec, err := p.cfg.Opener.Requeue(zone, b.id, c.RecordName, c.Envelope)
 		if err != nil {
 			if !droppable(err) {
 				return written, failed, err

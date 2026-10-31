@@ -54,12 +54,20 @@ func (p *Processor) decide(ctx context.Context, b mailbox, fn func(*sql.Tx) erro
 	})
 }
 
-// mark writes the rollback mark of an opened record: called only inside the
-// transaction that commits the first decision about it (a crash before
-// that commit leaves the record new, so its redelivery is applied).
-func mark(tx *sql.Tx, wireName string, o secure.Opened) error {
+// mark writes the rollback mark of a record b's phone sent: called only
+// inside the transaction that commits the first decision about it (a crash
+// before that commit leaves the record new, so its redelivery is applied).
+// The hub's own echo read back (ownReceived) has no phone mark to write.
+func mark(tx *sql.Tx, b mailbox, wireName string, o secure.Opened) error {
+	if o.Sender != b.id {
+		return nil
+	}
 	return state.RecordSeen(tx, wireName, o.Sender.String(), o.Epoch, o.Seq)
 }
+
+// decodes reports whether payload decodes into v; a record that does not is
+// dropped unanswered (it carries no id to echo).
+func decodes(payload []byte, v any) bool { return json.Unmarshal(payload, v) == nil }
 
 // parseAction decodes an ordered action and binds it to its record: the
 // sender is b's phone and the frame names a-<sender>-<action_seq>. ok is
@@ -109,6 +117,56 @@ func (p *Processor) action(ctx context.Context, b mailbox, r record, o secure.Op
 	return p.drainHeld(ctx, b, ps)
 }
 
+// ownReceived settles an action whose claim outlived its pass. A
+// received-echo kind is claimed begun and its record overwritten with the
+// hub's received echo before the handler runs; if the hub then stops (or the
+// done transaction fails), the phone's record holds only that echo, which
+// FromPhone refuses as the hub's own. Read back here, an own received echo of
+// the next action whose ledger row is still begun is answered
+// outcome_unknown — never re-run — so the order moves on (the Swift hub's
+// begun → outcome_unknown, RelayProcessor processAction). Any other own
+// record is no work.
+func (p *Processor) ownReceived(ctx context.Context, b mailbox, rec transport.Stored, ps *pass) error {
+	o, err := p.cfg.Opener.OwnEcho(b.zone, rec.Name, rec.Envelope)
+	if err != nil {
+		if droppable(err) {
+			return nil
+		}
+		return err
+	}
+	if o.Frame.Kind != kindAction {
+		return nil
+	}
+	var a wire.ActionRequest
+	if !decodes(o.Frame.Payload, &a) || a.ActionSeq == nil || a.Status != wire.StatusReceived {
+		return nil
+	}
+	seq := *a.ActionSeq
+	plain := actionName(b.id, seq)
+	if o.Frame.ID != plain { // the echo of another phone's action
+		return nil
+	}
+	dev, linked, err := p.cfg.Store.Device(b.id.String())
+	if err != nil || !linked {
+		return err
+	}
+	if dev.LinkNonce != b.link {
+		return errRelinked
+	}
+	if seq != dev.LastAppliedActionSeq+1 {
+		return nil
+	}
+	phase, _, _, err := p.cfg.Store.Phase(b.ledger(plain))
+	if err != nil || phase != state.PhaseBegun {
+		return err
+	}
+	ps.report.Read++
+	if err := p.apply(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, o, a, seq, plain, ps); err != nil {
+		return err
+	}
+	return p.drainHeld(ctx, b, ps)
+}
+
 // repeat answers an action at or below the last applied seq with its stored
 // final echo (applied when the ledger has none: skipped or pruned), never
 // dispatching it again.
@@ -126,7 +184,7 @@ func (p *Processor) repeat(ctx context.Context, b mailbox, r record, o secure.Op
 		return err
 	}
 	if err := p.decide(ctx, b, func(tx *sql.Tx) error {
-		if err := mark(tx, r.name, o); err != nil {
+		if err := mark(tx, b, r.name, o); err != nil {
 			return err
 		}
 		return state.Enqueue(tx, q.control(b.zone))
@@ -156,7 +214,7 @@ func (p *Processor) hold(ctx context.Context, b mailbox, r record, o secure.Open
 	}
 	device := b.id.String()
 	if err := p.decide(ctx, b, func(tx *sql.Tx) error {
-		if err := mark(tx, r.name, o); err != nil {
+		if err := mark(tx, b, r.name, o); err != nil {
 			return err
 		}
 		if err := state.Hold(tx, device, seq, r.name, r.env); err != nil {
@@ -221,8 +279,7 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		out = normalize(reg.handler(ctx, Request{Device: b.id, RecordName: plain, Action: a, ReceivedAt: now}))
 	}
 	if _, err := out.result(); err != nil {
-		log.Printf("hub: action %s answered a result that does not encode", plain)
-		out = failed(reasonWriteFailed, "")
+		out = unencodable(b.id)
 	}
 	final, err := p.sealEcho(b, r.name, plain, a, out, r.expect)
 	if err != nil {
@@ -243,7 +300,7 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 		if err := state.DropHeld(tx, device, seq); err != nil {
 			return err
 		}
-		if err := mark(tx, r.name, o); err != nil { // the deciding commit for idempotent kinds
+		if err := mark(tx, b, r.name, o); err != nil { // the deciding commit for idempotent kinds
 			return err
 		}
 		if err := state.Enqueue(tx, final.control(b.zone)); err != nil {
@@ -265,6 +322,15 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 	return nil
 }
 
+// unencodable is the outcome of a handler answer whose result does not
+// encode: failed/write_failed rather than a record that wedges the order. It
+// logs the device only (an action seq flowing here hangs gosec's G706 taint
+// analysis, see reaskHeld).
+func unencodable(device secure.ID) Outcome {
+	log.Printf("hub: an action of device %s answered a result that does not encode", device)
+	return failed(reasonWriteFailed, "")
+}
+
 // claim commits plain as begun with the rollback mark (and the received
 // echo, written at once so the phone sees it before the handler runs).
 // claimed is false when the ledger already holds the record.
@@ -281,7 +347,7 @@ func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Ope
 		if err := state.Begin(tx, b.ledger(plain), now); err != nil {
 			return err
 		}
-		if err := mark(tx, r.name, o); err != nil {
+		if err := mark(tx, b, r.name, o); err != nil {
 			return err
 		}
 		if recv == nil {
@@ -297,7 +363,7 @@ func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Ope
 	}
 	if recv != nil {
 		ps.report.Echoed++
-		if _, _, err := p.flushMailbox(ctx, b.zone); err != nil {
+		if _, _, err := p.flushMailbox(ctx, b); err != nil {
 			return true, err
 		}
 	}
@@ -379,12 +445,15 @@ func (p *Processor) drainHeld(ctx context.Context, b mailbox, ps *pass) error {
 			if !droppable(err) {
 				return err
 			}
-			log.Printf("hub: held action %d of device %s no longer opens (%s): asking again", next.ActionSeq, b.id, errClass(err))
 			return p.reaskHeld(ctx, b, next.ActionSeq, last+1)
 		}
 		a, seq, plain, ok := parseAction(b, o)
 		if !ok || seq != next.ActionSeq {
 			return p.reaskHeld(ctx, b, next.ActionSeq, last+1)
+		}
+		if ps.budget <= 0 {
+			ps.report.Remaining++ // resumed at the start of the next pass
+			return nil
 		}
 		r := record{name: next.RecordName, env: next.Envelope, expect: expectAbsent}
 		if err := p.apply(ctx, b, r, o, a, seq, plain, ps); err != nil {
@@ -410,6 +479,10 @@ func (p *Processor) dropHeld(ctx context.Context, b mailbox, seqs []uint64) erro
 
 // reaskHeld drops an unusable held action and writes resend_from(from) again.
 func (p *Processor) reaskHeld(ctx context.Context, b mailbox, seq, from uint64) error {
+	// The class stays out of this line: logging a value that flows from the held
+	// row through FromPhone sends gosec's G706 taint analysis into a loop it
+	// never leaves (it hung golangci-lint); the device id is enough here.
+	log.Printf("hub: a held action of device %s no longer opens: asking again", b.id)
 	q, err := p.sealResendFrom(b, from)
 	if err != nil {
 		return err
@@ -433,15 +506,16 @@ func (p *Processor) reaskHeld(ctx context.Context, b mailbox, seq, from uint64) 
 // delete); a re-read one is harmless. The other phone controls are Task 10's.
 func (p *Processor) phoneControl(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, ps *pass) error {
 	var c wire.Control
-	if err := json.Unmarshal(o.Frame.Payload, &c); err != nil || c.ID == "" || o.Frame.ID != "c-"+c.ID {
+	if !decodes(o.Frame.Payload, &c) || c.ID == "" || o.Frame.ID != "c-"+c.ID {
 		log.Printf("hub: undecodable control of device %s dropped", b.id)
 		return nil
 	}
 	if c.Kind != wire.ControlSkipTo {
 		return nil
 	}
-	if c.Seq == nil || *c.Seq == 0 {
-		log.Printf("hub: skip_to without a seq from device %s dropped", b.id)
+	if c.Seq == nil || *c.Seq == 0 || c.DeviceID == nil || !sameID(*c.DeviceID, b.id) ||
+		(c.HubID != nil && !sameID(*c.HubID, p.cfg.Keys.HubID())) {
+		log.Printf("hub: skip_to of device %s without a seq or naming another device or hub: dropped", b.id)
 		return nil
 	}
 	m := *c.Seq
@@ -453,8 +527,12 @@ func (p *Processor) phoneControl(ctx context.Context, b mailbox, rec transport.S
 	if dev.LinkNonce != b.link {
 		return errRelinked
 	}
+	if m > dev.LastAppliedActionSeq+1+MaxSkipAhead {
+		log.Printf("hub: skip_to of device %s jumps %d past the order window: dropped", b.id, m-dev.LastAppliedActionSeq)
+		return nil
+	}
 	if err := p.decide(ctx, b, func(tx *sql.Tx) error {
-		if err := mark(tx, rec.Name, o); err != nil {
+		if err := mark(tx, b, rec.Name, o); err != nil {
 			return err
 		}
 		if m > dev.LastAppliedActionSeq+1 {

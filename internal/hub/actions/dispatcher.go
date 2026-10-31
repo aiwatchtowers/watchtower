@@ -31,6 +31,10 @@ const (
 	// BatchLimit is the most actions one pass applies or holds; the rest
 	// waits for the next pass (repeats never count).
 	BatchLimit = 200
+	// MaxSkipAhead bounds a phone's skip_to(m): m may lie at most this far
+	// past the next expected action_seq. A skip only gives up actions the
+	// phone lost after a resend_from, never a jump across the counter.
+	MaxSkipAhead = 1 << 16
 )
 
 // NonIdempotentKinds are claimed begun before their handler runs, so a hub

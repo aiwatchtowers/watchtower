@@ -465,7 +465,7 @@ func TestActionOlderThan7DaysExpires(t *testing.T) {
 	}
 }
 
-func TestClockSkewOver300sFails(t *testing.T) {
+func TestClockSkewOver300sExpired(t *testing.T) {
 	w := newWorld(t, transport.KindRelay)
 	now := w.clock()
 	ahead := w.phone.NewAction("test_noop")
@@ -641,8 +641,12 @@ func TestRelinkRestartsTheOrder(t *testing.T) {
 
 func TestRelinkDuringApplyCommitsNothing(t *testing.T) {
 	w := newWorld(t, transport.KindRelay)
+	relinked := false
 	w.disp.Register("ask_answer", func(context.Context, Request) Outcome {
-		w.relink(w.phone)
+		if !relinked {
+			relinked = true
+			w.relink(w.phone)
+		}
 		return Outcome{Status: wire.StatusApplied}
 	}, KindOptions{})
 	w.act("ask_answer")
@@ -655,6 +659,137 @@ func TestRelinkDuringApplyCommitsNothing(t *testing.T) {
 	if rows, _ := w.st.PendingControls(w.phone.Zone()); len(rows) != 0 {
 		t.Errorf("%d echoes queued for the old link", len(rows))
 	}
+	if tok, _ := w.st.ZoneToken(w.phone.Zone()); tok != 0 {
+		t.Fatalf("the page read under the old link stored its token: %d", tok)
+	}
+	// The new link's first action is read and applied.
+	if seq := w.act("ask_answer"); seq != 1 {
+		t.Fatalf("new link's first seq %d", seq)
+	}
+	w.settle()
+	w.wantEcho(1, wire.StatusApplied, "")
+	if d := w.device(w.phone); d.LastAppliedActionSeq != 1 {
+		t.Errorf("last applied %d", d.LastAppliedActionSeq)
+	}
+}
+
+// A received-echo kind whose apply never finished leaves only the hub's own
+// received echo in the phone's record: a later pass must settle it
+// outcome_unknown (never re-run) and the phone's lane must go on.
+func TestStoppedApplyAfterReceivedEchoLetsTheLaneContinue(t *testing.T) {
+	for _, stop := range []string{"crash", "done_commit"} {
+		t.Run(stop, func(t *testing.T) {
+			eachKind(t, func(t *testing.T, w *world) {
+				calls := 0
+				w.disp.Register("session_input", func(context.Context, Request) Outcome {
+					calls++
+					if stop == "crash" {
+						panic("the hub stops mid-apply")
+					}
+					return Outcome{Status: wire.StatusApplied, Delivery: "typed"}
+				}, KindOptions{})
+				first := w.act("session_input")
+				second := w.act("test_noop")
+				if stop == "done_commit" {
+					w.proc.fault = func(point string) error {
+						if point == "done" {
+							return errors.New("injected commit failure")
+						}
+						return nil
+					}
+				}
+				func() {
+					defer func() { _ = recover() }()
+					_, _ = w.proc.Pass(w.ctx)
+				}()
+				w.proc.fault = nil
+				w.sync(w.phone)
+				w.wantEcho(first, wire.StatusReceived, "") // the record now holds the hub's own echo
+				w.settle()
+				if calls != 1 {
+					t.Fatalf("handler ran %d times", calls)
+				}
+				w.wantEcho(first, wire.StatusFailed, reasonOutcomeUnknown)
+				w.wantEcho(second, wire.StatusApplied, "")
+				w.wantCalls("test_noop:2")
+				if d := w.device(w.phone); d.LastAppliedActionSeq != second {
+					t.Fatalf("last applied %d: the lane is wedged", d.LastAppliedActionSeq)
+				}
+				w.wantEmptyMailbox()
+			})
+		})
+	}
+}
+
+func TestOnePhonesFailureDoesNotHoldBackTheOthers(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	other := w.addPhone()
+	w.act("test_noop")
+	if _, err := other.Act("test_noop"); err != nil {
+		t.Fatal(err)
+	}
+	w.fake.FailNext("changes", transport.ErrUnavailable) // the first mailbox read fails
+	r, err := w.proc.Pass(w.ctx)
+	if err == nil {
+		t.Fatal("the failed read was not reported")
+	}
+	if r.Applied != 1 {
+		t.Fatalf("pass %+v: the other phone was held back", r)
+	}
+	if r := w.pass(); r.Applied != 1 {
+		t.Fatalf("retry pass %+v", r)
+	}
+}
+
+func TestHeldDrainHonoursTheBatchLimit(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	if _, err := w.phone.Queue(w.phone.NewAction("test_noop")); err != nil { // 1 never reaches the mailbox
+		t.Fatal(err)
+	}
+	total := BatchLimit + 10
+	for range total - 1 {
+		w.act("test_noop")
+	}
+	if r := w.pass(); r.Held != BatchLimit || r.Remaining == 0 {
+		t.Fatalf("first pass %+v", r)
+	}
+	sawRemaining := false
+	for range 30 {
+		r := w.pass()
+		sawRemaining = sawRemaining || (r.Applied > 0 && r.Remaining > 0)
+		if r.Applied > BatchLimit {
+			t.Fatalf("a pass applied %d", r.Applied)
+		}
+		n := w.sync(w.phone)
+		if r.Read+r.ControlsWritten+r.Applied == 0 && n == 0 {
+			break
+		}
+	}
+	if got := len(w.callLog()); got != total {
+		t.Fatalf("%d applied, want %d", got, total)
+	}
+	if !sawRemaining {
+		t.Error("no pass stopped at the batch limit")
+	}
+	if d := w.device(w.phone); d.LastAppliedActionSeq != uint64(total) {
+		t.Errorf("last applied %d", d.LastAppliedActionSeq)
+	}
+}
+
+func TestSkipToOutsideTheWindowIgnored(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	w.act("test_noop")
+	w.settle()
+	if err := w.phone.SkipTo(1 << 40); err != nil {
+		t.Fatal(err)
+	}
+	w.pass()
+	if d := w.device(w.phone); d.LastAppliedActionSeq != 1 {
+		t.Fatalf("skip_to jumped the order to %d", d.LastAppliedActionSeq)
+	}
+	w.act("test_noop")
+	w.settle()
+	w.wantCalls("test_noop:1", "test_noop:2")
 }
 
 // puller keeps its own zone cursors, as the hosted relay transport does.

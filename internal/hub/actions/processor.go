@@ -122,16 +122,28 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 	if err != nil {
 		return ps.report, err
 	}
+	var errs []error
 	for _, b := range boxes {
-		if err := p.readMailbox(ctx, b, ps); err != nil {
-			p.nudge(ps)
-			return ps.report, err
+		// Held actions that are next in line first: a drain an earlier
+		// pass left at the batch limit (or a crash) resumes here.
+		err := p.drainHeld(ctx, b, ps)
+		if err == nil {
+			err = p.readMailbox(ctx, b, ps)
+		}
+		if errors.Is(err, errRelinked) {
+			log.Printf("hub: device %s was re-linked or unlinked during a pass: its mailbox is read again next pass", b.id)
+			continue
+		}
+		if err != nil {
+			// One phone's failure never holds back the other phones.
+			log.Printf("hub: reading device %s's mailbox: %s", b.id, errClass(err))
+			errs = append(errs, err)
 		}
 	}
 	written, _, err := p.flushAll(ctx)
 	ps.report.ControlsWritten = written
 	p.nudge(ps)
-	return ps.report, err
+	return ps.report, errors.Join(append(errs, err)...)
 }
 
 func (p *Processor) nudge(ps *pass) {
@@ -194,7 +206,10 @@ func (p *Processor) pull(ctx context.Context, zone string, apply func(transport.
 // readMailbox pulls b's changes page by page. After TOKEN_EXPIRED the whole
 // mailbox comes again from 0 (Batch.Reset): every surviving action is then a
 // repeat. The processor mirrors nothing per zone (held actions are the
-// hub's own state, not a copy of the mailbox), so a Reset drops nothing.
+// hub's own state, not a copy of the mailbox), so a Reset drops nothing. A
+// pull stopped by the batch limit or by a re-link stores no token for the
+// page: the rest of it (a re-linked phone's new records included) is read
+// again next pass.
 func (p *Processor) readMailbox(ctx context.Context, b mailbox, ps *pass) error {
 	err := p.pull(ctx, b.zone, func(batch transport.Batch) error {
 		for i, rec := range batch.Changed {
@@ -226,9 +241,10 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 		if !droppable(err) {
 			return err
 		}
-		if !errors.Is(err, secure.ErrWrongClass) { // the hub's own records come back through the feed
-			log.Printf("hub: dropped a mailbox record of device %s: %s", b.id, errClass(err))
+		if errors.Is(err, secure.ErrWrongClass) { // the hub's own records come back through the feed
+			return p.ownReceived(ctx, b, rec, ps)
 		}
+		log.Printf("hub: dropped a mailbox record of device %s: %s", b.id, errClass(err))
 		return nil
 	}
 	if opened.Sender != b.id {
@@ -250,10 +266,6 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 	default:
 		// recording_upload and device records belong to other lanes; an
 		// unknown kind has no work (the Kit's RelayRecordKind decoding).
-		return nil
-	}
-	if errors.Is(err, errRelinked) {
-		log.Printf("hub: device %s was re-linked or unlinked during a pass: record dropped", b.id)
 		return nil
 	}
 	return err
