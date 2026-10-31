@@ -1375,7 +1375,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_targets (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     target_id  INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
     first_at   TEXT NOT NULL,
-    last_at    TEXT NOT NULL,
+    last_at    TEXT NOT NULL, status_at TEXT,
     PRIMARY KEY (session_id, target_id)
 );
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
