@@ -389,9 +389,12 @@ Plain name `c-<uuid>`, frame kind `control`, sealed like an action in the sender
 
 Not an action: record `recupload-<upload id>`, kind `recording_upload`, no order and no handler table, its own ledger. Payload `{id, started_at, ended_at, duration_sec, title_hint?, sample_format, status, error_message?, event_id?, device_id?, hub_id?}`, the audio as a sealed asset (§4.4). No age window; a retry reuses the same name and bytes. The hub rewrites the record without the asset: `received`, or `failed` with an owner-facing `error_message` — the upload echo has **no `reason` key** (the class stays in the hub's ledger). The phone deletes its plain audio and ciphertext only on `received`; a `failed` echo keeps both. Progress then arrives as the `recording_job` slice.
 
-Go hub: with the owner's recording switch `off` (§9) an upload is answered the final `failed` "This host can't transcribe recordings. Your recording stays on your phone." (ledger `not_supported`). With it `on`, a fresh Desktop transcriber heartbeat lets the upload be opened and answered `received`; otherwise it is answered `held` "Your Mac's transcriber isn't running. The recording waits on your phone." and retried each pass. Today's Kit decodes `held` as `pending` and keeps waiting.
+Go hub, **built today** (`internal/hub/actions/handlers/recording.go`): a host that has never had a Desktop transcriber heartbeat answers the final `failed` "This host can't transcribe recordings. Your recording stays on your phone." (ledger `not_supported`); a host whose Desktop heartbeat is stale answers `held` "Your Mac's transcriber isn't running. The recording waits on your phone." and retries each pass (in memory, no expiry); a fresh heartbeat lets the upload be opened and answered `received`. Today's Kit decodes `held` as `pending` and keeps waiting.
 
-**Held-upload limit (Proposed).** A held upload is not held forever: 7 days after it was first held it gets the final `failed` with reason `expired`, and turning the switch `off` fails every held upload with `not_supported`. Either way the phone keeps its audio. (Today's Go intake keeps a held upload in memory only, with no expiry.)
+Go hub, **Proposed** (§9):
+- The owner's recording switch replaces the never-had-Desktop rule: switch `off` → final `failed`/`not_supported`; switch `on` → the Desktop heartbeat decides only `received` (fresh) vs `held` (stale).
+- A held upload gets the final `failed`/`expired` 7 days after it was first held; turning the switch `off` fails every held upload with `not_supported`. Either way the phone keeps its audio.
+- These change together: the Go intake (`internal/hub/actions/handlers/recording.go` and the hold in `internal/hub/actions/recording.go`), the heartbeat slice (`internal/hub/slices/heartbeat.go`, `capabilities`), and the `watchtower hub recordings` verb.
 
 ### 7.8 Action flows
 
@@ -458,7 +461,8 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 "capabilities": {"recordings": "on"}
 ```
 
-- **An owner switch, not a derived value.** `recordings` is the value of a switch on the hub: `watchtower hub recordings on|off`, stored in the sidecar's `hub_meta`. Default: `on` for a desktop host, `off` for a headless host. A change restamps the heartbeat at once (the existing facts check).
+- **An owner switch, not a derived value.** `recordings` is the value of a switch on the hub: `watchtower hub recordings on|off`, stored in the sidecar's `hub_meta`. **Default** (decided by agent; owner confirms on this review): until the owner sets the switch, its value is `on` if the hub has ever seen a Desktop transcriber heartbeat, else `off`, so a Mac with Desktop keeps recording as today. Once set, the stored value wins. A change restamps the heartbeat at once (the existing facts check).
+- **The verb.** `watchtower hub recordings on|off` is an owner verb, refused under an agent marker like the other hub write verbs. `on` is refused on a host that has never had a Desktop transcriber heartbeat, with "this host has no transcriber", so a headless host can never publish `on`.
 - **Never derived from the Desktop heartbeat.** The Desktop transcriber heartbeat (`watchtower hub desktop heartbeat`; a running Go hub receives it over its control socket, being added in plan 1a Task 15's fix round) only decides, while the switch is `on`, whether an upload is `received` (Desktop fresh) or `held` (Desktop away, §7.7). A missing Desktop heartbeat can never turn the capability `off`.
 - **Off.** With the switch `off`, every upload gets the final `failed` with reason `not_supported` ("This host can't transcribe recordings. Your recording stays on your phone."), and any upload held when the switch is turned off is failed the same way. The phone keeps its audio.
 - **The phone's contract.** It must not offer recording for a hub whose heartbeat says `"off"`, and it must surface a final `failed` of an upload to the owner. An absent `capabilities` (an older hub) means `on`. Unknown capability keys are ignored; an unknown value of a known key reads as "not off" (today's behaviour), so a newer hub never hides a feature from an older phone by accident; the hub's answer stays the authority.
@@ -520,13 +524,14 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 - Hubs are admitted to the relay by a paying phone's vouch, not by App Attest — asks #800, #801.
 - The phone states its own `relay_device_id` inside the hello — Go hub design §12a (existing code in `internal/hub/link`).
 - A headless hub runs relay-only and offers no recording — Go hub design §3, §7.3.
-- Recording intake: `held` while Desktop is away, `failed` on a host that never had Desktop — Go hub design §8 p. 4a (existing code).
+- Recording intake: with the owner's switch `off` an upload is `failed`/`not_supported`; with it `on` the Desktop heartbeat decides only `received` vs `held` — conversation 2026-10-31 (replaces the built never-had-Desktop rule of Go hub design §8 p. 4a; Proposed).
+- The switch defaults to `on` when the hub has ever seen a Desktop transcriber heartbeat, else `off`; a stored value wins; `on` is refused on a host with no transcriber; owner verb, refused under an agent marker — decided by agent; owner confirms on this review (ask #832).
 - Capabilities live in the heartbeat; unknown values read as not off — conversation (this document, Proposed).
 - Recording is an owner on/off switch published in the heartbeat — conversation 2026-10-31, supersedes ask #827 N7 (owner confirms on this review).
 - Owner verbs go through `watchtower hub …` (a thin CLI later) — ask #827.
 - A held ask answer is delivered at most once; after a crash mid-delivery it stays readable via `get_ask` and the brief — plan 1b ruling.
-- A held upload expires after 7 days with `failed`/`expired`, the phone keeping its audio — review of this document (ask #831).
-- Phone UI and mockups are out of this document; they belong to the relay client spec — review of this document (ask #831).
+- A held upload expires after 7 days with `failed`/`expired`, the phone keeping its audio — decided by agent; owner confirms on this review (ask #832).
+- Phone UI and mockups are out of this document; they belong to the relay client spec — decided by agent; owner confirms on this review (ask #832).
 
 ## Open points
 
