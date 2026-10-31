@@ -3,6 +3,7 @@ import os
 import SwiftProtobuf
 import WatchtowerHostedRelay
 import WatchtowerRelayProto
+import XCTest
 
 /// The server end of one scripted WebSocket. It answers `Hello` and each
 /// `Request` from its script as soon as the client sends them, and lets the
@@ -288,9 +289,45 @@ final class ScriptedRelayDialer: RelaySocketDialer, @unchecked Sendable {
     }
 }
 
-/// Yields until `condition` holds.
-func spin(_ condition: () -> Bool) async {
+/// Yields until `condition` holds, for at most 5 s of wall-clock time; past that
+/// the test fails and this returns false.
+@discardableResult
+func spin(file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async -> Bool {
+    let deadline = Date().addingTimeInterval(5)
     while !condition() {
+        guard Date() < deadline else {
+            XCTFail("condition not met within 5 s", file: file, line: line)
+            return false
+        }
         await Task.yield()
+    }
+    return true
+}
+
+/// Reads a connection's events, each read capped like `spin`: a read that gets no
+/// event within 5 s fails the test and returns nil (the read is cancelled).
+final class EventProbe: @unchecked Sendable {
+    private var iterator: AsyncStream<HostedRelayClientEvent>.Iterator
+
+    init(_ connection: HostedRelayConnection) {
+        iterator = connection.events.makeAsyncIterator()
+    }
+
+    func next(file: StaticString = #filePath, line: UInt = #line) async -> HostedRelayClientEvent? {
+        let result = OSAllocatedUnfairLock<HostedRelayClientEvent??>(initialState: nil)
+        let read = Task {
+            let event = await self.advance()
+            result.withLock { $0 = .some(event) }
+        }
+        guard await spin(file: file, line: line, { result.withLock { $0 != nil } }) else {
+            read.cancel()
+            await read.value
+            return nil
+        }
+        return result.withLock { $0 }.flatMap { $0 }
+    }
+
+    private func advance() async -> HostedRelayClientEvent? {
+        await iterator.next()
     }
 }

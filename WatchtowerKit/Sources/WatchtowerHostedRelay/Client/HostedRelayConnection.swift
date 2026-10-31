@@ -5,7 +5,7 @@ import WatchtowerRelayProto
 
 extension HostedRelayClient {
     /// Opens and keeps the socket: dial with Authorization → Hello{1, token} → HelloOk → subscribe each zone one by one.
-    /// The connection runs until `close()` or a `.stopped` event.
+    /// The connection runs until `close()` or a `.stopped` event: the caller must close it.
     public func connect(zones: [String], eventBuffer: Int = 256) -> HostedRelayConnection {
         let connection = HostedRelayConnection(client: self, url: socketURL, zones: zones, eventBuffer: eventBuffer)
         connection.start()
@@ -28,6 +28,9 @@ extension HostedRelayClient {
 ///   answer within 10 s cuts the connection;
 /// - a login failing with `.notSupported` / `.updateRequired` → `.stopped(.attestation(…))`;
 ///   `.retryLater(after:)` → the next dial waits `max(after, defaultBackoff(attempt))`.
+///
+/// A connection must be closed: its loop keeps it alive (and keeps reconnecting) until
+/// `close()` or a `.stopped` event, whether or not anyone still holds it.
 public final class HostedRelayConnection: Sendable {
     static let handshakeTimeout = Duration.seconds(10)
     static let pingInterval = Duration.seconds(30)
@@ -139,6 +142,8 @@ public final class HostedRelayConnection: Sendable {
     }
 
     /// Closes the connection for good; the events stream ends after what is queued.
+    /// Waits for a login already in flight (the shared login is not cancellable; at most
+    /// the HTTPS request timeout) before it returns.
     public func close() async {
         let (runner, live, pending) = state.withLock { state in
             state.closed = true
@@ -245,7 +250,10 @@ public final class HostedRelayConnection: Sendable {
         let socket: any RelaySocket
         do {
             let headers = ["Authorization": "Bearer \(token)"]
-            guard let dialed = try await deadline(Self.handshakeTimeout, { try await self.dialer.dial(self.url, headers: headers) }) else {
+            let dialed = try await deadline(Self.handshakeTimeout, discard: Self.closeLateSocket) {
+                try await self.dialer.dial(self.url, headers: headers)
+            }
+            guard let dialed else {
                 Self.logger.error("relay socket: dial timed out")
                 return .failed
             }
@@ -452,10 +460,11 @@ public final class HostedRelayConnection: Sendable {
         return true
     }
 
-    /// A relay answer that refuses the zone (not "try again later" and not a lost connection).
+    /// A relay answer that refuses the zone. "Try again later", a lost connection, a session
+    /// or version problem are about the connection, not the zone: cut it and keep the zone.
     private static func refuses(_ error: HostedRelayError) -> Bool {
         switch error {
-        case .server(code: .unavailable, _), .unreachable:
+        case .server(code: .unavailable, _), .server(code: .unauthenticated, _), .unreachable, .unsupportedVersion:
             return false
         default:
             return true
@@ -541,10 +550,12 @@ public final class HostedRelayConnection: Sendable {
 
     /// `body`, or nil when `limit` passes on the clock first. Whenever `body` did not finish
     /// (timeout, error, cancellation), `closing` is closed before the group waits for `body`:
-    /// a socket read or ping is not cancellable, the close is what makes it return.
+    /// a socket read or ping is not cancellable, the close is what makes it return. A value
+    /// `body` still produces after the timeout won goes to `discard` (a dialed socket is closed).
     private func deadline<T: Sendable>(
         _ limit: Duration,
         closing socket: (any RelaySocket)? = nil,
+        discard: (@Sendable (T) async -> Void)? = nil,
         _ body: @escaping @Sendable () async throws -> T
     ) async throws -> T? {
         try await withThrowingTaskGroup(of: Race<T>.self) { group in
@@ -561,8 +572,17 @@ public final class HostedRelayConnection: Sendable {
                 throw error
             }
             await socket?.close(code: Self.closeNormal)
+            group.cancelAll()
+            while let late = try? await group.next() {
+                if case .done(let value) = late { await discard?(value) }
+            }
             return nil
         }
+    }
+
+    /// Closes a socket the dial produced after its deadline had already passed.
+    private static let closeLateSocket: @Sendable (any RelaySocket) async -> Void = { socket in
+        await socket.close(code: closeNormal)
     }
 
     /// The zone's kind (`hub`, `mailbox`, `pair`, ...) for logs: never its ids.

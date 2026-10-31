@@ -9,8 +9,6 @@ import XCTest
 /// relay `sim/README.md` "The Go client"), same names and numbers, plus the
 /// Swift client's own reconnect rules (relay `proto/README.md` "WebSocket").
 final class HostedRelayConnectionTests: XCTestCase {
-    private typealias Events = AsyncStream<HostedRelayClientEvent>.Iterator
-
     /// A reconnect delay: anything shorter than the 10 s handshake timeout.
     private static let reconnectDelay: (Duration) -> Bool = { $0 < .seconds(10) }
 
@@ -19,7 +17,7 @@ final class HostedRelayConnectionTests: XCTestCase {
     func testDialSendsAuthorizationHeader() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         let first = await events.next()
         XCTAssertEqual(first, .connected)
 
@@ -36,7 +34,7 @@ final class HostedRelayConnectionTests: XCTestCase {
     func testClientPings30s() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         _ = await events.next()
         let socket = try XCTUnwrap(harness.sockets.sockets.first)
 
@@ -55,7 +53,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         let harness = try RelayClientHarness()
         harness.sockets.script([.http(401)])
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         let first = await events.next()
         XCTAssertEqual(first, .connected)
 
@@ -69,7 +67,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         let harness = try RelayClientHarness()
         harness.sockets.script([.socket(ScriptedRelaySocket(hello: .close(4001)))])
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         let first = await events.next()
         XCTAssertEqual(first, .connected)
 
@@ -82,7 +80,7 @@ final class HostedRelayConnectionTests: XCTestCase {
     func testReconnectDelayAfterGoingAway() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         _ = await events.next()
         let socket = try XCTUnwrap(harness.sockets.sockets.first)
 
@@ -106,7 +104,7 @@ final class HostedRelayConnectionTests: XCTestCase {
             let calls = OSAllocatedUnfairLock(initialState: 0)
             let harness = try RelayClientHarness { calls.withLock { $0 += 1 } }
             let connection = await harness.client.connect(zones: [])
-            var events = connection.events.makeAsyncIterator()
+            let events = EventProbe(connection)
             _ = await events.next()
             let socket = try XCTUnwrap(harness.sockets.sockets.first)
 
@@ -128,7 +126,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         let harness = try RelayClientHarness()
         harness.sockets.script([.socket(ScriptedRelaySocket(pongs: false))])
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         _ = await events.next()
         let socket = try XCTUnwrap(harness.sockets.sockets.first)
 
@@ -156,10 +154,10 @@ final class HostedRelayConnectionTests: XCTestCase {
         // Mid-connection.
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         _ = await events.next()
         try XCTUnwrap(harness.sockets.sockets.first).closeFromServer(4000)
-        let rest = await drain(&events)
+        let rest = await drain(events)
         XCTAssertEqual(rest, [.disconnected, .stopped(.unsupportedVersion)])
         XCTAssertEqual(harness.sockets.dials.count, 1)
 
@@ -167,8 +165,8 @@ final class HostedRelayConnectionTests: XCTestCase {
         let early = try RelayClientHarness()
         early.sockets.script([.socket(ScriptedRelaySocket(hello: .close(4000)))])
         let refused = await early.client.connect(zones: [])
-        var refusedEvents = refused.events.makeAsyncIterator()
-        let all = await drain(&refusedEvents)
+        let refusedEvents = EventProbe(refused)
+        let all = await drain(refusedEvents)
         XCTAssertEqual(all, [.stopped(.unsupportedVersion)])
         XCTAssertEqual(early.sockets.dials.count, 1)
         await connection.close()
@@ -179,7 +177,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         let harness = try RelayClientHarness()
         harness.sockets.script(Array(repeating: .socket(ScriptedRelaySocket(hello: .close(1006))), count: 3))
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
 
         let windows: [ClosedRange<Duration>] = [
             .milliseconds(250)...(.milliseconds(500)),
@@ -211,7 +209,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         let harness = try RelayClientHarness()
         harness.sockets.script([.socket(ScriptedRelaySocket(subscribe: ["acme/a": .silent]))])
         let connection = await harness.client.connect(zones: ["acme/a"])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         _ = await events.next()
         let socket = try XCTUnwrap(harness.sockets.sockets.first)
 
@@ -223,7 +221,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         let delay = await harness.clock.waitForSleep(where: Self.reconnectDelay)
         harness.clock.manual.advance(by: delay)
 
-        let again = await take(2, &events)
+        let again = await take(2, events)
         XCTAssertEqual(again, [.connected, .zoneChanged(zone: "acme/a", seq: 0)])
         XCTAssertEqual(harness.sockets.sockets.last?.subscribes, [["acme/a"]])
         await connection.close()
@@ -233,9 +231,9 @@ final class HostedRelayConnectionTests: XCTestCase {
         let harness = try RelayClientHarness()
         harness.sockets.script([.socket(ScriptedRelaySocket(subscribe: ["acme/b": .error(.forbidden)]))])
         let connection = await harness.client.connect(zones: ["acme/a", "acme/b", "acme/c"])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
 
-        let first = await take(4, &events)
+        let first = await take(4, events)
         XCTAssertEqual(first.first, .connected)
         let expected: [HostedRelayClientEvent] = [
             .zoneChanged(zone: "acme/a", seq: 0),
@@ -253,32 +251,52 @@ final class HostedRelayConnectionTests: XCTestCase {
         socket.closeFromServer(1006)
         _ = await events.next()
         harness.clock.manual.advance(by: await harness.clock.waitForSleep(where: Self.reconnectDelay))
-        let again = await take(3, &events)
+        let again = await take(3, events)
         XCTAssertEqual(again.first, .connected)
         XCTAssertEqual(harness.sockets.sockets.last?.subscribes, [["acme/a"], ["acme/c"]])
         await connection.close()
     }
 
+    func testSubscribeSessionOrVersionErrorCutsAndKeepsTheZone() async throws {
+        for code in [Relay_V1_ErrorCode.unauthenticated, .unsupportedVersion] {
+            let harness = try RelayClientHarness()
+            harness.sockets.script([.socket(ScriptedRelaySocket(subscribe: ["acme/a": .error(code)]))])
+            let connection = await harness.client.connect(zones: ["acme/a"])
+            let events = EventProbe(connection)
+
+            let first = await take(2, events)
+            XCTAssertEqual(first, [.connected, .disconnected], "\(code): cut, no refusal")
+            let socket = try XCTUnwrap(harness.sockets.sockets.first)
+            XCTAssertNotNil(socket.closedWith, "\(code)")
+            harness.clock.manual.advance(by: await harness.clock.waitForSleep(where: Self.reconnectDelay))
+
+            let again = await take(2, events)
+            XCTAssertEqual(again, [.connected, .zoneChanged(zone: "acme/a", seq: 0)], "\(code): the zone is kept")
+            XCTAssertEqual(harness.sockets.sockets.last?.subscribes, [["acme/a"]], "\(code)")
+            await connection.close()
+        }
+    }
+
     func testEventsAfterConnectAreRecordLessPerZone() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: ["acme/a", "acme/b"])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
 
-        let first = await take(3, &events)
+        let first = await take(3, events)
         XCTAssertEqual(first, [.connected, .zoneChanged(zone: "acme/a", seq: 0), .zoneChanged(zone: "acme/b", seq: 0)])
         let socket = try XCTUnwrap(harness.sockets.sockets.first)
         socket.pushZoneChanged("acme/a", seq: 5)
         socket.pushControl(.slotRemoved, detail: "mac-device")
         socket.pushZoneChanged("acme/other", seq: 9)  // not ours: never reported
         socket.pushControl(.sessionExpired)            // handled by the 4001 that follows, never reported
-        let live = await take(2, &events)
+        let live = await take(2, events)
         XCTAssertEqual(live, [.zoneChanged(zone: "acme/a", seq: 5), .control(kind: .slotRemoved, detail: "mac-device")])
 
         socket.closeFromServer(1006)
         let disconnected = await events.next()
         XCTAssertEqual(disconnected, .disconnected)
         harness.clock.manual.advance(by: await harness.clock.waitForSleep(where: Self.reconnectDelay))
-        let again = await take(3, &events)
+        let again = await take(3, events)
         XCTAssertEqual(again, [.connected, .zoneChanged(zone: "acme/a", seq: 0), .zoneChanged(zone: "acme/b", seq: 0)])
         await connection.close()
     }
@@ -286,8 +304,8 @@ final class HostedRelayConnectionTests: XCTestCase {
     func testFullBufferFoldsZoneEventsAndKeepsControls() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: ["acme/a", "acme/b"], eventBuffer: 2)
-        var events = connection.events.makeAsyncIterator()
-        _ = await take(3, &events)
+        let events = EventProbe(connection)
+        _ = await take(3, events)
         let socket = try XCTUnwrap(harness.sockets.sockets.first)
 
         // Nobody reads meanwhile: the reader must not wait for room.
@@ -300,7 +318,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         socket.pushZoneChanged("acme/b", seq: 5)
         await socket.waitUntilDrained()
 
-        let delivered = await take(6, &events)
+        let delivered = await take(6, events)
         XCTAssertEqual(delivered, [
             .zoneChanged(zone: "acme/a", seq: 1),
             .zoneChanged(zone: "acme/a", seq: 2),
@@ -315,8 +333,8 @@ final class HostedRelayConnectionTests: XCTestCase {
     func testSetZonesSubscribesOnlyTheNewZones() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: ["acme/a"])
-        var events = connection.events.makeAsyncIterator()
-        _ = await take(2, &events)
+        let events = EventProbe(connection)
+        _ = await take(2, events)
         let socket = try XCTUnwrap(harness.sockets.sockets.first)
 
         await connection.setZones(["acme/b"])
@@ -333,7 +351,7 @@ final class HostedRelayConnectionTests: XCTestCase {
     func testSendIsAnsweredByID() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         _ = await events.next()
 
         let response = try await connection.send(RelayClientHarness.removeSlot)
@@ -356,7 +374,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         harness.fake.script(.generateAssertion, failures: [.serverUnavailable, .serverUnavailable, .serverUnavailable])
         let start = harness.clock.now()
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
 
         for want in [Duration.seconds(1), .seconds(2), .seconds(4)] {
             let delay = await harness.clock.waitForSleep(where: Self.reconnectDelay)
@@ -374,7 +392,7 @@ final class HostedRelayConnectionTests: XCTestCase {
     func testAttestationUpdateRequiredStopsTheConnection() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: [])
-        var events = connection.events.makeAsyncIterator()
+        let events = EventProbe(connection)
         _ = await events.next()
 
         harness.http.script("login", [.error(.attestationRequired)])
@@ -382,7 +400,7 @@ final class HostedRelayConnectionTests: XCTestCase {
         let disconnected = await events.next()
         XCTAssertEqual(disconnected, .disconnected)
         harness.clock.manual.advance(by: await harness.clock.waitForSleep(where: Self.reconnectDelay))
-        let rest = await drain(&events)
+        let rest = await drain(events)
         XCTAssertEqual(rest, [.stopped(.attestation(.updateRequired))])
         XCTAssertEqual(harness.sockets.dials.count, 1)
         XCTAssertEqual(harness.http.requests("login").count, 2)
@@ -391,18 +409,18 @@ final class HostedRelayConnectionTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func take(_ count: Int, _ events: inout Events) async -> [HostedRelayClientEvent] {
+    private func take(_ count: Int, _ events: EventProbe, line: UInt = #line) async -> [HostedRelayClientEvent] {
         var taken: [HostedRelayClientEvent] = []
-        while taken.count < count, let event = await events.next() {
+        while taken.count < count, let event = await events.next(line: line) {
             taken.append(event)
         }
         return taken
     }
 
     /// Every event up to the end of the stream.
-    private func drain(_ events: inout Events) async -> [HostedRelayClientEvent] {
+    private func drain(_ events: EventProbe, line: UInt = #line) async -> [HostedRelayClientEvent] {
         var taken: [HostedRelayClientEvent] = []
-        while let event = await events.next() {
+        while let event = await events.next(line: line) {
             taken.append(event)
         }
         return taken

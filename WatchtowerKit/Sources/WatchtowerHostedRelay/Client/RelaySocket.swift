@@ -34,9 +34,6 @@ public protocol RelaySocketDialer: Sendable {
 /// `RelaySocketDialer` over `URLSessionWebSocketTask`. Close codes are read
 /// from `closeCode.rawValue`, so the relay's 4000/4001/4008 survive (R13).
 public struct URLSessionRelaySocketDialer: RelaySocketDialer {
-    /// The upgrade request's timeout (the Go client's handshake timeout).
-    static let upgradeTimeout: TimeInterval = 10
-
     private let session: URLSession
 
     /// The ephemeral session of `URLSessionRelayHTTP` by default: nothing of a
@@ -46,7 +43,9 @@ public struct URLSessionRelaySocketDialer: RelaySocketDialer {
     }
 
     public func dial(_ url: URL, headers: [String: String]) async throws -> any RelaySocket {
-        var request = URLRequest(url: url, timeoutInterval: Self.upgradeTimeout)
+        // No `timeoutInterval`: on a WebSocket task it can act as an idle timeout and cut
+        // a socket that is quiet between pings. The connection bounds the upgrade itself.
+        var request = URLRequest(url: url)
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         let task = session.webSocketTask(with: request)
         // The Go client reads without a limit (`SetReadLimit(-1)`).
