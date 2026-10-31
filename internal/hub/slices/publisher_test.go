@@ -344,7 +344,8 @@ func TestOnlyUnlinkedKindsWhileNoPhone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if f.ID != "device_grant-"+ph.id.String() || !kb.Grant.Linked || kb.Keys == nil ||
-		!slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay}) || kb.Grant.RelayDeviceID != "relaydeviceidacme" {
+		!slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay}) || kb.Grant.RelayDeviceID != "relaydeviceidacme" ||
+		kb.Grant.RelayAuthPub != "cmVsYXktYXV0aC1wdWItYWNtZQ" || kb.Grant.OrderedActions == nil || *kb.Grant.OrderedActions != 1 {
 		t.Fatalf("keybox = %s %+v", f.ID, kb.Grant)
 	}
 
@@ -396,29 +397,121 @@ func TestAKindIsSavedAtMostOncePerSpacing(t *testing.T) {
 	}
 }
 
-// runPublisher runs p.Run until the test ends.
-func runPublisher(t *testing.T, p *Publisher) {
-	t.Helper()
+// fakeTime is Run's clock and timers under the test's control.
+type fakeTime struct {
+	mu     sync.Mutex
+	now    time.Time
+	timers map[int]fakeTimer
+	nextID int
+	armed  int
+}
+
+type fakeTimer struct {
+	at time.Time
+	ch chan time.Time
+}
+
+func newFakeTime() *fakeTime {
+	return &fakeTime{now: time.Unix(1_800_000_000, 0).UTC(), timers: map[int]fakeTimer{}}
+}
+
+func (f *fakeTime) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.now
+}
+
+func (f *fakeTime) Timer(d time.Duration) (<-chan time.Time, func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	id := f.nextID
+	f.nextID++
+	f.armed++
+	if d <= 0 {
+		ch <- f.now
+	} else {
+		f.timers[id] = fakeTimer{at: f.now.Add(d), ch: ch}
+	}
+	return ch, func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		delete(f.timers, id)
+	}
+}
+
+func (f *fakeTime) armedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.armed
+}
+
+// advance moves the clock and fires the timers due; true when one fired.
+func (f *fakeTime) advance(d time.Duration) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.now = f.now.Add(d)
+	fired := false
+	for id, t := range f.timers {
+		if !t.at.After(f.now) {
+			t.ch <- f.now
+			delete(f.timers, id)
+			fired = true
+		}
+	}
+	return fired
+}
+
+// runner drives p.Run on a fake clock, one settled step at a time: every
+// step waits until Run has gone back to sleep on a new timer.
+type runner struct {
+	t  *testing.T
+	ft *fakeTime
+	p  *Publisher
+}
+
+func (r *rig) runFake(sources ...Source) *runner {
+	r.t.Helper()
+	ft := newFakeTime()
+	p := r.publisherWith(Config{Clock: ft.Now}, sources...)
+	p.mono, p.timer = ft.Now, ft.Timer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
-	t.Cleanup(func() {
+	r.t.Cleanup(func() {
 		cancel()
 		if err := <-done; !errors.Is(err, context.Canceled) {
-			t.Errorf("Run = %v", err)
+			r.t.Errorf("Run = %v", err)
 		}
 	})
+	ru := &runner{t: r.t, ft: ft, p: p}
+	ru.settle(0) // the full cycle at start
+	return ru
 }
 
-// waitReads waits (bounded) until src was read n times.
-func waitReads(t *testing.T, src *fakeSource, n int) {
-	t.Helper()
+// settle waits (bounded) until Run armed more than n timers.
+func (ru *runner) settle(n int) {
+	ru.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for len(src.readTimes()) < n {
+	for ru.ft.armedCount() <= n {
 		if time.Now().After(deadline) {
-			t.Fatalf("source read %d times, want %d", len(src.readTimes()), n)
+			ru.t.Fatal("Run never went back to sleep")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func (ru *runner) publishSoon(k Kind) {
+	n := ru.ft.armedCount()
+	ru.p.PublishSoon(k)
+	ru.settle(n)
+}
+
+// step advances the fake clock and lets Run handle what fell due.
+func (ru *runner) step(d time.Duration) {
+	n := ru.ft.armedCount()
+	if ru.ft.advance(d) {
+		ru.settle(n)
 	}
 }
 
@@ -426,14 +519,19 @@ func TestDebounceCoalescesBurst(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	src := &fakeSource{kind: "target"}
 	src.set(item("1", `{"v":1}`))
-	p := r.publisherWith(Config{Clock: time.Now}, src)
-	runPublisher(t, p)
-	waitReads(t, src, 1) // the full cycle at start
-	for range 5 {
-		p.PublishSoon("target")
-		time.Sleep(20 * time.Millisecond)
+	ru := r.runFake(src)
+	if n := len(src.readTimes()); n != 1 {
+		t.Fatalf("start read %d times", n)
 	}
-	time.Sleep(Debounce + 250*time.Millisecond)
+	for range 5 {
+		ru.publishSoon("target")
+		ru.step(20 * time.Millisecond)
+	}
+	if n := len(src.readTimes()); n != 1 {
+		t.Fatalf("read %d times inside the burst", n)
+	}
+	ru.step(Debounce)
+	ru.step(Debounce)
 	if n := len(src.readTimes()); n != 2 {
 		t.Fatalf("source read %d times after a burst, want 1 + 1", n)
 	}
@@ -443,31 +541,76 @@ func TestDebounceMaxWaitBoundsAContinuousBurst(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	src := &fakeSource{kind: "target"}
 	src.set(item("1", `{"v":1}`))
-	p := r.publisherWith(Config{Clock: time.Now}, src)
-	runPublisher(t, p)
-	waitReads(t, src, 1)
-	start := time.Now()
-	for time.Since(start) < 3*time.Second {
-		p.PublishSoon("target")
-		time.Sleep(100 * time.Millisecond)
-	}
-	reads := src.readTimes()
-	var during []time.Time
-	for _, at := range reads {
-		if at.After(start) {
-			during = append(during, at)
+	ru := r.runFake(src)
+	last, reads, cycles := ru.ft.Now(), 1, 0
+	for range 30 { // PublishSoon every 100 ms for 3 s: the trailing debounce never comes
+		ru.publishSoon("target")
+		ru.step(100 * time.Millisecond)
+		if n := len(src.readTimes()); n > reads {
+			reads, cycles, last = n, cycles+1, ru.ft.Now()
 		}
-	}
-	if len(during) < 2 {
-		t.Fatalf("%d cycles during a 3 s burst, want one at least every %v", len(during), MaxDebounceWait)
-	}
-	const slack = 250 * time.Millisecond
-	prev := start
-	for _, at := range during {
-		if gap := at.Sub(prev); gap > MaxDebounceWait+slack {
+		if gap := ru.ft.Now().Sub(last); gap > MaxDebounceWait {
 			t.Fatalf("a dirty kind waited %v, more than %v", gap, MaxDebounceWait)
 		}
-		prev = at
+	}
+	if cycles < 3 {
+		t.Fatalf("%d cycles in a 3 s burst, want one every %v", cycles, MaxDebounceWait)
+	}
+}
+
+// A failed save is retried after RetryFirst, then after a doubled delay,
+// well before the full diff.
+func TestFailedSaveIsRetriedWithBackoff(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	src := &fakeSource{kind: "owner_ask"}
+	src.set(item("1", `{"id":1}`))
+	ru := r.runFake(src)
+	w := r.wireName("owner_ask-1")
+	if _, ok := r.live()[w]; ok {
+		t.Fatal("saved through a failing transport")
+	}
+	ru.step(RetryFirst) // second attempt fails: the next waits 2 s
+	if n := len(src.readTimes()); n != 2 {
+		t.Fatalf("read %d times after the first retry", n)
+	}
+	ru.step(RetryFirst)
+	if n := len(src.readTimes()); n != 2 {
+		t.Fatalf("retried before the doubled delay: %d reads", n)
+	}
+	ru.step(RetryFirst)
+	if _, ok := r.live()[w]; !ok {
+		t.Fatal("owner_ask not published by the retry")
+	}
+	if RetryFirst != time.Second || RetryMax != 10*time.Second {
+		t.Fatalf("retry bounds = %v / %v", RetryFirst, RetryMax)
+	}
+}
+
+func TestFailedSourceIsRetried(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	src := &fakeSource{kind: "permission_request"}
+	src.set(item("1", `{"id":1}`))
+	src.fail(errors.New("db busy"))
+	ru := r.runFake(src)
+	src.set(item("1", `{"id":1}`))
+	ru.step(RetryFirst)
+	if _, ok := r.live()[r.wireName("permission_request-1")]; !ok {
+		t.Fatal("kind with a failed source not retried")
+	}
+}
+
+// A failed save leaves its kind and every kind after it unfinished.
+func TestCycleReportsUnfinishedKinds(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	ask, target := &fakeSource{kind: "owner_ask"}, &fakeSource{kind: "target"}
+	ask.set(item("1", `{"id":1}`))
+	target.set(item("1", `{"id":1}`))
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	rep, err := r.publisher(target, ask).Cycle(context.Background(), nil)
+	if !errors.Is(err, transport.ErrUnavailable) || !slices.Equal(rep.Unfinished, []Kind{"owner_ask", "target"}) {
+		t.Fatalf("Cycle = %+v %v", rep, err)
 	}
 }
 

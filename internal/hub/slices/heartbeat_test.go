@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/logcanary"
 )
 
 // kitHeartbeatKeys are the Kit HeartbeatPayload coding keys as they travel
@@ -97,10 +98,15 @@ func TestHeartbeatRestampsOnlyOnChangeOrInterval(t *testing.T) {
 	if got := onlyItem(t, src).Payload; !bytes.Equal(got, first) {
 		t.Fatal("unchanged facts restamped the heartbeat")
 	}
+	sink := logcanary.Capture(t)
 	readErr = errors.New("db gone")
 	now = now.Add(time.Minute)
 	if got := onlyItem(t, src).Payload; !bytes.Equal(got, first) {
 		t.Fatal("a failed accounts read changed the heartbeat")
+	}
+	onlyItem(t, src)
+	if n := strings.Count(sink.String(), "accounts read failed"); n != 1 {
+		t.Fatalf("a failure streak logged %d lines, want 1", n)
 	}
 	readErr = nil
 	rows[0].Status = "revoked"

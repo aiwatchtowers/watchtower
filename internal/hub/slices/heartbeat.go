@@ -65,6 +65,7 @@ type heartbeatSource struct {
 	accounts []wire.HeartbeatAccount // what the current payload carries
 	payload  []byte
 	stamped  time.Time
+	failing  bool // the accounts read failed last time (logged once per streak)
 }
 
 func (*heartbeatSource) Kind() Kind { return KindHeartbeat }
@@ -76,9 +77,13 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 	accounts, err := h.readAccounts(ctx)
 	changed := false
 	if err != nil {
-		log.Printf("hub slices: heartbeat accounts read failed (%s): last accounts kept", errClass(err))
+		if !h.failing {
+			log.Printf("hub slices: heartbeat accounts read failed (%s): last accounts kept", errClass(err))
+		}
+		h.failing = true
 		accounts = h.accounts
 	} else {
+		h.failing = false
 		changed = !slices.Equal(accounts, h.accounts)
 	}
 	if h.payload == nil || changed || now.Sub(h.stamped) >= HeartbeatInterval {

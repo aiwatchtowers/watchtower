@@ -33,6 +33,12 @@ const (
 	RelaySpacing = 150 * time.Millisecond
 	// CloudKitSpacing is CloudKit's (the battery rule #724, phase 3).
 	CloudKitSpacing = 2 * time.Second
+	// RetryFirst and RetryMax bound Run's retry of the kinds a cycle did not
+	// finish (a failed save, a failed source, an epoch abort): 1 s doubling
+	// to 10 s, reset by a cycle that finishes everything it was given — so a
+	// transient relay failure delays an ask by seconds, never a full diff.
+	RetryFirst = time.Second
+	RetryMax   = 10 * time.Second
 )
 
 // ErrNoKeys is returned while the hub has no epoch keys yet, so nothing is read or published
@@ -88,13 +94,17 @@ type Config struct {
 // unsealable, refused by the transport, an invalid id). Deferred holds the
 // kinds the spacing rule kept back, with the time they may be written.
 // Failed lists the kinds whose source failed. Aborted is true when an epoch
-// rotation stopped the cycle.
+// rotation stopped the cycle. Unfinished lists the kinds the cycle was given
+// and did not finish — a failed source, the kind whose save or state write
+// failed and every kind after it, the kinds left by an abort, or every kind
+// asked for when the link state could not be read; Run retries them.
 type CycleReport struct {
 	Saved, Deleted int
 	Skipped        []string
 	Deferred       map[Kind]time.Time
 	Failed         []Kind
 	Aborted        bool
+	Unfinished     []Kind
 }
 
 // Publisher is the slice publisher. PublishSoon is safe from any goroutine;
@@ -104,6 +114,10 @@ type Publisher struct {
 	spacing time.Duration
 	clock   func() time.Time
 	wake    chan struct{}
+	// mono and timer are Run's time (the debounce, the full diff, the
+	// retries); a test replaces them with a fake clock.
+	mono  func() time.Time
+	timer func(d time.Duration) (<-chan time.Time, func())
 
 	cycleMu sync.Mutex // one cycle at a time; guards the fields below
 	// lastWrite is when each kind last saved or deleted a record.
@@ -140,9 +154,14 @@ func NewPublisher(c Config) *Publisher {
 		}
 	}
 	return &Publisher{
-		c: c, spacing: spacing, clock: c.Clock, wake: make(chan struct{}, 1),
+		c: c, spacing: spacing, clock: c.Clock, wake: make(chan struct{}, 1), mono: time.Now, timer: realTimer,
 		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{},
 	}
+}
+
+func realTimer(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
 }
 
 // PublishSoon marks kinds dirty: Run diffs them Debounce after the last call,
@@ -151,7 +170,7 @@ func (p *Publisher) PublishSoon(kinds ...Kind) {
 	if len(kinds) == 0 {
 		return
 	}
-	now := time.Now()
+	now := p.mono()
 	p.mu.Lock()
 	if len(p.dirty) == 0 {
 		p.firstDirty = now
@@ -202,16 +221,15 @@ func (p *Publisher) takeDirty() []Kind {
 }
 
 // Run publishes until ctx ends (it returns ctx.Err()): a full cycle at once
-// and every FullDiffEvery, the dirty kinds after their debounce, and the
-// kinds the spacing rule deferred once it allows them. A failed cycle is
-// logged and left to the next trigger or the full diff.
+// and every FullDiffEvery, the dirty kinds after their debounce, the kinds
+// the spacing rule deferred once it allows them, and the kinds a cycle did
+// not finish after a bounded backoff (RetryFirst doubling to RetryMax).
 func (p *Publisher) Run(ctx context.Context) error {
-	held := map[Kind]time.Time{} // monotonic time each deferred kind may go
-	nextFull := time.Now()
-	timer := time.NewTimer(time.Hour)
-	defer timer.Stop()
+	held := map[Kind]time.Time{} // monotonic time each deferred or retried kind may go
+	nextFull := p.mono()
+	var backoff time.Duration
 	for {
-		now := time.Now()
+		now := p.mono()
 		var (
 			kinds []Kind
 			full  = !now.Before(nextFull)
@@ -240,11 +258,22 @@ func (p *Publisher) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			if err != nil {
-				log.Printf("hub slices: publish cycle failed (%s)", errClass(err))
+				log.Printf("hub slices: publish cycle failed (%s); %d kinds retried", errClass(err), len(rep.Unfinished))
 			}
+			after := p.mono()
 			clockNow := p.clock()
 			for k, at := range rep.Deferred {
-				held[k] = time.Now().Add(max(0, at.Sub(clockNow)))
+				held[k] = after.Add(max(0, at.Sub(clockNow)))
+			}
+			if len(rep.Unfinished) == 0 {
+				backoff = 0
+				continue
+			}
+			backoff = min(max(backoff*2, RetryFirst), RetryMax)
+			for _, k := range rep.Unfinished {
+				if at, ok := held[k]; !ok || at.Before(after.Add(backoff)) {
+					held[k] = after.Add(backoff)
+				}
 			}
 			continue
 		}
@@ -257,13 +286,15 @@ func (p *Publisher) Run(ctx context.Context) error {
 				deadline = at
 			}
 		}
-		timer.Reset(time.Until(deadline))
+		fired, stop := p.timer(deadline.Sub(now))
 		select {
 		case <-ctx.Done():
+			stop()
 			return ctx.Err()
 		case <-p.wake:
-		case <-timer.C:
+		case <-fired:
 		}
+		stop()
 	}
 }
 
@@ -285,6 +316,10 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 	if p.c.Linked != nil {
 		var err error
 		if linked, err = p.c.Linked(); err != nil {
+			rep.Unfinished = kinds
+			if kinds == nil {
+				rep.Unfinished = p.sourceKinds()
+			}
 			return rep, fmt.Errorf("slices: reading the link state: %w", err)
 		}
 	}
@@ -302,14 +337,14 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 			return slices.Contains(kinds, k)
 		}
 	}
+	var todo []Kind
 	for _, k := range publishOrder {
-		if !in(k) {
-			continue
+		if in(k) && len(p.sourcesOf(k)) > 0 {
+			todo = append(todo, k)
 		}
+	}
+	for i, k := range todo {
 		srcs := p.sourcesOf(k)
-		if len(srcs) == 0 {
-			continue
-		}
 		now := p.clock()
 		if last, ok := p.lastWrite[k]; ok && now.Sub(last) < p.spacing {
 			rep.Deferred[k] = last.Add(p.spacing)
@@ -322,9 +357,11 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		if errors.Is(err, errEpochMoved) {
 			log.Printf("hub slices: epoch rotated while %s was sealed: the rest is resealed next cycle", k)
 			rep.Aborted = true
+			rep.Unfinished = append(rep.Unfinished, todo[i:]...)
 			return rep, nil
 		}
 		if err != nil {
+			rep.Unfinished = append(rep.Unfinished, todo[i:]...)
 			return rep, err
 		}
 	}
@@ -336,6 +373,17 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 	p.lastPublish = at
 	p.mu.Unlock()
 	return rep, nil
+}
+
+// sourceKinds is every kind with a source, in publish order.
+func (p *Publisher) sourceKinds() []Kind {
+	var out []Kind
+	for _, k := range publishOrder {
+		if len(p.sourcesOf(k)) > 0 {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 func (p *Publisher) sourcesOf(k Kind) []Source {
@@ -370,6 +418,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 			}
 			log.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, errClass(err))
 			rep.Failed = append(rep.Failed, k)
+			rep.Unfinished = append(rep.Unfinished, k)
 			return false, nil
 		}
 		items = append(items, got...)
@@ -415,6 +464,9 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	}
 
 	if len(saves) > 0 {
+		// One Save per kind, not chunked: after a rotation or a new phone a
+		// big kind goes as one request of up to N sealed records. The hosted
+		// relay client (Task 8) or Plan 1b caps or splits the batch.
 		outs, err := p.c.Transport.Save(ctx, saves)
 		if err != nil {
 			return false, fmt.Errorf("slices: saving %s: %w", k, err)
