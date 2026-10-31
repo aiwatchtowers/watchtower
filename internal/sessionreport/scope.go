@@ -17,6 +17,7 @@ type boardEntry struct {
 	target   db.Target
 	parent   int64   // 0 = top level
 	children []int64 // in board order
+	archived bool    // closed and past the workbench's archive age (PROJ-15)
 	since    string  // when it entered its current status; "" = no history
 	order    int     // position in board order
 }
@@ -49,7 +50,7 @@ func loadBoard(d *db.DB, workbenchID int64) (*board, error) {
 
 func (b *board) add(level []db.BoardNode, parent int64) {
 	for _, n := range level {
-		e := &boardEntry{target: n.Target, parent: parent, since: n.StatusSince, order: len(b.order)}
+		e := &boardEntry{target: n.Target, parent: parent, since: n.StatusSince, archived: n.Archived, order: len(b.order)}
 		b.byID[e.id()] = e
 		b.order = append(b.order, e.id())
 		if parent != 0 {
@@ -111,7 +112,7 @@ type scope struct {
 
 // newScope builds the scope of session sessionID. in is the wide set (the
 // lists). The progress set is narrower (board #1352): a session bound to a
-// target on the board counts that target's subtree leaves; any other session
+// target on the board (present and not archived) counts that target's subtree leaves; any other session
 // counts the wide set minus leaves another session owns (owners: leaf id ->
 // owning session id).
 func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []int64, owners map[int64]int64) scope {
@@ -124,7 +125,7 @@ func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []i
 	for _, r := range roots {
 		b.walk(r, func(e *boardEntry) { s.in[e.id()] = true })
 	}
-	if _, onBoard := b.byID[s.session]; s.session != 0 && onBoard {
+	if bound, onBoard := b.byID[s.session]; s.session != 0 && onBoard && !bound.archived {
 		for _, e := range b.leavesUnder(s.session) {
 			s.progress[e.id()] = true
 		}

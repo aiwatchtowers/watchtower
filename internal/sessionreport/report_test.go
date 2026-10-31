@@ -435,6 +435,19 @@ func TestProj14_BoundTargetOffBoardFallsBackToRule2(t *testing.T) {
 	require.NoError(t, err)
 	stamp(t, d, 2, 11, 12)
 	assert.Equal(t, Progress{Done: 1, Total: 2}, build(t, d, 1).Progress)
+
+	// An archived bound target falls back to rule 2 too.
+	_, err = d.Exec(`INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, updated_at) VALUES
+		(30, 'Old group', '2026-09-28', '2026-10-05', NULL, 'done', 1, '2020-01-01T00:00:00Z'),
+		(31, 'old leaf', '2026-09-28', '2026-10-05', 30, 'done', 1, '2020-01-01T00:00:00Z');
+		DELETE FROM target_status_history WHERE target_id IN (30, 31);
+		UPDATE terminal_sessions SET target_id = 30 WHERE id = 1`)
+	require.NoError(t, err)
+	require.NoError(t, d.SetWorkbenchArchiveDays(1, 3))
+	archived, err := d.IsWorkbenchTargetArchived(30)
+	require.NoError(t, err)
+	require.True(t, archived, "precondition")
+	assert.Equal(t, Progress{Done: 2, Total: 3}, build(t, d, 1).Progress, "rule 2: archived 30's leaf 31 plus B; A's leaves are S2's")
 }
 
 func TestProj14_OwnerBoardMoveKeepsOwnership(t *testing.T) {
