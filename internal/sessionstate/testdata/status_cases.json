@@ -1,0 +1,787 @@
+{
+ "now": "2026-10-31T12:00:00.000Z",
+ "cases": [
+  {
+   "name": "not live, nothing",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": ""
+   },
+   "expect": {
+    "state": "not_started",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "live, no state",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "run mark, no turn",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "marked_idle",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "run mark from an earlier run",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": "2026-10-31T10:00:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "working this run",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "working from an earlier run",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31T10:00:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "working but not live",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": ""
+   },
+   "expect": {
+    "state": "not_started",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "working, unreadable stamp",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31 11:30",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "working, stamp at the run start",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31T11:00:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "waiting this run",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "approval this run",
+   "row": {
+    "kind": "claude",
+    "agent_state": "approval",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "needs_approval",
+    "hooks_reported": true,
+    "idle": false,
+    "working": false,
+    "needs_approval": true
+   }
+  },
+  {
+   "name": "approval from an earlier run",
+   "row": {
+    "kind": "claude",
+    "agent_state": "approval",
+    "agent_state_at": "2026-10-31T10:00:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "unknown stored value",
+   "row": {
+    "kind": "claude",
+    "agent_state": "thinking",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "failed turn",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": "2026-10-31T11:30:00.000Z",
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "error",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "failure of an earlier write",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": "2026-10-31T10:00:00.000Z",
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "background agents counted",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 2,
+    "agent_background_at": "2026-10-31T11:30:00.000Z",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "agents_working",
+    "hooks_reported": true,
+    "idle": true,
+    "working": true,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "background count of zero inside the grace",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 0,
+    "agent_background_at": "2026-10-31T11:58:30.000Z",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "agents_working",
+    "hooks_reported": true,
+    "idle": true,
+    "working": true,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "background count of zero past the grace",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 0,
+    "agent_background_at": "2026-10-31T11:57:00.000Z",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "background report from the future",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 3,
+    "agent_background_at": "2026-10-31T12:05:00.000Z",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "background count with an unreadable stamp",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 3,
+    "agent_background_at": "yesterday",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "background count while working",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 3,
+    "agent_background_at": "2026-10-31T11:30:00.000Z",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "approval outranks background agents",
+   "row": {
+    "kind": "claude",
+    "agent_state": "approval",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 3,
+    "agent_background_at": "2026-10-31T11:30:00.000Z",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "needs_approval",
+    "hooks_reported": true,
+    "idle": false,
+    "working": false,
+    "needs_approval": true
+   }
+  },
+  {
+   "name": "failed outranks background agents",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": "2026-10-31T11:30:00.000Z",
+    "agent_background": 3,
+    "agent_background_at": "2026-10-31T11:30:00.000Z",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "error",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "finished, not live",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": "2026-10-31T10:00:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": ""
+   },
+   "expect": {
+    "state": "finished",
+    "hooks_reported": false,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "finished over a turn end",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": "2026-10-31T11:30:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "finished",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "working outranks finished",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": "2026-10-31T10:00:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "open question ask, not live",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 1,
+    "open_question_asks": 1,
+    "open_review_asks": 0,
+    "run_started_at": ""
+   },
+   "expect": {
+    "state": "waiting_for_you",
+    "hooks_reported": false,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "open question ask over a turn end",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 2,
+    "open_question_asks": 1,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "waiting_for_you",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "only check asks open",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 1,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "ready_to_check",
+    "hooks_reported": false,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "review ask open",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 1,
+    "open_question_asks": 0,
+    "open_review_asks": 1,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "ready_to_check",
+    "hooks_reported": false,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "ready to check outranks finished",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": "2026-10-31T11:30:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 1,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "ready_to_check",
+    "hooks_reported": false,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "finished outranks an open question",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": "2026-10-31T11:30:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 1,
+    "open_question_asks": 1,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "finished",
+    "hooks_reported": false,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "run mark with an open question",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 1,
+    "open_question_asks": 1,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "waiting_for_you",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "shell session, live",
+   "row": {
+    "kind": "shell",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  }
+ ]
+}
