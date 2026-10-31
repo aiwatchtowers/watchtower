@@ -1,0 +1,114 @@
+{
+  "cases" : [
+    {
+      "cap" : 899852,
+      "length" : 0,
+      "padded" : 256
+    },
+    {
+      "cap" : 899852,
+      "length" : 1,
+      "padded" : 256
+    },
+    {
+      "cap" : 899852,
+      "length" : 255,
+      "padded" : 256
+    },
+    {
+      "cap" : 899852,
+      "length" : 256,
+      "padded" : 256
+    },
+    {
+      "cap" : 899852,
+      "length" : 257,
+      "padded" : 1024
+    },
+    {
+      "cap" : 899852,
+      "length" : 1023,
+      "padded" : 1024
+    },
+    {
+      "cap" : 899852,
+      "length" : 65536,
+      "padded" : 65536
+    },
+    {
+      "cap" : 899852,
+      "length" : 65537,
+      "padded" : 131072
+    },
+    {
+      "cap" : 899852,
+      "length" : 131072,
+      "padded" : 131072
+    },
+    {
+      "cap" : 899852,
+      "length" : 899852,
+      "padded" : 899852
+    },
+    {
+      "cap" : 899852,
+      "length" : 899853,
+      "padded" : null
+    },
+    {
+      "cap" : 899916,
+      "length" : 0,
+      "padded" : 256
+    },
+    {
+      "cap" : 899916,
+      "length" : 1,
+      "padded" : 256
+    },
+    {
+      "cap" : 899916,
+      "length" : 255,
+      "padded" : 256
+    },
+    {
+      "cap" : 899916,
+      "length" : 256,
+      "padded" : 256
+    },
+    {
+      "cap" : 899916,
+      "length" : 257,
+      "padded" : 1024
+    },
+    {
+      "cap" : 899916,
+      "length" : 1023,
+      "padded" : 1024
+    },
+    {
+      "cap" : 899916,
+      "length" : 65536,
+      "padded" : 65536
+    },
+    {
+      "cap" : 899916,
+      "length" : 65537,
+      "padded" : 131072
+    },
+    {
+      "cap" : 899916,
+      "length" : 131072,
+      "padded" : 131072
+    },
+    {
+      "cap" : 899916,
+      "length" : 899916,
+      "padded" : 899916
+    },
+    {
+      "cap" : 899916,
+      "length" : 899917,
+      "padded" : null
+    }
+  ]
+}

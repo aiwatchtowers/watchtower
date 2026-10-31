@@ -351,19 +351,22 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 	hubSigPub := k.hubSig.Public().(ed25519.PublicKey)
 	aeadKeys := map[string][]byte{
 		"data":         seq(0x10, 0x2F),
+		"alert":        seq(0xD0, 0xEF),
 		"relayToHub":   relayKey(t, k, "p2h", 1),
 		"relayToPhone": relayKey(t, k, "h2p", 1),
 	}
-	senders := map[string][]byte{"data": hubID, "relayToHub": k.deviceID, "relayToPhone": hubID}
+	senders := map[string][]byte{"data": hubID, "alert": hubID, "relayToHub": k.deviceID, "relayToPhone": hubID}
 	zoneByte := map[string]byte{"DataZone": 1, "RelayZone": 2}
 	wants := map[string]envWant{
-		"data":         {1, true, "DataZone", "meeting_transcript", "9", "urgent", `{"title":"Acme sync"}`},
+		"data": {1, true, "DataZone", "meeting_transcript", "9", "urgent", `{"title":"Acme sync"}`},
+		"alert": {2, true, "DataZone", "ask_alert", "42", "", `{"ask_id":42,"body":"Review the plan","event":"ask",` +
+			`"key":"ask-42","quick":true,"title":"Acme","workbench_id":7,"workbench_name":"Acme"}`},
 		"relayToHub":   {5, false, "RelayZone", "action", "a1", "", `{"op":"close"}`},
 		"relayToPhone": {6, false, "RelayZone", "echo", "a1", "", `{"ok":true}`},
 	}
 	nonce := seq(0x50, 0x5B)
-	if len(fx.Cases) != 3 {
-		t.Fatalf("fixture holds %d cases, want 3", len(fx.Cases))
+	if len(fx.Cases) != len(wants) {
+		t.Fatalf("fixture holds %d cases, want %d", len(fx.Cases), len(wants))
 	}
 
 	for name, c := range fx.Cases {
@@ -396,6 +399,16 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 			bad := cat(header, []byte{3 - zb}, be16(len(c.WireName)), []byte(c.WireName))
 			if _, err := aead.Open(nil, header[50:62], body, bad); err == nil {
 				t.Error("opened under the wrong zone")
+			}
+			if name == "alert" {
+				// The alert class is sealed with K_alert; the data key must not open it.
+				dataAEAD, err := chacha20poly1305.New(aeadKeys["data"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := dataAEAD.Open(nil, header[50:62], body, aad); err == nil {
+					t.Error("alert opened with the data key")
+				}
 			}
 		})
 	}

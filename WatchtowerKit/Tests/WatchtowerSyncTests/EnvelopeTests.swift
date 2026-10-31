@@ -31,6 +31,11 @@ struct EnvelopeVectors: Codable, Equatable {
 
     var cases: [String: Case]
 
+    /// `K_alert` of the `alert` case: 0xD0...0xEF.
+    static let alertKey = SymmetricKey(data: E2EFixtureKeys.sequence(0xD0, 0xEF))
+    static let alertPayload = Data((#"{"ask_id":42,"body":"Review the plan","event":"ask","key":"ask-42","quick":true,"#
+        + #""title":"Acme","workbench_id":7,"workbench_name":"Acme"}"#).utf8)
+
     init(keys k: E2EFixtureKeys, dataKey: SymmetricKey, nonce: ChaChaPoly.Nonce) throws {
         let asset = try ChunkedAssetCipher.encrypt(
             Data("[]".utf8), assetID: k.hubID, key: SymmetricKey(data: E2EFixtureKeys.sequence(0x90, 0xAF)), chunkSize: 16).descriptor
@@ -40,6 +45,9 @@ struct EnvelopeVectors: Codable, Equatable {
             k, class: .data, key: dataKey, sender: k.hubID, place: EnvelopeContext(zone: .data, wireName: "abcdefghijklmnopqrstuvwxyz"), signed: true,
             frame: InnerFrame(kind: "meeting_transcript", id: "9", notifyLevel: "urgent", asset: asset,
                               payload: Data(#"{"title":"Acme sync"}"#.utf8)), nonce: nonce)
+        cases["alert"] = try Self.make(
+            k, class: .alert, key: Self.alertKey, sender: k.hubID, place: EnvelopeContext(zone: .data, wireName: "qrstuvwxyzabcdefghijklmnop"),
+            signed: true, frame: InnerFrame(kind: "ask_alert", id: "42", payload: Self.alertPayload), nonce: nonce)
         cases["relayToHub"] = try Self.make(
             k, class: .relayToHub, key: phoneToHub, sender: k.deviceID, place: EnvelopeContext(zone: .relay, wireName: "zyxwvutsrqponmlkjihgfedcba"),
             signed: false, frame: InnerFrame(kind: "action", id: "a1", payload: Data(#"{"op":"close"}"#.utf8)), nonce: nonce)
@@ -89,7 +97,7 @@ struct EnvelopeVectors: Codable, Equatable {
             XCTAssertTrue(key.isValidSignature(Data(hex: signature), for: message))
             verified += 1
         }
-        XCTAssertEqual(verified, 1)
+        XCTAssertEqual(verified, 2, "data + alert are the signed cases")
     }
 }
 
@@ -293,5 +301,23 @@ final class EnvelopeTests: XCTestCase {
         let computed = try EnvelopeVectors(keys: k, dataKey: dataKey, nonce: fixedNonce)
         try E2EFixtures.check(computed, file: "envelope")
         try EnvelopeVectors.verifyStoredSignatures(file: "envelope", key: k.hubSig.publicKey)
+    }
+
+    /// The frozen `alert` case (class 2, signed by `hub_sig`, sealed with `K_alert`) opens with the alert key only.
+    func testAlertEnvelopeVector() throws {
+        try E2EFixtures.check(try EnvelopeVectors(keys: k, dataKey: dataKey, nonce: fixedNonce), file: "envelope")
+        let url = E2EFixtures.directory.appendingPathComponent("envelope.json")
+        let alert = try XCTUnwrap(try JSONDecoder().decode(EnvelopeVectors.self, from: Data(contentsOf: url)).cases["alert"])
+        XCTAssertEqual(alert.envelopeClass, EnvelopeClass.alert.rawValue)
+        XCTAssertEqual(alert.zone, CloudZoneID.data.rawValue)
+        let place = EnvelopeContext(zone: .data, wireName: alert.wireName)
+        let wire = Data(hex: alert.header) + Data(hex: alert.body) + Data(hex: try XCTUnwrap(alert.signature))
+        let opened = try EnvelopeSealer.openSymmetric(wire, accepting: [.alert], context: place,
+                                                      verifier: k.hubSig.publicKey) { _ in EnvelopeVectors.alertKey }
+        XCTAssertEqual(opened.frame, InnerFrame(kind: "ask_alert", id: "42", payload: EnvelopeVectors.alertPayload))
+        XCTAssertThrowsError(try EnvelopeSealer.openSymmetric(wire, accepting: [.alert], context: place,
+                                                              verifier: k.hubSig.publicKey) { _ in self.dataKey }) {
+            XCTAssertEqual($0 as? EnvelopeError, .authenticationFailed)
+        }
     }
 }
