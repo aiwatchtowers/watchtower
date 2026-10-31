@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/hub"
-	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
@@ -138,9 +137,7 @@ const hubRelayOriginRemedy = "Set the relay: watchtower config set hub.relay_ori
 // would stay off before writing a status.
 func runHubStatus(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
-	probe := hubProbe()
-	host, _ := hostkind.Detect(probe)
-	dir, mode, err := hub.Dir(probe)
+	dir, mode, host, err := hub.Dir(hostProbe())
 	var s hub.Status
 	switch {
 	case errors.Is(err, hub.ErrDesktopHost):

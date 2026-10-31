@@ -32,11 +32,13 @@ var ErrBadRelayOrigin = errors.New("the relay origin must be https://host[:port]
 // fragment, and http:// only for 127.0.0.1, localhost and [::1].
 func CheckRelayOrigin(origin string) error {
 	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" || u.Hostname() == "" || u.User != nil ||
+	if err != nil || u.Hostname() == "" || u.User != nil ||
 		u.Path != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(origin, "#") {
 		return ErrBadRelayOrigin
 	}
-	if strings.HasSuffix(u.Host, ":") { // url.Parse refuses a port that is not a number
+	// url.Parse refuses a port that is not a number, but takes an empty one
+	// ("https://relay.example.com:").
+	if strings.HasSuffix(u.Host, ":") {
 		return ErrBadRelayOrigin
 	}
 	switch u.Scheme {

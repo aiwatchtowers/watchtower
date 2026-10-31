@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -40,8 +41,17 @@ var (
 	ErrPolicyOff = errors.New("hub: the MobileSync policy is off")
 )
 
-// Resolve is the daemon's only way to a hub: the Options to Run and the mode,
-// or ModeOff and the reason (Refusal(err)) the hub stays off.
+// DesktopHostError is ErrDesktopHost with the hostkind signal that found the
+// app (for the daemon's log line).
+type DesktopHostError struct{ Signal string }
+
+func (e *DesktopHostError) Error() string { return ErrDesktopHost.Error() }
+
+// Is makes errors.Is(err, ErrDesktopHost) hold.
+func (e *DesktopHostError) Is(target error) bool { return target == ErrDesktopHost }
+
+// Resolve is the daemon's only way to a hub: the Options to Run (o.Mode is
+// ModeTest or ModeLive), or the reason (Refusal(err)) the hub stays off.
 //
 // WATCHTOWER_HUB_DIR set: the phase-1 test mode through FromEnv, exactly as
 // before (a set dir never falls back to live). Else the host kind decides,
@@ -51,38 +61,44 @@ var (
 // sidecar exists with hub_meta.enabled = 1 (read-only; the dir is never
 // created here), the MobileSync policy is not off, a valid relay origin is
 // set and the session-host socket folder is usable.
-func Resolve(cfg *config.Config, d *db.DB, p hostkind.Probe) (Options, Mode, error) {
-	kind, _ := hostkind.Detect(p)
+func Resolve(cfg *config.Config, d *db.DB, p hostkind.Probe) (Options, error) {
+	kind, signal := hostkind.Detect(p)
 	if os.Getenv(EnvHubDir) != "" {
 		o, _, err := FromEnv(cfg, d)
 		if err != nil {
-			return Options{}, ModeOff, err
+			return Options{}, err
 		}
 		o.Mode, o.Host = ModeTest, kind
-		return o, ModeTest, nil
+		return o, nil
 	}
 	if kind == hostkind.Desktop {
-		return Options{}, ModeOff, ErrDesktopHost
+		return Options{}, &DesktopHostError{Signal: signal}
 	}
 	dir, origin, err := liveGate(cfg)
+	// state.OpenReadOnly (reading the switch) re-points this process's
+	// dblock.jsonl sink at the hub dir; the daemon's stays its database's.
+	// d is nil only for a hub with no database (Options.DB nil, tests).
 	if d != nil {
-		// Reading the switch pointed this process's lock-metrics sink at
-		// the hub dir (state.OpenReadOnly); the daemon's stays its database's.
-		repointLockMetrics(d)
+		path, ferr := mainFile(context.Background(), d)
+		if ferr != nil {
+			log.Printf("hub: the lock-metrics sink stays in the hub dir (%s)", errClass(ferr))
+		} else {
+			lockmetrics.Configure(path)
+		}
 	}
 	if err != nil {
-		return Options{}, ModeOff, err
+		return Options{}, err
 	}
 	sock, err := sessionhost.DefaultSocket()
 	if err != nil {
-		return Options{}, ModeOff, fmt.Errorf("%w: %w", sessionhost.ErrRunDirUnusable, err)
+		return Options{}, fmt.Errorf("%w: %w", sessionhost.ErrRunDirUnusable, err)
 	}
-	o := Options{
+	// A headless hub's relay-only rules (spec §7.3) switch on here once
+	// Options carries that switch.
+	return Options{
 		Dir: dir, RelayOrigin: origin, RecordingsDir: filepath.Join(dir, "recordings"), DB: d,
 		SessionStart: sessionstart.Deps{Socket: sock}, Mode: ModeLive, Host: kind,
-	}
-	// Task 7: set RelayOnlyRules = true here
-	return o, ModeLive, nil
+	}, nil
 }
 
 // liveGate is the live hub's start rule on a headless host: its dir and
@@ -131,28 +147,22 @@ func liveEnabled(dir string) (bool, error) {
 	return v == "1", nil
 }
 
-// repointLockMetrics points the lock-metrics sink back at d's file.
-func repointLockMetrics(d *db.DB) {
-	if path, err := mainFile(context.Background(), d); err == nil {
-		lockmetrics.Configure(path)
-	}
-}
-
-// Dir is the hub dir the `hub …` CLI works in: WATCHTOWER_HUB_DIR when set
-// (test mode), else DefaultDir on a headless host (live mode), else
-// ErrDesktopHost. Nothing is created.
-func Dir(p hostkind.Probe) (dir string, mode Mode, err error) {
+// Dir is the hub dir the `hub …` CLI works in and the host's kind:
+// WATCHTOWER_HUB_DIR when set (test mode), else DefaultDir on a headless
+// host (live mode), else ErrDesktopHost. Nothing is created.
+func Dir(p hostkind.Probe) (dir string, mode Mode, kind hostkind.Kind, err error) {
+	kind, signal := hostkind.Detect(p)
 	if dir := os.Getenv(EnvHubDir); dir != "" {
-		return dir, ModeTest, nil
+		return dir, ModeTest, kind, nil
 	}
-	if k, _ := hostkind.Detect(p); k == hostkind.Desktop {
-		return "", ModeOff, ErrDesktopHost
+	if kind == hostkind.Desktop {
+		return "", ModeOff, kind, &DesktopHostError{Signal: signal}
 	}
 	dir, err = DefaultDir()
 	if err != nil {
-		return "", ModeOff, err
+		return "", ModeOff, kind, err
 	}
-	return dir, ModeLive, nil
+	return dir, ModeLive, kind, nil
 }
 
 // OffReason is the reason the daemon's hub in mode would stay off before it

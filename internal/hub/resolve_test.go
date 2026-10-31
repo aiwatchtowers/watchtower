@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/state"
@@ -61,6 +62,12 @@ func desktopProbe(home, support string) hostkind.Probe {
 	}
 }
 
+// resolve is Resolve with the mode it put in the options beside them.
+func resolve(cfg *config.Config, d *db.DB, p hostkind.Probe) (Options, Mode, error) {
+	o, err := Resolve(cfg, d, p)
+	return o, o.Mode, err
+}
+
 // listing is every path under root with its mode, size and mtime.
 func listing(t *testing.T, root string) map[string]string {
 	t.Helper()
@@ -90,27 +97,27 @@ func TestResolve_TestModeUnchangedWhenHubDirSet(t *testing.T) {
 	for _, p := range []hostkind.Probe{headless(), desktopProbe("", "")} {
 		for _, c := range []struct{ env, active string }{{"", "hubtest-a"}, {"hubtest-b", "hubtest-a"}, {"acme", "acme"}} {
 			t.Setenv(EnvTestWorkspace, c.env)
-			_, mode, err := Resolve(&config.Config{ActiveWorkspace: c.active}, nil, p)
+			_, mode, err := resolve(&config.Config{ActiveWorkspace: c.active}, nil, p)
 			if mode != ModeOff || !errors.Is(err, ErrNotTestWorkspace) || Refusal(err) != ReasonNotTestWorkspace {
 				t.Fatalf("%+v: mode %q err %v", c, mode, err)
 			}
 			noEntries(t, dir)
 		}
 		t.Setenv(EnvTestWorkspace, "hubtest-a")
-		o, mode, err := Resolve(&config.Config{ActiveWorkspace: "hubtest-a"}, nil, p)
+		o, mode, err := resolve(&config.Config{ActiveWorkspace: "hubtest-a"}, nil, p)
 		if err != nil || mode != ModeTest || o.Mode != ModeTest || o.Dir != dir || o.RelayOrigin != "https://relay.example.com" ||
 			o.RecordingsDir != filepath.Join(dir, "recordings") || o.SessionStart.Socket != "" {
 			t.Fatalf("test workspace: %+v mode %q err %v", o, mode, err)
 		}
 		noEntries(t, dir)
 		t.Setenv(EnvRelayOrigin, "")
-		if _, mode, err := Resolve(&config.Config{ActiveWorkspace: "hubtest-a"}, nil, p); mode != ModeOff || !errors.Is(err, ErrNoRelayOrigin) {
+		if _, mode, err := resolve(&config.Config{ActiveWorkspace: "hubtest-a"}, nil, p); mode != ModeOff || !errors.Is(err, ErrNoRelayOrigin) {
 			t.Fatalf("a set dir fell back to live: mode %q err %v", mode, err)
 		}
 		t.Setenv(EnvRelayOrigin, "https://relay.example.com")
 	}
 	t.Setenv(EnvHubDir, "relative/hub")
-	if _, mode, err := Resolve(&config.Config{ActiveWorkspace: "hubtest-a"}, nil, headless()); mode != ModeOff || !errors.Is(err, ErrDirNotAbsolute) {
+	if _, mode, err := resolve(&config.Config{ActiveWorkspace: "hubtest-a"}, nil, headless()); mode != ModeOff || !errors.Is(err, ErrDirNotAbsolute) {
 		t.Fatalf("relative dir: mode %q err %v", mode, err)
 	}
 }
@@ -139,11 +146,15 @@ func TestResolve_DesktopHostNeverStartsALiveHub(t *testing.T) {
 		"app bundle": desktopProbe(home, support),
 		"MobileHub/": {GOOS: "darwin", Home: home, AppSupport: support, Stat: os.Stat, ReadFile: os.ReadFile},
 	} {
-		o, mode, err := Resolve(&config.Config{}, nil, p)
+		o, mode, err := resolve(&config.Config{}, nil, p)
 		if mode != ModeOff || !errors.Is(err, ErrDesktopHost) || Refusal(err) != ReasonDesktopHost || o.Dir != "" {
 			t.Fatalf("%s: %+v mode %q err %v", name, o, mode, err)
 		}
-		if _, _, err := Dir(p); !errors.Is(err, ErrDesktopHost) {
+		var de *DesktopHostError
+		if !errors.As(err, &de) || de.Signal == "" {
+			t.Fatalf("%s: no signal in %v", name, err)
+		}
+		if _, _, kind, err := Dir(p); !errors.Is(err, ErrDesktopHost) || kind != hostkind.Desktop {
 			t.Fatalf("%s: Dir: %v", name, err)
 		}
 		if r := OffReason(&config.Config{}, ModeOff); r != "" {
@@ -173,7 +184,7 @@ func mapsEqual(a, b map[string]string) bool {
 func TestResolve_LiveIsOffUntilEnabled(t *testing.T) {
 	dir := liveHome(t)
 	t.Setenv(EnvRelayOrigin, "https://relay.example.com")
-	_, mode, err := Resolve(&config.Config{}, nil, headless())
+	_, mode, err := resolve(&config.Config{}, nil, headless())
 	if mode != ModeOff || !errors.Is(err, ErrHubDisabled) || Refusal(err) != ReasonDisabled {
 		t.Fatalf("no sidecar: mode %q err %v", mode, err)
 	}
@@ -184,16 +195,16 @@ func TestResolve_LiveIsOffUntilEnabled(t *testing.T) {
 	noEntries(t, dir)
 
 	setMeta(t, dir, state.MetaEnabled, "0")
-	if _, mode, err := Resolve(&config.Config{}, nil, headless()); mode != ModeOff || !errors.Is(err, ErrHubDisabled) {
+	if _, mode, err := resolve(&config.Config{}, nil, headless()); mode != ModeOff || !errors.Is(err, ErrHubDisabled) {
 		t.Fatalf("enabled = 0: mode %q err %v", mode, err)
 	}
 	setMeta(t, dir, state.MetaEnabled, "1")
 	policytest.Set(t, map[string]any{"MobileSync": policy.MobileOff})
-	if _, mode, err := Resolve(&config.Config{}, nil, headless()); mode != ModeOff || Refusal(err) != ReasonPolicyOff {
+	if _, mode, err := resolve(&config.Config{}, nil, headless()); mode != ModeOff || Refusal(err) != ReasonPolicyOff {
 		t.Fatalf("policy off: mode %q err %v", mode, err)
 	}
 	policytest.Set(t, nil)
-	o, mode, err := Resolve(&config.Config{}, nil, headless())
+	o, mode, err := resolve(&config.Config{}, nil, headless())
 	if err != nil || mode != ModeLive || o.Mode != ModeLive || o.Host != hostkind.Headless || o.Dir != dir ||
 		o.RelayOrigin != "https://relay.example.com" || o.RecordingsDir != filepath.Join(dir, "recordings") {
 		t.Fatalf("enabled: %+v mode %q err %v", o, mode, err)
@@ -211,7 +222,7 @@ func TestResolve_LiveNeedsARelayOrigin(t *testing.T) {
 	setMeta(t, dir, state.MetaEnabled, "1")
 	for _, origin := range []string{"", "relay.example.com", "http://relay.example.com", "https://relay.example.com/x"} {
 		DefaultRelayOrigin = origin
-		_, mode, err := Resolve(&config.Config{}, nil, headless())
+		_, mode, err := resolve(&config.Config{}, nil, headless())
 		if mode != ModeOff || !errors.Is(err, ErrNoRelayOrigin) || Refusal(err) != ReasonNoRelayOrigin {
 			t.Fatalf("origin %q: mode %q err %v", origin, mode, err)
 		}
@@ -282,7 +293,7 @@ func TestLiveHubUsesTheDefaultSessionHostSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ := fileDB(t)
-	o, _, err := Resolve(&config.Config{}, d, headless())
+	o, _, err := resolve(&config.Config{}, d, headless())
 	if err != nil || want == "" || o.SessionStart.Socket != want {
 		t.Fatalf("socket %q, want %q (err %v)", o.SessionStart.Socket, want, err)
 	}
@@ -297,7 +308,7 @@ func TestLiveHubUsesTheDefaultSessionHostSocket(t *testing.T) {
 	t.Cleanup(func() { _ = w.port.Close() })
 
 	t.Setenv(sessionhost.SocketEnv, "/tmp/acme-sh.sock")
-	if o, _, err := Resolve(&config.Config{}, d, headless()); err != nil || o.SessionStart.Socket != "/tmp/acme-sh.sock" {
+	if o, _, err := resolve(&config.Config{}, d, headless()); err != nil || o.SessionStart.Socket != "/tmp/acme-sh.sock" {
 		t.Fatalf("env socket: %q, %v", o.SessionStart.Socket, err)
 	}
 }
@@ -308,7 +319,7 @@ func liveRun(t *testing.T) func(*Options) {
 	dir := liveHome(t)
 	t.Setenv(EnvRelayOrigin, "https://relay.example.com")
 	setMeta(t, dir, state.MetaEnabled, "1")
-	live, mode, err := Resolve(&config.Config{}, nil, headless())
+	live, mode, err := resolve(&config.Config{}, nil, headless())
 	if err != nil || mode != ModeLive {
 		t.Fatalf("live Resolve: %v", err)
 	}

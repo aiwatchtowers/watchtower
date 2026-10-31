@@ -78,9 +78,9 @@ func TestSyncDaemon_GoHubStartsOnlyInATestWorkspace(t *testing.T) {
 
 func setGoHubProbe(t *testing.T, p hostkind.Probe) {
 	t.Helper()
-	orig := goHubProbe
-	goHubProbe = func() hostkind.Probe { return p }
-	t.Cleanup(func() { goHubProbe = orig })
+	orig := hostProbe
+	hostProbe = func() hostkind.Probe { return p }
+	t.Cleanup(func() { hostProbe = orig })
 }
 
 // TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly: with no hub dir the daemon
@@ -110,7 +110,7 @@ func TestSyncDaemon_GoHubLiveOnAHeadlessHostOnly(t *testing.T) {
 		return nil, fs.ErrNotExist
 	}})
 	startGoHub(context.Background(), &config.Config{}, nil, logger)()
-	assert.Contains(t, buf.String(), "hub: off (desktop_host)")
+	assert.Contains(t, buf.String(), "hub: off (desktop_host, app_bundle)")
 
 	buf.Reset()
 	setGoHubProbe(t, hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile})

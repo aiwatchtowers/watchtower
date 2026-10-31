@@ -37,8 +37,9 @@ var hubLockWait = 3 * time.Second
 // that goes through the running hub never calls it).
 var hubOpenState = state.Open
 
-// hubProbe is this host's probe (a test seam).
-var hubProbe = hostkind.System
+// hostProbe is this host's probe for the hub verbs and the daemon's hub (a
+// test seam).
+var hostProbe = hostkind.System
 
 // errHubDesktopHost is every verb's refusal but status' on a Mac whose
 // mobile link the Watchtower app runs (hub.ErrDesktopHost).
@@ -47,7 +48,7 @@ var errHubDesktopHost = errors.New("Mobile on this Mac is run by the Watchtower 
 // hubDir is the dir every hub verb works in: WATCHTOWER_HUB_DIR (test mode),
 // else the live hub's dir on a headless host; refused on a desktop host.
 func hubDir() (string, error) {
-	dir, _, err := hub.Dir(hubProbe())
+	dir, _, _, err := hub.Dir(hostProbe())
 	if errors.Is(err, hub.ErrDesktopHost) {
 		return "", errHubDesktopHost
 	}

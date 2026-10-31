@@ -176,12 +176,12 @@ func hubLiveCLI(t *testing.T, p hostkind.Probe) (live, cfgPath string) {
 		t.Setenv(m, "")
 	}
 	policytest.Set(t, nil)
-	origProbe, origConfig := hubProbe, flagConfig
-	hubProbe = func() hostkind.Probe { return p }
+	origProbe, origConfig := hostProbe, flagConfig
+	hostProbe = func() hostkind.Probe { return p }
 	cfgPath = filepath.Join(base, "config.yaml")
 	require.NoError(t, os.WriteFile(cfgPath, []byte("active_workspace: acme\n"), 0o600))
 	flagConfig = cfgPath
-	t.Cleanup(func() { hubProbe, flagConfig = origProbe, origConfig })
+	t.Cleanup(func() { hostProbe, flagConfig = origProbe, origConfig })
 	live, err = hub.DefaultDir()
 	require.NoError(t, err)
 	return live, cfgPath

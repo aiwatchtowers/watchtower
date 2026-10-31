@@ -298,19 +298,20 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	value := args[1]
 	configPath := flagConfig
 
-	if retiredConfigKeys[strings.ToLower(key)] {
+	lk := strings.ToLower(key) // viper keys are case-insensitive
+	if retiredConfigKeys[lk] {
 		return fmt.Errorf("%q is retired and has no effect; nothing was written", key)
 	}
 	// An unknown agent would read as Claude Code without a word (viper keys
 	// are case-insensitive).
-	if strings.ToLower(key) == "workbench.default_agent" && !agentkind.IsAgent(value) {
+	if lk == "workbench.default_agent" && !agentkind.IsAgent(value) {
 		return fmt.Errorf("workbench.default_agent must be %s or %s, got %q; nothing was written",
 			agentkind.Claude, agentkind.Codex, value)
 	}
 
 	// A live hub would stay off on a malformed relay origin; "" unsets it
 	// (the build's default applies again).
-	if strings.ToLower(key) == "hub.relay_origin" && value != "" {
+	if lk == "hub.relay_origin" && value != "" {
 		if err := hub.CheckRelayOrigin(value); err != nil {
 			return fmt.Errorf("hub.relay_origin: %w, got %q; nothing was written", err, value)
 		}
@@ -318,7 +319,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 
 	// A provider or agent the organization's policy forbids is refused
 	// (#608); the agent kinds are their providers.
-	if lk := strings.ToLower(key); lk == "ai.provider" || lk == "workbench.default_agent" {
+	if lk == "ai.provider" || lk == "workbench.default_agent" {
 		if err := providers.Allowed(value); err != nil {
 			return fmt.Errorf("%w; nothing was written", err)
 		}

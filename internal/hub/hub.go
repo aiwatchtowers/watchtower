@@ -537,8 +537,10 @@ func (s *supervisor) hostName() string {
 // it fails or is empty.
 func shortHostName(hostname func() (string, error)) string {
 	n, err := hostname()
-	n, _, _ = strings.Cut(n, ".")
-	if err != nil || n == "" {
+	if err != nil {
+		return "Watchtower hub"
+	}
+	if n, _, _ = strings.Cut(n, "."); n == "" {
 		return "Watchtower hub"
 	}
 	return n

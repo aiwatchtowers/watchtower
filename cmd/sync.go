@@ -32,7 +32,6 @@ import (
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/hub"
-	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/issuekey"
@@ -1018,16 +1017,18 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	return d.Run(ctx)
 }
 
-// goHubProbe is the host probe startGoHub resolves with (a test seam).
-var goHubProbe = hostkind.System
-
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so
 // and logs whether it did; the returned func stops it and waits. Its cycle
 // tick is the daemon's poll interval.
 func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (stop func()) {
-	o, mode, err := hub.Resolve(cfg, database, goHubProbe())
+	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
-		logger.Printf("hub: off (%s)", hub.Refusal(err))
+		var desktop *hub.DesktopHostError
+		if errors.As(err, &desktop) {
+			logger.Printf("hub: off (%s, %s)", hub.Refusal(err), desktop.Signal)
+		} else {
+			logger.Printf("hub: off (%s)", hub.Refusal(err))
+		}
 		return func() {}
 	}
 	// The session port's seams; the socket stays Resolve's (test mode: the
@@ -1064,7 +1065,7 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 			logger.Printf("hub: off (%s)", hub.Refusal(err))
 		}
 	}()
-	if mode == hub.ModeLive {
+	if o.Mode == hub.ModeLive {
 		logger.Printf("hub: started (live, headless)")
 	} else {
 		logger.Printf("hub: started (test workspace)")

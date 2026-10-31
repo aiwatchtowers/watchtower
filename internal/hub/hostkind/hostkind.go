@@ -3,13 +3,17 @@
 // live Go hub never runs beside the Swift hub (Go hub spec §7.3, §12.1).
 //
 // Detect only checks that files exist and reads the app bundle's
-// Info.plist; it never creates, opens for writing or lists anything.
+// Info.plist; it never creates, opens for writing or lists anything. It
+// fails closed: anything it cannot read or make sense of on a Mac reads as
+// a desktop host.
 package hostkind
 
 import (
-	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Kind is a host's kind.
@@ -39,10 +43,17 @@ type Probe struct {
 }
 
 // Detect classifies the host. Off darwin every host is headless. On darwin
-// a Watchtower.app in /Applications or ~/Applications whose Info.plist holds
-// BundleID (signal app_bundle), or a MobileHub/ directory in the app support
-// folder (swift_hub_state, left by an app that ran the Swift hub), makes it
-// a desktop host. An empty Home or AppSupport skips the checks that need it.
+// these make it a desktop host:
+//   - app_bundle: a Watchtower.app in /Applications or ~/Applications whose
+//     Info.plist names BundleID, or that has no Info.plist, or whose
+//     Info.plist cannot be read or parsed (only a plist that parses and
+//     names another bundle id is ignored), or whose existence cannot be
+//     checked;
+//   - swift_hub_state: a MobileHub/ directory in the app support folder
+//     (left by an app that ran the Swift hub), or one whose existence
+//     cannot be checked.
+//
+// An empty Home or AppSupport skips the checks that need it.
 func Detect(p Probe) (k Kind, signal string) {
 	if p.GOOS != "darwin" {
 		return Headless, ""
@@ -52,41 +63,36 @@ func Detect(p Probe) (k Kind, signal string) {
 		apps = append(apps, filepath.Join(p.Home, "Applications"))
 	}
 	for _, dir := range apps {
-		raw, err := p.ReadFile(filepath.Join(dir, "Watchtower.app", "Contents", "Info.plist"))
-		if err == nil && plistHasBundleID(raw, BundleID) {
+		if appBundleHere(p, filepath.Join(dir, "Watchtower.app")) {
 			return Desktop, SignalAppBundle
 		}
 	}
 	if p.AppSupport != "" {
-		if fi, err := p.Stat(filepath.Join(p.AppSupport, "MobileHub")); err == nil && fi.IsDir() {
+		fi, err := p.Stat(filepath.Join(p.AppSupport, "MobileHub"))
+		if (err == nil && fi.IsDir()) || (err != nil && !absent(err)) {
 			return Desktop, SignalSwiftHubState
 		}
 	}
 	return Headless, ""
 }
 
-// plistHasBundleID reports whether an Info.plist names id as its
-// CFBundleIdentifier: in an XML plist the key followed by <string>id</string>;
-// in a binary plist (bplist00) id stored as its own ASCII string object
-// (marker 0x5F, int marker 0x10, length byte), so a longer identifier that
-// starts with id does not match.
-func plistHasBundleID(raw []byte, id string) bool {
-	if bytes.HasPrefix(raw, []byte("bplist00")) {
-		if len(id) < 15 || len(id) > 255 {
-			return false
-		}
-		obj := append([]byte{0x5F, 0x10, byte(len(id))}, id...)
-		return bytes.Contains(raw, obj)
+// appBundleHere reports whether app is (or may be) the Watchtower app.
+func appBundleHere(p Probe, app string) bool {
+	raw, err := p.ReadFile(filepath.Join(app, "Contents", "Info.plist"))
+	if err == nil {
+		id, err := plistBundleID(raw)
+		return err != nil || id == BundleID
 	}
-	const key = "<key>CFBundleIdentifier</key>"
-	for rest := raw; ; {
-		i := bytes.Index(rest, []byte(key))
-		if i < 0 {
-			return false
-		}
-		rest = bytes.TrimLeft(rest[i+len(key):], " \t\r\n")
-		if bytes.HasPrefix(rest, []byte("<string>"+id+"</string>")) {
-			return true
-		}
+	if !absent(err) {
+		return true
 	}
+	// No Info.plist: an app dir there is still the app (half-installed or
+	// moved in); only its absence is not.
+	_, err = p.Stat(app)
+	return !absent(err)
+}
+
+// absent: err says the path does not exist.
+func absent(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
