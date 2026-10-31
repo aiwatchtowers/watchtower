@@ -168,4 +168,13 @@ final class HostedRelayAttestationTests: XCTestCase {
         let key = try Curve25519.Signing.PublicKey(rawRepresentation: register.authPub)
         XCTAssertTrue(key.isValidSignature(register.signature, for: hash))
     }
+
+    func testAttestationFailedOnRegisterShowsUpdate() async throws {
+        // A register always carries a fresh attestation: a refusal is "update the app", no retry.
+        let harness = try RelayClientHarness(storedKey: false)
+        harness.http.script("register", [.error(.attestationFailed)])
+        await assertRelayError(.attestation(.updateRequired)) { _ = try await harness.client.register() }
+        XCTAssertEqual(harness.http.ops, ["challenge", "register"])
+        XCTAssertEqual(harness.clock.sleeps, [])
+    }
 }

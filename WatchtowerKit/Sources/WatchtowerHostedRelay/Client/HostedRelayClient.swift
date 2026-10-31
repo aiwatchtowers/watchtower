@@ -85,8 +85,9 @@ public actor HostedRelayClient {
         let response: Relay_V1_Response
         do {
             response = try await perform(.register(register))
-        } catch HostedRelayError.server(code: .attestationRequired, _) {
-            Self.logger.error("relay register: attestation_required")
+        } catch HostedRelayError.server(code: let code, _) where code == .attestationRequired || code == .attestationFailed {
+            // A register always carries a fresh attestation: a refusal means "update the app".
+            Self.logger.error("relay register: \(String(describing: code), privacy: .public)")
             throw HostedRelayError.attestation(.updateRequired)
         }
         guard case .registered(let registered) = response.result, registered.deviceID == deviceID else {
@@ -106,14 +107,26 @@ public actor HostedRelayClient {
     /// request was refused with), else one login shared by concurrent callers.
     private func sessionToken(stale: String?) async throws -> String {
         if let token, token != stale { return token }
+        let fresh = try await sharedLogin()
+        guard let stale, fresh == stale else { return fresh }
+        // The login we joined issued the very token we were refused with: log in for real.
         return try await sharedLogin()
     }
 
+    /// Joins the login in flight or starts one. `loginTask` is cleared on the
+    /// actor by the login itself, in the same step that stores the token, so
+    /// no caller can join a login that has already finished.
     private func sharedLogin() async throws -> String {
         if let loginTask { return try await loginTask.value }
-        let task = Task { try await self.loginOnce() }
+        let task = Task {
+            do {
+                return try await self.loginOnce()
+            } catch {
+                self.loginTask = nil
+                throw error
+            }
+        }
         loginTask = task
-        defer { if loginTask == task { loginTask = nil } }
         return try await task.value
     }
 
@@ -155,6 +168,7 @@ public actor HostedRelayClient {
             }
             await attestor.loginSucceeded()
             token = session.token
+            loginTask = nil
             return session.token
         }
     }
@@ -230,9 +244,10 @@ public actor HostedRelayClient {
         let body: Data
         do {
             (status, body) = try await http.post(opURL, body: try request.serializedData(), headers: headers)
-        } catch is CancellationError {
-            throw CancellationError()
         } catch {
+            if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
             Self.logger.error("relay \(Self.name(op), privacy: .public): no answer")
             throw HostedRelayError.unreachable
         }

@@ -19,9 +19,16 @@ public struct URLSessionRelayHTTP: RelayHTTP {
 
     private let session: URLSession
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession = Self.ephemeralSession) {
         self.session = session
     }
+
+    /// No disk cache: relay bodies carry envelopes, which the Kit never writes to disk.
+    public static let ephemeralSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }()
 
     public func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
         var request = Self.request(url, method: "POST", headers: headers)

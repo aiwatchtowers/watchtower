@@ -174,4 +174,45 @@ final class HostedRelayClientTests: XCTestCase {
             }
         }
     }
+
+    func testReloginWhenTheSharedLoginIssuesTheRefusedToken() async throws {
+        let harness = try RelayClientHarness()
+        var reissued = Relay_V1_Response()
+        reissued.session.token = "reissued-token"
+        harness.http.script("login", [.ok(reissued), .ok(reissued)])
+        harness.http.script("removeSlot", [.error(.unauthenticated, status: 401)])
+        _ = try await harness.client.perform(RelayClientHarness.removeSlot)
+
+        // Refused with "reissued-token", the relogin got the very same token back: a real login follows.
+        XCTAssertEqual(harness.http.requests("login").count, 3)
+        XCTAssertEqual(
+            harness.http.requests("removeSlot").map { $0.headers["Authorization"] },
+            ["Bearer reissued-token", "Bearer token-1"]
+        )
+    }
+
+    func testCancellationIsNotUnreachable() async throws {
+        let harness = try RelayClientHarness()
+        harness.http.script("removeSlot", [.failure(URLError(.cancelled))])
+        do {
+            _ = try await harness.client.perform(RelayClientHarness.removeSlot)
+            XCTFail("expected CancellationError")
+        } catch {
+            XCTAssert(error is CancellationError, "got \(error)")
+        }
+
+        // A cancelled caller whose request then fails in transport sees the cancellation.
+        harness.http.script("removeSlot", [.failure(URLError(.networkConnectionLost))])
+        harness.http.gate("removeSlot")
+        let call = Task { try await harness.client.perform(RelayClientHarness.removeSlot) }
+        await harness.http.waitForGated(1)
+        call.cancel()
+        harness.http.release()
+        do {
+            _ = try await call.value
+            XCTFail("expected CancellationError")
+        } catch {
+            XCTAssert(error is CancellationError, "got \(error)")
+        }
+    }
 }
