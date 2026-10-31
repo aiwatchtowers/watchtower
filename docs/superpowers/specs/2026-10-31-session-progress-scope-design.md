@@ -53,40 +53,43 @@ The report's **progress scope** of session S:
    the board (archived, or deleted — the FK is `ON DELETE SET NULL`), S falls
    back to rule 2.
 2. **S has no session target**: the scope is today's — linked targets plus the
-   subtrees of linked targets that have children — **minus every target owned
+   subtrees of linked targets that have children — **minus every leaf owned
    by another session**.
 
-**Ownership.** The owner of a target is the session with the latest
+**Ownership** is decided for **leaves only** (progress counts leaves). The
+owner of a leaf is the session with the latest
 *status stamp* for it among all agent sessions of the workbench. A session's
 status stamp for a target is:
 
-- `status_at` on its link row: set when that session's write **changed the
-  target's status** (an `update_target` with a new `status`, or a `column`
-  move that changes the status) or
-  **created** the target (`create_targets`);
-- for a link row with `status_at` NULL (every row written before this change,
-  and links from comments/asks only), its `last_at` stands in **only if no
-  session has a non-NULL `status_at` for that target**. Rationale: old rows get
-  a sensible owner (the session that touched the target last), while from now
-  on comments never steal a target from a session that moved it.
+- `status_at` on its link row, set when that session's write **changed the
+  leaf's status** (an `update_target` with a new `status`, or a `column` move
+  that changes the status), **created** it (`create_targets`), or **bound the
+  session to a target whose subtree holds it** (`set_session_target`, see
+  below);
+- a link row with `status_at` NULL (a comment or ask only) gives no ownership.
 
-Exclusion is decided per leaf: walk from the leaf up through its ancestors
-and take the **first one that has an owner** (the leaf itself included). If
-that owner is another session, the leaf leaves S's progress. If no target on
-the path has an owner, the leaf stays. So a group another session took over
-(by moving the group itself) goes with all of its leaves, unless S later
-moved a leaf inside it.
+**Old rows.** The migration sets `status_at = last_at` on every existing row
+once. Before this change there is no record of which write was a status
+change, so for old links the last write of any kind stands in; this is what
+fixes the owner's live session on upgrade. From the upgrade on, a comment
+never takes a leaf. This is a one-time approximation, recorded as an agent
+decision.
 
-A target nobody owns (no link row at all) counts for every session whose scope
-reaches it, as today. Owner moves on the Board (actor `owner`) write no link
+A leaf has no owner when no session stamped it; it then counts for every
+session whose scope reaches it, as today. Moving a **group** gives no
+ownership of its leaves: another session setting a group `in_progress` takes
+nothing from S.
+
+Owner moves on the Board (actor `owner`) write no link
 and so never change ownership (ask #846).
 
 Ties (equal stamps, second resolution) go to the higher session id.
 
 ### Binding a session to a target (owner ask #844, option B part)
 
-**One Go writer**: `terminal_sessions.target_id` stays written by the Desktop
-at launch (unchanged) and is re-written only through Go:
+**Writers of `terminal_sessions.target_id`:** the Desktop writes it once, in
+the row's INSERT at launch (unchanged). After launch only Go re-writes it,
+through the two entry points below; the Desktop never UPDATEs it.
 
 - **MCP tool `set_session_target`** on the workbench surface (DEV-06: nineteen
   → twenty tools; skill pack bump). Args: `target_id` (a target of this
@@ -94,15 +97,34 @@ at launch (unchanged) and is re-written only through Go:
   `finish_session` (`terminalSessionOf`; no session → refused with
   `set_session_target needs a Watchtower terminal session`, before any row or
   audit row). Applied directly and audited like the other workbench writes.
-  It also links the target (`LinkSessionTarget`) when non-zero.
+  When non-zero it links the target and **stamps every leaf of its subtree**
+  for the session (`status_at = now`), so the bound session takes those leaves
+  from other unbound sessions at once (otherwise re-pointing would not move
+  the numbers until the new session changes a status). Refused with a clear
+  error when the target is not on the board (archived) or is `dismissed`:
+  rule 1 would fall straight back to rule 2 and the call would look like a
+  no-op. A `done` target may be bound (it shows N/N).
 - **CLI `watchtower workbench session-target --session N (--target M | --clear) [--json]`**:
   same validation; refused under an agent marker (owner verb, like `coach
   accept`). The Desktop calls it.
 - **Desktop**: the session row's context menu gets **Session Target ▸**, a
   submenu built from the same outline as the board's **Move to…**
-  (`WorkbenchBoardOutline`), plus **None — Count What It Touched** at the top
-  and a checkmark on the current one. After the CLI returns, the report
-  refreshes (the existing session-report refresh).
+  (`WorkbenchBoardOutline`, archived and dismissed targets left out), plus
+  **None — Count What It Touched** at the top and a checkmark on the current
+  one. After the CLI returns, the report refreshes (the existing
+  session-report refresh). Sketch (native menu, between **Rename…** and
+  **Clean Up…**):
+
+  ```
+  Rename…
+  Session Target          ▸ │ ✓ None — Count What It Touched
+  Clean Up…                 │ ─────────────────────────────
+  …                         │   Фаза 1: Go-хаб           ▸ │ ✓ Фаза 1: Go-хаб (whole group)
+                            │   Релей                    ▸ │   Задача 1.1 …
+                            │   Монетизация                │   …
+  ```
+
+  A group is chosen with its own first item, as in **Move to…**.
 - The workbench skill tells the agent: when the work of the session moves to a
   new group, call `set_session_target` with that group.
 
@@ -117,18 +139,21 @@ Migration `00167_session_target_status_at.sql (next free number at implementatio
 ```sql
 -- +goose Up
 ALTER TABLE terminal_session_targets ADD COLUMN status_at TEXT;
+UPDATE terminal_session_targets SET status_at = last_at;
 -- +goose Down
 ALTER TABLE terminal_session_targets DROP COLUMN status_at;
 ```
 
 Mirror in `schema.sql`, regenerate the golden snapshot and the Swift test
-schema. No backfill (old rows use the `last_at` fallback above).
+schema. The one-line backfill above is the whole upgrade.
 
 `db.LinkSessionTarget(sessionID, targetID)` gains a sibling
 `LinkSessionTargetStatus(sessionID, targetID)` that sets `status_at = last_at =
-now`. `linkSession` takes a flag; `update_target` passes it when the status
-changed (it already knows: `a.Status != t.Status`, and the column path), and
-`create_targets` passes it for every created target.
+now`. `linkSession` takes a flag. `update_target`'s `Execute` does not have
+the old status today (`t` is read in `Scope`), so `applyTargetUpdate` returns
+whether it wrote a status (the plain `status` path and the column path) and
+`Execute` passes that; `create_targets` passes the flag for every created
+target.
 
 `db.SessionTargetOwners(workbenchID) map[targetID]sessionID` computes
 ownership in one query (window over `terminal_session_targets` joined to
@@ -146,9 +171,9 @@ unchanged — no Swift change for the count.
 
 ## Contracts
 
-- **PROJ-14 amended**: the progress scope rule above; `set_session_target`
-  and the CLI as the only re-writers of `terminal_sessions.target_id` after
-  launch, which also re-points the finish gates' ticket (ask #850); `status_at` written only by the status-changing / creating writes.
+- **PROJ-14 amended**: the progress scope rule above; the Desktop's launch
+  INSERT as the only Desktop write of `terminal_sessions.target_id`,
+  `set_session_target` and the CLI as its only re-writers after launch, which also re-points the finish gates' ticket (ask #850); `status_at` written only by the status-changing / creating writes.
   Guard tests renamed in place only if their wording changes; none relaxed.
 - **DEV-06**: twenty tools; the vocabulary test's count bumps.
 
@@ -160,8 +185,10 @@ In a WatchtowerCore presentation type, covered by a test:
 - top item `None — Count What It Touched`
 - failure line (the CLI's error) `Couldn't change the session target: <error>`
 
-No new screen; the row itself does not change, so no new DesignShot. The
-existing row shots stay valid (decision: agent).
+No new screen and the row itself does not change. The submenu is a native
+`NSMenu`, which the DesignShot harness cannot render, so the sketch above is
+its mockup (decision: agent); the owner checks it in the running app at the
+manual check.
 
 ## Tests (minimum)
 
@@ -169,12 +196,19 @@ Go (`internal/sessionreport`, `internal/db`, `internal/tools`):
 
 1. The owner's case: S1 linked 35 targets of group A by old rows, S2 later moved
    them (`status_at` set) → S1's progress excludes them; S1's group B counts.
-2. Old rows only (all `status_at` NULL): the later `last_at` wins.
-3. A comment from S2 on a target S1 moved does not take it.
+2. Migration backfill: old rows get `status_at = last_at`; the later one wins.
+3. A comment from S2 (new row, `status_at` NULL) on a leaf S1 moved does not
+   take it.
+3a. S2 moves a **group** S1 linked: S1 keeps every leaf under it.
+3b. `create_targets` stamps: the creating session owns the new leaves.
+3c. Tie on `status_at` → the higher session id owns.
 4. Session target set → progress = its subtree only; lists still show other
    links.
+4a. Bound target archived (off the board) → rule 2 applies.
 5. `set_session_target`: no session → refused before any row; other
-   workbench's target → refused; `0` clears; audit row present.
+   workbench's target, archived or dismissed target → refused; `0` clears and
+   rule 2 applies (old links kept); audit row present; binding stamps the
+   subtree's leaves so another unbound session loses them.
 6. Owner board move does not change ownership.
 7. CLI refused under an agent marker.
 
@@ -189,7 +223,11 @@ the checkmark on the current target and "None" when unbound.
 | Ownership moves only on a status change (comments don't steal) | owner, ask #844 (option text) |
 | Owner board moves don't change ownership | owner, ask #846 |
 | Work outside a bound target: in the report, not in the number, no marker | owner, ask #846 |
-| Old links fall back to `last_at`, no backfill | agent |
+| Old links: one-time backfill `status_at = last_at` (comments-only old rows may own) | agent |
+| Ownership on leaves only; moving a group takes nothing | agent |
+| Binding stamps the subtree's leaves (re-pointing moves numbers at once) | agent |
+| Binding refused for archived/dismissed targets; `done` allowed | agent |
+| Submenu sketch instead of a DesignShot (native menu) | agent |
 | `create_targets` counts as a status stamp | agent |
 | Bound scope is strict: work outside it is in the report only | owner, ask #846 |
 | No ownership exclusion inside a bound target | agent |
