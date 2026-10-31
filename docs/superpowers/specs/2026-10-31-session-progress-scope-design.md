@@ -100,7 +100,12 @@ through the two entry points below; the Desktop never UPDATEs it.
   When non-zero it links the target and **stamps every leaf of its subtree**
   for the session (`status_at = now`), so the bound session takes those leaves
   from other unbound sessions at once (otherwise re-pointing would not move
-  the numbers until the new session changes a status). Refused with a clear
+  the numbers until the new session changes a status). The `target_id` write
+  and the leaf stamps are **one write transaction** (`BEGIN IMMEDIATE`, no
+  reads of the board inside it beyond the subtree ids, collected first): a
+  failure rolls back both and the tool fails like any write (the registry's
+  `failed` audit row), unlike the best-effort `linkSession` of the other
+  tools. The CLI uses the same db function. Refused with a clear
   error when the target is not on the board (archived) or is `dismissed`:
   rule 1 would fall straight back to rule 2 and the call would look like a
   no-op. A `done` target may be bound (it shows N/N).
@@ -208,7 +213,8 @@ Go (`internal/sessionreport`, `internal/db`, `internal/tools`):
 5. `set_session_target`: no session → refused before any row; other
    workbench's target, archived or dismissed target → refused; `0` clears and
    rule 2 applies (old links kept); audit row present; binding stamps the
-   subtree's leaves so another unbound session loses them.
+   subtree's leaves so another unbound session loses them; a failure in the
+   stamp write leaves `target_id` unchanged (one transaction).
 6. Owner board move does not change ownership.
 7. CLI refused under an agent marker.
 
