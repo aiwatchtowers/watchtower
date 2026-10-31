@@ -277,6 +277,35 @@ final class HostedRelayConnectionTests: XCTestCase {
         }
     }
 
+    /// A rate or traffic limit is "try again later": the zone is kept and the connection
+    /// redials with backoff, so no zone goes quiet for good.
+    func testSubscribeRateOrTrafficLimitCutsAndKeepsTheZone() async throws {
+        for code in [Relay_V1_ErrorCode.rateLimited, .trafficLimitExceeded] {
+            let harness = try RelayClientHarness()
+            harness.sockets.script([
+                .socket(ScriptedRelaySocket(subscribe: ["acme/a": .error(code)])),
+                .socket(ScriptedRelaySocket(subscribe: ["acme/a": .error(code)]))
+            ])
+            let connection = await harness.client.connect(zones: ["acme/a"])
+            let events = EventProbe(connection)
+
+            // Two cuts in a row: the second redial waits longer although each reached HelloOk.
+            let windows: [ClosedRange<Duration>] = [.milliseconds(250)...(.milliseconds(500)), .milliseconds(500)...(.seconds(1))]
+            for window in windows {
+                let first = await take(2, events)
+                XCTAssertEqual(first, [.connected, .disconnected], "\(code): cut, no refusal")
+                let delay = await harness.clock.waitForSleep(where: Self.reconnectDelay)
+                XCTAssert(window.contains(delay), "\(code): \(delay) outside \(window)")
+                harness.clock.manual.advance(by: delay)
+            }
+
+            let again = await take(2, events)
+            XCTAssertEqual(again, [.connected, .zoneChanged(zone: "acme/a", seq: 0)], "\(code): the zone is kept")
+            XCTAssertEqual(harness.sockets.sockets.last?.subscribes, [["acme/a"]], "\(code)")
+            await connection.close()
+        }
+    }
+
     func testEventsAfterConnectAreRecordLessPerZone() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: ["acme/a", "acme/b"])

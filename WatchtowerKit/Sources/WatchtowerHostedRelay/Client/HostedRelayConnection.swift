@@ -25,7 +25,8 @@ extension HostedRelayClient {
 /// - a ping every 30 s while open; no pong within 10 s closes and reconnects;
 /// - after every connect, each zone subscribed one by one (a refused zone is dropped and
 ///   reported), then a record-less `zoneChanged` per subscribed zone; a subscribe with no
-///   answer within 10 s cuts the connection;
+///   answer within 10 s, or answered "try again later" (unavailable, a rate or traffic limit),
+///   cuts the connection and keeps the zone, the redial on `defaultBackoff` of the cuts in a row;
 /// - a login failing with `.notSupported` / `.updateRequired` → `.stopped(.attestation(…))`;
 ///   `.retryLater(after:)` → the next dial waits `max(after, defaultBackoff(attempt))`.
 ///
@@ -61,6 +62,8 @@ public final class HostedRelayConnection: Sendable {
     /// Why one connection ended.
     private enum End: Sendable {
         case dropped, goingAway, sessionExpired, unsupportedVersion, closed
+        /// A subscribe got no answer or a "try again later": cut, the zones kept.
+        case subscribeCut
     }
 
     private enum Handshake: Sendable {
@@ -147,8 +150,9 @@ public final class HostedRelayConnection: Sendable {
     }
 
     /// Closes the connection for good; the events stream ends after what is queued.
-    /// Waits for a login already in flight (the shared login is not cancellable; at most
-    /// the HTTPS request timeout) before it returns.
+    /// Waits for a login already in flight before it returns: the shared login is not
+    /// cancellable, and it includes the App Attest / DeviceCheck calls, which have no timeout
+    /// of ours, besides its HTTPS requests (30 s each).
     public func close() async {
         let (runner, live, pending) = state.withLock { state in
             state.closed = true
@@ -169,6 +173,9 @@ public final class HostedRelayConnection: Sendable {
 
     private func run() async {
         var attempt = 0
+        /// Connections in a row cut by a subscribe: their backoff grows although each one
+        /// reached `HelloOk` (a rate limit is not retried twice a second).
+        var cuts = 0
         var wait: Duration?
         var stale: String?
         while !isClosed {
@@ -182,6 +189,7 @@ public final class HostedRelayConnection: Sendable {
                 let end = await serve(socket)
                 if end == .closed || isClosed { return }
                 buffer.push(.disconnected)
+                cuts = end == .subscribeCut ? cuts + 1 : 0
                 switch end {
                 case .unsupportedVersion:
                     return stop(.unsupportedVersion)
@@ -191,6 +199,8 @@ public final class HostedRelayConnection: Sendable {
                     // Only this connection's token: `perform` may already hold a newer one.
                     stale = token
                     wait = backoff(0)
+                case .subscribeCut:
+                    wait = backoff(cuts - 1)
                 case .dropped, .closed:
                     wait = backoff(0)
                 }
@@ -327,7 +337,7 @@ public final class HostedRelayConnection: Sendable {
         return await withTaskGroup(of: End?.self) { group in
             group.addTask { await self.read(socket) }
             group.addTask { await self.keepAlive(socket) }
-            group.addTask { await self.subscribe(zones, on: socket, generation: generation) ? nil : .dropped }
+            group.addTask { await self.subscribe(zones, on: socket, generation: generation) ? nil : .subscribeCut }
             var end = End.dropped
             for await result in group {
                 if let result {
@@ -465,11 +475,13 @@ public final class HostedRelayConnection: Sendable {
         return true
     }
 
-    /// A relay answer that refuses the zone. "Try again later", a lost connection, a session
-    /// or version problem are about the connection, not the zone: cut it and keep the zone.
+    /// A relay answer that refuses the zone. "Try again later" (unavailable, a rate or traffic
+    /// limit), a lost connection, a session or version problem are about the connection, not
+    /// the zone: cut it and keep the zone, so no zone goes quiet for good.
     private static func refuses(_ error: HostedRelayError) -> Bool {
         switch error {
-        case .server(code: .unavailable, _), .server(code: .unauthenticated, _), .unreachable, .unsupportedVersion:
+        case .server(code: .unavailable, _), .server(code: .rateLimited, _), .server(code: .trafficLimitExceeded, _),
+             .server(code: .unauthenticated, _), .unreachable, .unsupportedVersion:
             return false
         default:
             return true
