@@ -1,9 +1,13 @@
 import Foundation
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// The Go twin `internal/sessionstate` resolves the same rows to the same
 /// states: both read `internal/sessionstate/testdata/status_cases.json`.
+/// Lives in the Desktop test target (not Tests/Core) because `SessionControl`,
+/// whose `isIdle`/`isWorking` the Go predicates mirror, is an app type.
+@MainActor
 final class SessionAgentStatusFixtureTests: XCTestCase {
     private struct Fixture: Decodable {
         let now: String
@@ -40,16 +44,20 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
     private struct Expect: Decodable {
         let state: String
         let hooksReported: Bool
+        let idle: Bool
+        let working: Bool
+        let needsApproval: Bool
 
         enum CodingKeys: String, CodingKey {
-            case state, hooksReported = "hooks_reported"
+            case state, idle, working
+            case hooksReported = "hooks_reported", needsApproval = "needs_approval"
         }
     }
 
     func testEveryGoFixtureCaseResolvesTheSame() throws {
-        // Tests/Core/<this file> -> the repository root, four levels up.
+        // Tests/<this file> -> the repository root, three levels up.
         var root = URL(fileURLWithPath: #filePath)
-        for _ in 0..<4 { root.deleteLastPathComponent() }
+        for _ in 0..<3 { root.deleteLastPathComponent() }
         let url = root.appendingPathComponent("internal/sessionstate/testdata/status_cases.json")
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
         let now = try XCTUnwrap(SessionAgentStatus.parseStamp(fixture.now))
@@ -70,6 +78,9 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
             )[1], item.name)
             XCTAssertEqual(Self.name(of: status), item.expect.state, item.name)
             XCTAssertEqual(status.hooksReported, item.expect.hooksReported, item.name)
+            XCTAssertEqual(SessionControl.isIdle(status), item.expect.idle, item.name)
+            XCTAssertEqual(SessionControl.isWorking(status), item.expect.working, item.name)
+            XCTAssertEqual(status.state.kind == .needsApproval, item.expect.needsApproval, item.name)
         }
     }
 

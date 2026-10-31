@@ -364,7 +364,7 @@
    "expect": {
     "state": "agents_working",
     "hooks_reported": true,
-    "idle": true,
+    "idle": false,
     "working": true,
     "needs_approval": false
    }
@@ -387,7 +387,7 @@
    "expect": {
     "state": "agents_working",
     "hooks_reported": true,
-    "idle": true,
+    "idle": false,
     "working": true,
     "needs_approval": false
    }
@@ -548,7 +548,7 @@
    "expect": {
     "state": "finished",
     "hooks_reported": false,
-    "idle": true,
+    "idle": false,
     "working": false,
     "needs_approval": false
    }
@@ -617,7 +617,7 @@
    "expect": {
     "state": "waiting_for_you",
     "hooks_reported": false,
-    "idle": true,
+    "idle": false,
     "working": false,
     "needs_approval": false
    }
@@ -663,7 +663,7 @@
    "expect": {
     "state": "ready_to_check",
     "hooks_reported": false,
-    "idle": true,
+    "idle": false,
     "working": false,
     "needs_approval": false
    }
@@ -686,7 +686,7 @@
    "expect": {
     "state": "ready_to_check",
     "hooks_reported": false,
-    "idle": true,
+    "idle": false,
     "working": false,
     "needs_approval": false
    }
@@ -709,7 +709,7 @@
    "expect": {
     "state": "ready_to_check",
     "hooks_reported": false,
-    "idle": true,
+    "idle": false,
     "working": false,
     "needs_approval": false
    }
@@ -732,7 +732,7 @@
    "expect": {
     "state": "finished",
     "hooks_reported": false,
-    "idle": true,
+    "idle": false,
     "working": false,
     "needs_approval": false
    }
@@ -782,6 +782,53 @@
     "working": false,
     "needs_approval": false
    }
+  },
+  {
+   "name": "live, unparseable run start",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "not a stamp"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "live, unparseable run start with the run's mark",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "not a stamp"
+   },
+   "expect": {
+    "state": "running",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
   }
- ]
+ ],
+ "note": "idle/working/needs_approval mirror SessionControl.isIdle / isWorking and the lineCheck needs-approval test (Swift)"
 }

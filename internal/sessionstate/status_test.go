@@ -68,7 +68,7 @@ func TestStatusFixtures(t *testing.T) {
 			if got := HooksReported(r); got != c.Expect.HooksReported {
 				t.Errorf("HooksReported = %v, want %v", got, c.Expect.HooksReported)
 			}
-			if got := IsIdle(s); got != c.Expect.Idle {
+			if got := IsIdle(r, s); got != c.Expect.Idle {
 				t.Errorf("IsIdle = %v, want %v", got, c.Expect.Idle)
 			}
 			if got := IsWorking(s); got != c.Expect.Working {

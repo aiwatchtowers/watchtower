@@ -68,6 +68,10 @@ const backgroundGrace = 120 * time.Second
 // Resolve is SessionAgentStatus.effective: the hook states count only for a
 // live session and only when written during the current run; finished and the
 // open asks are not run-scoped.
+//
+// Known divergence: the Desktop can show a background count as over after two
+// failed staleness probes (displayOver, kept in memory); Go has no such input
+// and may still report agents_working then.
 func Resolve(r Row, now time.Time) State {
 	live := r.RunStartedAt != ""
 	hook := trustedHook(r)
@@ -103,16 +107,34 @@ func Resolve(r Row, now time.Time) State {
 // mark), so a permission prompt on screen would show as needs_approval.
 func HooksReported(r Row) bool { return r.RunStartedAt != "" && (trustedHook(r) != "" || runMarked(r)) }
 
-// IsIdle reports whether the agent sits at its prompt with nothing running.
-func IsIdle(s State) bool {
-	return s == StateStopped || s == StateFinished || s == StateWaitingForYou || s == StateReadyToCheck ||
-		s == StateError || s == StateAgentsWorking || s == StateMarkedIdle
+// IsIdle mirrors SessionControl.isIdle: the agent is idle for the current run
+// when the session is live and either a hook state of this run says its turn
+// ended (stopped, finished, waiting_for_you, ready_to_check, error) or the run
+// is marked and no turn began (marked_idle, whatever the asks say). Without a
+// hook state of this run, finished and the asks alone do not make it idle.
+// agents_working is not idle: it is in IsWorking only.
+func IsIdle(r Row, s State) bool {
+	if r.RunStartedAt == "" {
+		return false
+	}
+	if trustedHook(r) == "" {
+		return runMarked(r)
+	}
+	switch s {
+	case StateStopped, StateFinished, StateWaitingForYou, StateReadyToCheck, StateError:
+		return true
+	case StateNotStarted, StateRunning, StateMarkedIdle, StateWorking, StateAgentsWorking, StateNeedsApproval:
+	}
+	return false
 }
 
-// IsWorking reports whether the agent, or its background agents, are busy.
+// IsWorking mirrors SessionControl.isWorking: the current turn works, or the
+// main turn is over and background agents run. agents_working is in IsWorking
+// and not in IsIdle.
 func IsWorking(s State) bool { return s == StateWorking || s == StateAgentsWorking }
 
-// NeedsApproval reports whether a permission dialog waits.
+// NeedsApproval reports whether a permission dialog waits (the lineCheck test
+// on the needs-approval kind).
 func NeedsApproval(s State) bool { return s == StateNeedsApproval }
 
 // trustedHook is the stored hook state when the session is live and it was
