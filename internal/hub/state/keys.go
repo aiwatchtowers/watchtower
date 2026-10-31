@@ -3,6 +3,7 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -34,6 +35,9 @@ func (s *Store) Epochs() ([]Epoch, error) {
 		)
 		if err := rows.Scan(&epoch, &e.SealedKeys, &created, &first, &retiredF); err != nil {
 			return nil, fmt.Errorf("reading an epoch: %w", err)
+		}
+		if epoch < 0 || epoch > math.MaxUint32 {
+			return nil, fmt.Errorf("epoch %d out of range", epoch)
 		}
 		e.Epoch = uint32(epoch)
 		e.CreatedAt = fromReal(created)

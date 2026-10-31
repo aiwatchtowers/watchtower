@@ -6,7 +6,7 @@ import (
 )
 
 // LinkDevice writes d as a linked phone, replacing a row with the same id
-// (a re-pair). user_record_name, a CloudKit-only Swift column, is written
+// (a re-pair); the id is stored uppercase. user_record_name, a CloudKit-only Swift column, is written
 // empty.
 func LinkDevice(tx *sql.Tx, d Device) error {
 	last, err := u64(d.LastAppliedActionSeq)
@@ -22,7 +22,7 @@ func LinkDevice(tx *sql.Tx, d Device) error {
 	}
 	_, err = tx.Exec(`INSERT INTO devices (`+deviceColumns+`, user_record_name)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
-		d.ID, d.Name, d.Scope, toReal(d.LinkedAt), d.SigningKey, d.AgreementKey, nullString(d.LinkNonce),
+		deviceKey(d.ID), d.Name, d.Scope, toReal(d.LinkedAt), d.SigningKey, d.AgreementKey, nullString(d.LinkNonce),
 		d.TypingAllowed, d.TypingRequested, d.PermissionsAllowed, d.PermissionsRequested,
 		d.StartSessionsAllowed, d.StartSessionsGranted,
 		last, d.Ordered, nullString(d.RelayDeviceID), resend)

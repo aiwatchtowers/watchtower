@@ -132,7 +132,7 @@ func Hold(tx *sql.Tx, device string, seq uint64, record string, envelope []byte)
 	}
 	if _, err := tx.Exec(`INSERT INTO held_actions (device_id, action_seq, record_name, envelope, held_at)
 		VALUES (?, ?, ?, ?, ?) ON CONFLICT(device_id, action_seq) DO NOTHING`,
-		device, v, record, envelope, toReal(time.Now())); err != nil {
+		deviceKey(device), v, record, envelope, toReal(time.Now())); err != nil {
 		return fmt.Errorf("holding an action: %w", err)
 	}
 	return nil

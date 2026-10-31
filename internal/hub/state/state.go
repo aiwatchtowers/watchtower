@@ -4,7 +4,11 @@
 // (00001, so an adopted Swift sidecar applies too) and is its own goose
 // provider, never watchtower.db's. The Store is the file's only writer:
 // Desktop reads it read-only, and the CLI writes only while it holds the hub
-// lock (lock.go), so two writers never meet.
+// lock (lock.go), so two writers never meet. Open does not take the hub
+// lock: the caller (the hub runtime, or the CLI writing directly) holds it.
+// Device ids are stored canonical uppercase (Swift uuidString): every writer
+// that keys on a device id upper-cases it, and readers also match NOCASE, as
+// the Swift hub does.
 package state
 
 import (
@@ -17,6 +21,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -112,3 +117,6 @@ func u64(v uint64) (int64, error) {
 	}
 	return int64(v), nil
 }
+
+// deviceKey is a device id in its stored form: canonical uppercase.
+func deviceKey(id string) string { return strings.ToUpper(id) }

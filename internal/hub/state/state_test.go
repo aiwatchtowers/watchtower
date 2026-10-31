@@ -350,3 +350,35 @@ func TestSliceState(t *testing.T) {
 		t.Fatalf("after delete = %+v", got)
 	}
 }
+
+func TestDeviceIDsStoredUppercase(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if err := s.HoldAction("d", 5, "a5", []byte{5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HoldAction("D", 5, "a5", []byte{5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := RecordSeen(tx, "w1", "dev", 1, 1); err != nil {
+			return err
+		}
+		if err := RecordSeen(tx, "w1", "DEV", 1, 2); err != nil {
+			return err
+		}
+		return LinkDevice(tx, Device{ID: "0c0c0c0c-0c0c-0c0c-0c0c-0c0c0c0c0c0c", Name: "p", Scope: "private", LinkedAt: time.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []struct{ query, want string }{
+		{`SELECT group_concat(device_id) FROM held_actions`, "D"},
+		{`SELECT group_concat(sender_id) FROM relay_seen`, "DEV"},
+		{`SELECT group_concat(device_id) FROM devices`, "0C0C0C0C-0C0C-0C0C-0C0C-0C0C0C0C0C0C"},
+	} {
+		var got string
+		if err := s.db.QueryRow(q.query).Scan(&got); err != nil || got != q.want {
+			t.Fatalf("%s = %q %v, want %q", q.query, got, err, q.want)
+		}
+	}
+}

@@ -105,7 +105,7 @@ func TestBaselineMatchesSwiftColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer swift.Close()
+	defer func() { _ = swift.Close() }()
 	swift.SetMaxOpenConns(1)
 	for _, stmt := range swiftSchema {
 		if _, err := swift.Exec(stmt); err != nil {
@@ -114,9 +114,11 @@ func TestBaselineMatchesSwiftColumns(t *testing.T) {
 	}
 	s := openTest(t)
 	tables := func(db *sql.DB) map[string]string {
-		rows, err := db.Query(`SELECT m.name, group_concat(p.name || ' ' || p.type || ' ' || p."notnull" || ' ' || ifnull(p.dflt_value, '') || ' ' || p.pk, ', ')
+		rows, err := db.Query(`SELECT m.name, group_concat(p.name || ' ' || p.type || ' ' || p."notnull" || ' ' || ifnull(p.dflt_value, '') || ' ' || p.pk, ', ' ORDER BY p.cid)
 			FROM sqlite_master m JOIN pragma_table_info(m.name) p
 			WHERE m.type = 'table' AND m.name NOT LIKE 'goose%' AND m.name NOT LIKE 'sqlite%'
+				-- 00002's appended devices columns: the baseline is what is pinned here.
+				AND NOT (m.name = 'devices' AND p.name IN ('last_applied_action_seq', 'ordered', 'relay_device_id', 'resend_requested_from'))
 			GROUP BY m.name ORDER BY m.name`)
 		if err != nil {
 			t.Fatal(err)
@@ -136,11 +138,7 @@ func TestBaselineMatchesSwiftColumns(t *testing.T) {
 	got := tables(s.db)
 	go2 := map[string]bool{"control_queue": true, "held_actions": true, "zone_tokens": true}
 	for name, cols := range want {
-		g := got[name]
-		if name == "devices" {
-			g = g[:min(len(g), len(cols))]
-		}
-		if g != cols {
+		if got[name] != cols {
 			t.Errorf("table %s:\n go    %s\n swift %s", name, got[name], cols)
 		}
 	}

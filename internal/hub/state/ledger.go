@@ -76,6 +76,7 @@ func (s *Store) Phase(record string) (phase, outcome string, echo []byte, err er
 // RecordSeen writes the rollback mark for a record (relay_seen: the newest
 // epoch/seq seen under its wire name from sender) inside the caller's
 // transaction, the one that commits the first decision about the record.
+// sender is stored uppercase.
 func RecordSeen(tx *sql.Tx, wire, sender string, epoch uint32, seq uint64) error {
 	v, err := u64(seq)
 	if err != nil {
@@ -83,7 +84,7 @@ func RecordSeen(tx *sql.Tx, wire, sender string, epoch uint32, seq uint64) error
 	}
 	if _, err := tx.Exec(`INSERT INTO relay_seen (wire_name, sender_id, epoch, seq, at) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(wire_name, sender_id) DO UPDATE SET epoch = excluded.epoch, seq = excluded.seq, at = excluded.at`,
-		wire, sender, int64(epoch), v, toReal(time.Now())); err != nil {
+		wire, deviceKey(sender), int64(epoch), v, toReal(time.Now())); err != nil {
 		return fmt.Errorf("writing the rollback mark: %w", err)
 	}
 	return nil
