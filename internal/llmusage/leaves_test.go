@@ -37,6 +37,7 @@ var knownNonLLMExec = map[string]string{
 	"cmd.registerMCPWithClaudeCode":      "claude mcp add (MCP config, no model call)",
 	"cmd.runIntegrateRemove":             "claude mcp remove (MCP config, no model call)",
 	"cmd.runQuickSync":                   "runs this binary's `sync`, which records its own calls",
+	"cmd.runServiceCommand":              "systemctl/launchctl/loginctl for `service install|uninstall|status` (no model call)",
 	"cmd.runSyncDetach":                  "re-execs this binary as the detached daemon, which records its own calls",
 	"codewalk.gitCheckIgnore":            "git check-ignore",
 	"codewalk.gitListFiles":              "git ls-files",

@@ -311,19 +311,7 @@ func runHubSetEnabled(on bool) func(*cobra.Command, []string) error {
 			return err
 		}
 		asJSON, _ := cmd.Flags().GetBool("json")
-		op := hub.OpDisable
-		if on {
-			op = hub.OpEnable
-		}
-		_, err := hubWrite(hub.ControlRequest{Op: op},
-			func(_ string, st *state.Store) (hub.ControlAnswer, error) {
-				// The running hub's own rule: on is refused while the policy is off.
-				if on && policy.MobileSync() == policy.MobileOff {
-					return hub.ControlAnswer{Error: hub.ErrClassPolicyOff}, nil
-				}
-				return hub.ControlAnswer{OK: true}, st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on)))
-			})
-		if err != nil {
+		if err := setHubEnabled(on); err != nil {
 			return err
 		}
 		line := "hub turned off"
@@ -332,6 +320,25 @@ func runHubSetEnabled(on bool) func(*cobra.Command, []string) error {
 		}
 		return hubPrint(cmd, asJSON, hubEnabledJSON{Enabled: on}, line)
 	}
+}
+
+// setHubEnabled writes hub_meta.enabled through hubWrite (`hub enable|disable`
+// and `service install`); on a headless host it creates the live hub dir.
+// The caller has already refused an agent marker.
+func setHubEnabled(on bool) error {
+	op := hub.OpDisable
+	if on {
+		op = hub.OpEnable
+	}
+	_, err := hubWrite(hub.ControlRequest{Op: op},
+		func(_ string, st *state.Store) (hub.ControlAnswer, error) {
+			// The running hub's own rule: on is refused while the policy is off.
+			if on && policy.MobileSync() == policy.MobileOff {
+				return hub.ControlAnswer{Error: hub.ErrClassPolicyOff}, nil
+			}
+			return hub.ControlAnswer{OK: true}, st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on)))
+		})
+	return err
 }
 
 func boolInt(b bool) int {
