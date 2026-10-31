@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -401,6 +402,87 @@ func TestALiveErrorHoldsTheAnswer(t *testing.T) {
 	e.h.DeliverHeld(context.Background())
 	if len(e.h.held) != 0 || len(e.port.lines()) != 1 {
 		t.Fatal("goes once the host answers")
+	}
+}
+
+// N1 (PROJ-12): a line held before its launch was known (the host could not
+// be read) never goes into a launch started after the answer was stored —
+// that launch's brief already lists it — before or after a hub restart.
+func TestAnUnpinnedHeldLineNeverGoesIntoALaterLaunch(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		e := newEnv(t)
+		s := e.seedAsk(asks.KindQuestion, questions)
+		e.port.start(s.session)
+		e.port.liveErr = errors.New("host busy")
+		wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
+		e.port.liveErr = nil
+		e.port.live[s.session] = LiveRun{SessionID: s.session, Run: 2, StartedAt: time.Now().Add(2 * time.Second)}
+		h := e.h
+		if restart {
+			h = Register(actions.NewDispatcher(), e.h.d)
+		}
+
+		h.DeliverHeld(context.Background())
+
+		if len(e.port.lines()) != 0 || len(h.held) != 0 {
+			t.Fatalf("restart=%v: lines = %d held = %d, want the line dropped", restart, len(e.port.lines()), len(h.held))
+		}
+	}
+}
+
+// N2: each held line leaves hub_meta just before its own delivery, so a
+// crash mid-loop loses at most the line in flight.
+func TestEachHeldLineLeavesTheStoreJustBeforeItsDelivery(t *testing.T) {
+	e := newEnv(t)
+	first := e.seedAsk(asks.KindQuestion, questions)
+	second := e.seedAsk(asks.KindQuestion, questions)
+	for _, s := range []seeded{first, second} {
+		e.port.start(s.session)
+		e.hooksReport(s.session, "approval")
+		wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
+		e.hooksReport(s.session, "waiting")
+	}
+	var stored []string
+	e.port.onDeliver = func(DeliverRequest) {
+		raw, _, _ := e.store.Meta(heldMetaKey)
+		stored = append(stored, raw)
+	}
+
+	e.h.DeliverHeld(context.Background())
+
+	if len(stored) != 2 {
+		t.Fatalf("deliveries = %d", len(stored))
+	}
+	ask := func(id int64) string { return `"ask":` + strconv.FormatInt(id, 10) + "," }
+	if strings.Contains(stored[0], ask(first.ask)) || !strings.Contains(stored[0], ask(second.ask)) {
+		t.Fatalf("during the first delivery hub_meta = %s, want only the second ask", stored[0])
+	}
+	if strings.Contains(stored[1], ask(second.ask)) {
+		t.Fatalf("during the second delivery hub_meta = %s", stored[1])
+	}
+}
+
+// N3: a held line goes only while its ask is still answered — not once the
+// agent read it (delivered) or it was withdrawn.
+func TestAHeldLineOfAnAskNoLongerAnsweredIsSkipped(t *testing.T) {
+	for _, status := range []string{"delivered", "withdrawn"} {
+		e := newEnv(t)
+		s := e.seedAsk(asks.KindQuestion, questions)
+		e.port.start(s.session)
+		e.hooksReport(s.session, "approval")
+		e.h.askAnswer(context.Background(), e.answerAction(s, yes))
+		e.hooksReport(s.session, "waiting")
+		if status == "withdrawn" {
+			e.exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent', answer = '' WHERE id = ?`, s.ask)
+		} else {
+			e.exec(`UPDATE owner_asks SET status = ? WHERE id = ?`, status, s.ask)
+		}
+
+		e.h.DeliverHeld(context.Background())
+
+		if len(e.port.lines()) != 0 || len(e.h.held) != 0 {
+			t.Fatalf("%s: lines = %d held = %d", status, len(e.port.lines()), len(e.h.held))
+		}
 	}
 }
 

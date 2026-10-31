@@ -10,6 +10,7 @@ import (
 	"log"
 	"reflect"
 	"strings"
+	"time"
 
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
@@ -55,6 +56,10 @@ type heldAnswer struct {
 	run    uint64
 	pinned bool
 	line   string
+	// notAfter, for a held line with no pinned run, is when the answer was
+	// stored: a launch started after it already lists the answer in its
+	// brief, so the line never goes into it.
+	notAfter time.Time
 }
 
 // heldRecord is a held answer as hub_meta keeps it.
@@ -224,7 +229,8 @@ func (h *Handlers) deliverLine(ctx context.Context, line heldAnswer) string {
 		h.hold(line)
 		return deliveryHeld
 	}
-	if !ok || live.Exited || (line.pinned && live.Run != line.run) {
+	if !ok || live.Exited || (line.pinned && live.Run != line.run) ||
+		(!line.pinned && !line.notAfter.IsZero() && live.StartedAt.After(line.notAfter)) {
 		return deliveryNoSession
 	}
 	line.run, line.pinned = live.Run, true
@@ -348,22 +354,56 @@ func (h *Handlers) loadHeld() {
 // DeliverHeld tries every held answer again (after a read of the session
 // states): one whose session still waits on a permission prompt, or whose
 // host or state cannot be read, is held again; one whose session stopped or
-// runs another launch goes nowhere — the session's brief lists it. Taken
-// from the queue (and from hub_meta) before any wait, so neither an
-// overlapping call nor a restart mid-delivery sends a line twice.
+// runs another launch goes nowhere — the session's brief lists it. Each line
+// leaves the queue (and hub_meta) just before its own delivery, so neither
+// an overlapping call nor a restart mid-delivery sends a line twice, and a
+// crash loses at most the one line in flight (its brief still has it).
 func (h *Handlers) DeliverHeld(ctx context.Context) {
 	h.mu.Lock()
-	held := h.held
-	h.held = nil
-	if len(held) > 0 {
-		h.saveHeldLocked()
-	}
+	held := append([]heldAnswer(nil), h.held...)
 	h.mu.Unlock()
 	for _, line := range held {
+		if !h.takeHeld(line) {
+			continue // an overlapping call took it
+		}
+		line, ok := h.stillAnswered(line)
+		if !ok {
+			continue
+		}
 		if h.deliverLine(ctx, line) == deliveryCannotType {
 			log.Printf("hub handlers: ask %d: held answer cannot be typed", line.askID)
 		}
 	}
+}
+
+// takeHeld removes line from the held set and hub_meta; false when it was no
+// longer there.
+func (h *Handlers) takeHeld(line heldAnswer) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, l := range h.held {
+		if l.askID == line.askID && l.sessionID == line.sessionID {
+			h.held = append(h.held[:i:i], h.held[i+1:]...)
+			h.saveHeldLocked()
+			return true
+		}
+	}
+	return false
+}
+
+// stillAnswered re-reads the ask right before its held line is typed: only an
+// ask still answered (not read by the agent or delivered by the brief, not
+// withdrawn) in the same session goes; its answered_at bounds an unpinned
+// line's launch.
+func (h *Handlers) stillAnswered(line heldAnswer) (heldAnswer, bool) {
+	ask, err := h.d.DB.GetOwnerAskByID(line.askID)
+	if err != nil || ask.Status != "answered" || !ask.SessionID.Valid || ask.SessionID.Int64 != line.sessionID {
+		return line, false
+	}
+	if at, err := time.Parse("2006-01-02T15:04:05Z", ask.AnsweredAt); err == nil {
+		line.notAfter = at
+	}
+	return line, true
 }
 
 // rememberDelivery keeps the delivery of a stored answer for a re-run of the
