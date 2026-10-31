@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -54,7 +55,100 @@ func serviceCLI(t *testing.T, goos string, p hostkind.Probe) (*serviceFake, stri
 	origGOOS, origRunner := serviceGOOS, serviceRunner
 	serviceGOOS, serviceRunner = goos, f.run
 	t.Cleanup(func() { serviceGOOS, serviceRunner = origGOOS, origRunner })
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	fakeServiceBinary(t, filepath.Join(home, "bin", "watchtower"), filepath.Join(home, "tmp"))
 	return f, live
+}
+
+// fakeServiceBinary makes serviceExe see exe (created) as the running binary,
+// os.Args[0] not found on PATH, and tmp as the temp dir.
+func fakeServiceBinary(t *testing.T, exe, tmp string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(exe), 0o700))
+	require.NoError(t, os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o700))
+	origArgs0, origExe, origLook, origTmp := serviceArgs0, serviceExecutable, serviceLookPath, serviceTempDir
+	serviceArgs0 = func() string { return "watchtower" }
+	serviceExecutable = func() (string, error) { return exe, nil }
+	serviceLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	serviceTempDir = func() string { return tmp }
+	t.Cleanup(func() {
+		serviceArgs0, serviceExecutable, serviceLookPath, serviceTempDir = origArgs0, origExe, origLook, origTmp
+	})
+}
+
+func TestServiceUnitCarriesTheGlobalFlags(t *testing.T) {
+	serviceCLI(t, "linux", linuxProbe())
+	cfgPath := flagConfig
+	_, err := runService(t, "install", "--workspace", "acme")
+	require.NoError(t, err)
+	b, err := os.ReadFile(systemdUnitFile(t))
+	require.NoError(t, err)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "ExecStart="+filepath.Join(home, "bin", "watchtower")+
+		" --config "+cfgPath+" --workspace acme sync --daemon\n")
+}
+
+func TestServiceExePrefersTheInvokedPath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "opt", "watchtower-1.2.3")
+	link := filepath.Join(dir, "bin", "watchtower")
+	fakeServiceBinary(t, target, filepath.Join(dir, "tmp"))
+	require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o700))
+	require.NoError(t, os.Symlink(target, link))
+
+	// The invoked path resolves to the running binary: the stable symlink.
+	serviceLookPath = func(name string) (string, error) {
+		assert.Equal(t, "watchtower", name)
+		return link, nil
+	}
+	exe, err := serviceExe()
+	require.NoError(t, err)
+	assert.Equal(t, link, exe)
+
+	// It resolves to another file: os.Executable.
+	other := filepath.Join(dir, "bin", "other")
+	require.NoError(t, os.WriteFile(other, []byte("x"), 0o700))
+	serviceLookPath = func(string) (string, error) { return other, nil }
+	exe, err = serviceExe()
+	require.NoError(t, err)
+	assert.Equal(t, target, exe)
+
+	// Not found on PATH: os.Executable.
+	serviceLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	exe, err = serviceExe()
+	require.NoError(t, err)
+	assert.Equal(t, target, exe)
+}
+
+func TestServiceExeRefusesATemporaryBuild(t *testing.T) {
+	dir := t.TempDir()
+	for name, exe := range map[string]string{
+		"temp dir":       filepath.Join(dir, "tmp", "x", "watchtower"),
+		"go build cache": filepath.Join(dir, "cache", "go-build123", "b001", "exe", "watchtower"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fakeServiceBinary(t, exe, filepath.Join(dir, "tmp"))
+			_, err := serviceExe()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "temporary build")
+		})
+	}
+}
+
+func TestServiceInstallRefusesATemporaryBuildBeforeWritingAnything(t *testing.T) {
+	f, live := serviceCLI(t, "linux", linuxProbe())
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	fakeServiceBinary(t, filepath.Join(home, "go-build42", "exe", "watchtower"), filepath.Join(home, "tmp"))
+	_, err = runService(t, "install")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "temporary build")
+	assert.Empty(t, f.calls)
+	assert.NoFileExists(t, systemdUnitFile(t))
+	assert.NoDirExists(t, workspaceDir(t, "acme"))
+	assert.NoDirExists(t, live)
 }
 
 func runService(t *testing.T, args ...string) (string, error) {

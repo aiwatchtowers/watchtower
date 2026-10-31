@@ -116,6 +116,54 @@ func TestLaunchdPlistGolden(t *testing.T) {
 	assert.Equal(t, readGolden(t, "com.watchtower.daemon.plist.golden"), LaunchdPlist(testUnit))
 }
 
+var testUnitWithFlags = Unit{
+	Exe:   testUnit.Exe,
+	Path:  testUnit.Path,
+	Flags: []string{"--config", "/home/acme/wt/config.yaml", "--workspace", "acme"},
+}
+
+func TestSystemdUnitWithFlagsGolden(t *testing.T) {
+	assert.Equal(t, readGolden(t, "watchtower-flags.service.golden"), SystemdUnit(testUnitWithFlags))
+}
+
+func TestLaunchdPlistWithFlagsGolden(t *testing.T) {
+	assert.Equal(t, readGolden(t, "com.watchtower.daemon-flags.plist.golden"), LaunchdPlist(testUnitWithFlags))
+}
+
+func TestUnitEscapesFlagsLikeTheBinary(t *testing.T) {
+	u := testUnit
+	u.Flags = []string{"--config", "/home/acme/my config/100%.yaml"}
+	assert.Contains(t, SystemdUnit(u),
+		`ExecStart=/home/acme/.local/bin/watchtower --config "/home/acme/my config/100%%.yaml" sync --daemon`)
+	u.Flags = []string{"--workspace", "a&b"}
+	assert.Contains(t, LaunchdPlist(u), "<string>a&amp;b</string>")
+}
+
+func TestInstallRefusesAFlagWithAControlCharacter(t *testing.T) {
+	r := newFakeRunner()
+	i := linuxInstaller(t, r, &bytes.Buffer{})
+	u := testUnit
+	u.Flags = []string{"--config", "/home/acme/c.yaml\nExecStartPre=/bin/evil"}
+	_, err := i.Install(context.Background(), u)
+	require.Error(t, err)
+	assert.Empty(t, r.calls)
+	assert.NoFileExists(t, i.systemdUnitPath())
+}
+
+func TestInstallTreatsAnotherFlagSetAsAChangedUnit(t *testing.T) {
+	r := newFakeRunner()
+	i := linuxInstaller(t, r, &bytes.Buffer{})
+	_, err := i.Install(context.Background(), testUnit)
+	require.NoError(t, err)
+	r.calls = nil
+	_, err = i.Install(context.Background(), testUnitWithFlags)
+	require.NoError(t, err)
+	b, err := os.ReadFile(i.systemdUnitPath())
+	require.NoError(t, err)
+	assert.Equal(t, SystemdUnit(testUnitWithFlags), string(b))
+	assert.True(t, r.called("systemctl --user restart watchtower.service"))
+}
+
 func TestUnitsHoldNoSecret(t *testing.T) {
 	t.Setenv("WATCHTOWER_TEST_TOKEN", "xoxp-secret-token")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-secret-key")

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -143,7 +144,7 @@ func runServiceInstall(cmd *cobra.Command, _ []string) error {
 		}
 		return setHubEnabled(true)
 	}
-	unit, err := serviceUnit()
+	unit, err := serviceUnit(cmd)
 	if err != nil {
 		return err
 	}
@@ -189,18 +190,80 @@ func runServiceStatus(cmd *cobra.Command, _ []string) error {
 	return printServiceStatus(cmd, asJSON, st)
 }
 
-// serviceUnit is this binary (symlinks resolved, so an update that swaps a
-// symlink target still runs the real file) with the installing shell's PATH.
-func serviceUnit() (service.Unit, error) {
-	exe, err := os.Executable()
+// Seams for serviceExe (tests never depend on the real binary or PATH).
+var (
+	serviceArgs0      = func() string { return os.Args[0] }
+	serviceExecutable = os.Executable
+	serviceLookPath   = exec.LookPath
+	serviceTempDir    = os.TempDir
+)
+
+// serviceUnit is this binary (serviceExe), the installing shell's PATH, and
+// the global flags this run was given, so the daemon reads the config and
+// workspace the install just set up (an absolute config path).
+func serviceUnit(cmd *cobra.Command) (service.Unit, error) {
+	exe, err := serviceExe()
 	if err != nil {
-		return service.Unit{}, fmt.Errorf("finding this binary: %w", err)
+		return service.Unit{}, err
 	}
-	exe, err = filepath.EvalSymlinks(exe)
+	var flags []string
+	if f := cmd.Flags().Lookup("config"); f != nil && f.Changed {
+		abs, err := filepath.Abs(flagConfig)
+		if err != nil {
+			return service.Unit{}, fmt.Errorf("resolving the config path: %w", err)
+		}
+		flags = append(flags, "--config", abs)
+	}
+	if flagWorkspace != "" {
+		flags = append(flags, "--workspace", flagWorkspace)
+	}
+	return service.Unit{Exe: exe, Path: os.Getenv("PATH"), Flags: flags}, nil
+}
+
+// serviceExe is the binary path the unit runs. It prefers the path the owner
+// invoked (os.Args[0] through PATH, made absolute) when that resolves to the
+// running binary: a stable path such as ~/.local/bin/watchtower keeps working
+// when an update swaps the file or the symlink's target. Otherwise it is
+// os.Executable. A binary under the temp dir or a Go build cache (`go run`)
+// is refused: it is gone after the run.
+func serviceExe() (string, error) {
+	exe, err := serviceExecutable()
 	if err != nil {
-		return service.Unit{}, fmt.Errorf("resolving this binary's path: %w", err)
+		return "", fmt.Errorf("finding this binary: %w", err)
 	}
-	return service.Unit{Exe: exe, Path: os.Getenv("PATH")}, nil
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", fmt.Errorf("resolving this binary's path: %w", err)
+	}
+	if transientBinary(resolved) {
+		return "", errors.New("this watchtower binary is a temporary build (go run or a temp folder): " +
+			"install it first (for example into ~/.local/bin) and run `watchtower service install` from there")
+	}
+	chosen := exe
+	if p, err := serviceLookPath(serviceArgs0()); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			if r, err := filepath.EvalSymlinks(abs); err == nil && r == resolved {
+				chosen = abs
+			}
+		}
+	}
+	return chosen, nil
+}
+
+// transientBinary reports a resolved binary path under the temp dir or in a
+// Go build dir (a `go-build…` path component).
+func transientBinary(resolved string) bool {
+	for _, c := range strings.Split(filepath.ToSlash(resolved), "/") {
+		if strings.HasPrefix(c, "go-build") {
+			return true
+		}
+	}
+	tmp := serviceTempDir()
+	if r, err := filepath.EvalSymlinks(tmp); err == nil {
+		tmp = r
+	}
+	rel, err := filepath.Rel(tmp, resolved)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func printServiceStatus(cmd *cobra.Command, asJSON bool, st service.Status) error {

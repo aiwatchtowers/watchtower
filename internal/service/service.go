@@ -40,8 +40,19 @@ const unitFileMode = 0o600
 
 // Unit is what a unit file says: the binary and the PATH its sessions need.
 type Unit struct {
-	Exe  string // absolute (os.Executable, symlinks resolved)
+	Exe  string // absolute: the path the owner invoked when it is the running binary, else os.Executable
 	Path string // the installing shell's PATH
+	// Flags are the global flags the install ran with (--config <abs>,
+	// --workspace <name>), placed before `sync --daemon` so the daemon reads
+	// the config the install wrote.
+	Flags []string
+}
+
+// daemonArgv is the daemon's command line: the binary, the global flags,
+// then `sync --daemon`.
+func (u Unit) daemonArgv() []string {
+	argv := append([]string{u.Exe}, u.Flags...)
+	return append(argv, "sync", "--daemon")
 }
 
 // Runner runs an external command and returns its combined output. A missing
@@ -176,9 +187,9 @@ func validateUnit(u Unit) error {
 	if u.Path == "" {
 		return fmt.Errorf("service: PATH is empty")
 	}
-	for _, s := range []string{u.Exe, u.Path} {
+	for _, s := range append([]string{u.Exe, u.Path}, u.Flags...) {
 		if strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-			return fmt.Errorf("service: the binary path or PATH holds a control character")
+			return fmt.Errorf("service: the binary path, a flag or PATH holds a control character")
 		}
 	}
 	return nil

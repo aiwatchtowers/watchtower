@@ -25,7 +25,7 @@ func LaunchdPlist(u Unit) string {
 	str("\t", LaunchdLabel)
 	key("\t", "ProgramArguments")
 	b.WriteString("\t<array>\n")
-	for _, arg := range []string{u.Exe, "sync", "--daemon"} {
+	for _, arg := range u.daemonArgv() {
 		str("\t\t", arg)
 	}
 	b.WriteString("\t</array>\n")

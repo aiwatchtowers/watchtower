@@ -17,7 +17,12 @@ func SystemdUnit(u Unit) string {
 	b.WriteString("Wants=network-online.target\n")
 	b.WriteString("\n[Service]\n")
 	b.WriteString("Type=simple\n")
-	b.WriteString("ExecStart=" + systemdExecArg(u.Exe) + " sync --daemon\n")
+	argv := u.daemonArgv()
+	words := make([]string, len(argv))
+	for n, a := range argv {
+		words[n] = systemdExecArg(a)
+	}
+	b.WriteString("ExecStart=" + strings.Join(words, " ") + "\n")
 	b.WriteString("Restart=on-failure\n")
 	b.WriteString("RestartSec=10\n")
 	b.WriteString("TimeoutStopSec=30\n")
