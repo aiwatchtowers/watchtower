@@ -1,7 +1,8 @@
 import Foundation
 import WatchtowerKit
 
-/// The Now tab (spec §5.5, mockup 1): the Mac status chip, then Waiting for
+/// The Now tab (spec §5.5, mockup 1): the Mac status chip, the outbox's
+/// Waiting to send and Not delivered (relay client mockup 5a), then Waiting for
 /// you across every workbench (open asks with their quick answers, pending
 /// permission requests, sessions that stopped, finished or failed in the
 /// last 24 h unless an open ask of theirs already shows; newest first, 20
@@ -22,8 +23,15 @@ struct NowModel {
     let emptyText: String?
     let working: [NowWorkingRow]
     let waitingHeaderTone = PhoneTone.waitingForYou
+    /// Waiting to send and Not delivered; nil when neither shows.
+    let outbox: NowOutboxRows?
 
-    init(snapshot: WorkbenchReplicaSnapshot, linked: Bool, now: Date) {
+    /// `lastFlushStopped`: the session's last outbox flush stopped on a refusal (`OutboxBacklog`); the outbox's
+    /// rows and counts come from the snapshot's own `pending` rows, so they always agree with each other.
+    init(snapshot: WorkbenchReplicaSnapshot, linked: Bool, now: Date, lastFlushStopped: Bool = false, calendar: Calendar = .current) {
+        outbox = NowOutboxRows(
+            lastFlushStopped: lastFlushStopped, queued: OutboxItem.rows(snapshot.pending, .queued),
+            undelivered: OutboxItem.rows(snapshot.pending, .undelivered), snapshot: snapshot, now: now, calendar: calendar)
         mac = .of(heartbeat: snapshot.heartbeat?.updatedAt, linked: linked, now: now)
         chip = MacStatusChipModel(macName: snapshot.heartbeat?.macName ?? "", state: mac.chipState(linked: linked), now: now)
         let openAsks = snapshot.openAsks()
@@ -56,7 +64,57 @@ struct NowModel {
         [chip.toneUse, ToneUse(element: "waiting header", tone: waitingHeaderTone, role: .waiting)]
             + waitingForYou.map(\.toneUse)
             + working.map { ToneUse(element: "working session \($0.id) dot", tone: .green, role: .session(isWaiting: false)) }
+            + (outbox?.toneUses ?? [])
     }
+}
+
+/// Now's outbox group (relay client mockup 5a, Ruling 12): **Waiting to send** with the count and the oldest
+/// queued actions, only while something is queued and the last flush stopped on a refusal; **Not delivered** with
+/// the count, a link to the list, while anything is listed there. Never orange.
+struct NowOutboxRows: Equatable {
+    static let queuedLimit = 3
+
+    let waitingTitle = "Waiting to send"
+    /// nil: Waiting to send is hidden.
+    let waitingCount: Int?
+    /// The oldest queued actions, at most `queuedLimit`.
+    let queued: [NowQueuedRow]
+    /// "2 more" past the first rows.
+    let moreText: String?
+    /// "Not delivered · 2"; nil: the row is hidden.
+    let notDeliveredText: String?
+
+    /// `queued` and `undelivered`: the ordered rows in those states, oldest first (`OutboxItem.rows`).
+    init?(
+        lastFlushStopped: Bool,
+        queued items: [OutboxItem],
+        undelivered: [OutboxItem],
+        snapshot: WorkbenchReplicaSnapshot,
+        now: Date,
+        calendar: Calendar
+    ) {
+        let waiting = !items.isEmpty && lastFlushStopped
+        guard waiting || !undelivered.isEmpty else { return nil }
+        waitingCount = waiting ? items.count : nil
+        let format = RecordingsFormat(calendar: calendar, now: now)
+        let shown = waiting ? Array(items.prefix(Self.queuedLimit)) : []
+        queued = shown.map { NowQueuedRow(id: $0.id, summary: ActionSummary.text(for: $0, snapshot: snapshot), time: format.when($0.createdAt)) }
+        let more = waiting ? items.count - shown.count : 0
+        moreText = more > 0 ? "\(more) more" : nil
+        notDeliveredText = undelivered.isEmpty ? nil : "\(NotDeliveredModel.title) · \(undelivered.count)"
+    }
+
+    var toneUses: [ToneUse] {
+        (waitingCount == nil ? [] : [ToneUse(element: "waiting to send count", tone: .secondary, role: .info)])
+            + (notDeliveredText == nil ? [] : [ToneUse(element: "not delivered row", tone: .red, role: .status)])
+    }
+}
+
+/// One queued action under Waiting to send: its summary and "Today 09:58".
+struct NowQueuedRow: Equatable, Identifiable {
+    let id: String
+    let summary: String
+    let time: String
 }
 
 /// One Waiting-for-you row of Now (mockup 1): a state mark, the title, a
