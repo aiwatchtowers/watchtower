@@ -20,6 +20,14 @@ final class SecureTransportTests: XCTestCase {
             payload: Data("{\"device_id\":\"\(deviceID.uuidString)\",\"id\":\"\(id)\",\"status\":\"\(status)\"}".utf8))
     }
 
+    /// The record as the in-memory transport stores it: the same fields plus the version it was stored under.
+    private func stored(_ record: CloudRecord, recordSeq: UInt64) -> CloudRecord {
+        CloudRecord(
+            recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
+            payload: record.payload, notifyLevel: record.notifyLevel, assetFileURL: record.assetFileURL,
+            origin: record.origin, asset: record.asset, sealed: record.sealed, recordSeq: recordSeq)
+    }
+
     /// Stamps every fetched record with a fixed origin, as a server-backed transport would.
     private struct OriginStampingTransport: CloudSyncTransport, Sendable {
         let base: InMemoryCloudTransport
@@ -189,7 +197,7 @@ final class SecureTransportTests: XCTestCase {
         // Event 1 is the first send, event 2 the re-send: both carry the stored bytes.
         let latest = try await inner.changes(in: .relay, since: nil).changed
         let second = try await inner.changes(in: .relay, since: CloudChangeToken(value: 1)).changed
-        XCTAssertEqual(latest, [sealed])
+        XCTAssertEqual(latest, [stored(sealed, recordSeq: 2)])
         XCTAssertEqual(second.map(\.payload), [sealed.payload], "byte for byte: a deliberate re-send is not a new envelope")
     }
 
@@ -202,9 +210,9 @@ final class SecureTransportTests: XCTestCase {
 
         try await hub.save([signal])
         let saved = try await inner.changes(in: .data, since: nil).changed
-        XCTAssertEqual(saved, [signal])
+        XCTAssertEqual(saved, [stored(signal, recordSeq: 1)])
         let read = try await hub.changes(in: .data, since: nil).changed
-        XCTAssertEqual(read, [signal])
+        XCTAssertEqual(read, [stored(signal, recordSeq: 1)])
 
         try await hub.delete(recordNames: [signal.recordName], in: .data)
         let deleted = try await inner.changes(in: .data, since: nil).deletedRecordNames
@@ -546,6 +554,163 @@ final class SecureTransportTests: XCTestCase {
         }
     }
 
+    // MARK: - Conditional writes and controls
+
+    private let controlID = "11111111-2222-4333-8444-555555555555"
+
+    private func control(kind: String = "skip_to", deviceID: UUID = TestE2E.deviceID) -> CloudRecord {
+        CloudRecord(
+            recordName: "c-\(controlID)", zone: .relay, kind: RelayRecordKind.control.rawValue, modifiedAt: stamp,
+            payload: Data(
+                "{\"device_id\":\"\(deviceID.uuidString)\",\"hub_id\":\"\(TestE2E.hubID.uuidString)\",\"id\":\"\(controlID)\",\"kind\":\"\(kind)\"}"
+                    .utf8))
+    }
+
+    /// A control sealed the way a hub that knows the kind seals it (h2p to the phone): the Swift hub never does.
+    private func hubSealedControl(wireName: String) throws -> CloudRecord {
+        let keys = TestE2E.hub()
+        let plain = control(kind: "resend_from")
+        let frame = InnerFrame(kind: plain.kind, id: plain.recordName, payload: plain.payload)
+        let envelope = try EnvelopeSealer.sealSymmetric(
+            frame, envelopeClass: .relayToPhone,
+            key: try keys.relayKey(.hubToPhone, deviceID: TestE2E.deviceID, epoch: 1),
+            hubID: TestE2E.hubID, senderID: TestE2E.hubID, epoch: 1, seq: 77,
+            context: EnvelopeContext(zone: .relay, wireName: wireName), signer: nil)
+        return CloudRecord(recordName: wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: stamp, payload: envelope)
+    }
+
+    func testAConditionalSaveForwardsTheSealedBytes() async throws {
+        let inner = InMemoryCloudTransport()
+        let phone = try phoneTransport(inner: inner)
+        let sealed = try await phone.seal(action())
+
+        let first = try await phone.saveSealed([ConditionalSave(record: sealed, expect: .absent)])
+        let again = try await phone.saveSealed([ConditionalSave(record: sealed, expect: .absent)])
+
+        XCTAssertEqual(first, [.saved(recordSeq: 1)])
+        XCTAssertEqual(again, [.conflict(current: stored(sealed, recordSeq: 1))], "the wire record comes back as it is stored")
+        let onWire = try await inner.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(onWire.map(\.recordName), [sealed.recordName], "the wire name is forwarded, never re-derived")
+        XCTAssertEqual(onWire.map(\.payload), [sealed.payload], "byte for byte: no new envelope")
+
+        let deleted = try await phone.deleteSealed([
+            ConditionalDelete(recordName: sealed.recordName, zone: .relay, expect: .seq(1))
+        ])
+        XCTAssertEqual(deleted, [.deleted])
+        let gone = try await inner.changes(in: .relay, since: nil).deletedRecordNames
+        XCTAssertEqual(gone, [sealed.recordName])
+    }
+
+    func testAConflictsCurrentRecordOpens() async throws {
+        let inner = InMemoryCloudTransport()
+        let phone = try phoneTransport(inner: inner)
+        let hub = hubTransport(inner: inner)
+        try await phone.save([action()])
+        let received = try await hub.changes(in: .relay, since: nil).changed
+        let opened = try XCTUnwrap(received.first)
+        try await hub.save([CloudRecord(
+            recordName: opened.recordName, zone: .relay, kind: opened.kind, modifiedAt: stamp,
+            payload: action(status: "applied").payload, sealed: opened.sealed)])
+
+        let resent = try await phone.seal(action())
+        let outcome = try await phone.saveSealed([ConditionalSave(record: resent, expect: .absent)])
+        guard case .conflict(let current)? = outcome.first else { return XCTFail("expected a conflict, got \(outcome)") }
+
+        let reopened = try await phone.openConflict(current)
+        let echo = try XCTUnwrap(reopened)
+        XCTAssertEqual(echo.recordName, "action-a1")
+        XCTAssertEqual(echo.kind, RelayRecordKind.action.rawValue)
+        XCTAssertEqual(echo.payload, action(status: "applied").payload)
+        XCTAssertEqual(echo.sealed?.senderID, TestE2E.hubID)
+        XCTAssertEqual(echo.recordSeq, 2)
+
+        let garbage = CloudRecord(
+            recordName: current.recordName, zone: .relay, kind: WireKind.envelope, modifiedAt: stamp, payload: Data("x".utf8))
+        let unopened = try await phone.openConflict(garbage)
+        XCTAssertNil(unopened)
+    }
+
+    func testThePhoneOpensHubControlsAndTheHubStillDropsThem() async throws {
+        let inner = InMemoryCloudTransport()
+        let phone = try phoneTransport(inner: inner)
+        let rejections = Rejections()
+        let hub = hubTransport(inner: inner, rejections: rejections)
+
+        // p2h: the phone seals its own control and opens it back.
+        try await phone.save([control()])
+        let mine = try await phone.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(mine.map(\.recordName), ["c-\(controlID)"])
+        XCTAssertEqual(mine.first?.kind, RelayRecordKind.control.rawValue)
+        XCTAssertEqual(mine.first?.payload, control().payload)
+
+        // The Swift hub drops it as before.
+        let atHub = try await hub.changes(in: .relay, since: nil).changed
+        XCTAssertTrue(atHub.isEmpty)
+        XCTAssertEqual(rejections.values.map(\.reason), ["unknownKind"])
+        do {
+            _ = try await hub.seal(control())
+            XCTFail("expected unknownKind")
+        } catch let error as SecureTransportError {
+            XCTAssertEqual(error, .unknownKind(RelayRecordKind.control.rawValue))
+        }
+
+        // h2p: a control from the hub opens on the phone.
+        let fresh = InMemoryCloudTransport()
+        let reader = try phoneTransport(inner: fresh)
+        let hubWire = try reader.wireName(plain: control().recordName, zone: .relay)
+        try await fresh.save([try hubSealedControl(wireName: hubWire)])
+        let fromHub = try await reader.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(fromHub.map(\.recordName), [control().recordName])
+        XCTAssertEqual(fromHub.first?.kind, RelayRecordKind.control.rawValue)
+        XCTAssertEqual(fromHub.first?.sealed?.senderID, TestE2E.hubID)
+        XCTAssertEqual(fromHub.first?.sealed?.envelopeClass, .relayToPhone)
+    }
+
+    func testAPlainTransportIsNotConditional() async throws {
+        let plain = try phoneTransport(inner: OriginStampingTransport(base: InMemoryCloudTransport(), origin: .unknown))
+        XCTAssertFalse(plain.isConditional)
+        XCTAssertTrue(try phoneTransport(inner: InMemoryCloudTransport()).isConditional)
+
+        let sealed = try await plain.seal(action())
+        do {
+            _ = try await plain.saveSealed([ConditionalSave(record: sealed, expect: .absent)])
+            XCTFail("expected notConditional")
+        } catch let error as SecureTransportError {
+            XCTAssertEqual(error, .notConditional)
+        }
+        do {
+            _ = try await plain.deleteSealed([ConditionalDelete(recordName: sealed.recordName, zone: .relay, expect: .none)])
+            XCTFail("expected notConditional")
+        } catch let error as SecureTransportError {
+            XCTAssertEqual(error, .notConditional)
+        }
+    }
+
+    // MARK: - recordSeq survives opening
+
+    func testAnOpenedRelayRecordKeepsItsRecordSeq() async throws {
+        let inner = InMemoryCloudTransport()
+        let phone = try phoneTransport(inner: inner)
+        try await phone.save([action("a1"), action("a2")])
+
+        let mine = try await phone.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(mine.map(\.recordName), ["action-a1", "action-a2"])
+        XCTAssertEqual(mine.map(\.recordSeq), [1, 2])
+    }
+
+    func testAPassedThroughHelloKeepsItsRecordSeq() async throws {
+        let inner = InMemoryCloudTransport()
+        let phone = try phoneTransport(inner: inner)
+        try await phone.save([action()])
+        try await phone.save([CloudRecord(
+            recordName: "hello-\(TestE2E.deviceID.uuidString)", zone: .relay, kind: RelayRecordKind.hello.rawValue,
+            modifiedAt: stamp, payload: Data("{\"device\":{}}".utf8))])
+
+        let read = try await hubTransport(inner: inner).changes(in: .relay, since: nil).changed
+        let hello = try XCTUnwrap(read.first { $0.kind == RelayRecordKind.hello.rawValue })
+        XCTAssertEqual(hello.recordSeq, 2)
+    }
+
     // MARK: - Rollback guard
 
     func testInMemoryRollbackGuardKeysOnWireNameAndSender() throws {
@@ -654,7 +819,7 @@ final class SecureTransportTests: XCTestCase {
 
         let read = try await phone.changes(in: .data, since: nil).changed
 
-        XCTAssertEqual(read, [wellShaped], "only the signal shape passes")
+        XCTAssertEqual(read, [stored(wellShaped, recordSeq: 1)], "only the signal shape passes")
         XCTAssertEqual(rejections.values.map(\.wireName), ["target-7"])
         XCTAssertEqual(rejections.values.map(\.reason), ["malformedSignal"])
     }
@@ -672,7 +837,7 @@ final class SecureTransportTests: XCTestCase {
 
         let read = try await phone.changes(in: .data, since: nil).changed
 
-        XCTAssertEqual(read, [wellShaped])
+        XCTAssertEqual(read, [stored(wellShaped, recordSeq: 1)])
         XCTAssertEqual(rejections.values.map(\.wireName), [carrying.recordName])
         XCTAssertEqual(rejections.values.map(\.reason), ["malformedSignal"])
     }

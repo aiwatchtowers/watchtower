@@ -13,7 +13,8 @@ final class RootTabTests: XCTestCase {
     }
 
     func testSettingsIsReachedFromNow() {
-        XCTAssertEqual(NowRoute.allCases, [.settings])
+        // Settings, and the Not delivered list (relay client Phase 1), are pushed from Now.
+        XCTAssertEqual(NowRoute.allCases, [.settings, .notDelivered])
         XCTAssertFalse(RootTabView.Tab.allCases.map(\.rawValue).contains("more"), "More is gone")
     }
 

@@ -80,6 +80,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// Counts the CloudKit requests this transport issues (the phone's
     /// battery diagnostics); nil counts nothing.
     let energy: EnergyCounter?
+    /// Where conditional mailbox writes go (`ConditionalTransport`); nil until the first one builds the scope's
+    /// `CKDatabase` (a test injects a fake at init).
+    var conditionalDatabaseStorage: (any ConditionalDatabase)?
     let logger = Logger(subsystem: "WatchtowerKit", category: "CloudKitTransport")
 
     var engine: (any SyncEngineDriving)?
@@ -233,7 +236,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         engineFactory: @escaping EngineFactory,
         now: @escaping @Sendable () -> Date,
         sleep: @escaping @Sendable (TimeInterval) async -> Void,
-        energy: EnergyCounter? = nil
+        energy: EnergyCounter? = nil,
+        conditionalDatabase: (any ConditionalDatabase)? = nil
     ) {
         self.store = store
         zones = HubZones(scope: scope, hubID: hubID)
@@ -245,6 +249,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         self.now = now
         self.sleep = sleep
         self.energy = energy
+        conditionalDatabaseStorage = conditionalDatabase
     }
 
     /// In the phone role an account switch does NOT emit `.unlinked`: the

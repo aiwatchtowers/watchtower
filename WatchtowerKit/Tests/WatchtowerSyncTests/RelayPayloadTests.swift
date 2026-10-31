@@ -140,4 +140,35 @@ final class RelayPayloadTests: XCTestCase {
         let decoded = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8))
         XCTAssertEqual(decoded.hubID, "hub-acme")
     }
+
+    /// A legacy action (no order number) is written exactly as before ordered actions existed.
+    func testALegacyActionEncodesNoActionSeq() throws {
+        let action = ActionRequestPayload(
+            id: "A1", kind: .targetDone, entityID: "7", createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            deviceID: "device-a", hubID: "hub-acme"
+        )
+        XCTAssertNil(action.actionSeq)
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(action), encoding: .utf8))
+        // swiftlint:disable:next line_length
+        XCTAssertEqual(json, #"{"created_at":1700000000,"device_id":"device-a","entity_id":"7","hub_id":"hub-acme","id":"A1","kind":"target_done","params":{},"status":"pending"}"#)
+
+        var ordered = action
+        ordered.actionSeq = 3
+        let orderedJSON = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(ordered), encoding: .utf8))
+        XCTAssertTrue(orderedJSON.contains(#""action_seq":3"#), orderedJSON)
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(orderedJSON.utf8)), ordered)
+    }
+
+    /// The Go hub drops a `skip_to` without both ids; the phone's always carries them, uppercase.
+    func testSkipToCarriesBothIds() throws {
+        let device = try XCTUnwrap(UUID(uuidString: "bbbbbbbb-0000-4000-8000-000000000002"))
+        let hub = try XCTUnwrap(UUID(uuidString: "aaaaaaaa-0000-4000-8000-000000000001"))
+        let id = try XCTUnwrap(UUID(uuidString: "dddddddd-0000-4000-8000-000000000004"))
+        let control = ControlPayload.skipTo(12, deviceID: device, hubID: hub, id: id)
+        XCTAssertEqual(control.recordName, "c-DDDDDDDD-0000-4000-8000-000000000004")
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(control), encoding: .utf8))
+        // swiftlint:disable:next line_length
+        XCTAssertEqual(json, #"{"device_id":"BBBBBBBB-0000-4000-8000-000000000002","hub_id":"AAAAAAAA-0000-4000-8000-000000000001","id":"DDDDDDDD-0000-4000-8000-000000000004","kind":"skip_to","seq":12}"#)
+        XCTAssertNotEqual(ControlPayload.skipTo(1, deviceID: device, hubID: hub).id, ControlPayload.skipTo(1, deviceID: device, hubID: hub).id)
+    }
 }

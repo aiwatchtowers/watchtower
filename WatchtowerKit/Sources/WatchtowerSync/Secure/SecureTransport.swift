@@ -21,16 +21,19 @@ import os
 /// sender) (F3); signals (DataZone only) are refused here. A locked keychain makes `changes` throw
 /// `SecureTransportError.keysUnavailable` so the consumer keeps its token and replays (Review Focus 1). `deletedRecordNames` are passed through as wire names.
 public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
-    private static let relayKinds: Set<String> = [
+    private static let hubRelayKinds: Set<String> = [
         RelayRecordKind.action.rawValue, RelayRecordKind.recordingUpload.rawValue, RelayRecordKind.device.rawValue
     ]
+    /// The phone also seals and opens `control` (both directions); the Swift hub keeps dropping it as `unknownKind`.
+    private static let phoneRelayKinds = hubRelayKinds.union([RelayRecordKind.control.rawValue])
     private static let signalPrefix = "\(WireKind.signal)-"
     private static let keyboxPrefix = "keybox-"
     private static let grantPrefix = "\(SliceKind.deviceGrant.rawValue)-"
     private static let helloPrefix = "\(RelayRecordKind.hello.rawValue)-"
     private static let rolledBackReason = "rolledBack"
 
-    private let inner: any CloudSyncTransport & Sendable
+    /// Internal only for `SecureTransport+Conditional.swift`; nothing else writes past the sealing layer.
+    let inner: any CloudSyncTransport & Sendable
     private let keys: any SecureKeyProvider
     private let rollback: any RollbackGuard
     private let names: (any WireNameIndex)?
@@ -149,7 +152,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
                 hubID: hubID, senderID: hubID, epoch: epoch, seq: try keys.nextSeq(), context: context,
                 signer: try keys.hubSigner())
         case .relay:
-            guard Self.relayKinds.contains(record.kind) else { throw SecureTransportError.unknownKind(record.kind) }
+            guard Self.hubRelayKinds.contains(record.kind) else { throw SecureTransportError.unknownKind(record.kind) }
             let recipient = try echoRecipient(record, hubID: hubID)
             return try EnvelopeSealer.sealSymmetric(
                 frame, envelopeClass: .relayToPhone, key: try keys.relayKey(.hubToPhone, deviceID: recipient, epoch: epoch),
@@ -180,7 +183,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
                 hubID: hubID, senderID: deviceID, epoch: epoch, seq: try keys.nextSeq(), context: context,
                 signer: try keys.deviceSigner())
         }
-        guard Self.relayKinds.contains(record.kind) else { throw SecureTransportError.unknownKind(record.kind) }
+        guard Self.phoneRelayKinds.contains(record.kind) else { throw SecureTransportError.unknownKind(record.kind) }
         return try EnvelopeSealer.sealSymmetric(
             frame, envelopeClass: .relayToHub, key: try keys.relayKey(.phoneToHub, deviceID: deviceID, epoch: epoch),
             hubID: hubID, senderID: deviceID, epoch: epoch, seq: try keys.nextSeq(), context: context, signer: nil)
@@ -281,7 +284,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
 
     // MARK: - Opening
 
-    private enum OpenOutcome {
+    enum OpenOutcome {
         case opened(CloudRecord)
         case unopenable(String)
         case rolledBack
@@ -289,7 +292,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
 
     /// Throws only `keysUnavailable` (a locked keychain) and the provider's or the guard's other errors unchanged;
     /// everything about the record itself is an `.unopenable` outcome.
-    private func open(_ record: CloudRecord) throws -> OpenOutcome {
+    func open(_ record: CloudRecord) throws -> OpenOutcome {
         // Signals live in DataZone only (D14), which passes through untouched; a "sig" record in RelayZone is
         // unauthenticated plaintext anyone could write, so it is never handed over.
         if record.kind == WireKind.signal { return .unopenable("signalInRelayZone") }
@@ -337,7 +340,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             return .passThrough(CloudRecord(
                 recordName: record.recordName, zone: .relay, kind: RelayRecordKind.hello.rawValue,
                 modifiedAt: record.modifiedAt, payload: record.payload, assetFileURL: record.assetFileURL,
-                origin: record.origin))
+                origin: record.origin, recordSeq: record.recordSeq))
         case (.hub, .relayToHub):
             opened = try openSymmetric(record, header: header, context: context, direction: .phoneToHub, device: header.senderID)
         case let (.hub(hubID), .relayToPhone):
@@ -358,7 +361,12 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
 
     /// Kind, name binding and the rollback guard for an opened relay frame.
     private func accept(_ record: CloudRecord, header: EnvelopeHeader, frame: InnerFrame) throws -> OpenOutcome {
-        guard Self.relayKinds.contains(frame.kind) else { return .unopenable("unknownKind") }
+        let kinds: Set<String>
+        switch keys.role {
+        case .hub: kinds = Self.hubRelayKinds
+        case .phone: kinds = Self.phoneRelayKinds
+        }
+        guard kinds.contains(frame.kind) else { return .unopenable("unknownKind") }
         // The AAD binds the wire name; this binds the frame's plain name to it, so a sender cannot file a
         // record under another record's plain name.
         guard try wireName(plain: frame.id, zone: .relay) == record.recordName else { return .unopenable("nameMismatch") }
@@ -379,7 +387,8 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             asset: frame.asset,
             sealed: SealedInfo(
                 wireName: record.recordName, senderID: header.senderID, epoch: header.epoch, seq: header.seq,
-                envelopeClass: header.envelopeClass)))
+                envelopeClass: header.envelopeClass),
+            recordSeq: record.recordSeq))
     }
 
     /// nil when this side holds no relay key for the device at that epoch (unknown sender, epoch outside D10).

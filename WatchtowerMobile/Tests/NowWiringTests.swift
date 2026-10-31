@@ -169,4 +169,56 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(model(snapshot, at: now.addingTimeInterval(12)).chip.tone, .green)
         XCTAssertEqual(model(snapshot, at: now.addingTimeInterval(2_160)).chip.text, "Acme Mac · asleep · last seen 36 min ago")
     }
+
+    // MARK: - The outbox (relay client Phase 1, mockup 5a)
+
+    private func outboxItem(_ id: String, seq: UInt64, _ delivery: Delivery, minutesAgo: Double = 0) -> OutboxItem {
+        OutboxItem(
+            id: id, kind: .sessionStop, entityRecordName: "terminal_session-10", params: [:],
+            createdAt: now.addingTimeInterval(-minutesAgo * 60), seq: seq, delivery: delivery,
+            reason: delivery == .undelivered ? .refused : nil)
+    }
+
+    private func outbox(
+        stopped: Bool, queued: [OutboxItem], undelivered: [OutboxItem] = []
+    ) throws -> NowOutboxRows? {
+        NowOutboxRows(
+            lastFlushStopped: stopped, queued: queued, undelivered: undelivered, snapshot: try demoSnapshot(now: now),
+            now: now, calendar: .current)
+    }
+
+    func testWaitingToSendShowsOnlyWhenAFlushStopped() throws {
+        let three = (1...3).map { outboxItem("q\($0)", seq: UInt64($0), .queued) }
+        XCTAssertNil(try outbox(stopped: false, queued: three), "a queue the flush is still working through is not shown")
+        let stopped = try XCTUnwrap(try outbox(stopped: true, queued: three))
+        XCTAssertEqual(stopped.waitingTitle, "Waiting to send")
+        XCTAssertEqual(stopped.waitingCount, 3, "the count is the queued rows'")
+        XCTAssertNil(stopped.notDeliveredText)
+        XCTAssertNil(try outbox(stopped: true, queued: []), "nothing queued, nothing shown")
+        XCTAssertNil(
+            NowModel(snapshot: try demoSnapshot(now: now), linked: true, now: now, lastFlushStopped: true).outbox,
+            "a snapshot without ordered rows (today's path) shows neither")
+    }
+
+    func testWaitingToSendListsTheOldestQueuedActions() throws {
+        let rows = try XCTUnwrap(try outbox(stopped: true, queued: [
+            outboxItem("a", seq: 1, .queued, minutesAgo: 120), outboxItem("b", seq: 2, .queued, minutesAgo: 90),
+            outboxItem("c", seq: 3, .queued, minutesAgo: 60), outboxItem("d", seq: 4, .queued, minutesAgo: 30)
+        ]))
+        XCTAssertEqual(rows.waitingCount, 4)
+        XCTAssertEqual(rows.queued.map(\.id), ["a", "b", "c"], "the first \(NowOutboxRows.queuedLimit)")
+        XCTAssertEqual(rows.queued.first?.summary, "Stop “Session report”")
+        XCTAssertEqual(rows.queued.first?.time, "Today 10:00")
+        XCTAssertEqual(rows.moreText, "1 more")
+    }
+
+    func testNotDeliveredRowShowsTheCount() throws {
+        let rows = try XCTUnwrap(try outbox(
+            stopped: false, queued: [outboxItem("q", seq: 3, .queued)],
+            undelivered: [outboxItem("a", seq: 1, .undelivered), outboxItem("b", seq: 2, .undelivered)]))
+        XCTAssertEqual(rows.notDeliveredText, "Not delivered · 2")
+        XCTAssertNil(rows.waitingCount, "the flush has not stopped")
+        XCTAssertTrue(rows.toneUses.contains { $0.element == "not delivered row" && $0.tone == .red && $0.role == .status })
+        XCTAssertFalse(rows.toneUses.contains { $0.tone == .orange })
+    }
 }

@@ -37,17 +37,6 @@ extension ReplicaStore {
         }
     }
 
-    /// Deletes one overlay row. Public for the app's "Dismiss" affordance on
-    /// failed actions; unknown ids are a no-op (DELETE matches nothing).
-    /// Returns whether a row went.
-    @discardableResult
-    public func removePendingAction(id: String) throws -> Bool {
-        try writer.write { db in
-            try db.execute(sql: "DELETE FROM pending_actions WHERE action_id = ?", arguments: [id])
-            return db.changesCount > 0
-        }
-    }
-
     /// ActionOutbox's write path (internal: the app enqueues via the outbox,
     /// never by inserting rows directly). Stores the sealed record exactly as
     /// it was sent (`sealed.payload` under `sealed.recordName`), so the overlay
@@ -103,12 +92,14 @@ extension ReplicaStore {
         }
     }
 
-    /// Fails every still-pending row created strictly before `cutoff` in one
-    /// transaction; returns the affected ids (oldest first). Already-failed
-    /// rows keep their (more informative) desktop error message.
+    /// Fails every still-pending legacy row created strictly before `cutoff`
+    /// in one transaction; returns the affected ids (oldest first).
+    /// Already-failed rows keep their (more informative) desktop error
+    /// message. Ordered rows (`delivery` set) are skipped: they have their
+    /// own 24 h rule in the outbox.
     func sweepPendingActions(before cutoff: Date, errorMessage: String) throws -> [String] {
         try writer.write { db in
-            let predicate = "state = 'pending' AND created_at < ?"
+            let predicate = "state = 'pending' AND delivery IS NULL AND created_at < ?"
             let ids = try String.fetchAll(
                 db,
                 sql: "SELECT action_id FROM pending_actions WHERE \(predicate) ORDER BY created_at, action_id",
@@ -130,7 +121,7 @@ extension ReplicaStore {
     /// and logged once, keyed by action_id. These blobs are written by this
     /// module from a just-sealed record, so a failure here is a programmer
     /// error (or a re-pair) — but one bad row must never take down the overlay.
-    private func decodePendingActions(_ rows: [Row]) throws -> [PendingAction] {
+    func decodePendingActions(_ rows: [Row]) throws -> [PendingAction] {
         let decoder = RelayCoder.makeDecoder()
         var decoded: [PendingAction] = []
         var badIDs: [String] = []
@@ -153,7 +144,11 @@ extension ReplicaStore {
                 // An undecodable result reads as absent: the row still shows
                 // its message.
                 result: (row["result"] as Data?).flatMap { try? JSONDecoder().decode([String: JSONValue].self, from: $0) },
-                echoStatus: (row["echo_status"] as String?).flatMap(ActionStatus.init(rawValue:))
+                echoStatus: (row["echo_status"] as String?).flatMap(ActionStatus.init(rawValue:)),
+                actionSeq: (row["action_seq"] as Int64?).map { UInt64($0) },
+                epoch: (row["epoch"] as Int64?).map { UInt32(truncatingIfNeeded: $0) },
+                delivery: (row["delivery"] as String?).flatMap(Delivery.init(rawValue:)),
+                undeliveredReason: (row["undelivered_reason"] as String?).flatMap(UndeliveredReason.init(rawValue:))
             ))
         }
         let newBadIDs = badIDs
@@ -219,4 +214,12 @@ public struct PendingAction: Equatable, Identifiable {
     /// The last non-terminal echo the Mac wrote for a still-pending row
     /// (`received` once the hub dequeued it, `held`); nil before any echo.
     public let echoStatus: ActionStatus?
+    /// The ordered path (relay client Phase 1): the row's gapless seq, the
+    /// envelope epoch it was sealed in, where it stands on its way to the
+    /// hub, and why it is listed as Not delivered. All nil on a legacy row;
+    /// an undelivered row also reads `state == .failed`.
+    public let actionSeq: UInt64?
+    public let epoch: UInt32?
+    public let delivery: Delivery?
+    public let undeliveredReason: UndeliveredReason?
 }
