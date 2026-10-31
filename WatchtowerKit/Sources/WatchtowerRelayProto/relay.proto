@@ -1,0 +1,417 @@
+syntax = "proto3";
+
+package relay.v1;
+
+option go_package = "github.com/aiwatchtowers/relay/gen/relay/v1;relayv1";
+
+// Frame is the binary WebSocket frame. The same Request/Response messages are
+// the bodies of POST /v1/op (application/x-protobuf).
+message Frame {
+  oneof kind {
+    Hello hello = 1;
+    HelloOk hello_ok = 2;
+    Request request = 3;
+    Response response = 4;
+    Event event = 5;
+    GoingAway going_away = 6;
+  }
+}
+
+message Hello {
+  uint32 protocol_version = 1;
+  string session_token = 2;
+}
+
+message HelloOk {
+  string connection_id = 1;
+}
+
+// GoingAway announces a graceful server shutdown.
+message GoingAway {}
+
+message Request {
+  uint64 id = 1;
+  oneof op {
+    RegisterDevice register = 2;
+    GetChallenge challenge = 3;
+    Login login = 4;
+    Save save = 5;
+    Delete delete = 6;
+    Changes changes = 7;
+    Subscribe subscribe = 8;
+    AddMacSlot add_slot = 9;
+    RemoveMacSlot remove_slot = 10;
+    OpenPairingSlot open_pairing = 11;
+    ClosePairingSlot close_pairing = 12;
+    PromotePairing promote_pairing = 13;
+    SetHubReaders set_hub_readers = 14;
+    CreateUpload create_upload = 15;
+    GetDownload get_download = 16;
+    RegisterPushToken register_push = 17;
+    SendAlert send_alert = 18;
+    SubmitTransaction submit_transaction = 19;
+    GetAccountState get_account_state = 20;
+  }
+}
+
+message Response {
+  uint64 id = 1;
+  oneof result {
+    Ok ok = 2;
+    DeviceRegistered registered = 3;
+    Challenge challenge = 4;
+    Session session = 5;
+    SaveResult save = 6;
+    ChangesResult changes = 7;
+    PairingSlot pairing_slot = 8;
+    Upload upload = 9;
+    Download download = 10;
+    EntitlementState entitlement = 11;
+    Error error = 12;
+    DeleteResult delete = 13;
+    AccountState account_state = 14;
+  }
+}
+
+// Ok is the result of operations that return no data.
+message Ok {}
+
+message Record {
+  string zone = 1;
+  string name = 2;
+  bytes envelope = 3;
+  int64 client_modified_at_ms = 4;
+  uint64 record_seq = 5;
+  // An attachment belongs to exactly one live record; to move it, upload again.
+  string attachment_id = 6;
+  bool deleted = 7;
+}
+
+// Save writes items independently. After an error response the batch may be partially written: the
+// client must re-read the affected zones with Changes before retrying conditionally.
+message Save {
+  repeated SaveItem items = 1;
+}
+
+message SaveItem {
+  Record record = 1;
+  // No expect set means an unconditional write.
+  oneof expect {
+    uint64 expected_seq = 2;
+    bool must_not_exist = 3;
+  }
+}
+
+message SaveResult {
+  // Stored records with server-assigned record_seq, in request order. They carry metadata only
+  // (zone, name, client_modified_at_ms, record_seq, attachment_id, deleted): envelope is always
+  // empty, the client already has the bytes it sent.
+  repeated Record saved = 1;
+  // Items whose precondition failed; the other items of the batch were still written.
+  repeated SaveConflict conflicts = 2;
+}
+
+message SaveConflict {
+  // Index of the item in Save.items.
+  uint32 index = 1;
+  // Current server-side record; absent when the record does not exist.
+  optional Record current = 2;
+}
+
+message Delete {
+  string zone = 1;
+  repeated DeleteItem items = 2;
+}
+
+message DeleteItem {
+  string name = 1;
+  optional uint64 expected_seq = 2;
+}
+
+message DeleteResult {
+  // Items whose precondition failed; the other items of the batch were still applied.
+  repeated DeleteConflict conflicts = 1;
+}
+
+message DeleteConflict {
+  // Index of the item in Delete.items.
+  uint32 index = 1;
+  // Current server-side record; absent when the record does not exist.
+  optional Record current = 2;
+}
+
+message Changes {
+  string zone = 1;
+  uint64 since_seq = 2;
+  uint32 limit = 3;
+}
+
+message ChangesResult {
+  repeated Record changed = 1;
+  repeated string deleted = 2;
+  uint64 new_seq = 3;
+  bool more = 4;
+}
+
+message Event {
+  oneof kind {
+    ZoneChanged zone_changed = 1;
+    Control control = 2;
+  }
+}
+
+message ZoneChanged {
+  string zone = 1;
+  uint64 seq = 2;
+  // Present when the record is at most 64 KiB.
+  optional Record record = 3;
+}
+
+enum ControlKind {
+  CONTROL_KIND_UNSPECIFIED = 0;
+  CONTROL_KIND_ENTITLEMENT_EXPIRED = 1;
+  CONTROL_KIND_SUBSCRIPTION_MOVED = 2;
+  CONTROL_KIND_SLOT_REMOVED = 3;
+  CONTROL_KIND_PAIRING_OPENED = 4;
+  CONTROL_KIND_SESSION_EXPIRED = 5;
+}
+
+message Control {
+  ControlKind kind = 1;
+  string detail = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNSUPPORTED_VERSION = 1;
+  ERROR_CODE_UNAUTHENTICATED = 2;
+  ERROR_CODE_FORBIDDEN = 3;
+  ERROR_CODE_NOT_FOUND = 4;
+  ERROR_CODE_CONFLICT = 5;
+  ERROR_CODE_TOKEN_EXPIRED = 6;
+  ERROR_CODE_RECORD_TOO_LARGE = 7;
+  ERROR_CODE_ATTACHMENT_TOO_LARGE = 8;
+  ERROR_CODE_HUB_QUOTA_EXCEEDED = 9;
+  ERROR_CODE_MAILBOX_QUOTA_EXCEEDED = 10;
+  ERROR_CODE_TRAFFIC_LIMIT_EXCEEDED = 11;
+  ERROR_CODE_RATE_LIMITED = 12;
+  ERROR_CODE_SLOT_LIMIT = 13;
+  ERROR_CODE_SLOT_REPLACEMENT_LIMIT = 14;
+  ERROR_CODE_TRANSFER_LIMIT = 15;
+  ERROR_CODE_PAIRING_EXPIRED = 16;
+  ERROR_CODE_ENTITLEMENT_INACTIVE = 17;
+  ERROR_CODE_INVALID_TRANSACTION = 18;
+  ERROR_CODE_UNAVAILABLE = 19;
+  // Attestation is needed but missing, or its type is not accepted.
+  ERROR_CODE_ATTESTATION_REQUIRED = 20;
+  // An attestation check failed: signature, chain, app id, environment, counter or nonce.
+  ERROR_CODE_ATTESTATION_FAILED = 21;
+}
+
+message Error {
+  // Field 3 was `current`; precondition failures are reported per item by SaveConflict and
+  // DeleteConflict, never as an Error.
+  reserved 3;
+  reserved "current";
+
+  ErrorCode code = 1;
+  string message = 2;
+  optional uint32 retry_after_s = 4;
+}
+
+// ---- Device identity and sessions ----
+
+enum DeviceKind {
+  DEVICE_KIND_UNSPECIFIED = 0;
+  DEVICE_KIND_PHONE = 1;
+  DEVICE_KIND_MAC = 2;
+}
+
+message Attestation {
+  oneof kind {
+    AppAttest app_attest = 1;                     // register; login after a lost App Attest key
+    AppAttestAssertion app_attest_assertion = 2;  // login
+  }
+  // 3: play_integrity (Android), not accepted yet.
+  reserved 3;
+}
+
+message AppAttest {
+  bytes key_id = 1;
+  bytes attestation_object = 2;
+}
+
+message AppAttestAssertion {
+  bytes assertion = 1;
+}
+
+message RegisterDevice {
+  DeviceKind device_kind = 1;
+  bytes auth_pub = 2;
+  // The registration nonce from GetChallenge{purpose: REGISTER}.
+  bytes nonce = 3;
+  Attestation attestation = 4;
+  // Ed25519 signature by auth_pub over the register clientDataHash; proves possession of the key.
+  bytes signature = 5;
+}
+
+message DeviceRegistered {
+  string device_id = 1;
+  // The phone's relay account: StoreKit 2 purchases use it as appAccountToken. Set for phones (also
+  // on an idempotent re-register), empty for Macs.
+  string account_id = 2;
+}
+
+enum ChallengePurpose {
+  // Zero is LOGIN on purpose: an old client that sends no purpose gets today's login nonce.
+  // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+  CHALLENGE_PURPOSE_LOGIN = 0;
+  CHALLENGE_PURPOSE_REGISTER = 1;
+}
+
+message GetChallenge {
+  string device_id = 1;
+  ChallengePurpose purpose = 2;
+}
+
+message Challenge {
+  bytes nonce = 1;
+}
+
+message Login {
+  string device_id = 1;
+  bytes nonce = 2;
+  bytes signature = 3;
+  Attestation attestation = 4;
+}
+
+message Session {
+  string token = 1;
+  int64 expires_at_ms = 2;
+}
+
+message Subscribe {
+  repeated string zones = 1;
+}
+
+// ---- Slots and pairing ----
+
+message AddMacSlot {
+  // Field 1 was phone_device_id: the phone is always the session's device.
+  reserved 1;
+  reserved "phone_device_id";
+
+  string mac_device_id = 2;
+}
+
+message RemoveMacSlot {
+  string phone_device_id = 1;
+  string mac_device_id = 2;
+}
+
+message OpenPairingSlot {
+  string mac_device_id = 1;
+}
+
+message PairingSlot {
+  string slot_id = 1;
+  int64 expires_at_ms = 2;
+}
+
+message ClosePairingSlot {
+  string slot_id = 1;
+}
+
+message PromotePairing {
+  string slot_id = 1;
+}
+
+message SetHubReaders {
+  repeated string phone_device_ids = 1;
+}
+
+// ---- Attachments ----
+
+message CreateUpload {
+  string zone = 1;
+  uint64 size = 2;
+}
+
+message Upload {
+  string attachment_id = 1;
+  string url = 2;
+  int64 expires_at_ms = 3;
+  map<string, string> headers = 4;
+}
+
+message GetDownload {
+  string zone = 1;
+  string attachment_id = 2;
+}
+
+message Download {
+  string url = 1;
+  int64 expires_at_ms = 2;
+}
+
+// ---- Push and alerts ----
+
+enum PushEnv {
+  PUSH_ENV_UNSPECIFIED = 0;
+  PUSH_ENV_SANDBOX = 1;
+  PUSH_ENV_PRODUCTION = 2;
+}
+
+message RegisterPushToken {
+  string token = 1;
+  PushEnv env = 2;
+}
+
+message SendAlert {
+  string phone_device_id = 1;
+  bytes envelope = 2;
+}
+
+// ---- Entitlement ----
+
+message SubmitTransaction {
+  string signed_transaction = 1;
+}
+
+enum EntitlementKind {
+  ENTITLEMENT_KIND_UNSPECIFIED = 0;
+  ENTITLEMENT_KIND_NONE = 1;
+  ENTITLEMENT_KIND_ACTIVE = 2;
+  ENTITLEMENT_KIND_GRACE = 3;
+  ENTITLEMENT_KIND_EXPIRED = 4;
+  ENTITLEMENT_KIND_REVOKED = 5;
+}
+
+message EntitlementState {
+  EntitlementKind state = 1;
+  int64 until_ms = 2;
+}
+
+// ---- Account state ----
+
+// GetAccountState reads the caller's account state. Nothing is pushed on connect: clients call it
+// after (re)connecting and on Control events that change the account.
+message GetAccountState {}
+
+message AccountState {
+  // Phone sessions: the account's entitlement.
+  EntitlementState entitlement = 1;
+  // Phone sessions: the subscription moved to another phone (Control SUBSCRIPTION_MOVED) and this
+  // account has not linked a subscription since.
+  bool moved = 2;
+  // Phone sessions: the Macs in the account's slots, sorted.
+  repeated string mac_device_ids = 3;
+  // Mac sessions: the phones whose accounts hold this Mac in a slot, sorted by phone_device_id.
+  repeated SlotHolder phones = 4;
+}
+
+message SlotHolder {
+  string phone_device_id = 1;
+  // The phone's account is active or in grace: the Mac may write for it.
+  bool paying = 2;
+}

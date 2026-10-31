@@ -2,7 +2,7 @@
 
 import PackageDescription
 
-// Four products (mobile POC spec §2.1):
+// Products (mobile POC spec §2.1; the hosted relay client, #1239):
 // - WatchtowerSync: the model-free sync core (Sync, CloudKitTransport, the
 //   Relay payloads and coder, ReplicaStore, ReplicaHydrator). The Desktop
 //   executable target takes this one of the Kit's sync products only.
@@ -14,6 +14,14 @@ import PackageDescription
 // - WatchtowerE2ETesting: a test hub and a test phone sharing one pairing
 //   (F25). Linked ONLY by test targets (the Kit's, the Desktop's and the
 //   phone's); no app or extension target links it.
+// - WatchtowerHostedRelay: the hosted relay client, on the generated wire
+//   types of its WatchtowerRelayProto target (relay.proto pinned in
+//   Sources/WatchtowerRelayProto/VERSION, `make relay-proto`).
+// - WatchtowerHostedRelayTesting: the fake relay the client's tests and the
+//   phone's tests run on.
+//   These hosted relay products are linked by the phone only (R3): the
+//   Desktop never links them, and WatchtowerSync/WatchtowerKit never import
+//   SwiftProtobuf, the proto or DeviceCheck (SeamBoundaryTests).
 let package = Package(
     name: "WatchtowerKit",
     platforms: [
@@ -25,6 +33,7 @@ let package = Package(
         .library(name: "WatchtowerKit", targets: ["WatchtowerKit"]),
         .library(name: "WatchtowerDesign", targets: ["WatchtowerDesign"]),
         .library(name: "WatchtowerE2ETesting", targets: ["WatchtowerE2ETesting"]),
+        .library(name: "WatchtowerHostedRelay", targets: ["WatchtowerHostedRelay"]),
     ],
     dependencies: [
         // GRDB linked against SQLCipher.swift (#603): our fork, pinned exactly.
@@ -32,6 +41,10 @@ let package = Package(
         // URL and tag (SPM allows one GRDB in the graph), and the SQLCipher
         // version moves in lockstep with internal/sqlcipher/VERSION.
         .package(url: "https://github.com/aiwatchtowers/GRDB.swift", exact: "7.11.1-sqlcipher.2"),
+        // The hosted relay's wire types (#1239). Its protoc-gen-swift
+        // generated Sources/WatchtowerRelayProto/relay.pb.swift: moving this
+        // pin means `make relay-proto` again (VERSION line 2 must match).
+        .package(url: "https://github.com/apple/swift-protobuf", exact: "1.39.0"),
     ],
     targets: [
         .target(
@@ -51,6 +64,31 @@ let package = Package(
         .target(
             name: "WatchtowerE2ETesting",
             dependencies: ["WatchtowerSync"]
+        ),
+        .target(
+            name: "WatchtowerRelayProto",
+            dependencies: [
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ],
+            exclude: ["relay.proto", "VERSION"]
+        ),
+        .target(
+            name: "WatchtowerHostedRelay",
+            dependencies: [
+                "WatchtowerSync",
+                "WatchtowerRelayProto",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ]
+        ),
+        .testTarget(
+            name: "WatchtowerHostedRelayTests",
+            dependencies: [
+                "WatchtowerHostedRelay",
+                "WatchtowerRelayProto",
+                "WatchtowerSync",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
         ),
         .testTarget(
             name: "WatchtowerSyncTests",
