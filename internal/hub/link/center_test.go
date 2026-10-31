@@ -1041,24 +1041,36 @@ func TestPublishCallbackMayReadKeyboxes(t *testing.T) {
 		}
 		reads++
 	}
+	// The pairing runs here; a watchdog only waits. A deadlock never returns,
+	// so the watchdog ends the run with a panic naming it.
 	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		defer close(done)
-		a, b := newPhone(t), newPhone(t)
-		code := r.issue()
-		r.handle(a, code.Nonce)
-		r.handle(b, code.Nonce)
-		_ = r.c.Confirm(b.id.String(), "", false)
-		_ = r.c.Confirm(a.id.String(), r.code(a), true)
-		_ = r.c.Allow(a.id.String(), GrantTyping, true)
-		_ = r.c.Unlink(a.id.String())
-		r.advance(time.Hour)
-		_ = r.c.Sweep()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			panic("TestPublishCallbackMayReadKeyboxes: a Publish callback reading Keyboxes deadlocked")
+		}
 	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("a Publish callback reading Keyboxes deadlocked")
+	a, b := newPhone(t), newPhone(t)
+	code := r.issue()
+	r.handle(a, code.Nonce)
+	r.handle(b, code.Nonce)
+	if err := r.c.Confirm(b.id.String(), "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.Allow(a.id.String(), GrantTyping, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.Unlink(a.id.String()); err != nil {
+		t.Fatal(err)
+	}
+	r.advance(time.Hour)
+	if err := r.c.Sweep(); err != nil {
+		t.Fatal(err)
 	}
 	if reads < 6 {
 		t.Errorf("published %d times", reads)
