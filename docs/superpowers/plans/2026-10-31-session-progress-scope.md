@@ -157,10 +157,10 @@ Rules (spec "Rule"): target valid **and on the board** → progress = its subtre
 - Consumes: CLI from Task 5; `WorkbenchBoardOutline.rows`/nodes for the board tree.
 - Produces: `enum SessionTargetMenu { static let title = "Session Target"; static let noneTitle = "None — Count What It Touched"; static func failureLine(_ error: String) -> String; static func items(roots: [WorkbenchBoardNode], current: Int64?) -> [Item] }` where `Item` = `.none(checked: Bool)` | `.target(id: Int64, title: String, checked: Bool, children: [Item])`; archived and dismissed targets left out; a group's first child item is the group itself (as in **Move to…**).
 
-- [ ] **Step 1:** Failing tests in `SessionTargetMenuTests`: strings exact; `items` checks `none` when `current == nil`; checks the current target; omits dismissed/archived; group carries itself first. Plus a view-model test (next to the existing `WorkbenchesViewModel` tests with a stub CLI runner): a non-zero exit sets `sessionTargetError == SessionTargetMenu.failureLine(<stderr>)`; success clears it.
-- [ ] **Step 2:** `make test-swift FILTER=SessionTargetMenuTests` → FAIL.
+- [ ] **Step 1:** Failing tests in `SessionTargetMenuTests`: strings exact; `items` checks `none` when `current == nil`; checks the current target; omits dismissed/archived; group carries itself first. Plus a view-model test class `WorkbenchesViewModelSessionTargetTests` (next to the existing `WorkbenchesViewModel` tests, with their stub CLI runner): a non-zero exit sets `sessionTargetError == SessionTargetMenu.failureLine(<stderr>)`; success clears it.
+- [ ] **Step 2:** `make test-swift FILTER='SessionTargetMenuTests|WorkbenchesViewModelSessionTargetTests'` → FAIL.
 - [ ] **Step 3:** Implement model + menu wiring.
-- [ ] **Step 4:** `make test-swift FILTER=SessionTargetMenuTests` → PASS; `make lint-swift` clean.
+- [ ] **Step 4:** `make test-swift FILTER='SessionTargetMenuTests|WorkbenchesViewModelSessionTargetTests'` → PASS; `make lint-swift` clean.
 - [ ] **Step 5:** Commit `feat(desktop): Session Target submenu on the session row (board #1352)`.
 
 ### Final: gate + review
