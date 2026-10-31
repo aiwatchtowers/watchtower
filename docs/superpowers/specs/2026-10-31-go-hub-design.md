@@ -196,6 +196,7 @@ New or changed screens get mockups in `docs/design/mockups/go-hub/` before their
 - Desktop Settings → Mobile rebuilt over the daemon: the phone list with transport per phone (RC's mockup `docs/design/mockups/relay-client/index.html` on branch `feature/relay-client` is the base; it reaches main with that branch), "Mobile is run by a newer Watchtower", the adoption error state, the hand-over in progress.
 - Phone: a headless hub in the hub switcher (hostname), "This hub needs Relay", a hub without recording (record button hidden, with a one-line reason in the hub's info), "A free phone can't link this hub" before scanning.
 - Desktop in-app notice at the first launch of the Go-hub release (when a v1 host holds sessions): "Running sessions restart once with this update; their conversations continue" + **Continue**.
+- Desktop workspace switcher: "N sessions wait to resume" on a workspace whose sessions are still in the restart list (§8 p. 4b).
 - Terminal (headless host): `hub pair` output — QR, waiting line, SAS prompt, success and each refusal.
 
 ### 12.3 What existing phones notice
