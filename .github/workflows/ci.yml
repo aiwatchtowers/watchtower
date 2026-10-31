@@ -221,6 +221,12 @@ jobs:
         timeout-minutes: 25
         run: make test-cover
 
+      # The headless hub smoke test, live mode on linux/amd64 (build tag smoke,
+      # so the coverage run above never includes it).
+      - name: Hub smoke test
+        timeout-minutes: 10
+        run: make hub-smoke
+
   # The Go hub on linux/arm64 (a Raspberry Pi; Go hub phase 2, Task 2): the
   # build and the packages a headless host leans on, on a native arm64 runner
   # (the cgo SQLCipher build cannot cross-compile). The tarballs themselves
@@ -248,7 +254,10 @@ jobs:
       - name: Test (hub, session host)
         run: go test ./internal/hub/... ./internal/sessionhost/... ./internal/sessionstart/...
 
-      # The Linux hub smoke test (`make hub-smoke`) goes here as one more step.
+      # The headless hub smoke test, live mode on linux/arm64.
+      - name: Hub smoke test
+        timeout-minutes: 10
+        run: make hub-smoke
 
   # The race pass, split across three parallel jobs: grown past one job's
   # budget (2026-10-19: ~7.7k CPU-s on a 4-vCPU runner, the 40-minute step
