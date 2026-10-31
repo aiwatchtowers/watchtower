@@ -300,6 +300,9 @@ type supervisor struct {
 	// running hub; starting and stopping take it for writing.
 	hubMu sync.RWMutex
 	hub   *hubRuntime
+	// offlineMu runs the offline link decisions (no hub runs) one at a
+	// time, as the running hub's center does.
+	offlineMu sync.Mutex
 
 	// Only Run's goroutine touches these.
 	nextStart time.Time

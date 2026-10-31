@@ -45,6 +45,12 @@ const (
 	OpDisable = "disable"
 	OpPair    = "pair"
 	OpConfirm = "confirm"
+	// Desktop's own writes (spec §8 p. 4a): the hub writes them, so the
+	// sidecar keeps one writer while a hub runs. The CLI refuses them under
+	// an agent marker; the socket is the owner's alone (0600, peer uid).
+	OpDesktopHeartbeat = "desktop_heartbeat"
+	OpRecordingClaim   = "recording_claim"
+	OpRecordingFinish  = "recording_finish"
 )
 
 // The error classes a ControlAnswer carries.
@@ -57,19 +63,27 @@ const (
 	ErrClassNoCode       = "no_code"
 	ErrClassNoRequest    = "no_request"
 	ErrClassCodeChanged  = "code_changed"
+	ErrClassNoIdentity   = "no_identity"
+	ErrClassNoJob        = "no_job"
+	ErrClassJobState     = "job_state"
 	ErrClassFailed       = "failed"
 )
 
 // ControlRequest is one request on the control socket. Device names a phone
 // (unlink, allow, confirm), Grant a link.Grant (allow) with On, Name the
-// hub's display name (name), Confirm the owner's answer (confirm).
+// hub's display name (name), Confirm the owner's answer (confirm); Upload a
+// recording job (recording_claim, recording_finish) with TranscriptID or
+// ErrorClass (a class, never text) for its finish.
 type ControlRequest struct {
-	Op      string `json:"op"`
-	Device  string `json:"device,omitempty"`
-	Grant   string `json:"grant,omitempty"`
-	Name    string `json:"name,omitempty"`
-	On      bool   `json:"on,omitempty"`
-	Confirm bool   `json:"confirm,omitempty"`
+	Op           string `json:"op"`
+	Device       string `json:"device,omitempty"`
+	Grant        string `json:"grant,omitempty"`
+	Name         string `json:"name,omitempty"`
+	On           bool   `json:"on,omitempty"`
+	Confirm      bool   `json:"confirm,omitempty"`
+	Upload       string `json:"upload,omitempty"`
+	TranscriptID *int64 `json:"transcript_id,omitempty"`
+	ErrorClass   string `json:"error_class,omitempty"`
 }
 
 // ControlAnswer is one line from the hub: the answer to a request (Op set,
@@ -89,6 +103,12 @@ type ControlAnswer struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	Code      string     `json:"code,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
+	// At is when a desktop heartbeat was written; UploadID, Status and
+	// TranscriptID a recording job after a claim or finish.
+	At           *time.Time `json:"at,omitempty"`
+	UploadID     string     `json:"upload_id,omitempty"`
+	Status       string     `json:"status,omitempty"`
+	TranscriptID *int64     `json:"transcript_id,omitempty"`
 }
 
 // serveControl listens on <dir>/hub.sock until the returned stop is called
@@ -317,7 +337,8 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 
 // opClass is a request's op for a log line (an unknown op is not echoed).
 func opClass(op string) string {
-	for _, known := range []string{OpUnlink, OpAllow, OpName, OpEnable, OpDisable, OpPair, OpConfirm} {
+	for _, known := range []string{OpUnlink, OpAllow, OpName, OpEnable, OpDisable, OpPair, OpConfirm,
+		OpDesktopHeartbeat, OpRecordingClaim, OpRecordingFinish} {
 		if op == known {
 			return known
 		}
@@ -342,10 +363,74 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		}
 		s.poke()
 		return ControlAnswer{OK: true, Name: name}
-	case OpUnlink, OpAllow, OpPair, OpConfirm:
+	case OpUnlink, OpAllow:
+		return s.withHubOr(func(h *hubRuntime) ControlAnswer { return h.handle(r, pl) }, func() ControlAnswer { return s.offlineLink(r) })
+	case OpPair, OpConfirm:
 		return s.withHub(func(h *hubRuntime) ControlAnswer { return h.handle(r, pl) })
+	case OpDesktopHeartbeat:
+		now := s.o.Clock()
+		if err := s.st.Heartbeat(now); err != nil {
+			return ControlAnswer{Error: ErrClassFailed}
+		}
+		s.poke()
+		return ControlAnswer{OK: true, At: &now}
+	case OpRecordingClaim, OpRecordingFinish:
+		return s.recordingJob(r)
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}
+}
+
+// recordingJob claims or finishes a recording job for Desktop.
+func (s *supervisor) recordingJob(r ControlRequest) ControlAnswer {
+	if r.Upload == "" {
+		return ControlAnswer{Error: ErrClassBadRequest}
+	}
+	var (
+		job state.RecordingJob
+		err error
+	)
+	if r.Op == OpRecordingClaim {
+		job, err = s.st.ClaimRecording(r.Upload, s.o.Clock())
+	} else {
+		if (r.TranscriptID == nil) == (r.ErrorClass == "") {
+			return ControlAnswer{Error: ErrClassBadRequest}
+		}
+		job, err = s.st.FinishRecording(r.Upload, r.TranscriptID, r.ErrorClass, s.o.Clock())
+	}
+	switch {
+	case errors.Is(err, state.ErrNoRecordingJob):
+		return ControlAnswer{Error: ErrClassNoJob}
+	case errors.Is(err, state.ErrJobState):
+		return ControlAnswer{Error: ErrClassJobState}
+	case err != nil:
+		return ControlAnswer{Error: ErrClassFailed}
+	}
+	s.poke()
+	return ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}
+}
+
+// offlineLink is unlink or allow while the lock holder runs no hub
+// (disabled, policy off, starting): the offline link decisions on the
+// supervisor's own store, so the sidecar still has one writer. Called with
+// hubMu held, so no hub starts meanwhile.
+func (s *supervisor) offlineLink(r ControlRequest) ControlAnswer {
+	if r.Device == "" {
+		return ControlAnswer{Error: ErrClassBadRequest}
+	}
+	device := strings.ToUpper(r.Device)
+	s.offlineMu.Lock()
+	defer s.offlineMu.Unlock()
+	if r.Op == OpUnlink {
+		if err := UnlinkOffline(s.o.Dir, s.st, device, s.o.Clock); err != nil {
+			return ControlAnswer{Error: LinkErrClass(err)}
+		}
+		return ControlAnswer{OK: true, DeviceID: device}
+	}
+	if err := AllowOffline(s.st, device, link.Grant(r.Grant), r.On, s.o.Clock); err != nil {
+		return ControlAnswer{Error: LinkErrClass(err)}
+	}
+	on := r.On
+	return ControlAnswer{OK: true, DeviceID: device, Grant: r.Grant, Allowed: &on}
 }
 
 // setEnabled flips hub_meta.enabled; turning it on is refused while the
@@ -379,6 +464,17 @@ func (s *supervisor) withHub(fn func(*hubRuntime) ControlAnswer) ControlAnswer {
 	return fn(s.hub)
 }
 
+// withHubOr runs fn on the running hub, or off when none runs, holding
+// hubMu throughout so a hub never starts in the middle of off.
+func (s *supervisor) withHubOr(fn func(*hubRuntime) ControlAnswer, off func() ControlAnswer) ControlAnswer {
+	s.hubMu.RLock()
+	defer s.hubMu.RUnlock()
+	if s.hub == nil {
+		return off()
+	}
+	return fn(s.hub)
+}
+
 // handle runs a request that needs the running hub.
 func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 	switch r.Op {
@@ -387,7 +483,7 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 			return ControlAnswer{Error: ErrClassBadRequest}
 		}
 		if err := h.center.Unlink(r.Device); err != nil {
-			return ControlAnswer{Error: linkErrClass(err)}
+			return ControlAnswer{Error: LinkErrClass(err)}
 		}
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
 	case OpAllow:
@@ -395,7 +491,7 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 			return ControlAnswer{Error: ErrClassBadRequest}
 		}
 		if err := h.center.Allow(r.Device, link.Grant(r.Grant), r.On); err != nil {
-			return ControlAnswer{Error: linkErrClass(err)}
+			return ControlAnswer{Error: LinkErrClass(err)}
 		}
 		on := r.On
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device), Grant: r.Grant, Allowed: &on}
@@ -414,16 +510,19 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 			return ControlAnswer{Error: ErrClassNoCode}
 		}
 		if err := h.center.Confirm(r.Device, code, r.Confirm); err != nil {
-			return ControlAnswer{Error: linkErrClass(err)}
+			return ControlAnswer{Error: LinkErrClass(err)}
 		}
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}
 }
 
-// linkErrClass maps a link error to its answer class.
-func linkErrClass(err error) string {
+// LinkErrClass maps a link error to its answer class (the CLI's offline
+// path words its refusals through it too).
+func LinkErrClass(err error) string {
 	switch {
+	case errors.Is(err, ErrIdentityMissing):
+		return ErrClassNoIdentity
 	case errors.Is(err, state.ErrNoDevice):
 		return ErrClassNoDevice
 	case errors.Is(err, link.ErrUnknownGrant):
@@ -477,6 +576,10 @@ func (c *ControlClient) Do(r ControlRequest) (ControlAnswer, error) {
 		}
 	}
 }
+
+// SetReadDeadline bounds the wait of Next and Do (zero: no bound); a read
+// past it fails with a net.Error whose Timeout() is true.
+func (c *ControlClient) SetReadDeadline(t time.Time) error { return c.c.SetReadDeadline(t) }
 
 // Close closes the connection.
 func (c *ControlClient) Close() error { return c.c.Close() }
