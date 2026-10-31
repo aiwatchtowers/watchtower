@@ -199,7 +199,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
 
     /// A socket event: a zone change is a pull of that zone (R9; the connection sends a
     /// record-less one per zone after every connect, so a reconnect pulls both), a connect
-    /// reads the account state, controls and refusals go to `relayEvents`.
+    /// reads the account state and flushes the plain queue, controls and refusals go to
+    /// `relayEvents`.
     func handle(_ event: HostedRelayClientEvent) async {
         switch event {
         case .zoneChanged(let zone, _):
@@ -216,6 +217,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         case .connected:
             setReachable(true)
             await readAccountState()
+            // Rows queued while the socket was down go out now (the flush is single-flight).
+            await sendNow()
         case .disconnected:
             setReachable(false)
         case .stopped(let error):

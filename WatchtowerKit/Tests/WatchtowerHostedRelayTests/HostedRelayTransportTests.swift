@@ -976,4 +976,19 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         await eventually { log.relayEvents.filter { $0 == .entitlementInactive }.count >= 3 }
         XCTAssertEqual(log.relayEvents.filter { $0 == .entitlementInactive }.count, 3, "none, expired and revoked only")
     }
+
+    // MARK: - Whole-branch review
+
+    /// A row queued while the socket cannot be dialed goes out when it connects, with no
+    /// `sendNow()`, `pull()` or `start()` after the save.
+    func testAConnectFlushesTheQueue() async throws {
+        let (mac, phone) = try await hub()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: TransportStore.inMemory())
+        try relay.refuseNextDial(status: 503, times: 2)
+        await transport.start()
+        XCTAssertFalse(try opNames().contains("subscribe"), "no socket yet")
+
+        try await transport.save([mailboxRecord("queued")])
+        await eventually { (try? self.savedNames()) == [["queued"]] }
+    }
 }
