@@ -174,6 +174,9 @@ The phone/Kit side (relay client spec, `feature/relay-client`) and the Go hub me
 - **Vouching** (§7.2): the phone sends `vouch_hub` after the SAS confirmation and before `promote_pairing` (new link) or before `add_slot` (upgraded link); a refusal (`ATTESTATION_*`, slot limit) keeps the hub off the relay and shows the server's reason.
 - **Action and control records**: RC §5 (record names `a-<action_seq>`, `c-<uuid>`, echo statuses, control kinds) and sim rules 1–16, unchanged.
 - **Alerts**: `send_alert` with the sealed `ask_alert` per paying phone, opened by the NSE under the wire name `alert-push` (RC §10).
+- **Unknown fields are ignored.** A phone that predates vouching sees `relay_device_id`/`relay_auth_pub`/`transports` in `device_grant` and ignores them (today's JSON decoding already drops unknown keys; a Kit test pins it). The hub never counts itself on the relay, and never stops publishing to CloudKit, until the server reports it vouched and in an active slot.
+- **One shared fixture.** `device_grant` and `LinkPayload` v4 bytes are pinned by one JSON fixture in the repo (like `policy_cases.json`), read by a Kit test and a Go test: each case gives the payload and the expected decoded fields, including the ignore-unknown cases above. The Go hub plan's first task creates it; the relay client spec consumes it.
+- The `vouch_hub` bytes and error codes come from the relay repository (§15 p. 1) and are copied into both specs once fixed there.
 
 ## 13. Testing
 
