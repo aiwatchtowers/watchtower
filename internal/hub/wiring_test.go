@@ -319,7 +319,8 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 	var mu sync.Mutex
 	networkRuns := 0
 	o := Options{
-		DB: d,
+		DB:        d,
+		runnerGap: 200 * time.Millisecond,
 		reportFetch: func(ctx context.Context, _, sessionID int64, network bool) (sessionreport.Report, error) {
 			select {
 			case <-reportGate.release:
@@ -378,11 +379,11 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 		t.Fatalf("workbench records %d", len(workbench))
 	}
 
-	// The runners keep a 5 s minimum gap between two passes (the Swift
-	// HubRunnerWake), so a request right after a pass runs ≤ 5 s later; the
-	// publish then follows within the debounce — far under the 60 s
-	// hubslices.FullDiffEvery the result waited for before.
-	const prompt = 10 * time.Second
+	// The runners' minimum gap between passes (5 s in production, the Swift
+	// HubRunnerWake) is 200 ms here, so a request right after a pass runs
+	// soon; the publish then follows within the debounce — far under the
+	// 60 s hubslices.FullDiffEvery the result waited for before.
+	const prompt = 3 * time.Second
 	reportGate.open()
 	eventually(t, prompt, "the first report published", func() bool { return len(hashes("session_report")) == 1 })
 	first := hashes("session_report")

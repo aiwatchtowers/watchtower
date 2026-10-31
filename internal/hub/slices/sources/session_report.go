@@ -91,6 +91,9 @@ type SessionReportOptions struct {
 	Active    func() bool
 	Now       func() time.Time
 	OnChange  func()
+	// MinimumGap (0 = the standard 5 s) is a test seam: the least time
+	// between two passes a signal starts.
+	MinimumGap time.Duration
 }
 
 // SessionReportRunner keeps the session reports of the `session_report`
@@ -185,7 +188,7 @@ func SessionReport(d *db.DB, o SessionReportOptions) (*SessionReportRunner, erro
 		}
 	}
 	return &SessionReportRunner{
-		d: d, o: o, wake: newRunnerWake(),
+		d: d, o: o, wake: newRunnerWake(o.MinimumGap),
 		summaries: newCadence[map[int64]ReportSummary](o.Timing.SummaryEvery, o.Timing.SummarySpacing),
 		entries:   map[int64]*reportEntry{}, lastText: map[int64]string{},
 	}, nil

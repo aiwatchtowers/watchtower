@@ -142,6 +142,7 @@ type Options struct {
 	reportFetch  sources.ReportFetch // nil = the in-process report
 	gitFetch     sources.GitFetch    // nil = the in-process git status
 	laneBackstop time.Duration       // 0 = laneBackstop
+	runnerGap    time.Duration       // 0 = the runners' standard 5 s
 	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
 }
 

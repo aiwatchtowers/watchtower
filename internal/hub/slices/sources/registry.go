@@ -51,8 +51,11 @@ type Config struct {
 	// ReportFetch and GitFetch (nil = the in-process reads) are test seams.
 	ReportFetch ReportFetch
 	GitFetch    GitFetch
-	Now         func() time.Time
-	Location    *time.Location
+	// RunnerGap (0 = the standard 5 s) is a test seam: the report runner's
+	// and the git refresher's minimum gap between two passes.
+	RunnerGap time.Duration
+	Now       func() time.Time
+	Location  *time.Location
 }
 
 // Set is the hub's sources and what the runtime must start and tell.
@@ -137,7 +140,7 @@ func All(c Config) (*Set, error) {
 		now = time.Now
 	}
 
-	git := NewGitRefresher(c.DB, GitRefresherOptions{Active: c.Active, Now: now, OnChange: c.OnGitChange, Fetch: c.GitFetch})
+	git := NewGitRefresher(c.DB, GitRefresherOptions{Active: c.Active, Now: now, OnChange: c.OnGitChange, Fetch: c.GitFetch, MinimumGap: c.RunnerGap})
 	var report *SessionReportRunner
 	sessions := TerminalSessions(c.DB, TerminalSessionOptions{
 		Liveness: c.Live,
@@ -149,7 +152,7 @@ func All(c Config) (*Set, error) {
 		},
 		Now: now,
 	})
-	report, err := SessionReport(c.DB, SessionReportOptions{Sessions: sessions, Store: c.Store, Sealer: c.Sealer, Active: c.Active, Now: now, OnChange: c.OnReportChange, Fetch: c.ReportFetch})
+	report, err := SessionReport(c.DB, SessionReportOptions{Sessions: sessions, Store: c.Store, Sealer: c.Sealer, Active: c.Active, Now: now, OnChange: c.OnReportChange, Fetch: c.ReportFetch, MinimumGap: c.RunnerGap})
 	if err != nil {
 		return nil, err
 	}
