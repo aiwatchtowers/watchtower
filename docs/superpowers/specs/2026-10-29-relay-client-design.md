@@ -133,6 +133,7 @@ Implemented exactly as sim rules 8–16 (they change only together, relay spec �
 
 - **Kit, public CI:** a Swift port of the sim scenarios against `FakeHostedRelay` (in-memory server: zones, `record_seq`, conditional writes, mailbox ACL, controls, TTL with a fake clock) and against `InMemoryCloudTransport` extended with change tags — every sim test name gets a Swift twin with the same name (`TestGapTriggersResendFrom` → `testGapTriggersResendFrom`), so the two rule sets stay comparable. Login signing and `relay_device_id` pinned by vectors generated with the Go client.
 - **Interop with the real relay server:** locally through `make relay-interop RELAY=../relay` (starts the relay's local stand under `wrangler dev`, as the relay's own `go test -tags interop` does; needs Node, §12), and in the relay repository's CI building the Kit's client (ask #734). Public Watchtower CI never needs the private repo.
+- **Kit ↔ Go hub:** one shared JSON fixture for `device_grant` and `LinkPayload` v4 (like `policy_cases.json`), created by the Go hub plan's first task and read by a Kit test and a Go test; a Kit test pins that a phone without vouching ignores the new fields. The hub keeps publishing over CloudKit until the server confirms it is vouched and in an active slot (Go hub spec §12a).
 - **Phone/Desktop:** existing suites keep passing on CloudKit; new wiring tests per phase; one manual device check per phase that touches the phone.
 
 ## 12. What we need from the relay repository (relay session)
