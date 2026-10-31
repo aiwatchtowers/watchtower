@@ -187,7 +187,8 @@ func codexScript(codex devpack.LaunchArgs, m Mode) string {
 	return path + strings.Join(words, " ")
 }
 
-// ShellQuote is POSIX single quotes, with a `'` inside written `'\”`.
+// ShellQuote wraps v in POSIX single quotes; each single quote inside is
+// written as quote, backslash, quote, quote (the shell idiom for a quote).
 func ShellQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
 }
