@@ -712,10 +712,13 @@ final class AppRoot {
     }
 
     /// Outbox items still waiting for the Mac: what a removal loses besides
-    /// recordings it could not keep ("Not sent").
-    private static func pendingActionCount(_ session: HubSession) -> Int {
+    /// recordings it could not keep ("Not sent"). An ordered action is one
+    /// while `queued` (not written) or `sent` (no final answer yet).
+    static func pendingActionCount(_ session: HubSession) -> Int {
         do {
-            return try session.store.pendingActions().filter { $0.state == .pending }.count
+            return try session.store.pendingActions().filter {
+                $0.state == .pending || $0.delivery == .queued || $0.delivery == .sent
+            }.count
         } catch {
             logger.error("not-sent count failed: \(error.localizedDescription, privacy: .public)")
             return 0

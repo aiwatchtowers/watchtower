@@ -276,7 +276,7 @@ extension ReplicaStore {
     }
 
     /// Waiting to send (`queued`) and Not delivered (`undelivered`) counts.
-    func outboxCounts(from db: Database) throws -> (queued: Int, undelivered: Int) {
+    public func outboxCounts(from db: Database) throws -> (queued: Int, undelivered: Int) {
         let row = try Row.fetchOne(
             db,
             sql: """
@@ -303,7 +303,8 @@ extension ReplicaStore {
     }
 
     /// Dismiss All: removes every Not delivered row; returns how many went.
-    func dismissAllUndelivered() throws -> Int {
+    @discardableResult
+    public func dismissAllUndelivered() throws -> Int {
         try writer.write { db in
             try db.execute(sql: "DELETE FROM pending_actions WHERE delivery = 'undelivered'")
             return db.changesCount
