@@ -39,9 +39,9 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 
 - **Branch rule (owner, 2026-10-31):** all Go hub work branches from `feature/go-hub` and merges into it; one PR goes from `feature/go-hub` to `main` when all four phases are done. Each task branch here starts from `feature/go-hub`.
 - **E2E red line for pushes:** the only bytes the hub hands `send_alert` are a `secure.Push` built by `Sealer.AlertPush`; `transport.Alerts.SendAlert` accepts no other type. No plaintext preview, title or count goes in any request field — the relay's own `"Watchtower"` placeholder is the only visible text.
-- **Push size:** relay `MAX_PAYLOAD_BYTES = 4096`, body overhead 67 bytes, base64 → envelope ≤ **3021** bytes. `AlertPush` pads the frame to the **1 KiB** bucket (envelope 68 + 1024 + 16 + 64 = 1172 bytes) and, when the payload does not fit that bucket, clips `body`, then `title`, on rune boundaries with `…` until it does; `WorkAlertPayload` keys and every other field stay as they are. The data-zone `ask_alert` record is not clipped (decided by agent; Needs owner decision 2).
-- **At most once per (alert key, phone):** a ledger row is written `pending` before the request and settled after; a row found `pending` at hub start is settled `expired` and never resent (decided by agent; Needs owner decision 1).
-- **Freshness window** `alerts.Freshness = 5 * time.Minute` from the alert's first save: retries (`RATE_LIMITED` after `retry_after_s`, default 1 s, capped 60 s; `transport.ErrUnavailable` after the client's own 30 s, on the next connect) stop at its end with outcome `expired`.
+- **Push size:** relay `MAX_PAYLOAD_BYTES = 4096`, body overhead 67 bytes, base64 → envelope ≤ **3021** bytes. `AlertPush` pads the frame to the **1 KiB** bucket (envelope 68 + 1024 + 16 + 64 = 1172 bytes) and, when the payload does not fit that bucket, clips `body`, then `title`, on rune boundaries with `…` until it does; `WorkAlertPayload` keys and every other field stay as they are. The data-zone `ask_alert` record is not clipped (owner, ask #864).
+- **At most once per (alert key, phone):** a ledger row is written `pending` before the request and settled after; a row found `pending` at hub start is settled `expired` and never resent (owner, ask #864).
+- **Freshness window** `alerts.Freshness = 5 * time.Minute` from the alert's first save (owner, ask #864): retries (`RATE_LIMITED` after `retry_after_s`, default 1 s, capped 60 s; `transport.ErrUnavailable` after the client's own 30 s, on the next connect) stop at its end with outcome `expired`.
 - **Outcome classes** (ledger `outcome`, Desktop and logs): `sent | no_token | not_paying | forbidden | push_off | too_large | expired | failed`. Mapping from the relay at `3a99bd7`: `NOT_FOUND` → `no_token`; `ENTITLEMENT_INACTIVE` → `not_paying` (and one account-state refresh); `FORBIDDEN` → `forbidden`; `RECORD_TOO_LARGE` → `too_large` (a bug: logged once); `ERROR_CODE_UNSPECIFIED` with message `not implemented` → `push_off`; any other `UNSPECIFIED` → `failed`; `RATE_LIMITED`/`TRAFFIC_LIMIT_EXCEEDED` → retry; nothing else retried.
 - **No hub-side rate limit** beyond the relay's (token bucket per device, `MAX_ALERTS_PER_PHONE = 4` in flight, oldest cancelled): the work-alert policy already sends one push per stop and only while the owner is away. One sender goroutine per phone; the publisher never waits on a push (buffered queue, 64 per phone; overflow → `expired`).
 - **Measurements** (RC §10): sidecar table `latency_samples` holds `at`, `transport` (`cloudkit|relay`), `step` (`read_applied|applied_saved`), `ms` — nothing else; kept 7 days and at most **20 000** rows (pruned once a minute). Only actions applied on first read count (a held action measures the phone's gap, not the hub). An applied action with no slice save within 60 s leaves no `applied_saved` sample. Percentiles: nearest rank over the window. Nothing leaves the device.
@@ -384,14 +384,17 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - [ ] **Step 3:** Subscription lapsed on the phone → `not_paying`, no push, the free-phone line on Desktop.
 - [ ] **Step 4:** Diagnostics on both sides after a day of use; the phone's end-to-end p50 on a good network < 500 ms (RC §1), recorded in the PR without ids.
 
-## Needs owner decision
+## Decisions (owner, ask #864)
 
-1. **At-most-once pushes.** A push left `pending` by a crash is settled `expired` and never resent, so a crash at the wrong moment loses that one notification (the alert record still reaches the phone's replica). The alternative, at-least-once, could show the same alert twice. Decided by agent: at most once.
-2. **Clipping for the push only.** An alert whose text would push the envelope past the 4096-byte APNs limit has its body, then its title, shortened with "…" in the **push**; the `ask_alert` record in the data zone keeps the full capped text. Decided by agent.
-3. **5-minute freshness window.** A push not delivered within 5 minutes of the alert's first save (rate limit, relay outage) is dropped as `expired`, never sent late. Decided by agent.
-4. **Indicators beyond the RC §10 list:** "Notifications aren't set up on this iPhone. Open Watchtower on it once." (from `NOT_FOUND`), "Relay has no notifications configured." (from `not implemented`), and the Diagnostics line "This Mac's part alone is over the 500 ms goal." Decided by agent; each can be dropped without touching the hub.
-5. **What a sample counts.** Only actions applied on first read, 7 days, at most 20 000 rows, no sample when no slice was saved within 60 s. Decided by agent (RC §10 fixes only "content-free, on the device, p50/p90 per transport").
-6. **Protocol status text.** §4.8's relay paragraph and §11 item 5 move from "Proposed, not built" to "hub half built (phase 4)"; no wire change. Needs only the owner's acknowledgement.
+1. **At-most-once pushes.** A push left `pending` by a crash is settled `expired` and never resent; the alert record still reaches the phone's replica.
+2. **5-minute freshness window.** A push not delivered within 5 minutes of the alert's first save (rate limit, relay outage) is dropped as `expired`, never sent late.
+3. **Clipping for the push only.** An alert that would push the envelope past the 4096-byte APNs limit has its body, then its title, shortened with "…" in the push; the `ask_alert` record in the data zone keeps the full capped text.
+4. **The three extra indicators:** "Notifications aren't set up on this iPhone. Open Watchtower on it once." (from `NOT_FOUND`), "Relay has no notifications configured." (from `not implemented`), and the Diagnostics line "This Mac's part alone is over the 500 ms goal."
+
+Decided by agent:
+
+5. **What a sample counts.** Only actions applied on first read; kept 7 days, at most 20 000 rows; no sample when no slice was saved within 60 s (RC §10 fixes only "content-free, on the device, p50/p90 per transport").
+6. **Protocol status text.** §4.8's relay paragraph and §11 item 5 move from "Proposed, not built" to "hub half built (phase 4)"; no wire change.
 
 No inventory contract changes: no `docs/inventory/` entry covers `ask_alert`, pushes or the hub's diagnostics; PROJ-16/21 and FEED-* are untouched.
 
