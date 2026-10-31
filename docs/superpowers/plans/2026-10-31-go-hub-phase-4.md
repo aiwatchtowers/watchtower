@@ -82,7 +82,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
 - Modify: `docs/design/mockups/go-hub/index.html` (Phase 3 Task 3's page)
 
 **Interfaces:**
-- Produces: sections with the exact copy of Global Constraints "Pinned copy": Settings → Mobile hub block (Connected, Relay unavailable, hub storage full, mailbox full, Relay has no notifications configured), phone rows (subscribed, free phone on a relay hub, undelivered count, notifications not set up), each in empty / loading / error with **Retry** / busy / narrow; Settings → Mobile → Diagnostics (table step × transport × p50/p90/samples; empty "No timings yet…", loading, error with **Retry**, busy refresh, narrow; the over-goal line). Base: `docs/design/mockups/relay-client/index.html` sections 1–2 (on `feature/relay-client`).
+- Produces: sections with the exact copy of Global Constraints "Pinned copy": Settings → Mobile hub block (Connected, Relay unavailable, hub storage full "(5 GB)", mailbox full, Relay has no notifications configured), phone rows (subscribed, free phone on a relay hub, "On this Mac's side, N actions from this phone are not applied yet." in singular and plural, notifications not set up, "Last alert: sent to relay"), each in empty / loading / error with **Retry** / busy / narrow; Settings → Mobile → Diagnostics (table step × transport × p50/p90/samples with all three rows — "Phone action read → applied", "Applied → slice saved", "Phone action read → slice saved" (`read_saved`); empty "No timings yet…", loading, error with **Retry**, busy refresh, narrow; the over-goal line "This Mac's part alone is over the 500 ms goal."; the overflow line "N alerts were dropped because too many were waiting." in singular and plural). Every state listed here has a DesignShot in Task 8 or 9. Base: `docs/design/mockups/relay-client/index.html` sections 1–2 (on `feature/relay-client`).
 - **Depends on:** Task 0
 
 - [ ] **Step 1:** Add the sections; open the page locally and check light/dark and 600 px width.
@@ -172,6 +172,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   func (s *Store) SettleAlertPush(key, device, outcome, reason string, attempts int, at time.Time) error
   func (s *Store) ExpirePendingAlertPushes(at time.Time) (int, error)            // at hub start, reason restart
   func (s *Store) AlertPushOverflows(since time.Time) (int, error)               // expired with reason overflow
+  func (s *Store) AcceptedAlertPushes(keys []string) (map[string]map[string]bool, error) // key → device → accepted (Resignal)
   func (s *Store) LastAlertOutcomes(since time.Time) (map[string]string, error)  // device → newest settled outcome
   func (s *Store) PruneAlertPushes(before time.Time) error                       // 7 days, with the alert lifetime
   package alerts
@@ -212,13 +213,16 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   // Config gains: OnAlertSaved func(key string, fields secure.WorkAlertFields, savedAt time.Time)
   // called once per alert key after its first successful save, only while the active transport is the relay;
   // on CloudKit the signal path (Phase 3) runs instead. Republishes and rotations never call it.
-  func (p *Publisher) Resignal(keys []string) // on a switch to CloudKit: for each key whose alert is still in the work-alert window,
-  //   save its ask_alert record on CloudKit and write its sig- signal as for a first save (once per key)
+  func (p *Publisher) Resignal(keys []string) // on a switch to CloudKit: (a) re-checks owner-away first and writes nothing when
+  //   the owner is back; (b) drops every (key, phone) pair whose push the ledger shows `accepted` (contract point 3 holds across
+  //   the switch); (c) for a key still in the work-alert window that some linked phone has not received, saves its ask_alert
+  //   record on CloudKit and writes its sig- signal as for a first save (once per key); a key every phone received is skipped
+  //   (a CloudKit signal fires for every phone of the zone, so it is written only when at least one phone lacks the alert)
   ```
   The runtime's switch hook (toward CloudKit) calls `Pusher.Abandon("switched")`, then `Publisher.Resignal` with the returned keys.
 - **Depends on:** Task 4
 
-- [ ] **Step 1: Failing tests:** `TestFirstSaveOfAnAlertEnqueuesAPushOnRelay`, `TestRepublishAndRotationNeverPushAgain`, `TestNoSendAlertOnCloudKit` (and no signal on the relay, Phase 3's test stays green), `TestSwitchToCloudKitStopsQueuedPushes` (Review Focus 5), `TestSwitchToCloudKitResignalsOpenQueuedAlerts` (two queued alerts, one resolved before the switch → one `sig-` signal on CloudKit for the open one, none for the resolved one, both pushes `expired`/`switched`), `TestRateLimitedBurstNeverBlocksPublishing` (Review Focus 4: ten alerts, relay answers `RATE_LIMITED` 30 s; the next slice save still happens within the 150 ms spacing), `TestAccountRefreshUpdatesTargets` (a phone becomes paying after a `Control` → the next alert reaches it), `TestE2ECanary_AlertPushCarriesNoPlaintext` (canary markers in workbench name/title/body; the fake relay's captured `send_alert` frames contain none; the envelope opens with the alert key to the marker), interop (`make relay-interop RELAY=../relay`): `TestInterop_SendAlertOnTheLocalStandIsPushOff` (outcome `push_off`, no retry).
+- [ ] **Step 1: Failing tests:** `TestFirstSaveOfAnAlertEnqueuesAPushOnRelay`, `TestRepublishAndRotationNeverPushAgain`, `TestNoSendAlertOnCloudKit` (and no signal on the relay, Phase 3's test stays green), `TestSwitchToCloudKitStopsQueuedPushes` (Review Focus 5), `TestSwitchToCloudKitResignalsOpenQueuedAlerts` (two queued alerts, one resolved before the switch → one `sig-` signal on CloudKit for the open one, none for the resolved one, both pushes `expired`/`switched`), `TestResignalWritesNothingWhenOwnerIsBack` (away at enqueue, back at the switch → no record, no signal), `TestResignalSkipsAlertsEveryPhoneAlreadyHad` (key accepted for both phones → no signal; accepted for one of two → one signal, and the ledger keeps the accepted row so that phone is never pushed again), `TestRateLimitedBurstNeverBlocksPublishing` (Review Focus 4: ten alerts, relay answers `RATE_LIMITED` 30 s; the next slice save still happens within the 150 ms spacing), `TestAccountRefreshUpdatesTargets` (a phone becomes paying after a `Control` → the next alert reaches it), `TestE2ECanary_AlertPushCarriesNoPlaintext` (canary markers in workbench name/title/body; the fake relay's captured `send_alert` frames contain none; the envelope opens with the alert key to the marker), interop (`make relay-interop RELAY=../relay`): `TestInterop_SendAlertOnTheLocalStandIsPushOff` (outcome `push_off`, no retry).
 - [ ] **Step 2:** `go test ./internal/hub/... -run 'Alert|Push|SendAlert'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** → PASS; `make relay-interop RELAY=../relay` once; `make lint-diff`.
@@ -315,7 +319,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   ```
 - **Depends on:** Task 1 (mockup approved), Task 7
 
-- [ ] **Step 1: DesignShots** (light/dark): `mobileSettingsRelayConnected`, `mobileSettingsRelayUnavailable`, `mobileSettingsQuotaFull`, `mobileSettingsFreePhoneOnRelay`, `mobileSettingsUndelivered`, `mobileSettingsNotificationsMissing`, each also narrow; the existing empty/loading/error/busy shots updated with the hub block.
+- [ ] **Step 1: DesignShots** (light/dark): `mobileSettingsRelayConnected`, `mobileSettingsRelayUnavailable`, `mobileSettingsQuotaFull`, `mobileSettingsFreePhoneOnRelay`, `mobileSettingsUndelivered` (the "On this Mac's side…" line, singular and plural), `mobileSettingsNotificationsMissing`, `mobileSettingsAlertAccepted` ("Last alert: sent to relay"), each also narrow; the existing empty/loading/error/busy shots updated with the hub block.
 - [ ] **Step 2: Failing tests:** `testDecodesRelayHealthAndPayingPhones`, `testFreePhoneOnRelayLine` (`paying: false` on a relay hub → the line naming the phone; on CloudKit → none), `testUndeliveredSingularPlural` (1, 3), `testUndeliveredLineSaysThisMacsSide` (exact text, never "not delivered"), `testAcceptedReadsSentToRelay`, `testNoTokenLine`, `testRelayUnavailableMinutes` (since 2 min 30 s → "2 min"), `testQuotaLines` (hub text verbatim with "(5 GB)"), `testPushOffLineWhenAllPhonesPushOff`, `testWatchStatusEventRefreshesLines`, `testEveryUIStringLivesInTheModel`.
 - [ ] **Step 3:** `make test-swift FILTER='MobileSettingsModelTests|HubControlClientTests'` → FAIL.
 - [ ] **Step 4: Implement.**
@@ -347,7 +351,7 @@ All Global Constraints of Plans 1a, 1b, 2 and 3 hold (byte compatibility, zone b
   Durations format: < 1 s as "38 ms", else "2.1 s".
 - **Depends on:** Task 1 (mockup approved), Task 7
 
-- [ ] **Step 1: DesignShots** (light/dark): `mobileDiagnosticsRows` (relay and iCloud rows), `mobileDiagnosticsEmpty`, `mobileDiagnosticsLoading`, `mobileDiagnosticsError` (with **Retry**), `mobileDiagnosticsBusy` (refresh in flight over rows), `mobileDiagnosticsNarrow`, `mobileDiagnosticsOverGoal`, `mobileDiagnosticsOverflow`.
+- [ ] **Step 1: DesignShots** (light/dark): `mobileDiagnosticsRows` (relay and iCloud rows, all three steps including "Phone action read → slice saved"), `mobileDiagnosticsEmpty`, `mobileDiagnosticsLoading`, `mobileDiagnosticsError` (with **Retry**), `mobileDiagnosticsBusy` (refresh in flight over rows), `mobileDiagnosticsNarrow`, `mobileDiagnosticsOverGoal`, `mobileDiagnosticsOverflow` (singular and plural); the over-goal and overflow shots also narrow.
 - [ ] **Step 2: Failing tests:** `testRowsFromPinnedJSON`, `testDurationFormatting`, `testEmptyWhenNoRows`, `testErrorThenRetryLoads`, `testOverGoalLineOnlyOnRelay`, `testOverGoalUsesTheTotalNotASumOfMedians` (read_applied p50 300 + applied_saved p50 300 but read_saved p50 450 → no line), `testOverflowLineSingularPlural`, `testEveryUIStringLivesInTheModel`.
 - [ ] **Step 3:** `make test-swift FILTER=MobileDiagnosticsModelTests` → FAIL.
 - [ ] **Step 4: Implement.**
@@ -407,7 +411,7 @@ Decided by agent (shown to the owner on the review, ask #866):
 6. **Protocol status text.** §4.8's relay paragraph and §11 item 5 move from "Proposed, not built" to "hub half built (phase 4)"; no wire change.
 7. **Push queue of 64 per phone;** overflow settles `expired` (reason `overflow`), and the overflow count is shown in Diagnostics.
 
-Review rulings (ask #866): queued pushes re-signalled on a switch to CloudKit; owner-away re-checked before every send; the pending row written at enqueue; `accepted` = accepted by the relay ("Sent to relay"); the 500 ms line from the per-action total; the undelivered count labelled "on this Mac's side"; the quota text verbatim from the mockup.
+Review rulings (ask #866): queued pushes re-signalled on a switch to CloudKit; owner-away re-checked before every send; the pending row written at enqueue; `accepted` = accepted by the relay ("Sent to relay"); the 500 ms line from the per-action total; the undelivered count labelled "on this Mac's side"; the quota text verbatim from the mockup. Round 2 (ask #869): `Resignal` re-checks owner-away and skips (key, phone) pairs already `accepted`; Task 1 lists every new state and string, each with a DesignShot.
 
 No inventory contract changes: no `docs/inventory/` entry covers `ask_alert`, pushes or the hub's diagnostics; PROJ-16/21 and FEED-* are untouched.
 
