@@ -252,7 +252,7 @@ final class ReplicaOutboxTests: XCTestCase {
         let phone = try makePhone()
         let controls = (1...3).map { index in
             QueuedControl(
-                id: "C\(index)", kind: "skip_to", wireName: "w\(index)", envelope: Data([UInt8(index)]),
+                id: "C\(index)", kind: .skipTo, wireName: "w\(index)", envelope: Data([UInt8(index)]),
                 queuedAt: base.addingTimeInterval(Double(index)))
         }
         // Inserted out of their id order: the queue keeps insertion order.
@@ -368,7 +368,7 @@ final class ReplicaOutboxTests: XCTestCase {
             XCTAssertTrue(try phone.store.orderedActionsEnabled())
             try await insertOrdered(2, phone)
             try phone.store.enqueueControl(QueuedControl(
-                id: "C1", kind: "skip_to", wireName: "w", envelope: Data([1]), queuedAt: base))
+                id: "C1", kind: .skipTo, wireName: "w", envelope: Data([1]), queuedAt: base))
             XCTAssertTrue(try phone.store.markControlHandled(id: "H1", at: base))
         }
         try await DatabaseQueue(path: path).write { db in
