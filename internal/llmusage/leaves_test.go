@@ -56,6 +56,7 @@ var knownNonLLMExec = map[string]string{
 	"planusage.DefaultCredentialSource":  "security find-generic-password (the Claude Code token)",
 	"sessioncleanup.runCommand":          "ps / lsof",
 	"sessionhost.Ensure":                 "starts the watchtower session-host process (no model call)",
+	"cmd.workbenchSessionFinishSpawn":    "starts the detached `workbench session finish` that places and launches a session (no model call)",
 	"sessionhost.startSession":           "the owner's interactive PTY, measured by agentlog",
 }
 
