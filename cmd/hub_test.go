@@ -5,7 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/state"
@@ -139,10 +142,11 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	out, err := runHub(t, "status", "--json")
 	require.NoError(t, err)
 	m := decodeKeys(t, out)
-	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings"}, hubKeysOf(m))
+	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings", "host", "mode"}, hubKeysOf(m))
 	assert.Equal(t, hub.StateOff, m["state"])
 	assert.Equal(t, "", m["reason"])
 	assert.Equal(t, dir, m["dir"])
+	assert.Equal(t, string(hub.ModeTest), m["mode"])
 
 	// The daemon's hub would refuse this workspace before writing a status:
 	// status says so itself.
@@ -154,6 +158,137 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	out, err = runHub(t, "status", "--json")
 	require.NoError(t, err)
 	assert.Equal(t, hub.ReasonNotTestWorkspace, decodeKeys(t, out)["reason"])
+}
+
+// hubLiveCLI is a CLI run with no WATCHTOWER_HUB_DIR on a host p: a short
+// fresh HOME (the live dir's control socket must fit sockaddr_un), a config
+// file, no relay origin, no policy and no agent marker. It returns the live
+// hub dir and the config path.
+func hubLiveCLI(t *testing.T, p hostkind.Probe) (live, cfgPath string) {
+	t.Helper()
+	base, err := os.MkdirTemp("/tmp", "hubv")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	t.Setenv("HOME", base)
+	t.Setenv(hubDirEnv, "")
+	t.Setenv(hub.EnvRelayOrigin, "")
+	for _, m := range agentEnvMarkers {
+		t.Setenv(m, "")
+	}
+	policytest.Set(t, nil)
+	origProbe, origConfig := hubProbe, flagConfig
+	hubProbe = func() hostkind.Probe { return p }
+	cfgPath = filepath.Join(base, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("active_workspace: acme\n"), 0o600))
+	flagConfig = cfgPath
+	t.Cleanup(func() { hubProbe, flagConfig = origProbe, origConfig })
+	live, err = hub.DefaultDir()
+	require.NoError(t, err)
+	return live, cfgPath
+}
+
+func linuxProbe() hostkind.Probe {
+	return hostkind.Probe{GOOS: "linux", Stat: os.Stat, ReadFile: os.ReadFile}
+}
+
+func TestHubStatusPrintsTheNoRelayOriginRemedy(t *testing.T) {
+	live, cfgPath := hubLiveCLI(t, linuxProbe())
+	setHubMeta(t, live, state.MetaEnabled, "1")
+	out, err := runHub(t, "status")
+	require.NoError(t, err)
+	assert.Contains(t, out, "hub: off (no_relay_origin)")
+	assert.Contains(t, out, "Set the relay: watchtower config set hub.relay_origin <origin>")
+
+	out, err = runHub(t, "status", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.Equal(t, hub.ReasonNoRelayOrigin, m["reason"])
+	assert.Equal(t, string(hub.ModeLive), m["mode"])
+	assert.Equal(t, string(hostkind.Headless), m["host"])
+	assert.Equal(t, live, m["dir"])
+
+	// Set, the remedy goes.
+	require.NoError(t, os.WriteFile(cfgPath, []byte("active_workspace: acme\nhub:\n  relay_origin: https://relay.example.com\n"), 0o600))
+	flagConfig = cfgPath // runHub reset the inherited --config flag to its default
+	out, err = runHub(t, "status")
+	require.NoError(t, err)
+	assert.NotContains(t, out, "Set the relay")
+	assert.NotContains(t, out, "no_relay_origin")
+}
+
+// TestHubCLIRefusesTheLiveDirOnADesktopHost is Review Focus 1 on the CLI: a
+// Mac with the app shows off/desktop_host, every other verb exits 1, and
+// nothing is created under the live dir.
+func TestHubCLIRefusesTheLiveDirOnADesktopHost(t *testing.T) {
+	desktop := hostkind.Probe{GOOS: "darwin", Stat: os.Stat, ReadFile: func(p string) ([]byte, error) {
+		if p == "/Applications/Watchtower.app/Contents/Info.plist" {
+			return []byte("<key>CFBundleIdentifier</key><string>" + hostkind.BundleID + "</string>"), nil
+		}
+		return nil, fs.ErrNotExist
+	}}
+	live, _ := hubLiveCLI(t, desktop)
+	out, err := runHub(t, "status", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.Equal(t, hub.StateOff, m["state"])
+	assert.Equal(t, hub.ReasonDesktopHost, m["reason"])
+	assert.Equal(t, string(hostkind.Desktop), m["host"])
+	assert.Equal(t, "", m["dir"])
+	for _, args := range [][]string{
+		{"enable"}, {"disable"}, {"phones"}, {"name", "acme"}, {"unlink", "X"}, {"allow", "X", "typing"}, {"pair", "--json", "--stream"},
+	} {
+		_, err := runHub(t, args...)
+		require.Error(t, err, "%v", args)
+		assert.Equal(t, "Mobile on this Mac is run by the Watchtower app.", err.Error(), "%v", args)
+	}
+	_, err = os.Stat(live)
+	assert.True(t, errors.Is(err, fs.ErrNotExist), "the live dir was created on a desktop host")
+}
+
+func TestHubEnableCreatesTheLiveDirOnAHeadlessHost(t *testing.T) {
+	live, _ := hubLiveCLI(t, linuxProbe())
+	out, err := runHub(t, "status", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, hub.ReasonDisabled, decodeKeys(t, out)["reason"])
+	_, err = os.Stat(live)
+	require.True(t, errors.Is(err, fs.ErrNotExist), "status created the live dir")
+
+	_, err = runHub(t, "enable")
+	require.NoError(t, err)
+	fi, err := os.Stat(live)
+	require.NoError(t, err)
+	assert.True(t, fi.IsDir())
+	assert.Equal(t, os.FileMode(0o700), fi.Mode().Perm())
+	assert.Equal(t, "1", hubMeta(t, live, state.MetaEnabled))
+}
+
+func TestHubEnableOnAnUnwritableDataRootFails(t *testing.T) {
+	live, _ := hubLiveCLI(t, linuxProbe())
+	root := filepath.Dir(live)
+	require.NoError(t, os.MkdirAll(root, 0o700))
+	require.NoError(t, os.Chmod(root, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	before := hubTree(t, home)
+
+	_, err = runHub(t, "enable")
+	require.Error(t, err)
+	assert.Equal(t, before, hubTree(t, home), "a failed enable wrote something")
+}
+
+// hubTree is every path under root.
+func hubTree(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	require.NoError(t, filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		out = append(out, path)
+		return nil
+	}))
+	return out
 }
 
 func TestHubPhonesJSONKeys(t *testing.T) {

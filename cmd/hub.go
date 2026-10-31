@@ -3,18 +3,18 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/config"
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/state"
 )
 
-// hubDirEnv names the hub state dir; phase 1 has no default (the live
-// app-support folder is phase 3's), so every hub verb needs it.
+// hubDirEnv names the test-mode hub state dir; unset, the verbs work in the
+// live hub's dir on a headless host (hub.Dir).
 const hubDirEnv = hub.EnvHubDir
 
 // hubCmd is the `watchtower hub …` parent (Go hub spec §10). This file holds
@@ -37,13 +37,21 @@ var hubLockWait = 3 * time.Second
 // that goes through the running hub never calls it).
 var hubOpenState = state.Open
 
-// hubDir is WATCHTOWER_HUB_DIR, required by every hub verb in phase 1.
+// hubProbe is this host's probe (a test seam).
+var hubProbe = hostkind.System
+
+// errHubDesktopHost is every verb's refusal but status' on a Mac whose
+// mobile link the Watchtower app runs (hub.ErrDesktopHost).
+var errHubDesktopHost = errors.New("Mobile on this Mac is run by the Watchtower app.") //nolint:staticcheck // ST1005: the owner's sentence
+
+// hubDir is the dir every hub verb works in: WATCHTOWER_HUB_DIR (test mode),
+// else the live hub's dir on a headless host; refused on a desktop host.
 func hubDir() (string, error) {
-	dir := os.Getenv(hubDirEnv)
-	if dir == "" {
-		return "", fmt.Errorf("%s is not set: the hub verbs need a hub state dir in this phase", hubDirEnv)
+	dir, _, err := hub.Dir(hubProbe())
+	if errors.Is(err, hub.ErrDesktopHost) {
+		return "", errHubDesktopHost
 	}
-	return dir, nil
+	return dir, err
 }
 
 // hubWrite runs one write so the sidecar never has two writers: with the
@@ -122,14 +130,13 @@ func hubAnswerError(a hub.ControlAnswer) error {
 	return fmt.Errorf("the hub refused the request (%s)", a.Error)
 }
 
-// hubTestWorkspaceOK is hub.FromEnv's workspace check, which the daemon's
-// hub passes before it writes anything: false means a hub started now would
-// be refused not_test_workspace, a reason no status file ever carries.
-func hubTestWorkspaceOK() bool {
+// hubOffReason is the reason the daemon's hub in mode would stay off before
+// it writes any status (hub.OffReason: not_test_workspace, disabled,
+// policy_off, no_relay_origin), a reason no status file carries.
+func hubOffReason(mode hub.Mode) string {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		cfg = nil
 	}
-	_, _, err = hub.FromEnv(cfg, nil)
-	return !errors.Is(err, hub.ErrNotTestWorkspace)
+	return hub.OffReason(cfg, mode)
 }

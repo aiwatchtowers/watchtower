@@ -424,6 +424,7 @@ type Config struct {
 	DB               DBConfig                    `mapstructure:"db"`
 	Workbench        WorkbenchConfig             `mapstructure:"workbench"`
 	Privacy          PrivacyConfig               `mapstructure:"privacy"`
+	Hub              HubConfig                   `mapstructure:"hub"`
 	ClaudePath       string                      `mapstructure:"claude_path"`
 	CodexPath        string                      `mapstructure:"codex_path"`
 
@@ -435,6 +436,14 @@ type Config struct {
 	// data directory at all, so ValidateWorkspace reports that instead of
 	// mistaking an unreadable directory for a fresh install.
 	workspaceLookupErr error
+}
+
+// HubConfig holds the Go hub's settings (Go hub phase 2).
+type HubConfig struct {
+	// RelayOrigin is the relay a live headless hub connects to
+	// (https://host[:port]); it overrides the build's default origin, and
+	// WATCHTOWER_RELAY_ORIGIN overrides it (hub.RelayOrigin). "" = unset.
+	RelayOrigin string `mapstructure:"relay_origin"`
 }
 
 // PrivacyConfig holds the owner's privacy switches.

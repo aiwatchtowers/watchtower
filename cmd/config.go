@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
+	"watchtower/internal/hub"
 	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
@@ -274,6 +275,7 @@ var knownConfigKeys = map[string]bool{
 	"jira.enabled":                         true,
 	"transcripts.audio_retention_days":     true,
 	"features.migrated":                    true,
+	"hub.relay_origin":                     true,
 }
 
 // retiredConfigKeys were once accepted but nothing reads them any more;
@@ -304,6 +306,14 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	if strings.ToLower(key) == "workbench.default_agent" && !agentkind.IsAgent(value) {
 		return fmt.Errorf("workbench.default_agent must be %s or %s, got %q; nothing was written",
 			agentkind.Claude, agentkind.Codex, value)
+	}
+
+	// A live hub would stay off on a malformed relay origin; "" unsets it
+	// (the build's default applies again).
+	if strings.ToLower(key) == "hub.relay_origin" && value != "" {
+		if err := hub.CheckRelayOrigin(value); err != nil {
+			return fmt.Errorf("hub.relay_origin: %w, got %q; nothing was written", err, value)
+		}
 	}
 
 	// A provider or agent the organization's policy forbids is refused
