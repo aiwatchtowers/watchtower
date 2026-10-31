@@ -8,6 +8,8 @@ import WatchtowerHostedRelay
 public final class ManualRelayClock: RelayClock, @unchecked Sendable {
     private struct Sleeper {
         let deadline: Date
+        /// What the sleep asked for.
+        let duration: TimeInterval
         let continuation: CheckedContinuation<Void, any Error>
     }
 
@@ -34,14 +36,33 @@ public final class ManualRelayClock: RelayClock, @unchecked Sendable {
 
     /// Moves the clock and resumes every sleep whose deadline it reached.
     public func advance(by duration: Duration) {
+        advance { $0.addingTimeInterval(Self.seconds(duration)) }
+    }
+
+    /// Sets the clock to `move(now)` (never back) and resumes every sleep whose deadline it reached.
+    private func advance(_ move: (Date) -> Date) {
         let due: [Sleeper] = state.withLock { state in
-            state.now = state.now.addingTimeInterval(Self.seconds(duration))
+            state.now = max(state.now, move(state.now))
             let now = state.now
             let ready = state.sleepers.filter { $0.value.deadline <= now }
             for id in ready.keys { state.sleepers[id] = nil }
             return ready.sorted { $0.value.deadline < $1.value.deadline }.map(\.value)
         }
         for sleeper in due { sleeper.continuation.resume() }
+    }
+
+    /// Moves the clock to the earliest deadline among the sleeps that asked for less than
+    /// `limit` (a reconnect wait or a backoff, not a ping interval or a timeout) and resumes
+    /// what is due. False when no such sleep waits: the clock does not move.
+    @discardableResult
+    public func advanceToNextSleeper(shorterThan limit: Duration) -> Bool {
+        let bound = Self.seconds(limit)
+        let next: Date? = state.withLock { state in
+            state.sleepers.values.filter { $0.duration < bound }.map(\.deadline).min()
+        }
+        guard let next else { return false }
+        advance { _ in next }
+        return true
     }
 
     /// Suspends until at least `count` sleeps are waiting, so a test can
@@ -63,7 +84,7 @@ public final class ManualRelayClock: RelayClock, @unchecked Sendable {
                 let resumeNow: Bool = state.withLock { state in
                     let deadline = state.now.addingTimeInterval(Self.seconds(duration))
                     if deadline <= state.now { return true }
-                    state.sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
+                    state.sleepers[id] = Sleeper(deadline: deadline, duration: Self.seconds(duration), continuation: continuation)
                     return false
                 }
                 if resumeNow { return continuation.resume() }

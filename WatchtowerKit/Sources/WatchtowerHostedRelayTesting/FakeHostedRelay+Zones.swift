@@ -39,15 +39,23 @@ extension FakeHostedRelay {
         var lastSeq: UInt64 = 0
         /// The highest purged tombstone's seq: a token below it is `TOKEN_EXPIRED`.
         var floorSeq: UInt64 = 0
+        struct Attachment {
+            let size: Int
+            /// The upload URL's expiry: a PUT after it is refused.
+            let writableUntil: Date
+            /// Set by the first save that references it, once its bytes are uploaded with the declared size.
+            var committed = false
+        }
+
         var records: [String: Record] = [:]
-        /// Live attachments: id → size.
-        var attachments: [String: Int] = [:]
+        /// Live attachments, committed or not.
+        var attachments: [String: Attachment] = [:]
         /// Data zone only: the phones its Mac lets read (`set_hub_readers`).
         var readers: Set<String> = []
 
         /// Bytes toward the quota: live envelopes plus attachments.
         var usage: Int {
-            records.values.filter { !$0.deleted }.reduce(0) { $0 + $1.envelope.count } + attachments.values.reduce(0, +)
+            records.values.filter { !$0.deleted }.reduce(0) { $0 + $1.envelope.count } + attachments.values.reduce(0) { $0 + $1.size }
         }
 
         /// Tombstones `name` with a new seq (nothing for a missing record or a tombstone).
@@ -253,7 +261,7 @@ extension FakeHostedRelay {
         }
         let attachment = record.attachmentID.isEmpty ? nil : record.attachmentID
         if let attachment {
-            guard zone.attachments[attachment] != nil else { throw RelayFailure.notFound }
+            try commit(attachment, in: &zone)
             let held = zone.records.values.contains { !$0.deleted && $0.attachmentID == attachment && $0.name != record.name }
             if held { throw RelayFailure(.conflict, "conflict") }
         }
@@ -264,6 +272,20 @@ extension FakeHostedRelay {
         )
         if live, let old = current?.attachmentID, old != attachment { replaced.append(old) }
         return .saved
+    }
+
+    /// Worker `attachments.ts` `commit`: the bytes must be uploaded with the declared size
+    /// (other bytes are deleted); `NOT_FOUND` otherwise. Idempotent.
+    private func commit(_ attachmentID: String, in zone: inout Zone) throws {
+        guard var attachment = zone.attachments[attachmentID] else { throw RelayFailure.notFound }
+        if attachment.committed { return }
+        guard let bytes = state.blobs[attachmentID] else { throw RelayFailure.notFound }
+        guard bytes.count == attachment.size else {
+            state.blobs[attachmentID] = nil
+            throw RelayFailure.notFound
+        }
+        attachment.committed = true
+        zone.attachments[attachmentID] = attachment
     }
 
     // MARK: - Delete
@@ -333,7 +355,8 @@ extension FakeHostedRelay {
     // MARK: - Attachments and readers
 
     /// README: pair zones take no attachments (`FORBIDDEN`). The upload URL is
-    /// `<origin>/v1/blob/<id>`; the attachment counts toward the quota from now on.
+    /// `<origin>/v1/blob/<id>` (a PUT through `http`); the attachment counts toward the
+    /// quota from now on and is committed by the first save that references it.
     func createUpload(_ op: Relay_V1_CreateUpload, _ session: Session) throws -> Relay_V1_Response {
         let zone = try access(op.zone, session, .save)
         if case .pair = zone { throw RelayFailure.forbidden }
@@ -343,17 +366,19 @@ extension FakeHostedRelay {
         }
         try checkQuota(op.zone, zone, adding: Int(op.size))
         let id = Self.randomBytes(16).map { String(format: "%02x", $0) }.joined()
-        state.zones[op.zone, default: Zone()].attachments[id] = Int(op.size)
+        let expiry = now.addingTimeInterval(RelayTTL.presignedURL)
+        state.zones[op.zone, default: Zone()].attachments[id] = Zone.Attachment(size: Int(op.size), writableUntil: expiry)
         var response = Relay_V1_Response()
         response.upload.attachmentID = id
         response.upload.url = "\(origin)/v1/blob/\(id)"
-        response.upload.expiresAtMs = Self.ms(now.addingTimeInterval(RelayTTL.presignedURL))
+        response.upload.expiresAtMs = Self.ms(expiry)
         return response
     }
 
     func getDownload(_ op: Relay_V1_GetDownload, _ session: Session) throws -> Relay_V1_Response {
         try access(op.zone, session, .read)
-        guard state.zones[op.zone]?.attachments[op.attachmentID] != nil else { throw RelayFailure.notFound }
+        // Worker `downloadable`: committed and not dropped.
+        guard state.zones[op.zone]?.attachments[op.attachmentID]?.committed == true else { throw RelayFailure.notFound }
         var response = Relay_V1_Response()
         response.download.url = "\(origin)/v1/blob/\(op.attachmentID)"
         response.download.expiresAtMs = Self.ms(now.addingTimeInterval(RelayTTL.presignedURL))

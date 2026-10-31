@@ -7,9 +7,15 @@ import WatchtowerRelayProto
 /// README is silent, the Worker's code at that commit). Thread-safe (one lock);
 /// time from a `ManualRelayClock`, so TTLs run when the test advances it.
 ///
+/// The network seams (`http`, `sockets`, the blob store) are in `FakeHostedRelay+Network.swift`,
+/// the faults in `FakeHostedRelay+Faults.swift`.
+///
 /// Not modelled: rate limits, phone traffic, App Store transactions
 /// (`submit_transaction` answers "not implemented", as a stand without App
-/// Store keys does), push, blob uploads (Task 7), sockets and `ZoneChanged` (Task 7).
+/// Store keys does), push (`send_alert` checks its rules and answers `Ok`; a stand
+/// without an APNs key answers "not implemented" instead), the Hello timeout,
+/// session-expiry timers (an expired session ends a socket at its next frame or
+/// event, or through `expireSessions`), the attachment settle and orphan timers.
 public final class FakeHostedRelay: @unchecked Sendable {
     public enum AttestMode: Sendable, Equatable {
         /// README "Who must attest": every device attests, except the listed ones
@@ -39,7 +45,7 @@ public final class FakeHostedRelay: @unchecked Sendable {
     /// The server origin as configured (README: signed into the register and login hashes).
     public let origin: String
     let relayOrigin: RelayOrigin
-    let clock: ManualRelayClock
+    public let clock: ManualRelayClock
     private let lock = NSLock()
     /// Guarded by `lock`; only touched inside `locked`.
     var state: State
@@ -61,27 +67,40 @@ public final class FakeHostedRelay: @unchecked Sendable {
     /// README "HTTP status": 401 for `UNAUTHENTICATED`, 413 for a body over the record
     /// limit plus 64 KiB, 200 for everything else (protocol errors included).
     public func handle(_ request: Relay_V1_Request, bearer: String?) -> (status: Int, response: Relay_V1_Response) {
-        locked {
-            if let op = request.op { state.log.append(op) }
-            var response: Relay_V1_Response
-            var status = 200
-            let bodyBytes = (try? request.serializedData().count) ?? 0
-            if bodyBytes > state.limits.maxRecordBytes + Self.extraBodyBytes {
-                response = Self.failure(.recordTooLarge, "request too large")
-                status = 413
-            } else {
-                do {
-                    response = try run(request, bearer: bearer)
-                } catch let failure as RelayFailure {
-                    response = Self.failure(failure.code, failure.message)
-                } catch {
-                    response = Self.failure(.unspecified, "internal error")
-                }
+        locked { respond(request, bearer: bearer) }
+    }
+
+    /// `handle` with the lock held: a `failNext` fault first, then the op; a write's
+    /// change goes to the subscribed sockets (`fanOut`).
+    func respond(_ request: Relay_V1_Request, bearer: String?) -> (status: Int, response: Relay_V1_Response) {
+        if let op = request.op { state.log.append(op) }
+        var response: Relay_V1_Response
+        var status = 200
+        let bodyBytes = (try? request.serializedData().count) ?? 0
+        let before = zoneSeqs(request.op)
+        if let op = request.op, let code = takeFault(Self.name(op)) {
+            response = Self.failure(code, "injected fault")
+        } else if bodyBytes > state.limits.maxRecordBytes + Self.extraBodyBytes {
+            response = Self.failure(.recordTooLarge, "request too large")
+            status = 413
+        } else {
+            do {
+                response = try run(request, bearer: bearer)
+            } catch let failure as RelayFailure {
+                response = Self.failure(failure.code, failure.message)
+            } catch {
+                response = Self.failure(.unspecified, "internal error")
             }
-            response.id = request.id
-            if case .error(let error) = response.result, error.code == .unauthenticated { status = 401 }
-            return (status, response)
         }
+        response.id = request.id
+        if case .error(let error) = response.result, error.code == .unauthenticated { status = 401 }
+        fanOut(since: before)
+        return (status, response)
+    }
+
+    /// The op's case name (`save`, `createUpload`), as `failNext` names it.
+    static func name(_ op: Relay_V1_Request.OneOf_Op) -> String {
+        Mirror(reflecting: op).children.first?.label ?? "unknown"
     }
 
     /// Every op handled so far, in order (for assertions; never holds tokens).
@@ -193,11 +212,18 @@ public final class FakeHostedRelay: @unchecked Sendable {
         return Data((0..<count).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
     }
 
-    /// Queues a control for a device (README "Control events").
+    /// A control for a device (README "Control events"): on its socket past Hello when it has
+    /// one (Worker `ws.ts` `control`), else queued for `takeEvents`.
     func sendControl(_ kind: Relay_V1_ControlKind, _ detail: String, to deviceID: String) {
         var event = Relay_V1_Event()
         event.control.kind = kind
         event.control.detail = detail
+        if let socket = liveSocket(of: deviceID) {
+            var frame = Relay_V1_Frame()
+            frame.event = event
+            socket.deliver(frame)
+            return
+        }
         state.events[deviceID, default: []].append(event)
     }
 }
@@ -251,6 +277,11 @@ extension FakeHostedRelay {
         var accounts: [String: Account] = [:]
         var zones: [String: Zone] = [:]
         var events: [String: [Relay_V1_Event]] = [:]
+        /// Uploaded attachment bytes by attachment id (the Worker's R2 objects).
+        var blobs: [String: Data] = [:]
+        /// Open sockets, oldest first.
+        var sockets: [FakeRelaySocket] = []
+        var faults = Faults()
 
         init(attestMode: AttestMode) {
             self.attestMode = attestMode

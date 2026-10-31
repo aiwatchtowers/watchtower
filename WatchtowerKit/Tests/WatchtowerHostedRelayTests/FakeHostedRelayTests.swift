@@ -328,7 +328,7 @@ final class FakeHostedRelayTests: XCTestCase {
         XCTAssertEqual(try errorCode(relay, mac, uploadOp(zone, size: 0)), .unspecified)
         XCTAssertEqual(try errorCode(relay, mac, uploadOp(zone, size: UInt64(100 << 20) + 1)), .attachmentTooLarge)
         XCTAssertEqual(try errorCode(relay, phone, uploadOp(zone, size: 10)), .forbidden, "the phone cannot write the data zone")
-        let x = try upload(relay, mac, zone)
+        let x = try await upload(relay, mac, zone)
         XCTAssertEqual(x.url, "https://relay.example.com/v1/blob/\(x.attachmentID)")
         XCTAssertEqual(try errorCode(relay, mac, saveOp([item(zone, "a", "1", attachment: "missing")])), .notFound)
         _ = try saveResult(relay, mac, [item(zone, "a", "1", attachment: x.attachmentID)])
@@ -341,11 +341,110 @@ final class FakeHostedRelayTests: XCTestCase {
     func testAttachmentMovesBetweenRecordsInOneSave() async throws {
         let (relay, mac, _) = try await pairedWorld()
         let zone = "data/\(mac.id)"
-        let x = try upload(relay, mac, zone)
+        let x = try await upload(relay, mac, zone)
         _ = try saveResult(relay, mac, [item(zone, "a", "1", attachment: x.attachmentID)])
         let moved = try saveResult(relay, mac, [item(zone, "a", "2"), item(zone, "b", "3", attachment: x.attachmentID)])
         XCTAssertEqual(moved.saved.map(\.attachmentID), ["", x.attachmentID])
         XCTAssertNil(try errorCode(relay, mac, downloadOp(zone, x.attachmentID)), "b holds it, so it stays")
+    }
+
+    func testAttachmentCommitsOnlyAfterItsUpload() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        guard case .upload(let x) = try ok(relay, mac, uploadOp(zone, size: 4)).result else { return XCTFail("want an upload") }
+        let url = try XCTUnwrap(URL(string: x.url))
+        XCTAssertEqual(try errorCode(relay, mac, saveOp([item(zone, "a", "1", attachment: x.attachmentID)])), .notFound, "nothing uploaded yet")
+        let tooLong = try await relay.http.put(url, file: try file(Data("abcde".utf8)), headers: [:])
+        XCTAssertEqual(tooLong, 413)
+        let tooShort = try await relay.http.put(url, file: try file(Data("abc".utf8)), headers: [:])
+        XCTAssertEqual(tooShort, 400)
+        XCTAssertEqual(try errorCode(relay, phone, downloadOp(zone, x.attachmentID)), .notFound, "not committed")
+
+        let stored = try await relay.http.put(url, file: try file(Data("abcd".utf8)), headers: [:])
+        XCTAssertEqual(stored, 200)
+        _ = try saveResult(relay, mac, [item(zone, "a", "1", attachment: x.attachmentID)])
+        guard case .download(let download) = try ok(relay, phone, downloadOp(zone, x.attachmentID)).result else { return XCTFail("want a download") }
+        let out = try file(nil)
+        let tooSmall = try? await relay.http.get(try XCTUnwrap(URL(string: download.url)), to: out, maxBytes: 3, headers: [:])
+        XCTAssertNil(tooSmall, "past maxBytes")
+        let got = try await relay.http.get(try XCTUnwrap(URL(string: download.url)), to: out, maxBytes: 4, headers: [:])
+        XCTAssertEqual(got, 200)
+        XCTAssertEqual(try Data(contentsOf: out), Data("abcd".utf8))
+
+        _ = try saveResult(relay, mac, [item(zone, "a", "2")])
+        let gone = try await relay.http.get(url, to: try file(nil), maxBytes: 4, headers: [:])
+        XCTAssertEqual(gone, 404, "the overwrite dropped it")
+    }
+
+    // MARK: - Network seams
+
+    func testOpOverHTTPChecksTheProtocolVersion() async throws {
+        let relay = makeRelay()
+        let url = try XCTUnwrap(URL(string: "\(origin)/v1/op"))
+        let body = try request(.challenge(challengeOp(device(.phone, seed: 2), .register))).serializedData()
+        let missing = try await relay.http.post(url, body: body, headers: [:])
+        XCTAssertEqual(missing.status, 400)
+        XCTAssertEqual(code(try Relay_V1_Response(serializedBytes: missing.body)), .unsupportedVersion)
+        let fine = try await relay.http.post(url, body: body, headers: ["Relay-Protocol-Version": "1"])
+        XCTAssertEqual(fine.status, 200)
+        XCTAssertNil(code(try Relay_V1_Response(serializedBytes: fine.body)))
+        let unauthenticated = try await relay.http.post(
+            url, body: try request(.getAccountState(.init())).serializedData(), headers: ["Relay-Protocol-Version": "1"]
+        )
+        XCTAssertEqual(unauthenticated.status, 401)
+    }
+
+    func testSocketHelloSubscribeAndZoneEvents() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        let url = try XCTUnwrap(URL(string: "wss://relay.example.com/v1/ws"))
+        let bearer = ["Authorization": "Bearer \(phone.token)"]
+        do {
+            _ = try await relay.sockets.dial(url, headers: [:])
+            XCTFail("an upgrade without a token is refused")
+        } catch {
+            XCTAssertEqual(error as? RelayDialError, .http(status: 401))
+        }
+        let mismatched = try await relay.sockets.dial(url, headers: bearer)
+        try await mismatched.send(hello("another token"))
+        let refused = try await mismatched.receive()
+        XCTAssertEqual(refused, .closed(code: 4001))
+
+        let socket = try await relay.sockets.dial(url, headers: bearer)
+        try await socket.send(hello(phone.token))
+        guard case .helloOk = try await frame(socket).kind else { return XCTFail("want HelloOk") }
+        var subscribe = Relay_V1_Frame()
+        subscribe.request = request(.subscribe(Relay_V1_Subscribe.with { $0.zones = [zone] }))
+        try await socket.send(subscribe.serializedData())
+        let answer = try await frame(socket).response
+        XCTAssertEqual(answer.id, 7)
+        XCTAssertNil(code(answer))
+
+        _ = try saveResult(relay, mac, [item(zone, "small", "s")])
+        let small = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(small.seq, 1)
+        XCTAssertEqual(small.record.name, "small")
+        XCTAssertEqual(small.record.envelope, Data("s".utf8))
+        _ = try saveResult(relay, mac, [item(zone, "big", String(repeating: "b", count: (64 << 10) + 1))])
+        let big = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(big.seq, 2)
+        XCTAssertFalse(big.hasRecord, "over 64 KiB: no record inline")
+        _ = try saveResult(relay, mac, [item(zone, "x", "1"), item(zone, "y", "2")])
+        let two = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(two.seq, 4)
+        XCTAssertFalse(two.hasRecord, "two records: no record inline")
+
+        // A control goes to the live socket, not to the queue.
+        try await relay.setEntitlement(accountID: phone.accountID, state: "expired", for: .zero)
+        let expired = try await frame(socket).event.control
+        XCTAssertEqual(expired, control(.entitlementExpired, ""))
+        XCTAssertEqual(controls(relay, phone), [])
+
+        // A newer socket of the device displaces this one: GoingAway, then 1001.
+        _ = try await relay.sockets.dial(url, headers: bearer)
+        guard case .goingAway = try await frame(socket).kind else { return XCTFail("want GoingAway") }
+        let closed = try await socket.receive()
+        XCTAssertEqual(closed, .closed(code: 1001))
     }
 
     func testSendAlert() async throws {
@@ -773,9 +872,20 @@ final class FakeHostedRelayTests: XCTestCase {
         return .getDownload(download)
     }
 
-    private func upload(_ relay: FakeHostedRelay, _ device: Device, _ zone: String) throws -> Relay_V1_Upload {
+    /// An attachment of 10 bytes, created and uploaded.
+    private func upload(_ relay: FakeHostedRelay, _ device: Device, _ zone: String) async throws -> Relay_V1_Upload {
         guard case .upload(let upload) = try ok(relay, device, uploadOp(zone, size: 10)).result else { throw Failure.unexpected("not an upload") }
+        let status = try await relay.http.put(try XCTUnwrap(URL(string: upload.url)), file: try file(Data(repeating: 1, count: 10)), headers: [:])
+        XCTAssertEqual(status, 200)
         return upload
+    }
+
+    /// A temporary file holding `data` (nil data: none yet), removed after the test.
+    private func file(_ data: Data?) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("fake-relay-\(UUID().uuidString)")
+        if let data { try data.write(to: url) }
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
     }
 
     private func deleteItem(_ name: String, expectedSeq: UInt64? = nil) -> Relay_V1_DeleteItem {
@@ -804,6 +914,19 @@ final class FakeHostedRelayTests: XCTestCase {
         changes.sinceSeq = since
         changes.limit = limit
         return .changes(changes)
+    }
+
+    private func hello(_ token: String) throws -> Data {
+        var frame = Relay_V1_Frame()
+        frame.hello.protocolVersion = HostedRelay.protocolVersion
+        frame.hello.sessionToken = token
+        return try frame.serializedData()
+    }
+
+    /// The next frame on a fake socket (the fake queues it before the call returns).
+    private func frame(_ socket: any RelaySocket) async throws -> Relay_V1_Frame {
+        guard case .binary(let data) = try await socket.receive() else { throw Failure.unexpected("closed") }
+        return try Relay_V1_Frame(serializedBytes: data)
     }
 
     private func code(_ response: Relay_V1_Response) -> Relay_V1_ErrorCode? {
