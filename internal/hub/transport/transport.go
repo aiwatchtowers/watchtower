@@ -1,0 +1,148 @@
+// Package transport is the hub's neutral transport seam (spec §5, RC §3): the
+// record store under the sealer. Two implementations sit behind it — the
+// hosted relay (transport/relay) and, in a later phase, the CloudKit bridge —
+// plus the in-memory fake (transport/memfake) the hub's tests run on.
+//
+// Records are last-version only. A zone has a change feed (Changes) and a
+// change counter: on the hosted relay that counter is the zone's server_seq
+// and a record's RecordSeq is the server_seq of its last write; on CloudKit a
+// record's RecordSeq stands for its change tag, which is opaque — callers
+// compare it for equality only and never with a Changes cursor. Conditional
+// saves are part of Save (the spec's Conditional capability), paging is
+// Batch.More (Paged) and live events are Events (Live).
+//
+// The E2E red line (spec §13 point 2): Save accepts only a secure.Record the
+// Sealer produced. Every implementation refuses a Record with !Sealed() with
+// secure.ErrUnsealed before any I/O — the whole call is refused and nothing is
+// written. A record's asset file (Record.AssetPath) was checked by the Sealer
+// only at seal time (its length and chunk 0), so a transport that uploads it
+// must re-check it before upload or accept only files under the sealer's own
+// asset directory.
+package transport
+
+import (
+	"context"
+	"time"
+
+	"watchtower/internal/hub/secure"
+)
+
+// Kind names a transport.
+type Kind string
+
+// The transports.
+const (
+	KindRelay    Kind = "relay"
+	KindCloudKit Kind = "cloudkit"
+)
+
+// ExpectMode is a save's or a delete's precondition.
+type ExpectMode int
+
+// Preconditions: none (unconditional), the record must be absent (a tombstone
+// counts as absent), or the record's current RecordSeq must equal Expect.Seq.
+const (
+	ExpectNone ExpectMode = iota
+	ExpectAbsent
+	ExpectSeq
+)
+
+// Expect is a precondition; Seq is read only with ExpectSeq.
+type Expect struct {
+	Mode ExpectMode
+	Seq  uint64
+}
+
+// SaveItem is one record to save.
+type SaveItem struct {
+	Record secure.Record
+	Expect Expect
+}
+
+// Stored is a record as the transport holds it. In a Save outcome's Conflict
+// and in a Changes batch Envelope carries the bytes; AttachmentID is the
+// record's uploaded asset, or "".
+type Stored struct {
+	Zone, Name   string
+	Envelope     []byte
+	RecordSeq    uint64
+	ServerAt     time.Time
+	AttachmentID string
+}
+
+// Outcome is one item's result, in the order of the items. Saved is true when
+// the write (or delete) took effect, with the record's new RecordSeq (0 for a
+// delete). Saved false with Refused nil is a
+// failed precondition: Conflict is the current record, or nil when there is
+// none. Refused is a per-item refusal (a quota, a too-large record).
+type Outcome struct {
+	Saved     bool
+	RecordSeq uint64
+	Conflict  *Stored
+	Refused   error
+}
+
+// DeleteItem is one record to delete by its wire name.
+type DeleteItem struct {
+	Name   string
+	Expect Expect
+}
+
+// Batch is one page of a zone's changes after a cursor: the live records that
+// changed and the names deleted, in change order. NewSeq is the cursor to pass
+// next; More says another page follows from it.
+type Batch struct {
+	Changed []Stored
+	Deleted []string
+	NewSeq  uint64
+	More    bool
+}
+
+// ControlKind is a server control event (relay proto README, Control events).
+type ControlKind int
+
+// The control kinds.
+const (
+	EntitlementExpired ControlKind = iota + 1
+	SubscriptionMoved
+	SlotRemoved
+	PairingOpened
+	SessionExpired
+)
+
+// Control is a server control event; Detail is the kind's detail (a device id,
+// a pairing slot id, or empty).
+type Control struct {
+	Kind   ControlKind
+	Detail string
+}
+
+// Event is one live event. Zone set means "pull this zone" (it may have
+// changed); Control is a server control; Err is a transport-level failure the
+// runtime should see (the connection is gone, a login failed). Events are
+// best effort: a consumer still pulls on its own backstop timer.
+type Event struct {
+	Zone    string
+	Control *Control
+	Err     error
+}
+
+// Transport is the record store under the sealer.
+type Transport interface {
+	Kind() Kind
+	// Save writes items, which may name several zones. It refuses the whole
+	// call with secure.ErrUnsealed, before any I/O, when any item's Record
+	// did not come from the Sealer. Outcomes follow the items' order.
+	Save(ctx context.Context, items []SaveItem) ([]Outcome, error)
+	// Delete removes records of zone by wire name; outcomes follow the items.
+	Delete(ctx context.Context, zone string, items []DeleteItem) ([]Outcome, error)
+	// Changes returns one page of zone's changes after since (0 = from the
+	// start). ErrTokenExpired means since is no longer (or was never) valid:
+	// the caller resets the zone's cursor to 0 and pulls again.
+	Changes(ctx context.Context, zone string, since uint64) (Batch, error)
+	// Events is the transport's live event stream; the same channel on
+	// every call.
+	Events() <-chan Event
+	// Download writes the attachment's (sealed) bytes to dst.
+	Download(ctx context.Context, attachmentID, dst string) error
+}
