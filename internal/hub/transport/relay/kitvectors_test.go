@@ -59,6 +59,10 @@ func buildKitAuthVector(t *testing.T, seedHex, nonceHex, origin string) kitAuthV
 	id := client.DeviceID(pub)
 	regHash := client.RegisterClientDataHash(nonce, pub, origin)
 
+	// The login message mirrors client.loginLocked (nonce || device id ||
+	// origin), which keeps it inline; the login clientDataHash is the App
+	// Attest input from the relay's proto/README.md, which the Go client
+	// does not compute. Keep both in step with those sources.
 	loginMsg := make([]byte, 0, len(nonce)+len(id)+len(origin))
 	loginMsg = append(append(append(loginMsg, nonce...), id...), origin...)
 
