@@ -49,8 +49,8 @@ func TestSummaries_NoPRYetAndEmpty(t *testing.T) {
 		"the workbench's claude sessions in id order, not another workbench's")
 
 	assert.Equal(t, "not checked", list[0].PRLine, "a never-checked branch with done work may still carry a PR")
-	assert.Equal(t, 2, list[0].Done)
-	assert.Equal(t, 4, list[0].Total)
+	assert.Equal(t, 0, list[0].Done, "bound to 400: progress is its subtree only (board #1352)")
+	assert.Equal(t, 1, list[0].Total)
 	assert.Equal(t, "", list[1].PRLine)
 	assert.Equal(t, "2026-10-02T12:00:00.000Z", list[1].FinishedAt)
 	assert.Equal(t, "", list[2].PRLine)

@@ -19,23 +19,29 @@ import (
 // (spec 2026-10-03-workbench-session-report Part 3, PROJ-14): the session is
 // the one terminalSessionOf resolves for the binding's workbench, and with no
 // session nothing is recorded. Called only after the tool's own write
-// succeeded; a failure never fails or undoes it — see reportLinkFailure.
-func linkSession(d *db.DB, b Binding, sessionEnv func() string, out map[string]any, targetIDs ...int64) {
+// succeeded; a failure never fails or undoes it — see reportLinkFailure. stamp
+// also moves the link's status_at (a status-changing write: update_target that
+// changed the status, create_targets); other writes leave it as it was.
+func linkSession(d *db.DB, b Binding, sessionEnv func() string, out map[string]any, stamp bool, targetIDs ...int64) {
 	if len(targetIDs) == 0 {
 		return
 	}
 	session, err := terminalSessionOf(d, b.WorkbenchID, sessionEnv)
 	if err == nil && session.Valid {
-		err = linkTargets(d, session.Int64, targetIDs)
+		err = linkTargets(d, session.Int64, stamp, targetIDs)
 	}
 	reportLinkFailure(out, err)
 }
 
 // linkTargets upserts one (session, target) link per target, stopping at the
-// first failure.
-func linkTargets(d *db.DB, sessionID int64, targetIDs []int64) error {
+// first failure; stamp also moves status_at.
+func linkTargets(d *db.DB, sessionID int64, stamp bool, targetIDs []int64) error {
+	link := d.LinkSessionTarget
+	if stamp {
+		link = d.LinkSessionTargetStatus
+	}
 	for _, id := range targetIDs {
-		if err := d.LinkSessionTarget(sessionID, id); err != nil {
+		if err := link(sessionID, id); err != nil {
 			return err
 		}
 	}
@@ -189,7 +195,7 @@ func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs
 		out["handover_ask_id"] = a.HandoverAskID
 	}
 	if a.TargetID != 0 {
-		reportLinkFailure(out, linkTargets(d, sessionID, []int64{a.TargetID}))
+		reportLinkFailure(out, linkTargets(d, sessionID, false, []int64{a.TargetID}))
 	}
 	open, err := d.ListOwnerAsks(b.WorkbenchID, db.OwnerAskFilter{Statuses: []string{"open"}, SessionID: sessionID})
 	if err != nil {
