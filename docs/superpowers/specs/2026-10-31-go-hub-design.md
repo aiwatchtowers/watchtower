@@ -1,4 +1,4 @@
-# Go hub — one phone hub for the Mac and a Raspberry Pi, over the relay and CloudKit
+# Go hub — one phone hub for the Mac and headless hosts (Linux, a headless host, a Mac without the app), over the relay and CloudKit
 
 **Status:** draft · **Date:** 2026-10-31 · **Owner decisions:** asks #709, #711, #713, #800, #801, #802
 **Adapts:** [relay client design](2026-10-29-relay-client-design.md) (branch `feature/relay-client`, approved in ask #799; below: "relay client spec"). That spec's **hub half moves here and is implemented in Go**; its phone and Kit half stays there unchanged (§2).
@@ -7,9 +7,11 @@
 
 ## 1. Intent
 
-The owner wants to run Watchtower on a Raspberry Pi at home and keep workbenches there — Claude Code sessions in the Pi's folders — driven from the iPhone, the same way the phone drives the Mac's sessions today. The Pi has no screen and is not reachable from the internet.
+The owner wants Watchtower to keep workbenches — Claude Code sessions in its folders — on **any host**, driven from the iPhone the way the phone drives the Mac's sessions today. There are only two roles: **host** and **client** (the phone). A host may be a Mac with the Desktop app, a Mac without it, a Linux box or a Raspberry Pi, typically with no monitor and not reachable from the internet. Watchtower is not tied to the Pi; the Pi is just one such host.
 
-Today the phone hub (slices, the action mailbox, E2E, linking) lives in the Desktop app's Swift code and talks only CloudKit; sessions are created only by Desktop. Neither exists on Linux. The owner's choice (ask #713) is **one Go hub inside the daemon, built for darwin and linux** — not a second implementation for the Pi — and to move the Mac to it at the same time (ask #800). Since the relay client work was about to put the relay's hub side into the Swift hub, that hub side is written directly in Go instead (ask #802).
+**Terms used below.** *Desktop host* = a Mac with the Desktop app installed (has the CloudKit bridge, §6.2). *Headless host* = any host without the Desktop app: Linux (`arm64`/`amd64`, e.g. a Pi or a PC) or a Mac with only the CLI. "The Mac" in this text means a desktop host. Everything the hub does is the same code on both; the differences are listed in §7.3 and §9 ("Mac-only inputs").
+
+Today the phone hub (slices, the action mailbox, E2E, linking) lives in the Desktop app's Swift code and talks only CloudKit; sessions are created only by Desktop. Neither exists on Linux. The owner's choice (ask #713) is **one Go hub inside the daemon, built for darwin and linux** — not a second implementation for a headless host — and to move the Mac to it at the same time (ask #800). Since the relay client work was about to put the relay's hub side into the Swift hub, that hub side is written directly in Go instead (ask #802).
 
 Side effects the owner gets on the Mac: the hub no longer dies with the Desktop app (today "a quit or crashed Desktop pushes nothing", workbench-remote spec §5.1), and the relay's publishing-on-change is natural in the process that already sees most writes.
 
@@ -22,7 +24,7 @@ Side effects the owner gets on the Mac: the hub no longer dies with the Desktop 
 | §5 actions | hub order, holds, `resend_from`, echoes, control queue, hygiene, `ordered_actions` in `device_grant` (§8) | phone outbox, `action_seq`, `skip_to`, Not delivered |
 | §6 publishing on change | all of it, in Go (§9) | — |
 | §7 hosted relay transport | Go transport over the relay's Go client (§6) | `HostedRelayClient`/`HostedRelayTransport` in the Kit |
-| §8 linking | hub side, plus headless linking on the Pi (§10) | phone side, `LinkPayload` v4 reading |
+| §8 linking | hub side, plus headless linking on a headless host (§10) | phone side, `LinkPayload` v4 reading |
 | §9 switch, subscription | hub side of sim rules 8–16, epochs | phone switch UI, StoreKit, `SUBSCRIPTION_MOVED` |
 | §10 pushes, Desktop, measurements | `send_alert`, Desktop Settings → Mobile over the daemon, hub-side samples | `register_push`, NSE, phone Diagnostics |
 
@@ -32,16 +34,16 @@ Everything the relay client spec decided for the hub (Decisions list there: one 
 
 **Goals**
 1. One Go hub (`internal/hub/…`) in the daemon, built for `darwin/arm64`, `darwin/amd64`, `linux/arm64` (and `linux/amd64` because CI is there). It replaces the Swift hub in `WatchtowerDesktop/Sources/Services/MobileHub/` entirely; that code is deleted in the release that ships the Go hub.
-2. The Go hub speaks both transports through one hub logic: the hosted relay (both platforms) and CloudKit (Mac only, through a Swift bridge, §6.2). Free Mac users keep CloudKit with today's crypto, zones, shares and pairing.
-3. A Raspberry Pi runs the CLI, the daemon and `session-host`, holds workbenches, and is a hub on the relay: the phone sees it as one more Mac in its hub switcher (multi-hub F2), starts and stops sessions there, reads the workchat, answers asks and permission requests, types lines, moves board cards.
+2. The Go hub speaks both transports through one hub logic: the hosted relay (both platforms) and CloudKit (desktop hosts only, through a Swift bridge, §6.2). Free Mac users keep CloudKit with today's crypto, zones, shares and pairing.
+3. A headless host runs the CLI, the daemon and `session-host`, holds workbenches, and is a hub on the relay: the phone sees it as one more host in its hub switcher (multi-hub F2), starts and stops sessions there, reads the workchat, answers asks and permission requests, types lines, moves board cards.
 4. Sessions are created in Go: one start path (`watchtower workbench session start …`) used by the phone handler on both platforms and by Desktop's **New Session** on the Mac (§11).
 5. Every existing link survives the upgrade: no phone re-pairs because the hub changed language (§12).
 6. Byte compatibility with the Kit: envelopes, wire names, AAD, keyboxes, HPKE hello, SAS, padding, chunked assets — pinned by vectors generated from the Kit (§13).
 
 **Non-goals**
-- A Desktop UI on the Pi or for the Pi's workbenches on the Mac. The Pi is driven from the phone and its terminal.
-- Slack, Gmail, Jira, meetings, digests, Knowledge and other pipelines on the Pi. They are features with their own switches; on the Pi only Workbench is on by default (onboarding is not run there). Whatever the owner turns on later works if it is portable; making each one portable is not this project.
-- Phone recordings and transcription on the Pi (the transcriber is the Desktop's ML stack). A Pi hub does not offer recording; the phone hides it for that hub.
+- A Desktop UI on a headless host or for a headless host's workbenches on the Mac. A headless host is driven from the phone and its terminal.
+- Slack, Gmail, Jira, meetings, digests, Knowledge and other pipelines on a headless host. They are features with their own switches; on a headless host only Workbench is on by default (onboarding is not run there). Whatever the owner turns on later works if it is portable; making each one portable is not this project.
+- Phone recordings and transcription on a headless host (the transcriber is the Desktop's ML stack). A headless hub does not offer recording; the phone hides it for that hub.
 - The phone and Kit work of the relay client spec (§2).
 - A self-hosted relay, a LAN/direct transport, Tailscale.
 - Key rotation with ephemeral X25519 (RC §1: after launch, Phase 5 there).
@@ -49,7 +51,7 @@ Everything the relay client spec decided for the hub (Decisions list there: one 
 **Anti-goals (failure even if it works)**
 - Any phone has to pair again after the upgrade.
 - The Swift hub and the Go hub ever run against the same state at once (double apply, double publish, two relay sockets for one device identity).
-- A Pi that opens an inbound port or needs a router change.
+- A host that opens an inbound port or needs a router change.
 - Plaintext of slices, actions or alerts anywhere it is not today: on the relay, in iCloud, in logs (FILES-01), in a bridge socket on disk.
 - A phone line landing in the wrong place: PROJ-16 and PROJ-21 guard tests move with the code and pass unchanged in meaning (§8.4).
 - The Mac's behaviour for a free CloudKit user gets worse: slower, more battery, lost features. The changes they see are only the ones RC §1 already accepted (order of actions, publish on change).
@@ -57,15 +59,15 @@ Everything the relay client spec decided for the hub (Decisions list there: one 
 ## 4. Shape
 
 ```
-iPhone ─E2E─▶ hosted relay (Cloudflare) ◀─E2E, outbound WSS─ watchtower daemon (Go hub)  ─ Raspberry Pi (linux/arm64)
-   │                                    ◀─E2E, outbound WSS─ watchtower daemon (Go hub)  ─ Mac
-   └─E2E─▶ CloudKit ◀── WatchtowerCloudBridge (Swift, Mac only) ◀─ local socket ─┘
+iPhone ─E2E─▶ hosted relay (Cloudflare) ◀─E2E, outbound WSS─ watchtower daemon (Go hub)  ─ headless host (Linux / Pi / Mac without the app)
+   │                                    ◀─E2E, outbound WSS─ watchtower daemon (Go hub)  ─ desktop host (Mac with the app)
+   └─E2E─▶ CloudKit ◀── WatchtowerCloudBridge (Swift, desktop host only) ◀─ local socket ─┘
 ```
 
 - The hub runs inside the daemon process (`runSyncDaemon`) as its own long-lived component with its own goroutines, independent of the sync cycle: a slow cycle never delays a mailbox pass or a publish. It starts when the daemon starts and mobile sync is enabled (`mobileSyncEnabled` moves from Desktop defaults to config, §12), and respects the MDM `MobileSync` key (POLICY: hub off / workbench_only) exactly as today.
 - One process per device identity (sim, "one process per device identity"): a pidfile-style lock on the hub's state dir; a second daemon refuses to start its hub.
-- **Several workspaces** (my call): the hub state stays per user (one `hub_id`, as today), and the hub runs in the daemon of the **active workspace** (`active_workspace`), which is what the Swift hub follows today through Desktop. A workspace switch stops the old daemon's hub (releasing the lock) before the new one starts; slices read the active workspace's database, as now. The Pi has one workspace.
-- **`session-host`** (my call): the daemon may start `session-host` itself when it is not running (on the Pi always, on the Mac when Desktop is closed), with the same per-workspace socket and adoption rules (PROJ-20); Desktop attaches to the same host as today.
+- **Several workspaces** (my call): the hub state stays per user (one `hub_id`, as today), and the hub runs in the daemon of the **active workspace** (`active_workspace`), which is what the Swift hub follows today through Desktop. A workspace switch stops the old daemon's hub (releasing the lock) before the new one starts; slices read the active workspace's database, as now. A headless host has one workspace.
+- **`session-host`** (my call): the daemon may start `session-host` itself when it is not running (on a headless host always, on the Mac when Desktop is closed), with the same per-workspace socket and adoption rules (PROJ-20); Desktop attaches to the same host as today.
 - Desktop on the Mac becomes a client of the hub: Settings → Mobile, linking sheet, phone list and diagnostics read hub state and call `watchtower hub …` (§10), the way other screens use the CLI with pinned `--json` keys.
 
 ## 5. Hub-side seam in Go
@@ -87,22 +89,22 @@ The Swift hub's layers map one-to-one; the Go names are the builder's, the bound
 - The relay repository's Go client (`client/`) and generated proto (`gen/relay/v1`) are copied into `internal/hub/transport/relay/…` pinned to a relay commit with a `VERSION` file, the same rule as the Kit's copy (ask #734), with a `make relay-go RELAY=../relay` that refuses a dirty or unpinned source. Public Watchtower CI never needs the private repo.
 - Behaviour is RC §7's list (login, ping, close codes, backoff, `UNAVAILABLE` retries, `TOKEN_EXPIRED` → zone resync, resubscribe and pull after reconnect), which the Go client already implements; the transport adds zones (`data/<hub relay_device_id>`, `relay/<hub>/<phone>`, `pair/<slot>`), per-zone change tokens in the sidecar, attachments through `create_upload`/`get_download`, and the error mapping of RC §7.
 - The sim's `hub.go` and `relaytransport.go` are the reference model: the Go hub's processor is checked against the same scenarios (§13).
-- The Pi needs only outbound HTTPS/WSS to the relay origin. Nothing listens.
+- A headless host needs only outbound HTTPS/WSS to the relay origin. Nothing listens.
 
-### 6.2 CloudKit bridge (Mac only)
+### 6.2 CloudKit bridge (desktop hosts only)
 
 Apple offers CloudKit only through its frameworks; a Go process cannot write the owner's private database and shares. The bridge is a small signed Swift helper, **`WatchtowerCloudBridge.app`**, embedded in the Desktop bundle with the iCloud container entitlement:
 
 - It wraps the Kit's existing `CloudKitTransport` (CKSyncEngine, `transport.db` state, shares, query subscriptions for `sig-` alert records) and exposes exactly the transport operations — save (incl. conditional), delete, changes, share/participant operations of `PhoneAccessService`, alert subscription — as length-prefixed protobuf frames over a Unix socket in the hub's state dir (0700 dir, 0600 socket, peer UID check).
 - It carries only sealed envelopes and metadata — the same bytes it would hand CloudKit. It holds no hub keys and never opens an envelope.
 - The daemon launches it on demand (CloudKit transport selected) and supervises it (restart with backoff, shut down when the hub moves to the relay or stops). It does not depend on Desktop running. Silent pushes to the Mac (today `TrayAppDelegate`) are received by the bridge and forwarded as a "pull now" event.
-- The Pi never has it: a linux hub supports the relay only (§7.3).
+- A headless host never has it: a headless host supports the relay only (§7.3).
 
 ## 7. Identity on the relay: vouched hubs
 
 ### 7.1 Rule (asks #800, #801)
 
-Only phones attest with App Attest. **Every hub — Mac or Pi — is admitted because a paying, attested phone of the account vouches for its `relay_auth` key** when it links the hub. This replaces the App Attest design's "Mac: `app_attest` on register, assertion on every login" and removes its "Mac without App Attest support stays on CloudKit" consequence and its open item about Developer ID. Accepted consequence: "only our apps" means, for hubs, "only what a paying owner linked to their own subscription"; a home-built hub gets in only if the owner links it, and it takes one of the 3 slots.
+Only phones attest with App Attest. **Every hub — desktop or headless — is admitted because a paying, attested phone of the account vouches for its `relay_auth` key** when it links the hub. This replaces the App Attest design's "Mac: `app_attest` on register, assertion on every login" and removes its "Mac without App Attest support stays on CloudKit" consequence and its open item about Developer ID. Accepted consequence: "only our apps" means, for hubs, "only what a paying owner linked to their own subscription"; a home-built hub gets in only if the owner links it, and it takes one of the 3 slots.
 
 ### 7.2 Flow (needs a relay change, §15)
 
@@ -111,10 +113,12 @@ Only phones attest with App Attest. **Every hub — Mac or Pi — is admitted be
 3. The hub logs in with the Ed25519 signature only; the server accepts a vouched hub while it sits in an active slot of the vouching account (or of any account that later vouches for it). Removing the hub from every slot revokes it.
 4. Upgrading an existing CloudKit link to the relay (RC §8 first bullet): the hub sends `relay_device_id` + `auth_pub` in the phone's `device_grant`; the phone vouches and calls `add_slot`. No QR.
 
-### 7.3 Pi specifics
+### 7.3 Headless hosts
 
-- A linux hub runs relay-only. The transport switch toward CloudKit is not offered for it (the phone hides it for a hub whose `device_grant` says `transports: [relay]`), and `entitlement_expired` leaves it with no transport: it keeps working locally, stops publishing, and the phone shows "This hub needs Relay" for it. The hub keeps its state and resumes when a paying phone is back.
-- A free (CloudKit-only) phone cannot link a Pi; linking says so before the QR is scanned.
+- A headless hub runs relay-only. The transport switch toward CloudKit is not offered for it (the phone hides it for a hub whose `device_grant` says `transports: [relay]`), and `entitlement_expired` leaves it with no transport: it keeps working locally, stops publishing, and the phone shows "This hub needs Relay" for it. The hub keeps its state and resumes when a paying phone is back.
+- A free (CloudKit-only) phone cannot link a headless host; linking says so before the QR is scanned.
+- The rule follows the bridge, not the OS: a Mac with only the CLI is a headless host (relay-only, terminal pairing, LaunchAgent); installing the Desktop app later makes it a desktop host whose hub offers CloudKit too (`transports` in `device_grant` changes, no re-pairing). Its hub identity lives in daemon-owned Keychain items, or the 0600 file under the same rule as §12.2.
+- Differences between hosts, all of them: the CloudKit bridge, recordings (need Desktop's transcriber), owner-away and keep-awake (darwin only; on Linux owner-away = always away), `.copied` clipboard fallback (darwin), `clonefile` (darwin, plain copy on Linux), service manager (launchd vs systemd), key store (Keychain vs 0600 file). The rest of the hub is one code path.
 
 ## 8. Actions (RC §5, hub side)
 
@@ -127,7 +131,7 @@ Only phones attest with App Attest. **Every hub — Mac or Pi — is admitted be
    - A new `Deliver{session, text, keep_line_breaks, keep_format, submit_if}` request returns `submitted | typed | held(reason) | no_session`; the hub's handlers (session input, ask answers, finish request) and Desktop's own Workchat composer and ask answers call it, so there is one delivery path instead of Desktop's plus the hub's.
    - Delivery events (`pasted`, `left_typed`, `submitted`) are broadcast to attached clients so Desktop keeps showing its pane hints.
    - Hook-fed conditions (permission prompt pending, agent busy, `submitSettle`) stay in the database and are checked by the caller before and by the re-check callback during the pause, as `SessionControl` does today.
-   - The `.copied` fallback (line put on the Mac's clipboard when the session can't take typed text) stays on the Mac (`pbcopy` from the daemon); on the Pi it is `cannot_type` with the message "Open the session on the Pi".
+   - The `.copied` fallback (line put on the Mac's clipboard when the session can't take typed text) stays on the Mac (`pbcopy` from the daemon); on a headless host it is `cannot_type` with the message "Open the session on a headless host".
    - PROJ-12 is re-pointed to the `session-host` delivery with its guard tests ported unchanged in meaning — part of the ask #807 approval ("same meaning"), listed for the spec review.
 4a. **Phone recordings on the Mac** (my call): the transcriber stays in Desktop. The Go hub acts on a recording upload only while Desktop is running and has registered as the transcriber (a heartbeat row): then it opens the upload into the recordings dir (`config.AppSupportDir()`, excluded from Time Machine, 0600) and echoes `received` exactly as the Swift hub does, and Desktop takes the job from a queue table and drives `phone_recordings`. While Desktop is absent the recording action is held with the non-final echo `held`, so the phone keeps its audio; no plaintext audio is written by Go without a transcriber to take it. FILES-01 review of the queue is part of phase 3. This is no regression: today the Swift hub, and so recording intake, runs only while Desktop runs. **Desktop never writes the sidecar**: it claims and finishes recording jobs through `watchtower hub recording claim|finish --upload <id> [--transcript <id>]` and reads the queue only; the Go hub is the sidecar's single writer and owns its schema and migrations.
 5. **Mixed versions** (RC §5 p. 10): the hub announces `ordered_actions: 1` in `device_grant`; a payload without `action_seq` is handled the old way. An old phone keeps working against the Go hub on CloudKit.
@@ -147,16 +151,16 @@ Only phones attest with App Attest. **Every hub — Mac or Pi — is admitted be
 
 - `watchtower hub status|phones|unlink <device>|allow <device> <grant>|pair [--json]` with pinned `--json` keys. Desktop's Settings → Mobile is rebuilt on these (same screens, same design kit rows), plus the RC §10 transport indicators per phone.
 - **Pairing on the Mac**: Desktop shows the QR and the SAS from `hub pair --json --stream`, and sends the owner's confirmation back through it.
-- **Pairing on the Pi (headless)**: `watchtower hub pair` prints the QR as terminal block characters plus the payload as text, waits for the phone, prints the four-digit SAS and asks `Confirm code 1234 on your phone? [y/N]`. Attempt caps, refusals and code checks are the same as `MobileLinkCenter` today.
-- `device_grant` gains `transports` (`[cloudkit, relay]` on a Mac, `[relay]` on a Pi) and `relay_device_id` + `auth_pub` (§7.2 p. 4), next to RC's `ordered_actions`.
-- The phone shows the Pi under its hostname (overridable with `watchtower hub name <name>`).
+- **Pairing on a headless host**: `watchtower hub pair` prints the QR as terminal block characters plus the payload as text, waits for the phone, prints the four-digit SAS and asks `Confirm code 1234 on your phone? [y/N]`. Attempt caps, refusals and code checks are the same as `MobileLinkCenter` today.
+- `device_grant` gains `transports` (`[cloudkit, relay]` on a Mac, `[relay]` on a headless host) and `relay_device_id` + `auth_pub` (§7.2 p. 4), next to RC's `ordered_actions`.
+- The phone shows a headless host under its hostname (overridable with `watchtower hub name <name>`).
 
 ## 11. Sessions created in Go
 
 - `watchtower workbench session start --workbench N [--target T] [--agent claude|codex] [--place folder|worktree|auto] --json` does what Desktop's `startNewSession` does today: the `terminal_sessions` row, `SessionStartPlacement` (own worktree when a live agent already works in the folder, `.worktreeinclude`, the setup command), the brief, `claude mcp add` per new worktree, launch args (`workbench launch-args`), and the launch inside `session-host`, returning the session id at once (instant start, #942: row first in **Starting…**, moved into its worktree afterwards). `session stop` likewise.
 - Desktop's **New Session** calls the same command, so placement and brief logic exist once. Desktop still attaches its terminal view to the hosted PTY as today (reattach, `HostedTerminalSession`).
 - `clonefile` (darwin) falls back to a plain copy on linux for `.worktreeinclude` (`workbenchgit/clone_darwin.go` already isolates it).
-- On the Pi `session-host` and the daemon run as **systemd user services** (`watchtower service install` writes the units, `loginctl enable-linger` is documented). Claude Code and Codex are installed and logged in by the owner on the Pi (`claude` login via URL on a headless box), documented in the guide.
+- On a headless host `session-host` and the daemon run as user services: `watchtower service install` writes **systemd user units** on Linux (`loginctl enable-linger` documented) and a **launchd LaunchAgent** on a Mac without the app. With no Desktop there is no local-PTY fallback: if `session-host` cannot start, `session start` fails with the reason and the phone shows it. Claude Code and Codex are installed and logged in by the owner on a headless host (`claude` login via URL on a headless box), documented in the guide.
 
 ## 12. Moving the Mac over
 
@@ -167,11 +171,11 @@ The release that ships the Go hub ships a Desktop without the Swift hub. At firs
 ### 12.2 Keys and state
 
 - **Sidecar** (`MobileHub/hubstate.db` and assets) is opened by Go in place — same schema, a Go migration ledger added.
-- **Keychain identity** (`hub_sig`, `hub_kx`, wrap key — `HubKeyStore`): Desktop, which owns the items' ACL, hands them once to the daemon over an inherited pipe (`fsutil.AttachPayloads`, never a file); the daemon stores them in its own Keychain items (darwin, cgo Security framework, `ThisDeviceOnly`, created by the daemon binary; the legacy keychain ACL follows the binary's designated requirement, so a CLI update signed with the same team and identifier reads them without prompts — verified on a real Mac as the first task of phase 3). **If that check fails, the identity lives in a 0600 file in the hub state dir, as on the Pi** (owner, ask #807); the guide's privacy page says so. The bridge never holds keys either way. The hand-over is two-phase and safe to interrupt anywhere:
+- **Keychain identity** (`hub_sig`, `hub_kx`, wrap key — `HubKeyStore`): Desktop, which owns the items' ACL, hands them once to the daemon over an inherited pipe (`fsutil.AttachPayloads`, never a file); the daemon stores them in its own Keychain items (darwin, cgo Security framework, `ThisDeviceOnly`, created by the daemon binary; the legacy keychain ACL follows the binary's designated requirement, so a CLI update signed with the same team and identifier reads them without prompts — verified on a real Mac as the first task of phase 3). **If that check fails, the identity lives in a 0600 file in the hub state dir, as on a headless host** (owner, ask #807); the guide's privacy page says so. The bridge never holds keys either way. The hand-over is two-phase and safe to interrupt anywhere:
   1. Desktop writes the three items to the daemon's pipe (`hub adopt --keys-fd N`); the daemon stores them as **staged** (overwriting any earlier staged copy).
   2. The daemon opens the sealed sidecar keys with the staged identity; on success it marks the identity **adopted** in the sidecar and answers `adopted`; on failure it deletes the staged copy and answers the error.
   3. Only on `adopted` does Desktop delete its own items, then calls `hub adopt --confirm-deleted`.
-  A crash, a closed pipe or a killed process at any step leaves Desktop's items in place; the next Desktop launch runs the hand-over again from step 1 (staged copies are overwritten, an adopted identity answers `adopted` at once, a missing `--confirm-deleted` makes Desktop retry the delete). The hub stays off — publishing nothing — until the identity is adopted. On linux the identity lives in a 0600 file in the hub state dir (no Secure Enclave on a Pi — accepted, stated in the guide's privacy page).
+  A crash, a closed pipe or a killed process at any step leaves Desktop's items in place; the next Desktop launch runs the hand-over again from step 1 (staged copies are overwritten, an adopted identity answers `adopted` at once, a missing `--confirm-deleted` makes Desktop retry the delete). The hub stays off — publishing nothing — until the identity is adopted. On linux the identity lives in a 0600 file in the hub state dir (no Secure Enclave on a headless host — accepted, stated in the guide's privacy page).
 - **CloudKit state** (`transport.db`, CKSyncEngine) moves to the bridge as is.
 - **Mobile settings** (`mobileSyncEnabled`, start-session allows per phone, …) move from Desktop defaults to the hub's config/sidecar in the same adoption. Readers of `mobileSyncEnabled` that change together: `WatchtowerCore/Utilities/Constants.swift` (the key), `App/AppState.swift` and `App/AppState+MobileHub.swift` (read `hub status --json` instead), `Services/MobileHub/MobileHubService.swift` (deleted with the Swift hub); Settings → Mobile's toggle calls `hub enable|disable`.
 
@@ -179,8 +183,8 @@ The release that ships the Go hub ships a Desktop without the Swift hub. At firs
 
 New or changed screens get mockups in `docs/design/mockups/go-hub/` before their UI task, reviewed by the owner, and Desktop screens are checked with `make desktop-shots` per `docs/design/desktop-style-guide.md` before review:
 - Desktop Settings → Mobile rebuilt over the daemon: the phone list with transport per phone (RC's mockup in `docs/design/mockups/relay-client/` is the base), "Mobile is run by a newer Watchtower", the adoption error state, the hand-over in progress.
-- Phone: a Pi hub in the hub switcher (hostname), "This hub needs Relay", a session shown as "Open on the Mac", a hub without recording (record button hidden, with a one-line reason in the hub's info), "A free phone can't link this hub" before scanning.
-- Terminal (Pi): `hub pair` output — QR, waiting line, SAS prompt, success and each refusal.
+- Phone: a headless hub in the hub switcher (hostname), "This hub needs Relay", a session shown as "Open on the Mac", a hub without recording (record button hidden, with a one-line reason in the hub's info), "A free phone can't link this hub" before scanning.
+- Terminal (headless host): `hub pair` output — QR, waiting line, SAS prompt, success and each refusal.
 
 ### 12.3 What existing phones notice
 
@@ -191,7 +195,7 @@ Nothing beyond RC §1's accepted changes. Same `hub_id`, same keys, same zones a
 The phone/Kit side (relay client spec, `feature/relay-client`) and the Go hub meet only at these sealed payloads and records; both specs point here, and a change to any of them changes both sides together:
 
 - **`device_grant`** (hub → phone, data zone): adds `ordered_actions: 1` (RC §5 p. 10), `transports: ["cloudkit","relay"] | ["relay"]` (§7.3, §10), `relay_device_id` and `relay_auth_pub` of the hub (§7.2 p. 4; replaces RC's `relay_mac_device_id`, same value plus the public key the phone vouches for).
-- **`LinkPayload` v4** (QR): `transport`, `relay_device_id`, `relay_auth_pub`, `transports`; CKShare URLs optional and absent for a Pi.
+- **`LinkPayload` v4** (QR): `transport`, `relay_device_id`, `relay_auth_pub`, `transports`; CKShare URLs optional and absent for a headless host.
 - **Vouching** (§7.2): the phone sends `vouch_hub` after the SAS confirmation and before `promote_pairing` (new link) or before `add_slot` (upgraded link); a refusal (`ATTESTATION_*`, slot limit) keeps the hub off the relay and shows the server's reason.
 - **Action and control records**: RC §5 (record names `a-<action_seq>`, `c-<uuid>`, echo statuses, control kinds) and sim rules 1–16, unchanged.
 - **Alerts**: `send_alert` with the sealed `ask_alert` per paying phone, opened by the NSE under the wire name `alert-push` (RC §10).
@@ -208,18 +212,18 @@ The phone/Kit side (relay client spec, `feature/relay-client`) and the Go hub me
 - **Bridge**: a contract test drives the bridge with a fake `CloudSyncTransport`; one manual check against real CloudKit per phase that touches it.
 - **Ported guards**: PROJ-16/21 and every Swift hub test with a behavioural assertion gets a Go twin before the Swift file is deleted; the deletion PR lists the mapping.
 - **Linux**: CI already runs on ubuntu; add `GOARCH=arm64` build and a hub smoke test (start daemon, pair against the fake relay, start a session with a stub agent, echo a typed line).
-- **Device**: a real Pi run is the phase gate of §14 phase 2.
+- **Device**: a real headless host (a Pi) run is the phase gate of §14 phase 2.
 
 ## 14. Phases
 
 | Phase | Content | Depends on |
 |---|---|---|
-| 1 | Go hub core on the relay: secure port + vectors, sidecar, processor/dispatcher/handlers, slices, publishing on change, relay transport, `hub` CLI, Go session start. Verified in a **separate test workspace** (own database, own sidecar dir, own hub identity, `WATCHTOWER_HUB_DIR`) so it never touches the real workspace's asks, permission requests or sessions while the Swift hub runs; real data first in phase 3 (adoption) and on the Pi in phase 2 (my call). | relay change §15 p. 1 for real linking; the relay's local stand for tests |
-| 2 | Pi: linux/arm64 build, systemd units, headless pairing, vouching end to end, relay-only rules (§7.3), guide page. Gate: a real Pi driven from a real phone. | 1; relay client spec Phases 2–3 on the phone |
+| 1 | Go hub core on the relay: secure port + vectors, sidecar, processor/dispatcher/handlers, slices, publishing on change, relay transport, `hub` CLI, Go session start. Verified in a **separate test workspace** (own database, own sidecar dir, own hub identity, `WATCHTOWER_HUB_DIR`) so it never touches the real workspace's asks, permission requests or sessions while the Swift hub runs; real data first in phase 3 (adoption) and on a headless host in phase 2 (my call). | relay change §15 p. 1 for real linking; the relay's local stand for tests |
+| 2 | Headless hosts: linux/arm64 + linux/amd64 builds, a headless Mac (CLI only), systemd units, headless pairing, vouching end to end, relay-only rules (§7.3), guide page. Gate: a real headless host (a Pi) driven from a real phone. | 1; relay client spec Phases 2–3 on the phone |
 | 3 | Mac on the Go hub: CloudKit bridge, adoption (§12), Desktop Settings → Mobile over `hub …`, New Session through Go, transport switch both ways (sim rules 8–16) with epochs, Swift hub deleted. | 1; relay client spec Phase 1 on the phone for ordered actions |
 | 4 | Pushes (`send_alert` per paying phone), Desktop indicators and hub-side measurements (RC §10), mobile-companion feature note rewritten. | 3; relay client spec Phase 4 |
 
-Launch for users is one release carrying phases 1–4 (ask #800: the Mac and the Pi move together). Each phase gets its own plan.
+Launch for users is one release carrying phases 1–4 (ask #800: the Mac and a headless host move together). Each phase gets its own plan.
 
 ## 15. What we need from the relay repository (relay session)
 
@@ -237,25 +241,25 @@ Package layout under `internal/hub`, the bridge's frame schema, the systemd unit
 
 ## Decisions
 
-- Pi workbenches driven from the phone; the Pi is not reachable from the internet and connects outbound only — conversation, ask #709
-- Full E2E hub on the Pi, as on the Mac — ask #709
+- Workbenches on any host (Mac, Linux, Pi, a Mac without the app; usually no monitor) driven from the phone, two roles only: host and client — conversation 2026-10-31; a headless host is not reachable from the internet and connects outbound only — conversation, ask #709
+- Full E2E hub on a headless host, as on the Mac — ask #709
 - The relay is the owner's `aiwatchtowers/relay` (now Cloudflare) — ask #711
 - One Go hub in the daemon for darwin and linux, replacing the Swift hub — ask #713, conversation on ask #800 ("one Go code built for different platforms")
-- The Mac and the Pi move to the Go hub together; CloudKit through a Swift bridge on the Mac — ask #800
+- The Mac and a headless host move to the Go hub together; CloudKit through a Swift bridge on the Mac — ask #800
 - Every hub is admitted to the relay by the vouching of a paying attested phone; App Attest only on phones — asks #800, #801
 - The relay client spec's hub half is written in Go here; its phone and Kit half stays there — ask #802
 - `session-host` gets a non-attaching list/input operation; PROJ-20 amended and PROJ-16's live/same-run checks redefined on it with the same meaning; local-PTY fallback sessions unreachable from the phone — ask #807
-- Hub keys on the Mac in daemon-owned Keychain items; if that fails without prompts, a 0600 file as on the Pi; the bridge never holds keys — ask #807
+- Hub keys on the Mac in daemon-owned Keychain items; if that fails without prompts, a 0600 file as on a headless host; the bridge never holds keys — ask #807
 - E2E is the red line: vectors, plaintext canaries on everything leaving the hub, one sealing choke point, two-way Kit interop — ask #807
 Author's decisions, for the owner's approval in the review (each marked "my call" in the text):
 - The hub runs in the daemon of the active workspace; a workspace switch stops it there and starts it in the new daemon (§4).
-- The daemon may start `session-host` itself (Pi always; Mac when Desktop is closed); Desktop attaches to the same host (§4).
+- The daemon may start `session-host` itself (headless hosts always; the Mac when Desktop is closed); Desktop attaches to the same host (§4).
 - Phone recordings on the Mac are taken only while Desktop (the transcriber) runs; otherwise held, the phone keeps the audio — same as today, when the hub itself needs Desktop (§8 p. 4a).
 - Desktop never writes the sidecar; recording jobs through `hub recording claim|finish` (§8 p. 4a).
 - The downgrade guard ships in the next regular release; after adoption the mobile link cannot go back to an older app (it stays off there); a pre-guard app comes up as a new unlinked hub (§12.1).
 - Two-phase key hand-over, Desktop items deleted only after `adopted` (§12.2).
-- Phase 1 is verified in a separate test workspace; real data from phase 2 (Pi) and phase 3 (adoption) (§14).
-- A Pi hub without a paying phone has no transport: it keeps working locally, stops publishing, the phone shows "This hub needs Relay" (§7.3).
+- Phase 1 is verified in a separate test workspace; real data from phase 2 (headless host) and phase 3 (adoption) (§14).
+- A headless hub without a paying phone has no transport: it keeps working locally, stops publishing, the phone shows "This hub needs Relay" (§7.3).
 - Typed-never-submitted delivery and prompt state move into `session-host`; Desktop's composer and the hub use one `Deliver` path; PROJ-12 re-pointed with the same meaning (§8 p. 4b).
 - Mockups for every new or changed screen before its UI task (§12.4).
-- Hub inside the daemon process, not its own process; bridge as an embedded helper app over a Unix socket; daemon-owned Keychain items on darwin and a 0600 file on linux; hub lock + `hub_impl` guard against two hubs; Pi hubs relay-only with "This hub needs Relay"; Pi without recordings; only Workbench on by default on the Pi; sessions started by one Go command used by the phone and Desktop — author's decisions, for approval
+- Hub inside the daemon process, not its own process; bridge as an embedded helper app over a Unix socket; daemon-owned Keychain items on darwin and a 0600 file on linux; hub lock + `hub_impl` guard against two hubs; Pi hubs relay-only with "This hub needs Relay"; Pi without recordings; only Workbench on by default on a headless host; sessions started by one Go command used by the phone and Desktop — author's decisions, for approval
