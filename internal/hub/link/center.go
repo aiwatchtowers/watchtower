@@ -16,8 +16,9 @@
 // counts and classes only.
 //
 // For the runtime (Tasks 12, 14): HostInfo.Transports is announced as given,
-// so the runtime pins it (["relay"] on a headless host, never cloudkit
-// there). Each hello is tried under up to KeptCodes nonces while the
+// so the runtime pins it (HeadlessHost: ["relay"] on a headless host, never
+// cloudkit there). Pairing over the hosted relay and the data zone's readers
+// are in relay.go. Each hello is tried under up to KeptCodes nonces while the
 // center's lock is held, so a flood of junk hellos is bounded only by that:
 // the relay's rate limits stay in front of HandleHello.
 package link
@@ -125,6 +126,15 @@ type Center struct {
 	// beforeKeys is a test seam: run by Keyboxes between the device read
 	// and the key read.
 	beforeKeys func()
+
+	// sealer seals the keyboxes written into pairing slots (relay.go).
+	sealer *secure.Sealer
+	// pairMu guards pairs, the pairing slots read over the hosted relay; it
+	// is never held across a call that takes mu or does I/O.
+	pairMu sync.Mutex
+	pairs  map[string]*pairSlot
+	// readersMu runs SyncReaders one at a time.
+	readersMu sync.Mutex
 }
 
 // NewCenter builds a Center over c.
@@ -139,6 +149,7 @@ func NewCenter(c Config) *Center {
 	return &Center{
 		st: c.Store, keys: c.Keys, opener: c.Opener, host: c.Host, clock: c.Clock,
 		publish: c.Publish, events: make(chan PairEvent, eventBuffer),
+		sealer: secure.NewSealer(c.Keys), pairs: map[string]*pairSlot{},
 	}
 }
 

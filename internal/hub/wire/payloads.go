@@ -122,10 +122,15 @@ type DevicePayload struct {
 }
 
 // DeviceHello is the plain payload of a hello, sealed to the hub's key.
+// RelayDeviceID is the phone's own hosted-relay device id (lower-case
+// unpadded base32 of SHA-256 of its relay_auth key), sent by a phone linking
+// over the hosted relay so the hub can name it in set_hub_readers; absent on
+// the CloudKit route and from phones that predate it.
 type DeviceHello struct {
-	Device       DevicePayload `json:"device"`
-	SigningKey   string        `json:"signing_key"`
-	AgreementKey string        `json:"agreement_key"`
+	Device        DevicePayload `json:"device"`
+	SigningKey    string        `json:"signing_key"`
+	AgreementKey  string        `json:"agreement_key"`
+	RelayDeviceID string        `json:"relay_device_id,omitempty"`
 }
 
 // KeyboxKeys are the epoch keys of a keybox, base64url of 32 bytes each.
