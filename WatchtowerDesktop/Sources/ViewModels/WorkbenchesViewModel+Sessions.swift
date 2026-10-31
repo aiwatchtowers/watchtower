@@ -153,6 +153,8 @@ extension WorkbenchesViewModel {
                     forgetInLayout(id, projectID: projectID)
                 }
             }
+            // The row menu's Session Target ▸ follows the board with the list.
+            await loadSessionTargetRoots(projectID: projectID)
             return true
         } catch {
             guard load > workbenchLoads[projectID, default: SessionLoads()].applied else { return true }

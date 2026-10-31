@@ -772,6 +772,13 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchTargetDeleted.self, from: data)
     }
 
+    /// Binds a workbench session to a board target, or clears it (board
+    /// #1352): Go's one writer, which validates both and stamps the leaves.
+    func setSessionTarget(sessionID: Int64, targetID: Int64?) async throws {
+        let scope = targetID.map { ["--target", String($0)] } ?? ["--clear"]
+        _ = try await runner.run(args: ["workbench", "session-target", "--session", String(sessionID)] + scope + ["--json"])
+    }
+
     /// Installs the skill, the SessionStart and Stop hooks and the local MCP
     /// registration into the workbench folder. Idempotent — also the Repair action.
     func install(projectID: Int64) async throws {
