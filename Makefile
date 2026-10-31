@@ -40,6 +40,9 @@ LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.
 
 .PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check relay-go relay-interop
 
+# Linux builds run only in CI, on native Linux runners (scripts/build-linux.sh
+# from .github/workflows/linux-build.yml, and ci.yml's go-linux-arm64 job):
+# internal/sqlcipher is cgo, so a GOOS=linux build from macOS cannot work.
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
 

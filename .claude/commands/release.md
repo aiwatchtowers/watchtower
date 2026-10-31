@@ -111,7 +111,24 @@ gh release create "v<version>" \
     --title "Watchtower v<version>" \
     --notes "<release_notes>"
 ```
-3. Show the release URL to the user.
+3. **Headless hub artifacts — only from the Go hub's launch release on**
+   (before it, skip this step): the release build also wrote
+   `build/Watchtower-CLI-<version>-arm64.zip` (the signed CLI for a CLI-only
+   Mac, already in `checksums.txt`), and the tag's push started the
+   `linux-build` workflow, which builds the two Linux tarballs. The tag build
+   needs the repository variable `RELAY_ORIGIN` and `.env`'s
+   `WATCHTOWER_RELAY_ORIGIN_DEFAULT`; without them both builds refuse. Wait
+   for that run, download its artifacts and attach them:
+```bash
+run_id=$(gh run list --workflow linux-build.yml --branch "v<version>" --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run watch "$run_id" --exit-status
+gh run download "$run_id" --dir build/linux
+gh release upload "v<version>" \
+    "build/Watchtower-CLI-<version>-arm64.zip" \
+    build/linux/*/watchtower-v<version>-linux-*.tar.gz \
+    build/linux/*/watchtower-v<version>-linux-*.tar.gz.sha256
+```
+4. Show the release URL to the user.
 
 ## Step 9: Publish the iPhone app to TestFlight
 

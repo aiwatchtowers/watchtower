@@ -164,6 +164,20 @@ for arg in "$@"; do
 done
 VERSION="${VERSION:-0.2.0}"
 
+# BEGIN relay-origin-check (extracted verbatim by scripts/tests/test-build-app-relay.sh)
+# WATCHTOWER_RELAY_ORIGIN_DEFAULT (from the build profile) becomes the CLI's
+# build-time default relay origin, watchtower/internal/hub.DefaultRelayOrigin
+# (Go hub: the origin the relay session announces). A release build — a clean
+# X.Y.Z version without --dev — must pin it, and is refused here, before
+# anything is built; --dev and non-release versions may leave it empty.
+RELAY_ORIGIN_DEFAULT="${WATCHTOWER_RELAY_ORIGIN_DEFAULT:-}"
+if ! $DEV_MODE && [ -z "$RELAY_ORIGIN_DEFAULT" ] \
+    && printf '%s' "$VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "ERROR: WATCHTOWER_RELAY_ORIGIN_DEFAULT is empty: a release build must pin the relay origin" >&2
+    exit 1
+fi
+# END relay-origin-check
+
 # NOTARIZE_PROFILE is only read on the release path (dev mode exits before
 # notarization), so one unconditional default suffices.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
@@ -264,7 +278,7 @@ LINK_FETCH_DENY_HOSTS="${WATCHTOWER_LINK_FETCH_DENY_HOSTS:-}"
 # -tags codegrammars: the code index's full grammar set (an untagged build
 # carries only Go, Swift and Python).
 GOARCH=arm64 CGO_ENABLED=1 go build -tags codegrammars \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS}" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN_DEFAULT}" \
     -o "$STAGE_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$STAGE_DIR/watchtower" | cut -f1))"
 
@@ -841,12 +855,26 @@ else
     fi
 fi
 
+# BEGIN cli-zip (extracted verbatim by scripts/tests/test-build-app-relay.sh)
+# The CLI-only Mac download (Go hub, a headless host): the bundle's signed
+# Contents/MacOS/watchtower alone. Only on the signed, notarized branch — its
+# cdhash was in the notarized ZIP, so Gatekeeper finds the ticket online (a
+# bare Mach-O cannot be stapled). The ad-hoc branch makes none.
+CLI_ZIP_NAME=""
+if [ "$SIGN_IDENTITY" != "-" ] && [ -n "$NOTARIZE_PROFILE" ]; then
+    CLI_ZIP_NAME="Watchtower-CLI-${VERSION}${FLAVOR_SUFFIX}-arm64.zip"
+    echo "==> Creating CLI zip..."
+    rm -f "$CLI_ZIP_NAME"
+    ditto -c -k "$APP_BUNDLE/Contents/MacOS/watchtower" "$CLI_ZIP_NAME"
+fi
+# END cli-zip
+
 # Generate checksums
 echo "==> Generating checksums..."
 # Flavored builds get a flavored manifest so artifacts moved out of build/
 # stay self-describing; the default name is a contract with install.sh.
 CHECKSUMS="$STAGE_DIR/checksums${FLAVOR_SUFFIX}.txt"
-shasum -a 256 "$DMG_NAME" "$ZIP_NAME" > "$CHECKSUMS"
+shasum -a 256 "$DMG_NAME" "$ZIP_NAME" ${CLI_ZIP_NAME:+"$CLI_ZIP_NAME"} > "$CHECKSUMS"
 
 finish_staged_build
 echo ""
@@ -854,6 +882,9 @@ echo "==> Done!"
 echo "    App:  $APP_BUNDLE"
 echo "    DMG:  $OUT_DIR/$DMG_NAME ($DMG_SIZE)"
 echo "    ZIP:  $OUT_DIR/$ZIP_NAME ($ZIP_SIZE)  ← auto-update"
+if [ -n "$CLI_ZIP_NAME" ]; then
+    echo "    CLI:  $OUT_DIR/$CLI_ZIP_NAME  ← CLI-only Mac"
+fi
 echo "    SHA:  $OUT_DIR/$(basename "$CHECKSUMS")"
 if [ -n "$NOTARIZE_PROFILE" ] && [ "$SIGN_IDENTITY" != "-" ]; then
     echo "    Notarized & stapled ✓"

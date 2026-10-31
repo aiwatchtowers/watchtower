@@ -221,6 +221,36 @@ jobs:
         timeout-minutes: 25
         run: make test-cover
 
+  # The Go hub on linux/arm64 (a Raspberry Pi; Go hub phase 2, Task 2): the
+  # build and the packages a headless host leans on, on a native arm64 runner
+  # (the cgo SQLCipher build cannot cross-compile). The tarballs themselves
+  # come from linux-build.yml on ubuntu-22.04 for the glibc floor.
+  go-linux-arm64:
+    name: Go (linux/arm64)
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test (hub, session host)
+        run: go test ./internal/hub/... ./internal/sessionhost/... ./internal/sessionstart/...
+
+      # Task 8 of the phase 2 plan adds the Linux hub smoke test here as one
+      # more step: `make hub-smoke`.
+
   # The race pass, split across three parallel jobs: grown past one job's
   # budget (2026-10-19: ~7.7k CPU-s on a 4-vCPU runner, the 40-minute step
   # timed out; two shards then put tools, kb and db on one runner and timed
