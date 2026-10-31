@@ -297,7 +297,8 @@ final class LinkingViewModel {
             return
         }
         identity.deviceID = deviceKeys.deviceID.uuidString
-        let shared = route != .cloudKit(.private)
+        let shared: Bool
+        if case .cloudKit(.shared) = route { shared = true } else { shared = false }
         let record = LinkRecord(
             hubID: payload.hubID,
             macName: payload.macName,

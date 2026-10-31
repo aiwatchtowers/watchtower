@@ -11,8 +11,9 @@ final class SeamBoundaryTests: XCTestCase {
         for case let url as URL in walker where url.pathExtension == "swift" {
             checked += 1
             let text = try String(contentsOf: url, encoding: .utf8)
-            let imports = text.split(separator: "\n", omittingEmptySubsequences: false)
-                .contains { $0.hasPrefix("import CloudKit") }
+            let imports = text.split(separator: "\n").contains {
+                $0.range(of: #"^(@\w+ )*import (\w+ )?CloudKit\b"#, options: .regularExpression) != nil
+            }
             if imports {
                 XCTAssertTrue(url.path.contains("/CloudKitTransport/"), "\(url.path) imports CloudKit outside CloudKitTransport/")
             }
