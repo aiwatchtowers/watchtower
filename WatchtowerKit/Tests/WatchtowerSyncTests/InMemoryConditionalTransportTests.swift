@@ -112,6 +112,33 @@ final class InMemoryConditionalTransportTests: XCTestCase {
         XCTAssertEqual(absentUnconditional, .deleted)
     }
 
+    func testDeleteUnderAbsentConflictsWithAPresentRecord() async throws {
+        let transport = InMemoryCloudTransport()
+        _ = try await saveOne(transport, record("c-1"), .absent)
+
+        let outcome = try await deleteOne(transport, "c-1", .absent)
+        guard case let .conflict(current) = outcome else {
+            return XCTFail("expected a conflict, got \(outcome)")
+        }
+        XCTAssertEqual(current.recordSeq, 1)
+        let batch = try await transport.changes(in: .relay, since: nil)
+        XCTAssertEqual(batch.changed.map(\.recordName), ["c-1"])
+        XCTAssertTrue(batch.deletedRecordNames.isEmpty)
+    }
+
+    func testZonesCountRecordSeqIndependently() async throws {
+        let transport = InMemoryCloudTransport()
+        let relayFirst = try await saveOne(transport, record("a-1", zone: .relay), .absent)
+        let relaySecond = try await saveOne(transport, record("a-2", zone: .relay), .absent)
+        let dataFirst = try await saveOne(transport, record("target-1", zone: .data), .absent)
+        XCTAssertEqual(relayFirst, .saved(recordSeq: 1))
+        XCTAssertEqual(relaySecond, .saved(recordSeq: 2))
+        XCTAssertEqual(dataFirst, .saved(recordSeq: 1))
+
+        let data = try await transport.changes(in: .data, since: nil)
+        XCTAssertEqual(data.changed.map(\.recordSeq), [1])
+    }
+
     func testScriptedRefusalsComeFirst() async throws {
         let transport = InMemoryCloudTransport()
         await transport.refuseNext(.unreachable, count: 2)

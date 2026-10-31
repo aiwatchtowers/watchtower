@@ -122,8 +122,9 @@ public actor InMemoryCloudTransport: ConditionalTransport {
         scriptedRefusals.append(contentsOf: Array(repeating: refusal, count: max(0, count)))
     }
 
-    /// The next conditional `save` call waits at the returned gate until the test opens it; its conditions are
-    /// checked only after that, against the state the transport has then.
+    /// The next conditional `save(_ items:)` call waits at the returned gate until the test opens it; its conditions
+    /// are checked only after that, against the state the transport has then. Only that call is gated: plain
+    /// `save(_ records:)`, plain and conditional deletes, and later conditional saves go through at once.
     func suspendNextSave() -> SaveGate {
         let gate = SaveGate()
         pendingGate = gate
