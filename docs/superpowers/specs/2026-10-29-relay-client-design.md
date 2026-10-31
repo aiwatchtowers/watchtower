@@ -172,17 +172,17 @@ Launch for users waits for Phases 0–4 and §12 p. 5. Each phase gets its own p
 - On CloudKit a gap in a phone's actions may delay its later actions, Interrupt and permission answers included; accepted — ask #796
 - Publishing on change: the nudge on both transports; minimum spacing ~2 s on CloudKit, 100–200 ms (150 ms) on the hosted relay only — ask #735
 - The relay server moves to Cloudflare; protocol v1 and the client rules stay; the client sends the session token on the WebSocket upgrade, pings every 30 s, reconnects after 1–3 s on `GoingAway`, retries `UNAVAILABLE` and resyncs a zone on `TOKEN_EXPIRED` — relay freeze PR #1 (`2643f78`), relay ask #763
-- Existing "Relay" names keep meaning the mailbox lane; the new server's types are `HostedRelay*`; the user-facing name stays "Relay" — author's decision, for approval
+- Existing "Relay" names keep meaning the mailbox lane; the new server's types are `HostedRelay*`; the user-facing name stays "Relay" — author's decision, approved in ask #799
 - One action path for both transports, free CloudKit users included: ordered actions, outbox and control records; the reasons that count are order and one path in the code; the §5.11 two-path alternative is rejected — conversation (ask #795)
 - On CloudKit, mailbox-lane records written through `ConditionalTransport` turn `serverRecordChanged` into a conflict instead of "my payload wins"; slices keep today's path — part of the one action path (conversation, ask #795)
-- New phone ↔ old hub negotiated by `ordered_actions` in `device_grant`; the hosted relay needs both sides on the new path — author's decision, for approval
-- `relay_auth` accessibility `AfterFirstUnlockThisDeviceOnly` — author's decision, for approval
-- Go-process writes seen through a `PRAGMA data_version` poll, 250 ms while a phone was in touch in the last 10 min, else 1 s (never slower than today's poll); measured before Phase 0b ends — author's decision, for approval
-- The 30 s battery test is rewritten into a per-transport minimum-spacing test, not removed — author's decision, for approval
-- `action_seq` is a separate gapless counter inside the sealed payload; the envelope `seq` stays the rollback-guard counter — author's decision, for approval
-- Seam grows only through optional protocols (`ConditionalTransport`, `MailboxAddressing`, `PagedChanges`, `LiveTransport`) — author's decision, for approval
-- Rotation keyboxes on the relay travel in the phone's mailbox inside `transport_switched` — author's decision, for approval
-- `relay_auth` is created on first use of the hosted relay, not at install; never synced or backed up — author's decision, for approval
-- Latency measurements stay on the device, shown in Diagnostics; p50 is checked on our devices and the relay probe, not on users' devices — author's decision, for approval
-- 7-day rotation with ephemeral keys comes after launch (relay spec §9 allows it); at launch relay links keep 90-day static-key epochs plus a new epoch per switch — author's decision, for approval (security scope narrowed at launch)
+- New phone ↔ old hub negotiated by `ordered_actions` in `device_grant`; the hosted relay needs both sides on the new path — author's decision, approved in ask #799
+- `relay_auth` accessibility `AfterFirstUnlockThisDeviceOnly` — author's decision, approved in ask #799
+- Go-process writes seen through a `PRAGMA data_version` poll, 250 ms while a phone was in touch in the last 10 min, else 1 s (never slower than today's poll); measured before Phase 0b ends — author's decision, approved in ask #799
+- The 30 s battery test is rewritten into a per-transport minimum-spacing test, not removed — author's decision, approved in ask #799
+- `action_seq` is a separate gapless counter inside the sealed payload; the envelope `seq` stays the rollback-guard counter — author's decision, approved in ask #799
+- Seam grows only through optional protocols (`ConditionalTransport`, `MailboxAddressing`, `PagedChanges`, `LiveTransport`) — author's decision, approved in ask #799
+- Rotation keyboxes on the relay travel in the phone's mailbox inside `transport_switched` — author's decision, approved in ask #799
+- `relay_auth` is created on first use of the hosted relay, not at install; never synced or backed up — author's decision, approved in ask #799
+- Latency measurements stay on the device, shown in Diagnostics; p50 is checked on our devices and the relay probe, not on users' devices — author's decision, approved in ask #799
+- 7-day rotation with ephemeral keys comes after launch (relay spec §9 allows it); at launch relay links keep 90-day static-key epochs plus a new epoch per switch — author's decision, approved in ask #799 (security scope narrowed at launch)
 - Mockups for every new screen in `docs/design/mockups/relay-client/` — conversation (spec review round 1)
