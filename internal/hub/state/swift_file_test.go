@@ -117,8 +117,9 @@ func TestBaselineMatchesSwiftColumns(t *testing.T) {
 		rows, err := db.Query(`SELECT m.name, group_concat(p.name || ' ' || p.type || ' ' || p."notnull" || ' ' || ifnull(p.dflt_value, '') || ' ' || p.pk, ', ' ORDER BY p.cid)
 			FROM sqlite_master m JOIN pragma_table_info(m.name) p
 			WHERE m.type = 'table' AND m.name NOT LIKE 'goose%' AND m.name NOT LIKE 'sqlite%'
-				-- 00002's appended devices columns: the baseline is what is pinned here.
+				-- 00002's appended devices columns and 00003's pending_devices column: the baseline is what is pinned here.
 				AND NOT (m.name = 'devices' AND p.name IN ('last_applied_action_seq', 'ordered', 'relay_device_id', 'resend_requested_from'))
+				AND NOT (m.name = 'pending_devices' AND p.name = 'relay_device_id')
 			GROUP BY m.name ORDER BY m.name`)
 		if err != nil {
 			t.Fatal(err)

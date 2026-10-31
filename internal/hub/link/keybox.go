@@ -114,6 +114,7 @@ func linkPending(tx *sql.Tx, p pendingDevice, now time.Time) error {
 	d := state.Device{
 		ID: id, Name: p.name, Scope: p.scope, LinkedAt: now, SigningKey: p.signingKey, AgreementKey: p.agreementKey,
 		LinkNonce: p.linkNonce, TypingRequested: p.typingRequested, StartSessionsAllowed: p.startSessions,
+		RelayDeviceID: p.relayDeviceID,
 	}
 	var decided sql.NullFloat64
 	err := tx.QueryRow(`SELECT typing_allowed, permissions_allowed, permissions_requested, start_sessions_granted, decided_at

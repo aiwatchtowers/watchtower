@@ -42,6 +42,7 @@ type openedHello struct {
 	linkNonce []byte
 	sigPub    ed25519.PublicKey
 	kxPub     *ecdh.PublicKey
+	relayID   string
 }
 
 // HandleHello decides one phone hello (spec §2.3, F4): it opens it under each
@@ -75,6 +76,7 @@ func (c *Center) HandleHello(zone, wireName string, env []byte) (Pending, error)
 		signingKey: opened.sigPub, agreementKey: opened.kxPub.Bytes(), linkNonce: opened.code.nonce,
 		sas: sas, confirmNonce: append([]byte(nil), confirm...), receivedAt: now,
 		typingRequested: payload.TypingRequested, startSessions: payload.StartSessions,
+		relayDeviceID: opened.relayID,
 	}
 	waiting := false
 	err = c.st.WithTx(context.Background(), func(tx *sql.Tx) error {
@@ -195,7 +197,29 @@ func (c *Center) checkHello(wireName string, env []byte, h secure.Header, f secu
 	if hello.Device.Scope != wire.ScopePrivate && hello.Device.Scope != wire.ScopeShared {
 		return drop("has an unknown scope")
 	}
-	return openedHello{hello: hello, device: id.String(), code: code, linkNonce: nonce, sigPub: sigPub, kxPub: kxPub}, nil
+	if hello.RelayDeviceID != "" && !validRelayDeviceID(hello.RelayDeviceID) {
+		return drop("has an unusable relay device id")
+	}
+	return openedHello{hello: hello, device: id.String(), code: code, linkNonce: nonce, sigPub: sigPub, kxPub: kxPub,
+		relayID: hello.RelayDeviceID}, nil
+}
+
+// relayDeviceIDLength is the length of a hosted-relay device id: unpadded
+// base32 of a SHA-256 digest.
+const relayDeviceIDLength = 52
+
+// validRelayDeviceID: lower-case unpadded base32 of 32 bytes, as the relay
+// derives device ids (identity.RelayDeviceID).
+func validRelayDeviceID(s string) bool {
+	if len(s) != relayDeviceIDLength {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '2' || r > '7') {
+			return false
+		}
+	}
+	return true
 }
 
 // keyBytes is a public key from the hello: base64url of exactly 32 bytes.
@@ -270,10 +294,12 @@ type pendingDevice struct {
 	receivedAt                   time.Time
 	typingRequested              bool
 	startSessions                bool
+	// relayDeviceID is the phone's hosted-relay device id from its hello, or "".
+	relayDeviceID string
 }
 
 const pendingColumns = `device_id, name, model, scope, signing_key, agreement_key, link_nonce, sas,
-	confirm_nonce, received_at, typing_requested, start_sessions`
+	confirm_nonce, received_at, typing_requested, start_sessions, relay_device_id`
 
 // scanPending reads a row; ok is false for a row missing a key column or the
 // confirm nonce (a request from before SAS v2 is never offered for a link).
@@ -282,10 +308,11 @@ func scanPending(r interface{ Scan(...any) error }) (pendingDevice, bool, error)
 		p                  pendingDevice
 		name, model, scope sql.NullString
 		nonce, sas         sql.NullString
+		relayID            sql.NullString
 		received           sql.NullFloat64
 	)
 	if err := r.Scan(&p.deviceID, &name, &model, &scope, &p.signingKey, &p.agreementKey, &nonce, &sas,
-		&p.confirmNonce, &received, &p.typingRequested, &p.startSessions); err != nil {
+		&p.confirmNonce, &received, &p.typingRequested, &p.startSessions, &relayID); err != nil {
 		return pendingDevice{}, false, err
 	}
 	if p.signingKey == nil || p.agreementKey == nil || !nonce.Valid || !sas.Valid || p.confirmNonce == nil || !received.Valid {
@@ -296,6 +323,7 @@ func scanPending(r interface{ Scan(...any) error }) (pendingDevice, bool, error)
 		p.scope = wire.ScopePrivate
 	}
 	p.linkNonce, p.sas, p.receivedAt = nonce.String, sas.String, fromReal(received.Float64)
+	p.relayDeviceID = relayID.String
 	return p, true, nil
 }
 
@@ -357,15 +385,15 @@ const (
 )
 
 // savePending stores p, drawing one of its code's confirm nonces (the Swift
-// savePendingDevice): the same device with the same code and keys is
-// unchanged and draws none; any other hello for the code — a new device, or
-// a known one under new keys — draws one and replaces that device's request,
-// until the code has drawn MaxNoncesPerCode.
+// savePendingDevice): the same device with the same code, keys and relay
+// device id is unchanged and draws none; any other hello for the code — a new
+// device, or a known one under new keys or another relay id — draws one and
+// replaces that device's request, until the code has drawn MaxNoncesPerCode.
 func savePending(tx *sql.Tx, p pendingDevice) (pendingSave, error) {
 	if stored, ok, err := pendingTx(tx, p.deviceID); err != nil {
 		return 0, err
 	} else if ok && stored.linkNonce == p.linkNonce && bytes.Equal(stored.signingKey, p.signingKey) &&
-		bytes.Equal(stored.agreementKey, p.agreementKey) {
+		bytes.Equal(stored.agreementKey, p.agreementKey) && stored.relayDeviceID == p.relayDeviceID {
 		return pendingUnchanged, nil
 	}
 	drawn, err := drawAnswer(tx, p.linkNonce, MaxNoncesPerCode)
@@ -375,9 +403,9 @@ func savePending(tx *sql.Tx, p pendingDevice) (pendingSave, error) {
 	if _, err := tx.Exec(`DELETE FROM pending_devices WHERE device_id = ? COLLATE NOCASE`, p.deviceID); err != nil {
 		return 0, err
 	}
-	_, err = tx.Exec(`INSERT INTO pending_devices (`+pendingColumns+`, user_record_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+	_, err = tx.Exec(`INSERT INTO pending_devices (`+pendingColumns+`, user_record_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
 		strings.ToUpper(p.deviceID), p.name, p.model, p.scope, p.signingKey, p.agreementKey, p.linkNonce, p.sas,
-		p.confirmNonce, secs(p.receivedAt), p.typingRequested, p.startSessions)
+		p.confirmNonce, secs(p.receivedAt), p.typingRequested, p.startSessions, nullText(p.relayDeviceID))
 	return pendingSaved, err
 }
 
@@ -462,4 +490,12 @@ func isLinked(tx *sql.Tx, device string) (bool, error) {
 	var linked bool
 	err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM devices WHERE device_id = ? COLLATE NOCASE)`, device).Scan(&linked)
 	return linked, err
+}
+
+// nullText stores "" as NULL.
+func nullText(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
