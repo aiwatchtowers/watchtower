@@ -558,3 +558,108 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertTrue(try TransportStore(path: path).isPending(recordName: "device-1", zone: .relay), "the file is intact")
     }
 }
+
+// MARK: - Hosted relay tables (#1240)
+
+extension TransportStoreTests {
+    private func storeFile(_ name: String) -> String {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("\(name)-\(UUID().uuidString).sqlite").path
+        addTeardownBlock {
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) }
+        }
+        return path
+    }
+
+    private func relayRecord(_ name: String, seq: UInt64, zone: CloudZoneID = .data) -> CloudRecord {
+        CloudRecord(
+            recordName: name, zone: zone, kind: WireKind.envelope, modifiedAt: stamp, payload: Data(name.utf8),
+            origin: RecordOrigin(serverAt: stamp), recordSeq: seq)
+    }
+
+    /// The four relay tables exist on every store and stay empty while CloudKit uses it.
+    func testRelayTablesAreEmptyOnACloudKitStore() throws {
+        let path = storeFile("transport-cloudkit")
+        let store = try TransportStore(path: path)
+        try store.adoptScope(.private, hubID: "hub-a")
+        try store.enqueueSave([record("device-1", zone: .relay)])
+        try store.bufferChanged([record("target-1")])
+        _ = try store.changes(in: .data, since: nil)
+        try store.close()
+
+        let queue = try DatabaseQueue(path: path)
+        defer { try? queue.close() }
+        try queue.read { db in
+            for table in ["relay_cursors", "relay_records", "relay_resync_seen", "relay_binding"] {
+                XCTAssertTrue(try db.tableExists(table), table)
+                XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)"), 0, table)
+            }
+        }
+    }
+
+    /// A store serves one route: bound to a relay Mac, it refuses a CloudKit scope and another Mac.
+    func testARelayBoundStoreRefusesACloudKitScope() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertTrue(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil), "a new binding")
+        XCTAssertFalse(try store.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil), "the same binding again")
+
+        XCTAssertThrowsError(try store.adoptScope(.private, hubID: "hub-a")) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+        XCTAssertThrowsError(try store.saveScope(.private, hubID: "hub-a")) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+        XCTAssertThrowsError(try store.adoptRelayBinding(macDeviceID: "mac-b", hubID: nil)) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+        XCTAssertNil(try store.storedScope())
+
+        let cloudKit = try TransportStore.inMemory()
+        try cloudKit.adoptScope(.private, hubID: "hub-a")
+        XCTAssertThrowsError(try cloudKit.adoptRelayBinding(macDeviceID: "mac-a", hubID: nil)) {
+            XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
+        }
+    }
+
+    /// One page: its events (with the record's seq and the writer's clock), the cursor.
+    func testARelayPageBuffersEventsAndMovesTheCursor() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertEqual(try store.relayCursor(zone: .data), 0)
+        try store.bufferRelayPage(zone: .data, changed: [relayRecord("a", seq: 1)], deleted: ["gone"], newSeq: 3, resync: false)
+        XCTAssertEqual(try store.relayCursor(zone: .data), 3)
+        XCTAssertEqual(try store.relayCursor(zone: .relay), 0)
+        let batch = try store.changes(in: .data, since: nil)
+        XCTAssertEqual(batch.changed.map(\.recordName), ["a"])
+        XCTAssertEqual(batch.changed.first?.recordSeq, 1)
+        XCTAssertEqual(batch.changed.first?.origin, RecordOrigin(serverAt: stamp))
+        XCTAssertEqual(batch.deletedRecordNames, ["gone"])
+
+        try store.failInserts(true)
+        XCTAssertThrowsError(try store.bufferRelayPage(zone: .data, changed: [relayRecord("b", seq: 4)], deleted: [], newSeq: 4, resync: false))
+        try store.failInserts(false)
+        XCTAssertEqual(try store.relayCursor(zone: .data), 3, "a page that could not be buffered leaves the cursor")
+    }
+
+    /// A finished resync deletes the names the server once returned and this resync did not.
+    func testAFinishedResyncDeletesOnlyUnseenKnownNames() throws {
+        let store = try TransportStore.inMemory()
+        try store.bufferRelayPage(
+            zone: .data, changed: [relayRecord("a", seq: 1), relayRecord("b", seq: 2)], deleted: [], newSeq: 2, resync: false)
+        let floor = try store.changes(in: .data, since: nil).newToken
+        XCTAssertFalse(try store.relayResyncPending(.data))
+
+        try store.beginRelayResync(.data)
+        XCTAssertTrue(try store.relayResyncPending(.data))
+        XCTAssertFalse(try store.relayResyncPending(.relay))
+        XCTAssertEqual(try store.relayCursor(zone: .data), 0)
+        try store.bufferRelayPage(zone: .data, changed: [relayRecord("a", seq: 1)], deleted: [], newSeq: 5, resync: true)
+        XCTAssertEqual(try store.changes(in: .data, since: floor).deletedRecordNames, [], "nothing deleted before the end")
+
+        XCTAssertEqual(try store.finishRelayResync(.data), ["b"])
+        XCTAssertFalse(try store.relayResyncPending(.data))
+        XCTAssertEqual(try store.changes(in: .data, since: floor).deletedRecordNames, ["b"])
+        XCTAssertEqual(try store.relayCursor(zone: .data), 5)
+
+        try store.beginRelayResync(.data)
+        XCTAssertEqual(try store.finishRelayResync(.data), ["a"], "b is no longer known")
+    }
+}
