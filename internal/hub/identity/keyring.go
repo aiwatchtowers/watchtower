@@ -503,6 +503,19 @@ func (k *Keyring) materialLocked(device secure.ID, row state.Device, ok bool) *r
 	return m
 }
 
+// Wipe zeroes and forgets every cached relay material (agreement keys,
+// link nonces, derived pairwise keys). The hub calls it when it stops,
+// beside zeroing the Identity; a keyring used again re-derives from the
+// device rows while its Identity is still intact.
+func (k *Keyring) Wipe() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for id := range k.relay {
+		k.dropLocked(id)
+	}
+	clear(k.unusable)
+}
+
 // dropLocked wipes and forgets the device's cached material; the caller
 // holds k.mu.
 func (k *Keyring) dropLocked(device secure.ID) {

@@ -65,6 +65,9 @@ const (
 	// checkEvery: how often Run re-reads the policy and the switch on its
 	// own (a control request or a daemon cycle wakes it sooner).
 	checkEvery = 5 * time.Second
+	// controlWriteTimeout: one control-socket line must go out within it,
+	// or the client is dropped.
+	controlWriteTimeout = 5 * time.Second
 	// startBackoffMax caps the wait between failed hub starts.
 	startBackoffMax = time.Minute
 )
@@ -76,6 +79,9 @@ var (
 	ErrNotTestWorkspace  = errors.New("hub: not a hubtest-* test workspace named by WATCHTOWER_HUB_TEST_WORKSPACE")
 	ErrNoRelayOrigin     = errors.New("hub: WATCHTOWER_RELAY_ORIGIN is not set to an http(s) origin")
 	ErrSidecarUnreadable = errors.New("hub: the hub state is unreadable")
+	// ErrStartFailed: a start step other than reading the sidecar failed
+	// (the identity file, a first-start write, the asset dir); retried.
+	ErrStartFailed = errors.New("hub: the hub could not start")
 )
 
 // Refusal is the class of a FromEnv or Run error for a log line, never its
@@ -88,6 +94,8 @@ func Refusal(err error) string {
 		return ReasonNotTestWorkspace
 	case errors.Is(err, ErrSidecarUnreadable):
 		return ReasonSidecarUnreadable
+	case errors.Is(err, ErrStartFailed):
+		return ReasonStartFailed
 	case errors.Is(err, ErrDirNotAbsolute):
 		return "dir_not_absolute"
 	case errors.Is(err, ErrSwiftHubDir):
@@ -123,6 +131,7 @@ type Options struct {
 	lockWindow   time.Duration
 	checkEvery   time.Duration
 	passEvery    time.Duration
+	writeTimeout time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -152,6 +161,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.passEvery <= 0 {
 		o.passEvery = passEvery
+	}
+	if o.writeTimeout <= 0 {
+		o.writeTimeout = controlWriteTimeout
 	}
 	return o
 }
@@ -552,6 +564,8 @@ func startFailure(err error) string {
 	switch {
 	case errors.Is(err, ErrSidecarUnreadable):
 		return ReasonSidecarUnreadable
+	case errors.Is(err, ErrStartFailed):
+		return ReasonStartFailed
 	case errors.Is(err, transport.ErrForbidden), errors.Is(err, transport.ErrEntitlementInactive):
 		return ReasonNotAdmitted
 	default:

@@ -171,10 +171,12 @@ func listenControl(path string) (net.Listener, error) {
 	return l, nil
 }
 
-// pairListener is one connection's pairing stream: its writer and the code
-// each phone was shown on it.
+// pairListener is one connection's pairing stream: its writer, its queue
+// of events (written by its own goroutine, so a stalled client never holds
+// up the other streams) and the code each phone was shown on it.
 type pairListener struct {
 	w     *answerWriter
+	queue chan ControlAnswer // guarded by supervisor.pairMu for sends and close
 	mu    sync.Mutex
 	codes map[string]string
 }
@@ -186,51 +188,92 @@ func (p *pairListener) code(device string) (string, bool) {
 	return c, ok
 }
 
-// broadcast hands a pairing event to every pairing stream.
+// pairQueue is how many events one pairing stream may have waiting; a
+// stream that falls further behind is dropped (its connection closed).
+const pairQueue = 64
+
+// broadcast hands a pairing event to every pairing stream without waiting
+// on any of them: a stream whose queue is full is dropped, the others get
+// every event.
 func (s *supervisor) broadcast(ev link.PairEvent) {
-	s.pairMu.Lock()
-	listeners := make([]*pairListener, 0, len(s.pairs))
-	for p := range s.pairs {
-		listeners = append(listeners, p)
-	}
-	s.pairMu.Unlock()
 	a := ControlAnswer{Event: ev.Kind, OK: true, URL: ev.URL, DeviceID: ev.DeviceID, Name: ev.Name, Code: ev.Code, Reason: ev.Reason}
 	if !ev.ExpiresAt.IsZero() {
 		at := ev.ExpiresAt
 		a.ExpiresAt = &at
 	}
-	for _, p := range listeners {
+	s.pairMu.Lock()
+	defer s.pairMu.Unlock()
+	for p := range s.pairs {
 		if ev.Kind == link.EventSAS {
 			p.mu.Lock()
 			p.codes[strings.ToUpper(ev.DeviceID)] = ev.Code
 			p.mu.Unlock()
 		}
-		p.w.write(a)
+		select {
+		case p.queue <- a:
+		default:
+			log.Printf("hub: control socket: a pairing stream fell behind and was dropped")
+			p.w.drop()
+		}
 	}
 }
 
-// answerWriter serialises a connection's lines (answers and events).
+// answerWriter serialises a connection's lines (answers and events). Each
+// line has writeTimeout to go out; a write that fails or times out closes
+// the connection, and every later write is skipped.
 type answerWriter struct {
-	mu  sync.Mutex
-	enc *json.Encoder
+	mu      sync.Mutex
+	c       net.Conn
+	enc     *json.Encoder
+	timeout time.Duration
+	dropped bool
 }
 
-func (w *answerWriter) write(a ControlAnswer) {
+func (w *answerWriter) write(a ControlAnswer) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_ = w.enc.Encode(a)
+	if w.dropped {
+		return false
+	}
+	if err := w.c.SetWriteDeadline(time.Now().Add(w.timeout)); err == nil {
+		if err = w.enc.Encode(a); err == nil {
+			return true
+		}
+	}
+	log.Printf("hub: control socket: a client stopped reading and was dropped")
+	w.dropLocked()
+	return false
+}
+
+// drop closes the connection (its reader then ends serveConn).
+func (w *answerWriter) drop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.dropLocked()
+}
+
+func (w *answerWriter) dropLocked() {
+	if !w.dropped {
+		w.dropped = true
+		_ = w.c.Close()
+	}
 }
 
 // serveConn answers one client's requests in order.
 func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 	defer func() { _ = c.Close() }()
-	w := &answerWriter{enc: json.NewEncoder(c)}
-	var pl *pairListener
+	w := &answerWriter{c: c, enc: json.NewEncoder(c), timeout: s.o.writeTimeout}
+	var (
+		pl      *pairListener
+		pumping sync.WaitGroup
+	)
 	defer func() {
 		if pl != nil {
 			s.pairMu.Lock()
 			delete(s.pairs, pl)
+			close(pl.queue)
 			s.pairMu.Unlock()
+			pumping.Wait()
 		}
 	}()
 	sc := bufio.NewScanner(c)
@@ -245,7 +288,14 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 			continue
 		}
 		if r.Op == OpPair && pl == nil {
-			pl = &pairListener{w: w, codes: map[string]string{}}
+			pl = &pairListener{w: w, queue: make(chan ControlAnswer, pairQueue), codes: map[string]string{}}
+			pumping.Add(1)
+			go func(p *pairListener) {
+				defer pumping.Done()
+				for a := range p.queue {
+					p.w.write(a)
+				}
+			}(pl)
 			s.pairMu.Lock()
 			s.pairs[pl] = true
 			s.pairMu.Unlock()
@@ -255,7 +305,9 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 		if a.Error != "" {
 			log.Printf("hub: control %s refused (%s)", opClass(r.Op), a.Error)
 		}
-		w.write(a)
+		if !w.write(a) {
+			return
+		}
 	}
 }
 

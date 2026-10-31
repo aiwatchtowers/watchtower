@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
@@ -566,6 +567,143 @@ func TestControlSocketIsPrivateAndChecksPeer(t *testing.T) {
 		t.Fatalf("enable: %+v, %v", a, err)
 	}
 	r.waitState(StateRunning, "")
+}
+
+// targetSource is a stand-in for a Plan 1b slice outside workbench_only.
+type targetSource struct{}
+
+func (targetSource) Kind() hubslices.Kind { return "target" }
+func (targetSource) Items(context.Context) ([]hubslices.Item, error) {
+	return []hubslices.Item{{ID: "T1", Payload: []byte(`{"id":"T1"}`)}}, nil
+}
+
+// TestWorkbenchOnlyRetriesAFailedDelete: when the switch to workbench_only
+// fails to delete a kind it no longer allows, the running hub deletes it on
+// a later housekeeping pass instead of forgetting it.
+func TestWorkbenchOnlyRetriesAFailedDelete(t *testing.T) {
+	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+	dir := shortDir(t)
+	setMeta(t, dir, state.MetaEnabled, "1")
+	linkPhoneDirectly(t, dir)
+	r := newRig(t, dir)
+	o := r.options()
+	o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{targetSource{}} }
+	r.start(o)
+	r.waitState(StateRunning, "")
+	s, err := ReadStatus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := transport.DataZone(s.RelayDeviceID)
+	count := func() int { return len(liveRecords(t, r.fake, data)) }
+	eventually(t, 10*time.Second, "the target published", func() bool { return count() >= 3 }) // grant, heartbeat, target
+	published := count()
+
+	r.fake.FailNext("delete", transport.ErrUnavailable)
+	policytest.Set(t, map[string]any{"MobileSync": "workbench_only"})
+	eventually(t, 10*time.Second, "the target deleted on a retry", func() bool { return count() == published-1 })
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if h, err := st.SliceHashes("target"); err != nil || len(h) != 0 {
+		t.Fatalf("the target's slice state is kept: %v %v", h, err)
+	}
+}
+
+// TestStartFailureHasItsOwnReason: a start step that is not a sidecar read
+// (here an identity file with loose permissions) reads starting/start_failed,
+// never sidecar_unreadable.
+func TestStartFailureHasItsOwnReason(t *testing.T) {
+	policytest.Set(t, nil)
+	dir := shortDir(t)
+	setMeta(t, dir, state.MetaEnabled, "1")
+	if err := os.WriteFile(filepath.Join(dir, identity.FileName), make([]byte, 136), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, dir)
+	r.start(r.options())
+	r.waitState(StateStarting, ReasonStartFailed)
+	if r.dials.Load() != 0 {
+		t.Fatal("a transport was built without an identity")
+	}
+}
+
+// TestControlSocketDropsAStalledClient: a pairing stream that stops reading
+// is dropped (write deadline or full queue) and never holds back another
+// stream, which gets every pairing event.
+func TestControlSocketDropsAStalledClient(t *testing.T) {
+	policytest.Set(t, nil)
+	dir := shortDir(t)
+	setMeta(t, dir, state.MetaEnabled, "1")
+	r := newRig(t, dir)
+	o := r.options()
+	o.writeTimeout = 200 * time.Millisecond
+	r.start(o)
+	r.waitState(StateRunning, "")
+
+	stalled, err := Dial(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stalled.Close() }()
+	if err := stalled.Send(ControlRequest{Op: OpPair}); err != nil {
+		t.Fatal(err)
+	}
+
+	good, err := Dial(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = good.Close() }()
+	var qrs atomic.Int32
+	answers := make(chan ControlAnswer, 1)
+	go func() {
+		for {
+			a, err := good.Next()
+			if err != nil {
+				close(answers)
+				return
+			}
+			switch {
+			case a.Event == link.EventQR:
+				qrs.Add(1)
+			case a.Op != "":
+				answers <- a
+			}
+		}
+	}()
+	const n = 60
+	for i := range n {
+		if err := good.Send(ControlRequest{Op: OpPair}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case a, ok := <-answers:
+			if !ok || !a.OK {
+				t.Fatalf("pair %d: %+v (open %v)", i, a, ok)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("pair %d: no answer: the stalled client holds the hub up", i)
+		}
+	}
+	eventually(t, 10*time.Second, "every qr event on the reading stream", func() bool { return qrs.Load() >= n })
+
+	// The stalled stream was closed: draining it ends in EOF, not a timeout.
+	_ = stalled.c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	buf := make([]byte, 64<<10)
+	for {
+		_, err := stalled.c.Read(buf)
+		if err == nil {
+			continue
+		}
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			t.Fatal("the stalled client was never dropped")
+		}
+		break
+	}
 }
 
 // TestEndToEndOverMemfake links a hubtest phone through the control socket

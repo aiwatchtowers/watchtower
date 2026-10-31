@@ -807,3 +807,48 @@ func TestRotateMovesWorkAlertsToTheNewGeneration(t *testing.T) {
 		t.Fatalf("after rotation: gen %d, mark %+v", gen, marks["ask-1"])
 	}
 }
+
+func TestKeyring_WipeZeroesRelayMaterialAndReDerives(t *testing.T) {
+	st := openStore(t)
+	k := newKeyring(t, st, newClock())
+	dev, _ := linkPhone(t, st, run(0xA0, 0xBF))
+	before, err := k.RelayKey(secure.PhoneToHub, dev, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.mu.Lock()
+	m := k.relay[dev]
+	k.mu.Unlock()
+	if m == nil || len(m.keys) == 0 {
+		t.Fatal("no cached relay material before Wipe")
+	}
+	var held [][]byte
+	for _, key := range m.keys {
+		held = append(held, key)
+	}
+	nonce := m.nonce
+
+	k.Wipe()
+	for _, key := range held {
+		if !allZero(key) {
+			t.Fatal("a cached relay key survived Wipe")
+		}
+	}
+	if !allZero(nonce) {
+		t.Fatal("the cached link nonce survived Wipe")
+	}
+	k.mu.Lock()
+	left := len(k.relay)
+	k.mu.Unlock()
+	if left != 0 || m.keys != nil || m.peer != nil {
+		t.Fatalf("material still cached after Wipe: %d entries", left)
+	}
+
+	again, err := k.RelayKey(secure.PhoneToHub, dev, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(again, before) || allZero(again) {
+		t.Fatal("the keyring did not re-derive the same relay key after Wipe")
+	}
+}

@@ -30,6 +30,9 @@ const (
 	ReasonSidecarUnreadable = "sidecar_unreadable"
 	ReasonNotAdmitted       = "not_admitted"
 	ReasonRelayUnreachable  = "relay_unreachable"
+	// ReasonStartFailed: a start step failed that is neither the sidecar
+	// nor the relay (state starting, retried with backoff).
+	ReasonStartFailed = "start_failed"
 )
 
 // Status is what `hub status` shows. Its JSON keys are the CLI's pinned keys.

@@ -109,16 +109,16 @@ func loadIdentity(dir string) (identity.Identity, error) {
 	id, err := fs.Load()
 	if errors.Is(err, identity.ErrNoIdentity) {
 		if id, err = identity.New(); err != nil {
-			return identity.Identity{}, err
+			return identity.Identity{}, fmt.Errorf("%w: %w", ErrStartFailed, err)
 		}
 		if err := fs.Save(id); err != nil {
 			id.Zero()
-			return identity.Identity{}, err
+			return identity.Identity{}, fmt.Errorf("%w: %w", ErrStartFailed, err)
 		}
 		return id, nil
 	}
 	if err != nil {
-		return identity.Identity{}, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+		return identity.Identity{}, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
 	return id, nil
 }
@@ -134,7 +134,7 @@ func dataZoneOf(id identity.Identity) string {
 func (o Options) relayTransport(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
 	assets := filepath.Join(o.Dir, assetDirName)
 	if err := os.MkdirAll(assets, 0o700); err != nil {
-		return nil, fmt.Errorf("hub: creating the asset dir: %w", err)
+		return nil, fmt.Errorf("%w: creating the asset dir: %w", ErrStartFailed, err)
 	}
 	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth), relay.Options{
 		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets,
@@ -160,7 +160,7 @@ func closeTransport(t transport.Transport) {
 func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubRuntime, error) {
 	o, st := s.o, s.st
 	if err := ensureEnabledAt(st, o.Clock()); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
 	id, err := loadIdentity(o.Dir)
 	if err != nil {
@@ -173,19 +173,26 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	ok := false
 	defer func() {
 		if !ok {
+			if h.kr != nil {
+				h.kr.Wipe()
+			}
 			h.id.Zero()
 		}
 	}()
 	h.kr, err = identity.NewKeyring(h.id, st, o.Clock)
-	if err != nil {
+	if errors.Is(err, identity.ErrSealedKeyUnreadable) {
+		// The sidecar's sealed keys do not open under this identity.
 		return nil, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
 	authPub := h.id.RelayAuth.Public().(ed25519.PublicKey)
 	h.relayID = identity.RelayDeviceID(authPub)
 	h.data = transport.DataZone(h.relayID)
 	zones, err := h.zones()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
 	}
 	if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
@@ -498,6 +505,15 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
+	if h.mode == policy.MobileWorkbenchOnly {
+		// What the switch to workbench_only failed to delete: no source
+		// publishes those kinds now, so whatever is left is retried here.
+		if left, err := publishedRecords(h.st, workbenchOnly); err != nil {
+			log.Printf("hub: reading what was published failed (%s)", errClass(err))
+		} else {
+			wipe(ctx, h.st, h.tr, h.data, left)
+		}
+	}
 	if rep, err := h.proc.Hygiene(ctx); err != nil {
 		log.Printf("hub: hygiene failed (%s)", errClass(err))
 	} else if rep.Ran {
@@ -535,6 +551,7 @@ func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 		cancel()
 	}
 	closeTransport(h.tr)
+	h.kr.Wipe()
 	h.id.Zero()
 }
 
