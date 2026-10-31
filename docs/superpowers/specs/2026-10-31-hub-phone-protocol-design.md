@@ -77,7 +77,7 @@ Suite 1 only: X25519, Ed25519, HKDF-SHA256, ChaCha20-Poly1305, HPKE RFC 9180 `DH
 | `dev_sig` (Ed25519), `dev_kx` (X25519) | phone | signs hellos; receives keyboxes; derives relay keys |
 | relay key `K_relay[dir, e]` | hub + one phone | `HKDF-SHA256(X25519(hub_kx, dev_kx), salt: link_nonce, info: "wt/relay/v1/" ‖ p2h\|h2p ‖ 0x00 ‖ hub_id(16) ‖ device_id(16) ‖ epoch u32 BE)` |
 
-- **Epochs.** A new epoch on a phone's removal, on the cap (90 days or 2^28 seqs) and, with the relay, on every transport switch (RC §9). The previous epoch's relay-lane envelopes are accepted for 7 days; the hub publishes the window again under `e+1`.
+- **Epochs.** A new epoch on a phone's removal, on the cap (90 days or 2^28 seqs) and, with the relay, on every transport switch (RC §9). The previous epoch's relay-lane envelopes are accepted for 7 days — for every rotation, transport-switch epochs included (ask #843: sim rule 14's "no longer than 14 days" is not used; the hub may retire an epoch earlier once every phone acked a newer one and nothing sealed in it is held); the hub publishes the window again under `e+1`.
 - **Sequence numbers.** Each sender draws envelope `seq` (u64, from 1) from a crash-safe allocator; `0` means "none". Envelope `seq` is the rollback counter only; it is not an action order (§7.5).
 
 ### 4.3 Envelope
@@ -385,6 +385,8 @@ Plain name `c-<uuid>`, frame kind `control`, sealed like an action in the sender
 | `transport_switch_rejected` | hub → phone | `reason`, `retry_after_s` | Go hub writes |
 | `hub_on_relay` | hub → free phone | none | Proposed |
 
+**Switch notice in the transport being left** (ask #843, Proposed; closes open point 6). On every accepted switch, in both directions, before it stops publishing there, the hub writes into the transport it leaves, sealed in the old epoch: the `transport_switched` control to every phone's mailbox there, whatever action path the phone is on, and the transport marker (plain kind `transport`, id `marker`, the latest `transport_switched` minus `keybox` and `device_id`) into that transport's data zone (`DataZone-<hub_id>` or `data/<hub>`), never swept by hygiene. A phone reads mailbox controls and the data-zone marker independently of the ordered path; on `target: relay` without a subscription it acts as on `hub_on_relay`. No existing record of today's Kit can carry this: `WorkAlertPayload.Event` is a closed enum and `owner_ask` would show a false event, and `device_grant`/`heartbeat` describe the link, not a move. A phone whose Kit predates control records reads it after its next update.
+
 ### 7.7 Recording uploads
 
 Not an action: record `recupload-<upload id>`, kind `recording_upload`, no order and no handler table, its own ledger. Payload `{id, started_at, ended_at, duration_sec, title_hint?, sample_format, status, error_message?, event_id?, device_id?, hub_id?}`, the audio as a sealed asset (§4.4). No age window; a retry reuses the same name and bytes. The hub rewrites the record without the asset: `received`, or `failed` with an owner-facing `error_message` — the upload echo has **no `reason` key** (the class stays in the hub's ledger). The phone deletes its plain audio and ciphertext only on `received`; a `failed` echo keeps both. Progress then arrives as the `recording_job` slice.
@@ -539,6 +541,8 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 - A held ask answer is delivered at most once; after a crash mid-delivery it stays readable via `get_ask` and the brief — plan 1b ruling.
 - A held upload expires after 7 days with `failed`/`expired`, the phone keeping its audio — decided by agent; owner confirms on this review (ask #832).
 - Phone UI and mockups are out of this document; they belong to the relay client spec — decided by agent; owner confirms on this review (ask #832).
+- On every transport switch, both directions, the hub writes a sealed switch notice (`transport_switched` to each phone's mailbox plus the transport marker in the data zone) into the transport it is leaving, before it stops publishing there; a phone reads them independently of the ordered path. This closes open point 6 — owner, ask #843.
+- Old-epoch keys are kept 7 days for every rotation, transport-switch epochs included; sim rule 14's 14 days is not used. A phone away longer gets `resend_from` for its old-epoch actions and reseals them with the same `action_seq` — owner, ask #843.
 
 ## Open points
 
@@ -547,7 +551,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 3. **Old-epoch resend bytes.** Relay design §4.2 p. 6: an old-epoch action the hub can no longer open is answered `resend_from` and the phone reseals it under the new epoch with the same `seq` — not the same bytes, while RC §5 / sim rule 13 and the Kit's outbox say resends are byte-for-byte. Which rule wins after a switch is not written down.
 4. **Late echo on the ordered path.** The Go hub moves `last_applied_action_seq` on any handler answer, including a non-final `held` session line; the later final echo of that line (Swift `lateEcho`) has no ordered-path rule yet (it is outside the order, at the same name). Needed before `session_input` is ported.
 5. **Mac attestation.** The relay's client requirements (§1, §3, §9) still say every device attests with App Attest and a Mac without it stays on CloudKit; asks #800/#801 replaced that with vouching. The relay repo's document is not updated, and the relay has no `vouch_hub` yet (relay ask #805).
-6. **`hub_on_relay` carrier.** Relay design §4.2 p. 3 says the hub "publishes `hub_on_relay` in CloudKit"; RC §5 and Go `wire.Control` make it a control record in the free phone's mailbox. A control record needs the ordered path on that phone; a free phone on the legacy path would not read it.
+6. ~~**`hub_on_relay` carrier.**~~ **Resolved (ask #843):** the switch notice in the transport being left (§7.6) reaches every phone whose Kit decodes control records, a phone on the legacy action path included (today's App Store build reads it after its next update). Relay design §4.2 p. 3 says the hub "publishes `hub_on_relay` in CloudKit"; RC §5 and Go `wire.Control` make it a control record in the free phone's mailbox. A control record needs the ordered path on that phone; a free phone on the legacy path would not read it.
 7. **Hub count.** The phone links up to 4 hubs (`HubRegistry.limit`); a relay subscription holds 3 hub slots. What the phone shows for a 4th hub on the relay is not specified.
 8. **`probe` without a nonce.** The Swift hub answers `failed`/`invalid_params`, the Go hub `applied`. Harmless (today's phone always sends one) but a divergence.
 9. **`not_supported` on the wire.** The Go hub's `failed(not_supported)` exists only in its ledger: the upload echo has no `reason`, and the Kit's `ActionReason` has no `not_supported`. §9 proposes adding both (kept as Proposed after review).

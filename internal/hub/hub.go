@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -41,8 +42,10 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/slices"
+	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/policy"
@@ -120,9 +123,13 @@ type Options struct {
 	Clock                           func() time.Time
 	Register                        func(*actions.Dispatcher)
 	Sources                         func(*state.Store) []slices.Source
+	// Sessions is the session-host port of the handlers; nil answers no
+	// session live (the real port is Plan 1b Task 15).
+	Sessions handlers.SessionPort
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)
+	httpClient   *http.Client // the relay client's and the attachments' (nil = their own)
 	openStore    func(dir string) (*state.Store, error)
 	report       func(Status)
 	peerUID      func(*net.UnixConn) (int, error)
@@ -131,9 +138,15 @@ type Options struct {
 	lockWindow   time.Duration
 	checkEvery   time.Duration
 	passEvery    time.Duration
+	linkEvery    time.Duration
 	writeTimeout time.Duration
 	pairQueue    int // events one pairing stream may have waiting (0 = pairQueue)
-	sendBuffer   int // SO_SNDBUF of each accepted control connection (0 = the OS default)
+	trace        func(step string)
+	reportFetch  sources.ReportFetch // nil = the in-process report
+	gitFetch     sources.GitFetch    // nil = the in-process git status
+	laneBackstop time.Duration       // 0 = laneBackstop
+	runnerGap    time.Duration       // 0 = the runners' standard 5 s
+	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
 }
 
 func (o Options) withDefaults() Options {
@@ -163,6 +176,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.passEvery <= 0 {
 		o.passEvery = passEvery
+	}
+	if o.linkEvery <= 0 {
+		o.linkEvery = linkEvery
 	}
 	if o.writeTimeout <= 0 {
 		o.writeTimeout = controlWriteTimeout
@@ -519,9 +535,9 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 	s.setStatus(st)
 }
 
-// setStatus records the status: the report hook sees every one; the file
-// gets it unless this Run waits for the lock while another live run's
-// status is there.
+// setStatus records the status: the file gets it unless this Run waits for
+// the lock while another live run's status is there; the report hook then
+// sees every one (after the file, so a reader that saw it reads it there).
 func (s *supervisor) setStatus(st Status) {
 	st.Dir = s.o.Dir
 	s.statusMu.Lock()
@@ -530,14 +546,13 @@ func (s *supervisor) setStatus(st Status) {
 		return
 	}
 	s.status = st
+	if s.locked || !s.otherLiveStatus() {
+		if err := writeStatusRun(s.o.Dir, st, s.run); err != nil {
+			log.Printf("hub: writing the status failed (%s)", errClass(err))
+		}
+	}
 	if s.o.report != nil {
 		s.o.report(st)
-	}
-	if !s.locked && s.otherLiveStatus() {
-		return
-	}
-	if err := writeStatusRun(s.o.Dir, st, s.run); err != nil {
-		log.Printf("hub: writing the status failed (%s)", errClass(err))
 	}
 }
 

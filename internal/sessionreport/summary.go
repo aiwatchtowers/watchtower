@@ -37,6 +37,10 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 	if err != nil {
 		return nil, err
 	}
+	owners, err := d.SessionLeafOwners(workbenchID)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := d.QueryContext(ctx, `SELECT id, target_id, finished_at FROM terminal_sessions
 		WHERE project_id = ? AND kind IN `+agentkind.SQLKinds()+` ORDER BY id`, workbenchID)
 	if err != nil {
@@ -51,8 +55,8 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 		if err := rows.Scan(&s.SessionID, &target, &finishedAt); err != nil {
 			return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)
 		}
-		sc := newScope(b, target, links[s.SessionID])
-		p := sc.progress()
+		sc := newScope(b, s.SessionID, target, links[s.SessionID], owners)
+		p := sc.counts()
 		s.TargetID, s.Done, s.Total, s.FinishedAt = nullableInt(target), p.Done, p.Total, finishedAt.String
 		s.PRLine = sc.prLine(sc.prs(states))
 		out = append(out, s)

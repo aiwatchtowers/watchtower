@@ -2,7 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -441,4 +443,145 @@ func TestSessionLinkedTargetsTxReadsInsideTheTransaction(t *testing.T) {
 		assert.Equal(t, []int64{tid}, ids)
 		return nil
 	}))
+}
+
+var sessionUUIDCounter atomic.Int64
+
+// nextSessionUUID is a distinct claude_session_id for each seeded session.
+func nextSessionUUID() string {
+	return fmt.Sprintf("00000000-0000-4000-8000-%012d", sessionUUIDCounter.Add(1))
+}
+
+func setStatusAt(t *testing.T, d *DB, sid, tid int64, at any) {
+	t.Helper()
+	_, err := d.Exec(`INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at, status_at)
+		VALUES (?, ?, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z', ?)
+		ON CONFLICT (session_id, target_id) DO UPDATE SET status_at = excluded.status_at`, sid, tid, at)
+	require.NoError(t, err)
+}
+
+func TestSessionLeafOwners_LatestStatusWinsTieHigherID(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "owners.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	pid := newTestWorkbench(t, d)
+	leafA := insertWorkbenchTargetRow(t, d, pid, "a")
+	leafB := insertWorkbenchTargetRow(t, d, pid, "b")
+	s1 := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
+	s2 := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
+	setStatusAt(t, d, s1, leafA, "2026-10-01T10:00:00Z")
+	setStatusAt(t, d, s2, leafA, "2026-10-01T11:00:00Z")
+	s3 := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
+	s4 := newAgentStateRow(t, d, pid, "codex", nextSessionUUID())
+	setStatusAt(t, d, s3, leafB, "2026-10-01T12:00:00Z")
+	setStatusAt(t, d, s4, leafB, "2026-10-01T12:00:00Z")
+	got, err := d.SessionLeafOwners(pid)
+	require.NoError(t, err)
+	assert.Equal(t, map[int64]int64{leafA: s2, leafB: s4}, got)
+}
+
+func TestSessionLeafOwners_NullStatusAtGivesNothing(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "owners-null.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	pid := newTestWorkbench(t, d)
+	leaf := insertWorkbenchTargetRow(t, d, pid, "a")
+	s := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
+	require.NoError(t, d.LinkSessionTarget(s, leaf))
+	got, err := d.SessionLeafOwners(pid)
+	require.NoError(t, err)
+	assert.NotContains(t, got, leaf)
+}
+
+func TestSessionLeafOwners_IgnoresShellAndOtherWorkbench(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "owners-scope.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	leaf := insertWorkbenchTargetRow(t, d, pid, "a")
+	shell := newAgentStateRow(t, d, pid, "shell", nil)
+	foreign := newAgentStateRow(t, d, other, "claude", nextSessionUUID())
+	setStatusAt(t, d, shell, leaf, "2026-10-01T10:00:00Z")
+	setStatusAt(t, d, foreign, leaf, "2026-10-01T11:00:00Z")
+	got, err := d.SessionLeafOwners(pid)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestMigration00167_BackfillsStatusAtFromLastAt(t *testing.T) {
+	t.Parallel()
+	raw, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	require.NoError(t, gooseUpTo(raw, "migrations", 166))
+	for _, q := range []string{
+		`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')`,
+		`INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id)
+			VALUES (1, 't', 'custom', 'project', '2026-09-29', '2026-09-29', 'chat', 1)`,
+		`INSERT INTO terminal_sessions (id, project_id, kind, title, folder_path) VALUES (1, 1, 'shell', 's', '/tmp/acme')`,
+		`INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at)
+			VALUES (1, 1, '2026-10-01T09:00:00Z', '2026-10-02T09:00:00Z')`,
+	} {
+		_, err := raw.Exec(q)
+		require.NoError(t, err, q)
+	}
+	require.NoError(t, gooseUpTo(raw, "migrations", 167))
+	var statusAt, lastAt string
+	require.NoError(t, raw.QueryRow(`SELECT status_at, last_at FROM terminal_session_targets`).Scan(&statusAt, &lastAt))
+	assert.Equal(t, lastAt, statusAt)
+}
+
+func TestSetSessionTarget_OneTransaction(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "set-target-tx.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	pid := newTestWorkbench(t, d)
+	target := insertWorkbenchTargetRow(t, d, pid, "t")
+	s := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
+	// 999999 has no targets row: its link insert fails the foreign key.
+	err = d.SetSessionTarget(s, nullID(target), []int64{999999})
+	require.Error(t, err)
+	var tid sql.NullInt64
+	require.NoError(t, d.QueryRow(`SELECT target_id FROM terminal_sessions WHERE id = ?`, s).Scan(&tid))
+	assert.False(t, tid.Valid, "target_id must be unchanged")
+	assert.Zero(t, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = ?`, s))
+}
+
+func TestSetSessionTarget_Idempotent(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "set-target-idem.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	pid := newTestWorkbench(t, d)
+	target := insertWorkbenchTargetRow(t, d, pid, "t")
+	leaf := insertWorkbenchTargetRow(t, d, pid, "leaf")
+	s := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
+	require.NoError(t, d.SetSessionTarget(s, nullID(target), []int64{leaf}))
+	setStatusAt(t, d, s, leaf, "2000-01-01T00:00:00Z")
+	require.NoError(t, d.SetSessionTarget(s, nullID(target), []int64{leaf}))
+	var statusAt string
+	require.NoError(t, d.QueryRow(`SELECT status_at FROM terminal_session_targets WHERE session_id = ? AND target_id = ?`,
+		s, leaf).Scan(&statusAt))
+	assert.NotEqual(t, "2000-01-01T00:00:00Z", statusAt, "stamp moved")
+	assert.Equal(t, 2, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = ?`, s))
+	owners, err := d.SessionLeafOwners(pid)
+	require.NoError(t, err)
+	assert.Equal(t, s, owners[target])
+	assert.Equal(t, s, owners[leaf])
+}
+
+func TestSetSessionTarget_ClearKeepsLinks(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "set-target-clear.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	pid := newTestWorkbench(t, d)
+	target := insertWorkbenchTargetRow(t, d, pid, "t")
+	s := newAgentStateRow(t, d, pid, "claude", nextSessionUUID())
+	require.NoError(t, d.SetSessionTarget(s, nullID(target), nil))
+	require.NoError(t, d.SetSessionTarget(s, sql.NullInt64{}, nil))
+	var tid sql.NullInt64
+	require.NoError(t, d.QueryRow(`SELECT target_id FROM terminal_sessions WHERE id = ?`, s).Scan(&tid))
+	assert.False(t, tid.Valid)
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = ?`, s))
 }

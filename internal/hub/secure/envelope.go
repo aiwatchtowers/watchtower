@@ -134,6 +134,14 @@ func (e envelope) encode() []byte {
 	return append(out, e.signature...)
 }
 
+// ParseHeader checks that b is a well-formed envelope (the strict header,
+// the body length, the signature's presence) and returns its header. It
+// opens nothing: a check that bytes on the wire are envelopes.
+func ParseHeader(b []byte) (Header, error) {
+	e, err := parseEnvelope(b)
+	return e.header, err
+}
+
 // parseEnvelope refuses an envelope above MaxEnvelopeBytes, a bad header and
 // any length mismatch.
 func parseEnvelope(b []byte) (envelope, error) {
