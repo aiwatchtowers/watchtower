@@ -527,7 +527,7 @@ func (s *newStart) insert(ctx context.Context) error {
 func (s *newStart) finish(ctx context.Context) error {
 	c, done, err := s.d.lease(ctx)
 	if err != nil {
-		s.markFailed(ctx, "the session host is not running")
+		s.markFailed(ctx, hostDownReason(err))
 		return err
 	}
 	var hostErr error
@@ -735,6 +735,17 @@ func occupies(branch, folder, cwd, workbenchFolder string) bool {
 		return WorktreeTop(cwd) == ""
 	}
 	return branch == "" && filepath.Clean(folder) == filepath.Clean(workbenchFolder)
+}
+
+// hostDownReason is the row's reason when no host answers: a Linux start
+// that systemd-run refused names its class (no detached spawn follows).
+func hostDownReason(err error) string {
+	const down = "the session host is not running"
+	var um *sessionhost.UserManagerError
+	if errors.As(err, &um) {
+		return down + ": no systemd user manager (" + um.Class + ")"
+	}
+	return down
 }
 
 func (s *newStart) markFailed(ctx context.Context, reason string) {

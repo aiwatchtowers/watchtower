@@ -283,7 +283,7 @@ func TestPortStartFailuresAreNeverStarted(t *testing.T) {
 	_, err = unplaced.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go", Place: "worktree"})
 	require.ErrorContains(t, err, "into its worktree")
 
-	unreachable := w.portWith(func(d *Deps) { d.Socket = filepath.Join(t.TempDir(), "none.sock") })
+	unreachable := w.portWith(func(d *Deps) { d.Socket = droppingSocket(t) })
 	res, err = unreachable.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go"})
 	require.Error(t, err)
 	assert.Equal(t, StateFailed, res.State)

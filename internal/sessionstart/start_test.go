@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -123,6 +125,30 @@ func (w *world) list() []sessionhost.SessionInfo {
 }
 
 // reapAll kills every hosted process group and waits until each is gone.
+// droppingSocket is a host that cannot be reached: it hangs up on every
+// connection before Hello, so Ensure gives up without starting a host (an
+// absent socket would start one, on Linux through the real systemd-run).
+func droppingSocket(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ss")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "drop.sock")
+	l, err := net.Listen("unix", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			nc, err := l.Accept()
+			if err != nil {
+				return
+			}
+			_ = nc.Close()
+		}
+	}()
+	return path
+}
+
 func (w *world) reapAll() {
 	c, err := sessionhost.Dial(context.Background(), w.socket)
 	if err != nil {
@@ -325,6 +351,14 @@ func TestSessionStartUsesTheOverrideSocket(t *testing.T) {
 	res, err := Start(context.Background(), d, handlers.StartRequest{Workbench: w.wb, Brief: "go"})
 	require.NoError(t, err)
 	w.launched(res.SessionID)
+}
+
+// A Linux host start that systemd-run refused keeps its class in the row's
+// reason (and so in the phone's echo); any other failure keeps the plain one.
+func TestHostDownReasonKeepsTheUserManagerClass(t *testing.T) {
+	um := fmt.Errorf("the session host is not running: %w", &sessionhost.UserManagerError{Class: "no_user_bus"})
+	assert.Equal(t, "the session host is not running: no systemd user manager (no_user_bus)", hostDownReason(um))
+	assert.Equal(t, "the session host is not running", hostDownReason(errors.New("dial: connection reset")))
 }
 
 // A stop is the host's Stop request: the attached pane sees an Exit with
