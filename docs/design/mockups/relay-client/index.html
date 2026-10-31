@@ -44,6 +44,15 @@ th{color:#8e8e93;font-weight:500;border-top:0}
 .banner{background:#3a2a17;color:#ffcf8a;border-radius:10px;margin:0 4px 12px;padding:10px 12px;font-size:13px}
 .cta{background:#0a84ff;color:#fff;border-radius:12px;text-align:center;padding:12px;font-weight:600;margin:8px 4px}
 .link{color:#0a84ff}
+.dim{color:#8e8e93}
+.red{color:#ff453a}
+.off{color:#5a5a5e}
+.chip{display:inline-block;background:#1c1c1e;border-radius:10px;padding:2px 10px;font-size:12px;color:#8e8e93;margin:0 8px 10px}
+.sheet{margin:auto 4px 4px;display:flex;flex-direction:column;gap:8px}
+.sheet .box{background:#2c2c2e;border-radius:14px;text-align:center}
+.sheet .box div{padding:12px;font-size:15px;border-top:1px solid #3a3a3c}
+.sheet .box div:first-child{border-top:0;color:#8e8e93;font-size:12px}
+.dimmed{opacity:.35}
 </style></head><body>
 <h1>Relay client — mockups (2026-10-29)</h1>
 <div class="note">Spec: docs/superpowers/specs/2026-10-29-relay-client-design.md. Copy and layout only; colours follow the design kit when built (docs/design/desktop-style-guide.md): Desktop rows are `SettingsSection` + `.kitRow`, no separators, row actions on hover. Sample names are neutral.</div>
@@ -164,6 +173,52 @@ Changes reach your phone in under a second instead of tens of seconds.<br><br>
 <div class="iitem"><span class="grow">Move “Fix login” to Done<div class="sub">Today 09:59</div></span><span class="link">Retry</span></div>
 </div>
 <div class="igroup"><div class="iitem" style="color:#ff453a">Dismiss All</div></div>
+</div>
+</div>
+
+<h2>5a. iPhone — Phase 1 states of Not delivered (no banner yet)</h2>
+<div class="note">Phase 1 shows the queue and the undelivered list without the "Relay unavailable" banner; the banner joins in Phase 4 (Ruling 12). Sample names are neutral.</div>
+<div class="row">
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="nav">Now</div>
+<div><span class="chip">Work Mac · updated 10:41</span></div>
+<div class="ihead">Waiting to send · <span class="dim">3</span></div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Answer “Use the staging DB?” — Yes<div class="sub">Today 09:58</div></span></div>
+<div class="iitem"><span class="grow">Move “Fix login” to Done<div class="sub">Today 09:59</div></span></div>
+<div class="iitem"><span class="grow">Comment on “Update docs”<div class="sub">Today 10:02</div></span></div>
+</div>
+<div class="igroup"><div class="iitem red"><span class="grow">Not delivered · 2</span><span class="chev">›</span></div></div>
+<div class="ihead">Waiting for you</div>
+<div class="igroup"><div class="iitem">Review “Release notes”</div></div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Now</div><div class="nav dimmed">Not delivered</div>
+<div class="igroup dimmed">
+<div class="iitem"><span class="grow">Answer “Use the staging DB?” — Yes<div class="sub">Today 09:58</div></span><span class="link">Retry</span></div>
+<div class="iitem"><span class="grow">Move “Fix login” to Done<div class="sub">Today 09:59</div></span><span class="link">Retry</span></div>
+</div>
+<div class="sheet"><div class="box"><div>Dismiss 2 actions? They won't be sent.</div><div class="red" style="font-weight:600">Dismiss All</div></div><div class="box"><div style="color:#0a84ff;font-size:15px;font-weight:600">Cancel</div></div></div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Now</div><div class="nav">Not delivered</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Answer “Use the staging DB?” — Yes<div class="sub">Today 09:58</div><div class="sub">Unlock your iPhone to retry.</div></span><span class="off">Retry</span></div>
+<div class="iitem"><span class="grow">Move “Fix login” to Done<div class="sub">Today 09:59</div></span><span class="link">Retry</span></div>
+</div>
+<div class="ifoot">Retry on this row is disabled while its retry runs.</div>
+<div class="igroup"><div class="iitem red">Dismiss All</div></div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Now</div><div class="nav">Not delivered</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Move “Fix login” to Done<div class="sub">Yesterday 09:59 · No answer from Work Mac for 24 hours</div></span><span class="link">Retry</span></div>
+<div class="iitem"><span class="grow">Answer “Use the staging DB?” — Yes<div class="sub">Today 09:58</div></span><span class="link">Retry</span></div>
+</div>
+<div class="ifoot">First row: withdrawn after 24 h. Second row: refused, so only its time shows.</div>
 </div>
 </div>
 
