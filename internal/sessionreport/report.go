@@ -132,7 +132,7 @@ func Build(ctx context.Context, d *db.DB, workbenchID, sessionID int64, opts Opt
 	if err != nil {
 		return Report{}, err
 	}
-	r := Report{Session: sess, Progress: sc.progress(), OnYou: []Ask{}, Now: []NowItem{}, Next: []Item{},
+	r := Report{Session: sess, Progress: sc.counts(), OnYou: []Ask{}, Now: []NowItem{}, Next: []Item{},
 		Phases: sc.phases(spans), PRs: sc.prs(states), PRNote: opts.PRNote}
 	for _, a := range asks {
 		r.OnYou = append(r.OnYou, Ask{ID: a.ID, Kind: a.Kind, Title: a.Title, TargetID: nullableInt(a.TargetID),

@@ -44,6 +44,12 @@ type GitRefresherOptions struct {
 	Fetch  GitFetch
 	Active func() bool
 	Now    func() time.Time
+	// OnChange (nil = none) is called when a workbench's stored status
+	// changed: the hub publishes the workbench slice then.
+	OnChange func()
+	// MinimumGap (0 = the standard 5 s) is a test seam: the least time
+	// between two passes a signal starts.
+	MinimumGap time.Duration
 }
 
 // GitRefresher keeps each published workbench's git status for the
@@ -72,7 +78,7 @@ func NewGitRefresher(d *db.DB, o GitRefresherOptions) *GitRefresher {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	g := &GitRefresher{d: d, o: o, c: newCadence[GitSnapshot](o.Timing.Every, o.Timing.MinSpacing), wake: newRunnerWake()}
+	g := &GitRefresher{d: d, o: o, c: newCadence[GitSnapshot](o.Timing.Every, o.Timing.MinSpacing), wake: newRunnerWake(o.MinimumGap)}
 	if g.o.Fetch == nil {
 		g.o.Fetch = g.readStatus
 	}
@@ -148,7 +154,12 @@ func (g *GitRefresher) refresh(ctx context.Context, id int64) bool {
 	case !st.StatusOK:
 		log.Printf("hub slices: git status for workbench %d could not be read; keeping the last value", id)
 	default:
-		g.c.store(id, gitSnapshot(st))
+		snap := gitSnapshot(st)
+		old, had := g.c.value(id)
+		g.c.store(id, snap)
+		if (!had || old != snap) && g.o.OnChange != nil {
+			g.o.OnChange()
+		}
 	}
 	return true
 }

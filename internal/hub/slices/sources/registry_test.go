@@ -73,7 +73,7 @@ func TestAllRunnersAreTheThreeLoops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(set.Runners) != 3 || set.Report == nil || set.Git == nil || set.Chat == nil || set.Timeline == nil {
+	if len(set.Runners) != 3 || set.Report == nil || set.Git == nil || set.Chat == nil || set.Timeline == nil || set.Sessions == nil {
 		t.Errorf("runners %d", len(set.Runners))
 	}
 }
@@ -84,5 +84,36 @@ func TestAllNeedsItsInputs(t *testing.T) {
 	}
 	if _, err := All(Config{DB: openDB(t), Store: openSidecar(t), Sealer: newSealer(t), Watches: handlers.NewChatWatchRegistry(), Mode: policy.MobileAllowed}); err == nil {
 		t.Error("allowed without an asset directory must be refused")
+	}
+}
+
+// WorkbenchOnlyKinds is the set All builds under workbench_only (the hub's
+// MobileSync filter and wipe read it).
+func TestWorkbenchOnlyKindsIsTheRestrictedSet(t *testing.T) {
+	var want []string
+	for _, k := range WorkbenchOnlyKinds {
+		want = append(want, string(k))
+	}
+	sort.Strings(want)
+	if strings.Join(want, ",") != strings.Join(workbenchOnlyKinds, ",") {
+		t.Errorf("WorkbenchOnlyKinds = %v, All builds %v", want, workbenchOnlyKinds)
+	}
+}
+
+// Every database-backed kind All builds is fed by a ChangeTables table, so
+// the data_version watch marks it dirty; the runner-fed and sidecar kinds
+// are not.
+func TestChangeTablesCoverTheDatabaseKinds(t *testing.T) {
+	fed := map[string]bool{}
+	for _, kinds := range ChangeTables {
+		for _, k := range kinds {
+			fed[string(k)] = true
+		}
+	}
+	for _, k := range registryKinds(t, policy.MobileAllowed) {
+		runnerFed := k == "session_chat" || k == "session_report" || k == "recording_job"
+		if fed[k] == runnerFed {
+			t.Errorf("%s: in ChangeTables = %v", k, fed[k])
+		}
 	}
 }

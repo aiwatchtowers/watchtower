@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
@@ -175,7 +176,7 @@ func readMeta(t *testing.T, dir, key string) (string, bool) {
 }
 
 // linkPhoneDirectly writes a linked phone's row with no hub running.
-func linkPhoneDirectly(t *testing.T, dir string) {
+func linkPhoneDirectly(t *testing.T, dir string) *hubtest.Phone {
 	t.Helper()
 	p, err := hubtest.New(hubtest.Config{})
 	if err != nil {
@@ -189,6 +190,7 @@ func linkPhoneDirectly(t *testing.T, dir string) {
 	if err := st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, p.Device()) }); err != nil {
 		t.Fatal(err)
 	}
+	return p
 }
 
 func liveRecords(t *testing.T, f *memfake.Fake, zone string) []string {
@@ -612,6 +614,88 @@ func TestWorkbenchOnlyRetriesAFailedDelete(t *testing.T) {
 	}
 }
 
+// refusingWatcher is the memfake with the relay's WatchZone, refusing each
+// zone's first subscription as the relay does while no phone holds the hub
+// in a slot.
+type refusingWatcher struct {
+	*memfake.Fake
+	mu      sync.Mutex
+	refused map[string]bool
+	watched map[string]int
+}
+
+func (w *refusingWatcher) WatchZone(_ context.Context, zone string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.refused[zone] {
+		w.refused[zone] = true
+		return transport.ErrForbidden
+	}
+	w.watched[zone]++
+	return nil
+}
+
+func (w *refusingWatcher) count(zone string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.watched[zone]
+}
+
+// refusingRig runs a hub with a linked phone on the refusing watcher, with
+// a fast link upkeep; it returns the data zone and the phone's mailbox.
+func refusingRig(t *testing.T) (*rig, *refusingWatcher, string, string) {
+	t.Helper()
+	policytest.Set(t, nil)
+	dir := shortDir(t)
+	setMeta(t, dir, state.MetaEnabled, "1")
+	phone := linkPhoneDirectly(t, dir)
+	r := newRig(t, dir)
+	w := &refusingWatcher{Fake: r.fake, refused: map[string]bool{}, watched: map[string]int{}}
+	o := r.options()
+	o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
+		return w, nil
+	}
+	o.linkEvery = 50 * time.Millisecond
+	r.start(o)
+	r.waitState(StateRunning, "")
+	s, err := ReadStatus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, w, transport.DataZone(s.RelayDeviceID), transport.MailboxZone(s.RelayDeviceID, phone.RelayDeviceID())
+}
+
+// TestRefusedZoneSubscriptionRetriedByLinkUpkeep: on a transport that
+// subscribes zones itself (the hosted relay) the hub starts without
+// counting any zone as subscribed — the relay refuses a hub not in a slot
+// yet, and a start must still get PAIRING_OPENED — and the link upkeep
+// subscribes each zone (data zone and mailbox), retrying a refused one,
+// then never again.
+func TestRefusedZoneSubscriptionRetriedByLinkUpkeep(t *testing.T) {
+	_, w, data, mailbox := refusingRig(t)
+	eventually(t, 10*time.Second, "both zones subscribed after their refusal", func() bool {
+		return w.count(data) == 1 && w.count(mailbox) == 1
+	})
+	time.Sleep(300 * time.Millisecond) // several more upkeeps
+	if w.count(data) != 1 || w.count(mailbox) != 1 {
+		t.Fatalf("subscribed data %d, mailbox %d times", w.count(data), w.count(mailbox))
+	}
+}
+
+// TestDroppedZoneResubscribedAndStatusRecovers: a zone the relay dropped
+// (a zone error event, as after a refused resubscribe) is subscribed again
+// by the link upkeep, and a status left at relay_unreachable by a
+// transport failure recovers once the subscription takes.
+func TestDroppedZoneResubscribedAndStatusRecovers(t *testing.T) {
+	r, w, data, _ := refusingRig(t)
+	eventually(t, 10*time.Second, "the data zone subscribed", func() bool { return w.count(data) == 1 })
+	r.fake.SendEvent(transport.Event{Err: transport.ErrUnavailable})
+	r.waitState(StateRunning, ReasonRelayUnreachable)
+	r.fake.SendEvent(transport.Event{Zone: data, Err: transport.ErrForbidden})
+	eventually(t, 10*time.Second, "the dropped data zone subscribed again", func() bool { return w.count(data) == 2 })
+	r.waitState(StateRunning, "")
+}
+
 // TestStartFailureHasItsOwnReason: a start step that is not a sidecar read
 // (here an identity file with loose permissions) reads starting/start_failed,
 // never sidecar_unreadable.
@@ -681,6 +765,10 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 			}
 		}
 	}()
+	// The reading client paces the sends: the next pair goes out only once
+	// it has read the previous qr event, so at most one event waits on its
+	// stream and a slow runner can never make it look stalled; the stalled
+	// client gets all n and must overflow.
 	const n = 120 // × ~600-byte qr events: far past 2 × 4 KiB buffers plus 8 queued
 	for i := range n {
 		if err := good.Send(ControlRequest{Op: OpPair}); err != nil {
@@ -694,8 +782,14 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("pair %d: no answer: the stalled client holds the hub up", i)
 		}
+		eventually(t, 5*time.Second, fmt.Sprintf("qr event %d on the reading stream", i+1), func() bool {
+			return qrs.Load() >= int32(i+1)
+		})
 	}
-	eventually(t, 10*time.Second, "every qr event on the reading stream", func() bool { return qrs.Load() >= n })
+	// n, or n+1 when the stalled client's own pair reached this stream.
+	if got := qrs.Load(); got < n {
+		t.Fatalf("%d qr events on the reading stream, want %d", got, n)
+	}
 
 	// The stalled stream was closed: draining it ends in EOF, not a timeout.
 	_ = stalled.c.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -718,7 +812,7 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 // its device_grant from the data zone with ordered_actions 1 — every record
 // on the fake sealed (no plaintext marker in any frame).
 func TestEndToEndOverMemfake(t *testing.T) {
-	runEndToEnd(t, "")
+	runEndToEnd(t, "", nil)
 }
 
 // TestFILES01_HubLogsNoNamesCodesOrKeys: the whole flow — a renamed hub
@@ -726,7 +820,7 @@ func TestEndToEndOverMemfake(t *testing.T) {
 // name, no link code or URL and no four-digit code.
 func TestFILES01_HubLogsNoNamesCodesOrKeys(t *testing.T) {
 	sink := logcanary.Capture(t)
-	e := runEndToEnd(t, logcanary.Text("hub.name"))
+	e := runEndToEnd(t, logcanary.Text("hub.name"), nil)
 	sink.AssertClean(t)
 	for what, v := range map[string]string{"link URL": e.url, "link nonce": e.nonce, "code": e.code, "phone name": "Test Phone"} {
 		if strings.Contains(sink.String(), v) {
@@ -735,17 +829,28 @@ func TestFILES01_HubLogsNoNamesCodesOrKeys(t *testing.T) {
 	}
 }
 
-// endToEnd is what a run showed the owner and the phone.
-type endToEnd struct{ url, nonce, code string }
+// endToEnd is what a run showed the owner and the phone, and the linked
+// phone and running hub for a test that goes on.
+type endToEnd struct {
+	url, nonce, code string
+	phone            *hubtest.Phone
+	rig              *rig
+	dir              string
+}
 
 // runEndToEnd is TestEndToEndOverMemfake; a non-empty name renames the hub
-// first (the hub restarts for it) and must reach the link code.
-func runEndToEnd(t *testing.T, name string) endToEnd {
+// first (the hub restarts for it) and must reach the link code; configure
+// (nil = none) adjusts the hub's options.
+func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 	t.Helper()
 	policytest.Set(t, nil)
 	dir := shortDir(t)
 	r := newRig(t, dir)
-	r.start(r.options())
+	o := r.options()
+	if configure != nil {
+		configure(&o)
+	}
+	r.start(o)
 	r.waitState(StateOff, ReasonDisabled)
 	eventually(t, 5*time.Second, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, SocketName))
@@ -884,5 +989,5 @@ func runEndToEnd(t *testing.T, name string) endToEnd {
 			}
 		}
 	}
-	return endToEnd{url: qr.URL, nonce: lp.Nonce, code: sas.Code}
+	return endToEnd{url: qr.URL, nonce: lp.Nonce, code: sas.Code, phone: phone, rig: r, dir: dir}
 }

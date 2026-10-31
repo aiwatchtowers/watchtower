@@ -264,3 +264,28 @@ func TestGitRefresherInProcessStatus(t *testing.T) {
 		t.Fatalf("Status = %+v, %v", s, ok)
 	}
 }
+
+// OnChange fires when a workbench's stored status is new or differs, never
+// for an unchanged read or a failed one.
+func TestGitRefresherOnChangeOnlyWhenTheStatusChanged(t *testing.T) {
+	r := newGitRig(t)
+	insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	changes := 0
+	g := r.refresher(GitTiming{Every: 120 * time.Second, MinSpacing: 30 * time.Second, Timeout: time.Second, Idle: 15 * time.Second})
+	g.o.OnChange = func() { changes++ }
+	ctx := context.Background()
+	step := func(want int) {
+		t.Helper()
+		g.RefreshDue(ctx)
+		r.advance(120 * time.Second)
+		if changes != want {
+			t.Fatalf("OnChange %d times, want %d", changes, want)
+		}
+	}
+	step(1) // the first value
+	step(1) // unchanged
+	r.fetch = func(int64) (workbenchgit.Status, error) { return okStatus("main", false, 3), nil }
+	step(2)
+	r.fetch = func(int64) (workbenchgit.Status, error) { return workbenchgit.Status{}, errors.New("git missing") }
+	step(2)
+}

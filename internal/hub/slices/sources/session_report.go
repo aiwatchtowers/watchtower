@@ -78,6 +78,9 @@ type SummaryFetch func(ctx context.Context, workbenchID int64) ([]sessionreport.
 // process group, killed at the timeout); Summaries nil is
 // sessionreport.Summaries (`--summary`: the DB and the PR cache only);
 // Active nil is always (the hub's linked-phone gate); Now nil is time.Now.
+// OnChange (nil = none) is called after a report or a workbench's summaries
+// were stored: the hub publishes session_report, session_timeline and
+// terminal_session then, instead of waiting for the full diff.
 type SessionReportOptions struct {
 	Sessions  *TerminalSessionSource
 	Store     *state.Store
@@ -87,6 +90,10 @@ type SessionReportOptions struct {
 	Summaries SummaryFetch
 	Active    func() bool
 	Now       func() time.Time
+	OnChange  func()
+	// MinimumGap (0 = the standard 5 s) is a test seam: the least time
+	// between two passes a signal starts.
+	MinimumGap time.Duration
 }
 
 // SessionReportRunner keeps the session reports of the `session_report`
@@ -181,7 +188,7 @@ func SessionReport(d *db.DB, o SessionReportOptions) (*SessionReportRunner, erro
 		}
 	}
 	return &SessionReportRunner{
-		d: d, o: o, wake: newRunnerWake(),
+		d: d, o: o, wake: newRunnerWake(o.MinimumGap),
 		summaries: newCadence[map[int64]ReportSummary](o.Timing.SummaryEvery, o.Timing.SummarySpacing),
 		entries:   map[int64]*reportEntry{}, lastText: map[int64]string{},
 	}, nil
@@ -547,7 +554,9 @@ func (r *SessionReportRunner) run(ctx context.Context, t reportTaken) bool {
 	}
 	if err := r.save(ctx, t.sessionID, rep); err != nil {
 		log.Printf("hub slices: storing the session report of %d failed (%s)", t.sessionID, errClass(err))
+		return true
 	}
+	r.changed()
 	return true
 }
 
@@ -611,10 +620,18 @@ func (r *SessionReportRunner) runSummaries(ctx context.Context, listed []windowe
 				byID[s.SessionID] = ReportSummary{TargetID: s.TargetID, Done: s.Done, Total: s.Total, PRLine: s.PRLine}
 			}
 			r.summaries.store(id, byID)
+			r.changed()
 		}
 		due = due[1:]
 	}
 	r.summaries.restore(due)
+}
+
+// changed tells the hub a stored value changed.
+func (r *SessionReportRunner) changed() {
+	if r.o.OnChange != nil {
+		r.o.OnChange()
+	}
 }
 
 // Reports is every stored report that opens, by session id: the
