@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,11 +24,13 @@ import (
 var workbenchSessionCmd = &cobra.Command{
 	Use:   "session",
 	Short: "Start and stop workbench agent sessions in the session host",
-	Long: "start does what the app's New Session does: the session row (Starting…), its place — the\n" +
+	Long: "start does what the app's New Session does and answers at once (instant start): it writes the\n" +
+		"session row (state starting) and prints it; a detached `session finish` then places it — the\n" +
 		"workbench folder, or its own git worktree when a live agent already works there (or as --place\n" +
-		"asks) —, the first prompt, the launch in the session host. stop is the host's Stop request (the\n" +
-		"exit carries requested: no worktree cleanup). Inside an agent's terminal session only that\n" +
-		"session's workbench may be started or stopped.",
+		"asks) — and launches it in the session host. The row shows the result: running in the host, or\n" +
+		"a failure with its reason. stop is the host's Stop request (the exit carries requested: no\n" +
+		"worktree cleanup); stopped: true means the session is not running any more (also when it was\n" +
+		"not). Inside an agent's terminal session only that session's workbench may be started or stopped.",
 }
 
 var (
@@ -41,9 +46,30 @@ var (
 // $SHELL); a test seam.
 var workbenchSessionShell = ""
 
-// startBudgetCLI bounds a CLI start: the worktree, its integration and the
-// launch all run before the command answers.
-const startBudgetCLI = 3 * time.Minute
+// finishBudget bounds a detached finish: the worktree, its integration and
+// the launch.
+const finishBudget = 3 * time.Minute
+
+// workbenchSessionFinishSpawn continues a start in a detached
+// `workbench session finish` (its own session, no terminal, stdio to
+// /dev/null) so start answers at once; a test seam.
+var workbenchSessionFinishSpawn = func(sessionID int64, place string) error {
+	bin, err := workbenchExecutable()
+	if err != nil {
+		return fmt.Errorf("determining the watchtower binary path: %w", err)
+	}
+	args := []string{"workbench", "session", "finish", "--session", strconv.FormatInt(sessionID, 10), "--place", place,
+		"--config", flagConfig}
+	if flagWorkspace != "" {
+		args = append(args, "--workspace", flagWorkspace)
+	}
+	c := exec.Command(bin, args...)
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := c.Start(); err != nil {
+		return fmt.Errorf("continuing the start: %w", err)
+	}
+	return c.Process.Release() //nolint:wrapcheck // never fails for a started process
+}
 
 func init() {
 	start := &cobra.Command{Use: "start", Short: "Start an agent session", Args: cobra.NoArgs, RunE: runWorkbenchSessionStart}
@@ -51,6 +77,11 @@ func init() {
 	start.Flags().Int64Var(&sessionFlagTarget, "target", 0, "the target the session works on (optional)")
 	start.Flags().StringVar(&sessionFlagAgent, "agent", "", "claude or codex (default: workbench.default_agent)")
 	start.Flags().StringVar(&sessionFlagPlace, "place", "auto", "folder, worktree or auto")
+	finish := &cobra.Command{Use: "finish", Short: "Place and launch a row start wrote (run by start, detached)",
+		Hidden: true, Args: cobra.NoArgs, RunE: runWorkbenchSessionFinish}
+	finish.Flags().Int64Var(&sessionFlagSession, "session", 0, "terminal session id")
+	finish.Flags().StringVar(&sessionFlagPlace, "place", "auto", "folder, worktree or auto")
+	workbenchSessionCmd.AddCommand(finish)
 	stop := &cobra.Command{Use: "stop", Short: "Stop a session (the host's Stop request)", Args: cobra.NoArgs, RunE: runWorkbenchSessionStop}
 	stop.Flags().Int64Var(&sessionFlagSession, "session", 0, "terminal session id")
 	for _, c := range []*cobra.Command{start, stop} {
@@ -84,31 +115,57 @@ func runWorkbenchSessionStart(cmd *cobra.Command, _ []string) error {
 	if err := checkSessionCaller(database, sessionFlagWorkbench); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(cmdContext(cmd), startBudgetCLI)
-	defer cancel()
+	ctx := cmdContext(cmd)
 	r := handlers.StartRequest{Workbench: sessionFlagWorkbench, Agent: sessionFlagAgent, Place: sessionFlagPlace}
 	if sessionFlagTarget > 0 {
 		r.Target = &sessionFlagTarget
 	}
-	res, startErr := sessionstart.Start(ctx, sessionStartDeps(cfg, database), r)
-	if res.SessionID == 0 {
-		return startErr
+	d := sessionStartDeps(cfg, database)
+	res, err := sessionstart.Begin(ctx, d, r)
+	if err != nil {
+		return err
+	}
+	if res.State == sessionstart.StateStarting {
+		if err := workbenchSessionFinishSpawn(res.SessionID, sessionFlagPlace); err != nil {
+			_ = database.SetTerminalSessionLaunchError(ctx, res.SessionID, "the start could not continue", time.Now())
+			return err
+		}
 	}
 	out := sessionStartOutput{SessionID: res.SessionID, State: res.State}
 	var branch sql.NullString
 	if err := database.QueryRowContext(ctx, `SELECT folder_path, worktree_branch FROM terminal_sessions WHERE id = ?`,
 		res.SessionID).Scan(&out.FolderPath, &branch); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return errors.Join(startErr, fmt.Errorf("reading session %d: %w", res.SessionID, err))
+		return fmt.Errorf("reading session %d: %w", res.SessionID, err)
 	}
 	out.WorktreeBranch = branch.String
 	if sessionFlagJSON {
-		if err := writeJSON(cmd.OutOrStdout(), out); err != nil {
-			return err
-		}
-	} else {
-		fmt.Fprintf(cmd.OutOrStdout(), "session: %d\nstate: %s\nfolder: %s\n", out.SessionID, out.State, out.FolderPath)
+		return writeJSON(cmd.OutOrStdout(), out)
 	}
-	return startErr
+	fmt.Fprintf(cmd.OutOrStdout(), "session: %d\nstate: %s\nfolder: %s\n", out.SessionID, out.State, out.FolderPath)
+	return nil
+}
+
+// runWorkbenchSessionFinish is the detached rest of a start: placement and
+// launch of the row (sessionstart.Finish), the result written on the row.
+func runWorkbenchSessionFinish(cmd *cobra.Command, _ []string) error {
+	if sessionFlagSession <= 0 {
+		return usageError("--session: a positive terminal session id is required")
+	}
+	cfg, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	var wb sql.NullInt64
+	if err := database.QueryRow(`SELECT project_id FROM terminal_sessions WHERE id = ?`, sessionFlagSession).Scan(&wb); err != nil {
+		return fmt.Errorf("reading terminal session %d: %w", sessionFlagSession, err)
+	}
+	if err := checkSessionCaller(database, wb.Int64); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(cmdContext(cmd), finishBudget)
+	defer cancel()
+	return sessionstart.Finish(ctx, sessionStartDeps(cfg, database), sessionFlagSession, sessionFlagPlace, "", false)
 }
 
 func runWorkbenchSessionStop(cmd *cobra.Command, _ []string) error {

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -46,9 +47,17 @@ const (
 	launchRows = 24
 )
 
-// startBudget bounds the part of a start that runs after Start returned
-// (placement, the worktree's integration, the launch).
-const startBudget = 3 * time.Minute
+// ErrAlreadyLaunched refuses a Finish of a row the host already runs.
+var ErrAlreadyLaunched = errors.New("the session is already running")
+
+// DefaultLaunchWatch is how long the hub's port watches a new launch for an
+// exit 127 (the login shell found no agent binary) before it answers the
+// phone (SessionStartStopHandlers.defaultLaunchWatch); launchWatchStep is
+// its poll.
+const (
+	DefaultLaunchWatch = 3 * time.Second
+	launchWatchStep    = 100 * time.Millisecond
+)
 
 // Deps is what a start or stop runs against. DB is the workspace database,
 // DBPath its file (the session-host scope is derived from it), Socket the
@@ -78,9 +87,10 @@ type Deps struct {
 	// group work-on prompt (`integrate status`); nil = it does (the shipped
 	// skill does, as the Desktop assumes while the status is unknown).
 	SkillKnowsGroups func(ctx context.Context, workbenchID int64, agent agentkind.Kind) bool
-	// Go runs the rest of a new start (placement and launch) after Start
-	// returned the row (instant start); nil runs it before Start returns.
-	Go func(func(context.Context))
+	// LaunchWatch, when positive, watches a launch that long: an exit 127
+	// is *handlers.AgentNotFoundError (the phone's claude_not_found /
+	// codex_not_found), any other exit the session's own end.
+	LaunchWatch time.Duration
 
 	// host leases a session-host client (the port's own; nil = dial one
 	// per call).
@@ -265,8 +275,12 @@ func placementTurn(wb int64, fn func()) {
 //     and the integration (`claude mcp add`) installed in every new worktree;
 //  3. the launch argv (Launch, with `launch-args` for Codex);
 //  4. the session-host Launch under the workspace's scope and the agent;
-//  5. the id, at once when d.Go is set: steps 2–4 may finish after the
-//     return (instant start, #942).
+//  5. the launch checked (launchCheck): a refused launch, an unreachable
+//     host or a failed placement is an error, never a started session; with
+//     d.LaunchWatch an exit 127 is *handlers.AgentNotFoundError.
+//
+// Begin is steps 1 alone (the CLI's instant start, #942) and Finish steps
+// 2–5 for its row, in another process.
 //
 // r.Target: the target's session is reopened (resumed) when r.OpenExisting
 // and it has one; a new one is named after the target and gets r.Brief or the
@@ -281,30 +295,106 @@ func placementTurn(wb int64, fn func()) {
 // *handlers.AgentNotFoundError (Codex without a codex binary), a policy
 // refusal of the agent, a bad agent or place.
 func Start(ctx context.Context, d Deps, r handlers.StartRequest) (handlers.StartResult, error) {
-	choice := Choice(r.Place)
-	switch choice {
+	st, done, res, err := begin(ctx, d, r)
+	if st == nil {
+		return res, err
+	}
+	defer done()
+	if err := st.finish(ctx); err != nil {
+		return handlers.StartResult{SessionID: st.id, State: StateFailed}, err
+	}
+	return handlers.StartResult{SessionID: st.id, State: StateRunning}, nil
+}
+
+// Begin writes a new session's row (Starting…, in the workbench folder) and
+// answers {id, starting} at once, with Start's refusals; Finish places and
+// launches it. An OpenExisting start that finds the target's session is
+// answered as Start answers it.
+func Begin(ctx context.Context, d Deps, r handlers.StartRequest) (handlers.StartResult, error) {
+	st, done, res, err := begin(ctx, d, r)
+	if st == nil {
+		return res, err
+	}
+	done()
+	return handlers.StartResult{SessionID: st.id, State: StateStarting}, nil
+}
+
+// Finish places and launches a row Begin wrote, rebuilt from the row:
+// its agent, target and Claude session id; brief (else the target's
+// work-on prompt) and planFirst make the first prompt. A row the host
+// already runs is refused. Failures are recorded on the row as Start's are.
+func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, planFirst bool) error {
+	choice, err := parseChoice(place)
+	if err != nil {
+		return err
+	}
+	var wbID, targetID sql.NullInt64
+	var kind, claudeID string
+	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, '')
+		FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&wbID, &kind, &targetID, &claudeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("terminal session %d: %w", sessionID, db.ErrTerminalSessionNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("reading terminal session %d: %w", sessionID, err)
+	}
+	agent, ok := agentkind.Parse(kind)
+	if !wbID.Valid || !ok {
+		return fmt.Errorf("terminal session %d is not a workbench agent session", sessionID)
+	}
+	st := &newStart{d: d, agent: agent, choice: choice, claudeID: claudeID, id: sessionID}
+	if st.wb, err = loadWorkbench(ctx, d.DB, wbID.Int64); err != nil {
+		return err
+	}
+	if targetID.Valid {
+		if t, err := loadTarget(ctx, d.DB, targetID.Int64, st.wb.id); err == nil {
+			st.target = &t
+		}
+	}
+	if st.codex, err = codexArgs(ctx, d, agent, st.wb.id); err != nil {
+		st.markFailed(ctx, notFoundReason(agent))
+		return err
+	}
+	st.prompt = st.firstPrompt(ctx, brief, planFirst)
+	setStarting(sessionID, &startingRow{workbench: st.wb.id, folder: st.wb.folder})
+	defer setStarting(sessionID, nil)
+	return st.finish(ctx)
+}
+
+func parseChoice(place string) (Choice, error) {
+	switch c := Choice(place); c {
 	case "":
-		choice = ChoiceAuto
+		return ChoiceAuto, nil
 	case ChoiceAuto, ChoiceFolder, ChoiceWorktree:
-	default:
-		return handlers.StartResult{}, fmt.Errorf("place must be folder, worktree or auto, got %q", r.Place)
+		return c, nil
+	}
+	return "", fmt.Errorf("place must be folder, worktree or auto, got %q", place)
+}
+
+// begin is Start up to the row: nil st when it answered without one (a
+// refusal, or an existing session reopened). done releases the target and
+// the in-flight row.
+func begin(ctx context.Context, d Deps, r handlers.StartRequest) (st *newStart, done func(), res handlers.StartResult, err error) {
+	choice, err := parseChoice(r.Place)
+	if err != nil {
+		return nil, nil, res, err
 	}
 	agent, err := startAgent(d, r.Agent)
 	if err != nil {
-		return handlers.StartResult{}, err
+		return nil, nil, res, err
 	}
 	wb, err := loadWorkbench(ctx, d.DB, r.Workbench)
 	if err != nil {
-		return handlers.StartResult{}, err
+		return nil, nil, res, err
 	}
 	var target *targetRow
 	if r.Target != nil {
 		t, err := loadTarget(ctx, d.DB, *r.Target, wb.id)
 		if err != nil {
-			return handlers.StartResult{}, err
+			return nil, nil, res, err
 		}
 		if !beginTarget(t.id) {
-			return handlers.StartResult{}, handlers.ErrStartInProgress
+			return nil, nil, res, handlers.ErrStartInProgress
 		}
 		target = &t
 	}
@@ -317,36 +407,28 @@ func Start(ctx context.Context, d Deps, r handlers.StartRequest) (handlers.Start
 		existing, found, err := latestTargetSession(ctx, d.DB, target.id, wb.id, r.Agent)
 		if err != nil {
 			release()
-			return handlers.StartResult{}, err
+			return nil, nil, res, err
 		}
 		if found {
 			defer release()
-			return reopen(ctx, d, existing)
+			res, err = reopen(ctx, d, existing)
+			return nil, nil, res, err
 		}
 	}
-	s := &newStart{d: d, wb: wb, target: target, agent: agent, choice: choice}
-	if s.codex, err = codexArgs(ctx, d, agent, wb.id); err != nil {
+	st = &newStart{d: d, wb: wb, target: target, agent: agent, choice: choice}
+	if st.codex, err = codexArgs(ctx, d, agent, wb.id); err != nil {
 		release()
-		return handlers.StartResult{}, err
+		return nil, nil, res, err
 	}
-	s.prompt = s.firstPrompt(ctx, r.Brief, r.PlanFirst)
-	if err := s.insert(ctx); err != nil {
+	st.prompt = st.firstPrompt(ctx, r.Brief, r.PlanFirst)
+	if err := st.insert(ctx); err != nil {
 		release()
-		return handlers.StartResult{}, err
+		return nil, nil, res, err
 	}
-	finish := func(ctx context.Context) error {
-		defer release()
-		defer setStarting(s.id, nil)
-		return s.finish(ctx)
-	}
-	if d.Go != nil {
-		d.Go(func(ctx context.Context) { _ = finish(ctx) })
-		return handlers.StartResult{SessionID: s.id, State: StateStarting}, nil
-	}
-	if err := finish(ctx); err != nil {
-		return handlers.StartResult{SessionID: s.id, State: StateFailed}, err
-	}
-	return handlers.StartResult{SessionID: s.id, State: StateRunning}, nil
+	return st, func() {
+		setStarting(st.id, nil)
+		release()
+	}, res, nil
 }
 
 // startAgent is the agent a start runs, refused when unknown or when the
@@ -450,6 +532,14 @@ func (s *newStart) finish(ctx context.Context) error {
 	}
 	var hostErr error
 	defer func() { done(hostErr) }()
+	list, err := c.List(ctx)
+	if err != nil {
+		s.markFailed(ctx, "the session host could not be read")
+		return fmt.Errorf("listing the session host: %w", err)
+	}
+	if info, ok := findRun(list, s.d.scope(), s.id); ok && !info.Exited {
+		return ErrAlreadyLaunched
+	}
 	dir, placed, err := s.place(ctx, c)
 	if err != nil {
 		hostErr = err
@@ -459,14 +549,69 @@ func (s *newStart) finish(ctx context.Context) error {
 	if placed && strings.TrimSpace(s.wb.setup) != "" {
 		setup = s.wb.setup
 	}
+	// Deleted while its place was decided: it never launches.
+	var one int
+	if err := s.d.DB.QueryRowContext(ctx, `SELECT 1 FROM terminal_sessions WHERE id = ?`, s.id).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("Session #%d was deleted before it started.", s.id) //nolint:staticcheck // Swift's sentence, verbatim
+		}
+		return fmt.Errorf("reading session %d: %w", s.id, err)
+	}
 	m := Mode{Agent: string(s.agent), SessionID: s.claudeID}
 	if s.prompt != "" {
 		p := s.prompt
 		m.Prompt = &p
 	}
-	hostErr = launch(ctx, s.d, c, s.id, dir, m, s.codex, setup)
-	return hostErr
+	run, err := launch(ctx, s.d, c, s.id, dir, m, s.codex, setup)
+	if err != nil {
+		return err
+	}
+	return watchLaunch(ctx, s.d, c, s.id, run, s.agent)
 }
+
+// watchLaunch is SessionStartStopHandlers.exitedNotFound: for d.LaunchWatch
+// the launch run is watched while it runs; an exit 127 within it is the
+// agent not found (recorded on the row too), any other exit the session's
+// own end.
+func watchLaunch(ctx context.Context, d Deps, c *sessionhost.Client, row int64, run string, agent agentkind.Kind) error {
+	if d.LaunchWatch <= 0 {
+		return nil
+	}
+	deadline := time.Now().Add(d.LaunchWatch)
+	for {
+		list, err := c.List(ctx)
+		if err != nil {
+			return nil //nolint:nilerr // the launch ran; a failed watch read is no refusal
+		}
+		var info *sessionhost.SessionInfo
+		for i := range list {
+			if list[i].Row == row && list[i].Run == run {
+				info = &list[i]
+			}
+		}
+		if info == nil {
+			return nil
+		}
+		if info.Exited {
+			if info.Code != nil && *info.Code == 127 {
+				_ = d.DB.SetTerminalSessionLaunchError(context.WithoutCancel(ctx), row, notFoundReason(agent), d.now())
+				return &handlers.AgentNotFoundError{Agent: string(agent)}
+			}
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(launchWatchStep):
+		}
+	}
+}
+
+// notFoundReason is agent_error's reason for a missing agent binary.
+func notFoundReason(agent agentkind.Kind) string { return string(agent) + " was not found" }
 
 // place moves the row where Place decides, in the workbench's placement
 // turn: dir is where it starts, placed whether it went into a worktree made
@@ -498,7 +643,11 @@ func (s *newStart) place(ctx context.Context, c *sessionhost.Client) (dir string
 			return
 		}
 		if s.d.Integrate != nil {
-			_ = s.d.Integrate(ctx, s.wb.id, prep.Dir, s.agent) // the session runs without it; the Desktop shows the notice
+			// The session runs without it (no hooks or board tools); logged
+			// by id and class only (FILES-01).
+			if ierr := s.d.Integrate(ctx, s.wb.id, prep.Dir, s.agent); ierr != nil {
+				log.Printf("sessionstart: session %d: worktree integration failed (%s)", s.id, errClass(ierr))
+			}
 		}
 		if perr := s.d.DB.PlaceTerminalSession(ctx, s.id, prep.Dir, prep.Worktree.Branch, prep.Worktree.Base); perr != nil {
 			_, _ = s.d.DB.ExecContext(context.WithoutCancel(ctx), `DELETE FROM terminal_sessions WHERE id = ?`, s.id)
@@ -596,7 +745,7 @@ func (s *newStart) markFailed(ctx context.Context, reason string) {
 // launch is recorded on the row (agent_error) and returned.
 func launch(ctx context.Context, d Deps, c *sessionhost.Client, row int64, dir string, m Mode,
 	codex *devpack.LaunchArgs, setup string,
-) error {
+) (run string, err error) {
 	shell := d.Shell
 	if shell == "" {
 		shell = os.Getenv("SHELL")
@@ -604,18 +753,31 @@ func launch(ctx context.Context, d Deps, c *sessionhost.Client, row int64, dir s
 	spec, err := Launch(m, row, dir, shell, codex, setup)
 	if err != nil {
 		_ = d.DB.SetTerminalSessionLaunchError(context.WithoutCancel(ctx), row, "the launch could not be built", d.now())
-		return err
+		return "", err
 	}
+	run = NewSessionID()
 	_, err = c.Launch(ctx, sessionhost.LaunchReq{
-		Row: row, Run: NewSessionID(), Executable: spec.Executable, Args: spec.Args,
+		Row: row, Run: run, Executable: spec.Executable, Args: spec.Args,
 		Env: append(baseEnv(spec.Executable), spec.Env...), Cwd: spec.Dir, Cols: launchCols, Rows: launchRows,
 		Scope: d.scope(), Agent: m.Agent,
 	})
 	if err != nil {
 		_ = d.DB.SetTerminalSessionLaunchError(context.WithoutCancel(ctx), row, launchFailure(err), d.now())
-		return fmt.Errorf("session %d did not launch: %w", row, err)
+		return "", fmt.Errorf("session %d did not launch: %w", row, err)
 	}
-	return nil
+	return run, nil
+}
+
+// errClass is an error's class for a log line: its type, never its text.
+func errClass(err error) string {
+	var he *sessionhost.HostError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.As(err, &he):
+		return "host"
+	}
+	return fmt.Sprintf("%T", err)
 }
 
 // launchFailure is agent_error's reason for a refused launch: the host's own
@@ -698,8 +860,13 @@ func reopen(ctx context.Context, d Deps, r existingRow) (handlers.StartResult, e
 		return handlers.StartResult{}, fmt.Errorf("opening session %d: %w", r.id, err)
 	}
 	m := Mode{Agent: r.kind, SessionID: r.agentSessionID, Resume: r.agentSessionID != ""}
-	if hostErr = launch(ctx, d, c, r.id, r.folder, m, codex, ""); hostErr != nil {
-		return handlers.StartResult{SessionID: r.id, State: StateFailed}, hostErr
+	run, err := launch(ctx, d, c, r.id, r.folder, m, codex, "")
+	if err == nil {
+		err = watchLaunch(ctx, d, c, r.id, run, agent)
+	}
+	if err != nil {
+		hostErr = err
+		return handlers.StartResult{SessionID: r.id, State: StateFailed}, err
 	}
 	return handlers.StartResult{SessionID: r.id, State: StateRunning}, nil
 }

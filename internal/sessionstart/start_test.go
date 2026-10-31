@@ -223,15 +223,13 @@ func realPath(t *testing.T, path string) string {
 	return r
 }
 
-// Instant start (#942): the row is written in the workbench folder and
-// answered as starting before anything is placed or launched.
+// Instant start (#942): Begin writes the row in the workbench folder and
+// answers starting before anything is placed or launched; Finish, rebuilt
+// from the row, launches it.
 func TestSessionStartReturnsTheRowAtOnceInStarting(t *testing.T) {
 	w := newWorld(t)
 	tid := w.target("Ship the thing")
-	var rest func(context.Context)
-	d := w.deps()
-	d.Go = func(fn func(context.Context)) { rest = fn }
-	res, err := Start(context.Background(), d, handlers.StartRequest{Workbench: w.wb, Target: ptr(tid)})
+	res, err := Begin(context.Background(), w.deps(), handlers.StartRequest{Workbench: w.wb, Target: ptr(tid)})
 	require.NoError(t, err)
 	assert.Equal(t, StateStarting, res.State)
 	r := w.row(res.SessionID)
@@ -240,12 +238,15 @@ func TestSessionStartReturnsTheRowAtOnceInStarting(t *testing.T) {
 	assert.True(t, IsValidSessionID(r.claudeID))
 	_, live := findRun(w.list(), sessionhost.Scope(w.dbPath), res.SessionID)
 	assert.False(t, live, "nothing launched before the return")
-	_, err = Start(context.Background(), d, handlers.StartRequest{Workbench: w.wb, Target: ptr(tid)})
-	assert.ErrorIs(t, err, handlers.ErrStartInProgress, "a second start of a target still starting is refused")
 
-	require.NotNil(t, rest)
-	rest(context.Background())
+	require.True(t, beginTarget(tid))
+	_, err = Start(context.Background(), w.deps(), handlers.StartRequest{Workbench: w.wb, Target: ptr(tid)})
+	assert.ErrorIs(t, err, handlers.ErrStartInProgress, "a second start of a target still starting is refused")
+	endTarget(tid)
+
+	require.NoError(t, Finish(context.Background(), w.deps(), res.SessionID, "auto", "", false))
 	w.launched(res.SessionID)
+	assert.Error(t, Finish(context.Background(), w.deps(), res.SessionID, "auto", "", false), "a launched row is not launched twice")
 	argv := w.stubFile("argv", res.SessionID)
 	assert.Equal(t, "--session-id\n"+r.claudeID+"\n"+WorkOnPrompt(tid, false, true), argv)
 	assert.Equal(t, realPath(t, w.folder), w.stubFile("cwd", res.SessionID))

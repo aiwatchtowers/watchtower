@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
@@ -31,7 +34,9 @@ const (
 
 func (w *world) port() *Port {
 	w.t.Helper()
-	p := NewPort(w.deps(), nil)
+	d := w.deps()
+	d.LaunchWatch = 200 * time.Millisecond
+	p := NewPort(d, nil)
 	w.t.Cleanup(func() { _ = p.Close() })
 	return p
 }
@@ -42,7 +47,7 @@ func (w *world) startedSession(p *Port) (int64, sessionhost.SessionInfo) {
 	w.t.Helper()
 	res, err := p.Start(context.Background(), handlers.StartRequest{Workbench: w.wb, Brief: "go"})
 	require.NoError(w.t, err)
-	require.Equal(w.t, StateStarting, res.State)
+	require.Equal(w.t, StateRunning, res.State, "the port answers after the launch was checked")
 	info := w.launched(res.SessionID)
 	_, err = w.db.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?`,
 		db.AgentStateStamp(time.Now().Add(time.Second)), res.SessionID)
@@ -162,7 +167,7 @@ func newRelay(t *testing.T, w *world, p *Port) *relay {
 	})
 	require.NoError(t, err)
 	dev := r.phone.Device()
-	dev.TypingAllowed = true
+	dev.TypingAllowed, dev.StartSessionsAllowed, dev.StartSessionsGranted = true, true, true
 	require.NoError(t, st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, dev) }))
 	return r
 }
@@ -236,4 +241,103 @@ func TestHubTypesAPhoneLineIntoAStubSession(t *testing.T) {
 	seq := r.line(sid, "hello")
 	r.echo(seq, "the line submitted", submitted)
 	w.waitPTY(sid, pasteOpen+"hello"+pasteClose+"\r")
+}
+
+// portWith is a port over w's host whose deps change applies (a short
+// launch watch).
+func (w *world) portWith(change func(*Deps)) *Port {
+	w.t.Helper()
+	d := w.deps()
+	d.LaunchWatch = time.Second
+	change(&d)
+	p := NewPort(d, nil)
+	w.t.Cleanup(func() { _ = p.Close() })
+	return p
+}
+
+// The phone's start is answered only after the launch was checked (Swift's
+// launchCheck): a refused launch, a failed placement and an unreachable host
+// are errors, never a started session, and each row says why.
+func TestPortStartFailuresAreNeverStarted(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+
+	refused := w.portWith(func(d *Deps) { d.Shell = filepath.Join(w.stub, "no-such-shell") })
+	res, err := refused.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go"})
+	require.Error(t, err)
+	assert.Equal(t, StateFailed, res.State)
+	assert.Contains(t, w.row(res.SessionID).agentError, "launch refused: ")
+
+	unplaced := w.portWith(func(d *Deps) {
+		d.Integrate = func(ctx context.Context, _ int64, _ string, _ agentkind.Kind) error {
+			_, err := w.db.ExecContext(ctx, `DELETE FROM terminal_sessions WHERE folder_path = ?`, w.folder)
+			return err
+		}
+	})
+	_, err = unplaced.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go", Place: "worktree"})
+	require.ErrorContains(t, err, "into its worktree")
+
+	unreachable := w.portWith(func(d *Deps) { d.Socket = filepath.Join(t.TempDir(), "none.sock") })
+	res, err = unreachable.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go"})
+	require.Error(t, err)
+	assert.Equal(t, StateFailed, res.State)
+	assert.Equal(t, "the session host is not running", w.row(res.SessionID).agentError)
+}
+
+// Swift's launch watch: a launch that exits 127 at once (no claude on the
+// login PATH) is claude_not_found, not a started session.
+func TestPortStartAnExit127IsClaudeNotFound(t *testing.T) {
+	w := newWorld(t)
+	shell := filepath.Join(w.stub, "exit127")
+	writeScript(t, shell, "exit 127\n")
+	p := w.portWith(func(d *Deps) { d.Shell = shell })
+	res, err := p.Start(context.Background(), handlers.StartRequest{Workbench: w.wb, Brief: "go"})
+	var missing *handlers.AgentNotFoundError
+	require.True(t, errors.As(err, &missing), "%v", err)
+	assert.Equal(t, "claude", missing.Agent)
+	assert.Equal(t, StateFailed, res.State)
+	assert.Equal(t, "claude was not found", w.row(res.SessionID).agentError)
+
+	other := filepath.Join(w.stub, "exit3")
+	writeScript(t, other, "exit 3\n")
+	res, err = w.portWith(func(d *Deps) { d.Shell = other }).Start(context.Background(), handlers.StartRequest{Workbench: w.wb, Brief: "go"})
+	require.NoError(t, err, "any other exit is the session's own end")
+	assert.Equal(t, StateRunning, res.State)
+}
+
+func (r *relay) start(brief string) uint64 {
+	r.t.Helper()
+	a := r.phone.NewAction("session_start")
+	for k, v := range map[string]any{"workbench_id": r.w.wb, "mode": "new", "plan_first": false, "bring_forward": false, "brief": brief} {
+		b, _ := json.Marshal(v)
+		a.Params[k] = b
+	}
+	seq, err := r.phone.Queue(a)
+	require.NoError(r.t, err)
+	require.NoError(r.t, r.phone.Send(seq))
+	return seq
+}
+
+func failedWith(reason string) func(wire.ActionRequest) bool {
+	return func(e wire.ActionRequest) bool {
+		return e.Status == wire.StatusFailed && e.Reason != nil && *e.Reason == reason
+	}
+}
+
+// Through the hub's handlers: the phone's session_start echoes failed
+// write_failed for a refused launch and claude_not_found for an exit 127,
+// and applied {stage: starting} only for a launch that ran.
+func TestThePhonesStartEchoesTheLaunchCheck(t *testing.T) {
+	w := newWorld(t)
+	refused := newRelay(t, w, w.portWith(func(d *Deps) { d.Shell = filepath.Join(w.stub, "no-such-shell") }))
+	refused.echo(refused.start("go"), "a refused launch failed write_failed", failedWith("write_failed"))
+
+	shell := filepath.Join(w.stub, "exit127")
+	writeScript(t, shell, "exit 127\n")
+	missing := newRelay(t, w, w.portWith(func(d *Deps) { d.Shell = shell }))
+	missing.echo(missing.start("go"), "an exit 127 failed claude_not_found", failedWith("claude_not_found"))
+
+	ok := newRelay(t, w, w.port())
+	e := ok.echo(ok.start("go"), "a launch that ran applied", func(e wire.ActionRequest) bool { return e.Status == wire.StatusApplied })
+	assert.JSONEq(t, `"starting"`, string(e.Result["stage"]))
 }

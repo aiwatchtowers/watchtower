@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/internal/hub/actions/handlers"
@@ -19,17 +20,14 @@ var ErrNotRunning = errors.New("the session is not running")
 // connections: one only for Deliver, which keeps its client for the pause
 // plus up to sessionhost.CheckTimeout of re-check, and one for everything
 // else (lists, launches, InputTo, stops), so a delivery never holds a list
-// or an Interrupt up. A connection that failed is dropped and dialled again
-// (the host started first when none answers) on the next call. Starts it
-// begins return at once (instant start); Close ends them first.
+// or an Interrupt up. A connection the client closed after a failure is
+// dropped and dialled again (the host started first when none answers) on
+// the next call.
 type Port struct {
 	d       Deps
 	deliver slot
 	control slot
-
-	base   context.Context
-	cancel context.CancelFunc
-	starts sync.WaitGroup
+	closed  atomic.Bool
 }
 
 // NewPort is the hub's session port (a handlers.SessionPort); client (may
@@ -49,8 +47,10 @@ func OpenPort(ctx context.Context, d Deps) (*Port, error) {
 }
 
 func newPort(d Deps, client *sessionhost.Client) *Port {
-	base, cancel := context.WithCancel(context.Background())
-	p := &Port{d: d, base: base, cancel: cancel}
+	if d.LaunchWatch == 0 {
+		d.LaunchWatch = DefaultLaunchWatch
+	}
+	p := &Port{d: d}
 	p.deliver = slot{socket: d.socket(), exe: d.CLIPath, c: client}
 	p.control = slot{socket: d.socket(), exe: d.CLIPath}
 	return p
@@ -63,12 +63,10 @@ func (p *Port) Warm(ctx context.Context) error {
 	return err
 }
 
-// Close cancels the starts in flight (a cut launch is recorded on its row),
-// waits for them, then closes both connections; the hosted sessions keep
-// running.
+// Close closes both connections (later calls fail; a Start refuses before
+// writing a row); the hosted sessions keep running.
 func (p *Port) Close() error {
-	p.cancel()
-	p.starts.Wait()
+	p.closed.Store(true)
 	p.deliver.close()
 	p.control.close()
 	return nil
@@ -148,23 +146,19 @@ func (p *Port) Interrupt(ctx context.Context, sessionID int64, run uint64) error
 	return nil
 }
 
-// Start starts a session (Start) and answers once its row is written; the
-// placement and launch go on until Close.
+// Start starts a session (Start) and answers once its launch was checked,
+// as the Swift handler's launchCheck and launch watch do: a refused launch,
+// an unreachable host or a failed placement is an error (failed
+// write_failed), an exit 127 within the watch *handlers.AgentNotFoundError.
+// The row itself is written first, so the Desktop shows it Starting… while
+// this runs.
 func (p *Port) Start(ctx context.Context, r handlers.StartRequest) (handlers.StartResult, error) {
+	if p.closed.Load() {
+		return handlers.StartResult{}, errPortClosed
+	}
 	d := p.d
 	d.host = p.control.lease
-	d.Go = p.goStart
 	return Start(ctx, d, r)
-}
-
-func (p *Port) goStart(fn func(context.Context)) {
-	p.starts.Add(1)
-	go func() {
-		defer p.starts.Done()
-		ctx, cancel := context.WithTimeout(p.base, startBudget)
-		defer cancel()
-		fn(ctx)
-	}()
 }
 
 // Stop is a host Stop request (Stop).
@@ -222,11 +216,11 @@ func (s *slot) get(ctx context.Context) (*sessionhost.Client, error) {
 	return c, nil
 }
 
-// done drops c after a failure that left its stream out of step (anything
-// but the host's own Error answer): the next call dials again.
-func (s *slot) done(c *sessionhost.Client, err error) {
-	var he *sessionhost.HostError
-	if err == nil || errors.As(err, &he) {
+// done drops c once the client closed it (a failure that left its stream
+// out of step): the next call dials again. Other errors (the host's own
+// answer, a database or build error of the caller) keep it.
+func (s *slot) done(c *sessionhost.Client, _ error) {
+	if !c.Dead() {
 		return
 	}
 	s.mu.Lock()

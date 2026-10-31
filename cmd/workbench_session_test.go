@@ -68,29 +68,55 @@ func runSession(t *testing.T, args ...string) (string, error) {
 	return out, err
 }
 
+// spawnedFinishes replaces the detached finish with a record of its
+// arguments.
+func spawnedFinishes(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	prev := workbenchSessionFinishSpawn
+	workbenchSessionFinishSpawn = func(id int64, place string) error {
+		got = append(got, strconv.FormatInt(id, 10)+" "+place)
+		return nil
+	}
+	t.Cleanup(func() { workbenchSessionFinishSpawn = prev })
+	return &got
+}
+
+// Instant start (#942): start answers at once with the row starting in the
+// workbench folder and nothing launched; the detached finish launches it
+// (running in the host); stop stops and forgets it. Pinned keys.
 func TestWorkbenchSessionStartJSONKeys(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := t.TempDir()
 	wb, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	socket := sessionHostForTest(t)
+	spawned := spawnedFinishes(t)
 
 	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--json")
 	require.NoError(t, err, out)
 	var m map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
 	assert.Equal(t, sorted("session_id", "state", "folder_path", "worktree_branch"), keysOf(m))
-	assert.Equal(t, "running", m["state"])
+	assert.Equal(t, "starting", m["state"])
 	assert.Equal(t, "", m["worktree_branch"])
 	sid := int64(m["session_id"].(float64))
+	assert.Equal(t, []string{strconv.FormatInt(sid, 10) + " auto"}, *spawned)
 
 	c, err := sessionhost.Dial(context.Background(), socket)
 	require.NoError(t, err)
 	defer func() { _ = c.Close() }()
 	list, err := c.List(context.Background())
 	require.NoError(t, err)
+	assert.Empty(t, list, "nothing launched before start answered")
+
+	_, err = runSession(t, "finish", "--session", strconv.FormatInt(sid, 10), "--place", "auto")
+	require.NoError(t, err)
+	list, err = c.List(context.Background())
+	require.NoError(t, err)
 	require.Len(t, list, 1)
 	assert.Equal(t, sid, list[0].Row)
+	assert.False(t, list[0].Exited, "running")
 
 	out, err = runSession(t, "stop", "--session", strconv.FormatInt(sid, 10), "--json")
 	require.NoError(t, err, out)
@@ -101,6 +127,27 @@ func TestWorkbenchSessionStartJSONKeys(t *testing.T) {
 	list, err = c.List(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, list, "stopped and forgotten")
+}
+
+// A finish whose launch is refused leaves the row failed with its reason.
+func TestWorkbenchSessionFinishRecordsAFailedLaunch(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	sessionHostForTest(t)
+	spawnedFinishes(t)
+	workbenchSessionShell = "/nonexistent/shell" // restored by sessionHostForTest's cleanup
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--json")
+	require.NoError(t, err, out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	sid := strconv.FormatInt(int64(m["session_id"].(float64)), 10)
+	_, err = runSession(t, "finish", "--session", sid)
+	require.Error(t, err)
+	var state, failure string
+	require.NoError(t, database.QueryRow(`SELECT agent_state, agent_error FROM terminal_sessions WHERE id = ?`, sid).Scan(&state, &failure))
+	assert.Equal(t, "waiting", state)
+	assert.Contains(t, failure, "launch refused: ")
 }
 
 // Under an agent marker only the caller's own workbench: another
