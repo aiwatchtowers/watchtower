@@ -33,8 +33,10 @@ func signatureMessage(aad, body []byte) []byte {
 }
 
 // SealSymmetric pads f to its bucket, seals it with ChaCha20-Poly1305 under
-// key with the AAD of ctx, and signs it when signer is set. nonce nil draws a
-// random one; a given nonce must be 12 bytes (vectors only).
+// key with the AAD of ctx, and signs it when signer is set. Production passes
+// nonce nil, which draws a fresh random nonce; a caller nonce (12 bytes) exists
+// for the Kit vectors and tests only — a repeated (key, nonce) pair breaks
+// ChaCha20-Poly1305.
 func SealSymmetric(f InnerFrame, c EnvelopeClass, key []byte, hub, sender ID, epoch uint32, seq uint64, ctx Context, signer ed25519.PrivateKey, nonce []byte) ([]byte, error) {
 	if !symmetricClass(c) {
 		return nil, fmt.Errorf("%w: %d is not symmetric", ErrWrongClass, c)
@@ -99,12 +101,8 @@ func OpenSymmetric(raw []byte, accepting []EnvelopeClass, ctx Context, verifier 
 	if (h.Class == ClassData || h.Class == ClassAlert) && verifier == nil {
 		return Header{}, InnerFrame{}, ErrSignatureRequired
 	}
-	aad, err := ctx.aad(h)
-	if err != nil {
-		return Header{}, InnerFrame{}, err
-	}
 	if verifier != nil {
-		if err := verify(e, aad, verifier); err != nil {
+		if err := verify(e, ctx, verifier); err != nil {
 			return Header{}, InnerFrame{}, err
 		}
 	}
@@ -115,6 +113,10 @@ func OpenSymmetric(raw []byte, accepting []EnvelopeClass, ctx Context, verifier 
 	k, err := key(h)
 	if err != nil {
 		return Header{}, InnerFrame{}, fmt.Errorf("secure: envelope key: %w", err)
+	}
+	aad, err := ctx.aad(h)
+	if err != nil {
+		return Header{}, InnerFrame{}, err
 	}
 	aead, err := chacha20poly1305.New(k)
 	if err != nil {
@@ -135,9 +137,13 @@ func OpenSymmetric(raw []byte, accepting []EnvelopeClass, ctx Context, verifier 
 }
 
 // verify checks the signature only (no secret key).
-func verify(e envelope, aad []byte, pub ed25519.PublicKey) error {
+func verify(e envelope, ctx Context, pub ed25519.PublicKey) error {
 	if e.header.Flags&FlagSigned == 0 || e.signature == nil {
 		return ErrSignatureMissing
+	}
+	aad, err := ctx.aad(e.header)
+	if err != nil {
+		return err
 	}
 	if len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, signatureMessage(aad, e.body), e.signature) {
 		return ErrSignatureInvalid

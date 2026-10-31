@@ -3,6 +3,7 @@ package secure
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -116,5 +117,45 @@ func TestEncryptAssetFile_StreamsAndRoundTrips(t *testing.T) {
 	}
 	if _, err := EncryptAssetFile(filepath.Join(dir, "missing"), filepath.Join(dir, "x"), assetFixtureID); err == nil {
 		t.Error("missing source sealed")
+	}
+}
+
+// failingReader yields its bytes, then a read error instead of EOF.
+type failingReader struct {
+	r   io.Reader
+	err error
+}
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		return n, f.err
+	}
+	return n, err
+}
+
+func TestEncryptAssetStream_ReadErrorsSurface(t *testing.T) {
+	dir := t.TempDir()
+	boom := errors.New("device gone")
+	plain := []byte("acme")
+	// The error comes on the trailing-byte check: it must not pass as "no extra byte".
+	_, err := encryptAssetStream(&failingReader{r: bytes.NewReader(plain), err: boom}, uint64(len(plain)), filepath.Join(dir, "a"), assetFixtureID)
+	if !errors.Is(err, boom) {
+		t.Errorf("trailing read error: %v, want it surfaced", err)
+	}
+	// The error comes mid-chunk.
+	_, err = encryptAssetStream(&failingReader{r: bytes.NewReader(plain), err: boom}, uint64(len(plain))+10, filepath.Join(dir, "b"), assetFixtureID)
+	if !errors.Is(err, boom) {
+		t.Errorf("chunk read error: %v, want it surfaced", err)
+	}
+	// Grown and shrunk sources.
+	if _, err := encryptAssetStream(bytes.NewReader(plain), 3, filepath.Join(dir, "c"), assetFixtureID); !errors.Is(err, ErrAssetSourceChanged) {
+		t.Errorf("grown source: %v, want ErrAssetSourceChanged", err)
+	}
+	if _, err := encryptAssetStream(bytes.NewReader(plain), 5, filepath.Join(dir, "d"), assetFixtureID); !errors.Is(err, ErrAssetTruncated) {
+		t.Errorf("shrunk source: %v, want ErrAssetTruncated", err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Errorf("files left after failures: %d (%v)", len(entries), err)
 	}
 }

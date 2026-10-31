@@ -219,7 +219,7 @@ func DecryptAsset(sealed []byte, d AssetDescriptor) ([]byte, error) {
 // key, through a 0600 temp file beside dst that is renamed into place only
 // when every chunk is written. A source that shrinks or grows while it is
 // sealed fails (ErrAssetTruncated, ErrAssetSourceChanged).
-func EncryptAssetFile(src, dst string, assetID ID) (d AssetDescriptor, err error) {
+func EncryptAssetFile(src, dst string, assetID ID) (AssetDescriptor, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return AssetDescriptor{}, fmt.Errorf("secure: open asset source: %w", err)
@@ -232,7 +232,13 @@ func EncryptAssetFile(src, dst string, assetID ID) (d AssetDescriptor, err error
 	if info.Size() < 0 {
 		return AssetDescriptor{}, ErrAssetSourceChanged
 	}
-	h, err := newAssetHeader(assetID, ChunkSize, uint64(info.Size()))
+	return encryptAssetStream(in, uint64(info.Size()), dst, assetID)
+}
+
+// encryptAssetStream is EncryptAssetFile's body over a reader that must hold
+// exactly length bytes (the seam for read-failure tests).
+func encryptAssetStream(in io.Reader, length uint64, dst string, assetID ID) (d AssetDescriptor, err error) {
+	h, err := newAssetHeader(assetID, ChunkSize, length)
 	if err != nil {
 		return AssetDescriptor{}, err
 	}
@@ -279,8 +285,12 @@ func EncryptAssetFile(src, dst string, assetID ID) (d AssetDescriptor, err error
 			return AssetDescriptor{}, fmt.Errorf("secure: write asset: %w", err)
 		}
 	}
-	if n, _ := in.Read(chunk[:1]); n != 0 {
+	n, err := io.ReadFull(in, chunk[:1])
+	switch {
+	case n != 0:
 		return AssetDescriptor{}, ErrAssetSourceChanged
+	case !errors.Is(err, io.EOF):
+		return AssetDescriptor{}, fmt.Errorf("secure: read asset source: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		return AssetDescriptor{}, fmt.Errorf("secure: sync asset: %w", err)
