@@ -14,12 +14,17 @@ const bundleIDKey = "CFBundleIdentifier"
 
 // plistBundleID is an Info.plist's top-level CFBundleIdentifier, from an XML
 // plist (what scripts/build-app.sh writes) or a binary one (bplist00, what
-// Xcode and plutil may write).
+// Xcode and plutil may write). An empty one is errPlist too.
 func plistBundleID(raw []byte) (string, error) {
+	read := xmlBundleID
 	if bytes.HasPrefix(raw, []byte("bplist00")) {
-		return binaryBundleID(raw)
+		read = binaryBundleID
 	}
-	return xmlBundleID(raw)
+	id, err := read(raw)
+	if err == nil && id == "" {
+		return "", errPlist
+	}
+	return id, err
 }
 
 // xmlBundleID reads <plist><dict>…<key>CFBundleIdentifier</key><string>id…
@@ -104,32 +109,58 @@ func binaryBundleID(raw []byte) (string, error) {
 		}
 		return beUint(raw[off+2 : off+2+size]), off + 2 + size, true
 	}
-	str := func(ref uint64) (string, bool) {
+	// strAt is a string object's content in place, and whether it is UTF-16
+	// (count = len(content)/2) rather than ASCII; nothing is copied.
+	strAt := func(ref uint64) (content []byte, wide, ok bool) {
 		off, ok := object(ref)
 		if !ok {
-			return "", false
+			return nil, false, false
 		}
 		n, start, ok := length(off)
 		if !ok {
-			return "", false
+			return nil, false, false
 		}
 		switch raw[off] >> 4 {
 		case 0x5:
-			if n > tableOff-start {
-				return "", false
+			if n <= tableOff-start {
+				return raw[start : start+n], false, true
 			}
-			return string(raw[start : start+n]), true
 		case 0x6:
-			if n > (tableOff-start)/2 {
-				return "", false
+			if n <= (tableOff-start)/2 {
+				return raw[start : start+2*n], true, true
 			}
-			units := make([]uint16, n)
-			for i := range units {
-				units[i] = uint16(beUint(raw[start+uint64(2*i) : start+uint64(2*i)+2]))
-			}
-			return string(utf16.Decode(units)), true
 		}
-		return "", false
+		return nil, false, false
+	}
+	// isKey compares a string object with bundleIDKey without decoding it.
+	isKey := func(ref uint64) bool {
+		content, wide, ok := strAt(ref)
+		if !ok {
+			return false
+		}
+		if !wide {
+			return string(content) == bundleIDKey // no allocation: compared in place
+		}
+		if len(content) != 2*len(bundleIDKey) {
+			return false
+		}
+		for i := 0; i < len(bundleIDKey); i++ {
+			if content[2*i] != 0 || content[2*i+1] != bundleIDKey[i] {
+				return false
+			}
+		}
+		return true
+	}
+	str := func(ref uint64) (string, bool) {
+		content, wide, ok := strAt(ref)
+		if !ok || !wide {
+			return string(content), ok
+		}
+		units := make([]uint16, len(content)/2)
+		for i := range units {
+			units[i] = uint16(content[2*i])<<8 | uint16(content[2*i+1])
+		}
+		return string(utf16.Decode(units)), true
 	}
 
 	off, ok := object(top)
@@ -145,7 +176,7 @@ func binaryBundleID(raw []byte) (string, error) {
 		return beUint(raw[at : at+uint64(refSize)])
 	}
 	for i := uint64(0); i < n; i++ {
-		if key, ok := str(ref(i)); ok && key == bundleIDKey {
+		if isKey(ref(i)) {
 			if id, ok := str(ref(n + i)); ok {
 				return id, nil
 			}

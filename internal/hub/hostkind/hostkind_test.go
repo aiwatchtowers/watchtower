@@ -196,6 +196,12 @@ func TestDetect_AnUnreadableAppBundleIsDesktop(t *testing.T) {
 		"key, no string": func(t *testing.T, _ *Probe, root string) {
 			writeAt(t, root, appPlist, []byte("<plist><dict><key>CFBundleIdentifier</key><integer>1</integer></dict></plist>"))
 		},
+		"empty bundle id": func(t *testing.T, _ *Probe, root string) {
+			writeAt(t, root, appPlist, []byte("<plist><dict><key>CFBundleIdentifier</key><string/></dict></plist>"))
+		},
+		"empty binary bundle id": func(t *testing.T, _ *Probe, root string) {
+			writeAt(t, root, appPlist, bplist(false, false, "CFBundleIdentifier", ""))
+		},
 		"truncated binary": func(t *testing.T, _ *Probe, root string) {
 			raw := bplist(false, false, "CFBundleIdentifier", BundleID)
 			writeAt(t, root, appPlist, raw[:len(raw)-40])

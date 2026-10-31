@@ -209,7 +209,6 @@ func TestHubStatusPrintsTheNoRelayOriginRemedy(t *testing.T) {
 
 	// Set, the remedy goes.
 	require.NoError(t, os.WriteFile(cfgPath, []byte("active_workspace: acme\nhub:\n  relay_origin: https://relay.example.com\n"), 0o600))
-	flagConfig = cfgPath // runHub reset the inherited --config flag to its default
 	out, err = runHub(t, "status")
 	require.NoError(t, err)
 	assert.NotContains(t, out, "Set the relay")
@@ -467,7 +466,7 @@ func startPair(t *testing.T) *pairRun {
 		rootCmd.SetIn(nil)
 		rootCmd.SetArgs(nil)
 		for _, c := range hubCmd.Commands() {
-			c.Flags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+			c.LocalFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false }) // never the inherited --config
 		}
 	})
 	return p

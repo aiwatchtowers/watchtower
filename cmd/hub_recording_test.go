@@ -24,7 +24,10 @@ func runHub(t *testing.T, args ...string) (string, error) {
 	rootCmd.SetArgs(nil)
 	for _, c := range hubCmd.Commands() {
 		for _, sub := range append(c.Commands(), c) {
-			sub.Flags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+			// Local flags only: resetting the inherited root flags would point
+			// flagConfig at the default (the developer's real) config path for
+			// every later test in the package.
+			sub.LocalFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
 		}
 	}
 	return out.String(), err
