@@ -3,35 +3,6 @@ import Foundation
 import os
 import WatchtowerSync
 
-/// Saves and deletes CloudKit subscriptions; the live one is the private `CKDatabase`, a fake in tests.
-protocol SubscriptionSaving: Sendable {
-    func save(_ subscription: CKSubscription) async throws
-    func delete(id: CKSubscription.ID) async throws
-}
-
-/// The live saver: one container's private database.
-struct CloudKitSubscriptionSaver: SubscriptionSaving {
-    let containerID: String
-
-    init(containerID: String = WatchtowerCloud.containerID) {
-        self.containerID = containerID
-    }
-
-    private var database: CKDatabase { CKContainer(identifier: containerID).privateCloudDatabase }
-
-    func save(_ subscription: CKSubscription) async throws {
-        _ = try await database.save(subscription)
-    }
-
-    func delete(id: CKSubscription.ID) async throws {
-        do {
-            _ = try await database.deleteSubscription(withID: id)
-        } catch let error as CKError where error.code == .unknownItem {
-            // Already gone: what was asked for.
-        }
-    }
-}
-
 /// One hub's work-alert push subscription (D14): registered while the phone's "When work stops" switch is on, removed
 /// when it is off. A private-scope hub gets the `WatchtowerSignal` query subscription (saving by ID replaces, so a
 /// repeat is harmless); a shared-scope hub has none: the phone posts its alerts itself after each fetch
