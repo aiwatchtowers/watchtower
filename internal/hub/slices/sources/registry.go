@@ -64,6 +64,40 @@ type Set struct {
 	Git      *GitRefresher
 	Chat     *SessionChatSource
 	Timeline *TimelineSource
+	// Sessions is the terminal_session source: the handlers' SessionWindows
+	// (what the phone may ask a chat or a report of).
+	Sessions *TerminalSessionSource
+}
+
+// WorkbenchOnlyKinds is what All publishes under MobileSync =
+// workbench_only, in AllKinds order; the hub adds its own heartbeat and
+// device_grant.
+var WorkbenchOnlyKinds = []slices.Kind{
+	"workbench", "workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
+	"session_timeline", slices.KindAskAlert, "permission_request", slices.KindSessionChat,
+}
+
+// ChangeTables maps each watchtower.db table a database-backed source reads
+// to the kinds it feeds (the hub's data_version watch, spec §9). The
+// runner-fed kinds (session_chat, session_report) and the sidecar-backed
+// recording_job are not here: their own loops and nudges publish them.
+var ChangeTables = map[string][]slices.Kind{
+	"projects":                 {"workbench"},
+	"automations":              {"workbench"},
+	"automation_runs":          {"workbench"},
+	"targets":                  {"workbench", "workbench_target", "session_timeline", "calendar_event"},
+	"target_status_history":    {"workbench_target", "session_timeline"},
+	"workbench_board_columns":  {"workbench_target"},
+	"terminal_session_targets": {"workbench_target", "session_timeline"},
+	"project_comments":         {"workbench_target", "workbench_comment"},
+	"terminal_sessions":        {"workbench", "workbench_target", "terminal_session", "session_timeline", "permission_request"},
+	"owner_asks":               {"workbench", "workbench_target", "terminal_session", "session_timeline", "owner_ask", slices.KindAskAlert},
+	"spec_reviews":             {"owner_ask", slices.KindAskAlert},
+	"permission_requests":      {"permission_request", slices.KindAskAlert},
+	"calendar_events":          {"calendar_event"},
+	"meeting_prep_cache":       {"calendar_event"},
+	"meeting_transcripts":      {"calendar_event", "meeting_transcript"},
+	"meeting_recaps":           {"meeting_transcript"},
 }
 
 // All assembles the sources of a MobileSync scope (MDM POLICY-03, spec §9):
@@ -120,7 +154,7 @@ func All(c Config) (*Set, error) {
 	}
 	chat := SessionChat(c.Watches, c.DB, SessionChatOptions{Liveness: c.Live, Active: c.Active, OnChange: c.OnChatChange, Now: now})
 
-	set.Report, set.Git, set.Chat, set.Timeline = report, git, chat, timeline
+	set.Report, set.Git, set.Chat, set.Timeline, set.Sessions = report, git, chat, timeline, sessions
 	set.Runners = []Runner{chat, report, git}
 	set.Sources = []slices.Source{
 		Workbench(c.DB, WorkbenchOptions{Home: c.Home, GitStatus: git.Status, Sessions: sessions, DefaultAgent: c.DefaultAgent, Now: now}),

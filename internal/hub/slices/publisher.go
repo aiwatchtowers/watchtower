@@ -108,7 +108,10 @@ type CycleReport struct {
 }
 
 // Publisher is the slice publisher. PublishSoon is safe from any goroutine;
-// cycles run one at a time.
+// cycles run one at a time, and a kind's Items and the Save of what it
+// returned run inside one cycle (under cycleMu): a source may remove an
+// asset file it returned before at its next Items call (the stale
+// meeting_transcript assets), which so never overlaps that file's upload.
 type Publisher struct {
 	c       Config
 	spacing time.Duration
