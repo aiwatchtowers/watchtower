@@ -49,6 +49,8 @@ import (
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/policy"
+	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionstart"
 )
 
 // The phase-1 environment.
@@ -123,9 +125,16 @@ type Options struct {
 	Clock                           func() time.Time
 	Register                        func(*actions.Dispatcher)
 	Sources                         func(*state.Store) []slices.Source
-	// Sessions is the session-host port of the handlers; nil answers no
-	// session live (the real port is Plan 1b Task 15).
+	// Sessions is the session-host port of the handlers; nil = the real
+	// port (sessionstart.Port) over SessionStart, whose DB and DBPath the
+	// runtime fills from DB.
 	Sessions handlers.SessionPort
+	// SessionStart is what the real port starts sessions with: the host
+	// socket (FromEnv: WATCHTOWER_SESSION_HOST_SOCKET only — the phase-1
+	// test workspace never reaches the host the Desktop uses; "" leaves
+	// the hub with no session host), the CLI path and cmd's seams
+	// (launch-args, the worktree integration, the default agent).
+	SessionStart sessionstart.Deps
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)
@@ -211,7 +220,8 @@ func FromEnv(cfg *config.Config, database *db.DB) (Options, bool, error) {
 		return Options{}, false, ErrNoRelayOrigin
 	}
 	dir = filepath.Clean(dir)
-	return Options{Dir: dir, RelayOrigin: origin, RecordingsDir: filepath.Join(dir, "recordings"), DB: database}, true, nil
+	return Options{Dir: dir, RelayOrigin: origin, RecordingsDir: filepath.Join(dir, "recordings"), DB: database,
+		SessionStart: sessionstart.Deps{Socket: os.Getenv(sessionhost.SocketEnv)}}, true, nil
 }
 
 // checkDir refuses a relative dir and the Swift hub's <AppSupportDir>/MobileHub
