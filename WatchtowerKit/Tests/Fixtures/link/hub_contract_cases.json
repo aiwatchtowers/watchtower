@@ -1,0 +1,316 @@
+{
+  "device_grant": [
+    {
+      "name": "desktop_awaiting",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": false,
+        "typing_allowed": false,
+        "start_sessions_allowed": true,
+        "awaiting_confirmation": true,
+        "confirm_nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+        "link_code_tag": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "ordered_actions": 1,
+        "transports": [
+          "cloudkit",
+          "relay"
+        ],
+        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": false,
+        "typing_allowed": false,
+        "start_sessions_allowed": true,
+        "awaiting_confirmation": true,
+        "confirm_nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+        "link_code_tag": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "ordered_actions": 1,
+        "transports": [
+          "cloudkit",
+          "relay"
+        ],
+        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+      },
+      "kit": {
+        "linked": false,
+        "awaiting_confirmation": true,
+        "confirm_nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+        "link_code_tag": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "revoked": null,
+        "may_start_sessions": true,
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": false,
+        "linked_at": null,
+        "decided_at": null
+      }
+    },
+    {
+      "name": "headless_linked",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": true,
+        "start_sessions_allowed": true,
+        "linked_at": 1730000000,
+        "decided_at": 1730000001.5,
+        "start_sessions_granted": true,
+        "permissions_allowed": true,
+        "ordered_actions": 1,
+        "transports": [
+          "relay"
+        ],
+        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": true,
+        "start_sessions_allowed": true,
+        "linked_at": 1730000000,
+        "decided_at": 1730000001.5,
+        "start_sessions_granted": true,
+        "permissions_allowed": true,
+        "ordered_actions": 1,
+        "transports": [
+          "relay"
+        ],
+        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+      },
+      "kit": {
+        "linked": true,
+        "awaiting_confirmation": null,
+        "confirm_nonce": null,
+        "link_code_tag": null,
+        "revoked": null,
+        "may_start_sessions": true,
+        "permissions_allowed": true,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": true,
+        "linked_at": 1730000000,
+        "decided_at": 1730000001.5
+      }
+    },
+    {
+      "name": "revoked",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": false,
+        "typing_allowed": false,
+        "start_sessions_allowed": true,
+        "decided_at": 1730000100,
+        "revoked": true
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": false,
+        "typing_allowed": false,
+        "start_sessions_allowed": true,
+        "decided_at": 1730000100,
+        "revoked": true
+      },
+      "kit": {
+        "linked": false,
+        "awaiting_confirmation": null,
+        "confirm_nonce": null,
+        "link_code_tag": null,
+        "revoked": true,
+        "may_start_sessions": true,
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": false,
+        "linked_at": null,
+        "decided_at": 1730000100
+      }
+    },
+    {
+      "name": "old_hub_no_new_fields",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": true,
+        "start_sessions_allowed": true,
+        "linked_at": 1730000000
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": true,
+        "start_sessions_allowed": true,
+        "linked_at": 1730000000
+      },
+      "kit": {
+        "linked": true,
+        "awaiting_confirmation": null,
+        "confirm_nonce": null,
+        "link_code_tag": null,
+        "revoked": null,
+        "may_start_sessions": true,
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": true,
+        "linked_at": 1730000000,
+        "decided_at": null
+      }
+    },
+    {
+      "name": "unknown_future_key",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": false,
+        "start_sessions_allowed": true,
+        "future_field": 1
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": false,
+        "start_sessions_allowed": true
+      },
+      "kit": {
+        "linked": true,
+        "awaiting_confirmation": null,
+        "confirm_nonce": null,
+        "link_code_tag": null,
+        "revoked": null,
+        "may_start_sessions": true,
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": false,
+        "linked_at": null,
+        "decided_at": null
+      }
+    }
+  ],
+  "link_payload": [
+    {
+      "name": "v4_desktop",
+      "url": "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmV4YW1wbGUud2F0Y2h0b3dlciIsImRhdGFfc2hhcmUiOiJodHRwczovL3NoYXJlLmV4YW1wbGUuY29tL2QiLCJleHAiOjE3MzAwMDA2MDAsImh1Yl9pZCI6IkFBQUFBQUFBLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImh1Yl9reCI6IllXSmpaR1ZtWjJocGFtdHNiVzV2Y0hGeWMzUjFkbmQ0ZVhwN2ZIMS1mNEEiLCJodWJfc2lnIjoiUVVKRFJFVkdSMGhKU2t0TVRVNVBVRkZTVTFSVlZsZFlXVnBiWEYxZVgyQSIsImlhdCI6MTczMDAwMDAwMCwibWFjX25hbWUiOiJUZXN0IE1hYyIsIm5vbmNlIjoiSVNJakpDVW1KeWdwS2lzc0xTNHZNREV5TXpRMU5qYzRPVG83UEQwLVAwQSIsIm93bmVyX3VzZXIiOiJfb3duZXIwMDAwIiwicmVsYXlfYXV0aF9wdWIiOiJBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVCRVNFeFFWRmhjWUdSb2JIQjBlSHlBIiwicmVsYXlfZGV2aWNlX2lkIjoiQ0NDQ0NDQ0MtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAzIiwicmVsYXlfc2hhcmUiOiJodHRwczovL3NoYXJlLmV4YW1wbGUuY29tL3IiLCJ0cmFuc3BvcnQiOiJyZWxheSIsInRyYW5zcG9ydHMiOlsiY2xvdWRraXQiLCJyZWxheSJdLCJ2Ijo0fQ",
+      "kit": "newer_version",
+      "expect": {
+        "container": "iCloud.com.example.watchtower",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Mac",
+        "owner_user": "_owner0000",
+        "nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+        "iat": 1730000000,
+        "exp": 1730000600,
+        "hub_sig": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "hub_kx": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
+        "v": 4,
+        "data_share": "https://share.example.com/d",
+        "relay_share": "https://share.example.com/r",
+        "transport": "relay",
+        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+        "transports": [
+          "cloudkit",
+          "relay"
+        ]
+      }
+    },
+    {
+      "name": "v4_headless",
+      "url": "watchtower://link?d=eyJleHAiOjE3MzAwMDA2MDAsImh1Yl9pZCI6IkFBQUFBQUFBLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImh1Yl9reCI6IllXSmpaR1ZtWjJocGFtdHNiVzV2Y0hGeWMzUjFkbmQ0ZVhwN2ZIMS1mNEEiLCJodWJfc2lnIjoiUVVKRFJFVkdSMGhKU2t0TVRVNVBVRkZTVTFSVlZsZFlXVnBiWEYxZVgyQSIsImlhdCI6MTczMDAwMDAwMCwibWFjX25hbWUiOiJUZXN0IE1hYyIsIm5vbmNlIjoiSVNJakpDVW1KeWdwS2lzc0xTNHZNREV5TXpRMU5qYzRPVG83UEQwLVAwQSIsInJlbGF5X2F1dGhfcHViIjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQkVTRXhRVkZoY1lHUm9iSEIwZUh5QSIsInJlbGF5X2RldmljZV9pZCI6IkNDQ0NDQ0NDLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMyIsInRyYW5zcG9ydCI6InJlbGF5IiwidHJhbnNwb3J0cyI6WyJyZWxheSJdLCJ2Ijo0fQ",
+      "kit": "newer_version",
+      "expect": {
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Mac",
+        "nonce": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+        "iat": 1730000000,
+        "exp": 1730000600,
+        "hub_sig": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+        "hub_kx": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
+        "v": 4,
+        "transport": "relay",
+        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "relay_auth_pub": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+        "transports": [
+          "relay"
+        ]
+      }
+    },
+    {
+      "name": "v5_newer",
+      "url": "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmV4YW1wbGUud2F0Y2h0b3dlciIsImV4cCI6MTczMDAwMDYwMCwiZnV0dXJlX2ZpZWxkIjoxLCJodWJfaWQiOiJBQUFBQUFBQS0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJodWJfa3giOiJZV0pqWkdWbVoyaHBhbXRzYlc1dmNIRnljM1IxZG5kNGVYcDdmSDEtZjRBIiwiaHViX3NpZyI6IlFVSkRSRVZHUjBoSlNrdE1UVTVQVUZGU1UxUlZWbGRZV1ZwYlhGMWVYMkEiLCJpYXQiOjE3MzAwMDAwMDAsIm1hY19uYW1lIjoiVGVzdCBNYWMiLCJub25jZSI6IklTSWpKQ1VtSnlncEtpc3NMUzR2TURFeU16UTFOamM0T1RvN1BEMC1QMEEiLCJvd25lcl91c2VyIjoiX293bmVyMDAwMCIsInYiOjV9",
+      "kit": "newer_version",
+      "error": "newer_version"
+    },
+    {
+      "name": "v3_older",
+      "url": "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmV4YW1wbGUud2F0Y2h0b3dlciIsImV4cCI6MTczMDAwMDYwMCwiaHViX2lkIjoiQUFBQUFBQUEtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiaHViX2t4IjoiWVdKalpHVm1aMmhwYW10c2JXNXZjSEZ5YzNSMWRuZDRlWHA3ZkgxLWY0QSIsImh1Yl9zaWciOiJRVUpEUkVWR1IwaEpTa3RNVFU1UFVGRlNVMVJWVmxkWVdWcGJYRjFlWDJBIiwiaWF0IjoxNzMwMDAwMDAwLCJtYWNfbmFtZSI6IlRlc3QgTWFjIiwibm9uY2UiOiJJU0lqSkNVbUp5Z3BLaXNzTFM0dk1ERXlNelExTmpjNE9UbzdQRDAtUDBBIiwib3duZXJfdXNlciI6Il9vd25lcjAwMDAiLCJ2IjozfQ",
+      "kit": "not_asserted",
+      "error": "older_version"
+    },
+    {
+      "name": "zero_hub_key",
+      "url": "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmV4YW1wbGUud2F0Y2h0b3dlciIsImV4cCI6MTczMDAwMDYwMCwiaHViX2lkIjoiQUFBQUFBQUEtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiaHViX2t4IjoiWVdKalpHVm1aMmhwYW10c2JXNXZjSEZ5YzNSMWRuZDRlWHA3ZkgxLWY0QSIsImh1Yl9zaWciOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwiaWF0IjoxNzMwMDAwMDAwLCJtYWNfbmFtZSI6IlRlc3QgTWFjIiwibm9uY2UiOiJJU0lqSkNVbUp5Z3BLaXNzTFM0dk1ERXlNelExTmpjNE9UbzdQRDAtUDBBIiwib3duZXJfdXNlciI6Il9vd25lcjAwMDAiLCJ0cmFuc3BvcnRzIjpbInJlbGF5Il0sInYiOjR9",
+      "kit": "not_asserted",
+      "error": "bad_hub_key"
+    }
+  ],
+  "encoding": [
+    {
+      "name": "strings",
+      "kind": "strings",
+      "value": {
+        "b": "x/y <&>",
+        "a": "line\n\"q\"\t\u0001\u001f é ",
+        "c": "z"
+      },
+      "relay_coder": "{\"a\":\"line\\n\\\"q\\\"\\t\\u0001\\u001f é \",\"b\":\"x\\/y <&>\",\"c\":\"z\"}",
+      "link_encoder": "{\"a\":\"line\\n\\\"q\\\"\\t\\u0001\\u001f é \",\"b\":\"x/y <&>\",\"c\":\"z\"}"
+    },
+    {
+      "name": "dates",
+      "kind": "dates",
+      "value": {
+        "whole": 1730000000,
+        "at": 1730000000.5,
+        "before": -1.5
+      },
+      "relay_coder": "{\"at\":1730000000.5,\"before\":-1.5,\"whole\":1730000000}"
+    }
+  ]
+}
