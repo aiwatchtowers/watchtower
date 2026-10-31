@@ -6,8 +6,22 @@
 // slots (open_pairing → Control{PAIRING_OPENED} to the hub, promote_pairing),
 // direct slots (add_slot), the phones holding a hub with their paying flag
 // (get_account_state), and Control{ENTITLEMENT_EXPIRED} to the hub when a
-// phone stops paying (SetPaying). No attestation, no quotas, no zone access
-// rules: every signed-in device reads and writes every zone.
+// phone stops paying (SetPaying).
+//
+// Vouched hubs (relay proto README, "Vouched hubs"): a hub (DEVICE_KIND_HUB or
+// DEVICE_KIND_MAC) in no phone's slot may only run get_account_state,
+// subscribe, close_pairing and save/delete/changes on pair/ zones; every
+// other op, over HTTP or its open socket, answers HUB_NOT_VOUCHED. A phone
+// vouches for a hub with a VOUCH challenge and vouch_hub (checked in the
+// relay's order: FORBIDDEN, ENTITLEMENT_INACTIVE, ATTESTATION_FAILED for a
+// nonce that is not an unused VOUCH nonce of this phone, NOT_FOUND, SLOT_LIMIT;
+// attestation itself is not modelled: FailNext("vouch_hub", …) stands in), and
+// the pending vouch lives 10 minutes; promote_pairing and add_slot of a hub
+// not yet in the phone's slots consume it or answer HUB_NOT_VOUCHED. A hub
+// newly put into a slot gets Control{SLOT_ADDED, detail: the phone's device
+// id}, best effort: only on an open socket, dropped otherwise. No quotas and
+// no zone access rules beyond that: every device that may write a zone
+// reads and writes every zone.
 //
 // Test-only: never imported by production code
 // (TestRelaytestIsImportedOnlyByTests).
@@ -36,6 +50,12 @@ import (
 
 // pairingTTL is how long an opened pairing slot lives.
 const pairingTTL = 10 * time.Minute
+
+// VouchTTL is how long a phone's pending vouch for a hub lives.
+const VouchTTL = 10 * time.Minute
+
+// maxMacs is the hubs one account may hold in its slots.
+const maxMacs = 3
 
 // writeTimeout bounds one pushed WebSocket frame.
 const writeTimeout = 5 * time.Second
@@ -70,6 +90,11 @@ type Server struct {
 	paying   map[string]bool               // phone → paying; a phone not here pays
 	nextSlot int
 
+	vouches     map[string]map[string]time.Time // phone → hub → when its pending vouch expires
+	vouchNonces map[string]string               // unused VOUCH nonce → the phone it was issued to
+	nextNonce   int
+	now         func() time.Time
+
 	conns      map[string]*conn   // device → its current WebSocket
 	all        []*conn            // every WebSocket accepted (closed at cleanup)
 	pending    map[string][]frame // device → controls for its next WebSocket
@@ -93,6 +118,7 @@ func Start(t testing.TB) *Server {
 		pageLimit: 500, ready: make(chan struct{}),
 		kinds: map[string]relayv1.DeviceKind{}, pairings: map[string]pairing{},
 		slots: map[string][]string{}, paying: map[string]bool{}, conns: map[string]*conn{}, pending: map[string][]frame{},
+		vouches: map[string]map[string]time.Time{}, vouchNonces: map[string]string{}, now: time.Now,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/op", s.serveOp)
@@ -282,6 +308,25 @@ func (s *Server) SetPaying(phone string, paying bool) {
 	s.mu.Unlock()
 }
 
+// SetNow replaces the relay's clock (pending vouch expiry).
+func (s *Server) SetNow(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+}
+
+// RemoveSlot takes hub out of phone's slots (remove_slot, a subscription
+// moving away) and sends the hub Control{SLOT_REMOVED, detail: phone}. A hub
+// left in no slot is unvouched again; its registration stays.
+func (s *Server) RemoveSlot(phone, hub string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.Index(s.slots[phone], hub); i >= 0 {
+		s.slots[phone] = slices.Delete(s.slots[phone], i, i+1)
+		s.controlLocked(hub, relayv1.ControlKind_CONTROL_KIND_SLOT_REMOVED, phone)
+	}
+}
+
 // ---- ops ----
 
 // OpName is the name of req's op field ("save", "open_pairing", …).
@@ -353,9 +398,20 @@ func (s *Server) serveOp(w http.ResponseWriter, r *http.Request) {
 // handle answers one op of caller (a device id, "" before login) and queues
 // the events it causes; s.mu is held.
 func (s *Server) handle(caller string, req *relayv1.Request) *relayv1.Response {
+	if s.isHub(caller) && !s.vouched(caller) && !unvouchedAllowed(req) {
+		return errResp(relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED)
+	}
 	switch op := req.GetOp().(type) {
 	case *relayv1.Request_Challenge:
-		return &relayv1.Response{Result: &relayv1.Response_Challenge{Challenge: &relayv1.Challenge{Nonce: []byte("nonce")}}}
+		nonce := []byte("nonce")
+		if op.Challenge.GetPurpose() == relayv1.ChallengePurpose_CHALLENGE_PURPOSE_VOUCH {
+			s.nextNonce++
+			nonce = []byte("vouch-" + strconv.Itoa(s.nextNonce))
+			s.vouchNonces[string(nonce)] = op.Challenge.GetDeviceId()
+		}
+		return &relayv1.Response{Result: &relayv1.Response_Challenge{Challenge: &relayv1.Challenge{Nonce: nonce}}}
+	case *relayv1.Request_VouchHub:
+		return s.vouchHub(caller, op.VouchHub)
 	case *relayv1.Request_Login:
 		return &relayv1.Response{Result: &relayv1.Response_Session{Session: &relayv1.Session{
 			Token: tokenPrefix + op.Login.GetDeviceId()}}}
@@ -389,14 +445,18 @@ func (s *Server) handle(caller string, req *relayv1.Request) *relayv1.Response {
 		if !found || p.phone != caller {
 			return errResp(relayv1.ErrorCode_ERROR_CODE_PAIRING_EXPIRED)
 		}
+		if code := s.addSlot(caller, p.mac); code != relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED {
+			return errResp(code)
+		}
 		delete(s.pairings, op.PromotePairing.GetSlotId())
-		s.addSlot(caller, p.mac)
 		return ok()
 	case *relayv1.Request_AddSlot:
 		if caller == "" || op.AddSlot.GetMacDeviceId() == "" {
 			return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
 		}
-		s.addSlot(caller, op.AddSlot.GetMacDeviceId())
+		if code := s.addSlot(caller, op.AddSlot.GetMacDeviceId()); code != relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED {
+			return errResp(code)
+		}
 		return ok()
 	case *relayv1.Request_CreateUpload:
 		id := "att-" + strconv.Itoa(len(s.uploads)+1)
@@ -464,10 +524,101 @@ func (s *Server) openPairing(caller, mac string) *relayv1.Response {
 	}}}
 }
 
-func (s *Server) addSlot(phone, mac string) {
-	if !slices.Contains(s.slots[phone], mac) {
-		s.slots[phone] = append(s.slots[phone], mac)
-		slices.Sort(s.slots[phone])
+// addSlot puts mac into phone's slots (add_slot, promote_pairing). A hub
+// already there is idempotent and needs no vouch; otherwise the account must
+// have room (SLOT_LIMIT, the vouch kept) and a live pending vouch of this
+// phone for it, which it consumes (HUB_NOT_VOUCHED). The hub gets SLOT_ADDED
+// on its open socket. It returns UNSPECIFIED on success.
+func (s *Server) addSlot(phone, mac string) relayv1.ErrorCode {
+	if slices.Contains(s.slots[phone], mac) {
+		return relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED
+	}
+	if len(s.slots[phone]) >= maxMacs {
+		return relayv1.ErrorCode_ERROR_CODE_SLOT_LIMIT
+	}
+	if exp, found := s.vouches[phone][mac]; !found || !s.now().Before(exp) {
+		return relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED
+	}
+	delete(s.vouches[phone], mac)
+	s.slots[phone] = append(s.slots[phone], mac)
+	slices.Sort(s.slots[phone])
+	s.liveControlLocked(mac, relayv1.ControlKind_CONTROL_KIND_SLOT_ADDED, phone)
+	return relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED
+}
+
+// vouchHub is a phone's vouch_hub, checked in the relay's order.
+func (s *Server) vouchHub(caller string, v *relayv1.VouchHub) *relayv1.Response {
+	if s.kinds[caller] != relayv1.DeviceKind_DEVICE_KIND_PHONE {
+		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
+	}
+	if !s.pays(caller) {
+		return errResp(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE)
+	}
+	issued, found := s.vouchNonces[string(v.GetNonce())]
+	delete(s.vouchNonces, string(v.GetNonce())) // spent, whatever follows
+	if !found || issued != caller {
+		return errResp(relayv1.ErrorCode_ERROR_CODE_ATTESTATION_FAILED)
+	}
+	hub := v.GetHubDeviceId()
+	if len(v.GetAuthPub()) == 0 || client.DeviceID(v.GetAuthPub()) != hub || !s.isHub(hub) {
+		return errResp(relayv1.ErrorCode_ERROR_CODE_NOT_FOUND)
+	}
+	if !slices.Contains(s.slots[caller], hub) && len(s.slots[caller]) >= maxMacs {
+		return errResp(relayv1.ErrorCode_ERROR_CODE_SLOT_LIMIT)
+	}
+	if s.vouches[caller] == nil {
+		s.vouches[caller] = map[string]time.Time{}
+	}
+	s.vouches[caller][hub] = s.now().Add(VouchTTL)
+	return ok()
+}
+
+// isHub: device registered as a hub (either hub kind).
+func (s *Server) isHub(device string) bool {
+	k := s.kinds[device]
+	return k == relayv1.DeviceKind_DEVICE_KIND_HUB || k == relayv1.DeviceKind_DEVICE_KIND_MAC
+}
+
+// vouched: the hub is in some phone's slot (or, with SetAccountState, the
+// answered state lists a phone).
+func (s *Server) vouched(hub string) bool {
+	if s.account != nil {
+		return len(s.account.GetPhones()) > 0
+	}
+	for _, macs := range s.slots {
+		if slices.Contains(macs, hub) {
+			return true
+		}
+	}
+	return false
+}
+
+// unvouchedAllowed is what an unvouched hub may run (the relay's list): its
+// sign-in, its account state, subscribe, close_pairing, vouch_hub (which
+// answers a hub FORBIDDEN) and zone ops on pair/ zones only.
+func unvouchedAllowed(req *relayv1.Request) bool {
+	pair := func(zone string) bool { return strings.HasPrefix(zone, "pair/") }
+	switch op := req.GetOp().(type) {
+	case *relayv1.Request_Challenge, *relayv1.Request_Register, *relayv1.Request_Login,
+		*relayv1.Request_GetAccountState, *relayv1.Request_Subscribe, *relayv1.Request_ClosePairing,
+		*relayv1.Request_VouchHub:
+		return true
+	case *relayv1.Request_Save:
+		if len(op.Save.GetItems()) == 0 {
+			return false
+		}
+		for _, it := range op.Save.GetItems() {
+			if !pair(it.GetRecord().GetZone()) {
+				return false
+			}
+		}
+		return true
+	case *relayv1.Request_Delete:
+		return pair(op.Delete.GetZone())
+	case *relayv1.Request_Changes:
+		return pair(op.Changes.GetZone())
+	default:
+		return false
 	}
 }
 
@@ -649,6 +800,15 @@ func (s *Server) controlLocked(device string, kind relayv1.ControlKind, detail s
 	s.parkLocked(device, []frame{{b: b, control: true}})
 }
 
+// liveControlLocked sends a best-effort control: on device's open socket,
+// dropped when it has none (the relay's SLOT_ADDED); s.mu is held.
+func (s *Server) liveControlLocked(device string, kind relayv1.ControlKind, detail string) {
+	if c := s.conns[device]; c != nil && !c.closed {
+		b := eventFrame(&relayv1.Event{Kind: &relayv1.Event_Control{Control: &relayv1.Control{Kind: kind, Detail: detail}}})
+		c.enqueueLocked(frame{b: b, control: true})
+	}
+}
+
 // zoneChangedLocked tells every other device's current socket subscribed
 // to zoneName that it changed (the writer is not told); s.mu is held.
 func (s *Server) zoneChangedLocked(writer, zoneName string, seq uint64) {
@@ -759,9 +919,14 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		if req.GetSubscribe() != nil {
 			s.lastDevice = c.device
 		}
+		answer := &relayv1.Response{Id: req.GetId(), Result: &relayv1.Response_Ok{Ok: &relayv1.Ok{}}}
+		if s.isHub(c.device) && !s.vouched(c.device) && !unvouchedAllowed(req) {
+			// The gate holds on a socket opened while the hub was vouched.
+			answer = errResp(relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED)
+			answer.Id = req.GetId()
+		}
 		s.mu.Unlock()
-		out, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Response{Response: &relayv1.Response{
-			Id: req.GetId(), Result: &relayv1.Response_Ok{Ok: &relayv1.Ok{}}}}})
+		out, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Response{Response: answer}})
 		if ws.Write(ctx, websocket.MessageBinary, out) != nil {
 			return
 		}

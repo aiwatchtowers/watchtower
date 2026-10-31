@@ -10,11 +10,14 @@
 // TOKEN_EXPIRED resync, attachments through create_upload/get_download and
 // the error mapping (MapError).
 //
-// Until the relay admits hubs (DEVICE_KIND_HUB, vouch_hub; relay ask #805) the
-// hub registers as DEVICE_KIND_MAC with no attestation, which only a relay with
-// attestation off (the local stand) accepts; elsewhere it gets
-// ErrAttestationRequired. The hub does not count itself on the relay until the
-// account state shows it in a paying phone's slot (Admitted).
+// The hub registers as DEVICE_KIND_HUB with an empty attestation and logs in
+// with its Ed25519 signature only (relay proto README, "Vouched hubs"). It is
+// unvouched until a phone vouches for its key (vouch_hub) and puts it into a
+// slot: until then the relay opens only get_account_state, subscribe, its
+// pair/<slot> zones and close_pairing to it, and answers every other op
+// HUB_NOT_VOUCHED (transport.ErrNotVouched), also on an open socket. Vouched
+// reads that from the account state; the hub does not count itself on the
+// relay until the account state shows it in a paying phone's slot (Admitted).
 package relay
 
 import (
@@ -36,9 +39,10 @@ import (
 	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
-// DeviceKind is the kind the hub registers as: DEVICE_KIND_MAC until the
-// relay proto carries DEVICE_KIND_HUB (gap 1 of the relay hand-off).
-const DeviceKind = relayv1.DeviceKind_DEVICE_KIND_MAC
+// DeviceKind is the kind the Go hub registers as, in test and live mode
+// alike. The relay treats both hub kinds as one (DEVICE_KIND_MAC is the Swift
+// app's), so a hub an older build registered as a Mac stays the same device.
+const DeviceKind = relayv1.DeviceKind_DEVICE_KIND_HUB
 
 // eventBuffer is the Events channel's capacity. The pump never drops an
 // event: when the channel is full it waits (the client keeps folding zone
@@ -224,7 +228,7 @@ func (t *Transport) pump(conn *client.Conn) {
 	for ev := range conn.Events() {
 		switch {
 		case ev.Err != nil:
-			t.emit(transport.Event{Zone: ev.Err.Zone, Err: fmt.Errorf("relay: zone dropped: %w", MapError(ev.Err.Err))})
+			t.emit(transport.Event{Zone: ev.Err.Zone, Err: fmt.Errorf("relay: zone dropped: %w", t.noteError(MapError(ev.Err.Err)))})
 		case ev.GetZoneChanged() != nil:
 			zc := ev.GetZoneChanged()
 			resync := zc.GetSeq() == 0 && zc.Record == nil
@@ -238,7 +242,13 @@ func (t *Transport) pump(conn *client.Conn) {
 			if !ok {
 				continue
 			}
-			if c.Kind != transport.PairingOpened {
+			switch c.Kind {
+			case transport.PairingOpened:
+			case transport.SlotAdded:
+				// Read before the event goes out, so its consumer sees the
+				// slot in Vouched: one read per SLOT_ADDED, never a poll.
+				t.readAccountNow()
+			default:
 				t.refreshAccount()
 			}
 			t.emit(transport.Event{Control: &c})
@@ -268,6 +278,8 @@ func controlOf(c *relayv1.Control) (transport.Control, bool) {
 		k = transport.PairingOpened
 	case relayv1.ControlKind_CONTROL_KIND_SESSION_EXPIRED:
 		k = transport.SessionExpired
+	case relayv1.ControlKind_CONTROL_KIND_SLOT_ADDED:
+		k = transport.SlotAdded
 	default:
 		return transport.Control{}, false
 	}
@@ -317,8 +329,25 @@ func (t *Transport) refreshAccount() {
 	}()
 }
 
+// readAccountNow reads the account state once, bounded by accountTimeout and
+// by the transport's close; a failure is reported as an event.
+func (t *Transport) readAccountNow() {
+	ctx, cancel := context.WithTimeout(context.Background(), accountTimeout)
+	defer cancel()
+	go func() {
+		select {
+		case <-t.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	if _, err := t.AccountState(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		t.emit(transport.Event{Err: fmt.Errorf("relay: account state: %w", err)})
+	}
+}
+
 // AccountState reads the hub's account state (the phones holding it in a
-// slot) and keeps it for Admitted.
+// slot) and keeps it for Vouched and Admitted.
 func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, error) {
 	resp, err := t.c.Do(ctx, &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}})
 	if err != nil {
@@ -334,6 +363,16 @@ func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, er
 	return st, nil
 }
 
+// Vouched reports whether the last account state shows the hub in any
+// phone's slot, paying or not: only then does the relay open the data zone,
+// the mailboxes and set_hub_readers to it. A HUB_NOT_VOUCHED answer to any op
+// clears it until an account state says otherwise.
+func (t *Transport) Vouched() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.account.GetPhones()) > 0
+}
+
 // Admitted reports whether the last account state shows the hub in a paying
 // phone's slot: only then does the hub count itself on the relay.
 func (t *Transport) Admitted() bool {
@@ -347,13 +386,25 @@ func (t *Transport) Admitted() bool {
 	return false
 }
 
-// do runs one op over HTTPS and maps its error.
+// do runs one op over HTTPS and maps its error. HUB_NOT_VOUCHED means the
+// hub is in no slot now, whatever the last account state said.
 func (t *Transport) do(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
 	resp, err := t.c.Do(ctx, req)
 	if err != nil {
-		return nil, MapError(err)
+		return nil, t.noteError(MapError(err))
 	}
 	return resp, nil
+}
+
+// noteError forgets the cached account state's slots on HUB_NOT_VOUCHED and
+// returns err.
+func (t *Transport) noteError(err error) error {
+	if errors.Is(err, transport.ErrNotVouched) {
+		t.mu.Lock()
+		t.account = &relayv1.AccountState{}
+		t.mu.Unlock()
+	}
+	return err
 }
 
 // rereadZones asks the consumer to re-read zones after a refused write: the

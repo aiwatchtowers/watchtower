@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -460,6 +461,17 @@ func linkPhone(t *testing.T, h *interopHub) *linked {
 		}
 		return ok && kb.Keys != nil
 	})
+	// Vouched hubs: linked but in no slot, the hub is not_vouched, and the
+	// stand refuses a promote with no vouch (HUB_NOT_VOUCHED to the phone).
+	if s, err := ReadStatus(h.dir); err != nil || s.Reason != ReasonNotVouched {
+		t.Fatalf("status before the vouch: %+v, %v", s, err)
+	}
+	if err := store.PromotePairing(ctx, slot); !errors.Is(err, transport.ErrNotVouched) {
+		t.Fatalf("promote_pairing without a vouch: %v", err)
+	}
+	if err := phone.VouchLink(ctx, lp); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.PromotePairing(ctx, slot); err != nil {
 		t.Fatal(err)
 	}
@@ -548,18 +560,46 @@ func waitApplied(t *testing.T, p *hubtest.Phone, wait time.Duration, seqs ...uin
 
 // ---- the tests ----
 
-// TestInterop_LinkOverPairingSlot: the Go phone opens a pairing slot for
-// the hub, the hub answers its hello with a keybox, both show the same
-// four-digit code, the owner confirms, the phone gets the keys and promotes
-// the slot; the relay then admits the hub (status running, no reason, one
-// phone) and lets the phone read its device_grant from the data zone
-// (linkPhone checks each step).
-func TestInterop_LinkOverPairingSlot(t *testing.T) {
+// TestInterop_VouchedHubLinksAndPublishes (relay "Vouched hubs" on the
+// stand; it absorbs Phase 1's TestInterop_LinkOverPairingSlot: the stand
+// allows 10 registrations a minute per address and each test registers a
+// hub and a phone, so the suite keeps four link tests). The Go phone opens
+// a pairing slot for the hub — registered as DEVICE_KIND_HUB with no
+// attestation —, the hub answers its hello with a keybox, both show the same
+// four-digit code, the owner confirms and the phone gets the keys; the hub
+// is then not_vouched and the stand refuses a promote with no vouch; the
+// phone vouches and promotes, and the relay admits the hub (status running,
+// no reason, one phone), the phone reads its device_grant from the data zone
+// (linkPhone checks each step), the phone is stamped relay_admitted_at and
+// the heartbeat is published.
+func TestInterop_VouchedHubLinksAndPublishes(t *testing.T) {
 	h := startHub(t, interopOpts{passEvery: time.Second, linkEvery: time.Second})
 	l := linkPhone(t, h)
 	if len(l.code) != 4 || strings.Trim(l.code, "0123456789") != "" {
 		t.Fatalf("code %q is not four digits", l.code)
 	}
+	eventually(t, stepWait, "the phone stamped admitted", func() bool {
+		st, err := state.OpenReadOnly(h.dir)
+		if err != nil {
+			return false
+		}
+		defer func() { _ = st.Close() }()
+		devices, err := st.Devices()
+		return err == nil && len(devices) == 1 && !devices[0].RelayAdmittedAt.IsZero()
+	})
+	data := transport.DataZone(l.status.RelayDeviceID)
+	eventually(t, stepWait, "the heartbeat in the data zone", func() bool {
+		recs, err := l.phone.OpenData(data)
+		if err != nil {
+			return false
+		}
+		for _, r := range recs {
+			if r.Frame.Kind == "heartbeat" {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // TestInterop_ActionsInOrderWithEchoes: a1..a5 with a3 held back; the hub

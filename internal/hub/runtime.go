@@ -108,12 +108,20 @@ type hubRuntime struct {
 	// paused is true while no phone pays (guarded by mu).
 	paying *PayingWatch
 	paused bool
+	// acct is the account-state poll (nil without one); unvouched is true
+	// while the relay has not vouched for the hub, held while the
+	// publisher and the processor hold for either reason (mu; gateMu
+	// orders the holds and releases).
+	acct      *accountReader
+	unvouched bool
+	held      bool
+	gateMu    sync.Mutex
 
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	watched map[string]bool // zones subscribed (worker only)
 	// subRetry backs off a zone whose subscription the relay refused, and
-	// admitted is the admission the last link upkeep saw (worker only).
+	// admitted is the vouch state the last link upkeep saw (worker only).
 	subRetry map[string]*subRetry
 	admitted bool
 
@@ -235,12 +243,15 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
 	}
+	if as, ok := h.tr.(accountStater); ok {
+		h.acct = &accountReader{read: as.AccountState, vouched: h.vouched, clock: o.Clock}
+	}
+	h.unvouched = !h.vouched() // Connect read the account state
 	if o.RelayOnlyRules {
-		as, ok := h.tr.(accountStater)
-		if !ok {
+		if h.acct == nil {
 			return nil, fmt.Errorf("%w: the transport has no account state", ErrStartFailed)
 		}
-		h.paying = NewPayingWatch(as.AccountState)
+		h.paying = NewPayingWatch(h.readAccount)
 		if o.payTimer != nil {
 			h.paying.timer = o.payTimer
 		}
@@ -316,9 +327,15 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if h.paying != nil {
 		// Paused until the first account state shows a paying phone.
 		h.paused = true
+		log.Printf("hub: relay-only rules on: paused until the account state shows a paying phone")
+	}
+	if h.unvouched {
+		log.Printf("hub: not vouched on the relay (in no phone's slot): only pairing goes on")
+	}
+	if h.paused || h.unvouched {
+		h.held = true
 		pub.Pause()
 		h.proc.SetPaused(true)
-		log.Printf("hub: relay-only rules on: paused until the account state shows a paying phone")
 	}
 
 	hctx, cancel := context.WithCancel(context.Background())
@@ -475,6 +492,9 @@ func (h *hubRuntime) reason() string {
 	if unreachable {
 		return ReasonRelayUnreachable
 	}
+	if h.isUnvouched() {
+		return h.vouchReason()
+	}
 	if h.isPaused() {
 		return ReasonNeedsRelay
 	}
@@ -484,9 +504,11 @@ func (h *hubRuntime) reason() string {
 	return ""
 }
 
-// observe hands a relay write's error to the PayingWatch
-// (ENTITLEMENT_INACTIVE re-reads the account state).
+// observe hands a relay write's error to the gate (HUB_NOT_VOUCHED holds
+// the hub) and to the PayingWatch (ENTITLEMENT_INACTIVE re-reads the
+// account state).
 func (h *hubRuntime) observe(err error) {
+	h.noteNotVouched(err)
 	if h.paying != nil {
 		h.paying.Observe(transport.Event{}, err)
 	}
@@ -512,15 +534,11 @@ func (h *hubRuntime) setPaying(paying bool) {
 		return
 	}
 	if paying {
-		h.proc.SetPaused(false)
-		h.pub.Resume()
-		h.kick(h.passKick)
 		log.Printf("hub: resumed (a paying phone)")
 	} else {
-		h.pub.Pause()
-		h.proc.SetPaused(true)
 		log.Printf("hub: paused (%s)", ReasonNeedsRelay)
 	}
+	h.applyGate()
 	h.sup.poke()
 }
 
@@ -576,6 +594,7 @@ func (h *hubRuntime) work(ctx context.Context) {
 
 // onEvent handles one transport event.
 func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
+	h.noteNotVouched(ev.Err)
 	if h.paying != nil {
 		h.paying.Observe(ev, nil)
 	}
@@ -618,6 +637,8 @@ func (h *hubRuntime) onControl(ctx context.Context, c transport.Control) {
 	case transport.EntitlementExpired, transport.SlotRemoved, transport.SubscriptionMoved:
 		log.Printf("hub: relay control %d: readers synced again", c.Kind)
 		h.kick(h.linkKick)
+	case transport.SlotAdded:
+		h.onSlotAdded(c.Detail)
 	case transport.SessionExpired:
 		// The relay client signs in again by itself.
 	}
@@ -634,7 +655,7 @@ func (h *hubRuntime) pairing(ctx context.Context, slot string) {
 
 // pass is one processor pass, run again at once while it left records.
 func (h *hubRuntime) pass(ctx context.Context) {
-	if h.isPaused() {
+	if h.isHeld() {
 		return
 	}
 	for range 10 {
@@ -669,13 +690,23 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 		h.observe(err)
 		log.Printf("hub: pair keyboxes not written (%s)", errClass(err))
 	}
-	if rs, ok := h.tr.(readersSetter); ok {
+	vouched := h.vouched()
+	if rs, ok := h.tr.(readersSetter); ok && vouched {
+		// set_hub_readers is closed to an unvouched hub.
 		if err := h.center.SyncReaders(ctx, rs.SetLinkedReaders); err != nil {
+			h.noteNotVouched(err)
 			log.Printf("hub: readers not synced (%s)", errClass(err))
 		}
 	}
 	if zw, ok := h.tr.(zoneWatcher); ok {
 		h.watchZones(ctx, zw)
+	}
+	if !vouched && h.acct != nil && h.phoneLinked() {
+		// A linked phone and no slot: the hub expects one. SLOT_ADDED is
+		// best effort, so this backstop polls (at most every UnvouchedPoll).
+		if _, err := h.readAccount(ctx); err != nil {
+			log.Printf("hub: reading the account state failed (%s)", errClass(err))
+		}
 	}
 	h.pass(ctx)
 	h.sup.poke()
@@ -693,7 +724,9 @@ type soonWindow struct {
 }
 
 // soonTick is one tick of the short-retry window. Per tick it costs one
-// get_account_state; the full link check (keyboxes, readers, subscriptions,
+// get_account_state — while the hub is unvouched at most one per
+// UnvouchedPoll (the relay's limit; accountReader answers the ticks between
+// from the last read, and SLOT_ADDED reads at once) —; the full link check (keyboxes, readers, subscriptions,
 // a pass) runs only on the window's first tick and when the slotted set
 // changed since the last one, so a phone that is never promoted costs one
 // read every linkSoonEvery for linkSoonFor, nothing more. The window ends
@@ -730,8 +763,7 @@ func (h *hubRuntime) recheckPaying() {
 // phones that do (a key), read false when it could not be read. A
 // transport with no account state has nothing to wait for (settled).
 func (h *hubRuntime) slotState(ctx context.Context) (settled bool, slotted string, read bool) {
-	as, ok := h.tr.(accountStater)
-	if !ok {
+	if h.acct == nil {
 		return true, "", true
 	}
 	devices, err := h.st.Devices()
@@ -739,7 +771,7 @@ func (h *hubRuntime) slotState(ctx context.Context) (settled bool, slotted strin
 		return false, "", false
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
-	st, err := as.AccountState(ctx)
+	st, err := h.readAccount(ctx) // throttled while unvouched
 	cancel()
 	if err != nil {
 		return false, "", false
@@ -785,12 +817,12 @@ func zoneKind(zone, data string) string {
 // watchZones subscribes the hub's zones not subscribed yet. The relay
 // refuses them (FORBIDDEN) until a phone holds the hub in a slot: a refused
 // zone waits linkEvery, doubling up to maxSubBackoff, and is logged once
-// until it succeeds; the hub becoming admitted (promote_pairing, which
-// sends the hub no event) clears the waits. A subscription that takes means
+// until it succeeds; the hub becoming vouched (SLOT_ADDED, or a poll that
+// sees a slot) clears the waits. A subscription that takes means
 // the relay is reachable.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
-	if a, ok := h.tr.(admission); ok {
-		admitted := a.Admitted()
+	if _, ok := h.tr.(vouchState); ok {
+		admitted := h.vouched()
 		if admitted && !h.admitted {
 			clear(h.subRetry)
 		}
@@ -846,10 +878,10 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if h.mode == policy.MobileWorkbenchOnly && !h.isPaused() {
+	if h.mode == policy.MobileWorkbenchOnly && !h.isHeld() {
 		// What the switch to workbench_only failed to delete: no source
 		// publishes those kinds now, so whatever is left is retried here
-		// (not while paused: a paused hub deletes nothing).
+		// (not while paused or unvouched: then the hub deletes nothing).
 		if left, err := publishedRecords(h.st, workbenchOnly); err != nil {
 			log.Printf("hub: reading what was published failed (%s)", errClass(err))
 		} else {
@@ -884,7 +916,11 @@ func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 	h.cancel()
 	h.wg.Wait()
 	h.wiring.close()
-	if keep != nil {
+	if keep != nil && !h.vouched() {
+		// The data zone is closed to an unvouched hub: the records stay in
+		// slice_state, so the next start (or the stopped wipe) retries.
+		log.Printf("hub: not vouched on the relay: published records not deleted yet")
+	} else if keep != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 		if published, err := publishedRecords(h.st, keep); err != nil {
 			log.Printf("hub: reading what was published failed (%s)", errClass(err))
