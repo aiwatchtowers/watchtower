@@ -1,0 +1,579 @@
+{
+  "_comment": "PermissionAllowBlock (#517, ask #268/#312): when the phone may only deny a permission request. Read by WatchtowerKit PermissionAllowRuleTests and Go internal/hub/actions/handlers TestAllowBlockSharedCases; block is the Kit's raw value or null.",
+  "cases": [
+    {
+      "name": "clipped bash",
+      "tool": "Bash",
+      "summary": "ls",
+      "clipped": true,
+      "block": "clipped"
+    },
+    {
+      "name": "clipped plain edit",
+      "tool": "Edit",
+      "summary": "/tmp/acme/a.go",
+      "clipped": true,
+      "block": "clipped"
+    },
+    {
+      "name": "clipped settings edit",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.claude/settings.json",
+      "clipped": true,
+      "block": "clipped"
+    },
+    {
+      "name": "plain bash",
+      "tool": "Bash",
+      "summary": "ls",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.claude/settings.local.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.claude/hooks/x.sh",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.codex/config.toml",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.agents/skills/x/SKILL.md",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.git/hooks/pre-commit",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.zshrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.zshenv",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.zprofile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.zlogin",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.bashrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.bash_profile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.bash_login",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.profile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.git/config",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.mcp.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.envrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/.gitconfig",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.watchtower/workflow.md",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "/tmp/home/acme/.CLAUDE/settings.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": ".claude/settings.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Edit settings path",
+      "tool": "Edit",
+      "summary": "//tmp//home//acme//.git//hooks//x",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.claude/settings.local.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.claude/hooks/x.sh",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.codex/config.toml",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.agents/skills/x/SKILL.md",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.git/hooks/pre-commit",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.zshrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.zshenv",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.zprofile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.zlogin",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.bashrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.bash_profile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.bash_login",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.profile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.git/config",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.mcp.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.envrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/.gitconfig",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.watchtower/workflow.md",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.CLAUDE/settings.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": ".claude/settings.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "Write settings path",
+      "tool": "Write",
+      "summary": "//tmp//home//acme//.git//hooks//x",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.claude/settings.local.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.claude/hooks/x.sh",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.codex/config.toml",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.agents/skills/x/SKILL.md",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.git/hooks/pre-commit",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.zshrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.zshenv",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.zprofile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.zlogin",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.bashrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.bash_profile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.bash_login",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.profile",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.git/config",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.mcp.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.envrc",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/.gitconfig",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.watchtower/workflow.md",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "/tmp/home/acme/.CLAUDE/settings.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": ".claude/settings.json",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "NotebookEdit settings path",
+      "tool": "NotebookEdit",
+      "summary": "//tmp//home//acme//.git//hooks//x",
+      "clipped": false,
+      "block": "settingsPath"
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/main.go",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/docs/claude.md",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.github/workflows/ci.yml",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.git/info/exclude",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.watchtower/review.md",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/config",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/hooks/pre-commit",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/zshrc.md",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.claude-notes/x.md",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/.git",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "/tmp/home/acme/hooks/.git",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "ordinary path",
+      "tool": "Write",
+      "summary": "",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "bash naming a settings file",
+      "tool": "Bash",
+      "summary": "cat ~/.zshrc",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "webfetch naming .claude",
+      "tool": "WebFetch",
+      "summary": "https://example.com/.claude/x",
+      "clipped": false,
+      "block": null
+    },
+    {
+      "name": "tool name is case-sensitive",
+      "tool": "edit",
+      "summary": "/tmp/home/acme/.claude/settings.json",
+      "clipped": false,
+      "block": null
+    }
+  ]
+}

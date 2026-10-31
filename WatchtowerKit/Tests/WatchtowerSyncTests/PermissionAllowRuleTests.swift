@@ -57,4 +57,24 @@ final class PermissionAllowRuleTests: XCTestCase {
         XCTAssertNil(PermissionAllowBlock.check(toolName: "Bash", summary: "cat ~/.zshrc", clipped: false))
         XCTAssertNil(PermissionAllowBlock.check(toolName: "WebFetch", summary: "https://example.com/.claude/x", clipped: false))
     }
+
+    /// The cases the Go hub's `AllowBlock` reads too
+    /// (`Tests/Fixtures/permissions/allow_block_cases.json`): one rule on
+    /// both sides of the relay.
+    func testSharedAllowBlockCases() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // WatchtowerSyncTests
+            .deletingLastPathComponent() // Tests
+            .appendingPathComponent("Fixtures/permissions/allow_block_cases.json")
+        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        let cases = try XCTUnwrap(object?["cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty)
+        for fixtureCase in cases {
+            let tool = try XCTUnwrap(fixtureCase["tool"] as? String)
+            let summary = try XCTUnwrap(fixtureCase["summary"] as? String)
+            let clipped = try XCTUnwrap(fixtureCase["clipped"] as? Bool)
+            let block = PermissionAllowBlock.check(toolName: tool, summary: summary, clipped: clipped)
+            XCTAssertEqual(block?.rawValue, fixtureCase["block"] as? String, "\(tool) \(summary)")
+        }
+    }
 }

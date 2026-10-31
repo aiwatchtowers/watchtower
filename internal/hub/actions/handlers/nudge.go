@@ -24,4 +24,11 @@ var NudgeTable = map[string][]slices.Kind{
 	// The workbench record carries the automation buttons and their runs
 	// (AutomationRunHandler's publishSoon([.workbench])).
 	"automation_run": {"workbench"},
+	// PROJ-21: an answer changes the request and the session's state; an
+	// Esc changes the state the hooks report next. The request kinds feed
+	// the runner-fed slices (the runner publishes them itself).
+	"permission_answer":      {"permission_request", "terminal_session"},
+	"session_interrupt":      {"terminal_session"},
+	"session_report_request": {"session_report"},
+	"session_chat_request":   {"session_chat"},
 }

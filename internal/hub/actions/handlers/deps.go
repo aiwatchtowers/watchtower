@@ -61,6 +61,13 @@ type Deps struct {
 	Policy          func() string
 	WakeAutomations func()
 	Timeout         time.Duration
+	// Windows (nil = nothing published, so chat and report requests fail
+	// not_found), ChatWatches and Reports (nil = nothing to tell) are the
+	// runner-fed slices' side of session_chat_request and
+	// session_report_request (Task 8).
+	Windows     SessionWindows
+	ChatWatches ChatWatches
+	Reports     ReportRequests
 }
 
 // Handlers is the registered handler set: its in-memory state (asks being
@@ -99,6 +106,10 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 		reg(k, h.board)
 	}
 	reg("automation_run", h.automationRun)
+	reg("permission_answer", h.permissionAnswer)
+	reg("session_interrupt", h.sessionInterrupt)
+	reg("session_report_request", h.sessionReportRequest)
+	reg("session_chat_request", h.sessionChatRequest)
 	return h
 }
 
