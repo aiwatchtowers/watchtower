@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -22,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -670,11 +672,14 @@ func TestInterop_NoPlaintextOnTheWire(t *testing.T) {
 	m := &markCounter{calls: map[uint64]int{}}
 	h := startHub(t, interopOpts{passEvery: time.Second, linkEvery: time.Second, register: m.register})
 	name := canary(t, "name")
+	before := h.transport()
 	if a, err := h.ctl.Do(ControlRequest{Op: OpName, Name: name}); err != nil || !a.OK {
 		t.Fatalf("name: %+v, %v", a, err)
 	}
-	time.Sleep(500 * time.Millisecond) // the hub restarts for its new name
-	h.waitRunning()
+	// The hub restarts for its new name: a new transport, then running.
+	eventually(t, stepWait, "the hub restarted for its new name", func() bool {
+		return h.transport() != before && h.rec.last().State == StateRunning
+	})
 	l := linkPhone(t, h)
 	p := l.phone
 
@@ -710,6 +715,11 @@ func TestInterop_NoPlaintextOnTheWire(t *testing.T) {
 	canaries := []string{name, "Test Phone", "iPhone18,1", markKind, `"device_grant"`, `"keys"`}
 	for _, mark := range marks {
 		canaries = append(canaries, mark)
+	}
+	// The same canaries encoded as the protocol encodes bytes elsewhere.
+	for _, c := range slices.Clone(canaries) {
+		canaries = append(canaries, base64.StdEncoding.EncodeToString([]byte(c)),
+			base64.RawURLEncoding.EncodeToString([]byte(c)), hex.EncodeToString([]byte(c)))
 	}
 
 	streams := h.tap.streams()

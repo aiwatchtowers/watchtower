@@ -175,7 +175,7 @@ func readMeta(t *testing.T, dir, key string) (string, bool) {
 }
 
 // linkPhoneDirectly writes a linked phone's row with no hub running.
-func linkPhoneDirectly(t *testing.T, dir string) {
+func linkPhoneDirectly(t *testing.T, dir string) *hubtest.Phone {
 	t.Helper()
 	p, err := hubtest.New(hubtest.Config{})
 	if err != nil {
@@ -189,6 +189,7 @@ func linkPhoneDirectly(t *testing.T, dir string) {
 	if err := st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.LinkDevice(tx, p.Device()) }); err != nil {
 		t.Fatal(err)
 	}
+	return p
 }
 
 func liveRecords(t *testing.T, f *memfake.Fake, zone string) []string {
@@ -639,16 +640,14 @@ func (w *refusingWatcher) count(zone string) int {
 	return w.watched[zone]
 }
 
-// TestRefusedZoneSubscriptionRetriedByLinkUpkeep: on a transport that
-// subscribes zones itself (the hosted relay) the hub starts without
-// counting any zone as subscribed — the relay refuses a hub not in a slot
-// yet, and a start must still get PAIRING_OPENED — and the link upkeep
-// subscribes each zone, retrying a refused one, then never again.
-func TestRefusedZoneSubscriptionRetriedByLinkUpkeep(t *testing.T) {
+// refusingRig runs a hub with a linked phone on the refusing watcher, with
+// a fast link upkeep; it returns the data zone and the phone's mailbox.
+func refusingRig(t *testing.T) (*rig, *refusingWatcher, string, string) {
+	t.Helper()
 	policytest.Set(t, nil)
 	dir := shortDir(t)
 	setMeta(t, dir, state.MetaEnabled, "1")
-	linkPhoneDirectly(t, dir)
+	phone := linkPhoneDirectly(t, dir)
 	r := newRig(t, dir)
 	w := &refusingWatcher{Fake: r.fake, refused: map[string]bool{}, watched: map[string]int{}}
 	o := r.options()
@@ -662,12 +661,38 @@ func TestRefusedZoneSubscriptionRetriedByLinkUpkeep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, 10*time.Second, "the data zone subscribed after its refusal", func() bool { return w.count(data) == 1 })
+	return r, w, transport.DataZone(s.RelayDeviceID), transport.MailboxZone(s.RelayDeviceID, phone.RelayDeviceID())
+}
+
+// TestRefusedZoneSubscriptionRetriedByLinkUpkeep: on a transport that
+// subscribes zones itself (the hosted relay) the hub starts without
+// counting any zone as subscribed — the relay refuses a hub not in a slot
+// yet, and a start must still get PAIRING_OPENED — and the link upkeep
+// subscribes each zone (data zone and mailbox), retrying a refused one,
+// then never again.
+func TestRefusedZoneSubscriptionRetriedByLinkUpkeep(t *testing.T) {
+	_, w, data, mailbox := refusingRig(t)
+	eventually(t, 10*time.Second, "both zones subscribed after their refusal", func() bool {
+		return w.count(data) == 1 && w.count(mailbox) == 1
+	})
 	time.Sleep(300 * time.Millisecond) // several more upkeeps
-	if n := w.count(data); n != 1 {
-		t.Fatalf("the data zone subscribed %d times", n)
+	if w.count(data) != 1 || w.count(mailbox) != 1 {
+		t.Fatalf("subscribed data %d, mailbox %d times", w.count(data), w.count(mailbox))
 	}
+}
+
+// TestDroppedZoneResubscribedAndStatusRecovers: a zone the relay dropped
+// (a zone error event, as after a refused resubscribe) is subscribed again
+// by the link upkeep, and a status left at relay_unreachable by a
+// transport failure recovers once the subscription takes.
+func TestDroppedZoneResubscribedAndStatusRecovers(t *testing.T) {
+	r, w, data, _ := refusingRig(t)
+	eventually(t, 10*time.Second, "the data zone subscribed", func() bool { return w.count(data) == 1 })
+	r.fake.SendEvent(transport.Event{Err: transport.ErrUnavailable})
+	r.waitState(StateRunning, ReasonRelayUnreachable)
+	r.fake.SendEvent(transport.Event{Zone: data, Err: transport.ErrForbidden})
+	eventually(t, 10*time.Second, "the dropped data zone subscribed again", func() bool { return w.count(data) == 2 })
+	r.waitState(StateRunning, "")
 }
 
 // TestStartFailureHasItsOwnReason: a start step that is not a sidecar read

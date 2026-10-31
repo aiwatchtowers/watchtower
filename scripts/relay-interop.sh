@@ -7,8 +7,10 @@
 #
 # It starts `wrangler dev` from <relay checkout>/worker (Node and `npm ci`
 # there first; wrangler is the worker's own devDependency, run through npx)
-# in its own process group, on fresh state in a temp dir, with RELAY_ENV=dev
-# (App Attest off, the /dev/* endpoints), waits for /healthz, then runs
+# in its own process group, on fresh state in a temp dir, and waits for
+# /healthz. It relies on the worker's wrangler.jsonc top-level defaults
+# (RELAY_ENV=dev, RELAY_ATTEST_MODE=off: App Attest off, the /dev/*
+# endpoints) and checks that /dev/* exists before the tests run. Then it runs
 #
 #   go test -tags interop -run '^TestInterop_' ./internal/hub -relay=<origin> -relay-control-pid=<this pid>
 #
@@ -88,7 +90,9 @@ stop_wrangler() {
 
 cleanup() {
 	local rc=$?
-	trap - EXIT INT TERM USR1
+	# A second Ctrl-C or TERM must not cut the stop short and orphan wrangler.
+	trap - EXIT
+	trap '' INT TERM USR1
 	if [ -n "$GOPID" ]; then
 		stop_group "$GOPID"
 		GOPID=""
@@ -135,6 +139,12 @@ start_wrangler() {
 }
 
 start_wrangler || exit 1
+# The stand must be the dev environment: /dev/* answers 404 everywhere else.
+# An unknown phone gets 404 too, so probe with a malformed body (400).
+code="$(curl -sS -m 5 -o /dev/null -w '%{http_code}' -d '{}' "$ORIGIN/dev/account")"
+if [ "$code" = 404 ] || [ "$code" = 000 ]; then
+	die "the stand has no /dev/* endpoints (HTTP $code): it is not running with RELAY_ENV=dev"
+fi
 
 cd "$ROOT" || exit 1
 set -m
@@ -146,19 +156,22 @@ rc=0
 while :; do
 	wait "$GOPID"
 	rc=$?
-	if [ "$RESTART" = 1 ]; then
+	# A restart only while the tests still run (wait was cut short by the
+	# signal); a failed restart keeps GOPID so cleanup stops the tests.
+	if [ "$RESTART" = 1 ] && kill -0 "$GOPID" 2>/dev/null; then
 		RESTART=0
 		echo "relay-interop: restarting the stand (asked by a test)" >&2
 		stop_wrangler
 		if ! start_wrangler; then
+			echo "relay-interop: the stand did not restart; stopping the tests" >&2
 			rc=1
 			break
 		fi
 		continue
 	fi
+	GOPID="" # the tests exited
 	break
 done
-GOPID=""
 if [ "$rc" -ne 0 ]; then
 	echo "relay-interop: FAIL (exit $rc); wrangler log tail:" >&2
 	tail -n 60 "$LOG" >&2
