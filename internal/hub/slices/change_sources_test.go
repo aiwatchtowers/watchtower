@@ -246,11 +246,11 @@ func TestContinuousWritesStillPublishWithinOneSecond(t *testing.T) {
 	}
 }
 
+// TestAKindIsSavedAtMostOncePerSpacingOverTheRealSource is the 1a
 // TestAKindIsSavedAtMostOncePerSpacing over the real source and the
-// data_version watch (the 1a publisher test of the same name drives a fake
-// source): two saves of workbench_target are never closer than the relay's
+// data_version watch: two saves of workbench_target are never closer than the relay's
 // spacing, however fast the writes come.
-func TestAKindIsSavedAtMostOncePerSpacing(t *testing.T) {
+func TestAKindIsSavedAtMostOncePerSpacingOverTheRealSource(t *testing.T) {
 	r := newChangeRig(t)
 	r.run()
 	for i := range 40 { // a write every 40 ms for 1.6 s, and a handler's nudge on every third

@@ -44,8 +44,15 @@ type Config struct {
 	Hidden       func() map[int64]bool
 	Active       func() bool
 	OnChatChange func()
-	Now          func() time.Time
-	Location     *time.Location
+	// OnReportChange and OnGitChange (nil = none) are the report runner's
+	// and the git refresher's OnChange.
+	OnReportChange func()
+	OnGitChange    func()
+	// ReportFetch and GitFetch (nil = the in-process reads) are test seams.
+	ReportFetch ReportFetch
+	GitFetch    GitFetch
+	Now         func() time.Time
+	Location    *time.Location
 }
 
 // Set is the hub's sources and what the runtime must start and tell.
@@ -130,7 +137,7 @@ func All(c Config) (*Set, error) {
 		now = time.Now
 	}
 
-	git := NewGitRefresher(c.DB, GitRefresherOptions{Active: c.Active, Now: now})
+	git := NewGitRefresher(c.DB, GitRefresherOptions{Active: c.Active, Now: now, OnChange: c.OnGitChange, Fetch: c.GitFetch})
 	var report *SessionReportRunner
 	sessions := TerminalSessions(c.DB, TerminalSessionOptions{
 		Liveness: c.Live,
@@ -142,7 +149,7 @@ func All(c Config) (*Set, error) {
 		},
 		Now: now,
 	})
-	report, err := SessionReport(c.DB, SessionReportOptions{Sessions: sessions, Store: c.Store, Sealer: c.Sealer, Active: c.Active, Now: now})
+	report, err := SessionReport(c.DB, SessionReportOptions{Sessions: sessions, Store: c.Store, Sealer: c.Sealer, Active: c.Active, Now: now, OnChange: c.OnReportChange, Fetch: c.ReportFetch})
 	if err != nil {
 		return nil, err
 	}

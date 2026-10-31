@@ -23,6 +23,10 @@ import (
 // there.
 const transcriptAssetDir = "transcripts"
 
+// reportKinds is what a stored report or summary changes: the report, its
+// timeline milestones and the terminal_session record's report_* fields.
+var reportKinds = []slices.Kind{"session_report", "session_timeline", "terminal_session"}
+
 // watchBusy is the dedicated read handle's busy timeout: one data_version
 // read never waits longer for a lock.
 const watchBusy = time.Second
@@ -63,6 +67,55 @@ type wiring struct {
 	// watchConnClose returns the watch's connection to its handle.
 	watchConnClose func() error
 	watchErr       error // why there is no watch (logged at start)
+	// seed is the report runner's Seed; seeded is closed once it succeeded.
+	seed   func(context.Context) error
+	seeded chan struct{}
+}
+
+// Seed retry at start: 1 s doubling to 10 s.
+const (
+	seedRetryFirst = time.Second
+	seedRetryMax   = 10 * time.Second
+)
+
+// errNotSeeded skips the timeline in a publish cycle until the report runner
+// is seeded (the publisher retries the kind).
+var errNotSeeded = errors.New("hub: the session states are not seeded yet")
+
+func (w *wiring) isSeeded() bool {
+	select {
+	case <-w.seeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// trySeed runs Seed once; true (and seeded closed) when it succeeded.
+func (w *wiring) trySeed(ctx context.Context) bool {
+	if w.isSeeded() {
+		return true
+	}
+	if err := w.seed(ctx); err != nil {
+		log.Printf("hub: seeding the session states failed (%s)", errClass(err))
+		return false
+	}
+	close(w.seeded)
+	return true
+}
+
+// gatedSource is a source whose Items fail until ready: the timeline's first
+// read waits for the report runner's Seed.
+type gatedSource struct {
+	slices.Source
+	ready func() bool
+}
+
+func (g gatedSource) Items(ctx context.Context) ([]slices.Item, error) {
+	if !g.ready() {
+		return nil, errNotSeeded
+	}
+	return g.Source.Items(ctx)
 }
 
 // buildWiring builds the sources over o.DB in mode and registers the
@@ -77,8 +130,12 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode,
 		AssetDir: filepath.Join(o.Dir, assetDirName, transcriptAssetDir),
 		Home:     home, Away: platform.NewAway(), Active: h.phoneLinked,
-		OnChatChange: func() { h.publishSoon(slices.KindSessionChat) },
-		Now:          o.Clock,
+		OnChatChange:   func() { h.publishSoon(slices.KindSessionChat) },
+		OnReportChange: func() { h.publishSoon(reportKinds...) },
+		OnGitChange:    func() { h.publishSoon("workbench") },
+		ReportFetch:    o.reportFetch,
+		GitFetch:       o.gitFetch,
+		Now:            o.Clock,
 	})
 	if err != nil {
 		return nil, err
@@ -91,10 +148,31 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	w.handlers = handlers.Register(d, handlerDeps(o, st, set, watches, h.kr, port, lateEcho))
 
 	w.lane = newStateLane(o.DB.DB, o.Clock)
+	if o.laneBackstop > 0 {
+		w.lane.backstop = o.laneBackstop
+	}
 	w.lane.held = w.handlers.DeliverHeld
 	w.lane.nudge = h.publishSoon
-	if set.Timeline != nil {
-		w.lane.observe = set.Timeline.Observe
+	w.seeded = make(chan struct{})
+	if set.Report != nil {
+		w.seed = set.Report.Seed
+	} else {
+		close(w.seeded)
+	}
+	if tl := set.Timeline; tl != nil {
+		// T8 ordering: nothing observes the timeline before the report
+		// runner's Seed succeeded (a failed Seed at start is retried).
+		w.lane.observe = func(ctx context.Context, at time.Time) error {
+			if !w.isSeeded() {
+				return nil // Items observes as the fallback once seeded
+			}
+			return tl.Observe(ctx, at)
+		}
+		for i, src := range set.Sources {
+			if src == slices.Source(tl) {
+				set.Sources[i] = gatedSource{Source: tl, ready: w.isSeeded}
+			}
+		}
 	}
 	if set.Report != nil {
 		w.lane.changed = append(w.lane.changed, set.Report.SessionStateChanged)
@@ -127,6 +205,10 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 
 // openWatch opens the data_version watch on a read-only handle of its own:
 // the daemon's pool has one connection, which the watch must never hold.
+//
+// TODO(db-encryption Stage 2): this handle opens without a SQLCipher key
+// (correct while every file is plaintext, Stage 1); Stage 2 must pass the
+// key here as it does to db.Open.
 func (w *wiring) openWatch(ctx context.Context, main *db.DB, touched, clock func() time.Time) {
 	path, err := mainFile(ctx, main)
 	if err != nil {
@@ -177,13 +259,23 @@ func mainFile(ctx context.Context, d *db.DB) (string, error) {
 // runner is seeded first — before the timeline's first Observe or Items,
 // which write the current state as the newest milestone (T8 ordering) —
 // then the runners, the lane and the watch. The publisher starts after it.
+//
+// A Seed that fails here is retried (1 s doubling to 10 s) until it succeeds
+// or the hub stops; meanwhile the timeline is gated (its Items fail, so the
+// publisher retries it, and the lane does not observe). Nothing else waits:
+// the device_grant and the other kinds keep publishing.
 func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
-	if w.set.Report != nil {
-		if err := w.set.Report.Seed(ctx); err != nil {
-			log.Printf("hub: seeding the session states failed (%s)", errClass(err))
-		}
+	if w.trySeed(ctx) {
+		h.trace("seeded")
+	} else {
+		h.trace("seed_failed")
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.retrySeed(ctx)
+		}()
 	}
-	h.trace("seeded")
+	h.trace("runners")
 	for _, r := range w.set.Runners {
 		h.wg.Add(1)
 		go func() {
@@ -191,6 +283,7 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 			_ = r.Run(ctx)
 		}()
 	}
+	h.trace("lane")
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
@@ -200,6 +293,7 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 		log.Printf("hub: no data_version watch (%s): other processes' writes publish on the full diff", errClass(w.watchErr))
 		return
 	}
+	h.trace("watch")
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
@@ -208,6 +302,24 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 			w.lane.kick()
 		})
 	}()
+}
+
+// retrySeed retries Seed until it succeeds or ctx ends.
+func (w *wiring) retrySeed(ctx context.Context) {
+	wait := seedRetryFirst
+	for {
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		if w.trySeed(ctx) {
+			return
+		}
+		wait = min(wait*2, seedRetryMax)
+	}
 }
 
 // close releases the watch's handle once the goroutines are done.

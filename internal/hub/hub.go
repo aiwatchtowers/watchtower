@@ -44,6 +44,7 @@ import (
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/slices"
+	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/policy"
@@ -138,7 +139,10 @@ type Options struct {
 	writeTimeout time.Duration
 	pairQueue    int // events one pairing stream may have waiting (0 = pairQueue)
 	trace        func(step string)
-	sendBuffer   int // SO_SNDBUF of each accepted control connection (0 = the OS default)
+	reportFetch  sources.ReportFetch // nil = the in-process report
+	gitFetch     sources.GitFetch    // nil = the in-process git status
+	laneBackstop time.Duration       // 0 = laneBackstop
+	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
 }
 
 func (o Options) withDefaults() Options {
