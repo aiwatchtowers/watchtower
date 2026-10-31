@@ -92,6 +92,13 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	}
 	if deps.DesktopHost == nil {
 		deps.DesktopHost = func() bool { return false }
+		if deps.Store != nil {
+			// The single desktop-host signal: a fresh Desktop heartbeat.
+			deps.DesktopHost = func() bool {
+				fresh, _, err := deps.Store.DesktopHost(deps.Clock())
+				return err == nil && fresh
+			}
+		}
 	}
 	h := &Handlers{d: deps, answering: map[int64]bool{}}
 	h.loadHeld()
@@ -110,6 +117,9 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	reg("session_interrupt", h.sessionInterrupt)
 	reg("session_report_request", h.sessionReportRequest)
 	reg("session_chat_request", h.sessionChatRequest)
+	// recording_upload is no action kind: the processor calls the intake for
+	// the upload records, and a received one refreshes the recording_job slice.
+	d.SetRecordings(h.IntakeRecording, []string{"recording_job"})
 	return h
 }
 

@@ -185,6 +185,25 @@ func (f *Fake) Write(zone, name string, env []byte, expect transport.Expect) (tr
 	return f.put(zone, name, env, "", expect), nil
 }
 
+// WriteWithAsset is Write for a phone record that carries an attachment (a
+// recording upload): the sealed asset bytes are stored and served by Download.
+func (f *Fake) WriteWithAsset(zone, name string, env, asset []byte, expect transport.Expect) (transport.Outcome, error) {
+	if err := checkExpect(expect); err != nil {
+		return transport.Outcome{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.down {
+		return transport.Outcome{}, transport.ErrUnavailable
+	}
+	f.frames = append(f.frames, bytes.Clone(env))
+	f.attCounter++
+	att := "att-" + strconv.FormatUint(f.attCounter, 10)
+	f.attachments[att] = bytes.Clone(asset)
+	f.attZones[att] = zone
+	return f.put(zone, name, env, att, expect), nil
+}
+
 // Save implements transport.Transport. An unsealed Record refuses the whole
 // call with secure.ErrUnsealed before anything else; an asset file is read
 // whole, stored as an attachment and served by Download (the fake does not

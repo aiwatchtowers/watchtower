@@ -43,6 +43,8 @@ type Processor struct {
 	// before any decision commits, "done" inside the done transaction just
 	// before its commit (the transaction then rolls back).
 	fault func(point string) error
+	// held is the uploads answered held, tried again each pass (recording.go).
+	held map[string]*heldUpload
 }
 
 // PassReport counts one pass: phone records read (opened), actions applied
@@ -138,6 +140,9 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 		// Held actions that are next in line first: a drain an earlier
 		// pass left at the batch limit (or a crash) resumes here.
 		err := p.drainHeld(ctx, b, ps)
+		if err == nil {
+			err = p.retryUploads(ctx, b, ps)
+		}
 		if err == nil {
 			err = p.readMailbox(ctx, b, ps)
 		}
@@ -274,9 +279,12 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 	case kindControl:
 		ps.report.Read++
 		err = p.phoneControl(ctx, b, rec, opened, ps)
+	case kindRecordingUpload:
+		ps.report.Read++
+		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq)}, opened, rec.AttachmentID, ps)
 	default:
-		// recording_upload and device records belong to other lanes; an
-		// unknown kind has no work (the Kit's RelayRecordKind decoding).
+		// device records belong to another lane; an unknown kind has no work
+		// (the Kit's RelayRecordKind decoding).
 		return nil
 	}
 	return err

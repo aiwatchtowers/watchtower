@@ -70,6 +70,8 @@ type Phone struct {
 	Echoes map[uint64]wire.ActionRequest
 	// LegacyEchoes is the last echo seen per legacy action id.
 	LegacyEchoes map[string]wire.ActionRequest
+	// UploadEchoes is the last recording_upload echo read per upload id.
+	UploadEchoes map[string]map[string]any
 	// Controls is every hub control read, in order.
 	Controls []wire.Control
 	// Undelivered lists the actions a skip_to gave up on.
@@ -265,6 +267,18 @@ func (p *Phone) WriteFrame(kind, id string, payload []byte) (string, error) {
 	return name, err
 }
 
+// WriteUpload writes a recording_upload record recupload-<id> (payload is the
+// upload's JSON) with its sealed asset attached, if nothing holds the name.
+func (p *Phone) WriteUpload(id string, payload []byte, asset *secure.AssetDescriptor, sealed []byte) (string, error) {
+	name := secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, "recupload", id)
+	env, err := p.seal(name, secure.InnerFrame{Kind: "recording_upload", ID: "recupload-" + id, Asset: asset, Payload: payload})
+	if err != nil {
+		return "", err
+	}
+	_, err = p.cfg.Transport.WriteWithAsset(p.zone, name, env, sealed, transport.Expect{Mode: transport.ExpectAbsent})
+	return name, err
+}
+
 // SendLegacy writes a as today's phones do: no action_seq, record
 // action-<id>. It returns the wire name.
 func (p *Phone) SendLegacy(a wire.ActionRequest) (string, error) {
@@ -316,6 +330,16 @@ func (p *Phone) Sync() (int, error) {
 				if err := p.onEcho(rec, f); err != nil {
 					return n, err
 				}
+			case "recording_upload":
+				var m map[string]any
+				if err := json.Unmarshal(f.Payload, &m); err != nil {
+					return n, fmt.Errorf("hubtest: unreadable upload echo: %w", err)
+				}
+				if p.UploadEchoes == nil {
+					p.UploadEchoes = map[string]map[string]any{}
+				}
+				id, _ := m["id"].(string)
+				p.UploadEchoes[id] = m
 			case "control":
 				if err := p.onControl(rec, f); err != nil {
 					return n, err
