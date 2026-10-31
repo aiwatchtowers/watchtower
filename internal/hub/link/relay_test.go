@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/secure"
@@ -359,5 +361,176 @@ func TestPairZoneSubscribedUntilItTakes(t *testing.T) {
 	defer w.mu.Unlock()
 	if !slices.Equal(w.watched, []string{"slot1"}) {
 		t.Fatalf("subscriptions: %v, want one after the failed one", w.watched)
+	}
+}
+
+// rebuiltZone is a memfake whose pair zone was rebuilt on the relay: the
+// first read after cursor 10 is TOKEN_EXPIRED and the zone's counter starts
+// low again. It records every cursor the hub reads from.
+type rebuiltZone struct {
+	*memfake.Fake
+	mu      sync.Mutex
+	sinces  []uint64
+	expired bool
+}
+
+func (z *rebuiltZone) Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error) {
+	z.mu.Lock()
+	z.sinces = append(z.sinces, since)
+	first := !z.expired
+	z.mu.Unlock()
+	switch {
+	case since == 0 && first:
+		// Before the rebuild the zone stood at 10.
+		b, err := z.Fake.Changes(ctx, zone, 0)
+		b.NewSeq = 10
+		return b, err
+	case since == 10:
+		z.mu.Lock()
+		z.expired = true
+		z.mu.Unlock()
+		return transport.Batch{}, transport.ErrTokenExpired
+	}
+	return z.Fake.Changes(ctx, zone, since)
+}
+
+func TestPairZoneCursorAfterResyncReplacesTheOldOne(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	z := &rebuiltZone{Fake: memfake.New(transport.KindRelay, r.clock)}
+	p := newPhone(t)
+	r.writeHello(z.Fake, "slot1", p, r.issue().Nonce, withRelayID(relayID(t)))
+	for range 3 {
+		if err := r.c.OnPairingOpened(ctx, z, "slot1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	// Read 1 from 0 (cursor 10); read 2 from 10 → expired → from 0 (the
+	// rebuilt zone: hello + keybox, seq 2); read 3 from 2, not from 10 or 0.
+	want := []uint64{0, 10, 0, 2}
+	if !slices.Equal(z.sinces, want) {
+		t.Fatalf("cursors read: %v, want %v", z.sinces, want)
+	}
+}
+
+func TestAFailedHelloStillAnswersTheOnesDecidedBeforeIt(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	f := memfake.New(transport.KindRelay, r.clock)
+	code := r.issue()
+	a, b := newPhone(t), newPhone(t)
+	r.writeHello(f, "slot1", a, code.Nonce, withRelayID(relayID(t)))
+	r.writeHello(f, "slot1", b, code.Nonce, withRelayID(relayID(t)))
+	trigger := func(q string) {
+		t.Helper()
+		if err := r.st.WithTx(ctx, func(tx *sql.Tx) error { _, err := tx.Exec(q); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trigger(`CREATE TRIGGER fail_b BEFORE INSERT ON pending_devices WHEN NEW.device_id = '` + b.id.String() +
+		`' BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+	if err := r.c.OnPairingOpened(ctx, f, "slot1"); err == nil {
+		t.Fatal("the failing hello's error was not reported")
+	}
+	if _, ok := r.pairKeybox(f, "slot1", a); !ok {
+		t.Fatal("the hello decided before the failure got no keybox")
+	}
+	if _, ok := r.pairKeybox(f, "slot1", b); ok {
+		t.Fatal("the failed hello got a keybox")
+	}
+	trigger(`DROP TRIGGER fail_b`)
+	if err := r.c.OnPairingOpened(ctx, f, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if kb, ok := r.pairKeybox(f, "slot1", b); !ok || kb.Grant.AwaitingConfirmation == nil {
+		t.Fatalf("the failed hello was not read again: %+v %v", kb, ok)
+	}
+	if r.code(a) == "" {
+		t.Fatal("phone a's request was lost")
+	}
+}
+
+func TestRefusalKeyboxReachesThePairZone(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	f := memfake.New(transport.KindRelay, r.clock)
+	p := newPhone(t)
+	r.writeHello(f, "slot1", p, r.issue().Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, f, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.Confirm(p.id.String(), r.code(p), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.PublishPairKeyboxes(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	kb, ok := r.pairKeybox(f, "slot1", p)
+	if !ok || kb.Grant.LinkRefused == nil || *kb.Grant.LinkRefused != wire.RefusedNotConfirmed || kb.Keys != nil {
+		t.Fatalf("refusal keybox: %+v (found %v)", kb, ok)
+	}
+}
+
+func TestExpiryKeyboxReachesThePairZone(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	f := memfake.New(transport.KindRelay, r.clock)
+	p := newPhone(t)
+	code := r.issue()
+	r.advance(60 * time.Second) // the phone scans and opens its slot a minute later
+	r.writeHello(f, "slot1", p, code.Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, f, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	r.advance(wire.LinkLifetime - 59*time.Second) // past the code, inside the slot
+	if err := r.c.Sweep(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.PublishPairKeyboxes(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	kb, ok := r.pairKeybox(f, "slot1", p)
+	if !ok || kb.Grant.LinkRefused == nil || *kb.Grant.LinkRefused != wire.RefusedExpiredCode || kb.Keys != nil {
+		t.Fatalf("expiry keybox: %+v (found %v)", kb, ok)
+	}
+}
+
+// TestPairZoneKeyboxOpensInTheKitsDataContext pins the context the phone
+// opens a keybox with: the Kit's ReplicaOpener.openKeybox uses
+// EnvelopeContext(zone: .data, wireName: "keybox-<UUID>") whatever transport
+// zone the record came from, so a pair-zone keybox is sealed with the data
+// zone byte and that wire name, and does not open under the relay zone byte.
+func TestPairZoneKeyboxOpensInTheKitsDataContext(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	f := memfake.New(transport.KindRelay, r.clock)
+	p := newPhone(t)
+	r.writeHello(f, "slot1", p, r.issue().Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, f, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	var box *transport.Stored
+	for _, s := range pairZoneRecords(t, f, "slot1") {
+		if strings.HasPrefix(s.Name, "keybox-") {
+			box = &s
+		}
+	}
+	if box == nil || box.Name != "keybox-"+strings.ToUpper(p.id.String()) {
+		t.Fatalf("keybox record: %+v", box)
+	}
+	hub := r.kr.HubID()
+	sig := r.kr.Signer().Public().(ed25519.PublicKey)
+	open := func(z secure.Zone) error {
+		_, _, err := secure.OpenHPKE(box.Envelope, secure.ClassKeybox, p.kx, secure.KeyboxInfo(hub, p.id),
+			secure.Context{Zone: z, WireName: box.Name}, sig)
+		return err
+	}
+	if err := open(secure.ZoneData); err != nil {
+		t.Fatalf("does not open in the data context: %v", err)
+	}
+	if err := open(secure.ZoneRelay); err == nil {
+		t.Fatal("opens in the relay context too: the zone byte is not bound")
 	}
 }

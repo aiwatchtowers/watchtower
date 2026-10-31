@@ -118,14 +118,21 @@ func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slo
 	if err != nil {
 		return fmt.Errorf("link: reading the pair zone: %w", err)
 	}
-	var answered []string
+	var (
+		answered []string
+		failed   error
+	)
 	for _, h := range hellos {
 		p, err := c.HandleHello(zone, h.Name, h.Envelope)
 		if errors.Is(err, ErrHelloDropped) {
 			continue
 		}
 		if err != nil {
-			return err
+			// The hellos decided so far are still answered below; the
+			// cursor stays, so the batch is read again (a decided hello
+			// re-read changes nothing).
+			failed = err
+			break
 		}
 		if !p.Unanswered {
 			answered = append(answered, strings.ToUpper(p.DeviceID))
@@ -133,7 +140,11 @@ func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slo
 	}
 	c.pairMu.Lock()
 	if cur := c.pairs[slot]; cur != nil {
-		cur.cursor = max(cur.cursor, newSeq)
+		if failed == nil {
+			// Replaced, never max'ed: after a TOKEN_EXPIRED resync of a
+			// rebuilt zone the new cursor can be lower than the old one.
+			cur.cursor = newSeq
+		}
 		for _, d := range answered {
 			if !slices.Contains(cur.devices, d) {
 				cur.devices = append(cur.devices, d)
@@ -144,12 +155,14 @@ func (c *Center) OnPairingOpened(ctx context.Context, t transport.Transport, slo
 	if len(hellos) > 0 {
 		log.Printf("hub link: pair zone: %d hellos read, %d answered", len(hellos), len(answered))
 	}
-	return c.writePairKeyboxes(ctx, t, zone, answered)
+	return errors.Join(failed, c.writePairKeyboxes(ctx, t, zone, answered))
 }
 
 // PublishPairKeyboxes writes, in every pairing slot still open, the current
 // keybox of each phone whose hello came through it: after Confirm it carries
-// the keys, after a refusal or an expiry the reason.
+// the keys, after a refusal or an expiry the reason. Every open slot's boxes
+// are rewritten on each publish: bounded by maxPairSlots slots of at most
+// MaxGrantRecords phones each, and only within pairSlotLifetime.
 func (c *Center) PublishPairKeyboxes(ctx context.Context, t transport.Transport) error {
 	c.pairMu.Lock()
 	c.prunePairSlots()
