@@ -335,9 +335,13 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 			defer h.mu.Unlock()
 			return h.lastRelay, !h.lastRelay.IsZero()
 		},
-		Recordings: func() (bool, bool) {
+		Recordings: func() bool {
 			on, _, err := st.Recordings()
-			return on, err == nil
+			if err != nil {
+				log.Printf("hub: recording switch unreadable (%s): heartbeat says off", errClass(err))
+				return false
+			}
+			return on
 		},
 	}
 	if raw, ok, err := st.Meta(state.MetaEnabledAt); err == nil && ok {

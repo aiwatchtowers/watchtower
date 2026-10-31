@@ -29,7 +29,9 @@ const (
 	reasonOutcomeUnknown  = "outcome_unknown"
 	reasonUnsupported     = "unsupported_in_poc"
 	reasonWriteFailed     = "write_failed"
-	reasonNotSupported    = "not_supported"
+	// ReasonNotSupported: this host does not record (protocol §9); the
+	// recording intake answers it too.
+	ReasonNotSupported = "not_supported"
 )
 
 // The Swift hub's messages, verbatim.

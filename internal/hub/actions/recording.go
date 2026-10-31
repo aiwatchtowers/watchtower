@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -108,26 +107,14 @@ func (p *Processor) retryUploads(ctx context.Context, b mailbox, ps *pass) error
 	return p.recoverHeld(ctx, b, ps)
 }
 
-// heldSince is the first hold of an upload still held; ok false when it is
-// not held.
-func (p *Processor) heldSince(uploadID string) (time.Time, bool, error) {
-	rows, err := p.cfg.Store.HeldUploads()
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	for _, r := range rows {
-		if r.UploadID == uploadID {
-			return r.HeldAt, true, nil
-		}
-	}
-	return time.Time{}, false, nil
-}
-
 // recoverHeld finds b's held uploads with no memory entry (the hub restarted
 // since it held them) that are due: held HeldUploadMaxAge, or the recording
 // switch is off. It reads each one's record back, the hub's own held echo
 // (it carries the phone's payload), and settles it like a retry: the final
-// failed echo. A due upload whose record is gone is settled without an
+// failed echo. The echo has to be read back, not built from the row: the
+// phone decodes started_at, ended_at, duration_sec and sample_format as
+// required keys, and the sidecar keeps ids only. It counts against the
+// pass's budget (errBudget past it; the rest is settled next pass). A due upload whose record is gone is settled without an
 // echo; one the phone wrote again is left to the mailbox read.
 func (p *Processor) recoverHeld(ctx context.Context, b mailbox, ps *pass) error {
 	rows, err := p.cfg.Store.HeldUploads()
@@ -168,14 +155,25 @@ func (p *Processor) recoverHeld(ctx context.Context, b mailbox, ps *pass) error 
 	if len(due) == 0 {
 		return nil
 	}
+	if ps.budget <= 0 {
+		ps.report.Remaining += len(due)
+		return errBudget
+	}
 	found, rewritten, err := p.readHeldEchoes(ctx, b, due)
 	if err != nil {
 		return err
 	}
+	left := len(found)
 	for _, h := range found {
+		if ps.budget <= 0 {
+			// The rest stay held rows: the next pass settles them.
+			ps.report.Remaining += left
+			return errBudget
+		}
 		if err := p.settleUpload(ctx, h, ps, true); err != nil {
 			return err
 		}
+		left--
 	}
 	gone := 0
 	err = p.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
@@ -248,7 +246,7 @@ func heldOutcome(o Outcome) string {
 	switch {
 	case o.Status == wire.StatusReceived:
 		return state.HeldReceived
-	case o.Reason == reasonNotSupported:
+	case o.Reason == ReasonNotSupported:
 		return state.HeldNotSupported
 	case o.Reason == reasonExpired:
 		return state.HeldExpired
@@ -290,7 +288,7 @@ func (p *Processor) settleUpload(ctx context.Context, h *heldUpload, ps *pass, r
 			target = &secure.ID{}
 		}
 	}
-	heldAt, held, err := p.heldSince(id)
+	heldAt, held, err := p.cfg.Store.HeldAt(id)
 	if err != nil {
 		return err
 	}

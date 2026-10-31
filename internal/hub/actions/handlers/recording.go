@@ -17,8 +17,7 @@ import (
 // ingestUpload): the hub opens a phone's recording upload into the
 // recordings dir only while Desktop, the transcriber, is running.
 const (
-	reasonNotSupported = "not_supported"
-	reasonWrongHub     = "wrong_hub"
+	reasonWrongHub = "wrong_hub"
 
 	// MaxRecordingAssetBytes is the phone's own cap (RecordingUploader's
 	// maximumAssetBytes): a larger asset is refused before it is downloaded.
@@ -55,13 +54,14 @@ func recFailed(reason, message string) RecordingOutcome {
 // a transcriber to take it: with the owner's recording switch off (by
 // default off on a host that never had a Desktop heartbeat, protocol §9) it
 // answers the final failed(not_supported); with it on, a host whose Desktop
-// went quiet answers held and writes nothing. Otherwise the asset is size-checked, downloaded,
-// decrypted by chunk into <recordings dir>/<upload_id>.m4a (0600) and queued.
-// A failure leaves no file; a retried upload that is queued already is
-// answered received again. Nothing here logs a name, a path or a key.
+// went quiet answers held and writes nothing. Otherwise the asset is
+// size-checked, downloaded, decrypted by chunk into
+// <recordings dir>/<upload_id>.m4a (0600) and queued. A failure leaves no
+// file; a retried upload that is queued already is answered received again.
+// Nothing here logs a name, a path or a key.
 func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) RecordingOutcome {
 	if h.d.Store == nil || h.d.RecordingsDir == "" {
-		return recFailed(reasonNotSupported, NotSupportedMessage)
+		return recFailed(actions.ReasonNotSupported, NotSupportedMessage)
 	}
 	if in.TargetHub != nil && *in.TargetHub != in.ThisHub {
 		return recFailed(reasonWrongHub, "This recording was addressed to another Mac.")
@@ -75,7 +75,7 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
 	}
 	if !on {
-		return recFailed(reasonNotSupported, NotSupportedMessage)
+		return recFailed(actions.ReasonNotSupported, NotSupportedMessage)
 	}
 	fresh, _, err := h.d.Store.DesktopHost(h.d.Clock())
 	if err != nil {

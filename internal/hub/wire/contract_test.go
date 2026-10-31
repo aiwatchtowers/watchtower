@@ -45,6 +45,13 @@ type contractCase struct {
 	Kit    map[string]any  `json:"kit"`
 }
 
+// recordingsOffered is the phone's reading (protocol §9): recording is
+// offered unless the heartbeat says "off"; absent capabilities, unknown
+// values and unknown keys read as on.
+func recordingsOffered(hb wire.Heartbeat) bool {
+	return hb.Capabilities == nil || hb.Capabilities.Recordings != "off"
+}
+
 func compact(t *testing.T, raw json.RawMessage) string {
 	t.Helper()
 	var b bytes.Buffer
@@ -158,7 +165,7 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 			out, err := wire.Marshal(hb)
 			require.NoError(t, err)
 			require.Equal(t, compact(t, c.Expect), string(out), "Go writes the fixture's heartbeat bytes")
-			require.Equal(t, c.Kit["recordings_offered"], hb.RecordingsOffered())
+			require.Equal(t, c.Kit["recordings_offered"], recordingsOffered(hb))
 			if c.Name == "capabilities_on" || c.Name == "capabilities_off" {
 				// Go's own capabilities, built rather than decoded, are these bytes.
 				hb.Capabilities = wire.RecordingsCapability(c.Name == "capabilities_on")

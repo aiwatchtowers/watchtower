@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"watchtower/internal/hub/secure"
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 )
 
@@ -146,7 +147,7 @@ func TestUploadEchoMatchesTheContractFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string]RecordingOutcome{
-		"failed_not_supported": {Status: wire.StatusFailed, Reason: reasonNotSupported},
+		"failed_not_supported": {Status: wire.StatusFailed, Reason: ReasonNotSupported},
 		"received":             {Status: wire.StatusReceived},
 	}
 	for _, c := range f.UploadEcho {
@@ -177,6 +178,47 @@ func TestUploadEchoMatchesTheContractFixture(t *testing.T) {
 				t.Fatalf("echo\n got  %v\n want %v", got, want)
 			}
 		})
+	}
+}
+
+// TestRecoveredHeldUploadsKeepToTheBatchLimit: after a restart the due held
+// uploads are settled within the pass's budget; the rest stay held rows and
+// the next passes settle them.
+func TestRecoveredHeldUploadsKeepToTheBatchLimit(t *testing.T) {
+	w := newUploadWorld(t)
+	w.next = RecordingOutcome{Status: wire.StatusHeld, Message: "waiting"}
+	id := w.phone.ID()
+	ids := []string{"u1", "u2", "u3"}
+	for _, u := range ids {
+		w.upload(u, &id)
+	}
+	w.pass()
+	w.proc = NewProcessor(w.proc.cfg) // a restart: nothing held in memory
+	w.proc.batch = 1
+	w.mu.Lock()
+	w.now = w.now.Add(state.HeldUploadMaxAge)
+	w.mu.Unlock()
+	expired := func() int {
+		w.sync(w.phone)
+		n := 0
+		for _, u := range ids {
+			if w.phone.UploadEchoes[u]["status"] == wire.StatusFailed {
+				n++
+			}
+		}
+		return n
+	}
+	for want := 1; want <= len(ids); want++ {
+		r := w.pass()
+		if got := expired(); got != want {
+			t.Fatalf("pass %d: %d uploads expired, want %d", want, got, want)
+		}
+		if left := len(ids) - want; left > 0 && r.Remaining < left {
+			t.Fatalf("pass %d: Remaining %d, want at least %d", want, r.Remaining, left)
+		}
+		if held, err := w.st.HeldUploads(); err != nil || len(held) != len(ids)-want {
+			t.Fatalf("pass %d: held rows %d %v", want, len(held), err)
+		}
 	}
 }
 

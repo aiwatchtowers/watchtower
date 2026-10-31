@@ -115,21 +115,11 @@ func (s *Store) carryDesktopSeen() error {
 }
 
 // DesktopSeenAt is the first Desktop heartbeat; ok is false when none ever
-// arrived. A sidecar read only, before an Open carried a Plan 1b flag over,
-// reads the flag's last beat.
+// arrived (a Plan 1b flag counts once an Open carried it over).
 func (s *Store) DesktopSeenAt() (time.Time, bool, error) {
 	raw, ok, err := s.Meta(MetaDesktopSeenAt)
-	if err != nil {
+	if err != nil || !ok {
 		return time.Time{}, false, err
-	}
-	if !ok {
-		seen, flagged, err := s.Meta(MetaDesktopSeen)
-		if err != nil || !flagged || seen != "1" {
-			return time.Time{}, false, err
-		}
-		if raw, ok, err = s.Meta(MetaDesktopAt); err != nil || !ok {
-			return time.Time{}, false, err
-		}
 	}
 	f, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
@@ -185,20 +175,29 @@ func HoldUpload(tx *sql.Tx, uploadID, deviceID string, at time.Time) error {
 }
 
 // SettleHeldUpload ends uploadID's hold with outcome (HeldReceived,
-// HeldNotSupported, HeldExpired or HeldFailed). An upload not held, or
-// settled already, is left as it is.
+// HeldNotSupported, HeldExpired or HeldFailed; the column's CHECK refuses
+// anything else). An upload not held, or settled already, is left as it is.
 func SettleHeldUpload(tx *sql.Tx, uploadID, outcome string, at time.Time) error {
-	switch outcome {
-	case HeldReceived, HeldNotSupported, HeldExpired, HeldFailed:
-	default:
-		return fmt.Errorf("state: unknown held upload outcome %q", outcome)
-	}
 	_, err := tx.Exec(`UPDATE held_uploads SET outcome = ?, settled_at = ? WHERE upload_id = ? AND outcome IS NULL`,
 		outcome, toReal(at), uploadID)
 	if err != nil {
 		return fmt.Errorf("settling a held recording upload: %w", err)
 	}
 	return nil
+}
+
+// HeldAt is the first hold of an upload still held; ok is false when it is
+// not held (never, or settled).
+func (s *Store) HeldAt(uploadID string) (time.Time, bool, error) {
+	var at float64
+	err := s.db.QueryRow(`SELECT held_at FROM held_uploads WHERE upload_id = ? AND outcome IS NULL`, uploadID).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("reading a held upload: %w", err)
+	}
+	return fromReal(at), true, nil
 }
 
 // HeldUploads lists the unsettled held uploads, first held first.

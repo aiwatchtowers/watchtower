@@ -171,11 +171,17 @@ func TestHeldUploadKeepsItsFirstHoldTime(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].UploadID != "u1" || got[0].DeviceID != "AABB" || !got[0].HeldAt.Equal(t0) {
 		t.Fatalf("held = %+v %v", got, err)
 	}
+	if at, ok, err := s.HeldAt("u1"); err != nil || !ok || !at.Equal(t0) {
+		t.Fatalf("HeldAt = %v %v %v, want %v", at, ok, err, t0)
+	}
 	if err := in(func(tx *sql.Tx) error { return SettleHeldUpload(tx, "u1", HeldExpired, t0.Add(HeldUploadMaxAge)) }); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.HeldUploads(); len(got) != 0 {
 		t.Fatalf("a settled upload is still held: %+v", got)
+	}
+	if _, ok, err := s.HeldAt("u1"); err != nil || ok {
+		t.Fatalf("HeldAt of a settled upload: ok=%v err=%v", ok, err)
 	}
 	// Settling again, or settling an upload never held, changes nothing.
 	if err := in(func(tx *sql.Tx) error { return SettleHeldUpload(tx, "u1", HeldReceived, t0) }); err != nil {
