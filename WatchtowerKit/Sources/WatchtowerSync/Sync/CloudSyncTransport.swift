@@ -80,6 +80,10 @@ public struct CloudRecord: Equatable, Sendable {
     public let asset: AssetDescriptor?
     /// Set only on records `SecureTransport` opened: who sealed it, under which epoch and seq.
     public let sealed: SealedInfo?
+    /// Read-only transport metadata like `origin`, never sent on a save: the version of this record the transport
+    /// stores, the value a conditional write's `WriteExpectation.seq` names (`ConditionalTransport`). nil on a record
+    /// this device built and on transports that keep no versions.
+    public let recordSeq: UInt64?
 
     public init(
         recordName: String,
@@ -91,7 +95,8 @@ public struct CloudRecord: Equatable, Sendable {
         assetFileURL: URL? = nil,
         origin: RecordOrigin = .unknown,
         asset: AssetDescriptor? = nil,
-        sealed: SealedInfo? = nil
+        sealed: SealedInfo? = nil,
+        recordSeq: UInt64? = nil
     ) {
         self.recordName = recordName
         self.zone = zone
@@ -103,6 +108,7 @@ public struct CloudRecord: Equatable, Sendable {
         self.origin = origin
         self.asset = asset
         self.sealed = sealed
+        self.recordSeq = recordSeq
     }
 }
 

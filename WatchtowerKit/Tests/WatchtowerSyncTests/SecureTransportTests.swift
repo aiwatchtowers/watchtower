@@ -20,6 +20,14 @@ final class SecureTransportTests: XCTestCase {
             payload: Data("{\"device_id\":\"\(deviceID.uuidString)\",\"id\":\"\(id)\",\"status\":\"\(status)\"}".utf8))
     }
 
+    /// The record as the in-memory transport stores it: the same fields plus the version it was stored under.
+    private func stored(_ record: CloudRecord, recordSeq: UInt64) -> CloudRecord {
+        CloudRecord(
+            recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
+            payload: record.payload, notifyLevel: record.notifyLevel, assetFileURL: record.assetFileURL,
+            origin: record.origin, asset: record.asset, sealed: record.sealed, recordSeq: recordSeq)
+    }
+
     /// Stamps every fetched record with a fixed origin, as a server-backed transport would.
     private struct OriginStampingTransport: CloudSyncTransport, Sendable {
         let base: InMemoryCloudTransport
@@ -189,7 +197,7 @@ final class SecureTransportTests: XCTestCase {
         // Event 1 is the first send, event 2 the re-send: both carry the stored bytes.
         let latest = try await inner.changes(in: .relay, since: nil).changed
         let second = try await inner.changes(in: .relay, since: CloudChangeToken(value: 1)).changed
-        XCTAssertEqual(latest, [sealed])
+        XCTAssertEqual(latest, [stored(sealed, recordSeq: 2)])
         XCTAssertEqual(second.map(\.payload), [sealed.payload], "byte for byte: a deliberate re-send is not a new envelope")
     }
 
@@ -202,9 +210,9 @@ final class SecureTransportTests: XCTestCase {
 
         try await hub.save([signal])
         let saved = try await inner.changes(in: .data, since: nil).changed
-        XCTAssertEqual(saved, [signal])
+        XCTAssertEqual(saved, [stored(signal, recordSeq: 1)])
         let read = try await hub.changes(in: .data, since: nil).changed
-        XCTAssertEqual(read, [signal])
+        XCTAssertEqual(read, [stored(signal, recordSeq: 1)])
 
         try await hub.delete(recordNames: [signal.recordName], in: .data)
         let deleted = try await inner.changes(in: .data, since: nil).deletedRecordNames
@@ -654,7 +662,7 @@ final class SecureTransportTests: XCTestCase {
 
         let read = try await phone.changes(in: .data, since: nil).changed
 
-        XCTAssertEqual(read, [wellShaped], "only the signal shape passes")
+        XCTAssertEqual(read, [stored(wellShaped, recordSeq: 1)], "only the signal shape passes")
         XCTAssertEqual(rejections.values.map(\.wireName), ["target-7"])
         XCTAssertEqual(rejections.values.map(\.reason), ["malformedSignal"])
     }
@@ -672,7 +680,7 @@ final class SecureTransportTests: XCTestCase {
 
         let read = try await phone.changes(in: .data, since: nil).changed
 
-        XCTAssertEqual(read, [wellShaped])
+        XCTAssertEqual(read, [stored(wellShaped, recordSeq: 1)])
         XCTAssertEqual(rejections.values.map(\.wireName), [carrying.recordName])
         XCTAssertEqual(rejections.values.map(\.reason), ["malformedSignal"])
     }
