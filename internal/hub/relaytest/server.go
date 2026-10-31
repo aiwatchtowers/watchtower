@@ -70,10 +70,11 @@ type Server struct {
 	paying   map[string]bool               // phone → paying; a phone not here pays
 	nextSlot int
 
-	conns   []*conn             // open WebSockets, oldest first
-	pending map[string][][]byte // device → control frames for its next WebSocket
-	last    *conn               // the WebSocket that subscribed last (Push)
-	ready   chan struct{}       // closed at the first subscribe
+	conns      map[string]*conn   // device → its current WebSocket
+	all        []*conn            // every WebSocket accepted (closed at cleanup)
+	pending    map[string][]frame // device → controls for its next WebSocket
+	lastDevice string             // the device that subscribed last (Push)
+	ready      chan struct{}      // closed at the first subscribe
 }
 
 type zone struct {
@@ -83,13 +84,6 @@ type zone struct {
 
 type pairing struct{ phone, mac string }
 
-// conn is one open WebSocket and the zones it subscribed.
-type conn struct {
-	ws     *websocket.Conn
-	device string
-	zones  map[string]bool
-}
-
 // Start runs a fake relay until the test ends.
 func Start(t testing.TB) *Server {
 	t.Helper()
@@ -98,7 +92,7 @@ func Start(t testing.TB) *Server {
 		blobs: map[string][]byte{}, attZone: map[string]string{},
 		pageLimit: 500, ready: make(chan struct{}),
 		kinds: map[string]relayv1.DeviceKind{}, pairings: map[string]pairing{},
-		slots: map[string][]string{}, paying: map[string]bool{}, pending: map[string][][]byte{},
+		slots: map[string][]string{}, paying: map[string]bool{}, conns: map[string]*conn{}, pending: map[string][]frame{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/op", s.serveOp)
@@ -111,7 +105,7 @@ func Start(t testing.TB) *Server {
 	s.URL = s.srv.URL
 	t.Cleanup(func() {
 		s.mu.Lock()
-		conns := slices.Clone(s.conns)
+		conns := slices.Clone(s.all)
 		s.mu.Unlock()
 		for _, c := range conns {
 			_ = c.ws.CloseNow()
@@ -253,8 +247,9 @@ func (s *Server) Put(zoneName, name string, env []byte) uint64 {
 	return z.seq
 }
 
-// Push sends a server event on the WebSocket that subscribed last, waiting
-// up to 5 s for a first subscribe.
+// Push queues a server event on the current WebSocket of the device that
+// subscribed last, waiting up to 5 s for a first subscribe. A control
+// pushed while that device has no socket waits for its next one.
 func (s *Server) Push(t testing.TB, ev *relayv1.Event) {
 	t.Helper()
 	select {
@@ -262,13 +257,14 @@ func (s *Server) Push(t testing.TB, ev *relayv1.Event) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("relaytest: no WebSocket subscribed")
 	}
+	f := frame{b: eventFrame(ev), control: ev.GetControl() != nil}
 	s.mu.Lock()
-	c := s.last
-	s.mu.Unlock()
-	b, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Event{Event: ev}})
-	if err := c.ws.Write(t.Context(), websocket.MessageBinary, b); err != nil {
-		t.Fatal(err)
+	defer s.mu.Unlock()
+	if c := s.conns[s.lastDevice]; c != nil && !c.closed {
+		c.enqueueLocked(f)
+		return
 	}
+	s.parkLocked(s.lastDevice, []frame{f})
 }
 
 // SetPaying sets whether phone's account pays (a phone pays until told
@@ -278,14 +274,12 @@ func (s *Server) SetPaying(phone string, paying bool) {
 	s.mu.Lock()
 	was := s.pays(phone)
 	s.paying[phone] = paying
-	var sends []send
 	if was && !paying {
 		for _, mac := range s.slots[phone] {
-			sends = append(sends, s.controlLocked(mac, relayv1.ControlKind_CONTROL_KIND_ENTITLEMENT_EXPIRED, phone)...)
+			s.controlLocked(mac, relayv1.ControlKind_CONTROL_KIND_ENTITLEMENT_EXPIRED, phone)
 		}
 	}
 	s.mu.Unlock()
-	deliver(sends)
 }
 
 // ---- ops ----
@@ -344,29 +338,27 @@ func (s *Server) serveOp(w http.ResponseWriter, r *http.Request) {
 	s.reqs = append(s.reqs, proto.Clone(&req).(*relayv1.Request))
 	s.frames = append(s.frames, body)
 	var resp *relayv1.Response
-	var sends []send
 	if q := s.fail[op]; len(q) > 0 {
 		s.fail[op] = q[1:]
 		resp = errResp(q[0])
 	} else {
-		resp, sends = s.handle(caller, &req)
+		resp = s.handle(caller, &req)
 	}
 	s.mu.Unlock()
-	deliver(sends)
 	b, _ := proto.Marshal(resp)
 	w.Header().Set("Content-Type", "application/x-protobuf")
 	_, _ = w.Write(b) //nolint:gosec // a protobuf answer of a test server, not HTML
 }
 
-// handle answers one op of caller (a device id, "" before login) and lists
-// the events it sends; s.mu is held.
-func (s *Server) handle(caller string, req *relayv1.Request) (*relayv1.Response, []send) {
+// handle answers one op of caller (a device id, "" before login) and queues
+// the events it causes; s.mu is held.
+func (s *Server) handle(caller string, req *relayv1.Request) *relayv1.Response {
 	switch op := req.GetOp().(type) {
 	case *relayv1.Request_Challenge:
-		return &relayv1.Response{Result: &relayv1.Response_Challenge{Challenge: &relayv1.Challenge{Nonce: []byte("nonce")}}}, nil
+		return &relayv1.Response{Result: &relayv1.Response_Challenge{Challenge: &relayv1.Challenge{Nonce: []byte("nonce")}}}
 	case *relayv1.Request_Login:
 		return &relayv1.Response{Result: &relayv1.Response_Session{Session: &relayv1.Session{
-			Token: tokenPrefix + op.Login.GetDeviceId()}}}, nil
+			Token: tokenPrefix + op.Login.GetDeviceId()}}}
 	case *relayv1.Request_Register:
 		id := client.DeviceID(op.Register.GetAuthPub())
 		s.kinds[id] = op.Register.GetDeviceKind()
@@ -374,38 +366,38 @@ func (s *Server) handle(caller string, req *relayv1.Request) (*relayv1.Response,
 		if op.Register.GetDeviceKind() == relayv1.DeviceKind_DEVICE_KIND_PHONE {
 			reg.AccountId = "acct-" + id
 		}
-		return &relayv1.Response{Result: &relayv1.Response_Registered{Registered: reg}}, nil
+		return &relayv1.Response{Result: &relayv1.Response_Registered{Registered: reg}}
 	case *relayv1.Request_Save:
 		if o := s.saveOverride; o != nil {
 			s.saveOverride = nil
-			return &relayv1.Response{Result: &relayv1.Response_Save{Save: o}}, nil
+			return &relayv1.Response{Result: &relayv1.Response_Save{Save: o}}
 		}
 		return s.save(caller, op.Save)
 	case *relayv1.Request_Delete:
 		return s.del(caller, op.Delete)
 	case *relayv1.Request_Changes:
-		return s.changes(op.Changes), nil
+		return s.changes(op.Changes)
 	case *relayv1.Request_SetHubReaders:
 		s.readers = append(s.readers, slices.Clone(op.SetHubReaders.GetPhoneDeviceIds()))
-		return ok(), nil
+		return ok()
 	case *relayv1.Request_GetAccountState:
-		return &relayv1.Response{Result: &relayv1.Response_AccountState{AccountState: s.accountState(caller)}}, nil
+		return &relayv1.Response{Result: &relayv1.Response_AccountState{AccountState: s.accountState(caller)}}
 	case *relayv1.Request_OpenPairing:
 		return s.openPairing(caller, op.OpenPairing.GetMacDeviceId())
 	case *relayv1.Request_PromotePairing:
 		p, found := s.pairings[op.PromotePairing.GetSlotId()]
 		if !found || p.phone != caller {
-			return errResp(relayv1.ErrorCode_ERROR_CODE_PAIRING_EXPIRED), nil
+			return errResp(relayv1.ErrorCode_ERROR_CODE_PAIRING_EXPIRED)
 		}
 		delete(s.pairings, op.PromotePairing.GetSlotId())
 		s.addSlot(caller, p.mac)
-		return ok(), nil
+		return ok()
 	case *relayv1.Request_AddSlot:
 		if caller == "" || op.AddSlot.GetMacDeviceId() == "" {
-			return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN), nil
+			return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
 		}
 		s.addSlot(caller, op.AddSlot.GetMacDeviceId())
-		return ok(), nil
+		return ok()
 	case *relayv1.Request_CreateUpload:
 		id := "att-" + strconv.Itoa(len(s.uploads)+1)
 		s.uploads = append(s.uploads, op.CreateUpload)
@@ -413,19 +405,19 @@ func (s *Server) handle(caller string, req *relayv1.Request) (*relayv1.Response,
 		return &relayv1.Response{Result: &relayv1.Response_Upload{Upload: &relayv1.Upload{
 			AttachmentId: id, Url: s.URL + "/blob/" + id + "?X-Sig=opaque%2Fsig",
 			Headers: map[string]string{"X-Test-Upload": "yes"},
-		}}}, nil
+		}}}
 	case *relayv1.Request_GetDownload:
 		id := op.GetDownload.GetAttachmentId()
 		if s.attZone[id] != op.GetDownload.GetZone() {
-			return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN), nil
+			return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
 		}
 		base := s.downloadBase
 		if base == "" {
 			base = s.URL
 		}
-		return &relayv1.Response{Result: &relayv1.Response_Download{Download: &relayv1.Download{Url: base + "/blob/" + id + "?X-Sig=get"}}}, nil
+		return &relayv1.Response{Result: &relayv1.Response_Download{Download: &relayv1.Download{Url: base + "/blob/" + id + "?X-Sig=get"}}}
 	default:
-		return errResp(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED), nil
+		return errResp(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED)
 	}
 }
 
@@ -459,17 +451,17 @@ func (s *Server) accountState(caller string) *relayv1.AccountState {
 	return st
 }
 
-func (s *Server) openPairing(caller, mac string) (*relayv1.Response, []send) {
+func (s *Server) openPairing(caller, mac string) *relayv1.Response {
 	if caller == "" || mac == "" {
-		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN), nil
+		return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
 	}
 	s.nextSlot++
 	slot := "slot" + strconv.Itoa(s.nextSlot)
 	s.pairings[slot] = pairing{phone: caller, mac: mac}
-	sends := s.controlLocked(mac, relayv1.ControlKind_CONTROL_KIND_PAIRING_OPENED, slot)
+	s.controlLocked(mac, relayv1.ControlKind_CONTROL_KIND_PAIRING_OPENED, slot)
 	return &relayv1.Response{Result: &relayv1.Response_PairingSlot{PairingSlot: &relayv1.PairingSlot{
 		SlotId: slot, ExpiresAtMs: time.Now().Add(pairingTTL).UnixMilli(),
-	}}}, sends
+	}}}
 }
 
 func (s *Server) addSlot(phone, mac string) {
@@ -481,9 +473,8 @@ func (s *Server) addSlot(phone, mac string) {
 
 func live(r *relayv1.Record) bool { return r != nil && !r.GetDeleted() }
 
-func (s *Server) save(caller string, sv *relayv1.Save) (*relayv1.Response, []send) {
+func (s *Server) save(caller string, sv *relayv1.Save) *relayv1.Response {
 	res := &relayv1.SaveResult{}
-	var sends []send
 	for i, it := range sv.GetItems() {
 		rec := it.GetRecord()
 		z := s.zone(rec.GetZone())
@@ -510,15 +501,14 @@ func (s *Server) save(caller string, sv *relayv1.Save) (*relayv1.Response, []sen
 		meta := proto.Clone(stored).(*relayv1.Record)
 		meta.Envelope = nil
 		res.Saved = append(res.Saved, meta)
-		sends = append(sends, s.zoneChangedLocked(caller, rec.GetZone(), z.seq)...)
+		s.zoneChangedLocked(caller, rec.GetZone(), z.seq)
 	}
-	return &relayv1.Response{Result: &relayv1.Response_Save{Save: res}}, sends
+	return &relayv1.Response{Result: &relayv1.Response_Save{Save: res}}
 }
 
-func (s *Server) del(caller string, d *relayv1.Delete) (*relayv1.Response, []send) {
+func (s *Server) del(caller string, d *relayv1.Delete) *relayv1.Response {
 	res := &relayv1.DeleteResult{}
 	z := s.zone(d.GetZone())
-	var sends []send
 	for i, it := range d.GetItems() {
 		cur := z.recs[it.GetName()]
 		if it.ExpectedSeq != nil && (!live(cur) || cur.GetRecordSeq() != it.GetExpectedSeq()) {
@@ -532,10 +522,10 @@ func (s *Server) del(caller string, d *relayv1.Delete) (*relayv1.Response, []sen
 		if live(cur) {
 			z.seq++
 			z.recs[it.GetName()] = &relayv1.Record{Zone: d.GetZone(), Name: it.GetName(), RecordSeq: z.seq, Deleted: true}
-			sends = append(sends, s.zoneChangedLocked(caller, d.GetZone(), z.seq)...)
+			s.zoneChangedLocked(caller, d.GetZone(), z.seq)
 		}
 	}
-	return &relayv1.Response{Result: &relayv1.Response_Delete{Delete: res}}, sends
+	return &relayv1.Response{Result: &relayv1.Response_Delete{Delete: res}}
 }
 
 func (s *Server) changes(c *relayv1.Changes) *relayv1.Response {
@@ -593,19 +583,31 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- the WebSocket ----
+//
+// Every device has at most one current WebSocket (a new one replaces the
+// old for events). Server events go through the connection's queue, written
+// by one goroutine in the order they were queued under s.mu (op order), so
+// a socket sees zone events in seq order whoever wrote. A control is never
+// lost: queued while the device has no socket, and put back when a write
+// fails or the socket ends before it went out, it goes to the device's next
+// socket. A zone event on a dead socket is dropped: a reconnecting client
+// resubscribes and pulls every zone anyway.
 
-// send is one frame for one WebSocket, written after s.mu is released.
-type send struct {
-	ws    *websocket.Conn
-	frame []byte
+// frame is one queued server event.
+type frame struct {
+	b       []byte
+	control bool
 }
 
-func deliver(sends []send) {
-	for _, sd := range sends {
-		ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
-		_ = sd.ws.Write(ctx, websocket.MessageBinary, sd.frame) // a closed socket: the device reads on reconnect
-		cancel()
-	}
+// conn is one open WebSocket, the zones it subscribed and its queue.
+type conn struct {
+	ws     *websocket.Conn
+	device string
+	zones  map[string]bool
+	queue  []frame       // s.mu
+	closed bool          // s.mu: ended; nothing more is queued here
+	wake   chan struct{} // cap 1: the queue grew
+	done   chan struct{} // closed when the socket ends
 }
 
 func eventFrame(ev *relayv1.Event) []byte {
@@ -613,33 +615,95 @@ func eventFrame(ev *relayv1.Event) []byte {
 	return b
 }
 
-// controlLocked is a control for device: on every WebSocket it has open, or
-// held for its next one; s.mu is held.
-func (s *Server) controlLocked(device string, kind relayv1.ControlKind, detail string) []send {
-	b := eventFrame(&relayv1.Event{Kind: &relayv1.Event_Control{Control: &relayv1.Control{Kind: kind, Detail: detail}}})
-	var sends []send
-	for _, c := range s.conns {
-		if c.device == device {
-			sends = append(sends, send{c.ws, b})
-		}
+// enqueueLocked queues frames on c; s.mu is held and c is open.
+func (c *conn) enqueueLocked(fs ...frame) {
+	c.queue = append(c.queue, fs...)
+	select {
+	case c.wake <- struct{}{}:
+	default:
 	}
-	if len(sends) == 0 {
-		s.pending[device] = append(s.pending[device], b)
-	}
-	return sends
 }
 
-// zoneChangedLocked tells every other device's WebSocket subscribed to
-// zoneName that it changed (the writer is not told); s.mu is held.
-func (s *Server) zoneChangedLocked(writer, zoneName string, seq uint64) []send {
-	var sends []send
-	for _, c := range s.conns {
-		if c.device != writer && c.zones[zoneName] {
-			sends = append(sends, send{c.ws, eventFrame(&relayv1.Event{Kind: &relayv1.Event_ZoneChanged{
+// parkLocked hands the controls among fs to device's current socket, or
+// holds them for its next one; zone events are dropped. s.mu is held.
+func (s *Server) parkLocked(device string, fs []frame) {
+	var controls []frame
+	for _, f := range fs {
+		if f.control {
+			controls = append(controls, f)
+		}
+	}
+	if len(controls) == 0 {
+		return
+	}
+	if c := s.conns[device]; c != nil && !c.closed {
+		c.enqueueLocked(controls...)
+		return
+	}
+	s.pending[device] = append(s.pending[device], controls...)
+}
+
+// controlLocked sends a control to device; s.mu is held.
+func (s *Server) controlLocked(device string, kind relayv1.ControlKind, detail string) {
+	b := eventFrame(&relayv1.Event{Kind: &relayv1.Event_Control{Control: &relayv1.Control{Kind: kind, Detail: detail}}})
+	s.parkLocked(device, []frame{{b: b, control: true}})
+}
+
+// zoneChangedLocked tells every other device's current socket subscribed
+// to zoneName that it changed (the writer is not told); s.mu is held.
+func (s *Server) zoneChangedLocked(writer, zoneName string, seq uint64) {
+	for device, c := range s.conns {
+		if device != writer && !c.closed && c.zones[zoneName] {
+			c.enqueueLocked(frame{b: eventFrame(&relayv1.Event{Kind: &relayv1.Event_ZoneChanged{
 				ZoneChanged: &relayv1.ZoneChanged{Zone: zoneName, Seq: seq}}})})
 		}
 	}
-	return sends
+}
+
+// writeLoop writes c's queue in order until the socket ends or a write
+// fails; what was not written goes back to c's queue (or, once c ended, is
+// parked) and the socket is closed.
+func (s *Server) writeLoop(c *conn) {
+	for {
+		select {
+		case <-c.wake:
+		case <-c.done:
+			return
+		}
+		s.mu.Lock()
+		batch := c.queue
+		c.queue = nil
+		s.mu.Unlock()
+		for i, f := range batch {
+			ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+			err := c.ws.Write(ctx, websocket.MessageBinary, f.b)
+			cancel()
+			if err != nil {
+				s.mu.Lock()
+				if c.closed {
+					s.parkLocked(c.device, batch[i:])
+				} else {
+					c.queue = append(slices.Clone(batch[i:]), c.queue...)
+				}
+				s.mu.Unlock()
+				_ = c.ws.CloseNow() // the reader ends and parks the queue
+				return
+			}
+		}
+	}
+}
+
+// end retires c: no longer current, its unsent controls parked.
+func (s *Server) end(c *conn) {
+	s.mu.Lock()
+	c.closed = true
+	if s.conns[c.device] == c {
+		delete(s.conns, c.device)
+	}
+	s.parkLocked(c.device, c.queue)
+	c.queue = nil
+	s.mu.Unlock()
+	close(c.done)
 }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
@@ -658,22 +722,21 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	if ws.Write(ctx, websocket.MessageBinary, helloOK) != nil {
 		return
 	}
-	c := &conn{ws: ws, device: deviceOfToken(hello.GetHello().GetSessionToken()), zones: map[string]bool{}}
+	c := &conn{
+		ws: ws, device: deviceOfToken(hello.GetHello().GetSessionToken()), zones: map[string]bool{},
+		wake: make(chan struct{}, 1), done: make(chan struct{}),
+	}
 	s.mu.Lock()
 	s.frames = append(s.frames, b)
-	s.conns = append(s.conns, c)
-	var sends []send
-	for _, f := range s.pending[c.device] {
-		sends = append(sends, send{ws, f})
+	s.all = append(s.all, c)
+	s.conns[c.device] = c // replaces an older socket of the device
+	if held := s.pending[c.device]; len(held) > 0 {
+		delete(s.pending, c.device)
+		c.enqueueLocked(held...)
 	}
-	delete(s.pending, c.device)
 	s.mu.Unlock()
-	deliver(sends)
-	defer func() {
-		s.mu.Lock()
-		s.conns = slices.DeleteFunc(s.conns, func(o *conn) bool { return o == c })
-		s.mu.Unlock()
-	}()
+	go s.writeLoop(c)
+	defer s.end(c)
 	for {
 		_, b, err := ws.Read(ctx)
 		if err != nil {
@@ -694,7 +757,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		}
 		first := len(s.subscribed) > 0 && req.GetSubscribe() != nil
 		if req.GetSubscribe() != nil {
-			s.last = c
+			s.lastDevice = c.device
 		}
 		s.mu.Unlock()
 		out, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Response{Response: &relayv1.Response{

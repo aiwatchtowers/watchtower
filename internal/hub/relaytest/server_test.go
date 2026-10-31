@@ -7,12 +7,18 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"google.golang.org/protobuf/proto"
 
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/relaytest"
@@ -277,22 +283,159 @@ func TestFramesCaptureEverythingAndNoPlaintext(t *testing.T) {
 	}
 }
 
-// Guard: relaytest is a test-only package; no non-test package imports it.
+// Guard: relaytest is a test-only package; no non-test package imports it,
+// on either platform the hub ships for (a linux-only file counts too).
 func TestRelaytestIsImportedOnlyByTests(t *testing.T) {
 	const pkg = "watchtower/internal/hub/relaytest"
-	cmd := exec.Command("go", "list", "-f", "{{.ImportPath}} {{join .Imports \" \"}}", "watchtower/...")
-	cmd.Dir = filepath.Join("..", "..", "..")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v", err)
+	for _, goos := range []string{"linux", "darwin"} {
+		cmd := exec.Command("go", "list", "-f", "{{.ImportPath}} {{join .Imports \" \"}}", "watchtower/...")
+		cmd.Dir = filepath.Join("..", "..", "..")
+		cmd.Env = append(os.Environ(), "GOOS="+goos, "CGO_ENABLED=1")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("GOOS=%s go list: %v", goos, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 || fields[0] == pkg {
+				continue
+			}
+			if slices.Contains(fields[1:], pkg) {
+				t.Errorf("GOOS=%s: %s imports %s from a non-test file", goos, fields[0], pkg)
+			}
+		}
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0] == pkg {
-			continue
+}
+
+// ---- raw WebSockets (a device's sockets under the test's control) ----
+
+func dialWS(t *testing.T, srv *relaytest.Server, device string) *websocket.Conn {
+	t.Helper()
+	ws, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.CloseNow() })
+	hello, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Hello{Hello: &relayv1.Hello{
+		ProtocolVersion: relayv1.ProtocolVersion, SessionToken: "tok-" + device,
+	}}})
+	if err := ws.Write(t.Context(), websocket.MessageBinary, hello); err != nil {
+		t.Fatal(err)
+	}
+	if fr := readFrame(t, ws, time.Second); fr == nil || fr.GetHelloOk() == nil {
+		t.Fatalf("no hello_ok: %v", fr)
+	}
+	return ws
+}
+
+// subscribeWS subscribes zones and waits for the answer.
+func subscribeWS(t *testing.T, ws *websocket.Conn, zones ...string) {
+	t.Helper()
+	b, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Request{Request: &relayv1.Request{
+		Id: 1, Op: &relayv1.Request_Subscribe{Subscribe: &relayv1.Subscribe{Zones: zones}},
+	}}})
+	if err := ws.Write(t.Context(), websocket.MessageBinary, b); err != nil {
+		t.Fatal(err)
+	}
+	if fr := readFrame(t, ws, time.Second); fr == nil || fr.GetResponse() == nil {
+		t.Fatalf("no subscribe answer: %v", fr)
+	}
+}
+
+// readFrame reads one frame, nil when none comes within wait.
+func readFrame(t *testing.T, ws *websocket.Conn, wait time.Duration) *relayv1.Frame {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), wait)
+	defer cancel()
+	_, b, err := ws.Read(ctx)
+	if err != nil {
+		return nil
+	}
+	var fr relayv1.Frame
+	if err := proto.Unmarshal(b, &fr); err != nil {
+		t.Fatal(err)
+	}
+	return &fr
+}
+
+// A control sent to a socket that just died is not lost: the device's next
+// socket gets it.
+func TestControlOnADeadSocketReachesTheNextOne(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	_, store := newPhone(t, srv, h)
+	dead := dialWS(t, srv, h.relayID)
+	_ = dead.CloseNow() // the relay may still hold it as current
+	slot, err := store.OpenPairing(t.Context(), h.relayID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := dialWS(t, srv, h.relayID)
+	fr := readFrame(t, next, 5*time.Second)
+	if c := fr.GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_PAIRING_OPENED || c.GetDetail() != slot {
+		t.Fatalf("the next socket got %v, want PAIRING_OPENED %s", fr, slot)
+	}
+}
+
+// A device's newer socket replaces the older one: controls and Push go to
+// the newer only.
+func TestNewSocketReplacesTheOldForControlsAndPush(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	p, store := newPhone(t, srv, h)
+	addSlot(t, store, h.relayID)
+	old := dialWS(t, srv, h.relayID)
+	subscribeWS(t, old, "z")
+	cur := dialWS(t, srv, h.relayID)
+	subscribeWS(t, cur, "z")
+
+	srv.SetPaying(p.RelayDeviceID(), false)
+	if c := readFrame(t, cur, 5*time.Second).GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_ENTITLEMENT_EXPIRED {
+		t.Fatalf("the current socket got control %v", c)
+	}
+	srv.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{Zone: "z", Seq: 7}}})
+	if zc := readFrame(t, cur, 5*time.Second).GetEvent().GetZoneChanged(); zc.GetSeq() != 7 {
+		t.Fatalf("the current socket got %v from Push", zc)
+	}
+	if fr := readFrame(t, old, 300*time.Millisecond); fr != nil {
+		t.Fatalf("the replaced socket got %v", fr)
+	}
+}
+
+// Zone events reach a socket in seq order while several devices write the
+// zone at once.
+func TestZoneEventsArriveInSeqOrderAcrossWriters(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	ws := dialWS(t, srv, h.relayID)
+	subscribeWS(t, ws, "z")
+	const writers, each = 3, 20
+	stores := make([]*hubtest.RelayStore, writers)
+	for i := range stores {
+		_, stores[i] = newPhone(t, srv, h)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*each)
+	for i, st := range stores {
+		wg.Go(func() {
+			for n := range each {
+				if _, err := st.Write("z", fmt.Sprintf("r%d-%d", i, n), []byte{1}, transport.Expect{}); err != nil {
+					errs <- err
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var last uint64
+	for range writers * each {
+		zc := readFrame(t, ws, 5*time.Second).GetEvent().GetZoneChanged()
+		if zc == nil || zc.GetSeq() <= last {
+			t.Fatalf("zone event %v after seq %d", zc, last)
 		}
-		if slices.Contains(fields[1:], pkg) {
-			t.Errorf("%s imports %s from a non-test file", fields[0], pkg)
-		}
+		last = zc.GetSeq()
 	}
 }
