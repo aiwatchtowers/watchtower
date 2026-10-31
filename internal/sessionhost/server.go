@@ -117,7 +117,7 @@ func Listen(socketPath string) (net.Listener, error) {
 		}
 		return nil, fmt.Errorf("lock host: %w", err)
 	}
-	if c, err := net.DialTimeout("unix", socketPath, time.Second); err == nil {
+	if c, err := net.DialTimeout("unix", socketPath, time.Second); err == nil { //nolint:gosec // G704: a local unix socket path the owner chose (--socket or WATCHTOWER_SESSION_HOST_SOCKET), not a network URL
 		_ = c.Close()
 		_ = lock.Close()
 		return nil, ErrHostRunning

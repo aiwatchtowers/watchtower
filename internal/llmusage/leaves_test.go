@@ -55,6 +55,7 @@ var knownNonLLMExec = map[string]string{
 	"ownerconfirm.codesign":              "codesign of the Desktop app",
 	"planusage.DefaultCredentialSource":  "security find-generic-password (the Claude Code token)",
 	"sessioncleanup.runCommand":          "ps / lsof",
+	"sessionhost.Ensure":                 "starts the watchtower session-host process (no model call)",
 	"sessionhost.startSession":           "the owner's interactive PTY, measured by agentlog",
 }
 
