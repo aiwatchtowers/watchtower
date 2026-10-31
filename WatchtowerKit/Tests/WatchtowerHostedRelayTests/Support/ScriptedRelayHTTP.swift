@@ -174,16 +174,20 @@ final class ScriptedRelayHTTP: RelayHTTP, @unchecked Sendable {
     }
 }
 
-/// No WebSocket: the HTTPS tests never dial.
-struct NoRelaySockets: RelaySocketDialer {}
-
-/// A `ManualRelayClock` that also records every sleep it is asked for.
+/// A `ManualRelayClock` that also records every sleep it is asked for and
+/// knows which sleeps are still waiting.
 final class RecordingRelayClock: RelayClock, @unchecked Sendable {
+    private struct State {
+        var sleeps: [Duration] = []
+        var nextID = 0
+        var waiting: [Int: Duration] = [:]
+    }
+
     let manual = ManualRelayClock()
-    private let recorded = OSAllocatedUnfairLock(initialState: [Duration]())
+    private let recorded = OSAllocatedUnfairLock(initialState: State())
 
     var sleeps: [Duration] {
-        recorded.withLock { $0 }
+        recorded.withLock { $0.sleeps }
     }
 
     func now() -> Date {
@@ -191,8 +195,31 @@ final class RecordingRelayClock: RelayClock, @unchecked Sendable {
     }
 
     func sleep(for duration: Duration) async throws {
-        recorded.withLock { $0.append(duration) }
+        let id = recorded.withLock { state in
+            state.sleeps.append(duration)
+            state.nextID += 1
+            state.waiting[state.nextID] = duration
+            return state.nextID
+        }
+        defer { _ = recorded.withLock { $0.waiting.removeValue(forKey: id) } }
         try await manual.sleep(for: duration)
+    }
+
+    /// Suspends until a sleep matching `match` waits on the manual clock (and
+    /// every sleep begun so far is registered there), then returns its duration.
+    @discardableResult
+    func waitForSleep(where match: @escaping (Duration) -> Bool) async -> Duration {
+        var found: Duration?
+        await spin {
+            let waiting = self.recorded.withLock { Array($0.waiting.values) }
+            found = waiting.first(where: match)
+            return found != nil && self.manual.sleeperCount >= waiting.count
+        }
+        return found ?? .zero
+    }
+
+    func waitForSleep(_ duration: Duration) async {
+        await waitForSleep { $0 == duration }
     }
 }
 
@@ -204,13 +231,15 @@ struct RelayClientHarness {
     let fake = FakeAppAttest()
     let keys: InMemoryAppAttestKeyStore
     let clock = RecordingRelayClock()
+    let sockets: ScriptedRelayDialer
     let origin: RelayOrigin
     let signer: Ed25519RelaySigner
     let client: HostedRelayClient
 
     /// `storedKey`: the device registered earlier, so a login sends an assertion.
-    init(storedKey: Bool = true) throws {
+    init(storedKey: Bool = true, onGoingAway: (@Sendable () -> Void)? = nil) throws {
         keys = InMemoryAppAttestKeyStore(keyID: storedKey ? fake.makeKeyID() : nil)
+        sockets = ScriptedRelayDialer(clock: clock)
         origin = try RelayOrigin(Self.originString)
         signer = Ed25519RelaySigner(try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32)))
         client = HostedRelayClient(
@@ -219,8 +248,9 @@ struct RelayClientHarness {
             kind: .phone,
             attestor: RelayAttestor(attest: fake, keys: keys, clock: clock),
             http: http,
-            sockets: NoRelaySockets(),
-            clock: clock
+            sockets: sockets,
+            clock: clock,
+            onGoingAway: onGoingAway
         )
     }
 

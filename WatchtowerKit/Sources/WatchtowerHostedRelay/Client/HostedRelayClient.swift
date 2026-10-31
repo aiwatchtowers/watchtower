@@ -19,11 +19,13 @@ public actor HostedRelayClient {
 
     private let origin: RelayOrigin
     private let opURL: URL
+    /// `GET /v1/ws` on the origin, `wss`/`ws` for `https`/`http`.
+    let socketURL: URL
     private let signer: any RelaySigner
     private let kind: Relay_V1_DeviceKind
     private let attestor: RelayAttestor
     private let http: any RelayHTTP
-    // The WebSocket side (Task 5) uses these three.
+    // The WebSocket side (`connect`, HostedRelayConnection.swift).
     let sockets: any RelaySocketDialer
     let backoff: @Sendable (Int) -> Duration
     let onGoingAway: (@Sendable () -> Void)?
@@ -47,6 +49,7 @@ public actor HostedRelayClient {
     ) {
         self.origin = origin
         self.opURL = origin.url.appendingPathComponent("v1/op")
+        self.socketURL = Self.socketURL(origin.url)
         self.signer = signer
         self.kind = kind
         self.attestor = attestor
@@ -104,8 +107,9 @@ public actor HostedRelayClient {
     }
 
     /// A session token: the current one unless it is `stale` (the token a
-    /// request was refused with), else one login shared by concurrent callers.
-    private func sessionToken(stale: String?) async throws -> String {
+    /// request or a connection was refused with), else one login shared by
+    /// concurrent callers.
+    func sessionToken(stale: String?) async throws -> String {
         if let token, token != stale { return token }
         let fresh = try await sharedLogin()
         guard let stale, fresh == stale else { return fresh }
@@ -199,17 +203,27 @@ public actor HostedRelayClient {
     /// One op over HTTPS: session (single-flight login), UNAUTHENTICATED → one relogin and one retry,
     /// UNAVAILABLE → 0.5 s doubling to 8 s, ≤ 30 s total, then the error.
     public func perform(_ op: Relay_V1_Request.OneOf_Op) async throws -> Relay_V1_Response {
+        try await Self.retryingUnavailable(op, clock: clock) { try await performOnce(op) }
+    }
+
+    /// Runs `attempt` again while it fails with `UNAVAILABLE`: 0.5 s doubling
+    /// to 8 s, at most 30 s in total, then the error. Shared by HTTPS and the socket.
+    static func retryingUnavailable(
+        _ op: Relay_V1_Request.OneOf_Op,
+        clock: any RelayClock,
+        _ attempt: () async throws -> Relay_V1_Response
+    ) async throws -> Relay_V1_Response {
         let start = clock.now()
-        var delay = Self.unavailableFirstDelay
+        var delay = unavailableFirstDelay
         while true {
             do {
-                return try await performOnce(op)
+                return try await attempt()
             } catch HostedRelayError.server(code: .unavailable, let retryAfter) {
-                let left = Self.unavailableBudget - Self.duration(clock.now().timeIntervalSince(start))
+                let left = unavailableBudget - duration(clock.now().timeIntervalSince(start))
                 guard left > .zero else { throw HostedRelayError.server(code: .unavailable, retryAfter: retryAfter) }
-                Self.logger.info("relay \(Self.name(op), privacy: .public): unavailable, retrying")
+                logger.info("relay \(name(op), privacy: .public): unavailable, retrying")
                 try await clock.sleep(for: min(delay, left))
-                delay = min(delay * 2, Self.unavailableMaxDelay)
+                delay = min(delay * 2, unavailableMaxDelay)
             }
         }
     }
@@ -258,8 +272,7 @@ public actor HostedRelayClient {
         }
         if case .error(let error) = response.result {
             Self.logger.error("relay \(Self.name(op), privacy: .public): \(String(describing: error.code), privacy: .public), HTTP \(status)")
-            if error.code == .unsupportedVersion { throw HostedRelayError.unsupportedVersion }
-            throw HostedRelayError.server(code: error.code, retryAfter: error.hasRetryAfterS ? error.retryAfterS : nil)
+            throw Self.error(error)
         }
         guard (200..<300).contains(status) else {
             Self.logger.error("relay \(Self.name(op), privacy: .public): HTTP \(status) without an error")
@@ -270,6 +283,19 @@ public actor HostedRelayClient {
 
     private static func duration(_ interval: TimeInterval) -> Duration {
         .seconds(interval)
+    }
+
+    private static func socketURL(_ origin: URL) -> URL {
+        let url = origin.appendingPathComponent("v1/ws")
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        parts.scheme = parts.scheme?.lowercased() == "http" ? "ws" : "wss"
+        return parts.url ?? url
+    }
+
+    /// A relay `Response.error` as the error the client throws (`post`'s mapping).
+    static func error(_ error: Relay_V1_Error) -> HostedRelayError {
+        if error.code == .unsupportedVersion { return .unsupportedVersion }
+        return .server(code: error.code, retryAfter: error.hasRetryAfterS ? error.retryAfterS : nil)
     }
 
     /// The op's case name (`removeSlot`), for logs: the label only, never its fields.
