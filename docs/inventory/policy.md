@@ -61,10 +61,12 @@
 - `internal/historybackfill/policy_test.go`: `TestPolicyBackfill_SkipKeepsRowState`.
 - `cmd/provider_policy_test.go`: `TestProviderPolicy_ConfigSetRefused`.
 - `WatchtowerDesktop/Tests/MobileHub/MobileHubPolicyTests.swift`: `testOffStopsHubKeepsSetting`, `testLooseningDoesNotStartHubWhenSettingOff`.
+- Go hub (phase 1, **ask #807**), the Go twins: `internal/hub/hub_test.go::TestPolicy03_OffStopsHubKeepsSetting`, `internal/hub/hub_test.go::TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` (`MobileSync` off stops the Go hub and deletes what it published, `hub_meta.enabled` untouched; loosening never starts a hub the owner left off).
 
 **Locked since:** 2026-10-25
 
 ## Changelog
 
+- 2026-10-31 (Go hub phase 1, board #1284, **ask #807**): strengthening, no guard relaxed. POLICY-03's Go twins added for the Go hub (`internal/hub`). Text unchanged. Note `docs/features/go-hub.md`.
 - 2026-10-25 (board #608, approved 2026-10-25, asks #569 and #572): POLICY-01..03 written with the feature. Amended with it: PURGE-01 (policy origin), QC-02 (allowed list), CHAT-02/03 note (claude.ai tools off reason), AUTO-13 and the `mcp()` path (policy refusals), the mobile POC and the provider registry notes.
 - 2026-10-25 (board #608 final review, ask #572): strengthening, no guard relaxed. A policy-forbidden source's PURGE-01 lease is held (POLICY-03 kept as written); new agent sessions are refused in one place for every start path; the tool client factories and the reaction poll refuse a forbidden source; a warm Claude session ends when a mounted Quick Connection or its claude.ai mode becomes forbidden; Go and Swift fold host case ASCII-only and both require a valid IPv6 literal in brackets (fixture cases added).

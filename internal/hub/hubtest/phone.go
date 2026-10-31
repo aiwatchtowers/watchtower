@@ -3,8 +3,10 @@
 // the pairwise relay keys, seals relayToHub actions carrying action_seq into
 // its mailbox (on a memfake transport, or on the hosted relay through
 // RelayStore), keeps them in an outbox until a final echo, opens the hub's
-// echoes and controls, answers resend_from (resending with the same bytes,
-// or skip_to when it no longer has an action) and deletes what it read.
+// echoes and controls, answers resend_from (rewriting each requeued action's
+// same bytes as a new version under the last record_seq it knows at that
+// name, as the Swift phone does, or skip_to when it no longer has an action) and deletes
+// what it read.
 // Test-only: never imported by production code.
 package hubtest
 
@@ -59,6 +61,7 @@ type Config struct {
 type sent struct {
 	plain, wire string
 	env         []byte
+	recordSeq   uint64 // last RecordSeq the phone knows at this action's name (its write or the hub's echo); 0 = never written
 }
 
 // Phone is one emulated phone. Not safe for concurrent use.
@@ -192,27 +195,52 @@ func (p *Phone) Act(kind string) (uint64, error) {
 	return seq, p.Send(seq)
 }
 
-// Send writes action seq's sealed bytes (sim rule 3 on a conflict: an echo
-// at that name means delivered, the same bytes mean already there, anything
-// else is overwritten).
+// Send writes action seq's sealed bytes: the first write expects the name
+// absent, a later one (a resend_from answer) writes the same bytes as a new
+// version under the last record_seq the phone knows at that name — its own
+// write, or the held/received echo it read over it — the Swift phone's rule. Sim rule 3 on a conflict: an echo at that name means delivered, the
+// same bytes mean already there, anything else is overwritten.
 func (p *Phone) Send(seq uint64) error {
 	s, ok := p.history[seq]
 	if !ok {
 		return fmt.Errorf("hubtest: no action %d", seq)
 	}
-	out, err := p.cfg.Transport.Write(p.zone, s.wire, s.env, transport.Expect{Mode: transport.ExpectAbsent})
-	if err != nil || out.Saved || out.Conflict == nil {
+	exp := transport.Expect{Mode: transport.ExpectAbsent}
+	if s.recordSeq != 0 {
+		exp = transport.Expect{Mode: transport.ExpectSeq, Seq: s.recordSeq}
+	}
+	out, err := p.cfg.Transport.Write(p.zone, s.wire, s.env, exp)
+	if err != nil {
 		return err
+	}
+	if out.Saved {
+		p.wrote(seq, out.RecordSeq)
+		return nil
+	}
+	if out.Conflict == nil {
+		return nil
 	}
 	cur := out.Conflict
 	if bytes.Equal(cur.Envelope, s.env) {
+		p.wrote(seq, cur.RecordSeq)
 		return nil
 	}
 	if f, err := p.open(cur.Name, cur.Envelope); err == nil && f.Kind == "action" {
 		return p.onEcho(*cur, f)
 	}
-	_, err = p.cfg.Transport.Write(p.zone, s.wire, s.env, transport.Expect{Mode: transport.ExpectSeq, Seq: cur.RecordSeq})
+	out, err = p.cfg.Transport.Write(p.zone, s.wire, s.env, transport.Expect{Mode: transport.ExpectSeq, Seq: cur.RecordSeq})
+	if err == nil && out.Saved {
+		p.wrote(seq, out.RecordSeq)
+	}
 	return err
+}
+
+// wrote remembers the last record_seq the phone knows at action seq's name.
+func (p *Phone) wrote(seq, recordSeq uint64) {
+	if s, ok := p.history[seq]; ok {
+		s.recordSeq = recordSeq
+		p.history[seq] = s
+	}
 }
 
 // Forget drops action seq from the outbox and its history (a reinstall).
@@ -401,6 +429,7 @@ func (p *Phone) onEcho(rec transport.Stored, f secure.InnerFrame) error {
 		p.LegacyEchoes[a.ID] = a
 	} else {
 		p.Echoes[*a.ActionSeq] = a
+		p.wrote(*a.ActionSeq, rec.RecordSeq)
 	}
 	switch a.Status {
 	case wire.StatusApplied, wire.StatusFailed, wire.StatusExpired, wire.StatusCancelled:
@@ -434,7 +463,9 @@ func (p *Phone) onControl(rec transport.Stored, f secure.InnerFrame) error {
 }
 
 // resendFrom is sim rules 5–6: everything from `from` again, in order and with
-// the same bytes; actions the outbox no longer has become undelivered and a
+// the same bytes, each a new version over the last record the phone knows at
+// its name (Send);
+// actions the outbox no longer has become undelivered and a
 // skip_to names the first one it still has (or its next seq).
 func (p *Phone) resendFrom(from uint64) error {
 	first := p.nextAction

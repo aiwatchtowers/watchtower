@@ -84,11 +84,13 @@
 - `WatchtowerDesktop/Tests/MobileHub/SessionChatRunnerTests.swift::testUnlinkedPhoneDropsPayloadsForGood`
 - `WatchtowerDesktop/Tests/MobileHub/SessionChatPayloadTests.swift::testMatchesKitFixtureKeys`
 - `WatchtowerDesktop/Tests/MobileHub/SessionChatPayloadTests.swift::testOnlyFeedKindsPublished`
+- Go hub (phase 1, **ask #807**), the Go twins, same meaning: `internal/hub/slices/sources/session_chat_test.go::TestFeed05_NoWatchPublishesNothing`, `internal/hub/slices/sources/session_chat_test.go::TestFeed05_ExpiredWatchLeavesWindow`, `internal/hub/slices/sources/session_chat_test.go::TestFeed05_UnlinkedPhoneDropsPayloadsForGood`, `internal/hub/slices/sources/session_chat_test.go::TestFeed05_MatchesKitFixtureKeys`, `internal/hub/slices/sources/session_chat_test.go::TestFeed05_OnlyFeedKindsPublished`
 
 **Locked since:** 2026-10-18
 
 ## Changelog
 
+- 2026-10-31 (Go hub phase 1, board #1284, **ask #807**): strengthening, no guard relaxed. FEED-05's Go twins added for the Go hub's `session_chat` source (`internal/hub/slices/sources/session_chat.go`): the payload stays in the hub's memory (not in `watchtower.db`, not in the hub sidecar). Text unchanged. Note `docs/features/go-hub.md`.
 
 - 2026-10-16 (board #477..#485): file created, FEED-01..04. Spec `docs/superpowers/specs/2026-10-16-session-chat-feed-design.md`.
 - 2026-10-17: FEED-01..03 now cover Codex sessions (`ParseCodex`/`LocateCodex`, agent instructions Task 6); `codex sessions are not supported yet` refusal removed.
