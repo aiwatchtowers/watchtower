@@ -11,12 +11,32 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
-// openNoFollow opens path read-only, refusing a symlink as the last component.
+// maxRedirects caps the redirects an attachment PUT or GET follows.
+const maxRedirects = 3
+
+// errTooLarge: a download went past the attachment cap.
+var errTooLarge = errors.New("relay: download exceeds the attachment cap")
+
+// openNoFollow opens path read-only, refusing a symlink as the last component
+// and never blocking on a FIFO.
 func openNoFollow(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+}
+
+// checkRedirect follows at most maxRedirects redirects and never one that
+// leaves HTTPS once the request started on it.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return errors.New("relay: too many redirects")
+	}
+	if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return errors.New("relay: redirect leaves HTTPS")
+	}
+	return nil
 }
 
 // upload creates an upload slot for f's bytes in zone and PUTs the (already
@@ -61,7 +81,8 @@ func (t *Transport) upload(ctx context.Context, zone string, f *os.File) (string
 }
 
 // fetch GETs an opaque download URL into dst (0600), through a temporary file
-// in dst's directory renamed into place only when the whole body arrived.
+// in dst's directory renamed into place only when the whole body arrived
+// within the attachment cap; dst must be a hub-owned path (it is replaced).
 func (t *Transport) fetch(ctx context.Context, rawURL, dst string) (err error) {
 	if rawURL == "" {
 		return fmt.Errorf("relay: get_download: no URL in the answer")
@@ -80,6 +101,10 @@ func (t *Transport) fetch(ctx context.Context, rawURL, dst string) (err error) {
 	if res.StatusCode/100 != 2 {
 		return fmt.Errorf("relay: download: %w", MapError(fmt.Errorf("HTTP %d", res.StatusCode)))
 	}
+	limit := t.o.MaxAttachmentBytes
+	if res.ContentLength > limit {
+		return fmt.Errorf("%w: %w", transport.ErrRecordTooLarge, errTooLarge)
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".download-*")
 	if err != nil {
 		return fmt.Errorf("relay: download: %w", err)
@@ -90,8 +115,13 @@ func (t *Transport) fetch(ctx context.Context, rawURL, dst string) (err error) {
 			_ = os.Remove(tmp.Name())
 		}
 	}()
-	if _, err = io.Copy(tmp, res.Body); err != nil {
+	n, err := io.Copy(tmp, io.LimitReader(res.Body, limit+1))
+	if err != nil {
 		return fmt.Errorf("relay: download: %w", MapError(err))
+	}
+	if n > limit {
+		err = fmt.Errorf("%w: %w", transport.ErrRecordTooLarge, errTooLarge)
+		return err
 	}
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("relay: download: %w", err)

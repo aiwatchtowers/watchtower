@@ -327,7 +327,10 @@ func TestMemfake_TokenExpired(t *testing.T) {
 			if len(b.Changed) != 5 || len(b.Deleted) != 0 || b.NewSeq != head {
 				t.Errorf("resync from 0: %d changed, deleted %v, new %d (head %d)", len(b.Changed), b.Deleted, b.NewSeq, head)
 			}
-			if b := changes(t, f, box, head); len(b.Changed) != 0 {
+			if !b.Reset {
+				t.Error("the resync from 0 is not marked Reset")
+			}
+			if b := changes(t, f, box, head); len(b.Changed) != 0 || b.Reset {
 				t.Errorf("from head: %+v", b)
 			}
 			// Other zones are untouched.
@@ -432,7 +435,7 @@ func TestMemfake_FailuresWriteNothing(t *testing.T) {
 			t.Errorf("delete: %v", err)
 		}
 		f.FailNext("download", transport.ErrForbidden)
-		if err := f.Download(ctx, "x", filepath.Join(t.TempDir(), "out")); !errors.Is(err, transport.ErrForbidden) {
+		if err := f.Download(ctx, zone, "x", filepath.Join(t.TempDir(), "out")); !errors.Is(err, transport.ErrForbidden) {
 			t.Errorf("download: %v", err)
 		}
 
@@ -511,7 +514,7 @@ func TestMemfake_AttachmentRoundTrip(t *testing.T) {
 			t.Fatalf("no attachment: %+v", b)
 		}
 		out := filepath.Join(dir, "out")
-		if err := f.Download(context.Background(), b.Changed[0].AttachmentID, out); err != nil {
+		if err := f.Download(context.Background(), zone, b.Changed[0].AttachmentID, out); err != nil {
 			t.Fatal(err)
 		}
 		want, _ := os.ReadFile(sealedPath)
@@ -535,7 +538,10 @@ func TestMemfake_AttachmentRoundTrip(t *testing.T) {
 		if info, err := os.Stat(out); err != nil || info.Mode().Perm() != 0o600 {
 			t.Errorf("download mode: %v, %v", info, err)
 		}
-		if err := f.Download(context.Background(), "unknown", out); err == nil {
+		if err := f.Download(context.Background(), box, b.Changed[0].AttachmentID, out); !errors.Is(err, transport.ErrForbidden) {
+			t.Errorf("an attachment downloaded through another zone: %v", err)
+		}
+		if err := f.Download(context.Background(), zone, "unknown", out); err == nil {
 			t.Error("an unknown attachment downloaded")
 		}
 		// A pairing zone takes no attachments.

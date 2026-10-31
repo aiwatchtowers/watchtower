@@ -74,9 +74,16 @@ type Options struct {
 	// elsewhere never goes out. "" refuses every asset.
 	AssetDir string
 	// HTTP carries attachment PUTs and GETs (nil = a client with a 5-minute
-	// timeout). Relay ops go through the relay client's own HTTP client.
+	// timeout). Relay ops go through the relay client's own HTTP client. The
+	// transport uses a copy with its own redirect rule (see checkRedirect).
 	HTTP *http.Client
+	// MaxAttachmentBytes caps one download (0 = MaxAttachmentBytes).
+	MaxAttachmentBytes int64
 }
+
+// MaxAttachmentBytes is the relay's attachment cap (RELAY_MAX_ATTACHMENT_BYTES
+// default at the pinned commit): a download past it is refused.
+const MaxAttachmentBytes = 100 << 20
 
 // Transport is transport.Transport over the hosted relay; safe for concurrent
 // use.
@@ -90,7 +97,6 @@ type Transport struct {
 	mu         sync.Mutex
 	conn       *client.Conn
 	closed     bool
-	attZones   map[string]string // attachment id → zone, learned from saves and pulls
 	account    *relayv1.AccountState
 	refreshing bool
 	refreshDue bool
@@ -107,13 +113,17 @@ func New(c *client.Client, o Options) *Transport {
 	if o.Clock == nil {
 		o.Clock = time.Now
 	}
-	hc := o.HTTP
-	if hc == nil {
-		hc = &http.Client{Timeout: transferTimeout}
+	if o.MaxAttachmentBytes <= 0 {
+		o.MaxAttachmentBytes = MaxAttachmentBytes
 	}
+	hc := &http.Client{Timeout: transferTimeout}
+	if o.HTTP != nil {
+		copied := *o.HTTP
+		hc = &copied
+	}
+	hc.CheckRedirect = checkRedirect
 	return &Transport{
 		c: c, o: o, http: hc, events: make(chan transport.Event, eventBuffer), done: make(chan struct{}),
-		attZones: map[string]string{},
 	}
 }
 
@@ -345,16 +355,6 @@ func (t *Transport) do(ctx context.Context, req *relayv1.Request) (*relayv1.Resp
 	return resp, nil
 }
 
-// learn remembers the zone of an attachment the hub saw.
-func (t *Transport) learn(zone, attachmentID string) {
-	if attachmentID == "" {
-		return
-	}
-	t.mu.Lock()
-	t.attZones[attachmentID] = zone
-	t.mu.Unlock()
-}
-
 // rereadZones asks the consumer to re-read zones after a refused write: the
 // relay may have written part of the batch.
 func (t *Transport) rereadZones(zones []string) {
@@ -461,27 +461,42 @@ func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]tra
 		t.rereadZones(zones)
 		return nil, fmt.Errorf("relay: save: %w", err)
 	}
-	res := resp.GetSave()
-	conflicts := map[int]*relayv1.SaveConflict{}
-	for _, c := range res.GetConflicts() {
-		conflicts[int(c.GetIndex())] = c
-	}
-	if len(conflicts)+len(res.GetSaved()) != len(wire) {
-		return nil, fmt.Errorf("relay: save: %d saved and %d conflicts for %d items", len(res.GetSaved()), len(conflicts), len(wire))
-	}
-	next := 0
-	for k := range wire {
-		i := index[k]
-		if c, ok := conflicts[k]; ok {
-			out[i] = transport.Outcome{Conflict: t.stored(c.Current)}
-			continue
-		}
-		s := res.GetSaved()[next]
-		next++
-		t.learn(s.GetZone(), s.GetAttachmentId())
-		out[i] = transport.Outcome{Saved: true, RecordSeq: s.GetRecordSeq()}
+	if err := saveOutcomes(resp.GetSave(), index, out); err != nil {
+		return nil, fmt.Errorf("relay: save: %w", err)
 	}
 	return out, nil
+}
+
+// saveOutcomes fills out from a save answer: saved records in request order,
+// conflicts by their index in the request. An answer whose conflict indexes
+// are out of range or repeated, or that does not cover the request exactly,
+// is an error.
+func saveOutcomes(res *relayv1.SaveResult, index []int, out []transport.Outcome) error {
+	conflicts := make(map[int]*relayv1.SaveConflict, len(res.GetConflicts()))
+	for _, c := range res.GetConflicts() {
+		k := int(c.GetIndex())
+		if k >= len(index) {
+			return fmt.Errorf("conflict index %d out of range for %d items", k, len(index))
+		}
+		if _, dup := conflicts[k]; dup {
+			return fmt.Errorf("conflict index %d repeated", k)
+		}
+		conflicts[k] = c
+	}
+	saved := res.GetSaved()
+	if len(conflicts)+len(saved) != len(index) {
+		return fmt.Errorf("%d saved and %d conflicts for %d items", len(saved), len(conflicts), len(index))
+	}
+	next := 0
+	for k, i := range index {
+		if c, ok := conflicts[k]; ok {
+			out[i] = transport.Outcome{Conflict: stored(c.Current)}
+			continue
+		}
+		out[i] = transport.Outcome{Saved: true, RecordSeq: saved[next].GetRecordSeq()}
+		next++
+	}
+	return nil
 }
 
 // Delete implements transport.Transport. The relay has no "must be absent"
@@ -517,27 +532,28 @@ func (t *Transport) Delete(ctx context.Context, zone string, items []transport.D
 		if i >= len(out) {
 			return nil, fmt.Errorf("relay: delete: conflict index %d out of range", i)
 		}
-		out[i] = transport.Outcome{Conflict: t.stored(c.Current)}
+		out[i] = transport.Outcome{Conflict: stored(c.Current)}
 	}
 	return out, nil
 }
 
-// stored maps a relay record (nil stays nil). ServerAt is the record's
-// client_modified_at_ms: the relay keeps no server time per record.
-func (t *Transport) stored(r *relayv1.Record) *transport.Stored {
+// stored maps a relay record (nil stays nil). ServerAt is the writer's
+// client_modified_at_ms: the relay keeps no server time per record, so a
+// writer's skewed clock skews it.
+func stored(r *relayv1.Record) *transport.Stored {
 	if r == nil {
 		return nil
 	}
-	t.learn(r.GetZone(), r.GetAttachmentId())
 	return &transport.Stored{
 		Zone: r.GetZone(), Name: r.GetName(), Envelope: r.GetEnvelope(), RecordSeq: r.GetRecordSeq(),
 		ServerAt: time.UnixMilli(r.GetClientModifiedAtMs()), AttachmentID: r.GetAttachmentId(),
 	}
 }
 
-// Changes implements transport.Transport: one page after since. On
-// TOKEN_EXPIRED it also resets the zone's stored token to 0, so the next Pull
-// is a full resync of the zone.
+// Changes implements transport.Transport: one page after since (Reset when
+// since is 0). On TOKEN_EXPIRED it also resets the zone's stored token to 0,
+// so the next Pull is a full resync of the zone. Consumers use Pull, which
+// keeps the zone's token; Changes is the seam's raw page read.
 func (t *Transport) Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error) {
 	resp, err := t.do(ctx, &relayv1.Request{Op: &relayv1.Request_Changes{Changes: &relayv1.Changes{Zone: zone, SinceSeq: since}}})
 	if errors.Is(err, transport.ErrTokenExpired) {
@@ -549,13 +565,13 @@ func (t *Transport) Changes(ctx context.Context, zone string, since uint64) (tra
 		return transport.Batch{}, fmt.Errorf("relay: changes: %w", err)
 	}
 	page := resp.GetChanges()
-	b := transport.Batch{NewSeq: page.GetNewSeq(), More: page.GetMore(), Deleted: page.GetDeleted()}
+	b := transport.Batch{NewSeq: page.GetNewSeq(), More: page.GetMore(), Deleted: page.GetDeleted(), Reset: since == 0}
 	for _, r := range page.GetChanged() {
 		if r.GetDeleted() {
 			b.Deleted = append(b.Deleted, r.GetName())
 			continue
 		}
-		b.Changed = append(b.Changed, *t.stored(r))
+		b.Changed = append(b.Changed, *stored(r))
 	}
 	return b, nil
 }
@@ -563,7 +579,9 @@ func (t *Transport) Changes(ctx context.Context, zone string, since uint64) (tra
 // Pull reads zone's changes from its stored token, page by page: apply sees
 // each page and the token moves to the page's new_seq only after apply
 // returned nil, so a crash never skips a page. When the token has expired
-// (TOKEN_EXPIRED) the zone is pulled again from 0, once.
+// (TOKEN_EXPIRED) the zone is pulled again from 0, once; that first page has
+// Reset set (as does any pull from token 0), so apply can drop records whose
+// tombstones the relay purged meanwhile.
 func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.Batch) error) error {
 	since, err := t.o.Store.ZoneToken(zone)
 	if err != nil {
@@ -592,15 +610,10 @@ func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.
 	}
 }
 
-// Download implements transport.Transport. The attachment's zone must be
-// known from a save or a pull of this transport; otherwise ErrForbidden.
-func (t *Transport) Download(ctx context.Context, attachmentID, dst string) error {
-	t.mu.Lock()
-	zone, ok := t.attZones[attachmentID]
-	t.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("relay: download: attachment not seen by this transport: %w", transport.ErrForbidden)
-	}
+// Download implements transport.Transport: get_download for the attachment
+// of a record in zone, then a GET of the opaque URL into dst (a hub-owned
+// path), capped at Options.MaxAttachmentBytes.
+func (t *Transport) Download(ctx context.Context, zone, attachmentID, dst string) error {
 	resp, err := t.do(ctx, &relayv1.Request{Op: &relayv1.Request_GetDownload{GetDownload: &relayv1.GetDownload{Zone: zone, AttachmentId: attachmentID}}})
 	if err != nil {
 		return fmt.Errorf("relay: get_download: %w", err)
@@ -614,7 +627,11 @@ func isPairZone(zone string) bool { return strings.HasPrefix(zone, transport.Pai
 // regular file under Options.AssetDir, reached without a symlink: the Sealer
 // checked the file at seal time, and its own directory is where nothing else
 // writes. The returned handle is what gets uploaded, so the path is resolved
-// once.
+// once. Only the last component is opened with O_NOFOLLOW; a directory
+// component swapped for a symlink between the parent's resolution and the open
+// would escape — accepted, since AssetDir is the hub's private 0700 directory.
+// O_NONBLOCK keeps a FIFO from blocking the open; it is then refused as not a
+// regular file.
 func (t *Transport) openAsset(path string) (*os.File, error) {
 	if t.o.AssetDir == "" {
 		return nil, fmt.Errorf("%w: no asset directory configured", secure.ErrUnsealed)

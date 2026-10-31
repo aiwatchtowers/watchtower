@@ -29,21 +29,24 @@ type fakeRelay struct {
 	t    *testing.T
 	hits atomic.Int64 // every HTTP request, the WebSocket and blobs included
 
-	mu          sync.Mutex
-	ops         []string
-	reqs        []*relayv1.Request
-	fail        map[string][]relayv1.ErrorCode // op → codes, one per call
-	zones       map[string]*fakeZone
-	blobs       map[string][]byte
-	blobHeaders []http.Header
-	uploads     []*relayv1.CreateUpload
-	attZone     map[string]string
-	account     *relayv1.AccountState
-	readers     [][]string
-	subscribed  []string
-	pageLimit   int
-	ws          *websocket.Conn
-	wsReady     chan struct{}
+	mu           sync.Mutex
+	ops          []string
+	reqs         []*relayv1.Request
+	fail         map[string][]relayv1.ErrorCode // op → codes, one per call
+	zones        map[string]*fakeZone
+	blobs        map[string][]byte
+	blobHeaders  []http.Header
+	uploads      []*relayv1.CreateUpload
+	attZone      map[string]string
+	account      *relayv1.AccountState
+	readers      [][]string
+	subscribed   []string
+	pageLimit    int
+	hideLength   bool                // blob GETs stream with no Content-Length
+	downloadBase string              // get_download URL base ("" = this server)
+	saveOverride *relayv1.SaveResult // answered to the next save instead
+	ws           *websocket.Conn
+	wsReady      chan struct{}
 }
 
 type fakeZone struct {
@@ -162,6 +165,10 @@ func (f *fakeRelay) handle(req *relayv1.Request) *relayv1.Response {
 		return &relayv1.Response{Result: &relayv1.Response_Registered{Registered: &relayv1.DeviceRegistered{
 			DeviceId: client.DeviceID(op.Register.GetAuthPub())}}}
 	case *relayv1.Request_Save:
+		if o := f.saveOverride; o != nil {
+			f.saveOverride = nil
+			return &relayv1.Response{Result: &relayv1.Response_Save{Save: o}}
+		}
 		return f.save(op.Save)
 	case *relayv1.Request_Delete:
 		return f.del(op.Delete)
@@ -185,7 +192,11 @@ func (f *fakeRelay) handle(req *relayv1.Request) *relayv1.Response {
 		if f.attZone[id] != op.GetDownload.GetZone() {
 			return errResp(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN)
 		}
-		return &relayv1.Response{Result: &relayv1.Response_Download{Download: &relayv1.Download{Url: f.URL + "/blob/" + id + "?X-Sig=get"}}}
+		base := f.downloadBase
+		if base == "" {
+			base = f.URL
+		}
+		return &relayv1.Response{Result: &relayv1.Response_Download{Download: &relayv1.Download{Url: base + "/blob/" + id + "?X-Sig=get"}}}
 	default:
 		return errResp(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED)
 	}
@@ -287,6 +298,11 @@ func (f *fakeRelay) serveBlob(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			http.NotFound(w, r)
 			return
+		}
+		if f.hideLength {
+			w.(http.Flusher).Flush() // headers out first: chunked, no Content-Length
+		} else {
+			w.Header().Set("Content-Length", strconv.Itoa(len(b)))
 		}
 		_, _ = w.Write(b)
 	default:

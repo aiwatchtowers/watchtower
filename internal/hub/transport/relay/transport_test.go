@@ -8,9 +8,12 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -278,7 +281,9 @@ func TestRelayTransport_TokenExpiredResetsZoneToZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []string
+	var resets []bool
 	if err := h.tr.Pull(ctx, h.data, func(b transport.Batch) error {
+		resets = append(resets, b.Reset)
 		for _, s := range b.Changed {
 			got = append(got, s.Name)
 		}
@@ -289,6 +294,9 @@ func TestRelayTransport_TokenExpiredResetsZoneToZero(t *testing.T) {
 	var sinces []uint64
 	for _, r := range h.relay.requests("changes") {
 		sinces = append(sinces, r.GetChanges().GetSinceSeq())
+	}
+	if !slices.Equal(resets, []bool{true}) {
+		t.Fatalf("Reset flags %v, want the resync page marked", resets)
 	}
 	if !slices.Equal(sinces, []uint64{7, 7, 0}) || !slices.Equal(got, []string{"n0"}) {
 		t.Fatalf("since sequence %v, got %v", sinces, got)
@@ -496,23 +504,109 @@ func TestRelayTransport_UploadThenSaveWithAttachment(t *testing.T) {
 		t.Fatalf("changes: %+v, %v", b, err)
 	}
 	dst := filepath.Join(t.TempDir(), "out")
-	if err := h.tr.Download(ctx, "att-1", dst); err != nil {
+	if err := h.tr.Download(ctx, h.data, "att-1", dst); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(dst)
 	if info, err := os.Stat(dst); !bytes.Equal(got, want) || err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("download: %d bytes, %v", len(got), err)
 	}
-	// A new transport learns the attachment's zone from a pull before it can download.
+	// After a restart (a new transport, nothing pulled) the caller's zone is enough.
 	tr2 := h.newTransport(t)
-	if err := tr2.Download(ctx, "att-1", dst); !errors.Is(err, transport.ErrForbidden) {
-		t.Fatalf("unknown attachment: %v", err)
+	if err := tr2.Download(ctx, h.data, "att-1", dst); err != nil {
+		t.Fatalf("download from a new transport: %v", err)
 	}
-	if _, err := tr2.Changes(ctx, h.data, 0); err != nil {
+	// The relay refuses an attachment named through another zone.
+	other := transport.MailboxZone(h.tr.c.DeviceID(), "phone1")
+	if err := tr2.Download(ctx, other, "att-1", dst); !errors.Is(err, transport.ErrForbidden) {
+		t.Fatalf("other zone: %v", err)
+	}
+}
+
+func TestRelayTransport_DownloadCappedAndRedirectsChecked(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+	rec, sealedPath := h.sealAsset(t, h.assetDir, h.data)
+	if _, err := h.tr.Save(ctx, []transport.SaveItem{{Record: rec}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tr2.Download(ctx, "att-1", dst); err != nil {
-		t.Fatalf("download after a pull: %v", err)
+	info, err := os.Stat(sealedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.tr.o.MaxAttachmentBytes = info.Size() - 1
+	for _, hide := range []bool{false, true} { // with and without Content-Length
+		h.relay.mu.Lock()
+		h.relay.hideLength = hide
+		h.relay.mu.Unlock()
+		dir := t.TempDir()
+		dst := filepath.Join(dir, "out")
+		if err := h.tr.Download(ctx, h.data, "att-1", dst); !errors.Is(err, transport.ErrRecordTooLarge) {
+			t.Fatalf("hide length %v: %v, want ErrRecordTooLarge", hide, err)
+		}
+		if left, _ := os.ReadDir(dir); len(left) != 0 {
+			t.Fatalf("hide length %v: files left: %v", hide, left)
+		}
+	}
+	h.tr.o.MaxAttachmentBytes = info.Size()
+	if err := h.tr.Download(ctx, h.data, "att-1", filepath.Join(t.TempDir(), "out")); err != nil {
+		t.Fatalf("at the cap: %v", err)
+	}
+
+	// An HTTPS download URL that redirects to plain HTTP is refused.
+	plain := h.relay.URL + "/blob/att-1"
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain, http.StatusFound)
+	}))
+	t.Cleanup(tlsSrv.Close)
+	h.relay.mu.Lock()
+	h.relay.downloadBase = tlsSrv.URL
+	h.relay.mu.Unlock()
+	tr := New(NewClient(h.relay.URL, h.key), Options{Origin: h.relay.URL, Store: h.store, HTTP: tlsSrv.Client()})
+	t.Cleanup(func() { _ = tr.Close() })
+	dst := filepath.Join(t.TempDir(), "out")
+	if err := tr.Download(ctx, h.data, "att-1", dst); err == nil || !strings.Contains(err.Error(), "leaves HTTPS") {
+		t.Fatalf("https→http redirect: %v", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatal("a file was written for a refused redirect")
+	}
+	if strings.Contains(fmt.Sprint(tr.Download(ctx, h.data, "att-1", dst)), "X-Sig") {
+		t.Fatal("the signed URL reached the error")
+	}
+	// A redirect loop stops at the cap.
+	var loop *httptest.Server
+	loop = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, loop.URL+"/again", http.StatusFound)
+	}))
+	t.Cleanup(loop.Close)
+	h.relay.mu.Lock()
+	h.relay.downloadBase = loop.URL
+	h.relay.mu.Unlock()
+	if err := h.tr.Download(ctx, h.data, "att-1", dst); err == nil || !strings.Contains(err.Error(), "too many redirects") {
+		t.Fatalf("redirect loop: %v", err)
+	}
+}
+
+func TestRelayTransport_MalformedSaveAnswerIsAnError(t *testing.T) {
+	cases := map[string]*relayv1.SaveResult{
+		"out of range": {Conflicts: []*relayv1.SaveConflict{{Index: 5}}, Saved: []*relayv1.Record{{RecordSeq: 1}}},
+		"repeated":     {Conflicts: []*relayv1.SaveConflict{{Index: 0}, {Index: 0}}},
+		"short":        {Saved: []*relayv1.Record{{RecordSeq: 1}}},
+		"long":         {Saved: []*relayv1.Record{{RecordSeq: 1}, {RecordSeq: 2}, {RecordSeq: 3}}},
+	}
+	for name, res := range cases {
+		out := make([]transport.Outcome, 2)
+		if err := saveOutcomes(res, []int{0, 1}, out); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// Through the transport: the reviewer's answer (2 items, conflict index 5, 1 saved).
+	h := newHarness(t)
+	h.relay.saveOverride = &relayv1.SaveResult{Conflicts: []*relayv1.SaveConflict{{Index: 5}}, Saved: []*relayv1.Record{{RecordSeq: 1}}}
+	items := []transport.SaveItem{{Record: h.seal(t, "target-1", `{}`)}, {Record: h.seal(t, "target-2", `{}`)}}
+	if _, err := h.tr.Save(t.Context(), items); err == nil {
+		t.Fatal("a malformed save answer was accepted")
 	}
 }
 

@@ -69,6 +69,7 @@ type Fake struct {
 	zones       map[string]*zoneState
 	frames      [][]byte
 	attachments map[string][]byte
+	attZones    map[string]string // attachment id → its record's zone
 	tagCounter  uint64
 	attCounter  uint64
 	pending     []transport.Event // events waiting for room in the channel
@@ -88,7 +89,7 @@ func New(kind transport.Kind, clock func() time.Time) *Fake {
 	}
 	return &Fake{
 		kind: kind, clock: clock, events: make(chan transport.Event, eventBuffer),
-		failures: map[string][]error{}, zones: map[string]*zoneState{}, attachments: map[string][]byte{},
+		failures: map[string][]error{}, zones: map[string]*zoneState{}, attachments: map[string][]byte{}, attZones: map[string]string{},
 	}
 }
 
@@ -229,6 +230,7 @@ func (f *Fake) Save(ctx context.Context, items []transport.SaveItem) ([]transpor
 			f.attCounter++
 			att = "att-" + strconv.FormatUint(f.attCounter, 10)
 			f.attachments[att] = assets[i]
+			f.attZones[att] = r.Zone()
 		}
 		out[i] = f.put(r.Zone(), r.WireName(), env, att, it.Expect)
 	}
@@ -294,7 +296,7 @@ func (f *Fake) Changes(ctx context.Context, zone string, since uint64) (transpor
 		}
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].change < recs[j].change })
-	b := transport.Batch{NewSeq: z.counter}
+	b := transport.Batch{NewSeq: z.counter, Reset: since == 0}
 	n, size := 0, 0
 	for n < len(recs) && n < PageLimit {
 		size += len(recs[n].stored.Envelope)
@@ -318,8 +320,8 @@ func (f *Fake) Changes(ctx context.Context, zone string, since uint64) (transpor
 }
 
 // Download implements transport.Transport: it writes the attachment's bytes
-// to dst with mode 0600.
-func (f *Fake) Download(ctx context.Context, attachmentID, dst string) error {
+// to dst with mode 0600; an attachment of another zone is ErrForbidden.
+func (f *Fake) Download(ctx context.Context, zone, attachmentID, dst string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -329,6 +331,7 @@ func (f *Fake) Download(ctx context.Context, attachmentID, dst string) error {
 		return err
 	}
 	b, ok := f.attachments[attachmentID]
+	ok = ok && f.attZones[attachmentID] == zone
 	f.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("memfake: unknown attachment: %w", transport.ErrForbidden)
