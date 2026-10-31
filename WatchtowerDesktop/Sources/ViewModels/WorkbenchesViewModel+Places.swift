@@ -51,8 +51,8 @@ extension WorkbenchesViewModel {
 
     /// The header's worktree crumb: the place of the session on screen when
     /// it is a worktree (with its folder, for Show in Finder) or a removed
-    /// one; nil for the main folder, an unknown place or a page without a
-    /// session.
+    /// one (`pageSessionID`'s session); nil for the main folder, an unknown
+    /// place or a page without a session.
     func headerPlace(projectID: Int64) -> (label: SessionPlacePresentation.PlaceLabel, folder: URL?)? {
         guard let sessionID = pageSessionID(projectID: projectID) else { return nil }
         switch sessionPlaces.currentPlace(sessionID: sessionID) {
@@ -81,8 +81,8 @@ extension WorkbenchesViewModel {
 
     /// The code root the page's FILES, Files pane, git marks and code
     /// navigation work in (spec D6, §6.3): the root of the session the
-    /// layout holds (`codeRoot(sessionID:project:)`), else of the workbench's
-    /// session focused last; the main folder for a workbench without one.
+    /// layout holds (`codeRoot(sessionID:project:)`); with only the Files pane
+    /// on screen, the workbench's active live session's; else the main folder.
     func activeCodeRoot(project: Workbench) -> CodeRoot {
         codeRoot(sessionID: pageSessionID(projectID: project.id), project: project)
     }
@@ -150,7 +150,8 @@ extension WorkbenchesViewModel {
         return panes.first { WorkspaceLayout.sessionID(of: $0) != nil } ?? panes.first
     }
 
-    /// The session whose place sets the page's root (D6), nil without one.
+    /// The session whose place sets the page's root (D6; with only the Files
+    /// pane on screen, the workbench's active live session), nil without one.
     private func pageSessionID(projectID: Int64) -> Int64? {
         let focused = activeSessionID(projectID: projectID).map { [$0] } ?? []
         return CodeRootPolicy.activeSessionID(layout: layout(projectID: projectID), focusOrder: focused)

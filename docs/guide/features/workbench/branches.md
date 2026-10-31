@@ -10,7 +10,7 @@ Switching branches swaps every file in the folder. Done blindly, it can bury you
 
 ### What the button shows
 
-The branch name, an orange dot for uncommitted changes, and `↑2`/`↓1` when the branch is ahead of or behind its upstream. On a detached HEAD it shows the short commit hash. When the page shows a session that works in its own worktree, the button is that worktree's and sits on that session's strip. There is no button in a folder that is not a git repository, or on a Mac without git; Watchtower never asks you to install anything.
+The branch name, an orange dot for uncommitted changes, and `↑2`/`↓1` when the branch is ahead of or behind its upstream. On a detached HEAD it shows the short commit hash. When the page shows a session that works in its own worktree, the button is that worktree's and sits on that session's strip. Files on its own, after you click a file with the terminal full-screen, stays in that session's worktree too; the board on its own uses the main folder. There is no button in a folder that is not a git repository, or on a Mac without git; Watchtower never asks you to install anything.
 
 ### How a switch keeps your work
 
