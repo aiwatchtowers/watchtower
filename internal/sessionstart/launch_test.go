@@ -13,7 +13,8 @@ import (
 )
 
 // launchCase is one entry of testdata/launch_cases.json, written from the
-// Swift TerminalLaunch by TerminalLaunchFixtureTests (WT_E2E_REGENERATE=1).
+// Swift TerminalLaunch by TerminalLaunchFixtureTests (WT_E2E_REGENERATE=1,
+// which rewrites the file from the Swift inputs alone).
 type launchCase struct {
 	Name  string `json:"name"`
 	Shell string `json:"shell"`
@@ -49,7 +50,7 @@ func readCases[T any](t *testing.T, name string) []T {
 
 func TestLaunchFixtures(t *testing.T) {
 	cases := readCases[launchCase](t, "launch_cases.json")
-	assert.GreaterOrEqual(t, len(cases), 26)
+	assert.Len(t, cases, 28, "a new case is added in TerminalLaunchFixtureTests and regenerated")
 	for _, c := range cases {
 		m := Mode{
 			Agent: c.Mode.Agent, SessionID: c.Mode.SessionID, Prompt: c.Mode.Prompt,

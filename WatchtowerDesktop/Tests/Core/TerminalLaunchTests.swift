@@ -41,7 +41,10 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertEqual(l.environment, ["WATCHTOWER_FIRST_PROMPT= --dangerously-skip-permissions"])
         XCTAssertEqual(TerminalLaunch.positionalPrompt("-p x"), " -p x")
         XCTAssertEqual(TerminalLaunch.positionalPrompt("From a Watchtower code question:"), "From a Watchtower code question:")
-        XCTAssertFalse(TerminalLaunch.positionalPrompt(HandoffText.header).hasPrefix("-"))
+        // The first scalar, not the first Character: "-" with a combining
+        // mark is one Character, yet an argv parser sees the dash.
+        XCTAssertNotEqual(TerminalLaunch.positionalPrompt(HandoffText.header).unicodeScalars.first, "-")
+        XCTAssertEqual(TerminalLaunch.positionalPrompt("-\u{0301}p"), " -\u{0301}p")
     }
 
     /// Board #361: the variable is read by `/bin/sh`, so a login shell

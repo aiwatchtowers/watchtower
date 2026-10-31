@@ -163,21 +163,6 @@ func workbenchGitTarget(ctx context.Context) (
 	return id, workbenchgit.Options{Folder: folder.Root}, folder, resolveErr, nil
 }
 
-// folderRefusal is why a branches, switch or create call may not use the
-// folder asked for: a folder that could not be read, a failed worktree
-// listing or a folder outside the repository's worktrees. "" = go ahead.
-func folderRefusal(folder workbenchgit.ResolvedFolder, resolveErr error) (refused, detail string) {
-	switch {
-	case errors.Is(resolveErr, workbenchgit.ErrFolderUnreadable):
-		return workbenchgit.RefusedFolderUnreadable, resolveErr.Error()
-	case resolveErr != nil:
-		return workbenchgit.RefusedGitFailed, "listing the worktrees: " + resolveErr.Error()
-	case folder.OutsideTheRepository():
-		return workbenchgit.RefusedFolderNotAWorktree, string(folder.Scope)
-	}
-	return "", ""
-}
-
 // resolveErrText is resolveErr as the envelope reports it: the folder's
 // own "reading the folder: …" error (no git ran), or the failed listing.
 func resolveErrText(resolveErr error) string {
@@ -222,7 +207,7 @@ func runWorkbenchGitBranches(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	l := workbenchgit.BranchList{Branches: []workbenchgit.Branch{}, RemoteOnly: []workbenchgit.RemoteBranch{}}
-	if l.Refused, l.RefusedDetail = folderRefusal(folder, resolveErr); l.Refused == "" {
+	if l.Refused, l.RefusedDetail = workbenchgit.FolderRefusal(folder, resolveErr); l.Refused == "" {
 		l = workbenchgit.ListBranches(ctx, o)
 	}
 	l.WorkbenchID = id
@@ -316,7 +301,7 @@ func runWorkbenchGitFetch(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	res := workbenchgit.FetchResult{Remote: workbenchgit.Remote}
-	if res.Refused, res.RefusedDetail = folderRefusal(folder, resolveErr); res.Refused == "" {
+	if res.Refused, res.RefusedDetail = workbenchgit.FolderRefusal(folder, resolveErr); res.Refused == "" {
 		res = workbenchgit.Fetch(ctx, o, workbenchGitFlagUnattended)
 	}
 	res.WorkbenchID = id
@@ -361,7 +346,7 @@ func runWorkbenchGitCreate(cmd *cobra.Command, _ []string) error {
 // no git runs in a refused folder.
 func refusedSwitch(branch string, folder workbenchgit.ResolvedFolder, resolveErr error) workbenchgit.SwitchResult {
 	res := workbenchgit.SwitchResult{Branch: branch, NeedsConfirmation: []string{}}
-	res.Refused, res.RefusedDetail = folderRefusal(folder, resolveErr)
+	res.Refused, res.RefusedDetail = workbenchgit.FolderRefusal(folder, resolveErr)
 	return res
 }
 

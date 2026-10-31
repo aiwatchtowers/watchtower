@@ -2,6 +2,7 @@ package sessionstart
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"watchtower/internal/workbenchgit"
@@ -72,19 +73,40 @@ type Prepared struct {
 	Notice   string
 }
 
-// Prepare carries a placement out in o.Folder (the workbench folder), the
-// twin of the Desktop's placementForNewSession: in the folder as is, or a new
-// worktree through workbenchgit.CreateWorktree (which clones the
-// .worktreeinclude paths). It never fails: a worktree that could not be made
-// starts the session in the folder with a notice saying why. Nothing is ever
-// removed — a worktree made here stays even when the start fails later
-// (spec 2026-10-31 §11; `workbench cleanup` lists it). The agent integration
-// of the new worktree is the caller's; pass its error to WorktreeNotice.
-func Prepare(ctx context.Context, o workbenchgit.Options, p Placement, req workbenchgit.WorktreeRequest) Prepared {
+// HeldBranches lists every wt/… branch a session row still holds, in any
+// workbench (db.DB.HeldWorktreeBranches).
+type HeldBranches func(ctx context.Context) ([]string, error)
+
+// Prepare carries a placement out, the twin of the Desktop's
+// placementForNewSession and the `workbench worktree create` it runs. o.Folder
+// is the workbench folder; folder is the one asked for (`--folder`; "" = the
+// workbench folder). In the folder the session starts as is. For a worktree,
+// the folder is resolved and refused as the CLI does
+// (workbenchgit.FolderRefusal: unreadable, outside the repository), the held
+// branch names are read (a name a row still holds is never handed out again;
+// without them no worktree is made) and workbenchgit.CreateWorktree makes it
+// (cloning the .worktreeinclude paths). It never fails: a worktree that could
+// not be made starts the session in the folder with a notice saying why.
+// Nothing is ever removed — a worktree made here stays even when the start
+// fails later (spec 2026-10-31 §11; `workbench cleanup` lists it). The agent
+// integration of the new worktree is the caller's; pass its error to
+// WorktreeNotice.
+func Prepare(ctx context.Context, o workbenchgit.Options, p Placement, slug, folder string, held HeldBranches) Prepared {
 	if !p.Worktree {
 		return Prepared{Dir: o.Folder, Notice: p.Note}
 	}
-	res := workbenchgit.CreateWorktree(ctx, o, req)
+	resolved, resolveErr := workbenchgit.ResolveFolder(ctx, o, folder)
+	var res workbenchgit.WorktreeResult
+	if res.Refused, res.RefusedDetail = workbenchgit.FolderRefusal(resolved, resolveErr); res.Refused == "" {
+		taken, err := heldBranches(ctx, held)
+		if err != nil {
+			res.Error = err.Error()
+		} else {
+			wo := o
+			wo.Folder = resolved.Root
+			res = workbenchgit.CreateWorktree(ctx, wo, workbenchgit.WorktreeRequest{Slug: slug, Taken: taken})
+		}
+	}
 	if !res.Created {
 		reason := "the worktree could not be made."
 		for _, r := range []string{res.RefusedDetail, res.Error, res.Refused} {
@@ -96,6 +118,13 @@ func Prepare(ctx context.Context, o workbenchgit.Options, p Placement, req workb
 		return Prepared{Dir: o.Folder, Notice: "Started in the folder: " + reason}
 	}
 	return Prepared{Dir: res.Cwd, Worktree: &res, Notice: WorktreeNotice(res, "")}
+}
+
+func heldBranches(ctx context.Context, held HeldBranches) ([]string, error) {
+	if held == nil {
+		return nil, errors.New("the held worktree branches could not be read")
+	}
+	return held(ctx)
 }
 
 // WorktreeNotice is one line for a made worktree: the missing uncommitted

@@ -4,8 +4,9 @@ import XCTest
 /// `internal/sessionstart/testdata/launch_cases.json` is the shared fixture of
 /// Go `sessionstart.Launch`, the twin of `TerminalLaunch.make` (Go hub spec
 /// 2026-10-31 §11, a dual path pinned from both sides). The file is written
-/// from the Swift type with `WT_E2E_REGENERATE=1`; every case in it — Go's
-/// own additions included — must give the same launch here.
+/// from the Swift type with `WT_E2E_REGENERATE=1`, which rewrites it from
+/// `inputs` alone: a new case is added there, never by hand in the file.
+/// Every case in the file must give the same launch here and in Go.
 final class TerminalLaunchFixtureTests: XCTestCase {
     struct Mode: Codable {
         /// "claude", "codex", or "" for a shell.

@@ -4,7 +4,8 @@ import XCTest
 /// `internal/sessionstart/testdata/placement_cases.json` is the shared fixture
 /// of Go `sessionstart.Place`, the twin of `SessionStartPlacement.decide` (Go
 /// hub spec 2026-10-31 §11, a dual path pinned from both sides). Written from
-/// the Swift type with `WT_E2E_REGENERATE=1`.
+/// the Swift type with `WT_E2E_REGENERATE=1`, which rewrites it from `inputs`
+/// alone: a new case is added there, never by hand in the file.
 final class SessionStartPlacementFixtureTests: XCTestCase {
     struct Git: Codable {
         let gitAvailable: Bool
