@@ -77,18 +77,26 @@ class HostedRelayScenarioCase: XCTestCase {
 
     // MARK: - Devices
 
+    /// The `FakeAppAttest` of the device of `seed` (made on first use).
+    func fakeAttest(seed: UInt8) -> FakeAppAttest {
+        let attest = attests[seed] ?? FakeAppAttest()
+        attests[seed] = attest
+        return attest
+    }
+
     /// A client for the device of `seed` (one `FakeAppAttest` per seed, so a second client
     /// of the same device keeps the assertion counter). `register`: register and log in,
-    /// like the Go `device`. A Mac is exempt from attestation on the fake (R18).
+    /// like the Go `device`. A Mac is exempt from attestation on the fake (R18). `wrapHTTP`
+    /// puts a test's `RelayHTTP` in front of the backend's.
     func makeClient(
         kind: Relay_V1_DeviceKind,
         seed: UInt8,
         keys: (any AppAttestKeyStore)? = nil,
         register: Bool = true,
+        wrapHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
         onGoingAway: (@Sendable () -> Void)? = nil
     ) async throws -> HostedRelayClient {
-        let attest = attests[seed] ?? FakeAppAttest()
-        attests[seed] = attest
+        let attest = fakeAttest(seed: seed)
         let signer = Ed25519RelaySigner(try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: seed, count: 32)))
         let http: any RelayHTTP
         let sockets: any RelaySocketDialer
@@ -107,7 +115,7 @@ class HostedRelayScenarioCase: XCTestCase {
             signer: signer,
             kind: kind,
             attestor: RelayAttestor(attest: attest, keys: keys ?? InMemoryAppAttestKeyStore(), clock: clock),
-            http: http,
+            http: wrapHTTP?(http) ?? http,
             sockets: sockets,
             clock: clock,
             backoff: Self.quickBackoff,
@@ -122,8 +130,10 @@ class HostedRelayScenarioCase: XCTestCase {
 
     /// The Go `hub`: a Mac paired with a paying phone. A scenario that also runs on the
     /// stand, which keeps its state between tests, picks seeds no other test uses.
-    func hub(mac macSeed: UInt8 = 1, phone phoneSeed: UInt8 = 2) async throws -> (mac: HostedRelayClient, phone: HostedRelayClient) {
-        let phone = try await makeClient(kind: .phone, seed: phoneSeed)
+    func hub(
+        mac macSeed: UInt8 = 1, phone phoneSeed: UInt8 = 2, phoneHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil
+    ) async throws -> (mac: HostedRelayClient, phone: HostedRelayClient) {
+        let phone = try await makeClient(kind: .phone, seed: phoneSeed, wrapHTTP: phoneHTTP)
         let mac = try await makeClient(kind: .mac, seed: macSeed)
         try await pay(phone)
         try await stand.pair(mac: mac.deviceID, phones: [phone.deviceID])

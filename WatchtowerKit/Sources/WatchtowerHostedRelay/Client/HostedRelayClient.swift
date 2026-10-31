@@ -24,7 +24,8 @@ public actor HostedRelayClient {
     private let signer: any RelaySigner
     private let kind: Relay_V1_DeviceKind
     private let attestor: RelayAttestor
-    private let http: any RelayHTTP
+    /// Also the transport's blob uploads and downloads (`HostedRelayTransport+Attachments.swift`).
+    let http: any RelayHTTP
     // The WebSocket side (`connect`, HostedRelayConnection.swift).
     let sockets: any RelaySocketDialer
     let backoff: @Sendable (Int) -> Duration

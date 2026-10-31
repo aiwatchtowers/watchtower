@@ -3,6 +3,12 @@ import Foundation
 import GRDB
 import os
 
+public enum TransportStoreError: Error, Equatable, Sendable {
+    /// The store serves another route: a CloudKit scope when a relay Mac is asked for, or the
+    /// other way round, or another relay Mac (a store is bound to one route for good).
+    case boundToAnotherRoute
+}
+
 /// Persistence for the CloudKit adapter: an incoming change buffer (the
 /// source of pull-shaped `changes(since:)` tokens — seqs in this store),
 /// a pending-send queue, and the opaque CKSyncEngine state blob.
@@ -65,7 +71,8 @@ public final class TransportStore: Sendable {
                     notify_level TEXT,
                     asset_path TEXT,
                     creator TEXT,
-                    server_modified_at REAL
+                    server_modified_at REAL,
+                    record_seq INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS pending (
                     record_name TEXT NOT NULL,
@@ -98,6 +105,7 @@ public final class TransportStore: Sendable {
                     owner_name TEXT
                 );
                 """)
+            try Self.createRelayTables(db)
             // notify_level (Plan 6) and asset_path (phone recording uploads)
             // arrived after store files could already exist on disk.
             // CREATE TABLE IF NOT EXISTS cannot add a column, so patch older
@@ -116,6 +124,10 @@ public final class TransportStore: Sendable {
             if try !db.columns(in: "events").contains(where: { $0.name == "server_modified_at" }) {
                 try db.execute(sql: "ALTER TABLE events ADD COLUMN server_modified_at REAL")
             }
+            // record_seq (the relay's version of the record, R6) is fetched metadata too: events only.
+            if try !db.columns(in: "events").contains(where: { $0.name == "record_seq" }) {
+                try db.execute(sql: "ALTER TABLE events ADD COLUMN record_seq INTEGER")
+            }
             // hub_id (multi-hub spec §4.4): the hub this store's state belongs to.
             if try !db.columns(in: "scope").contains(where: { $0.name == "hub_id" }) {
                 try db.execute(sql: "ALTER TABLE scope ADD COLUMN hub_id TEXT")
@@ -125,7 +137,7 @@ public final class TransportStore: Sendable {
 
     // MARK: - Pending sends
 
-    func enqueueSave(_ records: [CloudRecord]) throws {
+    package func enqueueSave(_ records: [CloudRecord]) throws {
         try queue.write { db in
             for record in records {
                 try db.execute(
@@ -151,7 +163,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    func enqueueDelete(recordNames: [String], zone: CloudZoneID) throws {
+    package func enqueueDelete(recordNames: [String], zone: CloudZoneID) throws {
         try queue.write { db in
             for name in recordNames {
                 try db.execute(
@@ -167,7 +179,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    func pendingBatch(limit: Int) throws -> (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)]) {
+    package func pendingBatch(limit: Int) throws -> (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)]) {
         var saves: [CloudRecord] = []
         var deletes: [(name: String, zone: CloudZoneID)] = []
         for (row, zone) in try pendingRows(columns: "*", limit: limit) {
@@ -251,7 +263,7 @@ public final class TransportStore: Sendable {
     /// The row goes whatever it holds: if the record was re-queued for
     /// deletion after the failed send, that delete is dropped too. Harmless
     /// for a record CloudKit refused to store.
-    func dropPending(recordName: String, zone: CloudZoneID) throws {
+    package func dropPending(recordName: String, zone: CloudZoneID) throws {
         try queue.write { db in
             try db.execute(
                 sql: "DELETE FROM pending WHERE record_name = ? AND zone = ?",
@@ -273,7 +285,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    func clearPending(
+    package func clearPending(
         saves: [(name: String, zone: CloudZoneID, sentModifiedAt: Date)],
         deletes: [(name: String, zone: CloudZoneID)]
     ) throws {
@@ -324,7 +336,7 @@ public final class TransportStore: Sendable {
         }
     }
 
-    func bufferChanged(_ records: [CloudRecord]) throws {
+    package func bufferChanged(_ records: [CloudRecord]) throws {
         try queue.write { try Self.insertChanged(records, $0) }
     }
 
@@ -334,20 +346,20 @@ public final class TransportStore: Sendable {
                 sql: """
                     INSERT INTO events
                         (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path, creator,
-                         server_modified_at)
-                    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                         server_modified_at, record_seq)
+                    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     record.zone.rawValue, record.recordName, record.kind,
                     record.modifiedAt.timeIntervalSince1970, record.payload,
                     record.notifyLevel, record.assetFileURL?.path, record.origin.author,
-                    record.origin.serverAt?.timeIntervalSince1970
+                    record.origin.serverAt?.timeIntervalSince1970, record.recordSeq.map(Int64.init(bitPattern:))
                 ]
             )
         }
     }
 
-    func bufferDeleted(recordNames: [String], zone: CloudZoneID) throws {
+    package func bufferDeleted(recordNames: [String], zone: CloudZoneID) throws {
         try queue.write { try Self.insertDeleted(recordNames: recordNames, zone: zone, $0) }
     }
 
@@ -398,7 +410,8 @@ public final class TransportStore: Sendable {
                         assetFileURL: (row["asset_path"] as String?).map(URL.init(fileURLWithPath:)),
                         origin: RecordOrigin(
                             author: row["creator"],
-                            serverAt: (row["server_modified_at"] as Double?).map(Date.init(timeIntervalSince1970:)))
+                            serverAt: (row["server_modified_at"] as Double?).map(Date.init(timeIntervalSince1970:))),
+                        recordSeq: (row["record_seq"] as Int64?).map(UInt64.init(bitPattern:))
                     ))
                 }
             }
@@ -425,7 +438,7 @@ public final class TransportStore: Sendable {
     /// The record name is server-supplied and unauthenticated here (the
     /// stash runs before anything is opened), so the file name is its
     /// SHA-256 with the zone, in hex: never a path of the sender's choosing.
-    func stashAsset(
+    package func stashAsset(
         from url: URL, recordName: String, zone: CloudZoneID, maxBytes: Int64 = TransportStore.maximumStashBytes
     ) -> URL? {
         guard let assetsDirectory else { return nil }
@@ -566,7 +579,10 @@ public final class TransportStore: Sendable {
     }
 
     func saveScope(_ scope: CloudDatabaseScope, hubID: String) throws {
-        try queue.write { db in try Self.writeScope(scope, hubID: hubID, db) }
+        try queue.write { db in
+            try Self.refuseRelayBinding(db)
+            try Self.writeScope(scope, hubID: hubID, db)
+        }
     }
 
     /// Binds the store to `scope` and `hubID` (multi-hub spec §4.4). Engine
@@ -580,6 +596,7 @@ public final class TransportStore: Sendable {
     @discardableResult
     public func adoptScope(_ scope: CloudDatabaseScope, hubID: String) throws -> Bool {
         let wiped = try queue.write { db in
+            try Self.refuseRelayBinding(db)
             let stored = try Self.readBinding(db)
             var wipe = stored?.scope != scope || stored?.hubID != hubID
             if stored == nil { wipe = try Self.holdsState(db) }
@@ -653,6 +670,9 @@ public final class TransportStore: Sendable {
         try db.execute(sql: "DELETE FROM system_fields")
         try db.execute(sql: "DELETE FROM engine_state")
         try db.execute(sql: "DELETE FROM poll_tokens")
+        try db.execute(sql: "DELETE FROM relay_cursors")
+        try db.execute(sql: "DELETE FROM relay_records")
+        try db.execute(sql: "DELETE FROM relay_resync_seen")
     }
 
     /// Drops buffered events at or below a consumer's floor token for one zone.
@@ -851,4 +871,200 @@ public final class TransportStore: Sendable {
         }
     }
     #endif
+}
+
+// MARK: - Hosted relay (#1240)
+
+/// The hosted relay transport's state (`HostedRelayTransport`, Kit target
+/// `WatchtowerHostedRelay`): per zone the server cursor (`relay_cursors`),
+/// every record the server returned with its seq (`relay_records`), the
+/// names a `TOKEN_EXPIRED` resync has seen so far (`relay_resync_seen`, R10)
+/// and the relay Mac the store serves (`relay_binding`). Empty on a CloudKit
+/// store. Zones are keyed by `CloudZoneID`: a store serves one Mac.
+extension TransportStore {
+    /// A resync in progress is one marker row in `relay_resync_seen`, kept apart from the seen
+    /// names by its zone key (`<zone>#resync`, never a `CloudZoneID` raw value), so no record name
+    /// can stand for it. Its name says whether the resync runs or stalled (the relay refused a
+    /// middle page).
+    private static func resyncMarkerZone(_ zone: CloudZoneID) -> String {
+        zone.rawValue + "#resync"
+    }
+
+    private static let resyncRunning = "running"
+    private static let resyncStalled = "stalled"
+
+    /// Binds the store to the relay Mac `macDeviceID` (and `hubID` when known). A store holds
+    /// one route: one bound to a CloudKit scope, or to another Mac or hub, throws
+    /// `TransportStoreError.boundToAnotherRoute`. Returns whether the binding is new.
+    package func adoptRelayBinding(macDeviceID: String, hubID: String?) throws -> Bool {
+        try queue.write { db in
+            if try Self.readBinding(db) != nil { throw TransportStoreError.boundToAnotherRoute }
+            let row = try Row.fetchOne(db, sql: "SELECT mac_device_id, hub_id FROM relay_binding WHERE id = 1")
+            // Unbound state (a CloudKit send queue or buffer from before scopes were recorded) is another route's.
+            if row == nil, try Self.holdsState(db) { throw TransportStoreError.boundToAnotherRoute }
+            if let row {
+                let storedHub: String? = row["hub_id"]
+                guard row["mac_device_id"] == macDeviceID else { throw TransportStoreError.boundToAnotherRoute }
+                if let hubID, let storedHub, hubID != storedHub { throw TransportStoreError.boundToAnotherRoute }
+                if let hubID, storedHub == nil {
+                    try db.execute(sql: "UPDATE relay_binding SET hub_id = ? WHERE id = 1", arguments: [hubID])
+                }
+                return false
+            }
+            try db.execute(
+                sql: "INSERT INTO relay_binding (id, mac_device_id, hub_id) VALUES (1, ?, ?)",
+                arguments: [macDeviceID, hubID])
+            return true
+        }
+    }
+
+    /// The relay tables, created with the others on every store (empty on a CloudKit one).
+    fileprivate static func createRelayTables(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS relay_cursors (
+                zone TEXT PRIMARY KEY,
+                seq INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS relay_records (
+                zone TEXT NOT NULL,
+                name TEXT NOT NULL,
+                record_seq INTEGER NOT NULL,
+                PRIMARY KEY (zone, name)
+            );
+            CREATE TABLE IF NOT EXISTS relay_resync_seen (
+                zone TEXT NOT NULL,
+                name TEXT NOT NULL,
+                PRIMARY KEY (zone, name)
+            );
+            CREATE TABLE IF NOT EXISTS relay_binding (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                mac_device_id TEXT NOT NULL,
+                hub_id TEXT
+            );
+            """)
+    }
+
+    fileprivate static func refuseRelayBinding(_ db: Database) throws {
+        if try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM relay_binding)") == true {
+            throw TransportStoreError.boundToAnotherRoute
+        }
+    }
+
+    /// The server cursor of `zone`: the `new_seq` of the last buffered page, 0 before any.
+    package func relayCursor(zone: CloudZoneID) throws -> UInt64 {
+        try queue.read { db in
+            let seq = try Int64.fetchOne(db, sql: "SELECT seq FROM relay_cursors WHERE zone = ?", arguments: [zone.rawValue])
+            return seq.map(UInt64.init(bitPattern:)) ?? 0
+        }
+    }
+
+    /// One `changes` page in one transaction: its events (`changed` carry the record's seq and the
+    /// writer's clock as `origin.serverAt`, no creator), the records the server returned, the
+    /// names a running resync has seen, and the cursor. A failure writes nothing, so the cursor
+    /// moves only with the page it covers.
+    package func bufferRelayPage(
+        zone: CloudZoneID, changed: [CloudRecord], deleted: [String], newSeq: UInt64, resync: Bool
+    ) throws {
+        try queue.write { db in
+            try Self.insertChanged(changed, db)
+            try Self.insertDeleted(recordNames: deleted, zone: zone, db)
+            for record in changed {
+                try db.execute(
+                    sql: """
+                        INSERT INTO relay_records (zone, name, record_seq) VALUES (?, ?, ?)
+                        ON CONFLICT(zone, name) DO UPDATE SET record_seq = excluded.record_seq
+                        """,
+                    arguments: [zone.rawValue, record.recordName, Int64(bitPattern: record.recordSeq ?? 0)])
+            }
+            for name in deleted {
+                try db.execute(
+                    sql: "DELETE FROM relay_records WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
+            }
+            if resync {
+                for name in changed.map(\.recordName) + deleted {
+                    try db.execute(
+                        sql: "INSERT OR IGNORE INTO relay_resync_seen (zone, name) VALUES (?, ?)",
+                        arguments: [zone.rawValue, name])
+                }
+            }
+            try Self.writeRelayCursor(newSeq, zone: zone, db)
+        }
+    }
+
+    /// Starts a `TOKEN_EXPIRED` resync of `zone`: the cursor back to 0 and nothing seen yet, persisted.
+    package func beginRelayResync(_ zone: CloudZoneID) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
+                arguments: [zone.rawValue, Self.resyncMarkerZone(zone)])
+            try db.execute(
+                sql: "INSERT INTO relay_resync_seen (zone, name) VALUES (?, ?)",
+                arguments: [Self.resyncMarkerZone(zone), Self.resyncRunning])
+            try Self.writeRelayCursor(0, zone: zone, db)
+        }
+    }
+
+    /// Whether a resync of `zone` started and has not finished (a later pull resumes it), stalled or not.
+    package func relayResyncPending(_ zone: CloudZoneID) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS (SELECT 1 FROM relay_resync_seen WHERE zone = ?)",
+                arguments: [Self.resyncMarkerZone(zone)]) ?? false
+        }
+    }
+
+    /// Marks the running resync of `zone` stalled (the relay refused a middle page); the next
+    /// `beginRelayResync` clears the mark.
+    package func markRelayResyncStalled(_ zone: CloudZoneID) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE relay_resync_seen SET name = ? WHERE zone = ?",
+                arguments: [Self.resyncStalled, Self.resyncMarkerZone(zone)])
+        }
+    }
+
+    /// Whether the resync of `zone` stalled (`markRelayResyncStalled`) and has not been started again.
+    package func relayResyncStalled(_ zone: CloudZoneID) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS (SELECT 1 FROM relay_resync_seen WHERE zone = ? AND name = ?)",
+                arguments: [Self.resyncMarkerZone(zone), Self.resyncStalled]) ?? false
+        }
+    }
+
+    /// Ends a resync after its last page (R10), in one transaction: a deletion event for each
+    /// record the server once returned that the resync did not, and the resync state cleared.
+    /// Returns the deleted names.
+    package func finishRelayResync(_ zone: CloudZoneID) throws -> [String] {
+        try queue.write { db in
+            let gone = try String.fetchAll(
+                db,
+                sql: """
+                    SELECT name FROM relay_records
+                    WHERE zone = ? AND name NOT IN (SELECT name FROM relay_resync_seen WHERE zone = ?)
+                    ORDER BY record_seq, name
+                    """,
+                arguments: [zone.rawValue, zone.rawValue])
+            try Self.insertDeleted(recordNames: gone, zone: zone, db)
+            for name in gone {
+                try db.execute(
+                    sql: "DELETE FROM relay_records WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
+            }
+            try db.execute(
+                sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
+                arguments: [zone.rawValue, Self.resyncMarkerZone(zone)])
+            return gone
+        }
+    }
+
+    private static func writeRelayCursor(_ seq: UInt64, zone: CloudZoneID, _ db: Database) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO relay_cursors (zone, seq) VALUES (?, ?)
+                ON CONFLICT(zone) DO UPDATE SET seq = excluded.seq
+                """,
+            arguments: [zone.rawValue, Int64(bitPattern: seq)])
+    }
 }
