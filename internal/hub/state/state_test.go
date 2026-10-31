@@ -201,6 +201,59 @@ func TestDevices_LinkReadAndSetLastApplied(t *testing.T) {
 	}
 }
 
+func TestDevices_SetOrderedAndAckEpochNeverLowers(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	id := "0C0C0C0C-0C0C-0C0C-0C0C-0C0C0C0C0C0C"
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		return LinkDevice(tx, Device{ID: id, Name: "phone", Scope: "private", LinkedAt: time.Unix(1, 0)})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []func(*sql.Tx) error{
+		func(tx *sql.Tx) error { return SetOrdered(tx, id) },
+		func(tx *sql.Tx) error { return AckEpoch(tx, id, 5) },
+		func(tx *sql.Tx) error { return AckEpoch(tx, id, 3) },
+	} {
+		if err := s.WithTx(ctx, step); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, _, err := s.Device(id)
+	if err != nil || !d.Ordered || d.AckedEpoch != 5 {
+		t.Fatalf("device %+v, %v", d, err)
+	}
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error { return AckEpoch(tx, "missing", 1) }); !errors.Is(err, ErrNoDevice) {
+		t.Fatalf("AckEpoch on a missing device = %v", err)
+	}
+}
+
+func TestPruneLedgerKeepsBegunAndRecent(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	old, recent := time.Unix(1_000, 0), time.Unix(9_000, 0)
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := MarkDone(tx, "old", "applied", nil, nil, old); err != nil {
+			return err
+		}
+		if err := MarkDone(tx, "recent", "applied", nil, nil, recent); err != nil {
+			return err
+		}
+		return Begin(tx, "begun", old)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.PruneLedger(time.Unix(5_000, 0))
+	if err != nil || n != 1 {
+		t.Fatalf("pruned %d, %v", n, err)
+	}
+	for name, want := range map[string]string{"old": "", "recent": PhaseDone, "begun": PhaseBegun} {
+		if phase, _, _, err := s.Phase(name); err != nil || phase != want {
+			t.Errorf("%s: phase %q (%v), want %q", name, phase, err, want)
+		}
+	}
+}
+
 func devicesEqual(a, b Device) bool {
 	return a.ID == b.ID && a.Name == b.Name && a.Scope == b.Scope && a.LinkedAt.Equal(b.LinkedAt) &&
 		string(a.SigningKey) == string(b.SigningKey) && string(a.AgreementKey) == string(b.AgreementKey) &&
@@ -208,7 +261,7 @@ func devicesEqual(a, b Device) bool {
 		a.PermissionsAllowed == b.PermissionsAllowed && a.PermissionsRequested == b.PermissionsRequested &&
 		a.StartSessionsAllowed == b.StartSessionsAllowed && a.StartSessionsGranted == b.StartSessionsGranted &&
 		a.LastAppliedActionSeq == b.LastAppliedActionSeq && a.Ordered == b.Ordered &&
-		a.RelayDeviceID == b.RelayDeviceID && a.ResendRequestedFrom == b.ResendRequestedFrom
+		a.RelayDeviceID == b.RelayDeviceID && a.ResendRequestedFrom == b.ResendRequestedFrom && a.AckedEpoch == b.AckedEpoch
 }
 
 func TestControlQueueStoresSealedOnly(t *testing.T) {

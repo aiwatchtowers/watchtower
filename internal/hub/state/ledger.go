@@ -59,6 +59,21 @@ func MarkDone(tx *sql.Tx, record, outcome string, echo []byte, doneSeq *uint64, 
 	return nil
 }
 
+// PruneLedger removes done rows last updated before cutoff and reports how
+// many went (relay hygiene). Begun rows stay: they answer outcome_unknown.
+func (s *Store) PruneLedger(cutoff time.Time) (int64, error) {
+	var n int64
+	err := s.write(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`DELETE FROM relay_processed WHERE phase = 'done' AND updated_at < ?`, toReal(cutoff))
+		if err != nil {
+			return fmt.Errorf("pruning the relay ledger: %w", err)
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
+}
+
 // Phase is where record stands: "" (unknown), PhaseBegun or PhaseDone, with
 // a done record's outcome and stored echo.
 func (s *Store) Phase(record string) (phase, outcome string, echo []byte, err error) {

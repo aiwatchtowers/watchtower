@@ -2,11 +2,9 @@ package actions
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -189,149 +187,6 @@ func (p *Processor) sealEcho(b mailbox, wireName, plain string, a wire.ActionReq
 		return queued{}, fmt.Errorf("actions: sealing an echo: %w", err)
 	}
 	return queued{rec: rec, kind: queueEcho, expect: expect}, nil
-}
-
-// sealResendFrom seals a resend_from(from) control c-<uuid> for b.
-func (p *Processor) sealResendFrom(b mailbox, from uint64) (queued, error) {
-	id, err := newUUID()
-	if err != nil {
-		return queued{}, err
-	}
-	device, hub := b.id.String(), p.cfg.Keys.HubID().String()
-	payload, err := wire.Marshal(wire.Control{ID: id, Kind: wire.ControlResendFrom, DeviceID: &device, HubID: &hub, Seq: &from})
-	if err != nil {
-		return queued{}, err
-	}
-	plain := "c-" + id
-	name, err := p.cfg.Sealer.WireName(secure.ZoneRelay, plain)
-	if err != nil {
-		return queued{}, err
-	}
-	rec, err := p.cfg.Sealer.ToPhone(b.zone, b.id, name, kindControl, plain, payload)
-	if err != nil {
-		return queued{}, fmt.Errorf("actions: sealing resend_from: %w", err)
-	}
-	return queued{rec: rec, kind: wire.ControlResendFrom, expect: expectAbsent}, nil
-}
-
-// newUUID is a random v4 UUID in Swift's uuidString form.
-func newUUID() (string, error) {
-	var id secure.ID
-	if _, err := rand.Read(id[:]); err != nil {
-		return "", fmt.Errorf("actions: random: %w", err)
-	}
-	id[6] = id[6]&0x0f | 0x40
-	id[8] = id[8]&0x3f | 0x80
-	return id.String(), nil
-}
-
-// FlushControls writes every linked phone's queued echoes and controls, in
-// queue order per mailbox. A mailbox stops at its first row that does not
-// land (kept for the next pass, so order holds); a row whose record changed
-// meanwhile is dropped — the phone's newer copy comes through the feed and is
-// answered then — except that an echo replaces the hub's own older record at
-// its name. Task 10 adds retry classes and dropping rows refused for good.
-func (p *Processor) FlushControls(ctx context.Context) (written, failed int, err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.flushAll(ctx)
-}
-
-func (p *Processor) flushAll(ctx context.Context) (written, failed int, err error) {
-	boxes, err := p.mailboxes()
-	if err != nil {
-		return 0, 0, err
-	}
-	var errs []error
-	for _, b := range boxes {
-		w, f, err := p.flushMailbox(ctx, b)
-		written, failed = written+w, failed+f
-		if err != nil {
-			// One phone's failure never holds back the others' queues.
-			log.Printf("hub: flushing device %s's mailbox: %s", b.id, errClass(err))
-			errs = append(errs, err)
-		}
-	}
-	return written, failed, errors.Join(errs...)
-}
-
-// flushMailbox writes b's queue in order; failed counts rows that did not
-// land this time (the first one stops the mailbox).
-func (p *Processor) flushMailbox(ctx context.Context, b mailbox) (written, failed int, err error) {
-	zone := b.zone
-	rows, err := p.cfg.Store.PendingControls(zone)
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, c := range rows {
-		rec, err := p.cfg.Opener.Requeue(zone, b.id, c.RecordName, c.Envelope)
-		if err != nil {
-			if !droppable(err) {
-				return written, failed, err
-			}
-			// The phone could not open it either (its keys are gone): drop it.
-			log.Printf("hub: dropping queued %s %d: %s", c.Kind, c.ID, errClass(err))
-			if err := p.cfg.Store.ControlDone(c.ID); err != nil {
-				return written, failed, err
-			}
-			continue
-		}
-		landed, err := p.writeQueued(ctx, c, rec)
-		if err != nil {
-			return written, failed, err
-		}
-		if !landed {
-			return written, failed + 1, nil
-		}
-		written++
-	}
-	return written, failed, nil
-}
-
-// writeQueued saves one queued row; landed is false when it must wait for
-// the next pass (the row is marked failed with its error class). A dropped
-// row counts as landed: it is gone from the queue.
-func (p *Processor) writeQueued(ctx context.Context, c state.Control, rec secure.Record) (landed bool, err error) {
-	expect := transport.Expect{Mode: transport.ExpectNone}
-	switch c.Expect {
-	case state.ExpectAbsent:
-		expect.Mode = transport.ExpectAbsent
-	case state.ExpectSeq:
-		expect = transport.Expect{Mode: transport.ExpectSeq, Seq: c.ExpectSeq}
-	}
-	for attempt := 0; ; attempt++ {
-		out, err := p.cfg.Transport.Save(ctx, []transport.SaveItem{{Record: rec, Expect: expect}})
-		if err == nil && len(out) != 1 {
-			err = errors.New("actions: save answered no outcome")
-		}
-		if err == nil && out[0].Refused != nil {
-			err = out[0].Refused
-		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return false, ctx.Err()
-			}
-			return false, p.cfg.Store.ControlFailed(c.ID, errClass(err))
-		}
-		o := out[0]
-		if o.Saved {
-			return true, p.cfg.Store.ControlDone(c.ID)
-		}
-		// A failed precondition: an echo replaces the hub's own older record
-		// at its name (a held echo before the final one); anything else means
-		// the phone changed the record, and its copy is answered when read.
-		if c.Kind == queueEcho && attempt == 0 && o.Conflict != nil && p.ownRecord(o.Conflict) {
-			expect = transport.Expect{Mode: transport.ExpectSeq, Seq: o.Conflict.RecordSeq}
-			continue
-		}
-		return true, p.cfg.Store.ControlDone(c.ID)
-	}
-}
-
-// ownRecord reports whether s is a record the hub wrote (one of its echoes).
-func (p *Processor) ownRecord(s *transport.Stored) bool {
-	_, err := p.cfg.Opener.OwnEcho(s.Zone, s.Name, s.Envelope)
-	return err == nil
 }
 
 // droppable reports whether err is a verdict about the bytes (they do not

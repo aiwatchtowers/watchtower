@@ -34,11 +34,11 @@ func LinkDevice(tx *sql.Tx, d Device) error {
 		return fmt.Errorf("linking a device: %w", err)
 	}
 	_, err = tx.Exec(`INSERT INTO devices (`+deviceColumns+`, user_record_name)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
 		deviceKey(d.ID), d.Name, d.Scope, toReal(d.LinkedAt), d.SigningKey, d.AgreementKey, nullString(d.LinkNonce),
 		d.TypingAllowed, d.TypingRequested, d.PermissionsAllowed, d.PermissionsRequested,
 		d.StartSessionsAllowed, d.StartSessionsGranted,
-		last, d.Ordered, nullString(d.RelayDeviceID), resend)
+		last, d.Ordered, nullString(d.RelayDeviceID), resend, int64(d.AckedEpoch))
 	if err != nil {
 		return fmt.Errorf("linking a device: %w", err)
 	}

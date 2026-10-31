@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -31,12 +32,14 @@ type Device struct {
 	Ordered              bool
 	RelayDeviceID        string
 	ResendRequestedFrom  uint64
+	// AckedEpoch is the newest hub epoch the phone confirmed (epoch_ack).
+	AckedEpoch uint32
 }
 
 const deviceColumns = `device_id, name, scope, linked_at, signing_key, agreement_key, link_nonce,
 	typing_allowed, typing_requested, permissions_allowed, permissions_requested,
 	start_sessions_allowed, start_sessions_granted,
-	last_applied_action_seq, ordered, relay_device_id, resend_requested_from`
+	last_applied_action_seq, ordered, relay_device_id, resend_requested_from, acked_epoch`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -46,11 +49,12 @@ func scanDevice(r rowScanner) (Device, error) {
 		linked             float64
 		nonce, relayID     sql.NullString
 		lastApplied, resnd int64
+		acked              int64
 	)
 	err := r.Scan(&d.ID, &d.Name, &d.Scope, &linked, &d.SigningKey, &d.AgreementKey, &nonce,
 		&d.TypingAllowed, &d.TypingRequested, &d.PermissionsAllowed, &d.PermissionsRequested,
 		&d.StartSessionsAllowed, &d.StartSessionsGranted,
-		&lastApplied, &d.Ordered, &relayID, &resnd)
+		&lastApplied, &d.Ordered, &relayID, &resnd, &acked)
 	if err != nil {
 		return Device{}, err
 	}
@@ -59,6 +63,7 @@ func scanDevice(r rowScanner) (Device, error) {
 	d.RelayDeviceID = relayID.String
 	d.LastAppliedActionSeq = uint64(max(lastApplied, 0))
 	d.ResendRequestedFrom = uint64(max(resnd, 0))
+	d.AckedEpoch = uint32(min(max(acked, 0), math.MaxUint32))
 	return d, nil
 }
 
@@ -105,6 +110,19 @@ func SetLastApplied(tx *sql.Tx, device string, seq uint64) error {
 // so each gap gets one.
 func SetResendRequested(tx *sql.Tx, device string, from uint64) error {
 	return updateDevice(tx, device, from, `UPDATE devices SET resend_requested_from = ? WHERE device_id = ? COLLATE NOCASE`)
+}
+
+// SetOrdered marks device as sending action_seq (its first ordered action
+// was read), in the caller's transaction.
+func SetOrdered(tx *sql.Tx, device string) error {
+	return updateDevice(tx, device, 1, `UPDATE devices SET ordered = ? WHERE device_id = ? COLLATE NOCASE`)
+}
+
+// AckEpoch raises device's confirmed epoch to epoch (never lowers it), in
+// the caller's transaction.
+func AckEpoch(tx *sql.Tx, device string, epoch uint32) error {
+	return updateDevice(tx, device, uint64(epoch),
+		`UPDATE devices SET acked_epoch = max(acked_epoch, ?) WHERE device_id = ? COLLATE NOCASE`)
 }
 
 // updateDevice runs one counter update (query binds the value, then the id).

@@ -64,8 +64,12 @@ type Phone struct {
 	outbox     []uint64        // sealed, not yet answered with a final echo
 	cursor     uint64
 
+	legacy map[string]sent // legacy (unordered) actions by id
+
 	// Echoes is the last echo status seen per action_seq.
 	Echoes map[uint64]wire.ActionRequest
+	// LegacyEchoes is the last echo seen per legacy action id.
+	LegacyEchoes map[string]wire.ActionRequest
 	// Controls is every hub control read, in order.
 	Controls []wire.Control
 	// Undelivered lists the actions a skip_to gave up on.
@@ -94,6 +98,7 @@ func New(cfg Config) (*Phone, error) {
 		cfg: cfg, sig: sig, kx: kx, id: secure.DeviceID(pub), nonce: nonce, relayID: relayID,
 		zone:       transport.MailboxZone(cfg.HubRelayID, relayID),
 		nextAction: 1, history: map[uint64]sent{}, Echoes: map[uint64]wire.ActionRequest{},
+		legacy: map[string]sent{}, LegacyEchoes: map[string]wire.ActionRequest{},
 	}, nil
 }
 
@@ -122,7 +127,7 @@ func (p *Phone) Device() state.Device {
 		ID: p.id.String(), Name: "Test Phone", Scope: "private", LinkedAt: p.cfg.Clock(),
 		SigningKey: p.sig.Public().(ed25519.PublicKey), AgreementKey: p.kx.PublicKey().Bytes(),
 		LinkNonce: base64.RawURLEncoding.EncodeToString(p.nonce), StartSessionsAllowed: true,
-		Ordered: true, RelayDeviceID: p.relayID,
+		RelayDeviceID: p.relayID, // ordered stays false until the hub reads an action_seq
 	}
 }
 
@@ -216,18 +221,77 @@ func (p *Phone) Sealed(seq uint64) (wireName string, env []byte) {
 
 // SkipTo writes a skip_to(m) control.
 func (p *Phone) SkipTo(m uint64) error {
-	id := newUUID()
-	device, hub := p.id.String(), p.cfg.Hub.String()
-	payload, err := wire.Marshal(wire.Control{ID: id, Kind: wire.ControlSkipTo, DeviceID: &device, HubID: &hub, Seq: &m})
-	if err != nil {
-		return err
+	_, err := p.WriteControl(wire.Control{Kind: wire.ControlSkipTo, Seq: &m})
+	return err
+}
+
+// WriteControl writes c as a phone control record c-<id>: an empty ID gets a
+// new one, nil DeviceID and HubID name this phone and its hub. It returns the
+// id (writing the same id again is a second copy of that control).
+func (p *Phone) WriteControl(c wire.Control) (string, error) {
+	if c.ID == "" {
+		c.ID = newUUID()
 	}
-	name := secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, "c", id)
-	env, err := p.seal(name, secure.InnerFrame{Kind: "control", ID: "c-" + id, Payload: payload})
+	device, hub := p.id.String(), p.cfg.Hub.String()
+	if c.DeviceID == nil {
+		c.DeviceID = &device
+	}
+	if c.HubID == nil {
+		c.HubID = &hub
+	}
+	payload, err := wire.Marshal(c)
 	if err != nil {
-		return err
+		return "", err
+	}
+	_, err = p.WriteFrame("control", "c-"+c.ID, payload)
+	return c.ID, err
+}
+
+// ControlWireName is the wire name of control c-<id>.
+func (p *Phone) ControlWireName(id string) string {
+	return secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, "c", id)
+}
+
+// WriteFrame seals any frame (kind, plain id <prefix>-<rest>, payload) into
+// the mailbox under the id's wire name, if nothing holds that name.
+func (p *Phone) WriteFrame(kind, id string, payload []byte) (string, error) {
+	prefix, rest, _ := strings.Cut(id, "-")
+	name := secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, prefix, rest)
+	env, err := p.seal(name, secure.InnerFrame{Kind: kind, ID: id, Payload: payload})
+	if err != nil {
+		return "", err
 	}
 	_, err = p.cfg.Transport.Write(p.zone, name, env, transport.Expect{Mode: transport.ExpectAbsent})
+	return name, err
+}
+
+// SendLegacy writes a as today's phones do: no action_seq, record
+// action-<id>. It returns the wire name.
+func (p *Phone) SendLegacy(a wire.ActionRequest) (string, error) {
+	a.ActionSeq = nil
+	payload, err := wire.Marshal(a)
+	if err != nil {
+		return "", err
+	}
+	plain := "action-" + a.ID
+	name := secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, "action", a.ID)
+	env, err := p.seal(name, secure.InnerFrame{Kind: "action", ID: plain, Payload: payload})
+	if err != nil {
+		return "", err
+	}
+	p.legacy[a.ID] = sent{plain: plain, wire: name, env: env}
+	_, err = p.cfg.Transport.Write(p.zone, name, env, transport.Expect{Mode: transport.ExpectAbsent})
+	return name, err
+}
+
+// WriteLegacyCopy writes legacy action id's original bytes over whatever
+// holds its name.
+func (p *Phone) WriteLegacyCopy(id string) error {
+	s, ok := p.legacy[id]
+	if !ok {
+		return fmt.Errorf("hubtest: no legacy action %s", id)
+	}
+	_, err := p.cfg.Transport.Write(p.zone, s.wire, s.env, transport.Expect{Mode: transport.ExpectNone})
 	return err
 }
 
@@ -286,14 +350,20 @@ func (p *Phone) Records() ([]string, error) {
 
 func (p *Phone) onEcho(rec transport.Stored, f secure.InnerFrame) error {
 	var a wire.ActionRequest
-	if err := json.Unmarshal(f.Payload, &a); err != nil || a.ActionSeq == nil {
-		return fmt.Errorf("hubtest: unreadable echo: %v", err)
+	if err := json.Unmarshal(f.Payload, &a); err != nil {
+		return fmt.Errorf("hubtest: unreadable echo: %w", err)
 	}
-	seq := *a.ActionSeq
-	p.Echoes[seq] = a
+	if a.ActionSeq == nil {
+		p.LegacyEchoes[a.ID] = a
+	} else {
+		p.Echoes[*a.ActionSeq] = a
+	}
 	switch a.Status {
 	case wire.StatusApplied, wire.StatusFailed, wire.StatusExpired, wire.StatusCancelled:
-		p.outbox = slices.DeleteFunc(p.outbox, func(s uint64) bool { return s == seq })
+		if a.ActionSeq != nil {
+			seq := *a.ActionSeq
+			p.outbox = slices.DeleteFunc(p.outbox, func(s uint64) bool { return s == seq })
+		}
 		_, err := p.cfg.Transport.Delete(context.Background(), p.zone, []transport.DeleteItem{{
 			Name: rec.Name, Expect: transport.Expect{Mode: transport.ExpectSeq, Seq: rec.RecordSeq},
 		}})

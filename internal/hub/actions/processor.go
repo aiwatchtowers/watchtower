@@ -79,6 +79,17 @@ func (b mailbox) ledger(plain string) string {
 	return plain + "@" + strconv.FormatInt(b.linkedAt.UnixMilli(), 10)
 }
 
+// ledgerKey is the relay_processed key of action plain: an ordered action's
+// (seq > 0) is scoped to the link; a legacy action's (seq 0) is its plain
+// action-<uuid> name, unique across links and the key the Swift hub's ledger
+// used, so an adopted ledger still answers its records.
+func (b mailbox) ledgerKey(plain string, seq uint64) string {
+	if seq == 0 {
+		return plain
+	}
+	return b.ledger(plain)
+}
+
 // mailboxes lists the linked phones with a relay device id, oldest link
 // first.
 func (p *Processor) mailboxes() ([]mailbox, error) {

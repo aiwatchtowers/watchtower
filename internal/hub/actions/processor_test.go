@@ -107,7 +107,11 @@ func (w *world) recording(out Outcome) Handler {
 	return func(_ context.Context, r Request) Outcome {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		w.calls = append(w.calls, r.Action.Kind+":"+strconv.FormatUint(*r.Action.ActionSeq, 10))
+		id := r.RecordName // a legacy action has no action_seq
+		if r.Action.ActionSeq != nil {
+			id = strconv.FormatUint(*r.Action.ActionSeq, 10)
+		}
+		w.calls = append(w.calls, r.Action.Kind+":"+id)
 		return out
 	}
 }
