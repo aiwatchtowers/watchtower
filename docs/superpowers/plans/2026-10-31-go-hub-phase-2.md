@@ -8,15 +8,15 @@
 
 **Tech Stack:** Go 1.26 with cgo (SQLCipher over OpenSSL `libcrypto.so.3` on Linux, CommonCrypto on darwin), `golang.org/x/term` (already a direct dependency), `github.com/skip2/go-qrcode` (new, MIT, terminal half-block rendering), `golang.org/x/sys/unix` (`SO_PEERCRED`, `LOCAL_PEERCRED`), systemd user units and `systemd-run --user`, launchd LaunchAgents, GitHub Actions `ubuntu-22.04`/`ubuntu-22.04-arm`/`ubuntu-24.04-arm` runners; Swift only in the blocked Kit interop task.
 
-**Spec:** `docs/superpowers/specs/2026-10-31-go-hub-design.md` — §14 row 2 (this phase), §7 (§7.3 headless hosts), §10 (terminal pairing, `transports`, hostname), §11 (`service install`, Claude Code login on a headless box), §12.1 (never two hubs), §12.2 (0600 identity file on Linux), §12.4 (terminal mockup), §12a (contract), §13 (Linux smoke, vouch branch tests, device gate), §15 (relay change), Decisions. Owner rulings on this plan: ask #827 (see Resolved). Prerequisites: Plans 1a (`docs/superpowers/plans/2026-10-31-go-hub-phase-1.md`) and 1b (`…-phase-1b.md`) merged; this plan builds on their **Produces** blocks only.
+**Spec:** `docs/superpowers/specs/2026-10-31-go-hub-design.md` — §14 row 2 (this phase), §7 (§7.3 headless hosts), §10 (terminal pairing, `transports`, hostname), §11 (`service install`, Claude Code login on a headless box), §12.1 (never two hubs), §12.2 (0600 identity file on Linux), §12.4 (terminal mockup), §12a (contract), §13 (Linux smoke, vouch branch tests, device gate), §15 (relay change), Decisions. Phone ↔ hub protocol: `docs/superpowers/specs/2026-10-31-hub-phone-protocol-design.md` (approved, ask #834; §7.7, §9 for Task 9). Owner rulings on this plan: ask #827 (see Resolved). Prerequisites: Plans 1a (`docs/superpowers/plans/2026-10-31-go-hub-phase-1.md`) and 1b (`…-phase-1b.md`) merged; this plan builds on their **Produces** blocks only.
 
 ## External dependencies (ordered last)
 
 | Blocker | What is missing | Tasks it blocks |
 |---|---|---|
-| **Relay ask #805** (spec §15 p. 1) | `device_kind = HUB` registering unvouched, `vouch_hub`, `HUB_NOT_VOUCHED`, revoke on leaving every slot. Not in the relay's `main` today (its proto has `DEVICE_KIND_PHONE`/`DEVICE_KIND_MAC`, `ATTESTATION_REQUIRED`/`FAILED`, `SLOT_LIMIT` only, and a Mac must attest). Until then the hub registers as `DEVICE_KIND_MAC` with no attestation, which only the local stand (attestation `off`) accepts. | Task 9; through it Tasks 10, 11, 12 |
-| **Relay client spec Phases 2–3 on the phone** (neighbour session, Kit/phone) | Hosted relay client, phone identity, linking from the phone (`LinkPayload` v4 reading, `DeviceHello.relay_device_id`, `vouch_hub` + `promote_pairing`), "This hub needs Relay", "A free phone can't link this hub". | Tasks 11, 12 |
-| **Relay deploy** | The vouch change live on the staging relay (staging accepts development App Attest). | Task 12 |
+| **Relay ask #805** (spec §15 p. 1) | `device_kind = HUB` registering unvouched, `vouch_hub`, `HUB_NOT_VOUCHED`, revoke on leaving every slot. Not in the relay's `main` today (its proto has `DEVICE_KIND_PHONE`/`DEVICE_KIND_MAC`, `ATTESTATION_REQUIRED`/`FAILED`, `SLOT_LIMIT` only, and a Mac must attest). Until then the hub registers as `DEVICE_KIND_MAC` with no attestation, which only the local stand (attestation `off`) accepts. | Task 10; through it Tasks 11, 12, 13 |
+| **Relay client spec Phases 2–3 on the phone** (neighbour session, Kit/phone) | Hosted relay client, phone identity, linking from the phone (`LinkPayload` v4 reading, `DeviceHello.relay_device_id`, `vouch_hub` + `promote_pairing`), "This hub needs Relay", "A free phone can't link this hub". | Tasks 12, 13 |
+| **Relay deploy** | The vouch change live on the staging relay (staging accepts development App Attest). | Task 13 |
 
 Tasks 1–8 need neither: they run against `memfake`, the in-process fake relay and the local stand with attestation `off`, driven by the Go phone emulator `hubtest.Phone`.
 
@@ -28,7 +28,7 @@ The hub builds only what §12a fixes. The neighbour session's phone code must ma
 2. **Pairing:** the phone opens a pairing slot naming the QR's `relay_device_id`; its sealed `DeviceHello` carries its own `relay_device_id` (without it the link completes but that phone can never read a relay-only hub).
 3. **Vouch:** after the owner confirms the SAS in the terminal and the keybox opens, the phone sends `vouch_hub{hub_device_id = QR.relay_device_id, auth_pub = QR.relay_auth_pub}` with its assertion, then `promote_pairing`. A refusal leaves the hub `not_vouched`; the phone shows the server's reason.
 4. **`device_grant`** of a headless hub: `ordered_actions: 1`, `transports: ["relay"]`, `relay_device_id`, `relay_auth_pub`. The phone hides the iCloud choice and, when its own entitlement lapses, shows "This hub needs Relay".
-5. **Recording on a headless hub:** final echo `failed` with reason `not_supported`; the phone keeps the audio (Plan 1b Task 5). Whether a hub can record at all is a simple on/off capability **pending the protocol document** (the separate phone ↔ hub protocol document the owner approves on its own, ask #827): this plan does not decide its field; when the document lands, the hub publishes what it says (a headless hub = off) in a follow-up task.
+5. **Recording switch** (protocol §7.7, §9, approved in ask #834; hub side = Task 9): the heartbeat carries `capabilities.recordings` `"on"|"off"` (absent = on; an unknown value reads as not off; unknown keys ignored); the phone does not offer recording for `"off"`; the upload echo carries an optional `reason` (`not_supported`, `expired`, …) and a `failed` echo keeps the phone's audio. **External:** the Kit decoding — `HeartbeatPayload.capabilities.recordings`, `RecordingUploadPayload.reason`, `ActionReason.not_supported` — and Kit `HubContractFixtureTests` reading the new `heartbeat` section are the neighbour session's (relay client spec). A Linux hub always publishes `off`.
 6. **Grants:** typing and starting sessions stay requested by the phone and allowed on the host (`watchtower hub allow <device> typing|start_sessions`), as Plan 1a Task 11.
 
 ## Global Constraints
@@ -46,12 +46,12 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
 - **Owner verbs on a headless host** (ask #827): they go through `watchtower hub …` (and `watchtower service …`): `service install|uninstall`, `hub pair|allow|unlink|enable|disable|name` are refused under an agent marker (as Plan 1a Task 15) and confirmed by the terminal — the human `hub pair` needs stdin and stdout to be terminals. AGENT-07's Desktop-confirmed gestures stay refused on Linux (no Desktop to confirm them). No sudo is ever run by Watchtower.
 - **Pinned terminal copy** (spec §10; the rest reviewed in the Task 6 mockup): `Confirm code 1234 on your phone? [y/N] `.
 - **FILES-01 on the host:** unit files hold no secret (only `PATH`), the daemon's stdout/stderr under launchd go to `/dev/null` (it writes `watchtower.log` itself), journald sees only what the daemon already logs (ids, counts, classes).
-- **Inner loop:** `go test ./<pkg>`, `make lint-diff`, `bash scripts/tests/<file>.sh` for shell; the Linux-only tests run in the CI Linux jobs, and every rule they pin also has an OS-parameterised test that runs on the dev Mac. The full gate runs once, in Task 12.
+- **Inner loop:** `go test ./<pkg>`, `make lint-diff`, `bash scripts/tests/<file>.sh` for shell; the Linux-only tests run in the CI Linux jobs, and every rule they pin also has an OS-parameterised test that runs on the dev Mac. The full gate runs once, in Task 13.
 
 ## Review Focus
 
 1. **A live hub beside the Swift hub.** A Mac with the app (or with `MobileHub/` from an older app) must never start a live hub, even with `hub enable` written by hand. → Task 3 `TestResolve_DesktopHostNeverStartsALiveHub`, `TestHubCLIRefusesTheLiveDirOnADesktopHost`; Task 5 `TestInstallRefusedOnADesktopHost`.
-2. **A daemon restart that kills the sessions.** `systemctl --user restart watchtower.service` (an update) must leave every agent running. → Task 4 `TestEnsureUnderSystemdUsesATransientUnit`; Task 12 step P14.
+2. **A daemon restart that kills the sessions.** `systemctl --user restart watchtower.service` (an update) must leave every agent running. → Task 4 `TestEnsureUnderSystemdUsesATransientUnit`; Task 13 step P14.
 3. **A shared `/tmp` on Linux.** Another local user pre-creating the host socket or its `.lock` must not capture a phone line or stop the host. → Task 1 `TestSocketDirLinuxRefusesAForeignOrLooseRuntimeDir`, `TestSocketDirLinuxFallbackIsPrivate`.
 4. **A phone name that is a terminal escape.** The phone names itself; the terminal prints it before the SAS prompt. → Task 6 `TestHubPairEscapesThePhoneName`.
 5. **A binary that does not start on the Pi.** A runner image upgrade raising the glibc requirement past bookworm's. → Task 2 `scripts/check-glibc.sh` in the build job.
@@ -83,7 +83,7 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
   ```
 - **Depends on:** none (Phase 1 merged)
 
-- [ ] **Step 1: Failing tests:** `TestSocketDirDarwinUnchanged` (`socketDirFor("darwin", …)` = tempDir; `TestPathsFixture` still passes), `TestSocketDirLinuxUsesRunUserUID` (`/run/user/<uid>` owned, 0700 → chosen), `TestSocketDirLinuxIgnoresXDGRuntimeDir` (`XDG_RUNTIME_DIR` set to another dir → same answer as unset), `TestSocketDirLinuxRefusesAForeignOrLooseRuntimeDir` (`/run/user/<uid>` missing, owned by another uid, mode 0755 or a symlink → `<dataRoot>/.run`; Review Focus 3), `TestAClientWithoutXDGRuntimeDirFindsTheRunningHost` (linux-tagged: a host started with `XDG_RUNTIME_DIR` set, a client process with it unset → `DefaultSocket()` is the same path and `Dial` reaches the host), `TestSocketDirLinuxFallbackIsPrivate` (created 0700; an existing 0755 dir is tightened; a symlink is refused), `TestAppSupportDirOffDarwinIsUnderDataRoot` (`appSupportDirFor("linux", home, root)` = `<root>/.support`, never a path containing `Library/Application Support`; darwin unchanged), `TestDefaultHubDirCannotBeAWorkspace` (`.hub` fails `ValidWorkspaceRe`), `TestControlSocketAcceptsTheSameUIDOnLinux` (linux-tagged: a real connection from this process → accepted), `TestControlSocketRefusesAnotherUID` (seam returns uid+1 → closed, no request read), `TestDesktopHeartbeatRefusedOffDarwin` (`runtime.GOOS` seam = `linux` → exit 1 "there is no Watchtower app on Linux", `hub_meta.desktop_seen` never written — so a headless host keeps answering recordings `not_supported`).
+- [ ] **Step 1: Failing tests:** `TestSocketDirDarwinUnchanged` (`socketDirFor("darwin", …)` = tempDir; `TestPathsFixture` still passes), `TestSocketDirLinuxUsesRunUserUID` (`/run/user/<uid>` owned, 0700 → chosen), `TestSocketDirLinuxIgnoresXDGRuntimeDir` (`XDG_RUNTIME_DIR` set to another dir → same answer as unset), `TestSocketDirLinuxRefusesAForeignOrLooseRuntimeDir` (`/run/user/<uid>` missing, owned by another uid, mode 0755 or a symlink → `<dataRoot>/.run`; Review Focus 3), `TestAClientWithoutXDGRuntimeDirFindsTheRunningHost` (linux-tagged: a host started with `XDG_RUNTIME_DIR` set, a client process with it unset → `DefaultSocket()` is the same path and `Dial` reaches the host), `TestSocketDirLinuxFallbackIsPrivate` (created 0700; an existing 0755 dir is tightened; a symlink is refused), `TestAppSupportDirOffDarwinIsUnderDataRoot` (`appSupportDirFor("linux", home, root)` = `<root>/.support`, never a path containing `Library/Application Support`; darwin unchanged), `TestDefaultHubDirCannotBeAWorkspace` (`.hub` fails `ValidWorkspaceRe`), `TestControlSocketAcceptsTheSameUIDOnLinux` (linux-tagged: a real connection from this process → accepted), `TestControlSocketRefusesAnotherUID` (seam returns uid+1 → closed, no request read), `TestDesktopHeartbeatRefusedOffDarwin` (`runtime.GOOS` seam = `linux` → exit 1 "there is no Watchtower app on Linux", `hub_meta.desktop_seen_at` never written — so `hub recordings on` stays refused on Linux (Task 9)).
 - [ ] **Step 1b: Failure paths, each with its test** (added to Step 1's run):
   - `/run/user/<uid>` missing → `<data root>/.run`: `TestSocketDirLinuxMissingRunUserFallsBack`.
   - `/run/user/<uid>` present but owned by another uid, mode ≠ 0700, or a symlink → fallback, never used (no file created there): `TestSocketDirLinuxRefusesAForeignOrLooseRuntimeDir`.
@@ -163,7 +163,7 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
 
 **Files:**
 - Modify: `internal/sessionhost/ensure.go`, `internal/sessionhost/client_test.go` (switch to the seam)
-- Create: `internal/sessionhost/export_test.go`, `internal/sessionhost/sessionhosttest/launcher.go` (test-only package)
+- Create: `internal/sessionhost/export_test.go` (`SetTestLauncher`), `internal/sessionhost/sessionhosttest/serve.go` (test-only package, `ServeInProcess`)
 - Test: `internal/sessionhost/ensure_test.go`
 
 **Interfaces:**
@@ -173,17 +173,18 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
   type launcher interface{ launch(ctx context.Context, exe, socket string) error } // unexported
   func Ensure(ctx context.Context, socket, exe string) error // signature unchanged; uses productionLauncher(runtime.GOOS, exec.LookPath) unless a test launcher is installed
   func productionLauncher(goos string, lookPath func(string) (string, error)) launcher
-  // test seam only, in export_test.go (package sessionhost) and, for other packages, internal/sessionhost/sessionhosttest:
+  // test seams only. export_test.go (package sessionhost, for the in-package Ensure tests):
   func SetTestLauncher(t testing.TB) (started func() []int) // installs a launcher that starts `<exe> session-host --socket <socket>` as a child in its own process group, killed and waited for in t.Cleanup; restores the production launcher after the test
-  func ServeInProcess(t testing.TB, socket string) // sessionhosttest only: sessionhost.Listen(socket) + sessionhost.NewServer(sessionhost.Options{IdleExit: 0, RingSize: <the command's ring size>}).Serve in a goroutine for the whole test; IdleExit 0 disables the idle exit by construction (server.go: no idle timer when IdleExit <= 0); t.Cleanup cancels Serve, kills every hosted session's process group and waits for them. No production flag or env var is added
-  // production linux: always the transient unit — there is no other way to start the host on Linux (one path per host; no detached fallback). The test launcher is a test seam, not a product mode: it is reachable only from _test.go files and sessionhosttest (a package only tests import; a guard test fails if a non-test file imports it). darwin: the detached (setsid) spawn of Plan 1b (the CLI-only Mac's LaunchAgent sets AbandonProcessGroup)
+  // internal/sessionhost/sessionhosttest (test-only package, used by Task 8):
+  func ServeInProcess(t testing.TB, socket string) // sessionhost.Listen(socket) + sessionhost.NewServer(sessionhost.Options{IdleExit: 0, RingSize: <the command's ring size>}).Serve in a goroutine for the whole test; IdleExit 0 disables the idle exit by construction (server.go: no idle timer when IdleExit <= 0); t.Cleanup cancels Serve, kills every hosted session's process group and waits for them. No production flag or env var is added
+  // production linux: always the transient unit — there is no other way to start the host on Linux (one path per host; no detached fallback). The test launcher is a test seam, not a product mode: it lives only in export_test.go, and sessionhosttest holds only ServeInProcess (a package only tests import; a guard test fails if a non-test file imports it). darwin: the detached (setsid) spawn of Plan 1b (the CLI-only Mac's LaunchAgent sets AbandonProcessGroup)
   var ErrNoUserManager = errors.New("sessionhost: systemd-run --user failed") // wrapped with the class: no_user_bus | not_found | exit_<code>
   const SystemdUnit = "watchtower-session-host"
   ```
   Transient unit argv, exactly: `systemd-run --user --unit=watchtower-session-host --collect --quiet --property=UMask=0077 -- <exe> session-host --socket <socket>`. An exit saying the unit already exists or is active means another `Ensure` won: dial again, not an error. Any other failure (no user bus, `systemd-run` missing, another exit code) returns `ErrNoUserManager` with its class; `session start` then fails with "[Watchtower] the session host is not running: no systemd user manager (<class>)" in the row's `agent_error` and the phone's echo — never a detached spawn. The host still exits 60 s after its last session (PROJ-20), which ends the transient unit.
 - **Depends on:** Task 1
 
-- [ ] **Step 0: Switch the existing tests to the seam.** `git grep -n 'Ensure(' -- '*_test.go'` finds them; today (origin/main): `internal/sessionhost/client_test.go` `TestEnsureStartsAHostWhenNoneAnswers` (spawns a host; switches to `SetTestLauncher`) and `TestEnsureNeverReplacesAV1Host` (spawns nothing; unchanged). Any test of Plan 1b Task 15 (`internal/sessionstart`, `internal/hub`) that reaches `Ensure` when it lands switches the same way, and Task 8's smoke test uses the launcher through `sessionhosttest`. Re-run the grep when this task starts and list the switched tests in the commit message.
+- [ ] **Step 0: Switch the existing tests to the seam.** `git grep -n 'Ensure(' -- '*_test.go'` finds them; today (origin/main): `internal/sessionhost/client_test.go` `TestEnsureStartsAHostWhenNoneAnswers` (spawns a host; switches to `SetTestLauncher`) and `TestEnsureNeverReplacesAV1Host` (spawns nothing; unchanged). Any test of Plan 1b Task 15 (`internal/sessionstart`, `internal/hub`) that reaches `Ensure` when it lands switches the same way. The launcher serves only these in-package `Ensure` tests; Task 8's smoke test does not use it (it runs the host with `sessionhosttest.ServeInProcess`). Re-run the grep when this task starts and list the switched tests in the commit message.
 - [ ] **Step 1: Failing tests:** `TestProductionLauncherOnLinuxIsSystemdRun` (guard: `productionLauncher("linux", …)` is the systemd-run launcher, whatever the environment), `TestSessionhosttestIsImportedOnlyByTests` (guard: `go list -deps` of every non-test package excludes `internal/sessionhost/sessionhosttest`), `TestEnsureUnderSystemdUsesATransientUnit` (Review Focus 2: fake runner records the argv above byte for byte; no child of the test process), `TestEnsureOnLinuxNeverSpawnsDetached` (even without `INVOCATION_ID`: only `systemd-run` is called), `TestEnsureOnDarwinSpawnsDetached` (GOOS seam darwin → detached, `systemd-run` never called), `TestEnsureStartsAHostWhenNoneAnswers` (switched to `SetTestLauncher`; still asserts one host started, a second `Ensure` starts nothing), `TestSystemdRunFailureIsASessionStartError` (table: no user bus, `systemd-run` not on PATH, exit 1 with another message → `ErrNoUserManager` with class `no_user_bus`/`not_found`/`exit_1`; no process spawned; Plan 1b's `session start` marks the row with the pinned reason), `TestEnsureTreatsAnExistingUnitAsRunning`, `TestEnsureNeverReplacesAV1Host` (Plan 1b's, unchanged).
 - [ ] **Step 2:** `go test ./internal/sessionhost -run Ensure` → FAIL.
 - [ ] **Step 3: Implement.**
@@ -331,7 +332,41 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
 - [ ] **Step 4:** `make hub-smoke` → PASS locally (darwin, test mode) and in the CI Linux jobs (live mode, amd64 and arm64).
 - [ ] **Step 5: Commit** `hub: Linux smoke test — daemon, terminal-free pairing, stub session, typed line`.
 
-### Task 9: Vouching end to end — **blocked on relay ask #805**
+### Task 9: Recording switch (protocol §9, §7.7)
+
+**Files** (protocol §7.7's list):
+- Modify: `internal/hub/state/recordings.go` (`desktop_seen_at`, the switch, the one-time carry-over), `internal/hub/actions/handlers/recording.go` (intake by the switch, echo `reason`), `internal/hub/actions/recording.go` (the hold: first-held time, 7-day expiry, fail-all on off), `internal/hub/slices/heartbeat.go` (`capabilities`)
+- Create: `cmd/hub_recordings.go`
+- Modify: `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json` (a `heartbeat` section and upload-echo cases), `internal/hub/wire/contract_test.go` (`TestHubContractFixture` reads them)
+- Test: `internal/hub/state/recordings_test.go`, `internal/hub/actions/handlers/recording_test.go`, `internal/hub/slices/heartbeat_test.go`, `cmd/hub_recordings_test.go`
+
+**Interfaces:**
+- Consumes: Plan 1b Task 5 (`Store.DesktopHost`, `hub_meta.desktop_at`/`desktop_seen`, `recording_upload` intake, `hub desktop heartbeat`), Plan 1a Task 13 `slices.HeartbeatSource`, Plan 1a Task 14/15 control socket and owner-verb refusal. Protocol: `docs/superpowers/specs/2026-10-31-hub-phone-protocol-design.md` §7.7, §9 (approved, ask #834).
+- Produces:
+  ```go
+  package state
+  const MetaDesktopSeenAt, MetaRecordings = "desktop_seen_at", "recordings" // hub_meta keys: a timestamp; "on" | "off"
+  func (s *Store) DesktopSeenAt() (time.Time, bool, error) // the first Desktop heartbeat; never cleared automatically
+  func (s *Store) Recordings() (on bool, stored bool, err error) // stored value wins; else on iff DesktopSeenAt is set
+  func (s *Store) SetRecordings(on bool) error              // refuses on=true with ErrNoTranscriber when DesktopSeenAt is unset
+  var ErrNoTranscriber = errors.New("this host has no transcriber")
+  const HeldUploadMaxAge = 7 * 24 * time.Hour
+  ```
+  - `hub_meta` is key-value: no migration. On `Open`, a sidecar with `desktop_seen = "1"` and no `desktop_seen_at` gets `desktop_seen_at = desktop_at` once (one transaction); the first heartbeat on a fresh sidecar writes it.
+  - Heartbeat payload gains `"capabilities": {"recordings": "on"|"off"}`; a switch change restamps the heartbeat at once.
+  - Intake: switch off → final `failed`, `reason: "not_supported"`, `error_message` "This host can't transcribe recordings. Your recording stays on your phone.", nothing written; switch on → Desktop fresh = `received` (as Plan 1b), stale = `held`. A held upload's first-held time is kept (an id and a timestamp, in the hold's ledger; no content); 7 days after it → final `failed`, `reason: "expired"`. Turning the switch off fails every held upload with `not_supported`. The phone keeps its audio on every `failed`.
+  - Upload echo gains the optional `reason` key (`not_supported`, `expired`, …); `received` carries none.
+  - CLI (pinned keys): `hub recordings on|off [--json]` → `{"recordings","stored"}`; `hub status --json` gains `"recordings"` (additive). Owner verb: refused under an agent marker; `on` on a host with no `desktop_seen_at` → exit 1 "this host has no transcriber" (so a Linux host never publishes `on`).
+- **Depends on:** none (Phase 1 merged)
+
+- [ ] **Step 1: Fixture cases** in `hub_contract_cases.json` `heartbeat`: `capabilities_on`, `capabilities_off`, `capabilities_absent` (expect: reads as on), `capabilities_unknown_value` (`"recordings": "partial"` → not off), `unknown_capability_key` (ignored); `upload_echo`: `failed_not_supported` (with `reason`), `failed_expired`, `received` (no `reason`), `failed_legacy_no_reason`. The Kit side that decodes them is the neighbour's (Phone contract point 5).
+- [ ] **Step 2: Failing tests:** `TestHubContractFixture` (heartbeat and upload-echo cases decode to `expect`; Go encodes `capabilities` and `reason` byte-equal to the `on`/`off`/`failed_not_supported` cases), `TestRecordingsDefaultIsOnIfDesktopWasEverSeen`, `TestRecordingsDefaultIsOffWithoutDesktop`, `TestStoredRecordingsValueWins`, `TestDesktopSeenAtSurvivesARestart` (protocol §9's required test: a heartbeat, close, reopen with no new heartbeat → default still `on`), `TestDesktopSeenCarriedOverOnce` (`desktop_seen = "1"`, `desktop_at = T` → `desktop_seen_at = T`; a second open changes nothing), `TestDesktopSeenAtIsATimestamp` (Plan 1b Task 16's column/key allowlist), `TestRecordingsOnRefusedWithoutATranscriber` (CLI exit 1, the message, nothing stored), `TestHubRecordingsRefusedUnderAnAgentMarker`, `TestHubRecordingsJSONKeys`, `TestHeartbeatCarriesTheRecordingsCapability` (on/off; a switch change restamps it in the next cycle), `TestSwitchOffFailsUploadsNotSupported` (echo `failed`, `reason: "not_supported"`, no file under the recordings dir), `TestHeldUploadExpiresAfter7Days` (fake clock: 6 d 23 h still `held`, 7 d → `failed`/`expired`), `TestTurningOffFailsEveryHeldUpload`, `TestFILES01_RecordingSwitchLogsNoNames` (`logcanary`).
+- [ ] **Step 3:** `go test ./internal/hub/... ./cmd -run 'TestHubRecordings|TestHubContractFixture'` → FAIL.
+- [ ] **Step 4: Implement.** The `hub recordings` write goes over the control socket to a running hub, else under the hub lock (Plan 1a Task 15's rule).
+- [ ] **Step 5:** → PASS; `make kit-test FILTER=HubContractFixtureTests` still passes with today's Kit (unknown keys ignored); `make lint-diff`.
+- [ ] **Step 6: Commit** `hub: recording switch — capabilities.recordings, desktop_seen_at, upload echo reason, 7-day held expiry`.
+
+### Task 10: Vouching end to end — **blocked on relay ask #805**
 
 **Files:**
 - Re-copy: `internal/hub/transport/relay/{client,relayv1,VERSION}` with `make relay-go RELAY=../relay REF=<vouch commit>` (copy committed alone first, as Plan 1a Task 8)
@@ -355,7 +390,7 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
 - [ ] **Step 4:** `go test ./internal/hub/...`, `make relay-interop RELAY=../relay`, `make hub-smoke` → PASS; `make lint-diff`.
 - [ ] **Step 5: Commit** `hub: vouched admission on the relay (unvouched registration, not_vouched / vouch_revoked)`.
 
-### Task 10: Guide page, privacy, CLI reference, feature note
+### Task 11: Guide page, privacy, CLI reference, feature note
 
 **Files:**
 - Create: `docs/guide/features/headless-host.md` (feature template, < 8 KB without its card)
@@ -364,14 +399,14 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
 - Modify: `docs/inventory/workbench.md` (PROJ-20 changelog line: "2026-10-31 (Go hub phase 2, ask #827): amended for Linux only — the `session-host` socket is in `/run/user/<uid>` (fallback `<data root>/.run`, 0700) instead of `/tmp`, and the daemon starts the host as its own transient systemd user unit so a daemon restart keeps sessions; darwin unchanged, no guard relaxed."), `docs/inventory/agent-actions.md` (AGENT-07 changelog line, ask #827: on a headless host the owner verbs are `watchtower hub …`/`service …`, refused under every marker and confirmed by the terminal; the Desktop-confirmed gestures stay refused on Linux)
 
 **Interfaces:** none new.
-- **Depends on:** Task 5, Task 6, Task 7, Task 9 (WRITING.md rule 7: the page ships only once a headless host works against the real relay)
+- **Depends on:** Task 5, Task 6, Task 7, Task 10 (WRITING.md rule 7: the page ships only once a headless host works against the real relay)
 
 - [ ] **Step 1: Write the page** (WRITING.md rules; every string checked against the code): *Why use it* (workbenches on a box with no screen, driven from the phone; one scenario: a Pi on a shelf runs a Claude Code session while you are out); *How it works* (outbound only, nothing listens; the phone's subscription admits the host; relay only, no iCloud; what a headless host does not do: recordings, the clipboard fallback, Slack/Gmail/Jira pipelines are off); *Using it* (Linux: download the tarball for your architecture, check its `.sha256`, put `watchtower` on your `PATH`; needs 64-bit, glibc 2.35+, `libssl3`, `git`; install Claude Code or Codex and sign in — on a box with no browser `claude` prints a URL to open on another device; `watchtower service install`; `sudo loginctl enable-linger <user>` when asked; `watchtower config set hub.relay_origin …` only if told to; `watchtower workbench create --folder …`; `watchtower integrate claude-code`; `watchtower hub pair`; `watchtower hub allow …`; a Mac without the app: the CLI zip and the same steps with a LaunchAgent); *When it's empty or wrong* (`watchtower hub status` reasons → fixes: `needs_relay`, `not_vouched`, `vouch_revoked`, `desktop_host`, `no_relay_origin`, `disabled`; "[Watchtower] the session host is not running"; the QR is cut → widen the window or open the link); *Related*. One learn card: `id: headless-host-run`, `title: Run workbenches on a Linux box`, `area: iphone`, `level: power`, `kind: feature`, `since: next`.
 - [ ] **Step 2: Privacy section:** the hub identity is a 0600 file under `~/.local/share/watchtower/.hub` (no Keychain or Secure Enclave on a headless host — spec §12.2); no unified-log audit line off macOS (READ-02); no organization policy off macOS; everything that leaves the host is end-to-end encrypted as on the Mac.
 - [ ] **Step 3:** `go test ./docs/guide/ ./internal/kb/ ./internal/chat/ ./internal/learn/` → FAIL on the golden; regenerate with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update`; → PASS.
 - [ ] **Step 4: Commit** `docs: headless host guide page, privacy and CLI reference, go-hub phase 2 note`.
 
-### Task 11: Kit phone ↔ Go headless hub interop — **blocked on relay client spec Phase 3 (phone) and Task 9**
+### Task 12: Kit phone ↔ Go headless hub interop — **blocked on relay client spec Phase 3 (phone) and Task 10**
 
 **Files:**
 - Modify: `scripts/relay-interop.sh` (`KIT=1`: starts a live headless hub against the stand, then runs the Kit suite)
@@ -380,18 +415,18 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
 **Interfaces:**
 - Consumes: the neighbour session's `HostedRelayTransport` and phone link flow; the hub side's `hub pair --json --stream`.
 - Produces: the script writes the pairing URL to `$WT_HUB_INTEROP_DIR/pair.url`, waits for the Kit test's code in `pair.sas`, and answers `{"confirm":true}` only when it equals the hub's `sas.code`.
-- **Depends on:** Task 8, Task 9, relay client spec Phase 3
+- **Depends on:** Task 8, Task 10, relay client spec Phase 3
 
 - [ ] **Step 1: Failing Kit tests:** `testKitPhoneLinksAHeadlessHub` (Kit parses the relay-only v4 QR, hello with its `relay_device_id`, SAS equal, vouch, promote, `device_grant.transports == ["relay"]`), `testKitPhoneOpensEveryRecordKindTheGoHubSealed` (spec §13 E2E (3)), `testGoHubAppliesKitActionsInOrder` (a1..a3 incl. a `session_input` to a stub session → `applied`), `testRecordingOnAHeadlessHubIsNotSupported`.
 - [ ] **Step 2:** `make relay-interop RELAY=../relay KIT=1` → FAIL; implement the script part; → PASS; `make lint-swift`.
 - [ ] **Step 3: Commit** `hub: Kit phone interop with a headless hub over the relay stand`.
 
-### Task 12: Phase 2 gate — a real Pi and a real CLI-only Mac from a real phone — **blocked on the relay deploy and the phone**
+### Task 13: Phase 2 gate — a real Pi and a real CLI-only Mac from a real phone — **blocked on the relay deploy and the phone**
 
 **Files:** none (results in the PR body, redacted: no hostnames, ids, accounts or origins).
 
 **Interfaces:** none.
-- **Depends on:** Tasks 1–11; the vouch change on the staging relay; a phone development build with relay client Phases 2–3.
+- **Depends on:** Tasks 1–12; the vouch change on the staging relay; a phone development build with relay client Phases 2–3.
 
 - [ ] **Step 1: Automated gate:** `make test`, `make lint-all`, `make test-scripts`, `make hub-smoke`, `make relay-interop RELAY=../relay KIT=1`; CI green including `go-linux-arm64`; a `linux-build` run with both tarballs.
 - [ ] **Step 2: Pi** (Raspberry Pi 4 or 5, Raspberry Pi OS Lite 64-bit bookworm, SSH, user `<user>`). Expected result after each step in brackets.
@@ -426,10 +461,11 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
 ## Resolved in ask #827
 
 - **CLI-only Mac** stays a headless host: the same headless build for darwin, a LaunchAgent, the 0600 identity file in phase 2 (phase 3 may move it into Keychain under spec §12.2), a darwin CLI zip next to the Linux tarballs. The live hub refuses on a Mac with the Desktop app bundle or `MobileHub/` — one check at start, reason `desktop_host`, no stop or hand-over later (Task 3; spec §7.3 and Decisions amended).
-- **PROJ-20 amended, Linux only:** socket in `/run/user/<uid>` (fallback `<data root>/.run`), `session-host` as its own transient systemd unit (Tasks 1, 4; changelog in Task 10).
-- **Owner verbs on a headless host** go through `watchtower hub …`, confirmed by the terminal (Tasks 3, 5, 6; changelog in Task 10).
+- **PROJ-20 amended, Linux only:** socket in `/run/user/<uid>` (fallback `<data root>/.run`), `session-host` as its own transient systemd unit (Tasks 1, 4; changelog in Task 11).
+- **Owner verbs on a headless host** go through `watchtower hub …`, confirmed by the terminal (Tasks 3, 5, 6; changelog in Task 11).
 - **Decided by agent:** the live hub dir `<data root>/.hub` and `config.AppSupportDir()` = `<data root>/.support` off darwin (Tasks 1, 3); Linux tarballs and the CLI zip attached to releases only from the launch release, supported Linux = 64-bit, glibc ≥ 2.35, `libssl3` (Task 2).
-- **Recording capability: pending the protocol document.** The owner wants it as a simple on/off and approves the phone ↔ hub protocol in a separate document; this plan decides no field, and a headless hub keeps answering `failed(not_supported)` until that document lands.
+- **Recording capability:** approved in the phone ↔ hub protocol (ask #834, `docs/superpowers/specs/2026-10-31-hub-phone-protocol-design.md` §7.7, §9) and built here as Task 9.
+- **Linux hosts need a systemd user manager; no detached session-host** (spec Decisions, ask #829; the owner saw it across asks #830/#835 without objection). **Glibc floor 2.35 / `libssl3` / 64-bit, Linux tarballs from the launch release:** decided by agent (Global Constraints, Task 2).
 
 ## Known limits
 
@@ -440,15 +476,15 @@ All Global Constraints of Plans 1a and 1b hold (byte compatibility, zone bytes, 
 ## Later (not in this plan)
 
 - A thin management CLI for a headless Watchtower (owner, ask #827); until then the owner manages a headless host with `watchtower hub …`, `watchtower service …` and the existing commands.
-- Publishing the recording capability once the protocol document is approved.
 
 ## Self-review (done while writing)
 
-- **Spec coverage:** §14 row 2 — linux/arm64 + amd64 builds (Task 2), CLI-only Mac (Tasks 2, 3, 5, 12 M1–M4), systemd units (Tasks 4, 5), headless pairing (Task 6), vouching end to end (Task 9, interop 11), relay-only rules (Task 7), guide page (Task 10), gate on a real Pi from a real phone (Task 12). §7.3 — relay-only, needs Relay, free phone (contract point 1 + Task 6 terminal line + Task 3 no shares), CLI-only Mac rule: one start check, `desktop_host` (Task 3), host differences (Global Constraints, Task 1 audit). §10 — terminal QR, SAS prompt, `transports`, hostname (Tasks 3, 6). §11 — `service install`, Claude login on a headless box (Tasks 5, 10, 12 P3). §12.1 — never two hubs (Task 3). §12.2 — 0600 file on Linux (Task 3, privacy page Task 10). §12.4 — terminal mockup (Task 6). §13 — Linux arm64 build + smoke (Tasks 2, 8), vouch branches (Task 9), relay-only on `entitlement_expired` (Task 7), free phone for a headless host (Task 6 `TestHeadlessLinkPayloadHasNoShares`; the refusal itself is the phone's), device gate (Task 12). Out of scope: CloudKit bridge, adoption, Keychain store, Desktop rewiring (phase 3); pushes (phase 4).
-- **Phase 1 hand-offs fixed here:** Plan 1b Task 17's local `GOOS=linux GOARCH=arm64 go build ./...` cannot build (cgo, verified: `internal/sqlcipher/wt_nocgo.go`); Task 2 replaces it with the native arm64 CI job. Plan 1a Task 12's deferral of the vouch tests lands in Task 9.
-- **Types across tasks:** `hostkind.Detect`/`Kind` (3 → 5, 12), `hub.Resolve`/`Dir`/`Mode`/`DefaultDir` (1, 3 → 5, 6, 8), `sessionhost.Ensure` + test seam `sessionhosttest.SetTestLauncher` (4 → 8), `service.Installer` (5 → 8), `termqr.Render` (6), `Admission`/`Publisher.Pause`/`Processor.SetPaused` (7 → 8, 9), `relaytest.Server` (8 → 9), `transport.ErrNotVouched`, `devices.relay_admitted_at` (9).
+- **Spec coverage:** protocol §7.7/§9 recording switch (Task 9); §14 row 2 — linux/arm64 + amd64 builds (Task 2), CLI-only Mac (Tasks 2, 3, 5, 13 M1–M4), systemd units (Tasks 4, 5), headless pairing (Task 6), vouching end to end (Task 10, interop 12), relay-only rules (Task 7), guide page (Task 11), gate on a real Pi from a real phone (Task 13). §7.3 — relay-only, needs Relay, free phone (contract point 1 + Task 6 terminal line + Task 3 no shares), CLI-only Mac rule: one start check, `desktop_host` (Task 3), host differences (Global Constraints, Task 1 audit). §10 — terminal QR, SAS prompt, `transports`, hostname (Tasks 3, 6). §11 — `service install`, Claude login on a headless box (Tasks 5, 11, 13 P3). §12.1 — never two hubs (Task 3). §12.2 — 0600 file on Linux (Task 3, privacy page Task 11). §12.4 — terminal mockup (Task 6). §13 — Linux arm64 build + smoke (Tasks 2, 8), vouch branches (Task 10), relay-only on `entitlement_expired` (Task 7), free phone for a headless host (Task 6 `TestHeadlessLinkPayloadHasNoShares`; the refusal itself is the phone's), device gate (Task 13). Out of scope: CloudKit bridge, adoption, Keychain store, Desktop rewiring (phase 3); pushes (phase 4).
+- **Phase 1 hand-offs fixed here:** Plan 1b Task 17's local `GOOS=linux GOARCH=arm64 go build ./...` cannot build (cgo, verified: `internal/sqlcipher/wt_nocgo.go`); Task 2 replaces it with the native arm64 CI job. Plan 1a Task 12's deferral of the vouch tests lands in Task 10.
+- **Types across tasks:** `hostkind.Detect`/`Kind` (3 → 5, 12), `hub.Resolve`/`Dir`/`Mode`/`DefaultDir` (1, 3 → 5, 6, 8), `sessionhost.Ensure` + in-package seam `SetTestLauncher` (4) and `sessionhosttest.ServeInProcess` (4 → 8), `service.Installer` (5 → 8), `termqr.Render` (6), `Admission`/`Publisher.Pause`/`Processor.SetPaused` (7 → 8, 10), `relaytest.Server` (8 → 10), `state.Recordings`/`SetRecordings`/`DesktopSeenAt`, `HeldUploadMaxAge` (9), `transport.ErrNotVouched`, `devices.relay_admitted_at` (10).
 - **Ask #828 review round re-checked:** the socket dir has one signature (`socketDirFor(goos, tempDir, dataRoot, uid, stat)`, no env) used by host and clients; `productionLauncher(goos, lookPath)` has no detached path on Linux and both `sessionhost.ErrNoUserManager` (runtime) and `service.ErrNoUserManager` (install) have a test; the relay origin precedence (env > config > ldflags default > off) is pinned by one table test and the build script test; the smoke test pre-starts its host, so it needs no user manager; darwin/amd64 is gone from every task (the CLI zip was already arm64 only).
 - **Ask #830/#835 re-checked:** the smoke test no longer depends on timing: its host runs in-process with `IdleExit: 0` for the whole test (no held-connection claim), an assertion checks it answers before `session_start`, and a guard pins the production 60 s; Task 1's failure paths each name a test.
-- **Ask #829 review round re-checked:** `Ensure` keeps its signature; the only non-production launcher lives in test files and the test-only `sessionhosttest`, with two guard tests; both build scripts carry the relay-origin ldflag and refuse an empty one on a release build, each with a script test; the relay-origin rule reads the same in Global Constraints and Task 3.
+- **Ask #829 review round re-checked:** `Ensure` keeps its signature; the only non-production launcher lives in `export_test.go` for the in-package `Ensure` tests, `sessionhosttest` holds only `ServeInProcess` for the smoke test, with two guard tests; both build scripts carry the relay-origin ldflag and refuse an empty one on a release build, each with a script test; the relay-origin rule reads the same in Global Constraints and Task 3.
 - **Ask #827 revision re-checked:** no task depends on a runtime host re-check (removed from Task 3; Review Focus 1 now points at start-time tests only); the recording field appears in no task or contract point; every former open item is either a Resolved line or a Later line.
-- **Dependency waves:** 1 — Tasks 1, 2; 2 — Tasks 3, 4; 3 — Tasks 5, 6, 7; 4 — Task 8; then external — Task 9 (relay), Task 10, Task 11 (phone), Task 12 (relay deploy + phone).
+- **Ask #836 re-checked:** Task 9 depends only on Phase 1 and covers every hub-side item of protocol §7.7/§9 with a test (verb, default, restart, carry-over, capability, echo `reason`, 7-day expiry, fail-on-off, fixture); its Kit counterpart is an external contract point; no smoke-test reference to `SetTestLauncher` remains.
+- **Dependency waves:** 1 — Tasks 1, 2, 9; 2 — Tasks 3, 4; 3 — Tasks 5, 6, 7; 4 — Task 8; then external — Task 10 (relay), Task 11, Task 12 (phone), Task 13 (relay deploy + phone).
