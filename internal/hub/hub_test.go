@@ -571,6 +571,54 @@ func TestControlSocketIsPrivateAndChecksPeer(t *testing.T) {
 	r.waitState(StateRunning, "")
 }
 
+// TestControlSocketClosesWhenPeerCredentialsFail: a connection whose peer
+// credentials cannot be read is closed before any request is read, never
+// trusted.
+func TestControlSocketClosesWhenPeerCredentialsFail(t *testing.T) {
+	policytest.Set(t, nil)
+	dir := shortDir(t)
+	r := newRig(t, dir)
+	var failing atomic.Bool
+	failing.Store(true)
+	o := r.options()
+	o.peerUID = func(c *net.UnixConn) (int, error) {
+		if failing.Load() {
+			return os.Getuid(), errors.New("peer credentials unreadable")
+		}
+		return socketPeerUID(c)
+	}
+	r.start(o)
+	r.waitState(StateOff, ReasonDisabled)
+	eventually(t, 5*time.Second, "the control socket", func() bool {
+		_, err := os.Stat(filepath.Join(dir, SocketName))
+		return err == nil
+	})
+
+	c, err := Dial(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := c.Do(ControlRequest{Op: OpEnable}); err == nil {
+		t.Fatalf("a client with unreadable credentials was answered: %+v", a)
+	}
+	_ = c.Close()
+	time.Sleep(200 * time.Millisecond)
+	if s := r.rec.last(); s.State != StateOff || s.Reason != ReasonDisabled {
+		t.Fatalf("an untrusted client's request was applied: %+v", s)
+	}
+
+	failing.Store(false)
+	c, err = Dial(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if a, err := c.Do(ControlRequest{Op: OpEnable}); err != nil || !a.OK {
+		t.Fatalf("enable once the credentials read: %+v, %v", a, err)
+	}
+	r.waitState(StateRunning, "")
+}
+
 // targetSource is a stand-in for a Plan 1b slice outside workbench_only.
 type targetSource struct{}
 

@@ -41,21 +41,28 @@ var _ handlers.SessionPort = (*Port)(nil)
 // OpenPort makes sure a host answers (starting one when none does) and
 // returns the port on a fresh delivery connection; Close it with the hub.
 func OpenPort(ctx context.Context, d Deps) (*Port, error) {
-	c, err := dialHost(ctx, d.socket(), d.CLIPath)
+	socket, err := d.socket()
+	if err != nil {
+		return nil, err
+	}
+	c, err := dialHost(ctx, socket, d.CLIPath)
 	if err != nil {
 		return nil, err
 	}
 	return newPort(d, c), nil
 }
 
+// newPort resolves the socket once; a socket that cannot be resolved (an
+// unusable Linux socket folder) is every slot's answer.
 func newPort(d Deps, client *sessionhost.Client) *Port {
 	if d.LaunchWatch == 0 {
 		d.LaunchWatch = DefaultLaunchWatch
 	}
+	socket, err := d.socket()
 	p := &Port{d: d}
-	p.deliver = slot{socket: d.socket(), exe: d.CLIPath, c: client}
-	p.control = slot{socket: d.socket(), exe: d.CLIPath}
-	p.list = slot{socket: d.socket(), dialOnly: true}
+	p.deliver = slot{socket: socket, socketErr: err, exe: d.CLIPath, c: client}
+	p.control = slot{socket: socket, socketErr: err, exe: d.CLIPath}
+	p.list = slot{socket: socket, socketErr: err, dialOnly: true}
 	return p
 }
 
@@ -236,6 +243,8 @@ func (p *Port) find(ctx context.Context, sessionID int64) (sessionhost.SessionIn
 // slot is one lazily dialled host connection.
 type slot struct {
 	socket, exe string
+	// socketErr is why the socket could not be resolved; get returns it.
+	socketErr error
 	// dialOnly dials a host that runs and never starts one.
 	dialOnly bool
 
@@ -255,6 +264,9 @@ func (s *slot) get(ctx context.Context) (*sessionhost.Client, error) {
 	}
 	if s.c != nil {
 		return s.c, nil
+	}
+	if s.socketErr != nil {
+		return nil, s.socketErr
 	}
 	var c *sessionhost.Client
 	var err error

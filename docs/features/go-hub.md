@@ -120,6 +120,30 @@ and PROJ-21 list the Go guards (`docs/inventory/workbench.md`).
 - Recording jobs are queued for Desktop (`hub recording claim|finish`); a host that never had a Desktop answers an
   upload `not_supported`.
 
+## Linux behaviour
+
+Every darwin-only piece on the daemon path and what a Linux host does instead (phase 2, Task 1 audit; each line
+checked against the code named).
+
+| Piece | darwin | Linux |
+|---|---|---|
+| `internal/sessionhost` socket (`DefaultSocket` → `socketDirFor`) | the user's temp folder (unchanged, `testdata/paths.json`) | `/run/user/<uid>` when it is a real folder owned by the uid with mode 0700, else `<data root>/.run` (created 0700, tightened when looser; a symlink, a file or another owner → `run_dir_unusable`); computed from the uid alone, no `XDG_RUNTIME_DIR`, never `/tmp` |
+| `config.AppSupportDir` (`appSupportDirFor`) | `~/Library/Application Support/Watchtower` | `<data root>/.support`; `RecordingsDir`'s default follows (`<data root>/.support/recordings`, where a Linux host keeps none) |
+| Hub control socket peer check (`peer_darwin.go` / `peer_linux.go`) | `LOCAL_PEERCRED` | `SO_PEERCRED`; a failed read closes the connection before any request (`TestControlSocketClosesWhenPeerCredentialsFail`); other OSes refuse every client (`peer_other.go`) |
+| Live hub dir (`hub.DefaultDir`) | `<data root>/.hub` | the same; `.hub` is never a workspace name (`ValidWorkspaceRe`) |
+| `internal/policy` (`reader_other.go`) | MDM managed preferences | no reader: no profile, no restriction (POLICY-01) |
+| `internal/backupexclude` (`backupexclude_other.go`) | Time Machine exclusion attribute | no-op |
+| `internal/auditlog` (`oslog_other.go`) | unified-log line | no unified-log line (READ-02: a no-op off darwin) |
+| `internal/ownerconfirm` (`peer_other.go`) | the Desktop confirms owner gestures | no Desktop: every peer is refused, so AGENT-07 confirmation gestures are refused |
+| `internal/sessioncleanup` birth time (`birth_other.go`) | the worktree admin dir's birth time | unknown → a worktree not owned by record is kept |
+| `internal/workbenchgit` `.worktreeinclude` (`clone_other.go`) | `clonefile` | plain copy |
+| `internal/hub/platform` (`away_linux.go`, `awake_linux.go`) | console lock, input idle and display sleep; keep-awake | always away, no keep-awake (`Hold` does nothing) |
+| `internal/chat` sandbox (`NewChildSandbox`) | `sandbox-exec` profile | refused ("needs macOS"), so claude.ai mode stays off |
+| `internal/planusage` (`DefaultCredentialSource`) | Keychain, then `~/.claude/.credentials.json` | the credentials file only, no Keychain |
+| `internal/daemon` process identity (`procident_other.go`) | `kern.proc.pid` sysctl start time | `ps -o lstart=` under `LC_ALL=C` |
+| Phone line without paste mode (`session_input.go`) | `.copied` to the clipboard while the Desktop's heartbeat is fresh | no Desktop heartbeat: `failed(cannot_type)` |
+| `internal/sqlcipher` crypto (`wt_cgo.go`) | CommonCrypto | OpenSSL `libcrypto` (dynamic) |
+
 ## Measured cost
 
 An idle hub (one linked phone, a file database, production cadences: 1 s idle `data_version` poll, 5 s state-lane

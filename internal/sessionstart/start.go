@@ -104,9 +104,11 @@ func (d Deps) now() time.Time {
 	return time.Now()
 }
 
-func (d Deps) socket() string {
+// socket is d.Socket, else sessionhost.DefaultSocket (an unusable Linux
+// socket folder is its ErrRunDirUnusable error).
+func (d Deps) socket() (string, error) {
 	if d.Socket != "" {
-		return d.Socket
+		return d.Socket, nil
 	}
 	return sessionhost.DefaultSocket()
 }
@@ -119,7 +121,11 @@ func (d Deps) lease(ctx context.Context) (*sessionhost.Client, func(error), erro
 	if d.host != nil {
 		return d.host(ctx)
 	}
-	c, err := dialHost(ctx, d.socket(), d.CLIPath)
+	socket, err := d.socket()
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := dialHost(ctx, socket, d.CLIPath)
 	if err != nil {
 		return nil, nil, err
 	}

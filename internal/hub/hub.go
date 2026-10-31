@@ -587,6 +587,7 @@ func errClass(err error) string {
 		{transport.ErrTokenExpired, "token_expired"}, {transport.ErrUnsupportedVersion, "unsupported_version"},
 		{identity.ErrSealedKeyUnreadable, "sealed_key_unreadable"}, {identity.ErrInsecureMode, "insecure_mode"},
 		{identity.ErrKeysUnavailable, "keys_unavailable"}, {state.ErrNoDevice, "no_device"},
+		{sessionhost.ErrRunDirUnusable, "run_dir_unusable"},
 	} {
 		if errors.Is(err, c.err) {
 			return c.class
