@@ -125,6 +125,30 @@ and PROJ-21 list the Go guards (`docs/inventory/workbench.md`).
   heartbeat's `capabilities.recordings`; off answers an upload the final `failed`/`not_supported`, a held upload gets
   `failed`/`expired` 7 days after its first hold, and the upload echo carries `reason` on a failure (protocol §7.7, §9).
 
+## Linux behaviour
+
+Every darwin-only piece on the daemon path and what a Linux host does instead (phase 2, Task 1 audit; each line
+checked against the code named).
+
+| Piece | darwin | Linux |
+|---|---|---|
+| `internal/sessionhost` socket (`DefaultSocket` → `socketDirFor`) | the user's temp folder (unchanged, `testdata/paths.json`) | `/run/user/<uid>` when it is a real folder owned by the uid with mode 0700, else `<data root>/.run` (created 0700, checked and tightened through one `O_NOFOLLOW` descriptor; a symlink, a file, another owner or a socket path too long for `sockaddr_un` → `run_dir_unusable`; a data root that cannot be determined fails before `/run/user` is tried); computed from the uid alone, no `XDG_RUNTIME_DIR`, never `/tmp` |
+| `config.AppSupportDir` (`appSupportDirFor`) | `~/Library/Application Support/Watchtower` | `<data root>/.support`; `RecordingsDir`'s default follows (`<data root>/.support/recordings`, where a Linux host keeps none) |
+| Hub control socket peer check (`peer_darwin.go` / `peer_linux.go`) | `LOCAL_PEERCRED` | `SO_PEERCRED`; a failed read closes the connection before any request (`TestControlSocketClosesWhenPeerCredentialsFail`); other OSes refuse every client (`peer_other.go`) |
+| Live hub dir (`hub.DefaultDir`) | `<data root>/.hub` | the same; `.hub` is never a workspace name (`ValidWorkspaceRe`) |
+| `internal/policy` (`reader_other.go`) | MDM managed preferences | no reader: no profile, no restriction (POLICY-01) |
+| `internal/backupexclude` (`backupexclude_other.go`) | Time Machine exclusion attribute | no-op |
+| `internal/auditlog` (`oslog_other.go`) | unified-log line | no unified-log line (READ-02: a no-op off darwin) |
+| `internal/ownerconfirm` (`peer_other.go`) | the Desktop confirms owner gestures | no Desktop: every peer is refused, so AGENT-07 confirmation gestures are refused |
+| `internal/sessioncleanup` birth time (`birth_other.go`) | the worktree admin dir's birth time | unknown → a worktree not owned by record is kept |
+| `internal/workbenchgit` `.worktreeinclude` (`clone_other.go`) | `clonefile` | plain copy |
+| `internal/hub/platform` (`away_linux.go`, `awake_linux.go`) | console lock, input idle and display sleep; keep-awake | always away, no keep-awake (`Hold` does nothing) |
+| `internal/chat` sandbox (`NewChildSandbox`) | `sandbox-exec` profile | refused ("needs macOS"), so claude.ai mode stays off |
+| `internal/planusage` (`DefaultCredentialSource`) | Keychain, then `~/.claude/.credentials.json` | the credentials file only, no Keychain |
+| `internal/daemon` process identity (`procident_other.go`) | `kern.proc.pid` sysctl start time | `ps -o lstart=` under `LC_ALL=C` |
+| Phone line or ask answer the session cannot take (`internal/hub/actions/handlers`: `deps.go` `Clipboard`/`DesktopHost`, `session_input.go`, `ask.go`) | a line: copied to the clipboard (pbcopy) while the Desktop heartbeat is fresh, echo `failed(cannot_type)` saying so; an ask answer: saved, `failed(cannot_type)` | no Desktop heartbeat, so no clipboard: `failed(cannot_type)` with `CannotTypeMessage` (an ask answer still saved) |
+| `internal/sqlcipher` crypto (`wt_cgo.go`) | CommonCrypto | OpenSSL `libcrypto` (dynamic) |
+
 ## Measured cost
 
 An idle hub (one linked phone, a file database, production cadences: 1 s idle `data_version` poll, 5 s state-lane

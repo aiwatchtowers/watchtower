@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -851,8 +852,9 @@ func (c *Config) DBPath() string {
 // RecordingsDir returns the meeting-recording directory scanned by the daemon
 // orphan cleanup: transcripts.recordings_dir when set, otherwise the Swift
 // recorder's default location ($HOME/Library/Application Support/Watchtower/
-// recordings, cf. MeetingRecorderCenter.recordingsDirectory). Returns "" when
-// the home directory cannot be determined.
+// recordings, cf. MeetingRecorderCenter.recordingsDirectory; off darwin
+// <data root>/.support/recordings, where a Linux host keeps none). Returns ""
+// when the home directory cannot be determined.
 func (c *Config) RecordingsDir() string {
 	if c.Transcripts.RecordingsDir != "" {
 		return c.Transcripts.RecordingsDir
@@ -866,11 +868,27 @@ func (c *Config) RecordingsDir() string {
 
 // AppSupportDir returns the Desktop's Application Support folder
 // (~/Library/Application Support/Watchtower): recordings, MobileHub, the CLI
-// copy and the session host's log.
+// copy and the session host's log. Off darwin it is <data root>/.support
+// (appSupportDirFor).
 func AppSupportDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("could not determine home directory: %w", err)
 	}
-	return filepath.Join(home, "Library", "Application Support", "Watchtower"), nil
+	root := "" // darwin depends on the home folder alone
+	if runtime.GOOS != "darwin" {
+		if root, err = DataRoot(); err != nil {
+			return "", err
+		}
+	}
+	return appSupportDirFor(runtime.GOOS, home, root), nil
+}
+
+// appSupportDirFor is AppSupportDir for goos: the macOS Library folder on
+// darwin, <dataRoot>/.support elsewhere (no macOS-shaped path on Linux).
+func appSupportDirFor(goos, home, dataRoot string) string {
+	if goos == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "Watchtower")
+	}
+	return filepath.Join(dataRoot, ".support")
 }

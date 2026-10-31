@@ -346,8 +346,10 @@ func TestSessionStartUsesTheOverrideSocket(t *testing.T) {
 	t.Setenv(sessionhost.SocketEnv, w.socket)
 	d := w.deps()
 	d.Socket = ""
-	assert.Equal(t, w.socket, d.socket())
-	assert.NotEqual(t, sessionhost.SocketPath(sessionhost.BundleID, os.TempDir()), d.socket())
+	socket, err := d.socket()
+	require.NoError(t, err)
+	assert.Equal(t, w.socket, socket)
+	assert.NotEqual(t, sessionhost.SocketPath(sessionhost.BundleID, os.TempDir()), socket)
 	res, err := Start(context.Background(), d, handlers.StartRequest{Workbench: w.wb, Brief: "go"})
 	require.NoError(t, err)
 	w.launched(res.SessionID)
