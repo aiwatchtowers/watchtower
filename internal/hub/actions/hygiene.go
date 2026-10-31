@@ -49,6 +49,9 @@ type HygieneReport struct {
 func (p *Processor) Hygiene(ctx context.Context) (HygieneReport, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.paused.Load() {
+		return HygieneReport{}, nil
+	}
 	now := p.cfg.Clock()
 	raw, ok, err := p.cfg.Store.Meta(hygieneStampKey)
 	if err != nil {

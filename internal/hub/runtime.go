@@ -95,6 +95,10 @@ type hubRuntime struct {
 	proc    *actions.Processor
 	pub     *slices.Publisher
 	wiring  *wiring // nil without a database
+	// paying is the relay-only rules' watch (nil when they are off), and
+	// paused is true while no phone pays (guarded by mu).
+	paying *PayingWatch
+	paused bool
 
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -219,6 +223,16 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
 	}
+	if o.RelayOnlyRules {
+		as, ok := h.tr.(accountStater)
+		if !ok {
+			return nil, fmt.Errorf("%w: the transport has no account state", ErrStartFailed)
+		}
+		h.paying = NewPayingWatch(as.AccountState)
+		if o.payTimer != nil {
+			h.paying.timer = o.payTimer
+		}
+	}
 	if _, ok := h.tr.(zoneWatcher); !ok {
 		// A transport that sends every zone's events (memfake).
 		for _, z := range zones {
@@ -234,6 +248,10 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		Publish: func(kinds ...string) {
 			pub.PublishSoon(toKinds(kinds)...)
 			h.kick(h.linkKick)
+			if h.paying != nil {
+				// A link changed: a newly promoted phone may pay.
+				h.paying.Recheck()
+			}
 		},
 	})
 	d := actions.NewDispatcher()
@@ -281,6 +299,13 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		},
 	})
 	h.pub = pub
+	if h.paying != nil {
+		// Paused until the first account state shows a paying phone.
+		h.paused = true
+		pub.Pause()
+		h.proc.SetPaused(true)
+		log.Printf("hub: relay-only rules on: paused until the account state shows a paying phone")
+	}
 
 	hctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
@@ -303,6 +328,13 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		defer h.wg.Done()
 		h.work(hctx)
 	}()
+	if h.paying != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			_ = h.paying.Run(hctx, h.setPaying)
+		}()
+	}
 	h.kick(h.passKick)
 	h.kick(h.linkKick)
 	h.kick(h.houseKick)
@@ -429,10 +461,53 @@ func (h *hubRuntime) reason() string {
 	if unreachable {
 		return ReasonRelayUnreachable
 	}
+	if h.isPaused() {
+		return ReasonNeedsRelay
+	}
 	if a, ok := h.tr.(admission); ok && !a.Admitted() {
 		return ReasonNotAdmitted
 	}
 	return ""
+}
+
+// observe hands a relay write's error to the PayingWatch
+// (ENTITLEMENT_INACTIVE re-reads the account state).
+func (h *hubRuntime) observe(err error) {
+	if h.paying != nil {
+		h.paying.Observe(transport.Event{}, err)
+	}
+}
+
+// isPaused: the relay-only rules hold the hub paused (no paying phone).
+func (h *hubRuntime) isPaused() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.paused
+}
+
+// setPaying follows the PayingWatch (spec §7.3): no paying phone pauses the
+// publisher and the processor, keeping every queue and the sidecar; a paying
+// phone again resumes them with one full diff and one mailbox pass, which
+// writes the queued echoes and controls.
+func (h *hubRuntime) setPaying(paying bool) {
+	h.mu.Lock()
+	changed := h.paused == paying
+	h.paused = !paying
+	h.mu.Unlock()
+	if !changed {
+		return
+	}
+	if paying {
+		h.proc.SetPaused(false)
+		h.pub.Resume()
+		h.kick(h.passKick)
+		log.Printf("hub: resumed (a paying phone)")
+	} else {
+		h.pub.Pause()
+		h.proc.SetPaused(true)
+		log.Printf("hub: paused (%s)", ReasonNeedsRelay)
+	}
+	h.sup.poke()
 }
 
 func (h *hubRuntime) setUnreachable(v bool) {
@@ -478,6 +553,9 @@ func (h *hubRuntime) work(ctx context.Context) {
 
 // onEvent handles one transport event.
 func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
+	if h.paying != nil {
+		h.paying.Observe(ev, nil)
+	}
 	switch {
 	case ev.Err != nil && ev.Zone != "":
 		// The relay dropped this zone's subscription (refused on a
@@ -533,11 +611,15 @@ func (h *hubRuntime) pairing(ctx context.Context, slot string) {
 
 // pass is one processor pass, run again at once while it left records.
 func (h *hubRuntime) pass(ctx context.Context) {
+	if h.isPaused() {
+		return
+	}
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
 		rep, err := h.proc.Pass(pctx)
 		cancel()
 		if err != nil {
+			h.observe(err)
 			log.Printf("hub: mailbox pass failed (%s)", errClass(err))
 			return
 		}
@@ -561,6 +643,7 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	if err := h.center.PublishPairKeyboxes(ctx, h.tr); err != nil {
+		h.observe(err)
 		log.Printf("hub: pair keyboxes not written (%s)", errClass(err))
 	}
 	if rs, ok := h.tr.(readersSetter); ok {
@@ -635,6 +718,11 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 			r.next = now.Add(min(wait, maxSubBackoff))
 			continue
 		}
+		if r != nil && h.paying != nil {
+			// The relay takes a zone it refused: a phone holds the hub in
+			// a slot now, and may pay.
+			h.paying.Recheck()
+		}
 		delete(h.subRetry, z)
 		h.watched[z] = true
 		h.setUnreachable(false)
@@ -656,9 +744,10 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
-	if h.mode == policy.MobileWorkbenchOnly {
+	if h.mode == policy.MobileWorkbenchOnly && !h.isPaused() {
 		// What the switch to workbench_only failed to delete: no source
-		// publishes those kinds now, so whatever is left is retried here.
+		// publishes those kinds now, so whatever is left is retried here
+		// (not while paused: a paused hub deletes nothing).
 		if left, err := publishedRecords(h.st, workbenchOnly); err != nil {
 			log.Printf("hub: reading what was published failed (%s)", errClass(err))
 		} else {

@@ -19,6 +19,10 @@ const (
 	StateOff      = "off"
 	StateStarting = "starting"
 	StateRunning  = "running"
+	// StatePaused: a headless hub with no paying phone (spec §7.3) keeps
+	// its state and local work, publishes nothing and applies no action;
+	// pairing goes on.
+	StatePaused = "paused"
 )
 
 // The reasons a status carries (empty when there is nothing to say).
@@ -30,6 +34,9 @@ const (
 	ReasonSidecarUnreadable = "sidecar_unreadable"
 	ReasonNotAdmitted       = "not_admitted"
 	ReasonRelayUnreachable  = "relay_unreachable"
+	// ReasonNeedsRelay: paused, no phone holding the hub in a slot pays
+	// (the phone shows "This hub needs Relay").
+	ReasonNeedsRelay = "needs_relay"
 	// ReasonStartFailed: a start step failed that is neither the sidecar
 	// nor the relay (state starting, retried with backoff).
 	ReasonStartFailed = "start_failed"

@@ -226,6 +226,9 @@ func deleteClass(err error, out []transport.Outcome) string {
 func (p *Processor) FlushControls(ctx context.Context) (written, failed int, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.paused.Load() {
+		return 0, 0, nil
+	}
 	return p.flushAll(ctx)
 }
 

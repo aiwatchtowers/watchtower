@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/internal/hub/secure"
@@ -47,6 +48,22 @@ type Processor struct {
 	held map[string]*heldUpload
 	// batch, when set (tests), replaces BatchLimit as a pass's budget.
 	batch int
+	// paused (SetPaused) is read under mu by every transport-facing entry.
+	paused atomic.Bool
+}
+
+// SetPaused pauses the processor (spec §7.3, a headless hub with no paying
+// phone) or ends the pause. A paused Pass, FlushControls and Hygiene read
+// and write nothing and return at once; a LateEcho records its outcome and
+// queues the echo, which the first pass after the pause writes. The ledger,
+// the held actions and the control queue stay as they are. SetPaused(true)
+// returns once a pass already running has ended.
+func (p *Processor) SetPaused(on bool) {
+	p.paused.Store(on)
+	if on {
+		p.mu.Lock()
+		p.mu.Unlock() //nolint:staticcheck // SA2001: only waits for the running pass
+	}
 }
 
 // PassReport counts one pass: phone records read (opened), actions applied
@@ -135,6 +152,9 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 	ps := &pass{budget: BatchLimit}
 	if p.batch > 0 {
 		ps.budget = p.batch
+	}
+	if p.paused.Load() {
+		return ps.report, nil
 	}
 	boxes, err := p.mailboxes()
 	if err != nil {
