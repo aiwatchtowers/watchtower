@@ -69,6 +69,8 @@ public actor ActionOutbox {
     var chainTail: Task<Void, Never>?
     /// A flush queued on the chain that has not started yet: a `flush()` meanwhile joins it.
     var queuedFlush: Task<OutboxFlushReport, Error>?
+    /// The failed rows a `retry(id:)` is re-enqueueing now: a second Retry of one of them does nothing.
+    var retrying: Set<String> = []
     let logger = Logger(subsystem: "WatchtowerKit", category: "ActionOutbox")
 
     public init(

@@ -935,7 +935,8 @@ final class ActionOutboxOrderedTests: XCTestCase {
         } catch ActionOutboxError.notRetryable {
             // expected
         }
-        let retried = try await phone.outbox.retry(id: one.id)
+        let retriedID = try await phone.outbox.retry(id: one.id)
+        let retried = try XCTUnwrap(retriedID)
         _ = try await phone.outbox.flush()
 
         XCTAssertNotEqual(retried, one.id)
@@ -948,6 +949,22 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(fresh.delivery, .sent)
         let saves = await saves(phone)
         XCTAssertEqual(saves.last?.names, [try wire(phone, 3)])
+    }
+
+    /// Retry pressed on one row from two screens at once: one new action, the second press does nothing.
+    func testTwoRetriesOfOneRowEnqueueOnce() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        await phone.inner.refuseNext(.permanent(code: "zoneNotFound"), count: 1)
+        _ = try await phone.outbox.flush()
+
+        async let first = phone.outbox.retry(id: one.id)
+        async let second = phone.outbox.retry(id: one.id)
+        let retried = try await [first, second].compactMap { $0 }
+
+        XCTAssertEqual(retried.count, 1, "the second Retry is a no-op")
+        XCTAssertNil(try pending(phone, one.id))
+        XCTAssertEqual(try phone.store.pendingActions().map(\.id), retried)
     }
 
     func testDismissAllNeverResends() async throws {

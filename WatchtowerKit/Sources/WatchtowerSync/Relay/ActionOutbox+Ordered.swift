@@ -160,8 +160,11 @@ extension ActionOutbox {
 
     /// A new action with the failed row's kind, entity and params at the end of the queue (new id, now, next seq,
     /// current epoch), then the old row's Dismiss. Only a failed row (settled, Not delivered, or a legacy failed
-    /// row) can be retried. A locked keychain throws before anything changes.
-    public func retry(id: String) async throws -> String {
+    /// row) can be retried. A locked keychain throws before anything changes. nil: a Retry of this row is already
+    /// running (pressed on another screen), so this one does nothing.
+    public func retry(id: String) async throws -> String? {
+        guard retrying.insert(id).inserted else { return nil }
+        defer { retrying.remove(id) }
         guard let old = try store.pendingActions().first(where: { $0.id == id }), old.state == .failed else {
             throw ActionOutboxError.notRetryable
         }
