@@ -27,8 +27,9 @@ final class NotDeliveredModelTests: XCTestCase {
     private func model(
         _ items: [OutboxItem], retrying: Set<String> = [], errors: [String: String] = [:]
     ) throws -> NotDeliveredModel {
+        // As the view builds it: the Not delivered rows, oldest first.
         NotDeliveredModel(
-            items: items, snapshot: try demoSnapshot(now: now), macName: "Acme Mac", now: now, calendar: .current,
+            items: OutboxItem.ordered(items, .undelivered), snapshot: try demoSnapshot(now: now), macName: "Acme Mac", now: now, calendar: .current,
             retrying: retrying, errors: errors)
     }
 

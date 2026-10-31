@@ -25,7 +25,7 @@ struct NowView: View {
                 content(
                     NowModel(
                         snapshot: replica.snapshot, linked: env.linkedDevice != nil, now: context.date,
-                        outbox: env.activeSession.outboxBacklog
+                        lastFlushStopped: env.activeSession.outboxBacklog.lastFlushStopped
                     ),
                     date: context.date
                 )

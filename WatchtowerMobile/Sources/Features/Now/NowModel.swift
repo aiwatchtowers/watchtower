@@ -26,9 +26,12 @@ struct NowModel {
     /// Waiting to send and Not delivered; nil when neither shows.
     let outbox: NowOutboxRows?
 
-    init(snapshot: WorkbenchReplicaSnapshot, linked: Bool, now: Date, outbox backlog: OutboxBacklog = .empty, calendar: Calendar = .current) {
+    /// `lastFlushStopped`: the session's last outbox flush stopped on a refusal (`OutboxBacklog`); the outbox's
+    /// rows and counts come from the snapshot's own `pending` rows, so they always agree with each other.
+    init(snapshot: WorkbenchReplicaSnapshot, linked: Bool, now: Date, lastFlushStopped: Bool = false, calendar: Calendar = .current) {
         outbox = NowOutboxRows(
-            backlog: backlog, items: OutboxItem.rows(snapshot.pending, .queued), snapshot: snapshot, now: now, calendar: calendar)
+            lastFlushStopped: lastFlushStopped, queued: OutboxItem.rows(snapshot.pending, .queued),
+            undelivered: OutboxItem.rows(snapshot.pending, .undelivered), snapshot: snapshot, now: now, calendar: calendar)
         mac = .of(heartbeat: snapshot.heartbeat?.updatedAt, linked: linked, now: now)
         chip = MacStatusChipModel(macName: snapshot.heartbeat?.macName ?? "", state: mac.chipState(linked: linked), now: now)
         let openAsks = snapshot.openAsks()
@@ -81,16 +84,24 @@ struct NowOutboxRows: Equatable {
     /// "Not delivered · 2"; nil: the row is hidden.
     let notDeliveredText: String?
 
-    init?(backlog: OutboxBacklog, items: [OutboxItem], snapshot: WorkbenchReplicaSnapshot, now: Date, calendar: Calendar) {
-        let waiting = backlog.queued > 0 && backlog.lastFlushStopped
-        guard waiting || backlog.undelivered > 0 else { return nil }
-        waitingCount = waiting ? backlog.queued : nil
+    /// `queued` and `undelivered`: the ordered rows in those states, oldest first (`OutboxItem.rows`).
+    init?(
+        lastFlushStopped: Bool,
+        queued items: [OutboxItem],
+        undelivered: [OutboxItem],
+        snapshot: WorkbenchReplicaSnapshot,
+        now: Date,
+        calendar: Calendar
+    ) {
+        let waiting = !items.isEmpty && lastFlushStopped
+        guard waiting || !undelivered.isEmpty else { return nil }
+        waitingCount = waiting ? items.count : nil
         let format = RecordingsFormat(calendar: calendar, now: now)
-        let shown = waiting ? Array(items.sorted { $0.seq < $1.seq }.prefix(Self.queuedLimit)) : []
+        let shown = waiting ? Array(items.prefix(Self.queuedLimit)) : []
         queued = shown.map { NowQueuedRow(id: $0.id, summary: ActionSummary.text(for: $0, snapshot: snapshot), time: format.when($0.createdAt)) }
-        let more = waiting ? backlog.queued - shown.count : 0
+        let more = waiting ? items.count - shown.count : 0
         moreText = more > 0 ? "\(more) more" : nil
-        notDeliveredText = backlog.undelivered > 0 ? "\(NotDeliveredModel.title) · \(backlog.undelivered)" : nil
+        notDeliveredText = undelivered.isEmpty ? nil : "\(NotDeliveredModel.title) · \(undelivered.count)"
     }
 
     var toneUses: [ToneUse] {

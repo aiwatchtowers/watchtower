@@ -45,7 +45,12 @@ struct OutboxItem: Equatable, Identifiable {
 
     /// The ordered rows in `delivery`, oldest (lowest seq) first.
     static func rows(_ pending: [PendingAction], _ delivery: Delivery) -> [Self] {
-        pending.compactMap(Self.init).filter { $0.delivery == delivery }.sorted { $0.seq < $1.seq }
+        ordered(pending.compactMap(Self.init), delivery)
+    }
+
+    /// The items in `delivery`, oldest (lowest seq) first.
+    static func ordered(_ items: [Self], _ delivery: Delivery) -> [Self] {
+        items.filter { $0.delivery == delivery }.sorted { $0.seq < $1.seq }
     }
 }
 
@@ -147,6 +152,7 @@ struct NotDeliveredModel {
     let footer: String
     let rows: [NotDeliveredRow]
 
+    /// `items`: the Not delivered rows, oldest first (`OutboxItem.rows(_:.undelivered)`).
     init(
         items: [OutboxItem],
         snapshot: WorkbenchReplicaSnapshot,
@@ -159,7 +165,7 @@ struct NotDeliveredModel {
         let mac = macName.isEmpty ? "your Mac" : macName
         footer = "These actions never reached \(mac). Retry sends them again, after anything you did since."
         let format = RecordingsFormat(calendar: calendar, now: now)
-        rows = items.filter { $0.delivery == .undelivered }.sorted { $0.seq < $1.seq }.map { item in
+        rows = items.map { item in
             let reason = item.reason == .noAnswer ? "No answer from \(mac) for 24 hours" : nil
             return NotDeliveredRow(
                 id: item.id, summary: ActionSummary.text(for: item, snapshot: snapshot),

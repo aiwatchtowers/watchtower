@@ -20,11 +20,31 @@ struct NotDeliveredView: View {
     }
 
     var body: some View {
+        // As on Now: "Today 09:58" turns into "Yesterday 09:58" by the clock alone.
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            content(model(at: context.date))
+        }
+        .background(Color(.systemBackground))
+        .navigationTitle(NotDeliveredModel.title)
+        .onChange(of: isEmpty, initial: true) { _, empty in
+            if empty { dismiss() }
+        }
+    }
+
+    /// The list empties when the replica's last Not delivered row goes (a Retry, Dismiss All, another device).
+    private var isEmpty: Bool {
+        OutboxItem.rows(env.workbenchReplica.snapshot.pending, .undelivered).isEmpty
+    }
+
+    private func model(at date: Date) -> NotDeliveredModel {
         let snapshot = env.workbenchReplica.snapshot
-        let model = NotDeliveredModel(
+        return NotDeliveredModel(
             items: OutboxItem.rows(snapshot.pending, .undelivered), snapshot: snapshot,
-            macName: snapshot.heartbeat?.macName ?? "", now: Date(), calendar: .current,
+            macName: snapshot.heartbeat?.macName ?? "", now: date, calendar: .current,
             retrying: retrying, errors: errors)
+    }
+
+    private func content(_ model: NotDeliveredModel) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 Text(model.footer)
@@ -38,11 +58,6 @@ struct NotDeliveredView: View {
             }
             .padding(.horizontal, Spacing.large)
             .padding(.bottom, Spacing.large)
-        }
-        .background(Color(.systemBackground))
-        .navigationTitle(NotDeliveredModel.title)
-        .onChange(of: model.rows.isEmpty, initial: true) { _, empty in
-            if empty { dismiss() }
         }
     }
 

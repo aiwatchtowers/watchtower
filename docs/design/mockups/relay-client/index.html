@@ -53,6 +53,10 @@ th{color:#8e8e93;font-weight:500;border-top:0}
 .sheet .box div{padding:12px;font-size:15px;border-top:1px solid #3a3a3c}
 .sheet .box div:first-child{border-top:0;color:#8e8e93;font-size:12px}
 .dimmed{opacity:.35}
+.popover{position:relative;margin:0 40px 14px;background:#2c2c2e;border-radius:18px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.popover:after{content:"";position:absolute;left:50%;bottom:-8px;margin-left:-8px;border:8px solid transparent;border-bottom:0;border-top-color:#2c2c2e}
+.popover .ptitle{font-size:14px;padding:0 4px}
+.popover .pbtn{background:#3a3a3c;border-radius:16px;text-align:center;padding:9px;font-size:15px}
 </style></head><body>
 <h1>Relay client — mockups (2026-10-29)</h1>
 <div class="note">Spec: docs/superpowers/specs/2026-10-29-relay-client-design.md. Copy and layout only; colours follow the design kit when built (docs/design/desktop-style-guide.md): Desktop rows are `SettingsSection` + `.kitRow`, no separators, row actions on hover. Sample names are neutral.</div>
@@ -194,12 +198,14 @@ Changes reach your phone in under a second instead of tens of seconds.<br><br>
 </div>
 
 <div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
-<div class="back">‹ Now</div><div class="nav dimmed">Not delivered</div>
+<div class="back">‹ Now</div><div class="nav">Not delivered</div>
 <div class="igroup dimmed">
 <div class="iitem"><span class="grow">Answer “Use the staging DB?” — Yes<div class="sub">Today 09:58</div></span><span class="link">Retry</span></div>
 <div class="iitem"><span class="grow">Move “Fix login” to Done<div class="sub">Today 09:59</div></span><span class="link">Retry</span></div>
 </div>
-<div class="sheet"><div class="box"><div>Dismiss 2 actions? They won't be sent.</div><div class="red" style="font-weight:600">Dismiss All</div></div><div class="box"><div style="color:#0a84ff;font-size:15px;font-weight:600">Cancel</div></div></div>
+<div class="popover"><div class="ptitle">Dismiss 2 actions? They won't be sent.</div><div class="pbtn red">Dismiss All</div></div>
+<div class="igroup"><div class="iitem red">Dismiss All</div></div>
+<div class="ifoot" style="margin-top:0">iOS 26: the confirmation is a popover anchored on Dismiss All; a tap outside cancels.</div>
 </div>
 
 <div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
