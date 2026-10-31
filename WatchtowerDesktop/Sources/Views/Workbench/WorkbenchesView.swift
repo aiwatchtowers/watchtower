@@ -171,7 +171,11 @@ struct WorkbenchesView: View {
                         await vm.showTerminal(sessionID: session.id, projectID: projectID)
                     }
                 }
-            }
+            },
+            setTarget: { session, targetID in
+                Task { await vm.setSessionTarget(session, targetID: targetID) }
+            },
+            targetRoots: { vm.sessionTargetRoots[$0] ?? [] }
         )
     }
 

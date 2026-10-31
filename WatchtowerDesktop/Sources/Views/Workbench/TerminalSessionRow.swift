@@ -70,6 +70,13 @@ struct TerminalSessionRow: View {
         .listRowSeparator(.hidden)
         .contextMenu {
             Button("Rename…") { actions.rename(session) }
+            if let projectID = session.projectID, session.kind.isAgent, let setTarget = actions.setTarget {
+                Menu(SessionTargetMenu.title) {
+                    SessionTargetMenuItems(
+                        items: SessionTargetMenu.items(roots: actions.targetRoots(projectID), current: session.targetID)
+                    ) { setTarget(session, $0) }
+                }
+            }
             if session.projectID != nil, let cleanUp = actions.cleanUp {
                 Button("Clean Up…") { cleanUp(session) }
             }
@@ -217,6 +224,38 @@ extension SessionStatePresentation.Tone {
         case .red: .red
         case .purple: .purple
         case .secondary: .secondary
+        }
+    }
+}
+
+/// The submenu's items: a checkmark on the current one, a group as a
+/// submenu whose first item is the group itself.
+private struct SessionTargetMenuItems: View {
+    let items: [SessionTargetMenu.Item]
+    let choose: (Int64?) -> Void
+
+    var body: some View {
+        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+            switch item {
+            case let .none(checked):
+                entry(SessionTargetMenu.noneTitle, checked: checked) { choose(nil) }
+            case let .target(id, title, checked, children):
+                if children.isEmpty {
+                    entry(title, checked: checked) { choose(id) }
+                } else {
+                    Menu(title) { Self(items: children, choose: choose) }
+                }
+            }
+        }
+    }
+
+    private func entry(_ title: String, checked: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            if checked {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
         }
     }
 }
