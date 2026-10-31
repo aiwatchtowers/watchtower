@@ -124,9 +124,17 @@ extension CloudKitTransport: ConditionalTransport {
     }
 
     /// A `.seq` whose version is not the stored one: the phone already holds a newer version (or none at all).
+    /// When the stored handle is newer than the buffered event (this phone's own save, not fetched back yet),
+    /// the buffer holds no current copy to hand back: the write waits for the next fetch.
     private func staleSave(_ recordName: String) throws -> SaveOutcome {
-        if let current = try store.latestEvent(recordName: recordName, zone: .relay) { return .conflict(current: current) }
-        return .refused(.permanent(code: "unknownVersion"))
+        guard let current = try store.latestEvent(recordName: recordName, zone: .relay) else {
+            return .refused(.permanent(code: "unknownVersion"))
+        }
+        if let version = try store.recordVersion(recordName: recordName, zone: .relay),
+           current.recordSeq != version.recordSeq {
+            return .refused(.transient(code: "staleBuffer"))
+        }
+        return .conflict(current: current)
     }
 
     /// CloudKit has no conditional delete (the save policy binds saves only), so a `.seq` is checked against
@@ -150,7 +158,8 @@ extension CloudKitTransport: ConditionalTransport {
                   version.recordSeq == expected, version.changeTag != nil else {
                 switch try staleSave(item.recordName) {
                 case .conflict(let current): return .answer(.conflict(current: current))
-                default: return .answer(.refused(.permanent(code: "unknownVersion")))
+                case .refused(let refusal): return .answer(.refused(refusal))
+                case .saved: return .answer(.refused(.permanent(code: "unknownVersion")))
                 }
             }
             return .send(id)

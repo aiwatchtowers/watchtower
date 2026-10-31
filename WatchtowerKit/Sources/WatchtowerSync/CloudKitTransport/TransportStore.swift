@@ -7,7 +7,8 @@ import os
 /// Persistence for the CloudKit adapter: an incoming change buffer (the
 /// source of pull-shaped `changes(since:)` tokens — seqs in this store),
 /// a pending-send queue, and the opaque CKSyncEngine state blob.
-/// Pure GRDB — fully unit-testable without CloudKit.
+/// GRDB plus CloudKit's archive decoder (it reads the change tag out of a
+/// stored system-fields archive) — unit-testable without a CloudKit server.
 public final class TransportStore: Sendable {
     private let queue: DatabaseQueue
     /// Durable copies of fetched CKAsset files live here (next to the DB) —
@@ -517,14 +518,18 @@ public final class TransportStore: Sendable {
     /// re-save of a server-known record carry the change tag instead of
     /// colliding with .serverRecordChanged forever.
     ///
-    /// Every write is a new local version of the record: `record_seq` goes up
-    /// by one (1 for a new row) and is returned; `change_tag` is the archive's
+    /// Every write of a new version is a new local version of the record:
+    /// `record_seq` goes up by one (1 for a new row) and is returned — a
+    /// write of the same change tag (this phone fetching its own save back)
+    /// keeps it; `change_tag` is the archive's
     /// `recordChangeTag` (nil for an undecodable or never-saved archive).
     @discardableResult
     func saveSystemFields(_ data: Data, recordName: String, zone: CloudZoneID) throws -> UInt64 {
         try queue.write { try Self.upsertSystemFields(data, recordName: recordName, zone: zone, $0) }
     }
 
+    /// `record_seq` counts per row and restarts after a delete removes the row: safe for the write-once
+    /// mailbox names (`a-…`/`c-…`).
     @discardableResult
     private static func upsertSystemFields(
         _ data: Data, recordName: String, zone: CloudZoneID, _ db: Database
@@ -535,7 +540,11 @@ public final class TransportStore: Sendable {
                 VALUES (?, ?, ?, 1, ?)
                 ON CONFLICT(record_name, zone) DO UPDATE SET
                     data = excluded.data,
-                    record_seq = system_fields.record_seq + 1,
+                    record_seq = CASE
+                        WHEN excluded.change_tag IS NULL OR excluded.change_tag IS NOT system_fields.change_tag
+                        THEN system_fields.record_seq + 1
+                        ELSE system_fields.record_seq
+                    END,
                     change_tag = excluded.change_tag
                 """,
             arguments: [recordName, zone.rawValue, data, changeTag(ofArchive: data)]
@@ -561,10 +570,12 @@ public final class TransportStore: Sendable {
         try queue.read { db in
             guard let row = try Row.fetchOne(
                 db,
-                sql: "SELECT record_seq, change_tag FROM system_fields WHERE record_name = ? AND zone = ?",
+                sql: "SELECT record_seq, change_tag, data FROM system_fields WHERE record_name = ? AND zone = ?",
                 arguments: [recordName, zone.rawValue]
             ) else { return nil }
-            return (UInt64(max(0, row["record_seq"] as Int64? ?? 0)), row["change_tag"])
+            // A row from before `change_tag` has its tag in the archive only.
+            let changeTag = (row["change_tag"] as String?) ?? (row["data"] as Data?).flatMap(Self.changeTag(ofArchive:))
+            return (UInt64(max(0, row["record_seq"] as Int64? ?? 0)), changeTag)
         }
     }
 

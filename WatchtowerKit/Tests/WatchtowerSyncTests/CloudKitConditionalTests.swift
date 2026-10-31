@@ -110,6 +110,23 @@ final class CloudKitConditionalTests: XCTestCase {
         XCTAssertEqual(current.recordSeq, 2)
     }
 
+    /// The stored handle is newer than every buffered event (this phone's own save, not fetched back yet): the
+    /// buffer holds no current copy to hand back, so the write waits for the next fetch.
+    func testAStaleBufferIsATransientRefusalNotAnOldCopy() async throws {
+        let (transport, database, store) = try make()
+        try buffer(database.seed(serverRecord("c-1", payload: "v1")), into: store)
+        let saved = try await transport.save([ConditionalSave(record: record("c-1", payload: "v2"), expect: .seq(1))])
+        XCTAssertEqual(saved, [.saved(recordSeq: 2)])
+        let calls = database.calls.count
+
+        let save = try await transport.save([ConditionalSave(record: record("c-1", payload: "v3"), expect: .seq(1))])
+        let delete = try await transport.delete([ConditionalDelete(recordName: "c-1", zone: .relay, expect: .seq(1))])
+
+        XCTAssertEqual(save, [.refused(.transient(code: "staleBuffer"))])
+        XCTAssertEqual(delete, [.refused(.transient(code: "staleBuffer"))])
+        XCTAssertEqual(database.calls.count, calls, "no call")
+    }
+
     func testASeqWithNothingStoredConflictsWithTheBufferedEventOrIsUnknown() async throws {
         let (transport, database, store) = try make()
         try store.bufferChanged([record("c-1", payload: "seen")])

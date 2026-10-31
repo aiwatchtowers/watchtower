@@ -1,3 +1,4 @@
+import CloudKit
 import GRDB
 import XCTest
 @testable import WatchtowerSync
@@ -552,6 +553,50 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay))
         try store.bufferDeleted(recordNames: ["c-1"], zone: .relay)
         XCTAssertNil(try store.latestEvent(recordName: "c-1", zone: .relay), "a deletion is no current record")
+    }
+
+    /// The phone fetching its own write back (the same change tag) is not a new version.
+    func testReBufferingTheSameChangeTagKeepsTheRecordSeq() throws {
+        let store = try TransportStore.inMemory()
+        let tagged = FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "c-1")), changeTag: "tag-1")
+        let archive = CloudKitTransport.archivedSystemFields(of: tagged)
+        XCTAssertEqual(try store.saveSystemFields(archive, recordName: "c-1", zone: .relay), 1)
+        try store.bufferFetched(
+            changed: [record("c-1", zone: .relay)], systemFields: [(name: "c-1", zone: .relay, data: archive)], deleted: [:])
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.changeTag, "tag-1")
+        XCTAssertEqual(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+
+        let newer = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(tagged, changeTag: "tag-2"))
+        XCTAssertEqual(try store.saveSystemFields(newer, recordName: "c-1", zone: .relay), 2)
+    }
+
+    /// A row from before `change_tag` reads the tag out of its archive.
+    func testALegacyRowReadsItsChangeTagFromTheArchive() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+        let archive = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "c-1")), changeTag: "tag-9"))
+        do {
+            let legacy = try DatabaseQueue(path: path)
+            try legacy.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE system_fields (
+                        record_name TEXT NOT NULL, zone TEXT NOT NULL, data BLOB NOT NULL,
+                        PRIMARY KEY (record_name, zone)
+                    )
+                    """)
+                try db.execute(sql: "INSERT INTO system_fields (record_name, zone, data) VALUES ('c-1', 'RelayZone', ?)",
+                               arguments: [archive])
+            }
+        }
+        let store = try TransportStore(path: path)
+        let version = try XCTUnwrap(try store.recordVersion(recordName: "c-1", zone: .relay))
+        XCTAssertEqual(version.recordSeq, 0)
+        XCTAssertEqual(version.changeTag, "tag-9")
     }
 
     func testAStoreFromBeforeRecordSeqOpensWithZero() throws {
