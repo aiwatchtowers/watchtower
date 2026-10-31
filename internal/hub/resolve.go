@@ -93,11 +93,12 @@ func Resolve(cfg *config.Config, d *db.DB, p hostkind.Probe) (Options, error) {
 	if err != nil {
 		return Options{}, fmt.Errorf("%w: %w", sessionhost.ErrRunDirUnusable, err)
 	}
-	// A headless hub's relay-only rules (spec §7.3) switch on here once
-	// Options carries that switch.
+	// A headless hub runs spec §7.3's relay-only rules: paused while no
+	// phone holding it pays.
 	return Options{
 		Dir: dir, RelayOrigin: origin, RecordingsDir: filepath.Join(dir, "recordings"), DB: d,
 		SessionStart: sessionstart.Deps{Socket: sock}, Mode: ModeLive, Host: kind,
+		RelayOnlyRules: true,
 	}, nil
 }
 
