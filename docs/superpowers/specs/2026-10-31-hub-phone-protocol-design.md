@@ -394,7 +394,13 @@ Go hub, **built today** (`internal/hub/actions/handlers/recording.go`): a host t
 Go hub, **Proposed** (§9):
 - The owner's recording switch replaces the never-had-Desktop rule: switch `off` → final `failed`/`not_supported`; switch `on` → the Desktop heartbeat decides only `received` (fresh) vs `held` (stale).
 - A held upload gets the final `failed`/`expired` 7 days after it was first held; turning the switch `off` fails every held upload with `not_supported`. Either way the phone keeps its audio.
-- These change together: the Go intake (`internal/hub/actions/handlers/recording.go` and the hold in `internal/hub/actions/recording.go`), the heartbeat slice (`internal/hub/slices/heartbeat.go`, `capabilities`), and the `watchtower hub recordings` verb.
+- These change together:
+  - the Go intake (`internal/hub/actions/handlers/recording.go` and the hold in `internal/hub/actions/recording.go`);
+  - the heartbeat slice (`internal/hub/slices/heartbeat.go`, `capabilities`);
+  - the `watchtower hub recordings` verb;
+  - the sidecar: `hub_meta` keys `desktop_seen_at` and the switch value (`internal/hub/state`). `hub_meta` is a key-value table, so no schema change and no goose migration — only the one-time `desktop_seen` → `desktop_seen_at` carry-over (§9);
+  - the Kit (`WatchtowerKit`): `HeartbeatPayload` decodes `capabilities.recordings`, `RecordingUploadPayload` decodes the echo's `reason`, `ActionReason` gains `not_supported`;
+  - the shared fixture: a `heartbeat` section in `WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json` (capabilities on, off, absent, unknown value; an upload echo with `reason`), read by Kit `HubContractFixtureTests` and Go `TestHubContractFixture`.
 
 ### 7.8 Action flows
 
@@ -462,6 +468,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 ```
 
 - **An owner switch, not a derived value.** `recordings` is the value of a switch on the hub: `watchtower hub recordings on|off`, stored in the sidecar's `hub_meta`. **Default** (decided by agent; owner confirms on this review): until the owner sets the switch, its value is `on` if the hub has ever seen a Desktop transcriber heartbeat, else `off`, so a Mac with Desktop keeps recording as today. Once set, the stored value wins. A change restamps the heartbeat at once (the existing facts check).
+- **Where "ever seen" lives** (ask #833). The fact is persisted in the sidecar's `hub_meta`, never kept in memory only: key `desktop_seen_at` = the time of the first Desktop transcriber heartbeat (a timestamp, no content), written by the hub, the sidecar's single writer. Otherwise a Mac with Desktop would publish `off` after a hub restart until the next heartbeat, and the phone would stop offering recording. The key is never cleared automatically; turning recording off is the owner's switch. Today the Go hub stores `desktop_seen = "1"` and the last beat in `desktop_at` (`internal/hub/state/recordings.go`); `desktop_seen_at` replaces the flag, and a sidecar that has `desktop_seen = "1"` without it gets `desktop_seen_at` from `desktop_at` once. Required test: after a hub restart with no new heartbeat, the default is still `on` on a host that once had Desktop.
 - **The verb.** `watchtower hub recordings on|off` is an owner verb, refused under an agent marker like the other hub write verbs. `on` is refused on a host that has never had a Desktop transcriber heartbeat, with "this host has no transcriber", so a headless host can never publish `on`.
 - **Never derived from the Desktop heartbeat.** The Desktop transcriber heartbeat (`watchtower hub desktop heartbeat`; a running Go hub receives it over its control socket, being added in plan 1a Task 15's fix round) only decides, while the switch is `on`, whether an upload is `received` (Desktop fresh) or `held` (Desktop away, §7.7). A missing Desktop heartbeat can never turn the capability `off`.
 - **Off.** With the switch `off`, every upload gets the final `failed` with reason `not_supported` ("This host can't transcribe recordings. Your recording stays on your phone."), and any upload held when the switch is turned off is failed the same way. The phone keeps its audio.
