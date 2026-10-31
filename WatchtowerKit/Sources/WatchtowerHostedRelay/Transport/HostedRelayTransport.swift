@@ -167,10 +167,10 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         await connectIfWanted()
     }
 
-    /// One HTTPS `pull()`, joining one in flight. A held transport does nothing (as CloudKit's
+    /// One HTTPS `pull()` of both zones: a pull in flight (a socket's one-zone pull) is joined
+    /// with both zones owed, never just awaited. A held transport does nothing (as CloudKit's
     /// throttle does).
     public func fetchForPush(since: Date, grace: TimeInterval, pollOnFallback: Bool) async throws {
-        if let pullTask { return try await pullTask.value }
         guard held() == nil else { return }
         try await pull()
     }

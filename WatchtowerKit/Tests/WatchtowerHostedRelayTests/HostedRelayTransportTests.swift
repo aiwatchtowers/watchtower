@@ -991,4 +991,36 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         try await transport.save([mailboxRecord("queued")])
         await eventually { (try? self.savedNames()) == [["queued"]] }
     }
+
+    /// A push wake while a socket-triggered mailbox pull is in flight pulls the data zone too.
+    func testFetchForPushDuringAMailboxPullPullsBothZones() async throws {
+        var http: InterceptingRelayHTTP?
+        let (mac, phone) = try await hub { base in
+            let intercepting = InterceptingRelayHTTP(base)
+            http = intercepting
+            return intercepting
+        }
+        let intercepting = try XCTUnwrap(http)
+        try await macSave(mac, dataZone(mac), "d")
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        let mailboxZone = mailbox(mac, phone)
+
+        intercepting.holdNext { request in
+            if case .changes(let changes) = request.op { return changes.zone == mailboxZone }
+            return false
+        }
+        let socketPull = Task { await transport.handle(.zoneChanged(zone: mailboxZone, seq: 0)) }
+        await eventually { intercepting.holding }
+
+        let wake = Task { try await transport.fetchForPush(since: Self.stamp, grace: 0, pollOnFallback: false) }
+        let deadline = Date().addingTimeInterval(5)
+        while await !transport.zonesToPull.contains(.data), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        intercepting.release()
+        await socketPull.value
+        try await wake.value
+        XCTAssertEqual(try buffered(store, .data).changed.map(\.recordName), ["d"], "the data zone is pulled too")
+    }
 }

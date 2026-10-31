@@ -14,6 +14,8 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
         var upload: ((URL) -> Int?)?
         var gets: [URL] = []
         var puts: [URL] = []
+        var hold: ((Relay_V1_Request) -> Bool)?
+        var held: CheckedContinuation<Void, Never>?
     }
 
     private let base: any RelayHTTP
@@ -42,11 +44,35 @@ final class InterceptingRelayHTTP: RelayHTTP, @unchecked Sendable {
         state.withLock { $0.gets }
     }
 
+    /// Holds the next op `matches` accepts until `release()` (`holding` once it waits).
+    func holdNext(where matches: @escaping (Relay_V1_Request) -> Bool) {
+        state.withLock { $0.hold = matches }
+    }
+
+    var holding: Bool {
+        state.withLock { $0.held != nil }
+    }
+
+    func release() {
+        state.withLock { state -> CheckedContinuation<Void, Never>? in
+            defer { state.held = nil }
+            return state.held
+        }?.resume()
+    }
+
     var puts: [URL] {
         state.withLock { $0.puts }
     }
 
     func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
+        if let request = try? Relay_V1_Request(serializedBytes: body),
+           state.withLock({ state in
+               guard let hold = state.hold, hold(request) else { return false }
+               state.hold = nil
+               return true
+           }) {
+            await withCheckedContinuation { continuation in state.withLock { $0.held = continuation } }
+        }
         let hook = state.withLock { $0.answer }
         if let hook, let request = try? Relay_V1_Request(serializedBytes: body), let response = try hook(request) {
             return (200, try response.serializedData())
