@@ -128,7 +128,9 @@ final class HPKEEnvelopeVectorTests: XCTestCase {
         let helloContext = EnvelopeContext(zone: .relay, wireName: vectors.hello.wireName)
         let helloEnvelope = try Envelope.parse(Data(hex: vectors.hello.envelope))
         XCTAssertNoThrow(try EnvelopeSealer.verify(helloEnvelope, context: helloContext, key: signingKey))
-        XCTAssertThrowsError(try EnvelopeSealer.verify(helloEnvelope, context: helloContext, key: k.hubSig.publicKey))
+        XCTAssertThrowsError(try EnvelopeSealer.verify(helloEnvelope, context: helloContext, key: k.hubSig.publicKey)) {
+            XCTAssertEqual($0 as? EnvelopeError, .signatureInvalid)
+        }
 
         // Keybox: verified with hub_sig, opened by dev_kx; the payload is a Keybox with the grant and the keys.
         let keybox = try open(vectors.keybox, .keybox, recipient: k.devKX, verifier: k.hubSig.publicKey)

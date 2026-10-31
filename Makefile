@@ -147,10 +147,13 @@ test-swift:
 kit-test:
 	cd WatchtowerKit && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
-# The Kit E2E vectors the Go hub's golden tests read (WatchtowerKit/Tests/Fixtures/e2e/*.json).
+# The Kit E2E vectors the Go hub's golden tests read: padding, envelope, kdf,
+# hpke-envelope and asset .json in WatchtowerKit/Tests/Fixtures/e2e
+# (hpke-rfc9180-a21.json is hand-transcribed from the RFC, never regenerated).
 # The first run regenerates them (each vector test fails with "regenerated" on
 # purpose, so its exit code is ignored); the second run verifies the new files.
-E2E_VECTOR_TESTS := E2EPaddingVectorTests|HPKEEnvelopeVectorTests|EnvelopeTests|E2EKeyDerivationTests
+# The leading "\." and trailing "/" anchor whole class names (no Replica*EnvelopeTests).
+E2E_VECTOR_TESTS := \.(E2EPaddingVectorTests|HPKEEnvelopeVectorTests|EnvelopeTests|E2EKeyDerivationTests|ChunkedAssetCipherTests)/
 e2e-vectors:  ## regenerate the Kit E2E vectors (expected XCTFail "regenerated"), then verify
 	-WT_E2E_REGENERATE=1 $(MAKE) kit-test FILTER='$(E2E_VECTOR_TESTS)'
 	$(MAKE) kit-test FILTER='$(E2E_VECTOR_TESTS)'
