@@ -245,10 +245,10 @@ final class AppEnvironment {
     /// failed, else `.noData`. The other sessions only note it: a push
     /// launching the app into the background leaves them unfetched until
     /// the first activation (`HubSession.noteForeignPush`).
-    func handlePush(at arrival: Date? = nil, inForeground: Bool, scope: PushScope?) async -> FetchOutcome {
+    func handlePush(at arrival: Date? = nil, inForeground: Bool, scope: PushOrigin?) async -> FetchOutcome {
         var reached: [HubSession] = []
         for session in sessions.values {
-            if let scope, let own = session.route.flatMap(PushScope.init), own != scope {
+            if let scope, let own = session.route?.pushOrigin, own != scope {
                 session.noteForeignPush()
             } else {
                 reached.append(session)

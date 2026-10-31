@@ -118,7 +118,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let arrivedAt = Date()
         let inForeground = application.applicationState == .active
         // Read before the hop: the payload is not Sendable.
-        let scope = PushScope(remoteNotification: userInfo)
+        let scope = TransportFactory.cloudKit.wake.origin(ofRemoteNotification: userInfo)
         Task { @MainActor in
             guard let env = Self.root?.env else {
                 Self.logger.warning("remote notification with no environment (degraded boot?)")
@@ -185,7 +185,7 @@ enum PushCompletion {
         _ env: AppEnvironment,
         arrivedAt: Date,
         inForeground: Bool,
-        scope: PushScope? = nil,
+        scope: PushOrigin? = nil,
         startWork: BackgroundWork.Starter,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         completion: @escaping @MainActor (FetchOutcome) -> Void

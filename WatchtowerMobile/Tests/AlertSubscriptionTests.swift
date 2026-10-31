@@ -17,7 +17,7 @@ final class AlertSubscriptionTests: XCTestCase {
 
     func testPrivateScopeSavesTheSubscriptionOnce() async {
         let saver = FakeSaver()
-        let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .private, saver: saver)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: saver))
         await registrar.apply(enabled: true)
         await registrar.apply(enabled: true)
         let saved = await saver.saved
@@ -26,7 +26,7 @@ final class AlertSubscriptionTests: XCTestCase {
 
     func testTurningOffDeletesIt() async {
         let saver = FakeSaver()
-        let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .private, saver: saver)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: saver))
         await registrar.apply(enabled: true)
         await registrar.apply(enabled: false)
         let deleted = await saver.deleted
@@ -38,7 +38,8 @@ final class AlertSubscriptionTests: XCTestCase {
 
     func testSharedScopeSavesNothing() async {
         let saver = FakeSaver()
-        let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .shared(ownerName: "_owner"), saver: saver)
+        let registrar = AlertSubscriptionRegistrar(
+            hubID: hubID, route: .cloudKit(.shared(ownerName: "_owner-acme")), wake: CloudKitPushWake(saver: saver))
         await registrar.apply(enabled: true)
         await registrar.apply(enabled: false)
         let (saved, deleted) = await (saver.saved, saver.deleted)
@@ -48,7 +49,7 @@ final class AlertSubscriptionTests: XCTestCase {
 
     func testAFailedSaveIsRetriedByTheNextCall() async {
         let flaky = FlakySaver()
-        let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .private, saver: flaky)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: flaky))
         await registrar.apply(enabled: true)
         await registrar.apply(enabled: true)
         XCTAssertEqual(flaky.attempts, 2)
@@ -133,7 +134,7 @@ final class AlertSubscriptionTests: XCTestCase {
     /// applies the newest request, the ones in between cost no CloudKit call, and the end state is the last request.
     func testRapidTogglesEndInTheLastRequestedState() async throws {
         let saver = GatedSaver()
-        let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .private, saver: saver)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: saver))
         let issued = IssuedCount()
         var calls: [Task<Void, Never>] = []
         for enabled in [true, false, true, false] {
@@ -161,7 +162,7 @@ final class AlertSubscriptionTests: XCTestCase {
 
     func testForgettingAHubDeletesItsSubscription() async {
         let saver = FakeSaver()
-        let registrar = AlertSubscriptionRegistrar(hubID: hubID, scope: .private, saver: saver)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: saver))
         await registrar.apply(enabled: false)
         let deleted = await saver.deleted
         XCTAssertEqual(deleted, [AskAlertSubscription.subscriptionID(hubID: hubID)], "even before this launch saved it")

@@ -387,7 +387,7 @@ final class HubSession {
         hold: RecordingHold? = nil,
         route: HubRoute? = nil,
         notifications: NotificationCenter = .default,
-        subscriptionSaver: (any SubscriptionSaving)? = nil,
+        pushWake: (any PushWake)? = nil,
         alertCleaner: DeliveredAlertCleaner? = nil,
         alertPosting: LocalAlertPosting? = nil,
         startsActive: Bool = true,
@@ -482,7 +482,7 @@ final class HubSession {
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
-            scope: route?.cloudKitScope, transport: transport, saver: subscriptionSaver)
+            route: route, wake: pushWake)
         sharedAlerts = Self.makeSharedAlerts(
             hubID: hubID, route: route, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
@@ -542,9 +542,8 @@ final class HubSession {
         kind: TransportKind,
         hubID: String,
         device: LinkedDevice?,
-        scope: CloudDatabaseScope?,
-        transport: any CloudSyncTransport,
-        saver: (any SubscriptionSaving)?
+        route: HubRoute?,
+        wake: (any PushWake)?
     ) -> (DeviceSettings, AlertSubscriptionRegistrar?) {
         let settings = DeviceSettings(
             transport: secure, defaults: defaults,
@@ -552,30 +551,20 @@ final class HubSession {
             hubID: hubID
         )
         settings.linkedDevice = device
-        let registrar = makeAlertRegistrar(hubID: hubID, kind: kind, scope: scope, transport: transport, saver: saver)
+        let registrar = makeAlertRegistrar(hubID: hubID, kind: kind, route: route, wake: wake)
         return (settings, registrar)
     }
 
-    /// The hub's alert subscription, only over the live engine (or a saver a test injects). A CloudKit container
-    /// raises an uncatchable exception in a process without the app's iCloud entitlement (the unsigned test host,
-    /// where a `CloudKitTransport` never starts its engine either), so the live saver needs both.
+    /// The hub's alert subscription, only for a CloudKit hub with a route and a wake (the boot passes a wake only in
+    /// a process with the app's iCloud entitlement: CloudKit raises an uncatchable exception without it).
     private static func makeAlertRegistrar(
         hubID: String,
         kind: TransportKind,
-        scope: CloudDatabaseScope?,
-        transport: any CloudSyncTransport,
-        saver: (any SubscriptionSaving)?
+        route: HubRoute?,
+        wake: (any PushWake)?
     ) -> AlertSubscriptionRegistrar? {
-        guard kind == .cloudKit, let scope,
-              let saver = saver ?? liveSaver(transport: transport)
-        else { return nil }
-        return AlertSubscriptionRegistrar(hubID: hubID, scope: scope, saver: saver)
-    }
-
-    /// The private database's saver, only for a `CloudKitTransport` in an entitled process.
-    private static func liveSaver(transport: any CloudSyncTransport) -> (any SubscriptionSaving)? {
-        guard transport is any LiveTransport, TransportFactory.cloudKit.isAvailable() else { return nil }
-        return CloudKitSubscriptionSaver()
+        guard kind == .cloudKit, let route, let wake else { return nil }
+        return AlertSubscriptionRegistrar(hubID: hubID, route: route, wake: wake)
     }
 
     /// The recording uploader: sealed through `secure`, re-sending only

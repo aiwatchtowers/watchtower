@@ -1,4 +1,3 @@
-import CloudKit
 import Foundation
 import WatchtowerSync
 
@@ -34,33 +33,6 @@ enum SessionCadence {
         switch role {
         case .active: 5
         case .inactive: 300
-        }
-    }
-}
-
-/// The database a silent push came from: it reaches the sessions linked
-/// through that scope only.
-enum PushScope: Equatable, Sendable {
-    case `private`
-    case shared
-
-    /// nil for a route that has no CloudKit database (a hosted relay).
-    init?(_ route: HubRoute) {
-        switch route {
-        case .cloudKit(.private): self = .private
-        case .cloudKit(.shared): self = .shared
-        case .hostedRelay: return nil
-        }
-    }
-
-    /// The scope of a CloudKit database notification's payload; nil for
-    /// anything else (every session then fetches).
-    init?(remoteNotification userInfo: [AnyHashable: Any]) {
-        let notification = CKNotification(fromRemoteNotificationDictionary: userInfo) as? CKDatabaseNotification
-        switch notification?.databaseScope {
-        case .private: self = .private
-        case .shared: self = .shared
-        default: return nil
         }
     }
 }

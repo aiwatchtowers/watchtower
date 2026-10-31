@@ -1,4 +1,3 @@
-import CloudKit
 import Foundation
 import os
 import WatchtowerSync
@@ -12,18 +11,18 @@ final class AlertSubscriptionRegistrar {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AlertSubscription")
 
     private let hubID: String
-    private let scope: CloudDatabaseScope
-    private let saver: any SubscriptionSaving
+    private let route: HubRoute
+    private let wake: any PushWake
     private enum Applied { case unknown, registered, removed }
 
     /// What this process last got CloudKit to do; `unknown` until the first success, so a failure is retried by the
     /// next call (the next launch, or the next toggle).
     private var applied = Applied.unknown
 
-    init(hubID: String, scope: CloudDatabaseScope, saver: any SubscriptionSaving) {
+    init(hubID: String, route: HubRoute, wake: any PushWake) {
         self.hubID = hubID
-        self.scope = scope
-        self.saver = saver
+        self.route = route
+        self.wake = wake
     }
 
     /// The newest requested state.
@@ -50,10 +49,9 @@ final class AlertSubscriptionRegistrar {
         guard applied != wanted else { return }
         do {
             if enabled {
-                guard let subscription = AskAlertSubscription.subscription(for: scope, hubID: hubID) else { return }
-                try await saver.save(subscription)
-            } else if AskAlertSubscription.subscription(for: scope, hubID: hubID) != nil {
-                try await saver.delete(id: AskAlertSubscription.subscriptionID(hubID: hubID))
+                guard try await wake.subscribeAlerts(hubID: hubID, route: route) else { return }
+            } else {
+                try await wake.unsubscribeAlerts(hubID: hubID, route: route)
             }
             applied = wanted
         } catch {

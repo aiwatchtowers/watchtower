@@ -33,6 +33,7 @@ struct HubSessionFactory {
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
                 route: route,
+                pushWake: transports.isAvailable() ? transports.wake : nil,
                 startsActive: active,
                 uploadRetriesAllowed: active,
                 replicaObservesSuspension: true,

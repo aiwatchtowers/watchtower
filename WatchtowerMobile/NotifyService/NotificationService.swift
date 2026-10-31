@@ -1,4 +1,3 @@
-import CloudKit
 import os
 import UserNotifications
 import WatchtowerSync
@@ -25,18 +24,13 @@ final class NotificationService: UNNotificationServiceExtension {
             self.contentHandler = contentHandler
             original = request.content
         }
-        guard let notification = CKNotification(fromRemoteNotificationDictionary: request.content.userInfo)
-                as? CKQueryNotification,
-              notification.databaseScope == .private,
-              let signalID = notification.recordID,
-              let reference = AskAlertSubscription.alertReference(forSignal: signalID)
-        else {
+        guard let source = CloudKitPushWake().alertSource(for: request.content.userInfo) else {
             deliver(nil)
             return
         }
         let content = request.content
         work = Task { [weak self] in
-            let filled = await Self.fill(content, reference: reference)
+            let filled = await Self.fill(content, source: source)
             self?.deliver(filled)
         }
     }
@@ -57,22 +51,21 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private static func fill(
-        _ content: UNNotificationContent, reference: (hubID: String, alertID: CKRecord.ID)
+        _ content: UNNotificationContent, source: AlertSource
     ) async -> UNNotificationContent? {
         do {
             guard let group = Bundle.main.object(forInfoDictionaryKey: "WTKeychainAlertGroup") as? String, !group.isEmpty,
                   let material = try KeychainPhoneKeyStore.alertMaterial(
-                      reference.hubID, backend: SecItemKeychainBackend(), alertGroup: group)
+                      source.hubID, backend: SecItemKeychainBackend(), alertGroup: group)
             else {
                 logger.notice("ask alert not filled: no alert material for its hub")
                 return nil
             }
-            let record = try await fetch(reference.alertID)
-            guard let envelope = AskAlertSubscription.envelope(of: record),
-                  let payload = AlertOpener(material: material).open(wireName: reference.alertID.recordName, envelope: envelope)
+            guard let envelope = try await CloudKitPushWake().envelope(for: source, timeout: fetchTimeout),
+                  let payload = AlertOpener(material: material).open(wireName: source.wireName, envelope: envelope)
             else { return nil }
             let filled = content.mutableCopy() as? UNMutableNotificationContent ?? UNMutableNotificationContent()
-            let fields = WorkAlertContent(payload: payload, hubID: reference.hubID)
+            let fields = WorkAlertContent(payload: payload, hubID: source.hubID)
             filled.title = fields.title
             filled.body = fields.body
             filled.threadIdentifier = fields.threadID
@@ -84,18 +77,10 @@ final class NotificationService: UNNotificationServiceExtension {
         }
     }
 
-    private static func fetch(_ id: CKRecord.ID) async throws -> CKRecord {
-        let configuration = CKOperation.Configuration()
-        configuration.timeoutIntervalForRequest = fetchTimeout
-        configuration.timeoutIntervalForResource = fetchTimeout
-        return try await CKContainer(identifier: WatchtowerCloud.containerID).privateCloudDatabase
-            .configuredWith(configuration: configuration) { database in try await database.record(for: id) }
-    }
-
     /// A code, never key or payload bytes.
     private static func errorCode(_ error: Error) -> String {
+        if let code = CloudKitPushWake.errorCode(error) { return code }
         switch error {
-        case let error as CKError: return "CKError \(error.code.rawValue)"
         case KeyStoreError.corrupt: return "corrupt"
         case let error as KeyStoreError: return String(describing: error)
         default: return "unexpected"
