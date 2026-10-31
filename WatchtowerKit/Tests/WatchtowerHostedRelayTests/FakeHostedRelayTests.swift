@@ -346,6 +346,23 @@ final class FakeHostedRelayTests: XCTestCase {
         )
     }
 
+    /// R20: the Worker verifies a fresh `app_attest` before the signature (`worker/src/http/op.ts`).
+    func testBadFreshAttestationFailsBeforeTheSignature() async throws {
+        let relay = makeRelay()
+        let phone = try await onboard(relay, .phone, seed: 2)
+        let nonce = try loginNonce(relay, phone)
+        let storedKey = phone.keyID
+        var op = loginOp(phone, nonce: nonce, attestation: try await freshAttestation(phone, hash: Data(repeating: 7, count: 32)))
+        op.signature = Data(repeating: 1, count: 64)
+        XCTAssertEqual(try errorCode(relay, nil, .login(op)), .attestationFailed)
+        phone.keyID = storedKey
+        let assertion = try await assertion(phone, nonce: nonce)
+        XCTAssertNil(
+            try errorCode(relay, nil, .login(loginOp(phone, nonce: nonce, attestation: assertion))),
+            "the refused attestation did not burn the nonce"
+        )
+    }
+
     func testOffModeIgnoresAttestation() async throws {
         let relay = makeRelay(attest: .off)
         let phone = device(.phone, seed: 2)

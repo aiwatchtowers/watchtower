@@ -124,12 +124,25 @@ extension FakeHostedRelay {
 
     // MARK: - Login
 
-    /// README "Login": the nonce is consumed first, then the Ed25519 signature over
-    /// nonce ‖ device_id ‖ origin; every attestation decision comes only after the
-    /// signature holds, so a wrong signature is `UNAUTHENTICATED` whatever the attestation.
+    /// README "Login": the nonce is consumed, then the Ed25519 signature over
+    /// nonce ‖ device_id ‖ origin is checked, then the stored-key rules apply.
+    ///
+    /// README and Worker differ here, and the Worker wins (R20). The README says every
+    /// attestation decision of a login comes only after the signature holds. The Worker
+    /// (relay@3a99bd7 `worker/src/http/op.ts`, `loginAttestation`) verifies a fresh
+    /// `app_attest` first, before the nonce is consumed and before `DeviceDO.login`
+    /// checks the signature. So a bad fresh attestation is `ATTESTATION_FAILED` whatever
+    /// the signature. An assertion, or no attestation at all, is still decided after the
+    /// signature (`worker/src/do/device.ts`, `login`).
     func login(_ op: Relay_V1_Login) throws -> Relay_V1_Response {
         guard op.nonce.count == Self.loginNonceBytes else { throw RelayFailure.invalid }
         guard !op.deviceID.isEmpty else { throw RelayFailure.unauthenticated }
+        if attests(op.deviceID), op.hasAttestation, case .appAttest(let attest) = op.attestation.kind {
+            let hash = RelayAuthMessages.loginClientDataHash(nonce: op.nonce, deviceID: op.deviceID, origin: relayOrigin)
+            guard Self.attestationValid(attest, clientDataHash: hash) else {
+                throw RelayFailure(.attestationFailed, "attestation failed")
+            }
+        }
         let expiry = state.loginNonces[op.deviceID]?.removeValue(forKey: op.nonce)
         guard let expiry, now < expiry, var device = state.devices[op.deviceID] else { throw RelayFailure.unauthenticated }
         let message = RelayAuthMessages.loginMessage(nonce: op.nonce, deviceID: device.id, origin: relayOrigin)
@@ -155,7 +168,7 @@ extension FakeHostedRelay {
         let hash = RelayAuthMessages.loginClientDataHash(nonce: op.nonce, deviceID: device.id, origin: relayOrigin)
         switch op.hasAttestation ? op.attestation.kind : nil {
         case .appAttest(let attest):
-            guard Self.attestationValid(attest, clientDataHash: hash) else { throw failed }
+            // Verified in `login` before the nonce and the signature (the Worker's order).
             if attest.keyID != device.attestKeyID {
                 device.attestKeyID = attest.keyID
                 device.attestCounter = 0
