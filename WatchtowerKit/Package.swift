@@ -34,6 +34,7 @@ let package = Package(
         .library(name: "WatchtowerDesign", targets: ["WatchtowerDesign"]),
         .library(name: "WatchtowerE2ETesting", targets: ["WatchtowerE2ETesting"]),
         .library(name: "WatchtowerHostedRelay", targets: ["WatchtowerHostedRelay"]),
+        .library(name: "WatchtowerHostedRelayTesting", targets: ["WatchtowerHostedRelayTesting"]),
     ],
     dependencies: [
         // GRDB linked against SQLCipher.swift (#603): our fork, pinned exactly.
@@ -80,10 +81,19 @@ let package = Package(
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),
+        .target(
+            name: "WatchtowerHostedRelayTesting",
+            dependencies: [
+                "WatchtowerHostedRelay",
+                "WatchtowerRelayProto",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ]
+        ),
         .testTarget(
             name: "WatchtowerHostedRelayTests",
             dependencies: [
                 "WatchtowerHostedRelay",
+                "WatchtowerHostedRelayTesting",
                 "WatchtowerRelayProto",
                 "WatchtowerSync",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
