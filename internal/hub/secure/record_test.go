@@ -722,3 +722,31 @@ func TestOpener_RequeueOnlyRebuildsTheHubsOwnRecords(t *testing.T) {
 		t.Error("garbage requeued")
 	}
 }
+
+// The alert's signal (the Swift AskAlertSignal): "sig-<wire name>" in the
+// alert's zone, empty, and only for an alert.
+func TestSealer_SignalOnlyForAnAlert(t *testing.T) {
+	s := NewSealer(newKeySource(t))
+	alert, err := s.Alert("dz", "ask_alert-ask-42", []byte(`{"title":"Acme"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := s.Signal(alert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sig.WireName() != "sig-"+alert.WireName() || sig.WireName() != SignalName(alert.WireName()) ||
+		sig.Zone() != "dz" || !sig.Sealed() || len(sig.Envelope()) != 0 {
+		t.Errorf("signal: %q zone %q sealed %v len %d", sig.WireName(), sig.Zone(), sig.Sealed(), len(sig.Envelope()))
+	}
+	data, err := s.Data("dz", "owner_ask-1", "", []byte(`{}`), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Signal(data); !errors.Is(err, ErrWrongClass) {
+		t.Errorf("a data record got a signal: %v", err)
+	}
+	if _, err := s.Signal(Record{}); !errors.Is(err, ErrUnsealed) {
+		t.Errorf("an unsealed record got a signal: %v", err)
+	}
+}
