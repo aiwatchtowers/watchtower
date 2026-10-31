@@ -220,6 +220,7 @@ func TestARunIsNeverReplayed(t *testing.T) {
 func TestNudgeTableCoversEveryRegisteredKind(t *testing.T) {
 	e := newEnv(t)
 	registered := append([]string{"ask_answer", "automation_run"}, boardKinds...)
+	registered = append(registered, "permission_answer", "session_interrupt", "session_report_request", "session_chat_request")
 	for _, k := range registered {
 		if len(NudgeTable[k]) == 0 {
 			t.Fatalf("%s has no nudge", k)
