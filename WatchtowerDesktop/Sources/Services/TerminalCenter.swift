@@ -40,10 +40,14 @@ protocol TerminalSessionProcess: AnyObject {
     /// Whether the session host runs the process, so it outlives the app
     /// (board #496). Every real session is hosted; test fakes are not.
     var isHosted: Bool { get }
+    /// The current run never reached a process (the session host could
+    /// not be reached or started): its exit is not the session's own.
+    var neverStarted: Bool { get }
 }
 
 extension TerminalSessionProcess {
     var isHosted: Bool { false }
+    var neverStarted: Bool { false }
 
     var onOwnerFocus: (() -> Void)? {
         get { nil }
@@ -203,8 +207,10 @@ final class TerminalCenter {
     @ObservationIgnored private(set) var missingAgent: [Int64: AgentKind] = [:]
     /// Every process exit, after `states` records it (the VM's resume-failure
     /// check and placed-session cleanup): session id, exit code, and whether
-    /// Watchtower caused it by closing the terminal (`close`/`closeAll`,
-    /// which drop the process before signalling it). One subscriber.
+    /// it is not the session's own exit — Watchtower closed the terminal
+    /// (`close`/`closeAll`, which drop the process before signalling it), or
+    /// the run never started (`neverStarted`: the session host could not
+    /// be reached), so no PROJ-18 cleanup follows it. One subscriber.
     @ObservationIgnored var onSessionExit: ((_ id: Int64, _ code: Int32?, _ closedByApp: Bool) -> Void)?
     /// Every process exit too, by session row id, for a subscriber that
     /// outlives the workbench view model (`AutomationSessionCenter`).
@@ -240,7 +246,7 @@ final class TerminalCenter {
 
     /// The pane's text for a session that could not open because no
     /// session host client exists to launch it through.
-    static let noSessionHostReason = "[Watchtower] the session host is not running"
+    static let noSessionHostReason = "[Watchtower] \(HostedTerminalSession.hostNotRunningReason)"
 
     /// The connection `startSessionHost` began; a reattach waits for it.
     @ObservationIgnored private(set) var sessionHostConnection: Task<Void, Never>?
@@ -975,7 +981,7 @@ final class TerminalCenter {
         rows[id] = session
         process.onExit = { [weak self, weak process] code in
             guard let self else { return }
-            let closedByApp = process.map { self.processes[id] !== $0 } ?? true
+            let closedByApp = process.map { self.processes[id] !== $0 || $0.neverStarted } ?? true
             states[id] = .exited(code)
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
@@ -1388,8 +1394,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         allowMouseReporting = getTerminal().mouseMode != .off
     }
 
-    /// The process's output (from the session host, or SwiftTerm's own
-    /// process path).
+    /// The process's output, as the session host sends it.
     func feedOutput(_ bytes: ArraySlice<UInt8>) {
         feed(byteArray: bytes)
         syncMouseReporting()

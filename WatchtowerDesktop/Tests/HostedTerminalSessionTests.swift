@@ -188,6 +188,7 @@ final class HostedTerminalSessionTests: XCTestCase {
         try launched(transport, session: session)
         transport.push(.json(.exit, SessionHostExit(code: 3)))
         XCTAssertEqual(exits, [3])
+        XCTAssertFalse(session.neverStarted, "a run the host took is the session's own")
         XCTAssertTrue(transport.closed)
         // Output after Exit is ignored.
         transport.push(SessionHostFrame(type: .output, payload: Array("late".utf8)))
@@ -205,6 +206,7 @@ final class HostedTerminalSessionTests: XCTestCase {
         session.onExit = { exits.append($0) }
         transport.push(SessionHostFrame(type: .exit, payload: Array(#"{"code":null}"#.utf8)))
         XCTAssertEqual(exits, [nil])
+        XCTAssertFalse(session.neverStarted, "the host reported the run's exit")
     }
 
     func testAConnectionLostBeforeLaunchedReportsNilExit() async throws {
@@ -214,6 +216,7 @@ final class HostedTerminalSessionTests: XCTestCase {
         transport.hangUp()
         transport.hangUp()
         XCTAssertEqual(exits, [nil])
+        XCTAssertTrue(session.neverStarted, "the host never took the run")
         XCTAssertNil(session.recovering, "an unbound run is not looked up")
         XCTAssertTrue(transports[0].sent(.list).isEmpty)
     }
@@ -302,6 +305,7 @@ final class HostedTerminalSessionTests: XCTestCase {
         let fresh = try XCTUnwrap(transports.last)
         fresh.hangUp()
         XCTAssertEqual(exits, [nil])
+        XCTAssertFalse(session.neverStarted, "the run did run before its connection was lost")
         XCTAssertEqual(transports[0].sent(.list).count, 1)
     }
 

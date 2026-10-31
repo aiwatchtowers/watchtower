@@ -161,7 +161,8 @@ final class TerminalCenterTests: XCTestCase {
     /// that could not be reached or started at launch is asked once more by
     /// the session's start; when that fails too nothing is launched, the
     /// run ends and the pane says why. The next start asks again, and runs
-    /// in the host once it answers.
+    /// in the host once it answers. The failed launch is not a natural exit,
+    /// so it starts no PROJ-18 placed-session cleanup.
     func testProj20_NoSessionHostOpensNoSessionAndShowsTheReason() async throws {
         var hostUp = false
         var transports: [FakeSessionHostTransport] = []
@@ -178,7 +179,11 @@ final class TerminalCenterTests: XCTestCase {
         await center.connectSessionHost(make)
         XCTAssertNil(center.sessionHost, "the host neither answered nor could be started")
         var exits: [Int32?] = []
-        center.onSessionExit = { _, code, _ in exits.append(code) }
+        var ownExits = 0
+        center.onSessionExit = { _, code, closedByApp in
+            exits.append(code)
+            if !closedByApp { ownExits += 1 }
+        }
 
         let s = try row(kind: .shell)
         center.start(s, fresh: true)
@@ -188,6 +193,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertTrue(transports.allSatisfy { $0.sent(.launch).isEmpty }, "nothing is launched")
         XCTAssertEqual(center.states[s.id], .exited(nil))
         XCTAssertEqual(exits, [nil])
+        XCTAssertEqual(ownExits, 0, "a run that never started is no natural exit: no worktree cleanup follows")
         let terminal = try XCTUnwrap(hosted.view as? PalettedTerminalView).getTerminal()
         let text = (0..<terminal.rows).compactMap { terminal.getLine(row: $0)?.translateToString(trimRight: true) }.joined()
         XCTAssertTrue(text.contains("[Watchtower] the session host is not running"), text)
