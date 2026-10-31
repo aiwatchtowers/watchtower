@@ -12,6 +12,8 @@ Three agents ran overnight. The progress line under each session name, the **Rep
 
 Under the caption, Watchtower shows a progress line once it has read the report: for example "#314 · 14/15 · PR #147 open" for the target the session works on, its done tasks and its pull requests. The line refreshes every 15 seconds while the Workbench tab is on screen. If a refresh fails, the last line stays with "· stale" at the end.
 
+The count covers the session target picked with **Session Target** in the session's right-click menu. With no target, it covers what the session touched, leaving out targets another session has taken over since. The agent can finish only once its target is closed, so changing the target changes that check too.
+
 Pull request details need the GitHub CLI (`gh`). Without it, only whether a branch is merged is known.
 
 ## Using it
