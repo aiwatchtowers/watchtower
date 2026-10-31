@@ -81,8 +81,8 @@ extension WorkbenchesViewModel {
 
     /// The code root the page's FILES, Files pane, git marks and code
     /// navigation work in (spec D6, §6.3): the root of the session the
-    /// layout holds (`codeRoot(sessionID:project:)`); the main folder for a
-    /// page without a session.
+    /// layout holds (`codeRoot(sessionID:project:)`), else of the workbench's
+    /// session focused last; the main folder for a workbench without one.
     func activeCodeRoot(project: Workbench) -> CodeRoot {
         codeRoot(sessionID: pageSessionID(projectID: project.id), project: project)
     }
