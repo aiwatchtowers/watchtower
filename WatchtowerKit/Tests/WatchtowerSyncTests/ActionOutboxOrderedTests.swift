@@ -558,6 +558,71 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertNotNil(try row(phone, one.id)?.recordSeq)
     }
 
+    /// A first write that meets the hub's held echo keeps the echo's version, so the next resend rewrites it.
+    func testAFirstWriteThatMeetsAHeldEchoKeepsItsVersionForTheResend() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        let stored = try XCTUnwrap(row(phone, one.id))
+        try await hubWrites(phone, echo(one.id, seq: 1, status: .held, reason: .agentBusy))
+        let echoRecord = try await current(phone, stored.wireName)
+        let held = try XCTUnwrap(echoRecord?.recordSeq)
+
+        _ = try await phone.outbox.flush()
+        XCTAssertEqual(try row(phone, one.id)?.recordSeq, held)
+        XCTAssertEqual(try pending(phone, one.id)?.echoStatus, .held)
+
+        try await phone.outbox.resendFrom(1)
+
+        let saves = await saves(phone)
+        XCTAssertEqual(saves.map(\.expects), [[.absent], [.seq(held)]])
+        let now = try await current(phone, stored.wireName)
+        XCTAssertEqual(now?.payload, stored.envelope, "the held echo is rewritten with the action")
+        XCTAssertEqual(try row(phone, one.id)?.recordSeq, now?.recordSeq)
+    }
+
+    /// A requeued row with no known version: our own bytes found at another version are written again as a new one.
+    func testARequeuedRowWithoutAVersionRewritesItsOwnBytes() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        let stored = try XCTUnwrap(row(phone, one.id))
+        try await phone.inner.save([CloudRecord(
+            recordName: stored.wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: base,
+            payload: stored.envelope)])
+        let earlier = try await current(phone, stored.wireName)
+        let version = try XCTUnwrap(earlier?.recordSeq)
+        try phone.store.markSent(actionID: one.id, recordSeq: nil, at: base)
+
+        try await phone.outbox.resendFrom(1)
+
+        let saves = await saves(phone)
+        XCTAssertEqual(saves.map(\.expects), [[.absent], [.seq(version)]])
+        let now = try await current(phone, stored.wireName)
+        XCTAssertEqual(now?.payload, stored.envelope)
+        XCTAssertGreaterThan(try XCTUnwrap(now?.recordSeq), version, "a new version the hub lists again")
+        XCTAssertEqual(try row(phone, one.id)?.recordSeq, now?.recordSeq)
+        XCTAssertEqual(try row(phone, one.id)?.delivery, .sent)
+    }
+
+    /// A requeued row with no known version that meets a held echo rewrites it once.
+    func testARequeuedRowWithoutAVersionRewritesAHeldEcho() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        let stored = try XCTUnwrap(row(phone, one.id))
+        try phone.store.markSent(actionID: one.id, recordSeq: nil, at: base)
+        try await hubWrites(phone, echo(one.id, seq: 1, status: .held))
+        let echoRecord = try await current(phone, stored.wireName)
+        let held = try XCTUnwrap(echoRecord?.recordSeq)
+
+        try await phone.outbox.resendFrom(1)
+
+        let saves = await saves(phone)
+        XCTAssertEqual(saves.map(\.expects), [[.absent], [.seq(held)]])
+        let now = try await current(phone, stored.wireName)
+        XCTAssertEqual(now?.payload, stored.envelope)
+        XCTAssertEqual(try row(phone, one.id)?.delivery, .sent)
+        XCTAssertEqual(try row(phone, one.id)?.recordSeq, now?.recordSeq)
+    }
+
     func testResendFromSkipsWhatItCannotSendAndListsNothingNew() async throws {
         let phone = try await makePhone()
         let one = try await insert(phone)
@@ -583,7 +648,9 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(try phone.store.outboxRows([.undelivered]).map(\.actionID), [one.id], "nothing new listed")
         XCTAssertEqual(try row(phone, three.id)?.delivery, .sent)
         let saves = await saves(phone)
-        XCTAssertEqual(saves.suffix(1).map(\.names), [[try wire(phone, 3)]], "the control first, then row 3")
+        let controlWire = try phone.secure.wireName(plain: skip.recordName, zone: .relay)
+        XCTAssertEqual(
+            saves.suffix(2).map(\.names), [[controlWire], [try wire(phone, 3)]], "the control first, then row 3")
     }
 
     func testResendFromWithNoRowsWritesOnlySkipTo() async throws {

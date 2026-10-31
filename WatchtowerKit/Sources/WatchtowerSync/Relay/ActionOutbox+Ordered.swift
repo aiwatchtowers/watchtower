@@ -268,14 +268,18 @@ extension ActionOutbox {
         case stopped(TransportRefusal)
     }
 
-    /// Writes one queued row: a never-written row (`record_seq` NULL) with `.absent`, a row `resend_from` put back
-    /// with `.seq(record_seq)` — the same envelope as a new version, so the hub's `changes` lists it again. At most
-    /// two writes per row (Task 6 point 2): the second one's conflict is read, never written over.
+    /// Writes one queued row with `.seq(record_seq)`, or `.absent` when no version is known. A row `resend_from`
+    /// put back is a resend: the same envelope must land as a new version, so the hub's `changes` lists it again;
+    /// when its conflict holds our own bytes at another version or a non-final echo, it is overwritten once under
+    /// that version, whatever `record_seq` held. At most two writes per row (Task 6 point 2): the second one's
+    /// conflict is read, never written over.
     private func deliver(_ row: OutboxRow) async throws -> Delivered {
         let record = CloudRecord(
             recordName: row.wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: row.createdAt,
             payload: row.envelope)
-        let isResend = row.recordSeq != nil
+        // A queued row with a `sent_at` was written before and put back by `requeue` (nothing else moves a row
+        // back to `queued`): the requeue is what makes it a resend, not whether a version is known.
+        let isResend = row.sentAt != nil
         var expect: WriteExpectation = row.recordSeq.map { .seq($0) } ?? .absent
         var rewritingEcho = false
         for attempt in 0..<2 {
@@ -295,6 +299,11 @@ extension ActionOutbox {
                 return .stopped(refusal)
             case .conflict(let current):
                 if current.payload == row.envelope {
+                    if isResend, canWriteAgain, let version = current.recordSeq {
+                        // Our own bytes at another version: a resend writes them again as a new one.
+                        expect = .seq(version)
+                        continue
+                    }
                     // Our own bytes are there: written (CloudKit's reply was lost, say).
                     try written(row, version: current.recordSeq, rewritingEcho: rewritingEcho)
                     return .written
@@ -308,14 +317,16 @@ extension ActionOutbox {
                         return .written
                     }
                     // A non-final echo (`held`, `received`) never settles the row.
-                    try applyOrderedEcho(echo)
-                    if isResend, canWriteAgain, case .seq = expect, let version = current.recordSeq {
+                    if isResend, canWriteAgain, let version = current.recordSeq {
                         // A resend overwrites it once with the action (a hub that lost its held rows reads it again).
+                        try applyOrderedEcho(echo)
                         expect = .seq(version)
                         rewritingEcho = true
                         continue
                     }
+                    // Sent at the echo's version first, so the next resend rewrites the echo under it.
                     if !rewritingEcho { try store.markSent(actionID: row.actionID, recordSeq: current.recordSeq, at: now()) }
+                    try applyOrderedEcho(echo)
                     return .left
                 }
                 // Anything else (our own earlier copy, an older version): one overwrite of the same bytes.
