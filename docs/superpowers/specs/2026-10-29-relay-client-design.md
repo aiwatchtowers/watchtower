@@ -10,7 +10,7 @@ This spec does not repeat the relay spec. It says how Watchtower (Kit, Desktop h
 - A paying phone and its Macs run entirely over the relay: slices, actions, echoes, attachments, pushes, transport switch, subscription. Target: action on the phone → result on the phone screen **p50 < 500 ms** on a good network.
 - Free users stay on CloudKit. Their crypto, zones, shares and pairing do not change. **This spec proposes two changes for them, which need the owner's consent (focus of this review):**
   1. the hub applies each phone's actions in order with an outbox and control records, and the mailbox lane uses conditional writes on CloudKit (§5). Visible effect: an action the phone lost (reinstall) shows as **Not delivered** with **Retry** instead of vanishing; nothing else on screen changes;
-  2. the hub publishes on change (§6) — scope decided in ask #735.
+  2. the hub publishes on change (§6) — on both transports, faster spacing on the hosted relay only (ask #735).
 
   The reason for (1) is the transport switch: unechoed actions must move between transports with the same bytes and the same order (sim rule 13), so they need the ordered path *before* the switch, while still on CloudKit. The alternative is in §5.11.
 - **At launch, relay links keep today's key scheme** (90-day epochs, static-static pairwise keys) plus a new epoch at every transport switch. The 7-day rotation with ephemeral X25519 (relay spec §7.4) comes in Phase 5, after launch; relay spec §9 allows that. Until then the relay's "middle" forward secrecy rests on delete-after-delivery and latest-version-only storage alone.
@@ -89,9 +89,9 @@ Recon on #1238: the ~14 s median comes mostly from actions whose effect is never
 2. **In-process observation.** One `DatabaseRegionObservation` over every table a slice reads, mapped table → kinds (extends `FastLane.observedTables` from three tables to all).
 3. **Writes by Go processes.** Desktop cannot observe another process's commits; today's pattern is per-view-model polling (`SessionAgentStateCenter` polls once a second). Proposal: one `PRAGMA data_version` poll on a dedicated read connection, every 250 ms **while a phone is linked, the hub runs and the phone was in touch in the last 10 minutes**, otherwise every 1 s — never slower than today's `SessionAgentStateCenter` poll, so Desktop's agent states update at least as fast as now for a user without a phone. On change, nudge the DB-backed kinds and `SessionAgentStateCenter`. Cost: a few microseconds of SQLite per poll and 4 timer wake-ups a second while active — the same order as the existing 1 s poll, which this one replaces as a shared change source (the existing poll's own triggers, a live agent session, keep the 1 s floor). The interval is a constant in `HubChangeWatch`, measured before Phase 0b ends (Energy Impact in Activity Monitor, idle hub with a linked phone) and listed in Decisions. Rejected: a file watch on `-wal` (coalesces poorly, misses checkpoints) and a stamp file touched by every Go writer (touches all of `internal/db`).
 4. **Debounce** 150 ms trailing on the dirty-kind set; only dirty kinds are diffed. The full diff stays every 60 s as a backstop for clock-driven values (liveness ages, calendar horizon, permission expiry) and runner-fed kinds.
-5. **Per transport** — decision in ask #735 (pending). Recommended: steps 1–3 on both transports; the minimum spacing between sends stays ~2 s on CloudKit (each DataZone save is a silent push to the phone, the battery rule of #724) and drops to 150 ms on the hosted relay, where a foreground phone gets events over its WebSocket without pushes.
+5. **Per transport** (ask #735): steps 1–3 on both transports; the minimum spacing between sends stays ~2 s on CloudKit (each DataZone save is a silent push to the phone, the battery rule of #724) and drops to 150 ms on the hosted relay, where a foreground phone gets events over its WebSocket without pushes.
 6. **Mailbox pass.** On the hosted relay the hub reads mailboxes on the WebSocket event, not on a 3 s timer.
-7. **The battery test.** `SlicePublisherTests.testANormalKindIsSavedAtMostOncePerThirtySeconds` pins the owner's battery rule (#724). It is rewritten, not deleted: it becomes "a kind is saved at most once per the transport's minimum spacing", with the CloudKit spacing taken from the answer to ask #735, so the battery rule stays pinned by a test. The cadence lines of `docs/features/mobile-companion.md` change in the same PR.
+7. **The battery test.** `SlicePublisherTests.testANormalKindIsSavedAtMostOncePerThirtySeconds` pins the owner's battery rule (#724). It is rewritten, not deleted: it becomes "a kind is saved at most once per the transport's minimum spacing", with the CloudKit spacing ~2 s (ask #735), so the battery rule stays pinned by a test. The cadence lines of `docs/features/mobile-companion.md` change in the same PR.
 
 ## 7. Hosted relay transport
 
@@ -154,7 +154,7 @@ Implemented exactly as sim rules 8–16 (they change only together, relay spec �
 | 4 | Subscription, pushes, Desktop indicators, measurements (§9–10), guide pages | 3 | #1243–#1246 |
 | 5 | 7-day rotation with ephemeral X25519 (relay spec §7.4) — after launch | 3 | #1248 |
 
-Launch for users waits for Phases 0–4 and §12 p. 5. Each phase gets its own plan; phases 0a and 0b may run in parallel lanes. Phase 0b's plan is written once ask #735 is answered.
+Launch for users waits for Phases 0–4 and §12 p. 5. Each phase gets its own plan; phases 0a and 0b may run in parallel lanes.
 
 ## 14. Contracts and docs this touches
 
@@ -169,7 +169,7 @@ Launch for users waits for Phases 0–4 and §12 p. 5. Each phase gets its own p
 - Changes in the relay repository are done by the relay session — ask #734
 - `relay.proto` and the generated Swift are copied into the Kit, pinned to a relay commit — ask #734
 - Interop tests against the real relay server run locally and in the relay repository's CI; public Watchtower CI uses a fake server — ask #734
-- Publishing on change per transport — ask #735 (pending)
+- Publishing on change: the nudge on both transports; minimum spacing ~2 s on CloudKit, 100–200 ms (150 ms) on the hosted relay only — ask #735
 - The relay server moves to Cloudflare; protocol v1 and the client rules stay; the client sends the session token on the WebSocket upgrade, pings every 30 s, reconnects after 1–3 s on `GoingAway`, retries `UNAVAILABLE` and resyncs a zone on `TOKEN_EXPIRED` — relay freeze PR #1 (`2643f78`), relay ask #763
 - Existing "Relay" names keep meaning the mailbox lane; the new server's types are `HostedRelay*`; the user-facing name stays "Relay" — author's decision, for approval
 - **Needs the owner's explicit consent:** ordered actions, outbox and control records apply on CloudKit too, for free users as well (one code path for the switch); the visible change for free users is "Not delivered" + Retry; alternative in §5.11 — author's proposal, focus of this review
