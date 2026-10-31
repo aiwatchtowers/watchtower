@@ -147,8 +147,8 @@ func TestBuild_ScopeTakesLinkedTargetsAndSkipsDismissed(t *testing.T) {
 	d := loadFixture(t, "scope.sql")
 	r := build(t, d, 3)
 
-	assert.Equal(t, Progress{Done: 2, Total: 4}, r.Progress,
-		"401, the linked 411, and 420's 421 and 422; the dismissed 402 counts in neither number")
+	assert.Equal(t, Progress{Done: 0, Total: 1}, r.Progress,
+		"session 3 is bound to 400: progress counts its subtree only (401; the dismissed 402 counts in no number); 411 and 420's leaves stay in the lists")
 	assert.Equal(t, []int64{422}, ids(r.Now, func(n NowItem) int64 { return n.ID }))
 	assert.Equal(t, []int64{401}, itemIDs(r.Next), "412 is not in scope")
 
@@ -362,4 +362,106 @@ func TestSessionReport_HiddenLoopAskNotOnYou(t *testing.T) {
 	_, err = d.Exec(`UPDATE spec_reviews SET loop = 'owner' WHERE ask_id = 1`)
 	require.NoError(t, err)
 	assert.Len(t, build(t, d, 3).OnYou, 1)
+}
+
+// progressFixture: S1 (session 1, bound to nothing) linked group A (leaves
+// 11..13) and group B (leaves 21, 22); S2 is a second session.
+func progressFixture(t *testing.T) *db.DB {
+	t.Helper()
+	d := db.OpenTestDB(t)
+	_, err := d.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme'), (2, 'other', '/tmp/other');
+		INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id) VALUES
+		(10, 'A', '2026-09-28', '2026-10-05', NULL, 'todo', 1),
+		(11, 'a1', '2026-09-28', '2026-10-05', 10, 'done', 1),
+		(12, 'a2', '2026-09-28', '2026-10-05', 10, 'todo', 1),
+		(13, 'a3', '2026-09-28', '2026-10-05', 10, 'dismissed', 1),
+		(20, 'B', '2026-09-28', '2026-10-05', NULL, 'todo', 1),
+		(21, 'b1', '2026-09-28', '2026-10-05', 20, 'done', 1),
+		(22, 'b2', '2026-09-28', '2026-10-05', 20, 'todo', 1),
+		(90, 'foreign', '2026-09-28', '2026-10-05', NULL, 'todo', 2);
+		INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id) VALUES
+		(1, 1, 'claude', 'S1', NULL, '/tmp/acme', 'u1'),
+		(2, 1, 'claude', 'S2', NULL, '/tmp/acme', 'u2');
+		INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at) VALUES
+		(1, 10, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z'),
+		(1, 20, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z')`)
+	require.NoError(t, err)
+	return d
+}
+
+func stamp(t *testing.T, d *db.DB, session int64, targets ...int64) {
+	t.Helper()
+	for _, id := range targets {
+		require.NoError(t, d.LinkSessionTargetStatus(session, id))
+	}
+}
+
+func TestProj14_ProgressDropsLeavesOwnedByAnotherSession(t *testing.T) {
+	d := progressFixture(t)
+	require.Equal(t, Progress{Done: 2, Total: 4}, build(t, d, 1).Progress)
+	stamp(t, d, 2, 11, 12)
+
+	r := build(t, d, 1)
+	assert.Equal(t, Progress{Done: 1, Total: 2}, r.Progress, "only group B is left")
+	var listed []int64
+	for _, e := range func() []*boardEntry {
+		_, sc, err := loadScope(context.Background(), d, 1, 1)
+		require.NoError(t, err)
+		return sc.targets()
+	}() {
+		listed = append(listed, e.id())
+	}
+	assert.Contains(t, listed, int64(11), "the lists keep the wide set")
+	assert.Contains(t, listed, int64(12))
+}
+
+func TestProj14_GroupMoveTakesNoLeaves(t *testing.T) {
+	d := progressFixture(t)
+	stamp(t, d, 2, 10)
+	assert.Equal(t, Progress{Done: 2, Total: 4}, build(t, d, 1).Progress)
+}
+
+func TestProj14_BoundSessionCountsOnlyItsSubtree(t *testing.T) {
+	d := progressFixture(t)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = 20 WHERE id = 1`)
+	require.NoError(t, err)
+	stamp(t, d, 2, 21)
+	assert.Equal(t, Progress{Done: 1, Total: 2}, build(t, d, 1).Progress, "B only, no exclusion inside it")
+}
+
+func TestProj14_BoundTargetOffBoardFallsBackToRule2(t *testing.T) {
+	d := progressFixture(t)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = 90 WHERE id = 1`)
+	require.NoError(t, err)
+	stamp(t, d, 2, 11, 12)
+	assert.Equal(t, Progress{Done: 1, Total: 2}, build(t, d, 1).Progress)
+}
+
+func TestProj14_OwnerBoardMoveKeepsOwnership(t *testing.T) {
+	d := progressFixture(t)
+	stamp(t, d, 1, 12)
+	stamp(t, d, 2, 11)
+	require.NoError(t, d.UpdateTargetStatus(12, "done"))
+	owners, err := d.SessionLeafOwners(1)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, owners[12])
+	assert.EqualValues(t, 2, owners[11])
+	assert.Equal(t, Progress{Done: 2, Total: 3}, build(t, d, 1).Progress, "12 (now done) and 21; 11 is S2's")
+}
+
+func TestProgress_NoLinksNoTargetIsZero(t *testing.T) {
+	d := progressFixture(t)
+	assert.Equal(t, Progress{}, build(t, d, 2).Progress)
+}
+
+func TestProgress_UnownedCommentLeafStillCounts(t *testing.T) {
+	d := progressFixture(t)
+	stamp(t, d, 2, 21) // a different leaf is owned; 22 was only commented on (link, no stamp)
+	assert.Equal(t, Progress{Done: 1, Total: 3}, build(t, d, 1).Progress)
+}
+
+func TestProgress_OwnedDismissedLeafNeverCounts(t *testing.T) {
+	d := progressFixture(t)
+	stamp(t, d, 1, 13)
+	assert.Equal(t, Progress{Done: 2, Total: 4}, build(t, d, 1).Progress)
 }

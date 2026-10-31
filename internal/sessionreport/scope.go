@@ -103,13 +103,19 @@ func (b *board) hasDoneWork(e *boardEntry) bool {
 // subtree, the targets its agent linked, and the subtrees of linked targets
 // that have children.
 type scope struct {
-	b       *board
-	in      map[int64]bool
-	session int64 // the session's own target; 0 = none
+	b        *board
+	in       map[int64]bool
+	session  int64          // the session's own target; 0 = none
+	progress map[int64]bool // the leaves the progress counts; see newScope
 }
 
-func newScope(b *board, sessionTarget sql.NullInt64, linked []int64) scope {
-	s := scope{b: b, in: map[int64]bool{}}
+// newScope builds the scope of session sessionID. in is the wide set (the
+// lists). The progress set is narrower (board #1352): a session bound to a
+// target on the board counts that target's subtree leaves; any other session
+// counts the wide set minus leaves another session owns (owners: leaf id ->
+// owning session id).
+func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []int64, owners map[int64]int64) scope {
+	s := scope{b: b, in: map[int64]bool{}, progress: map[int64]bool{}}
 	roots := slices.Clone(linked)
 	if sessionTarget.Valid {
 		roots = append(roots, sessionTarget.Int64)
@@ -117,6 +123,17 @@ func newScope(b *board, sessionTarget sql.NullInt64, linked []int64) scope {
 	}
 	for _, r := range roots {
 		b.walk(r, func(e *boardEntry) { s.in[e.id()] = true })
+	}
+	if _, onBoard := b.byID[s.session]; s.session != 0 && onBoard {
+		for _, e := range b.leavesUnder(s.session) {
+			s.progress[e.id()] = true
+		}
+		return s
+	}
+	for _, e := range s.leaves() {
+		if owner, owned := owners[e.id()]; !owned || owner == sessionID {
+			s.progress[e.id()] = true
+		}
 	}
 	return s
 }
@@ -143,9 +160,12 @@ func (s scope) leaves() []*boardEntry {
 	return out
 }
 
-func (s scope) progress() Progress {
+func (s scope) counts() Progress {
 	var p Progress
 	for _, e := range s.leaves() {
+		if !s.progress[e.id()] {
+			continue
+		}
 		p.Total++
 		if e.target.Status == "done" {
 			p.Done++
@@ -218,7 +238,11 @@ func loadScope(ctx context.Context, d *db.DB, workbenchID, sessionID int64) (Ses
 	if err != nil {
 		return Session{}, scope{}, err
 	}
-	return sess, newScope(b, target, linked), nil
+	owners, err := d.SessionLeafOwners(workbenchID)
+	if err != nil {
+		return Session{}, scope{}, err
+	}
+	return sess, newScope(b, sessionID, target, linked, owners), nil
 }
 
 func loadSession(ctx context.Context, d *db.DB, workbenchID, sessionID int64) (Session, sql.NullInt64, error) {
