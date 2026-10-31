@@ -137,7 +137,7 @@ func TestBaselineMatchesSwiftColumns(t *testing.T) {
 	}
 	want := tables(swift)
 	got := tables(s.db)
-	go2 := map[string]bool{"control_queue": true, "held_actions": true, "zone_tokens": true, "recording_jobs": true}
+	go2 := map[string]bool{"control_queue": true, "held_actions": true, "zone_tokens": true, "recording_jobs": true, "held_uploads": true}
 	for name, cols := range want {
 		if got[name] != cols {
 			t.Errorf("table %s:\n go    %s\n swift %s", name, got[name], cols)

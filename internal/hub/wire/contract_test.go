@@ -1,6 +1,7 @@
 package wire_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -30,6 +31,25 @@ type fixture struct {
 		RelayCoder  string          `json:"relay_coder"`
 		LinkEncoder string          `json:"link_encoder"`
 	} `json:"encoding"`
+	Heartbeat  []contractCase `json:"heartbeat"`
+	UploadEcho []contractCase `json:"upload_echo"`
+}
+
+// contractCase is a {name, json, expect, kit} case: json decoded and
+// re-encoded by Go gives expect's bytes (the fixture writes it in Go's sorted
+// key order); kit is the phone's reading.
+type contractCase struct {
+	Name   string          `json:"name"`
+	JSON   json.RawMessage `json:"json"`
+	Expect json.RawMessage `json:"expect"`
+	Kit    map[string]any  `json:"kit"`
+}
+
+func compact(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var b bytes.Buffer
+	require.NoError(t, json.Compact(&b, raw))
+	return b.String()
 }
 
 func errFor(t *testing.T, s string) error {
@@ -109,6 +129,66 @@ func TestHubContractFixture(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, c.LinkEncoder, string(out))
 			}
+		})
+	}
+}
+
+// TestHubContractFixture_RecordingSwitch: the heartbeat's capabilities and
+// the upload echo's reason (protocol §7.7, §9).
+func TestHubContractFixture_RecordingSwitch(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	names := func(cs []contractCase) []string {
+		var out []string
+		for _, c := range cs {
+			out = append(out, c.Name)
+		}
+		return out
+	}
+	require.ElementsMatch(t, []string{"capabilities_on", "capabilities_off", "capabilities_absent",
+		"capabilities_unknown_value", "unknown_capability_key"}, names(f.Heartbeat))
+	require.ElementsMatch(t, []string{"failed_not_supported", "failed_expired", "received",
+		"failed_legacy_no_reason"}, names(f.UploadEcho))
+	for _, c := range f.Heartbeat {
+		t.Run("heartbeat/"+c.Name, func(t *testing.T) {
+			var hb wire.Heartbeat
+			require.NoError(t, json.Unmarshal(c.JSON, &hb))
+			out, err := wire.Marshal(hb)
+			require.NoError(t, err)
+			require.Equal(t, compact(t, c.Expect), string(out), "Go writes the fixture's heartbeat bytes")
+			require.Equal(t, c.Kit["recordings_offered"], hb.RecordingsOffered())
+			if c.Name == "capabilities_on" || c.Name == "capabilities_off" {
+				// Go's own capabilities, built rather than decoded, are these bytes.
+				hb.Capabilities = wire.RecordingsCapability(c.Name == "capabilities_on")
+				out, err := wire.Marshal(hb)
+				require.NoError(t, err)
+				require.Equal(t, compact(t, c.Expect), string(out))
+			}
+		})
+	}
+	for _, c := range f.UploadEcho {
+		t.Run("upload_echo/"+c.Name, func(t *testing.T) {
+			// The hub echoes an upload as a key map: every key the phone wrote kept.
+			var m map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(c.JSON, &m))
+			out, err := wire.Marshal(m)
+			require.NoError(t, err)
+			require.Equal(t, compact(t, c.Expect), string(out))
+			var echo struct {
+				Status string  `json:"status"`
+				Reason *string `json:"reason"`
+			}
+			require.NoError(t, json.Unmarshal(out, &echo))
+			require.Equal(t, c.Kit["status"], echo.Status)
+			if c.Kit["reason"] == nil {
+				require.Nil(t, echo.Reason, "no reason key")
+			} else {
+				require.NotNil(t, echo.Reason)
+				require.Equal(t, c.Kit["reason"], *echo.Reason)
+			}
+			require.Equal(t, c.Kit["keeps_audio"], echo.Status != wire.StatusReceived)
 		})
 	}
 }

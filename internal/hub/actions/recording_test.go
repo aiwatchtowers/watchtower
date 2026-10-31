@@ -3,6 +3,9 @@ package actions
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"os"
+	"reflect"
 	"testing"
 
 	"watchtower/internal/hub/secure"
@@ -122,6 +125,58 @@ func TestRecordingUploadNotSupportedIsFinal(t *testing.T) {
 	w.pass()
 	if e := w.echo("u1"); e["status"] != "failed" || e["error_message"] != "no transcriber" {
 		t.Fatalf("echo %v", e)
+	}
+}
+
+// TestUploadEchoMatchesTheContractFixture: the hub's failed echoes are the
+// shared fixture's upload_echo cases (the phone's own keys kept, status,
+// error_message and reason rewritten), the device id aside.
+func TestUploadEchoMatchesTheContractFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		UploadEcho []struct {
+			Name   string         `json:"name"`
+			Expect map[string]any `json:"expect"`
+		} `json:"upload_echo"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]RecordingOutcome{
+		"failed_not_supported": {Status: wire.StatusFailed, Reason: reasonNotSupported},
+		"received":             {Status: wire.StatusReceived},
+	}
+	for _, c := range f.UploadEcho {
+		out, ok := cases[c.Name]
+		if !ok {
+			continue
+		}
+		t.Run(c.Name, func(t *testing.T) {
+			w := newUploadWorld(t)
+			id := w.phone.ID()
+			want := maps.Clone(c.Expect)
+			want["device_id"] = id.String()
+			sent := maps.Clone(want)
+			sent["status"] = wire.StatusPending
+			delete(sent, "error_message")
+			sent["reason"] = "stale" // a stray key: the hub's answer replaces or drops it
+			if msg, ok := want["error_message"].(string); ok {
+				out.Message = msg
+			}
+			w.next = out
+			body, _ := json.Marshal(sent)
+			upload, _ := sent["id"].(string)
+			if _, err := w.phone.WriteUpload(upload, body, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			w.pass()
+			if got := w.echo(upload); !reflect.DeepEqual(got, want) {
+				t.Fatalf("echo\n got  %v\n want %v", got, want)
+			}
+		})
 	}
 }
 

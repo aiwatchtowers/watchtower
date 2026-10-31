@@ -27,7 +27,9 @@ const (
 
 // HeartbeatFacts is what the heartbeat carries besides its stamp. Accounts
 // reads the account rows (DBAccounts); LastPublishAt, LastRelayAt and
-// RelayBacklog may be nil (absent, absent, 0). Clock defaults to time.Now.
+// RelayBacklog may be nil (absent, absent, 0). Recordings reads the recording
+// switch (protocol §9; ok false = unreadable, the value last carried stays);
+// nil carries no capabilities. Clock defaults to time.Now.
 type HeartbeatFacts struct {
 	HubID         string
 	MacName       string
@@ -38,12 +40,13 @@ type HeartbeatFacts struct {
 	LastPublishAt func() (time.Time, bool)
 	LastRelayAt   func() (time.Time, bool)
 	RelayBacklog  func() int
+	Recordings    func() (on, ok bool)
 	Clock         func() time.Time
 }
 
 // HeartbeatSource is the hub's liveness record, record "heartbeat". It is
-// restamped (updated_at and the counters read anew) when its accounts change
-// and at least every HeartbeatInterval; between those it returns the same
+// restamped (updated_at and the counters read anew) when its accounts or the
+// recording switch change and at least every HeartbeatInterval; between those it returns the same
 // payload, so the 60 s full diff saves nothing. A failed accounts read keeps
 // the accounts last carried (none before the first). owner_user is "" and
 // sharing "none": a relay-only hub has no iCloud user and no share (gap 6).
@@ -61,11 +64,12 @@ func HeartbeatSource(f HeartbeatFacts) Source {
 type heartbeatSource struct {
 	f HeartbeatFacts
 
-	mu       sync.Mutex
-	accounts []wire.HeartbeatAccount // what the current payload carries
-	payload  []byte
-	stamped  time.Time
-	failing  bool // the accounts read failed last time (logged once per streak)
+	mu         sync.Mutex
+	accounts   []wire.HeartbeatAccount // what the current payload carries
+	recordings string                  // the switch the payload carries: "on", "off", "" (none)
+	payload    []byte
+	stamped    time.Time
+	failing    bool // the accounts read failed last time (logged once per streak)
 }
 
 func (*heartbeatSource) Kind() Kind { return KindHeartbeat }
@@ -86,12 +90,14 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 		h.failing = false
 		changed = !slices.Equal(accounts, h.accounts)
 	}
+	recordings := h.readRecordings()
+	changed = changed || recordings != h.recordings
 	if h.payload == nil || changed || now.Sub(h.stamped) >= HeartbeatInterval {
-		payload, err := wire.Marshal(h.build(now, accounts))
+		payload, err := wire.Marshal(h.build(now, accounts, recordings))
 		if err != nil {
 			return nil, fmt.Errorf("slices: encoding the heartbeat: %w", err)
 		}
-		h.payload, h.accounts, h.stamped = payload, accounts, now
+		h.payload, h.accounts, h.recordings, h.stamped = payload, accounts, recordings, now
 	}
 	return []Item{{Payload: h.payload}}, nil
 }
@@ -112,7 +118,23 @@ func (h *heartbeatSource) readAccounts(ctx context.Context) ([]wire.HeartbeatAcc
 	return out, nil
 }
 
-func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount) wire.Heartbeat {
+// readRecordings is the switch as the heartbeat carries it; an unreadable
+// switch keeps the value last carried.
+func (h *heartbeatSource) readRecordings() string {
+	if h.f.Recordings == nil {
+		return ""
+	}
+	on, ok := h.f.Recordings()
+	switch {
+	case !ok:
+		return h.recordings
+	case on:
+		return wire.CapabilityOn
+	}
+	return wire.CapabilityOff
+}
+
+func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount, recordings string) wire.Heartbeat {
 	if accounts == nil {
 		accounts = []wire.HeartbeatAccount{} // the Kit's accounts is not optional: [] never null
 	}
@@ -120,6 +142,9 @@ func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount)
 		UpdatedAt: wire.Time{Time: now}, AppVersion: h.f.AppVersion, HubID: h.f.HubID,
 		MacName: wire.ClipMacName(h.f.MacName), Flavor: h.f.Flavor, Accounts: accounts,
 		EnabledAt: wire.Time{Time: h.f.EnabledAt}, OwnerUser: "", Sharing: wire.SharingNone,
+	}
+	if recordings != "" {
+		hb.Capabilities = &wire.HeartbeatCapabilities{Recordings: recordings}
 	}
 	if h.f.LastPublishAt != nil {
 		if at, ok := h.f.LastPublishAt(); ok {

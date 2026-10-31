@@ -11,12 +11,44 @@ import (
 )
 
 // hub_meta keys of the Desktop heartbeat (spec §8 p. 4a): the last beat and
-// whether any ever arrived. The same signal is "desktop host" for the
-// clipboard fallback and "transcriber present" for recordings.
+// the first one (protocol §9; desktop_seen_at replaces Plan 1b's
+// desktop_seen flag, which a sidecar may still hold). The same signal is
+// "desktop host" for the clipboard fallback and "transcriber present" for
+// recordings. MetaRecordings is the owner's recording switch, "on" | "off".
 const (
-	MetaDesktopAt   = "desktop_at"
-	MetaDesktopSeen = "desktop_seen"
+	MetaDesktopAt     = "desktop_at"
+	MetaDesktopSeen   = "desktop_seen"
+	MetaDesktopSeenAt = "desktop_seen_at"
+	MetaRecordings    = "recordings"
 )
+
+// The switch's stored values.
+const (
+	RecordingsOn  = "on"
+	RecordingsOff = "off"
+)
+
+// ErrNoTranscriber refuses turning recordings on where no Desktop
+// transcriber heartbeat ever arrived (a headless host never publishes on).
+var ErrNoTranscriber = errors.New("this host has no transcriber")
+
+// HeldUploadMaxAge is how long an upload may stay held after its first
+// hold: then it gets the final failed/expired.
+const HeldUploadMaxAge = 7 * 24 * time.Hour
+
+// held_uploads.outcome values: how a hold ended.
+const (
+	HeldReceived     = "received"
+	HeldNotSupported = "not_supported"
+	HeldExpired      = "expired"
+	HeldFailed       = "failed" // any other final failure (its class is in relay_processed)
+)
+
+// HeldUpload is one unsettled held_uploads row: ids and the first hold.
+type HeldUpload struct {
+	UploadID, DeviceID string
+	HeldAt             time.Time
+}
 
 // DesktopFreshFor is how long a heartbeat counts as fresh (Desktop beats every
 // 30 s).
@@ -48,24 +80,160 @@ type RecordingJob struct {
 	FinishedAt   time.Time
 }
 
-// Heartbeat records a Desktop heartbeat at now and returns it.
+func realMeta(t time.Time) string { return strconv.FormatFloat(toReal(t), 'f', 3, 64) }
+
+// Heartbeat records a Desktop heartbeat at now; the first one also sets
+// desktop_seen_at, which nothing clears.
 func (s *Store) Heartbeat(now time.Time) error {
 	return s.write(func(tx *sql.Tx) error {
-		if err := SetMetaTx(tx, MetaDesktopAt, strconv.FormatFloat(toReal(now), 'f', 3, 64)); err != nil {
+		if err := SetMetaTx(tx, MetaDesktopAt, realMeta(now)); err != nil {
 			return err
 		}
-		return SetMetaTx(tx, MetaDesktopSeen, "1")
+		if _, ok, err := MetaTx(tx, MetaDesktopSeenAt); err != nil || ok {
+			return err
+		}
+		return SetMetaTx(tx, MetaDesktopSeenAt, realMeta(now))
 	})
+}
+
+// carryDesktopSeen gives a Plan 1b sidecar (desktop_seen = "1", no
+// desktop_seen_at) its desktop_seen_at from desktop_at, once (Open).
+func (s *Store) carryDesktopSeen() error {
+	return s.write(func(tx *sql.Tx) error {
+		if _, ok, err := MetaTx(tx, MetaDesktopSeenAt); err != nil || ok {
+			return err
+		}
+		if seen, ok, err := MetaTx(tx, MetaDesktopSeen); err != nil || !ok || seen != "1" {
+			return err
+		}
+		at, ok, err := MetaTx(tx, MetaDesktopAt)
+		if err != nil || !ok {
+			return err
+		}
+		return SetMetaTx(tx, MetaDesktopSeenAt, at)
+	})
+}
+
+// DesktopSeenAt is the first Desktop heartbeat; ok is false when none ever
+// arrived. A sidecar read only, before an Open carried a Plan 1b flag over,
+// reads the flag's last beat.
+func (s *Store) DesktopSeenAt() (time.Time, bool, error) {
+	raw, ok, err := s.Meta(MetaDesktopSeenAt)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if !ok {
+		seen, flagged, err := s.Meta(MetaDesktopSeen)
+		if err != nil || !flagged || seen != "1" {
+			return time.Time{}, false, err
+		}
+		if raw, ok, err = s.Meta(MetaDesktopAt); err != nil || !ok {
+			return time.Time{}, false, err
+		}
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("reading the first Desktop heartbeat: %w", err)
+	}
+	return fromReal(f), true, nil
+}
+
+// Recordings is the recording switch: the stored value when the owner set
+// one (stored), else on iff a Desktop heartbeat ever arrived.
+func (s *Store) Recordings() (on, stored bool, err error) {
+	v, ok, err := s.Meta(MetaRecordings)
+	if err != nil {
+		return false, false, err
+	}
+	if ok {
+		return v != RecordingsOff, true, nil
+	}
+	_, seen, err := s.DesktopSeenAt()
+	return seen, false, err
+}
+
+// SetRecordings stores the switch. On is ErrNoTranscriber (nothing stored)
+// when no Desktop heartbeat ever arrived.
+func (s *Store) SetRecordings(on bool) error {
+	return s.write(func(tx *sql.Tx) error {
+		if !on {
+			return SetMetaTx(tx, MetaRecordings, RecordingsOff)
+		}
+		_, seenAt, err := MetaTx(tx, MetaDesktopSeenAt)
+		if err != nil {
+			return err
+		}
+		if !seenAt {
+			return ErrNoTranscriber
+		}
+		return SetMetaTx(tx, MetaRecordings, RecordingsOn)
+	})
+}
+
+// HoldUpload records that uploadID was answered held at. An unsettled row
+// keeps its first hold's time; a settled one (the phone sent the upload
+// again) is held anew from at.
+func HoldUpload(tx *sql.Tx, uploadID, deviceID string, at time.Time) error {
+	_, err := tx.Exec(`INSERT INTO held_uploads (upload_id, device_id, held_at) VALUES (?, ?, ?)
+		ON CONFLICT(upload_id) DO UPDATE SET device_id = excluded.device_id, held_at = excluded.held_at,
+			outcome = NULL, settled_at = NULL
+		WHERE held_uploads.outcome IS NOT NULL`, uploadID, deviceKey(deviceID), toReal(at))
+	if err != nil {
+		return fmt.Errorf("holding a recording upload: %w", err)
+	}
+	return nil
+}
+
+// SettleHeldUpload ends uploadID's hold with outcome (HeldReceived,
+// HeldNotSupported, HeldExpired or HeldFailed). An upload not held, or
+// settled already, is left as it is.
+func SettleHeldUpload(tx *sql.Tx, uploadID, outcome string, at time.Time) error {
+	switch outcome {
+	case HeldReceived, HeldNotSupported, HeldExpired, HeldFailed:
+	default:
+		return fmt.Errorf("state: unknown held upload outcome %q", outcome)
+	}
+	_, err := tx.Exec(`UPDATE held_uploads SET outcome = ?, settled_at = ? WHERE upload_id = ? AND outcome IS NULL`,
+		outcome, toReal(at), uploadID)
+	if err != nil {
+		return fmt.Errorf("settling a held recording upload: %w", err)
+	}
+	return nil
+}
+
+// HeldUploads lists the unsettled held uploads, first held first.
+func (s *Store) HeldUploads() ([]HeldUpload, error) {
+	rows, err := s.db.Query(`SELECT upload_id, device_id, held_at FROM held_uploads
+		WHERE outcome IS NULL ORDER BY held_at, upload_id`)
+	if err != nil {
+		return nil, fmt.Errorf("reading the held uploads: %w", err)
+	}
+	defer rows.Close()
+	var out []HeldUpload
+	for rows.Next() {
+		var (
+			h  HeldUpload
+			at float64
+		)
+		if err := rows.Scan(&h.UploadID, &h.DeviceID, &at); err != nil {
+			return nil, fmt.Errorf("reading the held uploads: %w", err)
+		}
+		h.HeldAt = fromReal(at)
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the held uploads: %w", err)
+	}
+	return out, nil
 }
 
 // DesktopHost reports whether Desktop's heartbeat is fresh (89 s old yes,
 // 91 s old no) and whether any heartbeat ever arrived (stays true).
 func (s *Store) DesktopHost(now time.Time) (fresh, everSeen bool, err error) {
-	seen, ok, err := s.Meta(MetaDesktopSeen)
+	_, everSeen, err = s.DesktopSeenAt()
 	if err != nil {
 		return false, false, err
 	}
-	everSeen = ok && seen == "1"
 	if !everSeen {
 		return false, false, nil
 	}

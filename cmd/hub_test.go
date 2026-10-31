@@ -138,7 +138,7 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	out, err := runHub(t, "status", "--json")
 	require.NoError(t, err)
 	m := decodeKeys(t, out)
-	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones"}, hubKeysOf(m))
+	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings"}, hubKeysOf(m))
 	assert.Equal(t, hub.StateOff, m["state"])
 	assert.Equal(t, "", m["reason"])
 	assert.Equal(t, dir, m["dir"])

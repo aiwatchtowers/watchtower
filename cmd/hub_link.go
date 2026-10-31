@@ -148,7 +148,19 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	if s.State == hub.StateRunning {
 		line += fmt.Sprintf(", %s, %d phone(s)", s.Transport, s.Phones)
 	}
-	return hubPrint(cmd, asJSON, s, line)
+	rec, err := hubRecordingsValue(dir)
+	if err != nil {
+		return err
+	}
+	line += ", recordings " + rec
+	return hubPrint(cmd, asJSON, hubStatusJSON{Status: s, Recordings: rec}, line)
+}
+
+// hubStatusJSON is `hub status --json`: the runtime's status plus the
+// recording switch (additive key).
+type hubStatusJSON struct {
+	hub.Status
+	Recordings string `json:"recordings"`
 }
 
 func runHubPhones(cmd *cobra.Command, _ []string) error {

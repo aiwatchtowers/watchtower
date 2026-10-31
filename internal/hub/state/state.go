@@ -51,7 +51,12 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening the hub state: %w", err)
 	}
-	return &Store{db: d}, nil
+	s := &Store{db: d}
+	if err := s.carryDesktopSeen(); err != nil {
+		_ = d.Close()
+		return nil, fmt.Errorf("opening the hub state: %w", err)
+	}
+	return s, nil
 }
 
 // OpenReadOnly opens an existing <dir>/hubstate.db for reading only (the

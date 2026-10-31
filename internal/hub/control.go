@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy"
@@ -51,22 +52,25 @@ const (
 	OpDesktopHeartbeat = "desktop_heartbeat"
 	OpRecordingClaim   = "recording_claim"
 	OpRecordingFinish  = "recording_finish"
+	// OpRecordings sets the owner's recording switch (On; protocol §9).
+	OpRecordings = "recordings"
 )
 
 // The error classes a ControlAnswer carries.
 const (
-	ErrClassBadRequest   = "bad_request"
-	ErrClassHubOff       = "hub_off"
-	ErrClassPolicyOff    = "policy_off"
-	ErrClassNoDevice     = "no_device"
-	ErrClassUnknownGrant = "unknown_grant"
-	ErrClassNoCode       = "no_code"
-	ErrClassNoRequest    = "no_request"
-	ErrClassCodeChanged  = "code_changed"
-	ErrClassNoIdentity   = "no_identity"
-	ErrClassNoJob        = "no_job"
-	ErrClassJobState     = "job_state"
-	ErrClassFailed       = "failed"
+	ErrClassBadRequest    = "bad_request"
+	ErrClassHubOff        = "hub_off"
+	ErrClassPolicyOff     = "policy_off"
+	ErrClassNoDevice      = "no_device"
+	ErrClassUnknownGrant  = "unknown_grant"
+	ErrClassNoCode        = "no_code"
+	ErrClassNoRequest     = "no_request"
+	ErrClassCodeChanged   = "code_changed"
+	ErrClassNoIdentity    = "no_identity"
+	ErrClassNoJob         = "no_job"
+	ErrClassJobState      = "job_state"
+	ErrClassNoTranscriber = "no_transcriber"
+	ErrClassFailed        = "failed"
 )
 
 // ControlRequest is one request on the control socket. Device names a phone
@@ -109,6 +113,8 @@ type ControlAnswer struct {
 	UploadID     string     `json:"upload_id,omitempty"`
 	Status       string     `json:"status,omitempty"`
 	TranscriptID *int64     `json:"transcript_id,omitempty"`
+	// Recordings is the switch after a recordings request: "on" | "off".
+	Recordings string `json:"recordings,omitempty"`
 }
 
 // serveControl listens on <dir>/hub.sock until the returned stop is called
@@ -338,7 +344,7 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 // opClass is a request's op for a log line (an unknown op is not echoed).
 func opClass(op string) string {
 	for _, known := range []string{OpUnlink, OpAllow, OpName, OpEnable, OpDisable, OpPair, OpConfirm,
-		OpDesktopHeartbeat, OpRecordingClaim, OpRecordingFinish} {
+		OpDesktopHeartbeat, OpRecordingClaim, OpRecordingFinish, OpRecordings} {
 		if op == known {
 			return known
 		}
@@ -372,12 +378,44 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if err := s.st.Heartbeat(now); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
+		s.recordingsChanged() // the first beat turns the default switch on
 		s.poke()
 		return ControlAnswer{OK: true, At: &now}
 	case OpRecordingClaim, OpRecordingFinish:
 		return s.recordingJob(r)
+	case OpRecordings:
+		return s.setRecordings(r.On)
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}
+}
+
+// setRecordings stores the recording switch for the owner.
+func (s *supervisor) setRecordings(on bool) ControlAnswer {
+	err := s.st.SetRecordings(on)
+	switch {
+	case errors.Is(err, state.ErrNoTranscriber):
+		return ControlAnswer{Error: ErrClassNoTranscriber}
+	case err != nil:
+		return ControlAnswer{Error: ErrClassFailed}
+	}
+	s.recordingsChanged()
+	v := state.RecordingsOff
+	if on {
+		v = state.RecordingsOn
+	}
+	return ControlAnswer{OK: true, Recordings: v}
+}
+
+// recordingsChanged tells a running hub the switch may have changed: the
+// heartbeat is republished within slices.MaxDebounceWait, and a pass fails
+// the held uploads when it went off.
+func (s *supervisor) recordingsChanged() {
+	s.hubMu.RLock()
+	defer s.hubMu.RUnlock()
+	if s.hub != nil {
+		s.hub.publishSoon(slices.KindHeartbeat)
+		s.hub.kick(s.hub.passKick)
+	}
 }
 
 // recordingJob claims or finishes a recording job for Desktop.

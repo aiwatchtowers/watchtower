@@ -29,6 +29,7 @@ const (
 	reasonOutcomeUnknown  = "outcome_unknown"
 	reasonUnsupported     = "unsupported_in_poc"
 	reasonWriteFailed     = "write_failed"
+	reasonNotSupported    = "not_supported"
 )
 
 // The Swift hub's messages, verbatim.

@@ -114,6 +114,8 @@ func hubAnswerError(a hub.ControlAnswer) error {
 		return errors.New("no recording job with that upload id")
 	case hub.ErrClassJobState:
 		return errors.New("the recording job is not in a state that allows this")
+	case hub.ErrClassNoTranscriber:
+		return state.ErrNoTranscriber
 	case hub.ErrClassBadRequest:
 		return errors.New("the hub refused the request as malformed")
 	}

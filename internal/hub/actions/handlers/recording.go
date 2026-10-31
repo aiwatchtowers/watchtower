@@ -52,9 +52,10 @@ func recFailed(reason, message string) RecordingOutcome {
 }
 
 // IntakeRecording applies one upload. No plaintext audio is written without
-// a transcriber to take it: a host that never had a Desktop heartbeat answers
-// the final failed(not_supported), one whose Desktop went quiet answers held
-// and writes nothing. Otherwise the asset is size-checked, downloaded,
+// a transcriber to take it: with the owner's recording switch off (by
+// default off on a host that never had a Desktop heartbeat, protocol §9) it
+// answers the final failed(not_supported); with it on, a host whose Desktop
+// went quiet answers held and writes nothing. Otherwise the asset is size-checked, downloaded,
 // decrypted by chunk into <recordings dir>/<upload_id>.m4a (0600) and queued.
 // A failure leaves no file; a retried upload that is queued already is
 // answered received again. Nothing here logs a name, a path or a key.
@@ -68,13 +69,18 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 	if !uploadIDRE.MatchString(in.UploadID) {
 		return recFailed(reasonInvalidParams, "This recording has no usable id.")
 	}
-	fresh, seen, err := h.d.Store.DesktopHost(h.d.Clock())
+	on, _, err := h.d.Store.Recordings()
+	if err != nil {
+		log.Printf("hub recording: recording switch unreadable")
+		return recFailed(reasonWriteFailed, recordingWriteFailed)
+	}
+	if !on {
+		return recFailed(reasonNotSupported, NotSupportedMessage)
+	}
+	fresh, _, err := h.d.Store.DesktopHost(h.d.Clock())
 	if err != nil {
 		log.Printf("hub recording: desktop heartbeat unreadable")
 		return recFailed(reasonWriteFailed, recordingWriteFailed)
-	}
-	if !seen {
-		return recFailed(reasonNotSupported, NotSupportedMessage)
 	}
 	if !fresh {
 		return RecordingOutcome{Status: wire.StatusHeld, Message: HeldMessage}

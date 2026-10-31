@@ -335,6 +335,10 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 			defer h.mu.Unlock()
 			return h.lastRelay, !h.lastRelay.IsZero()
 		},
+		Recordings: func() (bool, bool) {
+			on, _, err := st.Recordings()
+			return on, err == nil
+		},
 	}
 	if raw, ok, err := st.Meta(state.MetaEnabledAt); err == nil && ok {
 		if secs, err := strconv.ParseFloat(raw, 64); err == nil {
