@@ -422,7 +422,7 @@ func TestServer_UnknownFrameIsSkipped(t *testing.T) {
 func TestServer_HelloVersionMismatchCloses(t *testing.T) {
 	path := startServer(t, Options{})
 	c := dialRaw(t, path)
-	c.send(Hello, HelloMsg{Version: 2})
+	c.send(Hello, HelloMsg{Version: ProtocolVersion + 1})
 	if ft, _ := c.read(); ft != Error {
 		t.Fatalf("reply = %#x, want Error", ft)
 	}

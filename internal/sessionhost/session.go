@@ -21,6 +21,10 @@ const readChunk = 32 << 10
 // holds the terminal keeps the stream open, so the wait is bounded.
 const drainGrace = 250 * time.Millisecond
 
+// stopGrace is how long a Stop request waits after SIGHUP before it kills the
+// session's process group (the same 3 s as the app's Stop Sessions).
+const stopGrace = 3 * time.Second
+
 type sessionKey struct {
 	row int64
 	run string
@@ -30,22 +34,34 @@ type sessionKey struct {
 type session struct {
 	key       sessionKey
 	scope     string
+	agent     string
+	launch    uint64
 	pid       int
 	startedAt time.Time
 	ptmx      *os.File
 	cmd       *exec.Cmd
 	ring      *Ring
 	readDone  chan struct{}
+	signal    func(pgid int, sig syscall.Signal) error // Stop's group signal
+	afterReap func()                                   // test hook: between reap and drain
 
-	mu     sync.Mutex // guards modes, conn, exited, code
+	mu     sync.Mutex // guards the fields below
 	modes  ModeTracker
 	conn   *conn
 	exited bool
 	code   *int
+	// reaped: cmd.Wait returned (the child is gone, its output may still
+	// drain). A Stop after this point finds the exit natural.
+	reaped bool
+	// requested: a Stop request's SIGHUP reached the group; the Exit says so.
+	requested bool
+	// dialog: the last PromptHint said a permission dialog is up.
+	dialog   bool
+	killTime *time.Timer
 }
 
 // startSession launches req under a fresh PTY with exactly req.Env.
-func startSession(req LaunchReq, ringSize int, now time.Time) (*session, error) {
+func startSession(req LaunchReq, launch uint64, ringSize int, now time.Time) (*session, error) {
 	if req.Executable == "" {
 		return nil, errors.New("launch: empty executable")
 	}
@@ -61,12 +77,15 @@ func startSession(req LaunchReq, ringSize int, now time.Time) (*session, error) 
 	return &session{
 		key:       sessionKey{row: req.Row, run: req.Run},
 		scope:     req.Scope,
+		agent:     req.Agent,
+		launch:    launch,
 		pid:       cmd.Process.Pid,
 		startedAt: now,
 		ptmx:      ptmx,
 		cmd:       cmd,
 		ring:      NewRing(ringSize),
 		readDone:  make(chan struct{}),
+		signal:    killGroup,
 	}, nil
 }
 
@@ -97,6 +116,12 @@ func (s *session) readLoop() {
 // the PTY and returns the exit code (nil when killed by a signal).
 func (s *session) wait() *int {
 	_ = s.cmd.Wait() // the exit status is read from ProcessState below
+	s.mu.Lock()
+	s.reaped = true
+	s.mu.Unlock()
+	if s.afterReap != nil {
+		s.afterReap()
+	}
 	select {
 	case <-s.readDone:
 	case <-time.After(drainGrace):
@@ -130,7 +155,46 @@ func (s *session) infoLocked() SessionInfo {
 		Exited:      s.exited,
 		Code:        s.code,
 		Scope:       s.scope,
+		Launch:      s.launch,
+		Agent:       s.agent,
 	}
+}
+
+// killGroup signals a process group: the default Options.signalGroup.
+func killGroup(pgid int, sig syscall.Signal) error { return syscall.Kill(-pgid, sig) }
+
+// stop signals the process group SIGHUP and kills it after stopGrace unless
+// the child was reaped by then. Only a delivered SIGHUP marks the run
+// requested, so its Exit carries Requested. alreadyExited reports that the
+// child was already reaped (or its group gone): nothing was signalled and the
+// exit stays natural. The decision is taken under s.mu against reaped, which
+// wait sets as soon as cmd.Wait returns, so a Stop during the output drain
+// never marks a natural exit. A child that exits on its own in the instant
+// before the SIGHUP, before it is reaped, still reads as stopped.
+func (s *session) stop() (alreadyExited bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reaped || s.exited {
+		return true, nil
+	}
+	if s.killTime != nil {
+		return false, nil // a stop is already under way
+	}
+	if err := s.signal(s.pid, syscall.SIGHUP); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return true, nil
+		}
+		return false, fmt.Errorf("stop: signal group: %w", err)
+	}
+	s.requested = true
+	s.killTime = time.AfterFunc(stopGrace, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.reaped {
+			_ = s.signal(s.pid, syscall.SIGKILL) // ESRCH: the group is already gone
+		}
+	})
+	return false, nil
 }
 
 // resize sets the window size and signals the process group even when the

@@ -39,9 +39,29 @@ const (
 	Error    FrameType = 0x8F
 )
 
+// Protocol v2 frame types. InputTo, Deliver and PromptHint never bind the
+// connection to a session; Deliver/Delivered, DeliverCheck/DeliverCheckReply
+// and DeliveryEvent are declared for the typed-never-submitted delivery and
+// not served yet (an unknown frame is skipped).
+const (
+	InputTo           FrameType = 0x08
+	Deliver           FrameType = 0x09
+	Delivered         FrameType = 0x89
+	DeliverCheck      FrameType = 0x8A
+	DeliverCheckReply FrameType = 0x0A
+	PromptHint        FrameType = 0x0B
+	DeliveryEvent     FrameType = 0x8B
+	Stop              FrameType = 0x0C
+	Stopping          FrameType = 0x8C
+)
+
 // ProtocolVersion is the protocol version this host speaks. The protocol
-// only grows additively.
-const ProtocolVersion = 1
+// only grows additively: a v2 host accepts v1 and v2 hellos and answers
+// with ProtocolVersion.
+const ProtocolVersion = 2
+
+// minProtocolVersion is the oldest client hello the host accepts.
+const minProtocolVersion = 1
 
 // HelloMsg is the payload of Hello (client: version) and HelloOK (host:
 // version and pid).
@@ -68,6 +88,11 @@ type LaunchReq struct {
 	// Scope names the app-side namespace of Row (the workspace whose
 	// database the row lives in); stored and listed back unchanged.
 	Scope string `json:"scope"`
+	// Agent is "claude", "codex" or "" (a shell); stored and listed back.
+	Agent string `json:"agent,omitempty"`
+	// Detach launches without binding this connection to the session (the
+	// hub never attaches; Desktop's pane does).
+	Detach bool `json:"detach,omitempty"`
 }
 
 // AttachReq attaches a client to a running session.
@@ -86,6 +111,12 @@ type SessionInfo struct {
 	Code        *int   `json:"code"`
 	// Scope is the launch's LaunchReq.Scope.
 	Scope string `json:"scope"`
+	// Launch is the host's per-row launch counter: 1 for the row's first
+	// launch in this host, one more for each later one, whatever client
+	// asked. InputTo and Stop name it, so a line never reaches a newer run.
+	Launch uint64 `json:"launch,omitempty"`
+	// Agent is the launch's LaunchReq.Agent.
+	Agent string `json:"agent,omitempty"`
 }
 
 // ListResp is the payload of a Listed frame.
@@ -100,9 +131,42 @@ type ResizeReq struct {
 }
 
 // ExitMsg is the payload of an Exit frame; Code is nil when the process was
-// killed by a signal.
+// killed by a signal. Requested is set only when the exit followed a Stop
+// request (the owner stopped the session); a natural exit never carries it.
 type ExitMsg struct {
-	Code *int `json:"code"`
+	Code      *int `json:"code"`
+	Requested bool `json:"requested,omitempty"`
+}
+
+// InputToReq writes Data to a session's PTY without binding the connection.
+// Row, Run and Launch must all match a running session.
+type InputToReq struct {
+	Row    int64  `json:"row"`
+	Run    string `json:"run"`
+	Launch uint64 `json:"launch"`
+	Data   []byte `json:"data"`
+}
+
+// PromptHintMsg tells the host whether a permission dialog is up in a
+// session (a client that reads hook state knows; the host cannot).
+type PromptHintMsg struct {
+	Row    int64  `json:"row"`
+	Run    string `json:"run"`
+	Dialog bool   `json:"dialog"`
+}
+
+// StoppingMsg is the payload of a Stopping frame. AlreadyExited: the run had
+// already exited, nothing was signalled, and its Exit carries no Requested.
+type StoppingMsg struct {
+	AlreadyExited bool `json:"already_exited,omitempty"`
+}
+
+// StopReq asks the host to stop a session: SIGHUP to its process group, then
+// SIGKILL after stopGrace. The run's Exit then carries Requested.
+type StopReq struct {
+	Row    int64  `json:"row"`
+	Run    string `json:"run"`
+	Launch uint64 `json:"launch"`
 }
 
 // WriteFrame writes one frame: type, big-endian uint32 length, payload.

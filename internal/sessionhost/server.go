@@ -64,6 +64,11 @@ type Options struct {
 	RingSize int
 	// Now is the clock for session start times.
 	Now func() time.Time
+	// signalGroup replaces Stop's process-group signal (tests only).
+	signalGroup func(pgid int, sig syscall.Signal) error
+	// afterReap runs once a child is reaped, before its output drains and
+	// its exit is recorded (tests only: holds the drain window open).
+	afterReap func()
 }
 
 // Server owns hosted sessions and serves clients over a listener.
@@ -72,6 +77,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[sessionKey]*session
+	launches map[int64]uint64 // per-row launch counter; never reset
 	conns    map[*conn]struct{}
 	closed   bool
 
@@ -89,6 +95,7 @@ func NewServer(opts Options) *Server {
 	return &Server{
 		opts:     opts,
 		sessions: map[sessionKey]*session{},
+		launches: map[int64]uint64{},
 		conns:    map[*conn]struct{}{},
 		changed:  make(chan struct{}, 1),
 	}
@@ -110,7 +117,7 @@ func Listen(socketPath string) (net.Listener, error) {
 		}
 		return nil, fmt.Errorf("lock host: %w", err)
 	}
-	if c, err := net.DialTimeout("unix", socketPath, time.Second); err == nil {
+	if c, err := net.DialTimeout("unix", socketPath, time.Second); err == nil { //nolint:gosec // G704: a local unix socket path the owner chose (--socket or WATCHTOWER_SESSION_HOST_SOCKET), not a network URL
 		_ = c.Close()
 		_ = lock.Close()
 		return nil, ErrHostRunning
@@ -314,6 +321,12 @@ func (s *Server) handle(c *conn) {
 			c.send(Listed, encode(ListResp{Sessions: s.list()}))
 		case Forget:
 			s.forget(c, p)
+		case InputTo:
+			s.inputTo(c, p)
+		case PromptHint:
+			s.promptHint(c, p)
+		case Stop:
+			s.stop(c, p)
 		default:
 			// Unknown frame types are skipped: the protocol grows
 			// additively and app and host versions may differ.
@@ -335,7 +348,7 @@ func (s *Server) hello(c *conn) bool {
 		_ = WriteFrame(c.nc, Error, encode(ErrorMsg{Message: "expected hello"}))
 		return false
 	}
-	if err := json.Unmarshal(p, &h); err != nil || h.Version != ProtocolVersion {
+	if err := json.Unmarshal(p, &h); err != nil || h.Version < minProtocolVersion || h.Version > ProtocolVersion {
 		msg := fmt.Sprintf("unsupported protocol version %d (host speaks %d)", h.Version, ProtocolVersion)
 		_ = WriteFrame(c.nc, Error, encode(ErrorMsg{Message: msg}))
 		return false
@@ -360,18 +373,28 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 		c.sendError(fmt.Sprintf("launch: session row %d run %q already exists", req.Row, req.Run))
 		return nil
 	}
-	sess, err := startSession(req, s.opts.RingSize, s.opts.Now())
+	launch := s.launches[req.Row] + 1
+	sess, err := startSession(req, launch, s.opts.RingSize, s.opts.Now())
 	if err != nil {
 		s.mu.Unlock()
 		c.sendError(err.Error())
 		return nil
 	}
+	if s.opts.signalGroup != nil {
+		sess.signal = s.opts.signalGroup
+	}
+	sess.afterReap = s.opts.afterReap
+	s.launches[req.Row] = launch
 	s.sessions[key] = sess
-	c.bound = true
+	if !req.Detach {
+		c.bound = true
+	}
 	// Bind and queue Launched before the reader starts, so it precedes
 	// every Output frame.
 	sess.mu.Lock()
-	sess.conn = c
+	if !req.Detach {
+		sess.conn = c
+	}
 	c.send(Launched, encode(sess.infoLocked()))
 	sess.mu.Unlock()
 	s.mu.Unlock()
@@ -379,7 +402,102 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 
 	go sess.readLoop()
 	go s.watch(sess)
+	if req.Detach {
+		return nil
+	}
 	return sess
+}
+
+// lookup returns the session of (row, run), or nil.
+func (s *Server) lookup(row int64, run string) *session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessions[sessionKey{row: row, run: run}]
+}
+
+// running returns the running session of (row, run, launch), or sends an
+// Error naming why there is none.
+func (s *Server) running(c *conn, op string, row int64, run string, launch uint64) *session {
+	sess := s.lookup(row, run)
+	if sess == nil {
+		c.sendError(fmt.Sprintf("%s: no session row %d run %q", op, row, run))
+		return nil
+	}
+	sess.mu.Lock()
+	exited := sess.exited
+	sess.mu.Unlock()
+	if sess.launch != launch {
+		c.sendError(fmt.Sprintf("%s: session row %d run %q is launch %d, not %d", op, row, run, sess.launch, launch))
+		return nil
+	}
+	if exited {
+		c.sendError(fmt.Sprintf("%s: session row %d run %q is not running", op, row, run))
+		return nil
+	}
+	return sess
+}
+
+// inputTo writes to a session's PTY without binding the connection: the
+// attached client (if any) keeps its session and sees the echo. Nothing is
+// answered on success.
+func (s *Server) inputTo(c *conn, p []byte) {
+	var req InputToReq
+	if err := json.Unmarshal(p, &req); err != nil {
+		c.sendError(fmt.Sprintf("input_to: bad request: %v", err))
+		return
+	}
+	sess := s.running(c, "input_to", req.Row, req.Run, req.Launch)
+	if sess == nil {
+		return
+	}
+	if _, err := sess.ptmx.Write(req.Data); err != nil {
+		c.sendError(fmt.Sprintf("input_to: %v", err))
+	}
+}
+
+// promptHint records whether a permission dialog is up in a session. Nothing
+// is answered on success.
+func (s *Server) promptHint(c *conn, p []byte) {
+	var m PromptHintMsg
+	if err := json.Unmarshal(p, &m); err != nil {
+		c.sendError(fmt.Sprintf("prompt_hint: bad request: %v", err))
+		return
+	}
+	sess := s.lookup(m.Row, m.Run)
+	if sess == nil {
+		c.sendError(fmt.Sprintf("prompt_hint: no session row %d run %q", m.Row, m.Run))
+		return
+	}
+	sess.mu.Lock()
+	sess.dialog = m.Dialog
+	sess.mu.Unlock()
+}
+
+// stop answers Stopping once the session's group was signalled; the Exit
+// follows on the attached connection and in List. A run that already exited
+// is answered Stopping{already_exited: true}: nothing was signalled and its
+// Exit carries no Requested.
+func (s *Server) stop(c *conn, p []byte) {
+	var req StopReq
+	if err := json.Unmarshal(p, &req); err != nil {
+		c.sendError(fmt.Sprintf("stop: bad request: %v", err))
+		return
+	}
+	sess := s.lookup(req.Row, req.Run)
+	if sess == nil {
+		c.sendError(fmt.Sprintf("stop: no session row %d run %q", req.Row, req.Run))
+		return
+	}
+	if sess.launch != req.Launch {
+		c.sendError(fmt.Sprintf("stop: session row %d run %q is launch %d, not %d", req.Row, req.Run, sess.launch, req.Launch))
+		return
+	}
+	already, err := sess.stop()
+	if err != nil {
+		c.sendError(err.Error())
+		return
+	}
+	c.send(Stopping, encode(StoppingMsg{AlreadyExited: already}))
 }
 
 // watch records the child's exit and delivers it to a bound connection.
@@ -391,8 +509,11 @@ func (s *Server) watch(sess *session) {
 	sess.mu.Lock()
 	sess.exited = true
 	sess.code = code
+	if sess.killTime != nil {
+		sess.killTime.Stop()
+	}
 	if sess.conn != nil {
-		sess.conn.send(Exit, encode(ExitMsg{Code: code}))
+		sess.conn.send(Exit, encode(ExitMsg{Code: code, Requested: sess.requested}))
 	}
 	sess.mu.Unlock()
 	s.notify()
@@ -426,7 +547,7 @@ func (s *Server) attach(c *conn, bound *session, p []byte) *session {
 		replay = replay[n:]
 	}
 	if sess.exited {
-		c.send(Exit, encode(ExitMsg{Code: sess.code}))
+		c.send(Exit, encode(ExitMsg{Code: sess.code, Requested: sess.requested}))
 		sess.mu.Unlock()
 		return nil
 	}
