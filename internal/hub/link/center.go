@@ -123,6 +123,10 @@ type Center struct {
 	mu sync.Mutex
 	// dirty: the locked section changed the device_grant slice (guarded by mu).
 	dirty bool
+	// onRevoke and revoked: the revoke seam (OnRevoke) and the devices the
+	// locked section revoked, told from unlock (guarded by mu).
+	onRevoke func(device string)
+	revoked  []string
 	// beforeKeys is a test seam: run by Keyboxes between the device read
 	// and the key read.
 	beforeKeys func()
@@ -161,14 +165,32 @@ func (c *Center) now() time.Time { return c.clock().Truncate(time.Second).UTC() 
 // Keyboxes or Grants synchronously. Call with c.mu held.
 func (c *Center) changed() { c.dirty = true }
 
-// unlock releases c.mu, then publishes what the locked section changed.
+// unlock releases c.mu, then publishes what the locked section changed and
+// tells the revoke seam about the devices it revoked.
 func (c *Center) unlock() {
 	dirty := c.dirty
 	c.dirty = false
+	revoked, onRevoke := c.revoked, c.onRevoke
+	c.revoked = nil
 	c.mu.Unlock()
 	if dirty && c.publish != nil {
 		c.publish(KindDeviceGrant)
 	}
+	if onRevoke != nil {
+		for _, d := range revoked {
+			onRevoke(d)
+		}
+	}
+}
+
+// OnRevoke sets fn, called with a phone's device id after a change that took
+// its typing away commits: Allow(GrantTyping, false) or Unlink of a linked
+// phone (PROJ-16: its held lines fail device_not_allowed at once). fn runs
+// outside the center's lock, on the deciding call's goroutine.
+func (c *Center) OnRevoke(fn func(device string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onRevoke = fn
 }
 
 // Unlink removes a linked phone and rotates the epoch in the same
@@ -198,6 +220,7 @@ func (c *Center) Unlink(device string) error {
 	if removed {
 		log.Printf("hub link: phone %s unlinked, epoch rotated", strings.ToUpper(device))
 		c.changed()
+		c.revoked = append(c.revoked, device)
 		return nil
 	}
 	var refused *pendingDevice
@@ -252,6 +275,9 @@ func (c *Center) Allow(device string, g Grant, on bool) error {
 		return fmt.Errorf("setting a grant: %w", err)
 	}
 	c.changed()
+	if g == GrantTyping && !on {
+		c.revoked = append(c.revoked, device)
+	}
 	return nil
 }
 

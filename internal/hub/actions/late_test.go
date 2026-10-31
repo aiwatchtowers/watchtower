@@ -83,3 +83,40 @@ func TestLateEchoOfAnUndecidedActionIsRefused(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotDecided", err)
 	}
 }
+
+// A final echo is never replaced: an action applied (or answered
+// outcome_unknown after a timeout) keeps it.
+func TestLateEchoNeverReplacesAFinalEcho(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	var seen Request
+	w.disp.Register("session_input", func(_ context.Context, r Request) Outcome {
+		seen = r
+		return failed(reasonOutcomeUnknown, "timed out")
+	}, KindOptions{})
+	seq := w.act("session_input")
+	w.settle()
+
+	err := w.proc.LateEcho(w.ctx, seen, Outcome{Status: wire.StatusApplied, Delivery: "submitted"})
+
+	if !errors.Is(err, ErrNotDecided) {
+		t.Fatalf("err = %v, want ErrNotDecided", err)
+	}
+	w.settle()
+	w.wantEcho(seq, wire.StatusFailed, reasonOutcomeUnknown)
+}
+
+// A processor without a sealer fails a late echo closed, with no panic.
+func TestLateEchoWithoutASealerFailsClosed(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	seen := heldThenLate(w)
+	w.act("session_input")
+	w.settle()
+	w.proc.cfg.Sealer = nil
+
+	if err := w.proc.LateEcho(w.ctx, *seen, Outcome{Status: wire.StatusApplied}); err == nil {
+		t.Fatal("a late echo without a sealer must fail")
+	}
+	if rows, _ := w.st.PendingControls(w.phone.Zone()); len(rows) != 0 {
+		t.Fatalf("%d writes queued", len(rows))
+	}
+}

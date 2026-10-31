@@ -1076,3 +1076,39 @@ func TestPublishCallbackMayReadKeyboxes(t *testing.T) {
 		t.Errorf("published %d times", reads)
 	}
 }
+
+// The revoke seam is told, after the commit and outside the lock, about a
+// phone that lost its typing grant or was unlinked; granting, other grants
+// and a no-op unlink tell it nothing.
+func TestOnRevokeIsToldOfTypingRevokesAndUnlinks(t *testing.T) {
+	r := newRig(t)
+	a, b := newPhone(t), newPhone(t)
+	r.confirmLinked(a)
+	r.confirmLinked(b)
+	var told []string
+	r.c.OnRevoke(func(device string) {
+		if _, err := r.c.Grants(); err != nil { // outside the lock: no deadlock
+			t.Errorf("grants inside the seam: %v", err)
+		}
+		d, linked, _ := r.st.Device(device)
+		if linked && d.TypingAllowed {
+			t.Errorf("told before the revoke committed")
+		}
+		told = append(told, device)
+	})
+	steps := []func() error{
+		func() error { return r.c.Allow(a.id.String(), GrantTyping, true) },
+		func() error { return r.c.Allow(a.id.String(), GrantPermissions, false) },
+		func() error { return r.c.Allow(a.id.String(), GrantTyping, false) },
+		func() error { return r.c.Unlink(b.id.String()) },
+	}
+	for _, step := range steps {
+		if err := step(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = r.c.Unlink(b.id.String()) // not linked any more: nothing to tell
+	if want := []string{a.id.String(), b.id.String()}; !slices.Equal(told, want) {
+		t.Fatalf("told %v, want %v", told, want)
+	}
+}

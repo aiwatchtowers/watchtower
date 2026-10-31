@@ -270,8 +270,8 @@ func TestStopOnAStoppedSessionIsAppliedWithNoRequest(t *testing.T) {
 	sid := le.agentSession("claude")
 
 	wantOutcome(t, le.stopOutcome(sid), wire.StatusApplied, "")
-	if len(le.lp.stops) != 0 {
-		t.Fatalf("stops %v", le.lp.stops)
+	if len(le.lp.stopCalls()) != 0 {
+		t.Fatalf("stops %v", le.lp.stopCalls())
 	}
 }
 
@@ -280,8 +280,8 @@ func TestStopOnALiveSessionStopsItOnce(t *testing.T) {
 	sid := le.liveSession()
 
 	wantOutcome(t, le.stopOutcome(sid), wire.StatusApplied, "")
-	if !slices.Equal(le.lp.stops, []int64{sid}) {
-		t.Fatalf("stops %v", le.lp.stops)
+	if !slices.Equal(le.lp.stopCalls(), []int64{sid}) {
+		t.Fatalf("stops %v", le.lp.stopCalls())
 	}
 }
 
@@ -294,8 +294,8 @@ func TestStopOnACodexBoardSessionIsAppliedAndOnAShellFailsNotFound(t *testing.T)
 
 	wantOutcome(t, le.stopOutcome(codex), wire.StatusApplied, "")
 	wantOutcome(t, le.stopOutcome(shell), wire.StatusFailed, reasonNotFound)
-	if !slices.Equal(le.lp.stops, []int64{codex}) {
-		t.Fatalf("stops %v", le.lp.stops)
+	if !slices.Equal(le.lp.stopCalls(), []int64{codex}) {
+		t.Fatalf("stops %v", le.lp.stopCalls())
 	}
 }
 
@@ -310,8 +310,8 @@ func TestStopOnAnUnknownOrNonBoardSessionFailsNotFound(t *testing.T) {
 
 	wantOutcome(t, le.stopOutcome(9999), wire.StatusFailed, reasonNotFound)
 	wantOutcome(t, le.stopOutcome(loose), wire.StatusFailed, reasonNotFound)
-	if len(le.lp.stops) != 0 {
-		t.Fatalf("stops %v", le.lp.stops)
+	if len(le.lp.stopCalls()) != 0 {
+		t.Fatalf("stops %v", le.lp.stopCalls())
 	}
 }
 

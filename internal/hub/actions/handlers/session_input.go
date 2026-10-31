@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -97,7 +98,7 @@ func isLineBreak(r rune) bool {
 		return false
 	}
 	switch r {
-	case '\u0085', ' ', ' ':
+	case '\u0085', '\u2028', '\u2029':
 		return true
 	}
 	return unicode.Is(unicode.Cc, r)
@@ -137,16 +138,48 @@ type tryResult struct {
 // states (DeliverHeld, never on a timer), echoed again when its reason
 // changes, and ends applied, failed or expired 24 h after the phone created
 // it, through a late echo.
+//
+// The dispatch owns a 30 s deadline (outcome_unknown). A first try still
+// running then goes on, but may no longer hold its line: holding is decided
+// once, by whichever comes first — the try's commit or the deadline — so a
+// line the phone was told to check on the Mac is never typed later.
 func (h *Handlers) sessionInput(ctx context.Context, r actions.Request) actions.Outcome {
-	return h.withTimeout(ctx, "session_input", inputTimeoutMessage, func(ctx context.Context) actions.Outcome {
-		if r.Action.Kind == "session_input_cancel" {
+	if r.Action.Kind == "session_input_cancel" {
+		return h.withTimeout(ctx, "session_input", inputTimeoutMessage, func(context.Context) actions.Outcome {
 			return h.cancelLine(r)
-		}
-		return h.sendLine(ctx, r)
-	})
+		})
+	}
+	var decided atomic.Int32 // 0 running, 1 the try committed its hold, 2 the deadline won
+	commit := func() bool { return decided.CompareAndSwap(0, 1) }
+	done := make(chan actions.Outcome, 1)
+	h.lines.tries.Add(1)
+	go func() {
+		defer h.lines.tries.Done()
+		defer func() {
+			if p := recover(); p != nil {
+				log.Printf("hub handlers: session_input panicked")
+				done <- failed(reasonWriteFailed, "The Mac hit an internal error applying this")
+			}
+		}()
+		done <- h.sendLine(context.WithoutCancel(ctx), r, commit)
+	}()
+	t := time.NewTimer(h.d.Timeout)
+	defer t.Stop()
+	select {
+	case o := <-done:
+		return o
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	if decided.CompareAndSwap(0, 2) {
+		return failed(reasonOutcomeUnknown, inputTimeoutMessage)
+	}
+	return <-done // the try committed its hold first: its row is being written
 }
 
-func (h *Handlers) sendLine(ctx context.Context, r actions.Request) actions.Outcome {
+// sendLine is one phone line's first try; commit, called right before a hold
+// is stored, is false once the dispatch's deadline passed.
+func (h *Handlers) sendLine(ctx context.Context, r actions.Request, commit func() bool) actions.Outcome {
 	sessionID, ok := entityID(r)
 	if !ok {
 		return failed(reasonInvalidParams, r.Action.Kind+" needs a session id")
@@ -182,6 +215,12 @@ func (h *Handlers) sendLine(ctx context.Context, r actions.Request) actions.Outc
 	case res.final != nil:
 		return *res.final
 	case res.gone:
+		return failed(reasonOutcomeUnknown, inputTimeoutMessage)
+	}
+	if !commit() {
+		// The phone was already answered outcome_unknown: the line is not
+		// held, so nothing types it later.
+		log.Printf("hub handlers: a phone line ended held after its deadline: not kept")
 		return failed(reasonOutcomeUnknown, inputTimeoutMessage)
 	}
 	err = h.saveHeld(heldLine{req: r, sessionID: sessionID, line: line, run: res.run, launch: res.launch, reason: res.held})
@@ -427,11 +466,11 @@ func (h *Handlers) cancelLine(r actions.Request) actions.Outcome {
 		if l.req.Action.ID != original {
 			continue
 		}
-		if l.typing {
-			return applied(nil)
-		}
 		if l.req.Device != r.Device {
 			return failed(reasonDeviceNotAllowed, foreignCancelMessage)
+		}
+		if l.typing {
+			return applied(nil)
 		}
 		h.finishLine(l, false, actions.Outcome{Status: wire.StatusCancelled, Reason: inputReasonCancelled, Message: cancelledMessage})
 		return applied(nil)

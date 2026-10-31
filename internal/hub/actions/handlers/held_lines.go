@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
 )
@@ -23,8 +24,8 @@ type LocalSealer interface {
 	OpenLocal(label string, sealed []byte) ([]byte, error)
 }
 
-// heldActionLabel is the SealLocal label of held_session_lines.action: the
-// phone's whole action (its text included) is sealed; only the sanitised
+// heldActionLabel is the SealLocal label of the params inside
+// held_session_lines.action: the phone's text is sealed; only the sanitised
 // line stays in the clear, as it always was (spec §8 p. 4a's allowlist).
 const heldActionLabel = "held_session_lines.action"
 
@@ -38,6 +39,9 @@ type lineState struct {
 	queue      []pendingEcho
 	echoing    bool
 	pending    sync.WaitGroup
+	// tries counts the first tries still running, a deadline's answer
+	// included (they run on past it).
+	tries sync.WaitGroup
 }
 
 type pendingEcho struct {
@@ -102,11 +106,22 @@ func (l heldLine) phone() phoneLine {
 	return phoneLine{req: l.req, sessionID: l.sessionID, line: l.line}
 }
 
-// heldAction is the sealed content of held_session_lines.action.
-type heldAction struct {
+// heldEnvelope is held_session_lines.action: the action's identity in the
+// clear (ids, kind, order, time: no content) and its params (the text)
+// sealed, so a row whose params no longer open is still echoed failed.
+type heldEnvelope struct {
 	Device string             `json:"device"`
-	Action wire.ActionRequest `json:"action"`
+	Action wire.ActionRequest `json:"action"` // params stripped
+	Params []byte             `json:"params"` // SealLocal of the params' JSON
 }
+
+// unreadableHeldMessage is the echo of a held line whose sealed text no
+// longer opens (the hub's identity was recreated).
+const unreadableHeldMessage = "The Mac could not read this held message — send it again"
+
+// errHeldUnreadable is a verdict on a held row's bytes: they do not open or
+// parse, now or later.
+var errHeldUnreadable = errors.New("held line does not open")
 
 // saveHeld stores a line held on its first try, so a hub restart (the
 // session host keeps the session) still delivers it.
@@ -114,14 +129,20 @@ func (h *Handlers) saveHeld(l heldLine) error {
 	if h.d.Sealer == nil {
 		return errors.New("no sidecar sealer")
 	}
-	plain, err := json.Marshal(heldAction{Device: l.req.Device.String(), Action: l.req.Action})
+	params, err := json.Marshal(l.req.Action.Params)
 	if err != nil {
 		return err
 	}
-	sealed, err := h.d.Sealer.SealLocal(heldActionLabel, plain)
-	clear(plain)
+	sealed, err := h.d.Sealer.SealLocal(heldActionLabel, params)
+	clear(params)
 	if err != nil {
 		return fmt.Errorf("sealing a held line: %w", err)
+	}
+	bare := l.req.Action
+	bare.Params = nil
+	blob, err := json.Marshal(heldEnvelope{Device: l.req.Device.String(), Action: bare, Params: sealed})
+	if err != nil {
+		return err
 	}
 	run, err := i64(l.run)
 	if err != nil {
@@ -130,7 +151,7 @@ func (h *Handlers) saveHeld(l heldLine) error {
 	err = h.d.Store.WithTx(context.Background(), func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT OR REPLACE INTO held_session_lines
 			(record_name, action, session_id, line, run, launch, reason, typing) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-			l.req.RecordName, sealed, l.sessionID, l.line, run, l.launch, l.reason)
+			l.req.RecordName, blob, l.sessionID, l.line, run, l.launch, l.reason)
 		return err
 	})
 	if err != nil {
@@ -146,8 +167,11 @@ func i64(v uint64) (int64, error) {
 	return int64(v), nil
 }
 
-// heldLines reads every held line. A row whose action does not open is
-// dropped (logged by its row only): it can be neither typed nor echoed.
+// heldLines reads every held line. A row whose bytes do not open (a verdict
+// on them: the hub's identity was recreated, or they are malformed) is
+// removed and echoed failed when its action is known. Any other failure to
+// open (no sealer, an unavailable keyring) keeps every row and fails the
+// read: the caller skips this round and the lines wait for the next.
 func (h *Handlers) heldLines() ([]heldLine, error) {
 	type raw struct {
 		record, line, launch, reason string
@@ -178,13 +202,19 @@ func (h *Handlers) heldLines() ([]heldLine, error) {
 	}
 	out := make([]heldLine, 0, len(rows))
 	for _, r := range rows {
-		req, ok := h.openHeld(r.record, r.action)
-		if !ok {
+		req, err := h.openHeld(r.record, r.action)
+		if errors.Is(err, errHeldUnreadable) {
 			log.Printf("hub handlers: a held line of session %d does not open: dropped", r.session)
-			if _, err := h.removeHeld(r.record, true); err != nil {
+			removed, err := h.removeHeld(r.record, true)
+			if err != nil {
 				log.Printf("hub handlers: an unreadable held line of session %d was not removed", r.session)
+			} else if removed && req.Action.ID != "" {
+				h.lateEcho(req, failed(reasonWriteFailed, unreadableHeldMessage))
 			}
 			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, heldLine{
 			req: req, sessionID: r.session, line: r.line, run: uint64(max(r.run.Int64, 0)), launch: r.launch,
@@ -194,31 +224,45 @@ func (h *Handlers) heldLines() ([]heldLine, error) {
 	return out, nil
 }
 
-// openHeld rebuilds a held line's request from its sealed action; an
-// adopted Swift row (its action in the clear, the sender in device_id) is
-// read as such.
-func (h *Handlers) openHeld(record string, blob []byte) (actions.Request, bool) {
-	var a heldAction
-	if h.d.Sealer != nil {
-		if plain, err := h.d.Sealer.OpenLocal(heldActionLabel, blob); err == nil {
-			err = json.Unmarshal(plain, &a)
-			clear(plain)
-			if err != nil {
-				return actions.Request{}, false
-			}
+// openHeld rebuilds a held line's request: its identity from the envelope,
+// its params from their seal. errHeldUnreadable is a verdict on the bytes
+// (the request then carries the identity when the envelope had one); any
+// other error is the sealer's and passes. An adopted Swift row (the action
+// in the clear, the sender in device_id) is read as such.
+func (h *Handlers) openHeld(record string, blob []byte) (actions.Request, error) {
+	var env heldEnvelope
+	if err := json.Unmarshal(blob, &env); err != nil || env.Device == "" {
+		var a wire.ActionRequest
+		if json.Unmarshal(blob, &a) != nil || a.DeviceID == nil || a.ID == "" {
+			return actions.Request{}, errHeldUnreadable
 		}
-	}
-	if a.Device == "" {
-		if json.Unmarshal(blob, &a.Action) != nil || a.Action.DeviceID == nil {
-			return actions.Request{}, false
+		device, err := secure.ParseID(*a.DeviceID)
+		if err != nil {
+			return actions.Request{}, errHeldUnreadable
 		}
-		a.Device = *a.Action.DeviceID
+		return actions.Request{Device: device, RecordName: record, Action: a}, nil
 	}
-	device, err := secure.ParseID(a.Device)
-	if err != nil || a.Action.ID == "" {
-		return actions.Request{}, false
+	device, err := secure.ParseID(env.Device)
+	if err != nil || env.Action.ID == "" {
+		return actions.Request{}, errHeldUnreadable
 	}
-	return actions.Request{Device: device, RecordName: record, Action: a.Action}, true
+	req := actions.Request{Device: device, RecordName: record, Action: env.Action}
+	req.Action.Params = map[string]json.RawMessage{}
+	if h.d.Sealer == nil {
+		return req, errors.New("hub handlers: no sidecar sealer to open a held line")
+	}
+	plain, err := h.d.Sealer.OpenLocal(heldActionLabel, env.Params)
+	if errors.Is(err, identity.ErrSealedKeyUnreadable) {
+		return req, errHeldUnreadable
+	}
+	if err != nil {
+		return req, fmt.Errorf("opening a held line: %w", err)
+	}
+	defer clear(plain)
+	if err := json.Unmarshal(plain, &req.Action.Params); err != nil {
+		return req, errHeldUnreadable
+	}
+	return req, nil
 }
 
 // claimHeld marks a held line as being typed, right before its paste: false

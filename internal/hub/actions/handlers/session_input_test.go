@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -51,8 +52,13 @@ func (c *lineClock) advance(d time.Duration) {
 }
 
 // lineSealer stands in for the keyring's SealLocal: the bytes it stores never
-// hold the plaintext.
-type lineSealer struct{}
+// hold the plaintext. failOpen, when set, is returned by the next OpenLocal
+// (a keyring that is not available for a moment). A value that does not open
+// is identity.ErrSealedKeyUnreadable, as the keyring says.
+type lineSealer struct {
+	mu       sync.Mutex
+	failOpen error
+}
 
 func flipBytes(b []byte) []byte {
 	out := make([]byte, len(b))
@@ -62,16 +68,29 @@ func flipBytes(b []byte) []byte {
 	return out
 }
 
-func (lineSealer) SealLocal(label string, plain []byte) ([]byte, error) {
+func (*lineSealer) SealLocal(label string, plain []byte) ([]byte, error) {
 	return append([]byte("sealed:"+label+":"), flipBytes(plain)...), nil
 }
 
-func (lineSealer) OpenLocal(label string, sealed []byte) ([]byte, error) {
+func (s *lineSealer) OpenLocal(label string, sealed []byte) ([]byte, error) {
+	s.mu.Lock()
+	fail := s.failOpen
+	s.failOpen = nil
+	s.mu.Unlock()
+	if fail != nil {
+		return nil, fail
+	}
 	prefix := []byte("sealed:" + label + ":")
 	if !bytes.HasPrefix(sealed, prefix) {
-		return nil, errors.New("does not open")
+		return nil, identity.ErrSealedKeyUnreadable
 	}
 	return flipBytes(sealed[len(prefix):]), nil
+}
+
+func (s *lineSealer) failNextOpen(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failOpen = err
 }
 
 // linePort is the fake session-host with a hook inside the next Live read
@@ -119,6 +138,12 @@ func (p *linePort) Stop(_ context.Context, id int64) error {
 	return nil
 }
 
+func (p *linePort) stopCalls() []int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.stops)
+}
+
 func (p *linePort) startCalls() []StartRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -161,7 +186,10 @@ type lineEnv struct {
 	lp     *linePort
 	clock  *lineClock
 	echoes *lineEchoes
-	wb     int64
+	sealer *lineSealer
+	// timeout is the handlers' deadline (0: DefaultTimeout).
+	timeout time.Duration
+	wb      int64
 }
 
 func newLineEnv(t *testing.T) *lineEnv {
@@ -173,7 +201,8 @@ func newLineEnv(t *testing.T) *lineEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	e.store = st
-	le := &lineEnv{env: e, lp: &linePort{fakePort: e.port}, clock: &lineClock{now: time.Now()}, echoes: &lineEchoes{}}
+	le := &lineEnv{env: e, lp: &linePort{fakePort: e.port}, clock: &lineClock{now: time.Now()}, echoes: &lineEchoes{},
+		sealer: &lineSealer{}}
 	e.linkDevice(true, false, false)
 	e.h = le.register()
 	le.wb = e.workbench()
@@ -181,13 +210,20 @@ func newLineEnv(t *testing.T) *lineEnv {
 }
 
 // register is a hub (re)start over the same sidecar and session-host.
-func (le *lineEnv) register() *Handlers {
-	return Register(actions.NewDispatcher(), Deps{
+func (le *lineEnv) register() *Handlers { return le.registerWith(le.sealer) }
+
+// registerWith is a (re)start with sealer (nil: a runtime built without one).
+func (le *lineEnv) registerWith(sealer LocalSealer) *Handlers {
+	d := Deps{
 		DB: le.db, Store: le.store, Sessions: le.lp,
 		DesktopHost: func() bool { return le.desktop },
 		Clipboard:   func(s string) error { le.clip = append(le.clip, s); return nil },
-		Clock:       le.clock.Now, Sealer: lineSealer{}, LateEcho: le.echoes.add,
-	})
+		Clock:       le.clock.Now, LateEcho: le.echoes.add, Timeout: le.timeout,
+	}
+	if sealer != nil {
+		d.Sealer = sealer
+	}
+	return Register(actions.NewDispatcher(), d)
 }
 
 // liveSession is a running claude session of the env's workbench.
@@ -284,9 +320,11 @@ func (le *lineEnv) pastes() []string {
 	return out
 }
 
-func (le *lineEnv) heldRows() int {
+func (le *lineEnv) heldRows() int { return le.heldRowsOf(le.h) }
+
+func (le *lineEnv) heldRowsOf(h *Handlers) int {
 	le.t.Helper()
-	rows, err := le.h.heldLines()
+	rows, err := h.heldLines()
 	if err != nil {
 		le.t.Fatal(err)
 	}
@@ -514,29 +552,47 @@ func TestProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored(t *testing.T) {
 	}
 }
 
-// Revoke on the Mac fails the device's held lines at once; nothing of them is
-// typed later.
+// Revoke on the Mac (link.Center.Allow typing off, through its OnRevoke
+// seam, as Swift's MobileLinkCenter.onTypingRevoked) fails the device's held
+// lines at once — echoed failed device_not_allowed with no read of the
+// session states — and nothing of them is typed later.
 func TestProj16_RevokeFailsHeldLines(t *testing.T) {
-	le := newLineEnv(t)
-	sid := le.liveSession()
-	le.setState(sid, "running")
-	first, second := le.input(sid, "One"), le.input(sid, "Two")
-	le.send(le.h, first)
-	le.send(le.h, second)
-
-	le.setTyping(false)
-	le.h.Revoked(le.device.String())
-
-	settled(le.h)
-	for _, a := range []actions.Request{first, second} {
-		wantEchoes(t, le, a, "failed:device_not_allowed")
+	rw := newRelayWorld(t)
+	sid := rw.le.liveSession()
+	rw.le.setState(sid, "running")
+	center := link.NewCenter(link.Config{Store: rw.le.store, Keys: rw.keys, Opener: secure.NewOpener(rw.keys, rw.keys)})
+	center.OnRevoke(rw.h.Revoked)
+	first := rw.send(rw.lineAction(rw.phone, sid, "One"))
+	second := rw.send(rw.lineAction(rw.phone, sid, "Two"))
+	rw.settle()
+	for _, seq := range []uint64{first, second} {
+		if e := rw.phone.Echoes[seq]; e.Status != wire.StatusHeld {
+			t.Fatalf("action %d: %+v, want held", seq, e)
+		}
 	}
-	if n := le.heldRows(); n != 0 {
+	reads := rw.le.lp.readCount()
+
+	if err := center.Allow(rw.phone.ID().String(), link.GrantTyping, false); err != nil {
+		t.Fatal(err)
+	}
+
+	settled(rw.h)
+	rw.settle()
+	for _, seq := range []uint64{first, second} {
+		e := rw.phone.Echoes[seq]
+		if e.Status != wire.StatusFailed || e.Reason == nil || *e.Reason != reasonDeviceNotAllowed {
+			t.Fatalf("action %d: %+v, want failed device_not_allowed", seq, e)
+		}
+	}
+	if n := rw.le.lp.readCount(); n != reads {
+		t.Fatalf("the revoke read the session %d times: it must fail the lines at once", n-reads)
+	}
+	if n := rw.le.heldRowsOf(rw.h); n != 0 {
 		t.Fatalf("%d held lines", n)
 	}
-	le.setState(sid, "stopped")
-	le.h.DeliverHeld(context.Background())
-	wantPastes(t, le)
+	rw.le.setState(sid, "stopped")
+	rw.h.DeliverHeld(context.Background())
+	wantPastes(t, rw.le)
 }
 
 // MARK: - Idle and busy
@@ -621,7 +677,7 @@ func TestSanitizeInputMatchesTheKit(t *testing.T) {
 		ok       bool
 	}{
 		// SessionInputTextTests.testLineBreaksAndControlsBecomeOneSpaceEachAndCRLFOne
-		{"  a\r\nb\nc\rd\x1b[2Je f  ", "a b c d [2Je f", true},
+		{"  a\r\nb\nc\rd\x1b[2Je\u2028f  ", "a b c d [2Je f", true},
 		// testFormatCharactersStay
 		{"hi " + family, "hi " + family, true},
 		{family, family, true},
@@ -805,6 +861,12 @@ func TestOnlyThePhoneThatSentALineCanCancelIt(t *testing.T) {
 	if n := le.heldRows(); n != 1 {
 		t.Fatalf("%d held lines, want the line still held", n)
 	}
+	// The sender rule comes first: a line being typed is no exception.
+	if ok, err := le.h.claimHeld(line.RecordName); !ok || err != nil {
+		t.Fatalf("claim %v %v", ok, err)
+	}
+	foreign = le.action("session_input_cancel", &line.Action.ID, nil, secure.ID{0x0c})
+	wantOutcome(t, le.send(le.h, foreign), wire.StatusFailed, reasonDeviceNotAllowed)
 	settled(le.h)
 	wantEchoes(t, le, line)
 }
@@ -1158,5 +1220,131 @@ func TestTheRelayEchoesHeldThenTheLaterOutcomeAndKeepsIt(t *testing.T) {
 	phase, outcome, _, err := rw.le.store.Phase(key)
 	if err != nil || phase != state.PhaseDone || outcome != wire.StatusApplied {
 		t.Fatalf("ledger %s/%s %v", phase, outcome, err)
+	}
+}
+
+// MARK: - Deadline and sidecar failures
+
+// A first try that is still running at the dispatch's deadline (here a
+// Deliver blocked on a hung host that finally answers held) holds nothing:
+// the phone was answered outcome_unknown, so the line is never typed later
+// and that echo is never replaced. The phone's own re-send is typed once.
+func TestASlowFirstTryHeldAfterItsDeadlineIsNeverTyped(t *testing.T) {
+	le := newLineEnv(t)
+	le.timeout = 50 * time.Millisecond
+	h := le.register()
+	sid := le.liveSession()
+	le.setState(sid, "stopped")
+	release := make(chan struct{})
+	le.port.onDeliver = func(DeliverRequest) { <-release }
+	le.lp.setResult(DeliverResult{Outcome: DeliverHeld, Reason: inputReasonPromptHasText})
+	first := le.input(sid, "Ship it")
+
+	out := le.send(h, first)
+
+	wantOutcome(t, out, wire.StatusFailed, reasonOutcomeUnknown)
+	close(release)
+	h.lines.tries.Wait()
+	if n := le.heldRowsOf(h); n != 0 {
+		t.Fatalf("%d held lines after the deadline", n)
+	}
+
+	le.port.onDeliver = nil
+	le.lp.setResult(DeliverResult{Outcome: DeliverSubmitted})
+	again := le.send(h, le.input(sid, "Ship it"))
+	le.clock.advance(busyAfterSubmit)
+	le.setState(sid, "stopped")
+	h.DeliverHeld(context.Background())
+	le.register().DeliverHeld(context.Background())
+
+	wantLine(t, again, deliverySubmitted, false)
+	if n := len(le.port.lines()); n != 2 {
+		t.Fatalf("%d deliveries, want the timed-out try and the re-send only", n)
+	}
+	settled(h)
+	wantEchoes(t, le, first)
+}
+
+// A sealer that cannot open for a moment (a locked keyring) keeps every
+// held row: the round is skipped, nothing is echoed, and the line goes on the
+// next read.
+func TestATransientSealerFailureKeepsTheHeldLine(t *testing.T) {
+	le := newLineEnv(t)
+	sid := le.liveSession()
+	le.setState(sid, "running")
+	line := le.input(sid, "Later")
+	le.send(le.h, line)
+	le.setState(sid, "stopped")
+
+	le.sealer.failNextOpen(errors.New("keyring not available"))
+	le.h.DeliverHeld(context.Background())
+
+	wantPastes(t, le)
+	settled(le.h)
+	wantEchoes(t, le, line)
+	le.h.DeliverHeld(context.Background())
+	wantPastes(t, le, "Later")
+	settled(le.h)
+	wantEchoes(t, le, line, "applied:submitted")
+}
+
+// A hub built without a sealer keeps the held rows too (at start and on each
+// read); a later hub with one types them.
+func TestAHubWithoutASealerKeepsTheHeldLines(t *testing.T) {
+	le := newLineEnv(t)
+	sid := le.liveSession()
+	le.setState(sid, "running")
+	line := le.input(sid, "Later")
+	le.send(le.h, line)
+	le.setState(sid, "stopped")
+
+	bare := le.registerWith(nil)
+	bare.DeliverHeld(context.Background())
+
+	wantPastes(t, le)
+	settled(bare)
+	wantEchoes(t, le, line)
+	after := le.register()
+	after.DeliverHeld(context.Background())
+	wantPastes(t, le, "Later")
+}
+
+// A held row whose sealed text genuinely does not open (the hub's identity
+// was recreated) is removed and echoed failed: it can never be typed.
+func TestAHeldLineThatDoesNotOpenIsDroppedWithAFailedEcho(t *testing.T) {
+	le := newLineEnv(t)
+	sid := le.liveSession()
+	le.setState(sid, "running")
+	line := le.input(sid, "Lost")
+	le.send(le.h, line)
+	err := le.store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		var blob []byte
+		if err := tx.QueryRow(`SELECT action FROM held_session_lines`).Scan(&blob); err != nil {
+			return err
+		}
+		var env heldEnvelope
+		if err := json.Unmarshal(blob, &env); err != nil {
+			return err
+		}
+		env.Params = []byte("sealed under another identity")
+		b, err := json.Marshal(env)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(`UPDATE held_session_lines SET action = ?`, b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	le.setState(sid, "stopped")
+
+	le.h.DeliverHeld(context.Background())
+
+	wantPastes(t, le)
+	settled(le.h)
+	wantEchoes(t, le, line, "failed:write_failed")
+	if n := le.heldRows(); n != 0 {
+		t.Fatalf("%d held lines", n)
 	}
 }

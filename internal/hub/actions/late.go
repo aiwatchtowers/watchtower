@@ -9,11 +9,13 @@ import (
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/wire"
 )
 
 // ErrNotDecided refuses a late echo of an action the ledger does not hold as
-// done under the phone's current link: a removed or re-linked phone (whose
-// new action order may reuse the record name) is never echoed (D9).
+// done with a held echo under the phone's current link: a removed or
+// re-linked phone (whose new action order may reuse the record name) is never
+// echoed (D9), and a final echo is never replaced.
 var ErrNotDecided = errors.New("actions: no decided action of a linked phone at that record")
 
 // LateEcho rewrites an action already echoed and decided with a later
@@ -28,6 +30,9 @@ var ErrNotDecided = errors.New("actions: no decided action of a linked phone at 
 // in the clear. The queued write is flushed at once (best effort: a failed
 // write stays queued for the next pass).
 func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
+	if p.cfg.Sealer == nil {
+		return errors.New("actions: no sealer for a late echo")
+	}
 	o = normalize(o)
 	if _, err := o.result(); err != nil {
 		return err
@@ -54,11 +59,13 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 		seq = *r.Action.ActionSeq
 	}
 	key := b.ledgerKey(r.RecordName, seq)
-	phase, _, _, err := p.cfg.Store.Phase(key)
+	phase, _, before, err := p.cfg.Store.Phase(key)
 	if err != nil {
 		return err
 	}
-	if phase != state.PhaseDone {
+	// Only a held echo is replaced: a final one (applied, failed, expired,
+	// cancelled, outcome_unknown after a timeout) is never rewritten.
+	if prev, ok := decodeStored(before); phase != state.PhaseDone || !ok || prev.Status != wire.StatusHeld {
 		return ErrNotDecided
 	}
 	wireName, err := p.cfg.Sealer.WireName(secure.ZoneRelay, r.RecordName)
