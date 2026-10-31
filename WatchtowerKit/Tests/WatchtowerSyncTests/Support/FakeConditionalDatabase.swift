@@ -15,6 +15,9 @@ final class FakeConditionalDatabase: ConditionalDatabase, @unchecked Sendable {
     private var records: [CKRecord.ID: CKRecord] = [:]
     private var tagSerial = 0
     private var _calls: [Call] = []
+    private var _fetches: [CKRecord.ID] = []
+    /// Thrown by the next fetches, one per fetch, in order.
+    var fetchFailures: [Error] = []
     /// Thrown by the next calls, one per call, in order.
     var callFailures: [Error] = []
     /// The result of a record's next save or delete, whatever the server holds.
@@ -23,6 +26,8 @@ final class FakeConditionalDatabase: ConditionalDatabase, @unchecked Sendable {
     var maxRecordsPerCall = Int.max
 
     var calls: [Call] { lock.withLock { _calls } }
+    /// The record IDs fetched, in order.
+    var fetches: [CKRecord.ID] { lock.withLock { _fetches } }
 
     func record(named name: String) -> CKRecord? {
         lock.withLock { records.first { $0.key.recordName == name }?.value }
@@ -73,6 +78,14 @@ final class FakeConditionalDatabase: ConditionalDatabase, @unchecked Sendable {
                 }
             }
             return (saves, deletes)
+        }
+    }
+
+    func fetchRecord(_ id: CKRecord.ID) async throws -> CKRecord? {
+        try lock.withLock {
+            _fetches.append(id)
+            if !fetchFailures.isEmpty { throw fetchFailures.removeFirst() }
+            return records[id]
         }
     }
 

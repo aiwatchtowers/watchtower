@@ -140,6 +140,64 @@ final class CloudKitConditionalTests: XCTestCase {
         XCTAssertEqual(outcomes.last, .refused(.permanent(code: "unknownVersion")))
     }
 
+    /// Stored r+1, the buffer compacted (the feed consumed the hub's echo), a `.seq(r)` write: the current copy
+    /// comes from the server, under the stored version, so the caller reads it instead of giving the record up.
+    private func compactedAfterTwoVersions() throws -> (CloudKitTransport, FakeConditionalDatabase, TransportStore) {
+        let (transport, database, store) = try make()
+        try buffer(database.seed(serverRecord("a-1", payload: "v1")), into: store)
+        try buffer(database.seed(serverRecord("a-1", payload: "v2")), into: store)
+        let token = try store.changes(in: .relay, since: nil).newToken
+        try store.compactEvents(in: .relay, keepSince: token)
+        XCTAssertNil(try store.latestEvent(recordName: "a-1", zone: .relay))
+        XCTAssertEqual(try store.recordVersion(recordName: "a-1", zone: .relay)?.recordSeq, 2)
+        return (transport, database, store)
+    }
+
+    func testAStaleSeqAfterCompactionConflictsWithTheServerCopy() async throws {
+        let (transport, database, _) = try compactedAfterTwoVersions()
+
+        let outcomes = try await transport.save([ConditionalSave(record: record("a-1", payload: "mine"), expect: .seq(1))])
+
+        guard case .conflict(let current) = outcomes.first else { return XCTFail("\(outcomes)") }
+        XCTAssertEqual(current.payload, Data("v2".utf8))
+        XCTAssertEqual(current.recordSeq, 2, "the stored version")
+        XCTAssertEqual(database.fetches.map(\.recordName), ["a-1"])
+        XCTAssertTrue(database.calls.isEmpty, "nothing written")
+    }
+
+    func testAStaleSeqDeleteAfterCompactionConflictsWithTheServerCopy() async throws {
+        let (transport, database, _) = try compactedAfterTwoVersions()
+
+        let outcomes = try await transport.delete([ConditionalDelete(recordName: "a-1", zone: .relay, expect: .seq(1))])
+
+        guard case .conflict(let current) = outcomes.first else { return XCTFail("\(outcomes)") }
+        XCTAssertEqual(current.payload, Data("v2".utf8))
+        XCTAssertEqual(current.recordSeq, 2)
+        XCTAssertTrue(database.calls.isEmpty)
+        XCTAssertNotNil(database.record(named: "a-1"), "not deleted")
+    }
+
+    func testAStaleSeqAfterCompactionOfARecordGoneOnTheServerIsGone() async throws {
+        let (transport, database, _) = try compactedAfterTwoVersions()
+        let id = try XCTUnwrap(database.record(named: "a-1")?.recordID)
+        _ = try await database.modify(saving: [], deleting: [id])
+
+        let save = try await transport.save([ConditionalSave(record: record("a-1"), expect: .seq(1))])
+        let delete = try await transport.delete([ConditionalDelete(recordName: "a-1", zone: .relay, expect: .seq(1))])
+
+        XCTAssertEqual(save, [.refused(.permanent(code: "gone"))])
+        XCTAssertEqual(delete, [.refused(.permanent(code: "gone"))])
+    }
+
+    func testAFailedFetchAfterCompactionIsARefusal() async throws {
+        let (transport, database, _) = try compactedAfterTwoVersions()
+        database.fetchFailures = [CKError(.networkUnavailable)]
+
+        let outcomes = try await transport.save([ConditionalSave(record: record("a-1"), expect: .seq(1))])
+
+        XCTAssertEqual(outcomes, [.refused(.unreachable)])
+    }
+
     func testAnUnknownItemOnASeqSaveIsGone() async throws {
         let (transport, database, store) = try make()
         let fetched = database.seed(serverRecord("c-1", payload: "v1"))

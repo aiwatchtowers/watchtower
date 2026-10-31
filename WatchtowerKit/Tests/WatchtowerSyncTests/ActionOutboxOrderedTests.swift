@@ -523,6 +523,52 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(try row(phone, one.id)?.recordSeq, now?.recordSeq)
     }
 
+    /// On CloudKit: the hub's held echo was fetched (a newer stored version) and the feed compacted it away, so the
+    /// local buffer holds no current copy. The resend reads the echo from the server and rewrites it; the row is
+    /// never listed as Not delivered (a Retry would apply it twice).
+    func testAResendOnCloudKitAfterTheHeldEchoWasCompactedRewritesIt() async throws {
+        let transportStore = try TransportStore.inMemory()
+        let database = FakeConditionalDatabase()
+        let cloudKit = CloudKitTransport.conditionalTesting(store: transportStore, database: database)
+        let zones = HubZones(scope: .shared(ownerName: "_owner-acme"), hubID: HubZones.testHubID)
+        let keys = try TestE2E.phoneStore()
+        let secure = TestE2E.phoneTransport(try TestE2E.phone(store: keys), inner: cloudKit)
+        let replica = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
+        let outbox = ActionOutbox(transport: secure, store: replica, deviceID: device) { [base] in base }
+        try await outbox.enableOrderedActions()
+        await outbox.setHubID(hubID)
+
+        let id = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        _ = try await outbox.flush()
+        let written = try XCTUnwrap(replica.outboxRows([.sent]).first { $0.actionID == id })
+        XCTAssertEqual(written.recordSeq, 1)
+
+        // The hub's held echo over the action's record, fetched into the buffer as the engine would.
+        let hubInner = InMemoryCloudTransport()
+        let held = echo(id, seq: 1, status: .held)
+        try await TestE2E.hubTransport(inner: hubInner).save([CloudRecordFactory.orderedRecord(
+            for: held, actionSeq: 1, deviceID: TestE2E.deviceID, modifiedAt: base)])
+        let hubChanges = try await hubInner.changes(in: .relay, since: nil)
+        let sealedEcho = try XCTUnwrap(hubChanges.changed.first)
+        XCTAssertEqual(sealedEcho.recordName, written.wireName)
+        let echoRecord = database.seed(CloudKitTransport.ckRecord(
+            from: sealedEcho, in: zones.zoneID(for: .relay), systemFields: nil))
+        try transportStore.bufferFetched(
+            changed: [try XCTUnwrap(CloudKitTransport.cloudRecord(from: echoRecord, zone: .relay))],
+            systemFields: [(name: written.wireName, zone: .relay, data: CloudKitTransport.archivedSystemFields(of: echoRecord))],
+            deleted: [:])
+        // The feed applied it, then compacted the buffer.
+        try await outbox.applyOrderedEcho(held)
+        try transportStore.compactEvents(in: .relay, keepSince: try transportStore.changes(in: .relay, since: nil).newToken)
+
+        try await outbox.resendFrom(1)
+
+        let after = try XCTUnwrap(replica.outboxRows([.queued, .sent, .settled, .undelivered]).first { $0.actionID == id })
+        XCTAssertEqual(after.delivery, .sent, "never listed as Not delivered")
+        XCTAssertEqual(database.record(named: written.wireName)?.encryptedValues["payload"] as? Data, written.envelope,
+                       "the held echo is rewritten with the action")
+    }
+
     func testAResendOverwriteThatMeetsAFinalEchoSettlesTheRow() async throws {
         let phone = try await makePhone()
         let one = try await insert(phone)

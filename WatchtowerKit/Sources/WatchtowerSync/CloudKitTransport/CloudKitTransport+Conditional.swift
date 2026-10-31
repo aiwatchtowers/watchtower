@@ -51,7 +51,7 @@ extension CloudKitTransport: ConditionalTransport {
             let (round, later) = Self.splitDuplicates(remaining) { items[$0].record.recordName }
             var outgoing: [(index: Int, record: CKRecord, overwrite: Bool)] = []
             for index in round {
-                switch try planSave(items[index]) {
+                switch try await planSave(items[index]) {
                 case .answer(let outcome): outcomes[index] = outcome
                 case let .send(record, overwrite): outgoing.append((index, record, overwrite))
                 }
@@ -86,7 +86,7 @@ extension CloudKitTransport: ConditionalTransport {
             let (round, later) = Self.splitDuplicates(remaining) { items[$0].recordName }
             var outgoing: [(index: Int, id: CKRecord.ID)] = []
             for index in round {
-                switch try planDelete(items[index]) {
+                switch try await planDelete(items[index]) {
                 case .answer(let outcome): outcomes[index] = outcome
                 case .send(let id): outgoing.append((index, id))
                 }
@@ -102,7 +102,7 @@ extension CloudKitTransport: ConditionalTransport {
 
     // MARK: - Local checks
 
-    private func planSave(_ item: ConditionalSave) throws -> SavePlan {
+    private func planSave(_ item: ConditionalSave) async throws -> SavePlan {
         let record = item.record
         guard record.zone == .relay else { return .answer(.refused(.permanent(code: "notMailbox"))) }
         let zoneID = zones.zoneID(for: .relay)
@@ -113,7 +113,7 @@ extension CloudKitTransport: ConditionalTransport {
         case .seq(let expected):
             guard let version = try store.recordVersion(recordName: record.recordName, zone: .relay),
                   version.recordSeq == expected else {
-                return .answer(try staleSave(record.recordName))
+                return .answer(try await staleSave(record.recordName))
             }
             let archive = try store.systemFields(recordName: record.recordName, zone: .relay)
             return .send(Self.ckRecord(from: record, in: zoneID, systemFields: archive), overwrite: false)
@@ -125,21 +125,44 @@ extension CloudKitTransport: ConditionalTransport {
 
     /// A `.seq` whose version is not the stored one: the phone already holds a newer version (or none at all).
     /// When the stored handle is newer than the buffered event (this phone's own save, not fetched back yet),
-    /// the buffer holds no current copy to hand back: the write waits for the next fetch.
-    private func staleSave(_ recordName: String) throws -> SaveOutcome {
+    /// the buffer holds no current copy to hand back: the write waits for the next fetch. A stored version with
+    /// no buffered event at all (the feed compacted it, the hub's echo say) is read from the server: its copy
+    /// under the stored version, or `gone` when the server has none.
+    private func staleSave(_ recordName: String) async throws -> SaveOutcome {
+        let version = try store.recordVersion(recordName: recordName, zone: .relay)
         guard let current = try store.latestEvent(recordName: recordName, zone: .relay) else {
-            return .refused(.permanent(code: "unknownVersion"))
+            guard let version else { return .refused(.permanent(code: "unknownVersion")) }
+            return await serverCopy(recordName, recordSeq: version.recordSeq)
         }
-        if let version = try store.recordVersion(recordName: recordName, zone: .relay),
-           current.recordSeq != version.recordSeq {
+        if let version, current.recordSeq != version.recordSeq {
             return .refused(.transient(code: "staleBuffer"))
         }
         return .conflict(current: current)
     }
 
+    /// One fetch of the server's current copy, as a conflict carrying `recordSeq`; `gone` when there is none.
+    private func serverCopy(_ recordName: String, recordSeq: UInt64) async -> SaveOutcome {
+        let id = CKRecord.ID(recordName: recordName, zoneID: zones.zoneID(for: .relay))
+        do {
+            guard let server = try await conditionalDatabase().fetchRecord(id) else {
+                return .refused(.permanent(code: Self.goneCode))
+            }
+            guard let current = Self.cloudRecord(from: server, zone: .relay) else {
+                return .refused(.transient(code: "unreadableRecord"))
+            }
+            return .conflict(current: Self.cloudRecord(current, recordSeq: recordSeq))
+        } catch let error as CKError {
+            return .refused(Self.refusal(for: error))
+        } catch {
+            return .refused(.transient(code: error is CancellationError ? "cancelled" : "notCloudKit"))
+        }
+    }
+
+    private static let goneCode = "gone"
+
     /// CloudKit has no conditional delete (the save policy binds saves only), so a `.seq` is checked against
     /// the stored handle and change tag here and the delete goes out unconditionally (Ruling 6).
-    private func planDelete(_ item: ConditionalDelete) throws -> DeletePlan {
+    private func planDelete(_ item: ConditionalDelete) async throws -> DeletePlan {
         guard item.zone == .relay else { return .answer(.refused(.permanent(code: "notMailbox"))) }
         let id = CKRecord.ID(recordName: item.recordName, zoneID: zones.zoneID(for: .relay))
         switch item.expect {
@@ -156,7 +179,7 @@ extension CloudKitTransport: ConditionalTransport {
         case .seq(let expected):
             guard let version = try store.recordVersion(recordName: item.recordName, zone: .relay),
                   version.recordSeq == expected, version.changeTag != nil else {
-                switch try staleSave(item.recordName) {
+                switch try await staleSave(item.recordName) {
                 case .conflict(let current): return .answer(.conflict(current: current))
                 case .refused(let refusal): return .answer(.refused(refusal))
                 case .saved: return .answer(.refused(.permanent(code: "unknownVersion")))
@@ -197,7 +220,7 @@ extension CloudKitTransport: ConditionalTransport {
                 return .send(Self.ckRecord(from: item.record, in: zones.zoneID(for: .relay), systemFields: nil),
                              overwrite: false)
             }
-            return .answer(.refused(.permanent(code: "gone")))
+            return .answer(.refused(.permanent(code: Self.goneCode)))
         case .failed(let error):
             return .answer(.refused(Self.refusal(for: error)))
         case .refused(let refusal):
