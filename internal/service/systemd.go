@@ -88,10 +88,10 @@ func (i Installer) installSystemd(ctx context.Context, u Unit) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	if changed {
-		if err := i.systemctl(ctx, "daemon-reload"); err != nil {
-			return Status{}, err
-		}
+	// Always reloaded: a unit file edited or replaced by hand since the last
+	// load is picked up too, and a reload restarts nothing.
+	if err := i.systemctl(ctx, "daemon-reload"); err != nil {
+		return Status{}, err
 	}
 	// enable --now starts a stopped unit and leaves a running one alone.
 	if err := i.systemctl(ctx, "enable", "--now", SystemdUnitName); err != nil {
@@ -106,23 +106,35 @@ func (i Installer) installSystemd(ctx context.Context, u Unit) (Status, error) {
 }
 
 func (i Installer) uninstallSystemd(ctx context.Context) (Status, error) {
+	if _, err := i.Run(ctx, "systemctl", "--user", "show-environment"); err != nil {
+		return Status{}, noUserManagerError{user: i.User}
+	}
 	path := i.systemdUnitPath()
-	exists, err := fileExists(path)
-	if err != nil {
+	if _, err := fileExists(path); err != nil {
 		return Status{}, err
 	}
-	if exists {
-		if err := i.systemctl(ctx, "disable", "--now", SystemdUnitName); err != nil {
-			return Status{}, err
-		}
-		if err := removeIfExists(path); err != nil {
-			return Status{}, err
-		}
-		if err := i.systemctl(ctx, "daemon-reload"); err != nil {
-			return Status{}, err
-		}
+	// Stopped even when the file is gone: a unit file removed by hand can
+	// still be loaded and running. A unit systemd does not know is fine.
+	disable := []string{"--user", "disable", "--now", SystemdUnitName}
+	if out, err := i.Run(ctx, "systemctl", disable...); err != nil && !systemdUnknownUnit(out) {
+		return Status{}, runErr("systemctl "+strings.Join(disable, " "), out, err)
+	}
+	if err := removeIfExists(path); err != nil {
+		return Status{}, err
+	}
+	if err := i.systemctl(ctx, "daemon-reload"); err != nil {
+		return Status{}, err
 	}
 	return i.systemdStatus(ctx, i.linger(ctx))
+}
+
+// systemdUnknownUnit reports systemctl's answer for a unit it has no file
+// for or has not loaded.
+func systemdUnknownUnit(out []byte) bool {
+	s := string(out)
+	return strings.Contains(s, "does not exist") ||
+		strings.Contains(s, "not loaded") ||
+		strings.Contains(s, "not found")
 }
 
 func (i Installer) statusSystemd(ctx context.Context) (Status, error) {

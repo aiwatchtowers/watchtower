@@ -8,10 +8,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -349,7 +351,7 @@ func TestWriteWorkspaceScaffold_UnreadableConfigIsAnError(t *testing.T) {
 	require.NoError(t, os.Chmod(configPath, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(configPath, 0o600) })
 
-	err := writeWorkspaceScaffold(configPath, "default", true)
+	err := writeWorkspaceScaffold(configPath, "default", true, nil)
 	require.ErrorContains(t, err, "reading config")
 	require.NoError(t, os.Chmod(configPath, 0o600))
 	data, err := os.ReadFile(configPath)
@@ -460,6 +462,15 @@ func newWorkspaceInitTestCmd(t *testing.T, args ...string) (*cobra.Command, *byt
 
 func TestWorkspaceInitHeadlessTurnsOffEveryNonCoreFeature(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
+	// One write: a kill between two writes could leave a created config
+	// without the headless profile.
+	writes := 0
+	old := writeConfigFile
+	writeConfigFile = func(v *viper.Viper, path string) error {
+		writes++
+		return old(v, path)
+	}
+	t.Cleanup(func() { writeConfigFile = old })
 
 	c, out := newWorkspaceInitTestCmd(t, "--headless", "--json")
 	require.NoError(t, runWorkspaceInit(c, nil))
@@ -482,6 +493,31 @@ func TestWorkspaceInitHeadlessTurnsOffEveryNonCoreFeature(t *testing.T) {
 	}
 	assert.Positive(t, off)
 	assert.Equal(t, "default", cfg.ActiveWorkspace)
+	assert.Equal(t, 1, writes, "the config is written once, profile included")
+}
+
+// --headless never changes the --json output: same keys as a plain run, one
+// JSON line, and "Kept your feature settings." never reaches it.
+func TestWorkspaceInitHeadlessJSONMatchesThePlainShape(t *testing.T) {
+	jsonKeys := func(t *testing.T, existing bool, args ...string) []string {
+		t.Helper()
+		_, configPath := workspaceInitHome(t)
+		if existing {
+			require.NoError(t, os.WriteFile(configPath, []byte("memory:\n  enabled: true\n"), 0o600))
+		}
+		c, out := newWorkspaceInitTestCmd(t, args...)
+		require.NoError(t, runWorkspaceInit(c, nil))
+		assert.NotContains(t, out.String(), "Kept")
+		assert.Equal(t, 1, strings.Count(out.String(), "\n"), "one JSON line: %q", out.String())
+		var keys map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(out.Bytes(), &keys))
+		return mapKeys(keys)
+	}
+	for _, existing := range []bool{false, true} {
+		plain := jsonKeys(t, existing, "--json")
+		headless := jsonKeys(t, existing, "--json", "--headless")
+		assert.ElementsMatch(t, plain, headless, "existing config: %v", existing)
+	}
 }
 
 func TestWorkspaceInitHeadlessKeepsAnExistingConfig(t *testing.T) {

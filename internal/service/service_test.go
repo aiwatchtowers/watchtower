@@ -27,6 +27,7 @@ var testUnit = Unit{
 type fakeRunner struct {
 	calls   []string
 	answers map[string]fakeAnswer
+	queued  map[string][]fakeAnswer // answered first, one per call
 }
 
 type fakeAnswer struct {
@@ -34,17 +35,39 @@ type fakeAnswer struct {
 	err error
 }
 
-func newFakeRunner() *fakeRunner { return &fakeRunner{answers: map[string]fakeAnswer{}} }
+func newFakeRunner() *fakeRunner {
+	return &fakeRunner{answers: map[string]fakeAnswer{}, queued: map[string][]fakeAnswer{}}
+}
 
 func (f *fakeRunner) on(cmdline, out string, err error) {
 	f.answers[cmdline] = fakeAnswer{out: out, err: err}
 }
 
+// queue makes the next calls of cmdline answer with as, in order, before the
+// answer set by on.
+func (f *fakeRunner) queue(cmdline string, as ...fakeAnswer) {
+	f.queued[cmdline] = append(f.queued[cmdline], as...)
+}
+
 func (f *fakeRunner) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	line := strings.Join(append([]string{name}, args...), " ")
 	f.calls = append(f.calls, line)
+	if q := f.queued[line]; len(q) > 0 {
+		f.queued[line] = q[1:]
+		return []byte(q[0].out), q[0].err
+	}
 	a := f.answers[line]
 	return []byte(a.out), a.err
+}
+
+func (f *fakeRunner) count(cmdline string) int {
+	n := 0
+	for _, c := range f.calls {
+		if c == cmdline {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeRunner) called(prefix string) bool {
@@ -62,10 +85,21 @@ func linuxInstaller(t *testing.T, r *fakeRunner, out *bytes.Buffer) Installer {
 	return Installer{GOOS: "linux", Home: home, User: "acme", UID: 1000, Run: r.run, Out: out}
 }
 
+// darwinInstaller starts with the agent loaded in no domain and a console
+// login (gui/501 answers); tests override either.
 func darwinInstaller(t *testing.T, r *fakeRunner) Installer {
 	t.Helper()
-	return Installer{GOOS: "darwin", Home: t.TempDir(), User: "acme", UID: 501, Run: r.run}
+	r.on("launchctl print gui/501/com.watchtower.daemon", "", errNotLoaded)
+	r.on("launchctl print user/501/com.watchtower.daemon", "", errNotLoaded)
+	return Installer{
+		GOOS: "darwin", Home: t.TempDir(), User: "acme", UID: 501, Run: r.run,
+		Sleep: func(time.Duration) { t.Fatal("unexpected bootstrap retry") },
+	}
 }
+
+var errNotLoaded = errors.New("exit status 113")
+
+const ioError = "Bootstrap failed: 5: Input/output error\n"
 
 func readGolden(t *testing.T, name string) string {
 	t.Helper()
@@ -120,6 +154,7 @@ func TestInstallRefusesAnUnsafeUnit(t *testing.T) {
 		"relative exe": {Exe: "watchtower", Path: "/usr/bin"},
 		"newline path": {Exe: "/usr/bin/watchtower", Path: "/usr/bin\nExecStartPre=/bin/evil"},
 		"newline exe":  {Exe: "/usr/bin/watch\ntower", Path: "/usr/bin"},
+		"empty path":   {Exe: "/usr/bin/watchtower", Path: ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := newFakeRunner()
@@ -280,7 +315,24 @@ func TestInstallIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.ModTime().Equal(old), "an unchanged unit is not rewritten")
 	assert.False(t, r.called("systemctl --user restart"), "no restart on a second run")
-	assert.False(t, r.called("systemctl --user daemon-reload"))
+	assert.Equal(t, []string{
+		"systemctl --user show-environment",
+		"systemctl --user daemon-reload",
+		"systemctl --user enable --now watchtower.service",
+	}, filterPrefix(r.calls, "systemctl --user show-environment", "systemctl --user daemon-reload",
+		"systemctl --user enable"), "a reload is fine, it restarts nothing")
+
+	// An identical unit with a loose mode gets its mode fixed, no rewrite.
+	require.NoError(t, os.Chmod(i.systemdUnitPath(), 0o644))
+	require.NoError(t, os.Chtimes(i.systemdUnitPath(), old, old))
+	r.calls = nil
+	_, err = i.Install(context.Background(), testUnit)
+	require.NoError(t, err)
+	info, err = os.Stat(i.systemdUnitPath())
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	assert.True(t, info.ModTime().Equal(old), "a mode fix is not a rewrite")
+	assert.False(t, r.called("systemctl --user restart"))
 
 	// A changed unit (a new binary path) is rewritten and restarted.
 	r.calls = nil
@@ -417,6 +469,178 @@ func TestInstallRefusesAnUnsupportedOS(t *testing.T) {
 	_, err := i.Install(context.Background(), testUnit)
 	require.ErrorIs(t, err, ErrUnsupportedOS)
 	assert.Empty(t, r.calls)
+}
+
+func TestUninstallStopsAHandRemovedUnit(t *testing.T) {
+	r := newFakeRunner()
+	i := linuxInstaller(t, r, &bytes.Buffer{})
+	_, err := i.Install(context.Background(), testUnit)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(i.systemdUnitPath()))
+
+	r.calls = nil
+	_, err = i.Uninstall(context.Background())
+	require.NoError(t, err)
+	assert.True(t, r.called("systemctl --user disable --now watchtower.service"),
+		"a unit whose file was removed by hand can still be running")
+	assert.True(t, r.called("systemctl --user daemon-reload"))
+}
+
+func TestUninstallToleratesAnUnknownUnit(t *testing.T) {
+	r := newFakeRunner()
+	r.on("systemctl --user disable --now watchtower.service",
+		"Failed to disable unit: Unit file watchtower.service does not exist.\n", errors.New("exit status 1"))
+	i := linuxInstaller(t, r, &bytes.Buffer{})
+	st, err := i.Uninstall(context.Background())
+	require.NoError(t, err)
+	assert.False(t, st.Installed)
+}
+
+func TestUninstallFailsOnAnotherDisableError(t *testing.T) {
+	r := newFakeRunner()
+	r.on("systemctl --user disable --now watchtower.service",
+		"Failed to disable unit: Access denied\n", errors.New("exit status 1"))
+	i := linuxInstaller(t, r, &bytes.Buffer{})
+	_, err := i.Install(context.Background(), testUnit)
+	require.NoError(t, err)
+	_, err = i.Uninstall(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Access denied")
+	assert.FileExists(t, i.systemdUnitPath(), "nothing removed when the unit could not be stopped")
+}
+
+func TestUninstallRefusedWhenSystemctlUserIsUnreachable(t *testing.T) {
+	r := newFakeRunner()
+	i := linuxInstaller(t, r, &bytes.Buffer{})
+	_, err := i.Install(context.Background(), testUnit)
+	require.NoError(t, err)
+
+	r.on("systemctl --user show-environment", "", errors.New("exit status 1"))
+	r.calls = nil
+	_, err = i.Uninstall(context.Background())
+	require.ErrorIs(t, err, ErrNoUserManager)
+	assert.FileExists(t, i.systemdUnitPath(), "nothing removed")
+	assert.Equal(t, []string{"systemctl --user show-environment"}, r.calls)
+}
+
+func TestUnitPathMustBeARegularFile(t *testing.T) {
+	r := newFakeRunner()
+	i := linuxInstaller(t, r, &bytes.Buffer{})
+	target := filepath.Join(i.Home, "elsewhere.service")
+	require.NoError(t, os.WriteFile(target, []byte(SystemdUnit(testUnit)), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Dir(i.systemdUnitPath()), 0o700))
+	require.NoError(t, os.Symlink(target, i.systemdUnitPath()))
+
+	_, err := i.Install(context.Background(), testUnit)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a regular file")
+	assert.False(t, r.called("systemctl --user enable"))
+	_, err = i.Status(context.Background())
+	require.Error(t, err)
+
+	require.NoError(t, os.Remove(i.systemdUnitPath()))
+	require.NoError(t, os.Mkdir(i.systemdUnitPath(), 0o700))
+	_, err = i.Install(context.Background(), testUnit)
+	require.Error(t, err)
+}
+
+// An agent bootstrapped into user/ before the owner's first console login is
+// still found there once gui/ appears: not loaded a second time, reported as
+// running, and moved to gui/ only when its plist changes.
+func TestLaunchdFindsAnAgentLoadedInUserBeforeTheLogin(t *testing.T) {
+	r := newFakeRunner()
+	i := darwinInstaller(t, r)
+	r.on("launchctl print gui/501", "", errors.New("exit status 113"))
+	_, err := i.Install(context.Background(), testUnit)
+	require.NoError(t, err)
+	plist := i.launchdPlistPath()
+	require.True(t, r.called("launchctl bootstrap user/501 "+plist))
+
+	// The owner logs in: gui/501 answers now; the agent stays in user/.
+	r.on("launchctl print gui/501", "", nil)
+	r.on("launchctl print user/501/com.watchtower.daemon", "state = running\n", nil)
+	r.calls = nil
+	st, err := i.Install(context.Background(), testUnit)
+	require.NoError(t, err)
+	assert.False(t, r.called("launchctl bootstrap"), "already loaded in user/")
+	assert.False(t, r.called("launchctl bootout"))
+	assert.True(t, st.Running)
+	assert.True(t, st.Installed)
+
+	st, err = i.Status(context.Background())
+	require.NoError(t, err)
+	assert.True(t, st.Running)
+
+	// A changed plist: out of user/, into the preferred gui/.
+	r.calls = nil
+	moved := testUnit
+	moved.Exe = "/home/acme/bin/watchtower"
+	_, err = i.Install(context.Background(), moved)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"launchctl bootout user/501/com.watchtower.daemon",
+		"launchctl bootstrap gui/501 " + plist,
+	}, filterPrefix(r.calls, "launchctl bootout", "launchctl bootstrap"))
+}
+
+func TestLaunchdRetriesTheBootstrapAfterABootout(t *testing.T) {
+	r := newFakeRunner()
+	i := darwinInstaller(t, r)
+	sleeps := 0
+	i.Sleep = func(d time.Duration) {
+		sleeps++
+		assert.Equal(t, 200*time.Millisecond, d)
+	}
+	_, err := i.Install(context.Background(), testUnit)
+	require.NoError(t, err)
+	plist := i.launchdPlistPath()
+	bootstrap := "launchctl bootstrap gui/501 " + plist
+
+	r.on("launchctl print gui/501/com.watchtower.daemon", "state = running\n", nil)
+	r.queue(bootstrap,
+		fakeAnswer{out: ioError, err: errors.New("exit status 5")},
+		fakeAnswer{out: ioError, err: errors.New("exit status 5")})
+	r.calls = nil
+	moved := testUnit
+	moved.Exe = "/home/acme/bin/watchtower"
+	_, err = i.Install(context.Background(), moved)
+	require.NoError(t, err)
+	assert.Equal(t, 3, r.count(bootstrap))
+	assert.Equal(t, 2, sleeps)
+
+	// Bounded: five I/O errors in a row fail the install.
+	r.calls, sleeps = nil, 0
+	for range 6 {
+		r.queue(bootstrap, fakeAnswer{out: ioError, err: errors.New("exit status 5")})
+	}
+	_, err = i.Install(context.Background(), testUnit)
+	require.Error(t, err)
+	assert.Equal(t, 5, r.count(bootstrap))
+	assert.Equal(t, 4, sleeps)
+}
+
+func TestLaunchdDoesNotRetryOtherBootstrapErrors(t *testing.T) {
+	r := newFakeRunner()
+	i := darwinInstaller(t, r) // its Sleep fails the test on any retry
+
+	// A first install (no bootout before it) never retries.
+	bootstrap := "launchctl bootstrap gui/501 " + i.launchdPlistPath()
+	r.queue(bootstrap, fakeAnswer{out: ioError, err: errors.New("exit status 5")})
+	_, err := i.Install(context.Background(), testUnit)
+	require.Error(t, err)
+	assert.Equal(t, 1, r.count(bootstrap))
+
+	// After a bootout, an answer other than the I/O error is not retried.
+	_, err = i.Install(context.Background(), testUnit) // loads it
+	require.NoError(t, err)
+	r.on("launchctl print gui/501/com.watchtower.daemon", "state = running\n", nil)
+	r.queue(bootstrap, fakeAnswer{out: "Bootstrap failed: 37: Operation already in progress\n", err: errors.New("exit status 37")})
+	r.calls = nil
+	moved := testUnit
+	moved.Exe = "/home/acme/bin/watchtower"
+	_, err = i.Install(context.Background(), moved)
+	require.Error(t, err)
+	assert.Equal(t, 1, r.count(bootstrap))
 }
 
 func filterPrefix(calls []string, prefixes ...string) []string {

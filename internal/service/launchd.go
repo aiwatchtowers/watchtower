@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // LaunchdPlist renders the LaunchAgent that runs `<exe> sync --daemon`. Its
@@ -61,23 +62,42 @@ func (i Installer) launchdPlistPath() string {
 	return filepath.Join(i.Home, "Library", "LaunchAgents", LaunchdLabel+".plist")
 }
 
-// launchdDomain is gui/<uid> when the owner has a console login, else
-// user/<uid> (a CLI-only Mac reached over SSH with nobody logged in).
+// bootstrapAttempts and bootstrapRetryWait bound the retry of a bootstrap
+// right after a bootout: launchd may still be tearing the old job down and
+// answers "5: Input/output error" until it is gone.
+const (
+	bootstrapAttempts  = 5
+	bootstrapRetryWait = 200 * time.Millisecond
+)
+
+func (i Installer) launchdDomainNames() (gui, user string) {
+	uid := strconv.Itoa(i.UID)
+	return "gui/" + uid, "user/" + uid
+}
+
+// launchdDomain is the domain a bootstrap goes into: gui/<uid> when the owner
+// has a console login, else user/<uid> (a CLI-only Mac reached over SSH with
+// nobody logged in).
 func (i Installer) launchdDomain(ctx context.Context) string {
-	gui := "gui/" + strconv.Itoa(i.UID)
+	gui, user := i.launchdDomainNames()
 	if _, err := i.Run(ctx, "launchctl", "print", gui); err == nil {
 		return gui
 	}
-	return "user/" + strconv.Itoa(i.UID)
+	return user
 }
 
-// launchdLoaded reports whether the agent is loaded in domain, and running.
-func (i Installer) launchdLoaded(ctx context.Context, domain string) (loaded, running bool) {
-	out, err := i.Run(ctx, "launchctl", "print", domain+"/"+LaunchdLabel)
-	if err != nil {
-		return false, false
+// launchdLoadedIn finds the domain the agent is loaded in, looking in both
+// (an agent bootstrapped into user/ before a login stays there after gui/
+// appears); "" when it is loaded in neither.
+func (i Installer) launchdLoadedIn(ctx context.Context) (domain string, running bool) {
+	gui, user := i.launchdDomainNames()
+	for _, d := range []string{gui, user} {
+		out, err := i.Run(ctx, "launchctl", "print", d+"/"+LaunchdLabel)
+		if err == nil {
+			return d, strings.Contains(string(out), "state = running")
+		}
 	}
-	return true, strings.Contains(string(out), "state = running")
+	return "", false
 }
 
 func (i Installer) launchctl(ctx context.Context, args ...string) error {
@@ -86,6 +106,26 @@ func (i Installer) launchctl(ctx context.Context, args ...string) error {
 		return runErr("launchctl "+strings.Join(args, " "), out, err)
 	}
 	return nil
+}
+
+// bootstrap loads the plist into domain. With retry (right after a bootout)
+// an I/O-error answer is retried a bounded number of times.
+func (i Installer) bootstrap(ctx context.Context, domain, path string, retry bool) error {
+	sleep := i.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	args := []string{"bootstrap", domain, path}
+	for attempt := 1; ; attempt++ {
+		out, err := i.Run(ctx, "launchctl", args...)
+		if err == nil {
+			return nil
+		}
+		if !retry || attempt >= bootstrapAttempts || !strings.Contains(string(out), "Input/output error") {
+			return runErr("launchctl "+strings.Join(args, " "), out, err)
+		}
+		sleep(bootstrapRetryWait)
+	}
 }
 
 func (i Installer) installLaunchd(ctx context.Context, u Unit) (Status, error) {
@@ -100,48 +140,47 @@ func (i Installer) installLaunchd(ctx context.Context, u Unit) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	domain := i.launchdDomain(ctx)
-	loaded, _ := i.launchdLoaded(ctx, domain)
-	if loaded && changed {
-		if err := i.launchctl(ctx, "bootout", domain+"/"+LaunchdLabel); err != nil {
+	loadedIn, _ := i.launchdLoadedIn(ctx)
+	switch {
+	case loadedIn != "" && !changed:
+		// Loaded with this plist already: nothing to do, in whichever domain.
+	case loadedIn != "":
+		if err := i.launchctl(ctx, "bootout", loadedIn+"/"+LaunchdLabel); err != nil {
 			return Status{}, err
 		}
-		loaded = false
-	}
-	if !loaded {
-		if err := i.launchctl(ctx, "bootstrap", domain, path); err != nil {
+		if err := i.bootstrap(ctx, i.launchdDomain(ctx), path, true); err != nil {
+			return Status{}, err
+		}
+	default:
+		if err := i.bootstrap(ctx, i.launchdDomain(ctx), path, false); err != nil {
 			return Status{}, err
 		}
 	}
-	return i.launchdStatus(ctx, domain)
+	return i.statusLaunchd(ctx)
 }
 
 func (i Installer) uninstallLaunchd(ctx context.Context) (Status, error) {
-	// The agent may have been bootstrapped into either domain (user/ before
-	// the owner's first console login, gui/ after), so both are unloaded.
-	uid := strconv.Itoa(i.UID)
-	for _, domain := range []string{"gui/" + uid, "user/" + uid} {
-		if loaded, _ := i.launchdLoaded(ctx, domain); loaded {
-			if err := i.launchctl(ctx, "bootout", domain+"/"+LaunchdLabel); err != nil {
-				return Status{}, err
-			}
+	// Unloaded from every domain it is loaded in.
+	gui, user := i.launchdDomainNames()
+	for _, domain := range []string{gui, user} {
+		if _, err := i.Run(ctx, "launchctl", "print", domain+"/"+LaunchdLabel); err != nil {
+			continue // not loaded there
+		}
+		if err := i.launchctl(ctx, "bootout", domain+"/"+LaunchdLabel); err != nil {
+			return Status{}, err
 		}
 	}
 	if err := removeIfExists(i.launchdPlistPath()); err != nil {
 		return Status{}, err
 	}
-	return i.launchdStatus(ctx, i.launchdDomain(ctx))
+	return i.statusLaunchd(ctx)
 }
 
 func (i Installer) statusLaunchd(ctx context.Context) (Status, error) {
-	return i.launchdStatus(ctx, i.launchdDomain(ctx))
-}
-
-func (i Installer) launchdStatus(ctx context.Context, domain string) (Status, error) {
 	installed, err := fileExists(i.launchdPlistPath())
 	if err != nil {
 		return Status{}, err
 	}
-	_, running := i.launchdLoaded(ctx, domain)
+	_, running := i.launchdLoadedIn(ctx)
 	return Status{Manager: managerLaunchd, Installed: installed, Running: running}, nil
 }

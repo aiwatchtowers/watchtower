@@ -147,36 +147,39 @@ func initWorkspace(configPath, override, name string, headless bool) (*workspace
 		return nil, fmt.Errorf("closing database: %w", err)
 	}
 
-	if err := writeWorkspaceScaffold(configPath, cfg.ActiveWorkspace, false); err != nil {
+	// The headless profile goes into the same write as the scaffold, so a
+	// created config never exists without it.
+	var profile map[string]any
+	if headless && newConfig {
+		profile = headlessProfile()
+	}
+	if err := writeWorkspaceScaffold(configPath, cfg.ActiveWorkspace, false, profile); err != nil {
 		return nil, err
 	}
-	res := &workspaceInitResult{Workspace: cfg.ActiveWorkspace, DBPath: dbPath, Created: created}
-	if headless {
-		if !newConfig {
-			res.KeptFeatures = true
-		} else if err := writeHeadlessProfile(configPath); err != nil {
-			return nil, err
-		}
-	}
-	return res, nil
+	return &workspaceInitResult{
+		Workspace:    cfg.ActiveWorkspace,
+		DBPath:       dbPath,
+		Created:      created,
+		KeptFeatures: headless && !newConfig,
+	}, nil
 }
 
-// writeHeadlessProfile turns off every registry feature that has a switch
-// and is not core, in the config file workspace init has just created.
-func writeHeadlessProfile(configPath string) error {
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	if err := v.ReadInConfig(); err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
+// headlessProfile turns off every registry feature that has a switch and is
+// not core.
+func headlessProfile() map[string]any {
+	out := map[string]any{}
 	for _, f := range features.All() {
 		if f.Core || f.ConfigKey == "" {
 			continue
 		}
-		v.Set(f.ConfigKey, false)
+		out[f.ConfigKey] = false
 	}
-	return writeConfigAtomic(v, configPath)
+	return out
 }
+
+// writeConfigFile is writeConfigAtomic behind a seam, so a test can count the
+// scaffold's writes.
+var writeConfigFile = writeConfigAtomic
 
 // writeWorkspaceScaffold records workspace as active_workspace in the config
 // file and fills in the sync/digest defaults a fresh install needs, leaving
@@ -186,7 +189,10 @@ func writeHeadlessProfile(configPath string) error {
 // force=true always writes, which the Slack login path needs to switch to a
 // team-named workspace. A missing file starts empty; any other read failure
 // is returned, so an unreadable file is never overwritten with defaults.
-func writeWorkspaceScaffold(configPath, workspace string, force bool) error {
+//
+// profile's keys are set whatever the file holds: workspace init --headless
+// passes the headless profile for a config it creates, nil elsewhere.
+func writeWorkspaceScaffold(configPath, workspace string, force bool, profile map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
@@ -204,6 +210,9 @@ func writeWorkspaceScaffold(configPath, workspace string, force bool) error {
 		return nil
 	}
 	v.Set("active_workspace", workspace)
+	for key, val := range profile {
+		v.Set(key, val)
+	}
 
 	defaults := map[string]any{
 		"ai.context_budget":         config.DefaultAIContextBudget,
@@ -221,5 +230,5 @@ func writeWorkspaceScaffold(configPath, workspace string, force bool) error {
 		}
 	}
 
-	return writeConfigAtomic(v, configPath)
+	return writeConfigFile(v, configPath)
 }

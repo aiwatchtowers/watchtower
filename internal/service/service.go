@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"watchtower/internal/fsutil"
 )
@@ -65,6 +66,8 @@ type Installer struct {
 	// the unit is written (cmd: workspace init --headless, hub enable). An
 	// error stops the install with no unit written.
 	Prepare func(ctx context.Context) error
+	// Sleep waits between launchctl bootstrap retries; nil = time.Sleep.
+	Sleep func(time.Duration)
 }
 
 // Status reports the daemon's service.
@@ -170,6 +173,9 @@ func validateUnit(u Unit) error {
 	if !filepath.IsAbs(u.Exe) {
 		return fmt.Errorf("service: the binary path must be absolute")
 	}
+	if u.Path == "" {
+		return fmt.Errorf("service: PATH is empty")
+	}
 	for _, s := range []string{u.Exe, u.Path} {
 		if strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 			return fmt.Errorf("service: the binary path or PATH holds a control character")
@@ -179,14 +185,22 @@ func validateUnit(u Unit) error {
 }
 
 // writeIfChanged writes content to path unless the file already holds exactly
-// it; changed reports a write.
+// it; changed reports a write. An identical file with another mode gets its
+// mode fixed and counts as unchanged. A symlink or a directory at path is
+// refused.
 func writeIfChanged(path, content string) (changed bool, err error) {
-	old, err := os.ReadFile(path)
-	switch {
-	case err == nil && bytes.Equal(old, []byte(content)):
-		return false, nil
-	case err != nil && !errors.Is(err, fs.ErrNotExist):
-		return false, fmt.Errorf("service: reading %s: %w", filepath.Base(path), err)
+	exists, err := fileExists(path)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		old, err := os.ReadFile(path)
+		if err != nil {
+			return false, fmt.Errorf("service: reading %s: %w", filepath.Base(path), err)
+		}
+		if bytes.Equal(old, []byte(content)) {
+			return false, fixMode(path)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return false, fmt.Errorf("service: creating the unit directory: %w", err)
@@ -197,17 +211,36 @@ func writeIfChanged(path, content string) (changed bool, err error) {
 	return true, nil
 }
 
-// fileExists reports a regular file at path; any error but "not there" is
-// returned.
-func fileExists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
+// fixMode sets an existing unit file's mode to unitFileMode when it differs.
+func fixMode(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("service: checking %s: %w", filepath.Base(path), err)
 	}
+	if info.Mode().Perm() == unitFileMode {
+		return nil
+	}
+	if err := os.Chmod(path, unitFileMode); err != nil {
+		return fmt.Errorf("service: setting the mode of %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+// fileExists reports a regular file at path (not followed through a
+// symlink). Anything else at path — a symlink, a directory — is an error, as
+// is any failure but "not there".
+func fileExists(path string) (bool, error) {
+	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
-	return false, fmt.Errorf("service: checking %s: %w", filepath.Base(path), err)
+	if err != nil {
+		return false, fmt.Errorf("service: checking %s: %w", filepath.Base(path), err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("service: %s is not a regular file", filepath.Base(path))
+	}
+	return true, nil
 }
 
 // runErr wraps a failed service-manager command with the first line of its
