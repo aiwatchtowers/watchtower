@@ -295,3 +295,36 @@ func TestExecFetch_KillsTheProcessGroup(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// Under WithProcessGroup a timed-out Exec kills the whole group — a child
+// the process started included — and waits, so nothing outlives the call.
+func TestExec_WithProcessGroupReapsChildrenOnTimeout(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	ctx, cancel := context.WithTimeout(WithProcessGroup(context.Background()), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, _, err := Exec(ctx, dir, nil, "/bin/sh", "-c", `sleep 30 & echo $! > "$1"; wait`, "sh", pidFile)
+	if err == nil {
+		t.Fatal("a timed-out run reported success")
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("Exec returned after %v: the group was not killed", took)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("child %d outlived the timed-out run", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
