@@ -478,5 +478,9 @@ func (c *ControlClient) Do(r ControlRequest) (ControlAnswer, error) {
 	}
 }
 
+// SetReadDeadline bounds the wait of Next and Do (zero: no bound); a read
+// past it fails with a net.Error whose Timeout() is true.
+func (c *ControlClient) SetReadDeadline(t time.Time) error { return c.c.SetReadDeadline(t) }
+
 // Close closes the connection.
 func (c *ControlClient) Close() error { return c.c.Close() }
