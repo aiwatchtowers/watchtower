@@ -572,6 +572,31 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertEqual(try store.saveSystemFields(newer, recordName: "c-1", zone: .relay), 2)
     }
 
+    /// Only relay records (RelayZone, or an `a-`/`c-` name) pay the archive decode at write: the hub's DataZone
+    /// buffering stores no `change_tag`, and a read still finds the tag in the archive.
+    func testOnlyRelayRecordsStoreTheirChangeTag() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+        let archive = CloudKitTransport.archivedSystemFields(of: FakeConditionalDatabase.copy(
+            CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: "x")), changeTag: "tag-1"))
+        let store = try TransportStore(path: path)
+        try store.saveSystemFields(archive, recordName: "target-1", zone: .data)
+        try store.saveSystemFields(archive, recordName: "a-1", zone: .data)
+        try store.saveSystemFields(archive, recordName: "wire-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "target-1", zone: .data)?.changeTag, "tag-1", "read from the archive")
+        try store.close()
+
+        let stored = try DatabaseQueue(path: path).read { db in
+            try Dictionary(uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT record_name, change_tag FROM system_fields")
+                .map { ($0["record_name"] as String, $0["change_tag"] as String?) })
+        }
+        XCTAssertEqual(stored["target-1"], .some(nil), "no decode for a DataZone record")
+        XCTAssertEqual(stored["a-1"], "tag-1")
+        XCTAssertEqual(stored["wire-1"], "tag-1")
+    }
+
     /// A row from before `change_tag` reads the tag out of its archive.
     func testALegacyRowReadsItsChangeTagFromTheArchive() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

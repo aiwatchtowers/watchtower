@@ -522,7 +522,8 @@ public final class TransportStore: Sendable {
     /// `record_seq` goes up by one (1 for a new row) and is returned — a
     /// write of the same change tag (this phone fetching its own save back)
     /// keeps it; `change_tag` is the archive's
-    /// `recordChangeTag` (nil for an undecodable or never-saved archive).
+    /// `recordChangeTag` (nil for an undecodable or never-saved archive,
+    /// and for a record outside the mailbox, which is not decoded here).
     @discardableResult
     func saveSystemFields(_ data: Data, recordName: String, zone: CloudZoneID) throws -> UInt64 {
         try queue.write { try Self.upsertSystemFields(data, recordName: recordName, zone: zone, $0) }
@@ -534,6 +535,7 @@ public final class TransportStore: Sendable {
     private static func upsertSystemFields(
         _ data: Data, recordName: String, zone: CloudZoneID, _ db: Database
     ) throws -> UInt64 {
+        let tag = isRelayRecord(recordName, zone: zone) ? changeTag(ofArchive: data) : nil
         try db.execute(
             sql: """
                 INSERT INTO system_fields (record_name, zone, data, record_seq, change_tag)
@@ -547,7 +549,7 @@ public final class TransportStore: Sendable {
                     END,
                     change_tag = excluded.change_tag
                 """,
-            arguments: [recordName, zone.rawValue, data, changeTag(ofArchive: data)]
+            arguments: [recordName, zone.rawValue, data, tag]
         )
         let recordSeq = try Int64.fetchOne(
             db,
@@ -555,6 +557,13 @@ public final class TransportStore: Sendable {
             arguments: [recordName, zone.rawValue]
         ) ?? 0
         return UInt64(max(0, recordSeq))
+    }
+
+    /// A record whose version conditional writes name (RelayZone, or a mailbox `a-`/`c-` name): only these pay an
+    /// archive decode per write for `change_tag`; any other row's tag is read from its archive when asked for
+    /// (`recordVersion`).
+    private static func isRelayRecord(_ recordName: String, zone: CloudZoneID) -> Bool {
+        zone == .relay || recordName.hasPrefix("a-") || recordName.hasPrefix("c-")
     }
 
     /// The server change tag inside an archive of a record's system fields.
