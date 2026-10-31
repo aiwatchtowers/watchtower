@@ -781,3 +781,111 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 	}
 	return &q, nil
 }
+
+// ErrMissingClaudeSessionID refuses a claude row without its session id
+// (TerminalSessionQueries.missingSessionID; the schema's CHECK would refuse
+// a NULL one, this an empty one too).
+var ErrMissingClaudeSessionID = errors.New("a Claude Code session needs a session id")
+
+// NewTerminalSession is a row CreateTerminalSession inserts, the twin of the
+// Desktop's TerminalSessionQueries.NewSession: WorkbenchID and TargetID 0 are
+// NULL, as are an empty ClaudeSessionID, WorktreeBranch, WorktreeBase and an
+// AutomationRunID of 0.
+type NewTerminalSession struct {
+	WorkbenchID     int64
+	Kind            string
+	Title           string
+	TargetID        int64
+	FolderPath      string
+	ClaudeSessionID string
+	WorktreeBranch  string
+	WorktreeBase    string
+	AutomationRunID int64
+}
+
+// CreateTerminalSession inserts a new session row with the same columns as
+// TerminalSessionQueries.create (every other column keeps its default) and
+// returns its id.
+func (db *DB) CreateTerminalSession(ctx context.Context, n NewTerminalSession) (int64, error) {
+	if n.Kind == string(agentkind.Claude) && n.ClaudeSessionID == "" {
+		return 0, ErrMissingClaudeSessionID
+	}
+	res, err := db.ExecContext(ctx, `INSERT INTO terminal_sessions
+		(project_id, kind, title, target_id, folder_path, claude_session_id,
+		 worktree_branch, worktree_base, automation_run_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionNullID(n.WorkbenchID), n.Kind, n.Title, sessionNullID(n.TargetID), n.FolderPath, sessionNullText(n.ClaudeSessionID),
+		sessionNullText(n.WorktreeBranch), sessionNullText(n.WorktreeBase), sessionNullID(n.AutomationRunID))
+	if err != nil {
+		return 0, fmt.Errorf("creating terminal session: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("creating terminal session: %w", err)
+	}
+	return id, nil
+}
+
+// PlaceTerminalSession moves a new row, inserted in the workbench folder
+// before its first launch, into the worktree its start made — the SQL of
+// TerminalSessionQueries.place. created_at becomes now: a placed row owns its
+// worktree and branch by record only when both were born no later than the
+// row (PROJ-18). ErrTerminalSessionNotFound when the row is gone.
+func (db *DB) PlaceTerminalSession(ctx context.Context, id int64, folderPath, worktreeBranch, worktreeBase string) error {
+	res, err := db.ExecContext(ctx, `UPDATE terminal_sessions SET folder_path = ?, worktree_branch = ?, worktree_base = ?,
+		created_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ?`, folderPath, worktreeBranch, sessionNullText(worktreeBase), id)
+	if err != nil {
+		return fmt.Errorf("placing terminal session %d: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("placing terminal session %d: %w", id, err)
+	} else if n == 0 {
+		return ErrTerminalSessionNotFound
+	}
+	return nil
+}
+
+// launchErrorRunes is agent_error's clip (the StopFailure hook's 60 runes).
+const launchErrorRunes = 60
+
+// SetTerminalSessionLaunchError records a start whose launch never ran: the
+// row leaves Starting… as a failed `waiting` (agent_failed_at equal to
+// agent_state_at, which is how the Desktop and the hub read a turn that ended
+// on an error) with reason, clipped to 60 runes, in agent_error. A hook of a
+// later run writes over it as over any failure. ErrTerminalSessionNotFound
+// when the row is gone.
+func (db *DB) SetTerminalSessionLaunchError(ctx context.Context, id int64, reason string, at time.Time) error {
+	if r := []rune(reason); len(r) > launchErrorRunes {
+		reason = string(r[:launchErrorRunes])
+	}
+	stamp := AgentStateStamp(at)
+	res, err := db.ExecContext(ctx, `UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+		agent_failed_at = ?, agent_error = ?, finished_at = NULL
+		WHERE id = ?`, stamp, stamp, reason, id)
+	if err != nil {
+		return fmt.Errorf("recording the launch error of terminal session %d: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("recording the launch error of terminal session %d: %w", id, err)
+	} else if n == 0 {
+		return ErrTerminalSessionNotFound
+	}
+	return nil
+}
+
+// sessionNullID is 0 as NULL.
+func sessionNullID(v int64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+// sessionNullText is "" as NULL.
+func sessionNullText(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}

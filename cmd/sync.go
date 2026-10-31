@@ -1029,6 +1029,11 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 	if !ok {
 		return func() {}
 	}
+	// The session port's seams; the socket stays FromEnv's (the override
+	// only: phase 1 never reaches the Desktop's host).
+	sd := sessionStartDeps(cfg, database)
+	sd.Socket = o.SessionStart.Socket
+	o.SessionStart = sd
 	ctx, cancel := context.WithCancel(ctx)
 	interval := cfg.Sync.PollInterval
 	if interval < time.Minute {

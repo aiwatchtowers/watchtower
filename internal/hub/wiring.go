@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionstart"
 )
 
 // transcriptAssetDir is meeting_transcript's own staging dir inside the
@@ -22,6 +25,9 @@ import (
 // source's first call sweeps every *.asset in it, so nothing else may live
 // there.
 const transcriptAssetDir = "transcripts"
+
+// hostWarmBudget bounds the start's first reach of session-host.
+const hostWarmBudget = 10 * time.Second
 
 // reportKinds is what a stored report or summary changes: the report, its
 // timeline milestones and the terminal_session record's report_* fields.
@@ -31,12 +37,14 @@ var reportKinds = []slices.Kind{"session_report", "session_timeline", "terminal_
 // read never waits longer for a lock.
 const watchBusy = time.Second
 
-// errNoSessionHost answers a session action until the session-host port is
-// wired (Plan 1b Task 15).
+// errNoSessionHost answers a session action on a hub with no session-host
+// socket.
 var errNoSessionHost = errors.New("hub: no session host")
 
-// noSessionHost is the SessionPort until Task 15 wires session-host: no
-// session is live, and starting, typing into or stopping one fails.
+// noSessionHost is the SessionPort of a hub given no session-host socket
+// (Options.SessionStart.Socket ""; phase 1 never falls back to the
+// Desktop's host): no session is live, and starting, typing into or stopping
+// one fails.
 type noSessionHost struct{}
 
 func (noSessionHost) Live(context.Context, int64) (handlers.LiveRun, bool, error) {
@@ -70,6 +78,9 @@ type wiring struct {
 	// seed is the report runner's Seed; seeded is closed once it succeeded.
 	seed   func(context.Context) error
 	seeded chan struct{}
+	// port is the real session port the wiring built (nil when Options
+	// carried one, or no socket); closed with the wiring.
+	port *sessionstart.Port
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -142,9 +153,9 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		return nil, err
 	}
 	w := &wiring{set: set}
-	port := o.Sessions
-	if port == nil {
-		port = noSessionHost{}
+	port, err := w.sessionPort(context.Background(), o)
+	if err != nil {
+		return nil, err
 	}
 	w.handlers = handlers.Register(d, handlerDeps(o, st, set, watches, h.kr, port, lateEcho))
 
@@ -202,6 +213,31 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 		deps.Reports = set.Report
 	}
 	return deps
+}
+
+// sessionPort is o.Sessions, else the real port over session-host
+// (Task 15) on o.SessionStart with the database's file as its scope, else —
+// no socket given — noSessionHost.
+func (w *wiring) sessionPort(ctx context.Context, o Options) (handlers.SessionPort, error) {
+	if o.Sessions != nil {
+		return o.Sessions, nil
+	}
+	if o.SessionStart.Socket == "" {
+		log.Printf("hub: no session host (%s not set)", sessionhost.SocketEnv)
+		return noSessionHost{}, nil
+	}
+	d := o.SessionStart
+	d.DB = o.DB
+	path, err := mainFile(ctx, o.DB)
+	if err != nil {
+		return nil, fmt.Errorf("hub: the session host scope: %w", err)
+	}
+	d.DBPath = path
+	if d.Clock == nil {
+		d.Clock = o.Clock
+	}
+	w.port = sessionstart.NewPort(d, nil)
+	return w.port, nil
 }
 
 // openWatch opens the data_version watch on a read-only handle of its own:
@@ -266,6 +302,19 @@ func mainFile(ctx context.Context, d *db.DB) (string, error) {
 // publisher retries it, and the lane does not observe). Nothing else waits:
 // the device_grant and the other kinds keep publishing.
 func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
+	if w.port != nil {
+		// Ensure the host on start when none answers (a later call dials
+		// again if this fails).
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			wctx, cancel := context.WithTimeout(ctx, hostWarmBudget)
+			defer cancel()
+			if err := w.port.Warm(wctx); err != nil {
+				log.Printf("hub: session host not reached at start (%s)", errClass(err))
+			}
+		}()
+	}
 	if w.trySeed(ctx) {
 		h.trace("seeded")
 	} else {
@@ -327,6 +376,9 @@ func (w *wiring) retrySeed(ctx context.Context) {
 func (w *wiring) close() {
 	if w == nil {
 		return
+	}
+	if w.port != nil {
+		_ = w.port.Close()
 	}
 	if w.watchConnClose != nil {
 		_ = w.watchConnClose()
