@@ -46,6 +46,7 @@ var (
 	ErrWrongHub         = errors.New("secure: envelope names another hub")
 	ErrWrongSender      = errors.New("secure: envelope from an unexpected sender")
 	ErrNameMismatch     = errors.New("secure: frame names another record")
+	ErrUnknownKind      = errors.New("secure: unknown record kind")
 	ErrEpochNotAccepted = errors.New("secure: relay epoch not accepted")
 	ErrNoRelayKey       = errors.New("secure: no relay key opens the record")
 	ErrRolledBack       = errors.New("secure: older version of a relay record")

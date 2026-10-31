@@ -120,6 +120,22 @@ func canonicalID(raw string) string {
 	return raw
 }
 
+// The kinds the Sealer seals, as the Kit's SecureTransport accepts them.
+// dataKinds is SliceKind without device_grant (Keybox) and ask_alert (Alert);
+// relayKinds is SecureTransport.relayKinds. A new Kit kind is added here in the
+// same change; the RC control kind joins relayKinds with the control queue
+// (Task 10).
+var (
+	dataKinds = []string{
+		"briefing", "inbox_item", "target", "track", "digest", "digest_topic", "calendar_event", "person_card",
+		"situation", "meeting_transcript", "day_plan", "day_plan_item", "feature_state", "stream_digest",
+		"slack_account", "google_account", "jira_account", heartbeatName, "recording_job", "workbench",
+		"workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
+		"session_timeline", "permission_request", "session_chat",
+	}
+	relayKinds = []string{"action", "recording_upload", "device"}
+)
+
 // Sealer is the single sealing choke point: every Record comes from here.
 type Sealer struct{ k KeySource }
 
@@ -137,6 +153,9 @@ func (s *Sealer) Data(zone, plain, notify string, payload []byte, asset *AssetDe
 	kind, _ := namingParts(plain)
 	if kind == grantKind || kind == alertKind {
 		return Record{}, fmt.Errorf("%w: %s is not sealed as data", ErrWrongClass, kind)
+	}
+	if !slices.Contains(dataKinds, kind) {
+		return Record{}, fmt.Errorf("%w: %q", ErrUnknownKind, kind)
 	}
 	if err := checkSealedAsset(asset, assetPath); err != nil {
 		return Record{}, err
@@ -197,6 +216,9 @@ func (s *Sealer) signedSymmetric(zone, plain string, f InnerFrame, c EnvelopeCla
 func (s *Sealer) ToPhone(zone string, device ID, wireName, kind, id string, payload []byte) (Record, error) {
 	if zone == "" {
 		return Record{}, errors.New("secure: record without a zone")
+	}
+	if !slices.Contains(relayKinds, kind) {
+		return Record{}, fmt.Errorf("%w: %q", ErrUnknownKind, kind)
 	}
 	want, err := s.WireName(ZoneRelay, id)
 	if err != nil {
@@ -261,7 +283,10 @@ func (s *Sealer) Keybox(zone string, device ID, payload []byte) (Record, error) 
 
 // checkSealedAsset refuses an asset file that is not the asset sealed under d:
 // its length must match d's header and its first chunk must open with d's key
-// (a plaintext file of the right size does not).
+// (a plaintext file of the right size does not). It runs at seal time only and
+// checks the length and chunk 0, not every chunk: the file can still change
+// afterwards, so a transport must re-check it before upload or accept uploads
+// only from the sealer's own asset directory.
 func checkSealedAsset(d *AssetDescriptor, path string) error {
 	if d == nil && path == "" {
 		return nil
@@ -334,9 +359,10 @@ func (o *Opener) header(env []byte) (Header, error) {
 // FromPhone opens a phone's relayToHub record: the sender must be a linked
 // device (wrongSender) with an accepted epoch, the frame's plain name must map
 // to wireName, and the rollback guard is checked, never written: Older is
-// ErrRolledBack, Newer and Same come back as the Verdict. zone is the
-// transport zone it was read from and is not part of the AAD (always RelayZone).
-func (o *Opener) FromPhone(zone, wireName string, envelope []byte) (Opened, error) {
+// ErrRolledBack, Newer and Same come back as the Verdict. The first
+// parameter (the transport zone) is unused: the AAD zone is always RelayZone;
+// it stays in the signature for the callers' symmetry with the Sealer.
+func (o *Opener) FromPhone(_, wireName string, envelope []byte) (Opened, error) {
 	h, err := o.header(envelope)
 	if err != nil {
 		return Opened{}, err
@@ -361,8 +387,8 @@ func (o *Opener) FromPhone(zone, wireName string, envelope []byte) (Opened, erro
 // OwnEcho opens the hub's own relayToPhone record read back: the sender must
 // be the hub (wrongSender); the header names no recipient, so each linked
 // device's h2p key is tried (ErrNoRelayKey when none opens it). The guard is
-// checked as in FromPhone.
-func (o *Opener) OwnEcho(zone, wireName string, envelope []byte) (Opened, error) {
+// checked, and the zone parameter unused, as in FromPhone.
+func (o *Opener) OwnEcho(_, wireName string, envelope []byte) (Opened, error) {
 	h, err := o.header(envelope)
 	if err != nil {
 		return Opened{}, err
@@ -411,7 +437,11 @@ func (o *Opener) openRelay(env []byte, wire string, c EnvelopeClass, dir Directi
 // accept binds the frame's plain name to wireName and checks the guard.
 func (o *Opener) accept(wire string, h Header, f InnerFrame) (Opened, error) {
 	want, err := wireName(o.k, ZoneRelay, f.ID)
-	if err != nil || want != wire {
+	if err != nil {
+		// A locked or failing keyring surfaces as itself (the Kit lets it through).
+		return Opened{}, fmt.Errorf("secure: frame wire name: %w", err)
+	}
+	if want != wire {
 		return Opened{}, ErrNameMismatch
 	}
 	v, err := o.g.Check(wire, h.Sender, h.Epoch, h.Seq)
@@ -428,8 +458,8 @@ func (o *Opener) accept(wire string, h Header, f InnerFrame) (Opened, error) {
 // kept link code's nonce (the caller tries each). The name must be
 // hello-<header sender> and the frame kind hello with id = the name. The
 // device's signature is verified by the link step, with the key the payload
-// carries.
-func (o *Opener) Hello(zone, wireName string, envelope []byte, linkNonce []byte) (Header, InnerFrame, error) {
+// carries. The zone parameter is unused, as in FromPhone.
+func (o *Opener) Hello(_, wireName string, envelope []byte, linkNonce []byte) (Header, InnerFrame, error) {
 	h, err := o.header(envelope)
 	if err != nil {
 		return Header{}, InnerFrame{}, err

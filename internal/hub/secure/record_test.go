@@ -27,6 +27,7 @@ type InMemoryKeySource struct {
 	devices  []ID
 	seq      uint64
 	handed   [][]byte
+	metaErr  error
 }
 
 func newKeySource(t *testing.T) *InMemoryKeySource {
@@ -48,7 +49,12 @@ func (s *InMemoryKeySource) DataKey(uint32) ([]byte, error) { return s.hand(data
 func (s *InMemoryKeySource) AlertKey(uint32) ([]byte, error) {
 	return s.hand(alertKey), nil
 }
-func (s *InMemoryKeySource) MetaKey() ([]byte, error) { return s.hand(metaKey), nil }
+func (s *InMemoryKeySource) MetaKey() ([]byte, error) {
+	if s.metaErr != nil {
+		return nil, s.metaErr
+	}
+	return s.hand(metaKey), nil
+}
 func (s *InMemoryKeySource) RelayKey(dir Direction, device ID, epoch uint32) ([]byte, error) {
 	if !slices.Contains(s.devices, device) {
 		return nil, fmt.Errorf("unknown device %s", device)
@@ -323,10 +329,10 @@ func TestSealer_AssetMustBeTheSealedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, try := range map[string]func() error{
-		"plaintext":     func() error { _, err := s.Data("dz", "x-1", "", nil, &d, plainFile); return err },
-		"same length":   func() error { _, err := s.Data("dz", "x-1", "", nil, &d, fake); return err },
-		"no descriptor": func() error { _, err := s.Data("dz", "x-1", "", nil, nil, sealedFile); return err },
-		"no file":       func() error { _, err := s.Data("dz", "x-1", "", nil, &d, ""); return err },
+		"plaintext":     func() error { _, err := s.Data("dz", "target-1", "", nil, &d, plainFile); return err },
+		"same length":   func() error { _, err := s.Data("dz", "target-1", "", nil, &d, fake); return err },
+		"no descriptor": func() error { _, err := s.Data("dz", "target-1", "", nil, nil, sealedFile); return err },
+		"no file":       func() error { _, err := s.Data("dz", "target-1", "", nil, &d, ""); return err },
 	} {
 		if err := try(); !errors.Is(err, ErrUnsealed) {
 			t.Errorf("%s: %v, want ErrUnsealed", name, err)
@@ -649,5 +655,35 @@ func TestWriteGoSealed(t *testing.T) {
 			h.Hub != fixtureHubID || h.Sender.String() != c.Sender || h.Epoch != 1 {
 			t.Errorf("%s: opened %+v %+v", name, h, f)
 		}
+	}
+}
+
+func TestSealer_RefusesUnknownKinds(t *testing.T) {
+	ks := newKeySource(t)
+	s := NewSealer(ks)
+	if _, err := s.Data("dz", "targte-7", "", []byte(`{}`), nil, ""); !errors.Is(err, ErrUnknownKind) {
+		t.Errorf("typo data kind: %v", err)
+	}
+	plain := "a-" + ks.k.deviceID.String() + "-1"
+	wire, _ := s.WireName(ZoneRelay, plain)
+	if _, err := s.ToPhone("mb", ks.k.deviceID, wire, "acton", plain, []byte(`{}`)); !errors.Is(err, ErrUnknownKind) {
+		t.Errorf("typo relay kind: %v", err)
+	}
+	for _, kind := range []string{"heartbeat", "owner_ask", "session_chat", "meeting_transcript"} {
+		if _, err := s.Data("dz", kind+"-1", "", []byte(`{}`), nil, ""); err != nil {
+			t.Errorf("%s refused: %v", kind, err)
+		}
+	}
+}
+
+func TestOpener_MetaKeyFailureSurfaces(t *testing.T) {
+	ks := newKeySource(t)
+	o := NewOpener(ks, newGuard())
+	wire, env := phoneAction(t, ks, "a-"+ks.k.deviceID.String()+"-1", 1, 5, fixtureHubID, ks.k.deviceID)
+	locked := errors.New("keyring locked")
+	ks.metaErr = locked
+	_, err := o.FromPhone("mb", wire, env)
+	if !errors.Is(err, locked) || errors.Is(err, ErrNameMismatch) {
+		t.Errorf("locked keyring: %v, want the keyring's error", err)
 	}
 }
