@@ -229,6 +229,21 @@ func (r *rig) refusalRows() int {
 	return n
 }
 
+// code is the code p's waiting request shows now, "" when none waits.
+func (r *rig) code(p phone) string {
+	r.t.Helper()
+	list, err := r.c.PendingLinks()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	for _, w := range list {
+		if w.DeviceID == p.id.String() {
+			return w.Code
+		}
+	}
+	return ""
+}
+
 func pendingIDs(t *testing.T, c *Center) []string {
 	t.Helper()
 	list, err := c.PendingLinks()
@@ -258,7 +273,7 @@ func (r *rig) confirmLinked(p phone) {
 	if got := r.handle(p, code.Nonce); got.Code == "" {
 		r.t.Fatalf("hello not waiting: %+v", got)
 	}
-	if err := r.c.Confirm(p.id.String(), true); err != nil {
+	if err := r.c.Confirm(p.id.String(), r.code(p), true); err != nil {
 		r.t.Fatalf("Confirm: %v", err)
 	}
 	if !r.linked(p) {
@@ -341,7 +356,7 @@ func TestAUsedCodeIsRefused(t *testing.T) {
 	code := r.issue()
 	a, b := newPhone(t), newPhone(t)
 	r.handle(a, code.Nonce)
-	if err := r.c.Confirm(a.id.String(), true); err != nil {
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
 		t.Fatal(err)
 	}
 	if got := r.handle(b, code.Nonce); got.Refused != wire.RefusedUsedCode {
@@ -415,7 +430,7 @@ func TestFourthNonceOnACodeIsTooManyRequests(t *testing.T) {
 		t.Errorf("re-sent hello %+v", again)
 	}
 	// The owner's Refuse gives no try back; a new code does.
-	if err := r.c.Confirm(b.id.String(), false); err != nil {
+	if err := r.c.Confirm(b.id.String(), "", false); err != nil {
 		t.Fatal(err)
 	}
 	e := newPhone(t)
@@ -605,7 +620,7 @@ func TestConfirmSealsKeyboxWithGrantAndKeys(t *testing.T) {
 	r.handle(a, code.Nonce)
 	r.handle(b, code.Nonce)
 	drain(r.c)
-	if err := r.c.Confirm(a.id.String(), true); err != nil {
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
 		t.Fatal(err)
 	}
 	kb := r.mustKeybox(a)
@@ -656,7 +671,7 @@ func TestConfirmAfterExpiryOrUnlinkSealsNoKeys(t *testing.T) {
 		a := newPhone(t)
 		r.handle(a, code.Nonce)
 		r.advance(601 * time.Second)
-		if err := r.c.Confirm(a.id.String(), true); err != nil {
+		if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
 			t.Fatal(err)
 		}
 		noKeys(t, r, a)
@@ -672,7 +687,7 @@ func TestConfirmAfterExpiryOrUnlinkSealsNoKeys(t *testing.T) {
 		if err := r.c.Unlink(a.id.String()); err != nil {
 			t.Fatal(err)
 		}
-		if err := r.c.Confirm(a.id.String(), true); !errors.Is(err, ErrNoRequest) {
+		if err := r.c.Confirm(a.id.String(), r.code(a), true); !errors.Is(err, ErrNoRequest) {
 			t.Errorf("confirm after unlink: %v", err)
 		}
 		noKeys(t, r, a)
@@ -682,10 +697,10 @@ func TestConfirmAfterExpiryOrUnlinkSealsNoKeys(t *testing.T) {
 		code := r.issue()
 		a := newPhone(t)
 		r.handle(a, code.Nonce)
-		if err := r.c.Confirm(a.id.String(), false); err != nil {
+		if err := r.c.Confirm(a.id.String(), "", false); err != nil {
 			t.Fatal(err)
 		}
-		if err := r.c.Confirm(a.id.String(), true); !errors.Is(err, ErrNoRequest) {
+		if err := r.c.Confirm(a.id.String(), r.code(a), true); !errors.Is(err, ErrNoRequest) {
 			t.Errorf("confirm after refuse: %v", err)
 		}
 		noKeys(t, r, a)
@@ -699,11 +714,12 @@ func TestConfirmAfterExpiryOrUnlinkSealsNoKeys(t *testing.T) {
 			code := r.issue()
 			a := newPhone(t)
 			r.handle(a, code.Nonce)
+			shown := r.code(a)
 			var wg sync.WaitGroup
 			wg.Add(3)
-			go func() { defer wg.Done(); _ = r.c.Confirm(a.id.String(), true) }()
+			go func() { defer wg.Done(); _ = r.c.Confirm(a.id.String(), shown, true) }()
 			go func() { defer wg.Done(); _ = r.c.Unlink(a.id.String()) }()
-			go func() { defer wg.Done(); _ = r.c.Confirm(a.id.String(), false) }()
+			go func() { defer wg.Done(); _ = r.c.Confirm(a.id.String(), "", false) }()
 			wg.Wait()
 			// Whichever order ran, an Unlink leaves the phone unlinked: its
 			// keybox is revoked or refused, never keyed.
@@ -767,7 +783,7 @@ func TestARemovedPhoneIsNotLinkedAgainByItsOldCode(t *testing.T) {
 	code := r.issue()
 	a := newPhone(t)
 	r.handle(a, code.Nonce)
-	if err := r.c.Confirm(a.id.String(), true); err != nil {
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.c.Unlink(a.id.String()); err != nil {
@@ -791,7 +807,7 @@ func TestTypingRequestIsStoredNotGranted(t *testing.T) {
 	code := r.issue()
 	a := newPhone(t)
 	r.handle(a, code.Nonce, func(h *wire.DeviceHello) { h.Device.TypingRequested = true })
-	if err := r.c.Confirm(a.id.String(), true); err != nil {
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
 		t.Fatal(err)
 	}
 	d, _, err := r.st.Device(a.id.String())
@@ -903,10 +919,10 @@ func TestFILES01_LinkLogsNoNamesOrKeys(t *testing.T) {
 	a, b := newPhone(t), newPhone(t)
 	r.handle(a, code.Nonce, func(h *wire.DeviceHello) { h.Device.Name = name })
 	r.handle(b, code.Nonce, func(h *wire.DeviceHello) { h.Device.Name = name })
-	if err := r.c.Confirm(b.id.String(), false); err != nil {
+	if err := r.c.Confirm(b.id.String(), "", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.c.Confirm(a.id.String(), true); err != nil {
+	if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.c.Unlink(a.id.String()); err != nil {
@@ -915,5 +931,101 @@ func TestFILES01_LinkLogsNoNamesOrKeys(t *testing.T) {
 	sink.AssertClean(t)
 	if strings.Contains(sink.String(), code.Nonce) {
 		t.Error("a link nonce reached the log")
+	}
+}
+
+// A request replaced after the owner looked — here by a relay observer
+// replaying the phone's older, still validly signed hello — is not linked
+// by the owner's Link on the code they compared (Swift linkCodeChanged).
+func TestConfirmOnAReplacedRequestIsCodeChanged(t *testing.T) {
+	r := newRig(t)
+	code := r.issue()
+	_, sig, _ := ed25519.GenerateKey(rand.Reader)
+	first, second := phoneWith(t, sig), phoneWith(t, sig)
+	stale := r.hello(first, code.Nonce)
+	if _, err := r.c.HandleHello("relay", first.name(), stale); err != nil {
+		t.Fatal(err)
+	}
+	shown := r.handle(second, code.Nonce).Code // the phone re-rolled; the owner sees this code
+	replayed, err := r.c.HandleHello("relay", first.name(), stale)
+	if err != nil || replayed.Code == "" {
+		t.Fatalf("replay: %+v %v", replayed, err)
+	}
+	if replayed.Code == shown {
+		t.Skip("the replay's code collided with the shown one by chance (1 in 10 000)")
+	}
+	if err := r.c.Confirm(second.id.String(), shown, true); !errors.Is(err, ErrCodeChanged) {
+		t.Fatalf("confirm on the replaced request: %v", err)
+	}
+	if r.linked(second) {
+		t.Fatal("linked keys whose code the owner never compared")
+	}
+	if got := r.code(second); got != replayed.Code {
+		t.Errorf("the request keeps waiting with its new code: %q", got)
+	}
+	// Confirming the code it shows now links it.
+	if err := r.c.Confirm(second.id.String(), replayed.Code, true); err != nil {
+		t.Fatal(err)
+	}
+	if !r.linked(second) {
+		t.Error("not linked on the current code")
+	}
+}
+
+// An Unlink while Keyboxes is between its device read and its key read
+// waits for it: the unlinked phone never gets the epoch its unlink begins.
+func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
+	r := newRig(t)
+	a, b := newPhone(t), newPhone(t)
+	r.confirmLinked(a)
+	r.confirmLinked(b)
+	before, _ := r.kr.CurrentEpoch()
+	done := make(chan error, 1)
+	r.c.beforeKeys = func() {
+		r.c.beforeKeys = nil
+		go func() { done <- r.c.Unlink(a.id.String()) }()
+		time.Sleep(50 * time.Millisecond) // time enough for an unlocked Unlink to rotate
+	}
+	boxes, err := r.c.Keyboxes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for _, kb := range boxes {
+		if kb.Keys != nil && kb.Keys.Epoch != before {
+			t.Errorf("%s got epoch %d, the snapshot was under %d", kb.Grant.DeviceID, kb.Keys.Epoch, before)
+		}
+	}
+	if after, _ := r.kr.CurrentEpoch(); after != before+1 {
+		t.Errorf("the unlink did not rotate: %d", after)
+	}
+	if kb := r.mustKeybox(a); kb.Keys != nil || kb.Grant.Revoked == nil {
+		t.Errorf("after the unlink: %+v", kb)
+	}
+}
+
+// A linked phone that scans a new QR waits for the owner like any phone, but
+// its keybox stays the linked one (the Swift DeviceGrantSlice: linked rows
+// first, a phone appears once), with its keys and no confirm nonce.
+func TestALinkedPhoneRescanningKeepsItsLinkedKeybox(t *testing.T) {
+	r := newRig(t)
+	a := newPhone(t)
+	r.confirmLinked(a)
+	code := r.issue()
+	if got := r.handle(a, code.Nonce); got.Code == "" {
+		t.Fatalf("re-scan: %+v", got)
+	}
+	if ids := pendingIDs(t, r.c); !slices.Equal(ids, sortedIDs(a)) {
+		t.Fatalf("waiting %v", ids)
+	}
+	kb := r.mustKeybox(a)
+	if !kb.Grant.Linked || kb.Keys == nil || kb.Grant.ConfirmNonce != nil || kb.Grant.AwaitingConfirmation != nil {
+		t.Errorf("keybox %+v", kb)
+	}
+	grants, err := r.c.Grants()
+	if err != nil || len(grants) != 1 {
+		t.Errorf("one row per phone: %d %v", len(grants), err)
 	}
 }

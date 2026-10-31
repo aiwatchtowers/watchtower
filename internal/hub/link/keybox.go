@@ -13,14 +13,18 @@ import (
 	"watchtower/internal/hub/wire"
 )
 
-// Confirm is the owner's answer to the request device waits with. ok=false
-// refuses it (not_confirmed; the code stays open). ok=true re-checks the code
+// Confirm is the owner's answer to the request device waits with, showing
+// code (the four-digit code the owner compared). ok=false refuses it
+// (not_confirmed; the link code stays open) whatever code it shows now.
+// ok=true on a request whose code is no longer code (a newer or replayed
+// hello replaced it) links nothing and keeps it waiting: ErrCodeChanged (the
+// Swift confirmLink(deviceID:sas:)). Otherwise it re-checks the link code
 // in the same transaction that links: still valid, the phone is linked with
 // its keys and link nonce, the code is used, and every other waiting request
 // is refused used_code (F17); expired or used meanwhile, the phone gets that
 // refusal and no keys. ErrNoRequest when nothing waits (it was refused,
 // unlinked or swept first).
-func (c *Center) Confirm(device string, ok bool) error {
+func (c *Center) Confirm(device, code string, ok bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
@@ -39,15 +43,18 @@ func (c *Center) Confirm(device string, ok bool) error {
 			return ErrNoRequest
 		}
 		request = p
+		if ok && p.sas != code {
+			return ErrCodeChanged
+		}
 		if !ok {
 			reason = wire.RefusedNotConfirmed
 			return refusePending(tx, p, reason, now)
 		}
-		code, kept, err := linkCodeTx(tx, p.linkNonce)
+		stored, kept, err := linkCodeTx(tx, p.linkNonce)
 		if err != nil {
 			return err
 		}
-		switch d, why := decide(code, kept, p.deviceID, now); d {
+		switch d, why := decide(stored, kept, p.deviceID, now); d {
 		case decisionRefused:
 			reason = why
 			return refusePending(tx, p, reason, now)
@@ -73,6 +80,10 @@ func (c *Center) Confirm(device string, ok bool) error {
 		return nil
 	})
 	if errors.Is(err, ErrNoRequest) {
+		return err
+	}
+	if errors.Is(err, ErrCodeChanged) {
+		log.Printf("hub link: link request of %s changed before Link: kept for a fresh decision", request.deviceID)
 		return err
 	}
 	if err != nil {

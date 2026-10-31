@@ -8,8 +8,18 @@
 // Keys are sealed only for a phone the owner confirmed under a code that was
 // still valid at that moment (Review Focus 5): the decision, the link and the
 // key columns are one transaction, and an unlink, a refusal or an expiry
-// before it leaves no request to confirm. Nothing here logs a name, a nonce
-// or a key; log lines carry device ids, counts and classes only.
+// before it leaves no request to confirm; Keyboxes reads the linked phones
+// and the epoch keys under the same lock as Unlink, so an unlinked phone
+// never gets the epoch that shuts it out. Confirm takes the code the owner
+// compared and refuses a request a newer or replayed hello replaced.
+// Nothing here logs a name, a nonce or a key; log lines carry device ids,
+// counts and classes only.
+//
+// For the runtime (Tasks 12, 14): HostInfo.Transports is announced as given,
+// so the runtime pins it (["relay"] on a headless host, never cloudkit
+// there). Each hello is tried under up to KeptCodes nonces while the
+// center's lock is held, so a flood of junk hellos is bounded only by that:
+// the relay's rate limits stay in front of HandleHello.
 package link
 
 import (
@@ -68,6 +78,9 @@ var (
 	ErrHelloDropped = errors.New("link: hello dropped")
 	// ErrNoRequest: no link request waits for the device.
 	ErrNoRequest = errors.New("link: no link request waits for the device")
+	// ErrCodeChanged: the waiting request shows another code than the one
+	// the owner confirmed (it was replaced); nothing changed, it waits.
+	ErrCodeChanged = errors.New("link: the request's code changed")
 	// ErrUnknownGrant: not one of the Grant values.
 	ErrUnknownGrant = errors.New("link: unknown grant")
 )
@@ -103,9 +116,13 @@ type Center struct {
 	publish func(kinds ...string)
 	events  chan PairEvent
 
-	// mu serialises the deciding methods, so a confirm never interleaves
-	// with an unlink or a refusal of the same phone.
+	// mu serialises the deciding methods and Keyboxes, so a confirm never
+	// interleaves with an unlink or a refusal of the same phone, and a
+	// keybox read never straddles an unlink's rotation.
 	mu sync.Mutex
+	// beforeKeys is a test seam: run by Keyboxes between the device read
+	// and the key read.
+	beforeKeys func()
 }
 
 // NewCenter builds a Center over c.

@@ -34,8 +34,13 @@ func (c *Center) Grants() ([]wire.DeviceGrant, error) {
 // than RevokedLifetime, each newest first, filling what is left of
 // MaxGrantRecords. A phone appears once: linked, waiting, refused, revoked.
 // Every grant announces ordered_actions 1, the hub's transports and its relay
-// identity.
+// identity. It holds the center's lock across the device read and the key
+// read, so an Unlink (which rotates) never lands between them: a phone read
+// as linked gets the keys of the epoch it was linked under, never the one
+// that removes it.
 func (c *Center) Keyboxes() ([]wire.Keybox, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	now := c.now()
 	var linked, rest []wire.Keybox
 	keyed := false
@@ -78,6 +83,9 @@ func (c *Center) Keyboxes() ([]wire.Keybox, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("link: reading the grants: %w", err)
+	}
+	if c.beforeKeys != nil {
+		c.beforeKeys()
 	}
 	if keyed {
 		keys, err := c.keys.KeyboxKeys()
