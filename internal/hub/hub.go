@@ -132,6 +132,8 @@ type Options struct {
 	checkEvery   time.Duration
 	passEvery    time.Duration
 	writeTimeout time.Duration
+	pairQueue    int // events one pairing stream may have waiting (0 = pairQueue)
+	sendBuffer   int // SO_SNDBUF of each accepted control connection (0 = the OS default)
 }
 
 func (o Options) withDefaults() Options {
@@ -164,6 +166,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.writeTimeout <= 0 {
 		o.writeTimeout = controlWriteTimeout
+	}
+	if o.pairQueue <= 0 {
+		o.pairQueue = pairQueue
 	}
 	return o
 }

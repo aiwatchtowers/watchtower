@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/internal/hub/link"
@@ -123,6 +124,11 @@ func (s *supervisor) serveControl(ctx context.Context) (stop func()) {
 				_ = c.Close()
 				continue
 			}
+			if s.o.sendBuffer > 0 {
+				if err := uc.SetWriteBuffer(s.o.sendBuffer); err != nil {
+					log.Printf("hub: control socket: send buffer not set (%s)", errClass(err))
+				}
+			}
 			connsMu.Lock()
 			conns[c] = true
 			connsMu.Unlock()
@@ -212,27 +218,30 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 		select {
 		case p.queue <- a:
 		default:
+			// serveConn closes the queue once its reader ends.
 			log.Printf("hub: control socket: a pairing stream fell behind and was dropped")
+			delete(s.pairs, p)
 			p.w.drop()
 		}
 	}
 }
 
 // answerWriter serialises a connection's lines (answers and events). Each
-// line has writeTimeout to go out; a write that fails or times out closes
-// the connection, and every later write is skipped.
+// line has a write deadline; a write that fails or times out closes the
+// connection, and every later write is skipped.
 type answerWriter struct {
-	mu      sync.Mutex
+	mu      sync.Mutex // serialises lines
 	c       net.Conn
 	enc     *json.Encoder
 	timeout time.Duration
-	dropped bool
+	dropped atomic.Bool
+	once    sync.Once
 }
 
 func (w *answerWriter) write(a ControlAnswer) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.dropped {
+	if w.dropped.Load() {
 		return false
 	}
 	if err := w.c.SetWriteDeadline(time.Now().Add(w.timeout)); err == nil {
@@ -240,23 +249,18 @@ func (w *answerWriter) write(a ControlAnswer) bool {
 			return true
 		}
 	}
-	log.Printf("hub: control socket: a client stopped reading and was dropped")
-	w.dropLocked()
+	if !w.dropped.Load() {
+		log.Printf("hub: control socket: a client stopped reading and was dropped")
+	}
+	w.drop()
 	return false
 }
 
-// drop closes the connection (its reader then ends serveConn).
+// drop closes the connection (its reader then ends serveConn). It never
+// waits for a write in progress: closing the conn ends that write.
 func (w *answerWriter) drop() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.dropLocked()
-}
-
-func (w *answerWriter) dropLocked() {
-	if !w.dropped {
-		w.dropped = true
-		_ = w.c.Close()
-	}
+	w.dropped.Store(true)
+	w.once.Do(func() { _ = w.c.Close() })
 }
 
 // serveConn answers one client's requests in order.
@@ -288,7 +292,7 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 			continue
 		}
 		if r.Op == OpPair && pl == nil {
-			pl = &pairListener{w: w, queue: make(chan ControlAnswer, pairQueue), codes: map[string]string{}}
+			pl = &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]string{}}
 			pumping.Add(1)
 			go func(p *pairListener) {
 				defer pumping.Done()

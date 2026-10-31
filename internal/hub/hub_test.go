@@ -639,7 +639,11 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 	setMeta(t, dir, state.MetaEnabled, "1")
 	r := newRig(t, dir)
 	o := r.options()
-	o.writeTimeout = 200 * time.Millisecond
+	// Deterministic on every OS: a small queue and small socket buffers
+	// on both ends, so the events below overflow the kernel buffer (Linux
+	// gives unix sockets ~200 KiB by default, macOS ~8 KiB) and then the
+	// queue, whichever trips first: the write deadline or the full queue.
+	o.writeTimeout, o.pairQueue, o.sendBuffer = 200*time.Millisecond, 8, 4096
 	r.start(o)
 	r.waitState(StateRunning, "")
 
@@ -648,6 +652,9 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = stalled.Close() }()
+	if err := stalled.c.(*net.UnixConn).SetReadBuffer(4096); err != nil {
+		t.Fatal(err)
+	}
 	if err := stalled.Send(ControlRequest{Op: OpPair}); err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +681,7 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 			}
 		}
 	}()
-	const n = 60
+	const n = 120 // × ~600-byte qr events: far past 2 × 4 KiB buffers plus 8 queued
 	for i := range n {
 		if err := good.Send(ControlRequest{Op: OpPair}); err != nil {
 			t.Fatal(err)
