@@ -122,7 +122,7 @@ extension ActionOutbox {
         // This is the queued flush starting: a request from now on queues the next one.
         queuedFlush = nil
         do {
-            return try await performFlush()
+            return try await reportedFlush()
         } catch {
             logger.error("outbox flush failed: \(String(describing: error), privacy: .public)")
             throw error
@@ -153,7 +153,7 @@ extension ActionOutbox {
                 id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload,
                 queuedAt: at))
         }
-        return try await performFlush()
+        return try await reportedFlush()
     }
 
     // MARK: Retry and Dismiss All
@@ -218,6 +218,13 @@ extension ActionOutbox {
     }
 
     // MARK: The flush pass
+
+    /// One pass, then its report to the observer.
+    private func reportedFlush() async throws -> OutboxFlushReport {
+        let report = try await performFlush()
+        flushReportObserver?(report)
+        return report
+    }
 
     /// One pass (sim rules 1, 3, 7a): queued controls in order, then queued actions by seq, one record per call.
     /// The first non-permanent refusal stops the pass. A permanent refusal never does: the control stays queued for

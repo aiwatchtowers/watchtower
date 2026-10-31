@@ -58,6 +58,8 @@ public actor ActionOutbox {
     var deviceID: String?
     /// Told about each `applied` echo whose overlay row it removed.
     var appliedObserver: (@Sendable (ActionRequestPayload) -> Void)?
+    /// Told about each flush pass that ran to its end (`ActionOutbox+Ordered.swift`).
+    var flushReportObserver: (@Sendable (OutboxFlushReport) -> Void)?
     /// The ordered path's state (`ActionOutbox+Ordered.swift`): the hub's id (an ordered payload's and a control's
     /// `hub_id`), the route (a control's outer bound exists only on the hosted relay), and the one serial chain
     /// that flushes, `resend_from` handling and the 24 h withdrawal run on.
@@ -95,6 +97,13 @@ public actor ActionOutbox {
     /// redelivered echo or an unknown action id.
     public func setAppliedObserver(_ observer: (@Sendable (ActionRequestPayload) -> Void)?) {
         appliedObserver = observer
+    }
+
+    /// Every flush pass's report, called on this actor once the pass ends: an explicit `flush()`, the one an
+    /// enqueue starts and the one a `resend_from` runs alike, so the app's "last flush stopped" never misses one.
+    /// A pass that throws (a store error) reports nothing.
+    public func setFlushReportObserver(_ observer: (@Sendable (OutboxFlushReport) -> Void)?) {
+        flushReportObserver = observer
     }
 
     /// The `snooze_until` param in the wire's frozen form: plain ISO8601 UTC,

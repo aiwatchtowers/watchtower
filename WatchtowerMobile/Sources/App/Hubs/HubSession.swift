@@ -175,9 +175,11 @@ final class HubSession {
     /// The calendar slices as the Calendar and Now tabs draw them.
     let calendarReplica = CalendarReplicaModel()
     /// The ordered outbox as the phone shows it (relay client Phase 1): waiting and Not delivered counts, and
-    /// whether this session's last flush stopped on a refusal. Always empty for a hub on today's path.
+    /// whether the outbox's last flush stopped on a refusal. Always empty for a hub on today's path.
     private(set) var outboxBacklog = OutboxBacklog.empty
     @ObservationIgnored private var backlogObservation: ResilientObservation?
+    /// The last flush (and sweep) the session started without waiting for it (`startOutboxWork`).
+    @ObservationIgnored private(set) var outboxWork: Task<Void, Never>?
     /// The phone recorder (record a meeting or a voice note), owned for the
     /// app's lifetime so a capture survives any navigation.
     let recorder: PhoneRecorderController
@@ -688,6 +690,10 @@ final class HubSession {
         // Before any fetch: the feed's `resend_from` needs both ids (with the device id the init set), or it
         // throws and the feed keeps its token, stalling every later action.
         await outbox.setHubID(hubID)
+        // Every flush's outcome, the ones an enqueue or a `resend_from` starts included.
+        await outbox.setFlushReportObserver { [weak self] report in
+            Task { @MainActor in self?.outboxBacklog.lastFlushStopped = report.stoppedOn != nil }
+        }
         // Before any fetch, so no applied echo goes unseen: an ask answer's
         // delivery, a start's session id.
         await outbox.setAppliedObserver(
@@ -992,13 +998,8 @@ final class HubSession {
         } catch {
             Self.logger.error("relay fetch failed: \(error.localizedDescription, privacy: .public)")
         }
-        await flushOutbox()
         // Once per fetch cycle, so a phone that stays up still withdraws an unanswered action after 24 h.
-        do {
-            try await outbox.sweepSilentPending()
-        } catch {
-            Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
-        }
+        startOutboxWork(sweep: true)
         readHeartbeat()
         onFetched?()
         return hydrated.applied + hydrated.deleted + routed > 0 ? .newData : .noData
@@ -1040,7 +1041,7 @@ final class HubSession {
         } catch {
             Self.logger.error("relay apply failed: \(error.localizedDescription, privacy: .public)")
         }
-        await flushOutbox()
+        startOutboxWork(sweep: false)
         readHeartbeat()
         onFetched?()
     }
@@ -1075,7 +1076,7 @@ final class HubSession {
         // Review Focus 1: rows a locked background hydrate stored open now (the unlock signal may have passed
         // while the app was suspended), before the return's fetch.
         indexStoredRows()
-        Task { [weak self] in await self?.flushOutbox() }
+        startOutboxWork(sweep: false)
         Task { [deviceSettings] in await deviceSettings.touchIfStale() }
         // A subscription save or delete that failed earlier is retried; one already applied costs no CloudKit call.
         if isBootstrapped, let alertRegistrar {
@@ -1139,7 +1140,7 @@ final class HubSession {
         }
         await readoptHeldIfNeeded()
         await recorder.uploadPending()
-        await flushOutbox()
+        startOutboxWork(sweep: false)
     }
 
     /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed
@@ -1211,15 +1212,24 @@ final class HubSession {
         }
     }
 
-    /// One flush pass, kept in `outboxBacklog.lastFlushStopped`. For a hub on today's path (no flag, no queued
-    /// control) it returns at once without reaching the transport.
-    private func flushOutbox() async {
+    /// One flush pass, then (`sweep`, once per fetch cycle) the 24 h sweep, as one task nobody waits for: on
+    /// CloudKit a flush writes one record per call, and a save that hangs must never hold up a fetch, an
+    /// activation or the unlock. Both run on the outbox's serial chain. For a hub on today's path (no flag, no
+    /// queued control) the flush returns at once without reaching the transport. Kept in `outboxWork` (tests).
+    private func startOutboxWork(sweep: Bool) {
         guard !stopped else { return }
-        do {
-            let report = try await outbox.flush()
-            outboxBacklog.lastFlushStopped = report.stoppedOn != nil
-        } catch {
-            Self.logger.warning("outbox flush failed: \(error.localizedDescription, privacy: .public)")
+        outboxWork = Task { [outbox] in
+            do {
+                _ = try await outbox.flush()
+            } catch {
+                Self.logger.warning("outbox flush failed: \(error.localizedDescription, privacy: .public)")
+            }
+            guard sweep else { return }
+            do {
+                try await outbox.sweepSilentPending()
+            } catch {
+                Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

@@ -325,6 +325,24 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(try row(phone, two.id)?.delivery, .sent)
     }
 
+    /// Every flush pass reaches the report observer: the ones an enqueue or `resend_from` starts as well as an
+    /// explicit `flush()`, so the phone's "last flush stopped" line never misses one.
+    func testEveryFlushReachesTheReportObserver() async throws {
+        let phone = try await makePhone()
+        let reports = OSAllocatedUnfairLock(initialState: [OutboxFlushReport]())
+        await phone.outbox.setFlushReportObserver { report in reports.withLock { $0.append(report) } }
+        await phone.inner.refuseNext(.unreachable, count: 1)
+
+        _ = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        _ = try await phone.outbox.sweepSilentPending()
+        XCTAssertEqual(reports.withLock { $0 }, [OutboxFlushReport(stoppedOn: .unreachable)], "the enqueue's own flush")
+
+        _ = try await phone.outbox.flush()
+        try await phone.outbox.resendFrom(1)
+        XCTAssertEqual(reports.withLock { $0 }.count, 3)
+        XCTAssertEqual(reports.withLock { $0 }.dropFirst().map(\.stoppedOn), [nil, nil])
+    }
+
     // MARK: - Echoes
 
     func testAGapHoldLeavesTheOverlayAlone() async throws {

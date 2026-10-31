@@ -31,19 +31,19 @@ final class OrderedActionsWiringTests: XCTestCase {
         XCTAssertFalse(before, "no grant yet")
 
         try await publishGrant(orderedActions: 1, over: transport)
-        _ = await first.refresh(.pull)
+        await fetch(first)
         let on = try await first.outbox.orderedActions()
         XCTAssertTrue(on)
 
         // A later grant without the flag never turns it off, nor does a restart.
         try await publishGrant(orderedActions: nil, over: transport, at: Date().addingTimeInterval(60))
-        _ = await first.refresh(.pull)
+        await fetch(first)
         await first.shutDown()
         first.closeDatabases()
 
         let second = try session(over: transport, path: path)
         await second.waitForBoot()
-        _ = await second.refresh(.pull)
+        await fetch(second)
         let still = try await second.outbox.orderedActions()
         XCTAssertTrue(still, "sticky per replica")
         try await second.boardWriter.setStatus(.done, on: try target(415))
@@ -57,12 +57,12 @@ final class OrderedActionsWiringTests: XCTestCase {
         let env = try session(over: transport)
         await env.waitForBoot()
         try await publishGrant(orderedActions: nil, over: transport)
-        _ = await env.refresh(.pull)
+        await fetch(env)
 
         let on = try await env.outbox.orderedActions()
         XCTAssertFalse(on)
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        _ = await env.refresh(.pull)
+        await fetch(env)
         let row = try XCTUnwrap(try env.store.pendingActions().first)
         XCTAssertNil(row.actionSeq)
         XCTAssertNil(row.delivery)
@@ -77,16 +77,15 @@ final class OrderedActionsWiringTests: XCTestCase {
         let env = try await orderedSession(over: transport)
         await transport.refuse(.unreachable)
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        _ = await env.refresh(.pull)
+        await fetch(env)
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .queued)
-        XCTAssertTrue(env.outboxBacklog.lastFlushStopped, "the fetch's flush stopped on the refusal")
+        try await poll({ env.outboxBacklog.lastFlushStopped }, "the fetch's flush stopped on the refusal")
         try await poll({ env.outboxBacklog.queued == 1 }, "the backlog counts the queued action")
 
         await transport.refuse(nil)
-        _ = await env.refresh(.pull)
+        await fetch(env)
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent)
-        XCTAssertFalse(env.outboxBacklog.lastFlushStopped)
-        try await poll({ env.outboxBacklog == .empty }, "nothing waits any more")
+        try await poll({ env.outboxBacklog == .empty }, "nothing waits, and the last flush went through")
     }
 
     /// Every fetch sweeps (not only the boot's): a phone that stays up still withdraws an action the Mac never
@@ -96,15 +95,48 @@ final class OrderedActionsWiringTests: XCTestCase {
         let clock = MutableClock()
         let env = try await orderedSession(over: transport, clock: clock)
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        _ = await env.refresh(.pull)
+        await fetch(env)
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent)
 
         clock.advance(25 * 3600)
-        _ = await env.refresh(.pull)
+        await fetch(env)
         let row = try XCTUnwrap(try env.store.pendingActions().first)
         XCTAssertEqual(row.delivery, .undelivered)
         XCTAssertEqual(row.undeliveredReason, .noAnswer)
         try await poll({ env.outboxBacklog.undelivered == 1 }, "the backlog lists it")
+    }
+
+    /// The fetch starts the outbox's flush and sweep and returns without waiting for them: a save that hangs on
+    /// the network never holds up a fetch's completion.
+    func testAHungSaveDoesNotHoldUpAFetch() async throws {
+        let transport = SwitchableTransport()
+        let env = try await orderedSession(over: transport)
+        await transport.holdNextSave()
+        addTeardownBlock { await transport.releaseHeldSave() }
+        try await env.boardWriter.setStatus(.done, on: try target(415))
+
+        let fetched = expectation(description: "the fetch completed")
+        Task {
+            _ = await env.refresh(.pull)
+            fetched.fulfill()
+        }
+        await fulfillment(of: [fetched], timeout: 5)
+        XCTAssertEqual(try env.store.pendingActions().first?.delivery, .queued, "the save still hangs")
+
+        await transport.releaseHeldSave()
+        await env.outboxWork?.value
+        XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent)
+    }
+
+    /// The flush an enqueue starts on its own reaches the backlog too, not only the session's.
+    func testAFlushTheOutboxStartsItselfSetsLastFlushStopped() async throws {
+        let transport = SwitchableTransport()
+        let env = try await orderedSession(over: transport)
+        await transport.refuse(.unreachable)
+        try await env.boardWriter.setStatus(.done, on: try target(415))
+        // Waits on the outbox's chain behind the enqueue's own flush; no session flush runs.
+        _ = try await env.outbox.sweepSilentPending()
+        try await poll({ env.outboxBacklog.lastFlushStopped }, "the enqueue's flush stopped on the refusal")
     }
 
     // MARK: - Dismiss and Retry through the outbox
@@ -134,7 +166,7 @@ final class OrderedActionsWiringTests: XCTestCase {
 
         let mark = await transport.conditionalSaves.count
         try await writeHubControl(.resendFrom, seq: 1, over: transport)
-        _ = await env.refresh(.pull)
+        await fetch(env)
         let written = await transport.conditionalSaves.dropFirst(mark)
         XCTAssertEqual(written.count, 1, "only the skip")
         let controls = try await phoneControls(in: transport)
@@ -212,7 +244,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let env = try session(over: transport, clock: clock)
         await env.waitForBoot()
         try await publishGrant(orderedActions: 1, over: transport)
-        _ = await env.refresh(.pull)
+        await fetch(env)
         let on = try await env.outbox.orderedActions()
         XCTAssertTrue(on)
         return env
@@ -223,6 +255,12 @@ final class OrderedActionsWiringTests: XCTestCase {
             deviceID: deviceID, hubID: hubID, name: "Colleague A's iPhone", scope: .private, linked: true,
             typingAllowed: true, startSessionsAllowed: true, mayStartSessions: true, orderedActions: orderedActions)
         try await TestPhone.hub(over: transport.inner).save([try TestPhone.grantRecord(grant, modifiedAt: at)])
+    }
+
+    /// One fetch, then the outbox work it started (flush, sweep).
+    private func fetch(_ env: HubSession) async {
+        _ = await env.refresh(.pull)
+        await env.outboxWork?.value
     }
 
     private func target(_ id: Int64) throws -> WorkbenchTarget {
@@ -273,10 +311,23 @@ final class OrderedActionsWiringTests: XCTestCase {
 private actor SwitchableTransport: ConditionalTransport {
     let inner = InMemoryCloudTransport()
     private var refusal: TransportRefusal?
+    /// The next conditional save waits here until released.
+    private var holdsNextSave = false
+    private var heldSave: CheckedContinuation<Void, Never>?
     private(set) var conditionalSaves: [ConditionalSave] = []
 
     func refuse(_ refusal: TransportRefusal?) {
         self.refusal = refusal
+    }
+
+    func holdNextSave() {
+        holdsNextSave = true
+    }
+
+    func releaseHeldSave() {
+        holdsNextSave = false
+        heldSave?.resume()
+        heldSave = nil
     }
 
     func save(_ records: [CloudRecord]) async throws {
@@ -293,6 +344,10 @@ private actor SwitchableTransport: ConditionalTransport {
 
     func save(_ items: [ConditionalSave]) async throws -> [SaveOutcome] {
         conditionalSaves += items
+        if holdsNextSave {
+            holdsNextSave = false
+            await withCheckedContinuation { heldSave = $0 }
+        }
         if let refusal {
             return items.map { _ in .refused(refusal) }
         }
