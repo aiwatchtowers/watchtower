@@ -2,6 +2,7 @@ package sessionreport
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -214,8 +215,11 @@ func TestBuild_GroupWithOnlyTodoLeavesIsNoPhase(t *testing.T) {
 
 func TestBuild_TargetlessSessionLinkedToATopLevelLeaf(t *testing.T) {
 	d := loadFixture(t, "scope.sql")
-	_, err := d.Exec(`INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at)
-		VALUES (6, 430, '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z')`)
+	// Session 4 was launched on 430, a binding at its created_at: S6's status
+	// write comes after it, so S6 owns the leaf.
+	_, err := d.Exec(`UPDATE terminal_sessions SET created_at = '2026-10-01T10:00:00Z' WHERE id = 4;
+		INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at, status_at)
+		VALUES (6, 430, '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z')`)
 	require.NoError(t, err)
 
 	r := build(t, d, 6)
@@ -457,8 +461,8 @@ func TestProj14_OwnerBoardMoveKeepsOwnership(t *testing.T) {
 	require.NoError(t, d.UpdateTargetStatus(12, "done"))
 	owners, err := d.SessionLeafOwners(1)
 	require.NoError(t, err)
-	assert.EqualValues(t, 1, owners[12])
-	assert.EqualValues(t, 2, owners[11])
+	assert.EqualValues(t, 1, owners[12].SessionID)
+	assert.EqualValues(t, 2, owners[11].SessionID)
 	assert.Equal(t, Progress{Done: 2, Total: 3}, build(t, d, 1).Progress, "12 (now done) and 21; 11 is S2's")
 }
 
@@ -477,4 +481,92 @@ func TestProgress_OwnedDismissedLeafNeverCounts(t *testing.T) {
 	d := progressFixture(t)
 	stamp(t, d, 1, 13)
 	assert.Equal(t, Progress{Done: 2, Total: 4}, build(t, d, 1).Progress)
+}
+
+func runSQL(t *testing.T, d *db.DB, q string, args ...any) {
+	t.Helper()
+	_, err := d.Exec(q, args...)
+	require.NoError(t, err)
+}
+
+func summaryOf(t *testing.T, d *db.DB, sessionID int64) Summary {
+	t.Helper()
+	all, err := Summaries(context.Background(), d, 1)
+	require.NoError(t, err)
+	for _, s := range all {
+		if s.SessionID == sessionID {
+			return s
+		}
+	}
+	t.Fatalf("no summary for session %d", sessionID)
+	return Summary{}
+}
+
+// PROJ-14 (final review, F1): binding writes one link row, and its binding
+// stamp takes the bound subtree's leaves from an unbound session.
+func TestProj14_BindingStampTakesLeaves(t *testing.T) {
+	d := progressFixture(t)
+	require.NoError(t, d.SetSessionTarget(2, sql.NullInt64{Int64: 10, Valid: true}))
+	var links int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = 2`).Scan(&links))
+	assert.Equal(t, 1, links, "the bound group only, no row per leaf")
+	assert.Equal(t, Progress{Done: 1, Total: 2}, build(t, d, 1).Progress, "A's leaves are S2's")
+	s1 := summaryOf(t, d, 1)
+	assert.Equal(t, []int{1, 2}, []int{s1.Done, s1.Total}, "the row line agrees")
+}
+
+// PROJ-14 (final review, F1): a tie between a link stamp and a binding stamp
+// goes to the higher session id, whichever source it comes from.
+func TestProj14_OwnerTieAcrossSourcesGoesToHigherID(t *testing.T) {
+	d := progressFixture(t)
+	runSQL(t, d, `INSERT INTO terminal_sessions (id, project_id, kind, title, folder_path, claude_session_id)
+		VALUES (3, 1, 'claude', 'S3', '/tmp/acme', 'u3')`)
+	const at = "2026-10-05T10:00:00Z"
+	runSQL(t, d, `UPDATE terminal_sessions SET target_id = 10, target_bound_at = ? WHERE id = 2`, at)
+	runSQL(t, d, `INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at, status_at)
+		VALUES (3, 12, ?, ?, ?), (1, 11, ?, ?, ?)`, at, at, at, at, at, at)
+	b, err := loadBoard(d, 1)
+	require.NoError(t, err)
+	owners, err := loadOwners(d, b, 1)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, owners[12], "link stamp of S3 beats S2's binding at the same second")
+	assert.EqualValues(t, 2, owners[11], "S2's binding beats S1's link at the same second")
+}
+
+// PROJ-14 (final review, F2, ask #880): the launch target is a binding at
+// created_at, so it takes leaves stamped earlier and loses to later stamps.
+func TestProj14_LaunchTargetIsABindingAtCreatedAt(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		createdAt string
+		want      Progress
+	}{
+		{"launched after the stamps", "2026-10-02T10:00:00Z", Progress{Done: 1, Total: 2}},
+		{"launched before the stamps", "2026-09-30T10:00:00Z", Progress{Done: 2, Total: 4}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := progressFixture(t)
+			runSQL(t, d, `UPDATE terminal_session_targets SET status_at = '2026-10-01T10:00:00Z' WHERE session_id = 1`)
+			runSQL(t, d, `INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at, status_at)
+				SELECT 1, id, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z'
+				FROM targets WHERE parent_id IN (10, 20)`)
+			runSQL(t, d, `UPDATE terminal_sessions SET target_id = 10, created_at = ? WHERE id = 2`, tc.createdAt)
+			assert.Equal(t, tc.want, build(t, d, 1).Progress)
+		})
+	}
+}
+
+// PROJ-14 (final review, F4): a dismissed bound target falls back to rule 2
+// and gives its session no binding stamp.
+func TestProj14_DismissedBoundTargetFallsBackToRule2(t *testing.T) {
+	d := progressFixture(t)
+	runSQL(t, d, `UPDATE terminal_sessions SET target_id = 10 WHERE id IN (1, 2)`)
+	runSQL(t, d, `UPDATE targets SET status = 'dismissed' WHERE id = 10`)
+	assert.Equal(t, Progress{Done: 2, Total: 4}, build(t, d, 1).Progress, "rule 2: A's and B's leaves, none taken by S2")
+}
+
+func TestProj14_BoundLeafCountsItself(t *testing.T) {
+	d := progressFixture(t)
+	runSQL(t, d, `UPDATE terminal_sessions SET target_id = 22 WHERE id = 1`)
+	assert.Equal(t, Progress{Done: 0, Total: 1}, build(t, d, 1).Progress)
 }
