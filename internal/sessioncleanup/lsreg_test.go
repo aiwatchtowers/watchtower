@@ -2,6 +2,7 @@ package sessioncleanup
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -114,6 +115,26 @@ func TestUnregister_UsesTheFixedBinaryAndTheCanonicalPath(t *testing.T) {
 	failing := &fakeCmds{fail: map[string]error{lsregisterBinary: os.ErrPermission}}
 	if err := (SystemLaunchServices{run: failing.run}).Unregister(context.Background(), bundle); err == nil {
 		t.Fatal("a failing lsregister returned nil")
+	}
+}
+
+// TestUnregister_NeverRegisteredIsDone: lsregister -u on a bundle
+// LaunchServices never registered fails with -10814; there is nothing to
+// unregister, so it is not an error.
+func TestUnregister_NeverRegisteredIsDone(t *testing.T) {
+	bundle := filepath.Join(canonicalPath(t.TempDir()), "x.xcarchive", "Products", "Applications", "App.app")
+	notFound := fmt.Errorf("%s -u %s: exit status 1: failed to scan %s: -10814\n from spotlight",
+		lsregisterBinary, bundle, bundle)
+	cmds := &fakeCmds{fail: map[string]error{lsregisterBinary: notFound}}
+	if err := (SystemLaunchServices{run: cmds.run}).Unregister(context.Background(), bundle); err != nil {
+		t.Fatalf("Unregister of a never-registered bundle = %v, want nil", err)
+	}
+	// -10814 in the path itself, not lsregister's diagnostic, is no excuse.
+	odd := filepath.Join(canonicalPath(t.TempDir()), "a: -10814", "App.app")
+	denied := fmt.Errorf("%s -u %s: exit status 1: permission denied", lsregisterBinary, odd)
+	cmds = &fakeCmds{fail: map[string]error{lsregisterBinary: denied}}
+	if err := (SystemLaunchServices{run: cmds.run}).Unregister(context.Background(), odd); err == nil {
+		t.Fatal("a real failure on a path containing -10814 returned nil")
 	}
 }
 
