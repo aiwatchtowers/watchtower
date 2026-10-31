@@ -274,7 +274,7 @@ func linkCommentTarget(d *db.DB, b Binding, sessionEnv func() string, out map[st
 	case err != nil:
 		reportLinkFailure(out, err)
 	case c != nil && c.TargetID.Valid:
-		linkSession(d, b, sessionEnv, out, c.TargetID.Int64)
+		linkSession(d, b, sessionEnv, out, false, c.TargetID.Int64)
 	}
 }
 
