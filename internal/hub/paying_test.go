@@ -803,3 +803,55 @@ func TestPhonePromotedAfterItsLinkIsSeenWithinSeconds(t *testing.T) {
 		t.Fatalf("%d link retries still armed after every phone is slotted", pending)
 	}
 }
+
+// readersCounting is the counting transport with the relay's readers
+// setter, counting its calls.
+type readersCounting struct {
+	*countingTransport
+	sets atomic.Int32
+}
+
+func (r *readersCounting) SetLinkedReaders(context.Context, []string) error {
+	r.sets.Add(1)
+	return nil
+}
+
+// A linked phone that is never promoted costs the short link retry one
+// account read per tick: no keybox writes and no readers sets once the
+// window's first check ran.
+func TestUnpromotedPhoneCostsOneReadPerTick(t *testing.T) {
+	soon := newPayClock()
+	rc := &readersCounting{}
+	r := startRelayOnly(t, true, nil, false, func(o *Options) {
+		o.soonTimer = soon.Timer
+		o.linkEvery = time.Hour
+		dial := o.newTransport
+		o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
+			tr, err := dial(ctx, id, st, zones)
+			if err != nil {
+				return nil, err
+			}
+			rc.countingTransport = tr.(*countingTransport)
+			return rc, nil
+		}
+	})
+	r.waitState(StatePaused, ReasonNeedsRelay)
+	r.pair(nil)
+	soon.Advance(linkSoonEvery) // the window's first tick: one full check
+	r.settled()
+	writes, sets, reads := r.ct.hubWrites(), rc.sets.Load(), r.fake.AccountStateReads()
+	const ticks = 5
+	for range ticks {
+		soon.Advance(linkSoonEvery)
+		r.settled()
+	}
+	if n := r.fake.AccountStateReads() - reads; n < ticks {
+		t.Fatalf("%d account reads over %d ticks", n, ticks)
+	}
+	if n := r.ct.hubWrites() - writes; n != 0 {
+		t.Fatalf("%d hub writes over %d ticks of an unpromoted phone", n, ticks)
+	}
+	if n := rc.sets.Load() - sets; n != 0 {
+		t.Fatalf("%d readers sets over %d ticks of an unpromoted phone", n, ticks)
+	}
+}

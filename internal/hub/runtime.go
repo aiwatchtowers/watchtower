@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -542,11 +543,8 @@ func (h *hubRuntime) work(ctx context.Context) {
 	defer links.Stop()
 	house := time.NewTicker(houseEvery)
 	defer house.Stop()
-	// The short-retry window of the link check (worker only).
-	var soon <-chan time.Time
-	stopSoon := func() {}
-	defer func() { stopSoon() }()
-	var soonUntil time.Time
+	soon := &soonWindow{stop: func() {}}
+	defer func() { soon.stop() }()
 	for {
 		select {
 		case <-ctx.Done():
@@ -562,17 +560,12 @@ func (h *hubRuntime) work(ctx context.Context) {
 		case <-links.C:
 			h.linkUpkeep(ctx)
 		case <-h.soonKick:
-			soonUntil = h.sup.o.Clock().Add(linkSoonFor)
-			if soon == nil {
-				soon, stopSoon = h.sup.o.soonTimer(linkSoonEvery)
+			soon.until, soon.checked = h.sup.o.Clock().Add(linkSoonFor), false
+			if soon.c == nil {
+				soon.c, soon.stop = h.sup.o.soonTimer(linkSoonEvery)
 			}
-		case <-soon:
-			stopSoon()
-			soon, stopSoon = nil, func() {}
-			h.linkUpkeep(ctx)
-			if !h.linksSettled(ctx) && h.sup.o.Clock().Before(soonUntil) {
-				soon, stopSoon = h.sup.o.soonTimer(linkSoonEvery)
-			}
+		case <-soon.c:
+			h.soonTick(ctx, soon)
 		case <-h.houseKick:
 			h.housekeeping(ctx)
 		case <-house.C:
@@ -688,39 +681,83 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	h.sup.poke()
 }
 
-// linksSettled reports whether every linked phone with a relay id holds the
-// hub in a slot (a fresh account state read): the end of the link check's
-// short-retry window. Settled, the PayingWatch re-reads at once, so a
-// headless hub paused for want of a paying phone resumes. A transport with no
-// account state has nothing to wait for.
-func (h *hubRuntime) linksSettled(ctx context.Context) bool {
+// soonWindow is the link check's short-retry window after a link change
+// (worker only): its timer, its end, and the slotted set the last link
+// check of the window saw.
+type soonWindow struct {
+	c       <-chan time.Time
+	stop    func()
+	until   time.Time
+	checked bool   // a link check ran in this window
+	slotted string // the slotted set at that check
+}
+
+// soonTick is one tick of the short-retry window. Per tick it costs one
+// get_account_state; the full link check (keyboxes, readers, subscriptions,
+// a pass) runs only on the window's first tick and when the slotted set
+// changed since the last one, so a phone that is never promoted costs one
+// read every linkSoonEvery for linkSoonFor, nothing more. The window ends
+// once every linked phone holds the hub in a slot, or at its end; either
+// way the PayingWatch re-reads then, so a headless hub paused for want of
+// a paying phone resumes as soon as one is there.
+func (h *hubRuntime) soonTick(ctx context.Context, w *soonWindow) {
+	w.stop()
+	w.c, w.stop = nil, func() {}
+	settled, slotted, read := h.slotState(ctx)
+	if read && (!w.checked || slotted != w.slotted) {
+		h.linkUpkeep(ctx)
+		w.checked, w.slotted = true, slotted
+	}
+	if read && settled {
+		h.recheckPaying()
+		return
+	}
+	if h.sup.o.Clock().Before(w.until) {
+		w.c, w.stop = h.sup.o.soonTimer(linkSoonEvery)
+		return
+	}
+	h.recheckPaying() // the window ran out unsettled: one more read
+}
+
+func (h *hubRuntime) recheckPaying() {
+	if h.paying != nil {
+		h.paying.Recheck()
+	}
+}
+
+// slotState reads the account state once: settled when every linked phone
+// with a relay id holds the hub in a slot, slotted the sorted set of the
+// phones that do (a key), read false when it could not be read. A
+// transport with no account state has nothing to wait for (settled).
+func (h *hubRuntime) slotState(ctx context.Context) (settled bool, slotted string, read bool) {
 	as, ok := h.tr.(accountStater)
 	if !ok {
-		return true
+		return true, "", true
 	}
 	devices, err := h.st.Devices()
 	if err != nil {
-		return false
+		return false, "", false
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	st, err := as.AccountState(ctx)
 	cancel()
 	if err != nil {
-		return false
+		return false, "", false
 	}
-	slotted := map[string]bool{}
+	held := map[string]bool{}
+	ids := make([]string, 0, len(st.GetPhones()))
 	for _, p := range st.GetPhones() {
-		slotted[p.GetPhoneDeviceId()] = true
+		held[p.GetPhoneDeviceId()] = true
+		ids = append(ids, p.GetPhoneDeviceId())
 	}
+	sort.Strings(ids)
+	settled = true
 	for _, d := range devices {
-		if d.RelayDeviceID != "" && !slotted[d.RelayDeviceID] {
-			return false
+		if d.RelayDeviceID != "" && !held[d.RelayDeviceID] {
+			settled = false
 		}
 	}
-	if h.paying != nil {
-		h.paying.Recheck()
-	}
-	return true
+	return settled, strings.Join(ids, ","), true
 }
 
 // subRetry is one refused zone subscription: how often it failed in a row
