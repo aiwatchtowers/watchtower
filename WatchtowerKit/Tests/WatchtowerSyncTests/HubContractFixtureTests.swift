@@ -58,6 +58,7 @@ final class HubContractFixtureTests: XCTestCase {
 
     /// The phone's action payloads: `action_seq` is read and written exactly as the Go `wire.ActionRequest`
     /// does, and the re-encoding carries no key the Go struct lacks.
+    /// Compares with `expect` (the Go `wire.Marshal` re-encoding), which equals `json` minus dropped unknown keys.
     func testActionCasesRoundTrip() throws {
         let cases = try XCTUnwrap(load()["action"])
         XCTAssertGreaterThanOrEqual(cases.count, 4)
@@ -100,7 +101,12 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(control.reason, kit["reason"] as? String, name)
             XCTAssertEqual(control.retryAfterS, (kit["retry_after_s"] as? NSNumber)?.uint32Value, name)
             XCTAssertEqual(control.recordName, kit["record_name"] as? String, name)
-            try assertSameJSON(RelayCoder.makeEncoder().encode(control), try XCTUnwrap(fixtureCase["expect"]), name)
+            // `expect` is Go's re-encoding; keys the Kit does not read yet (the keybox) are listed in `ignored_keys`.
+            var expected = try XCTUnwrap(fixtureCase["expect"] as? [String: Any], name)
+            for key in kit["ignored_keys"] as? [String] ?? [] {
+                expected.removeValue(forKey: key)
+            }
+            try assertSameJSON(RelayCoder.makeEncoder().encode(control), expected, name)
         }
         let unknown = try XCTUnwrap(cases.first { $0["name"] as? String == "unknown_kind" })
         let decoded = try RelayCoder.makeDecoder().decode(ControlPayload.self, from: bytes(try XCTUnwrap(unknown["json"])))

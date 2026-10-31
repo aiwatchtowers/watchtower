@@ -195,7 +195,7 @@ public actor RelayFeed {
             // consumer and answers through the `device_grant` slice / the keybox.
             break
         case .control:
-            // Ordered-path controls (`c-<uuid>`) are not routed yet: they stay in the mailbox.
+            // Not routed yet (Task 7); skipped.
             break
         case .recordingUpload:
             guard let upload = decode(RecordingUploadPayload.self, from: record) else { break }
