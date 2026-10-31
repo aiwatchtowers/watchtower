@@ -64,6 +64,8 @@ iPhone ─E2E─▶ hosted relay (Cloudflare) ◀─E2E, outbound WSS─ watchto
 
 - The hub runs inside the daemon process (`runSyncDaemon`) as its own long-lived component with its own goroutines, independent of the sync cycle: a slow cycle never delays a mailbox pass or a publish. It starts when the daemon starts and mobile sync is enabled (`mobileSyncEnabled` moves from Desktop defaults to config, §12), and respects the MDM `MobileSync` key (POLICY: hub off / workbench_only) exactly as today.
 - One process per device identity (sim, "one process per device identity"): a pidfile-style lock on the hub's state dir; a second daemon refuses to start its hub.
+- **Several workspaces** (my call): the hub state stays per user (one `hub_id`, as today), and the hub runs in the daemon of the **active workspace** (`active_workspace`), which is what the Swift hub follows today through Desktop. A workspace switch stops the old daemon's hub (releasing the lock) before the new one starts; slices read the active workspace's database, as now. The Pi has one workspace.
+- **`session-host`** (my call): the daemon may start `session-host` itself when it is not running (on the Pi always, on the Mac when Desktop is closed), with the same per-workspace socket and adoption rules (PROJ-20); Desktop attaches to the same host as today.
 - Desktop on the Mac becomes a client of the hub: Settings → Mobile, linking sheet, phone list and diagnostics read hub state and call `watchtower hub …` (§10), the way other screens use the CLI with pinned `--json` keys.
 
 ## 5. Hub-side seam in Go
@@ -120,6 +122,7 @@ Only phones attest with App Attest. **Every hub — Mac or Pi — is admitted be
 2. **Echo** every action record read, applied or repeat, by an overwrite with `expect: seq`; final statuses `applied | failed | expired | cancelled`, non-final `received | held` (sim rule 2).
 3. **Control queue**: durable per mailbox, retried every pass (sim rule 7a): `resend_from`, `epoch_ack` handling, `transport_switch`/`transport_switched`/`transport_switch_rejected`, `hub_on_relay`, owed echoes.
 4. **Handlers.** Every handler in `MobileHubCommandDispatcher` and `Handlers/` moves to Go with the same request/outcome payloads: asks (answer), board (create/update/move/comment), session start/stop, session input and Interrupt, permission answers, session chat/report requests, recordings (Mac only). PROJ-16 (a phone line reaches a session only from an allowed device, only through PROJ-12's typed-never-submitted delivery, never answering a permission prompt) and PROJ-21 (permission answers and one-Esc Interrupt under their grants, CAS on `permission_requests`) are re-pointed to the Go files in `docs/inventory/workbench.md` with their guard tests ported one-to-one; the meaning of each assertion does not change (owner approval for the re-pointing is part of approving this spec). Session input goes to the PTY through `session-host` (Go) instead of Desktop's `TerminalCenter`.
+4a. **Phone recordings on the Mac** (my call): the transcriber stays in Desktop. The Go hub acts on a recording upload only while Desktop is running and has registered as the transcriber (a heartbeat row): then it opens the upload into the recordings dir (`config.AppSupportDir()`, excluded from Time Machine, 0600) and echoes `received` exactly as the Swift hub does, and Desktop takes the job from a queue table and drives `phone_recordings`. While Desktop is absent the recording action is held with the non-final echo `held`, so the phone keeps its audio; no plaintext audio is written by Go without a transcriber to take it. FILES-01 review of the queue table is part of phase 3.
 5. **Mixed versions** (RC §5 p. 10): the hub announces `ordered_actions: 1` in `device_grant`; a payload without `action_seq` is handled the old way. An old phone keeps working against the Go hub on CloudKit.
 6. **Hygiene**: 7-day fallback on CloudKit, recipient delete + 14-day server TTL on the relay (sim rule 15).
 
@@ -152,7 +155,7 @@ Only phones attest with App Attest. **Every hub — Mac or Pi — is admitted be
 
 ### 12.1 One switch, never two hubs
 
-The release that ships the Go hub ships a Desktop without the Swift hub. At first launch of that Desktop the daemon's hub performs a one-time **adoption** before it publishes anything: it takes the hub lock, imports the Swift hub's state, and records `hub_impl = go` in the sidecar. An older Desktop that finds `hub_impl = go` refuses to start its Swift hub (one guard line shipped in the release *before* this one, so a downgrade cannot run both). Adoption is idempotent and resumable; a failure keeps the hub off and shows the error in Settings → Mobile (no fallback to the Swift hub, which no longer exists in that build).
+The release that ships the Go hub ships a Desktop without the Swift hub. At first launch of that Desktop the daemon's hub performs a one-time **adoption** before it publishes anything: it takes the hub lock, imports the Swift hub's state, and records `hub_impl = go` in the sidecar. An older Desktop that finds `hub_impl = go` refuses to start its Swift hub and says "Mobile is run by a newer Watchtower". That guard ships **in the next regular release, ahead of the Go hub** (my call), so every version an owner could downgrade to has it. A downgrade after adoption is not supported for the mobile link (the hub stays off in the older app); everything else in the app keeps working. Adoption is idempotent and resumable; a failure keeps the hub off and shows the error in Settings → Mobile (no fallback to the Swift hub, which no longer exists in that build).
 
 ### 12.2 Keys and state
 
@@ -192,7 +195,7 @@ The phone/Kit side (relay client spec, `feature/relay-client`) and the Go hub me
 
 | Phase | Content | Depends on |
 |---|---|---|
-| 1 | Go hub core on the relay: secure port + vectors, sidecar, processor/dispatcher/handlers, slices, publishing on change, relay transport, `hub` CLI, Go session start. Runs behind a dev flag next to the Swift hub on a test identity. | relay change §15 p. 1 for real linking; the relay's local stand for tests |
+| 1 | Go hub core on the relay: secure port + vectors, sidecar, processor/dispatcher/handlers, slices, publishing on change, relay transport, `hub` CLI, Go session start. Verified in a **separate test workspace** (own database, own sidecar dir, own hub identity, `WATCHTOWER_HUB_DIR`) so it never touches the real workspace's asks, permission requests or sessions while the Swift hub runs; real data first in phase 3 (adoption) and on the Pi in phase 2 (my call). | relay change §15 p. 1 for real linking; the relay's local stand for tests |
 | 2 | Pi: linux/arm64 build, systemd units, headless pairing, vouching end to end, relay-only rules (§7.3), guide page. Gate: a real Pi driven from a real phone. | 1; relay client spec Phases 2–3 on the phone |
 | 3 | Mac on the Go hub: CloudKit bridge, adoption (§12), Desktop Settings → Mobile over `hub …`, New Session through Go, transport switch both ways (sim rules 8–16) with epochs, Swift hub deleted. | 1; relay client spec Phase 1 on the phone for ordered actions |
 | 4 | Pushes (`send_alert` per paying phone), Desktop indicators and hub-side measurements (RC §10), mobile-companion feature note rewritten. | 3; relay client spec Phase 4 |
@@ -203,6 +206,11 @@ Launch for users is one release carrying phases 1–4 (ask #800: the Mac and the
 
 1. **Vouched hubs** (§7): `device_kind = HUB` registers unvouched; `vouch_hub` with the phone's assertion; login for a vouched hub with the Ed25519 signature only; revoke when it leaves every slot; App Attest design and client requirements updated (Mac rows replaced, the Developer ID open item dropped, the Linux open question closed by this rule).
 2. The hub-side client rules in `sim/README.md` stay the contract; the Go hub's interop job may run in the relay CI like the Kit's (ask #734).
+
+## 15a. Status of the other two documents (2026-10-31)
+
+- Relay client spec: moved onto §12a (`feature/relay-client` 6bcbca73e — `relay_device_id` + `relay_auth_pub`, `transports`, `vouch_hub` before `add_slot`/`promote_pairing`, relay-only hubs). No phone code with the old names has shipped; nothing needs a compatibility shim.
+- Relay: the vouching form is accepted by the relay session; the reversal of the App Attest rule (relay ask #772) waits on the owner in relay ask #805, then App Attest spec amendment → plan → code. Phase 1 builds and tests against the local stand with attestation off; real linking waits on that.
 
 ## 16. Left to the builder
 
