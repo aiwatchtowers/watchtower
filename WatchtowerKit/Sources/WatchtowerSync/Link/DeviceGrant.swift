@@ -61,12 +61,16 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public let linkCodeTag: String?
     /// Removed on the Mac (D9); absent otherwise.
     public let revoked: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The version of ordered actions the hub runs (relay client Phase 1); absent on an older hub.
+    public let orderedActions: Int?
 
     public var recordName: String { SliceKind.deviceGrant.recordName(id: deviceID) }
     /// Default false.
     public var permissionsAllowed: Bool { permissionsGranted ?? false }
     /// Whether the hub takes a `session_start` from this phone (#565; an older hub: its `startSessionsAllowed`).
     public var mayStartSessions: Bool { startSessionsGranted ?? startSessionsAllowed }
+    /// Whether this hub takes numbered actions (`a-<device>-<seq>`); false keeps the legacy path.
+    public var runsOrderedActions: Bool { (orderedActions ?? 0) >= 1 }
 
     // convertFromSnakeCase maps "device_id" -> "deviceId" and "hub_id" ->
     // "hubId" (lowercase d), so the CodingKey stringValues use that form.
@@ -87,6 +91,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         case confirmNonce
         case linkCodeTag
         case revoked
+        case orderedActions
     }
 
     public init(
@@ -105,7 +110,8 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         awaitingConfirmation: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         confirmNonce: String? = nil,
         linkCodeTag: String? = nil,
-        revoked: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+        revoked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        orderedActions: Int? = nil
     ) {
         self.deviceID = deviceID
         self.hubID = hubID
@@ -123,5 +129,6 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         self.confirmNonce = confirmNonce
         self.linkCodeTag = linkCodeTag
         self.revoked = revoked
+        self.orderedActions = orderedActions
     }
 }

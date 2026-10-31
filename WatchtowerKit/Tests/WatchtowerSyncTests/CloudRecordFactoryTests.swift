@@ -84,7 +84,7 @@ final class CloudRecordFactoryTests: XCTestCase {
     func testRelayRecordKindRawValuesAreFrozen() {
         XCTAssertEqual(
             RelayRecordKind.allCases.map(\.rawValue),
-            ["action", "heartbeat", "recording_upload", "device", "hello"]
+            ["action", "heartbeat", "recording_upload", "device", "hello", "control"]
         )
     }
 }

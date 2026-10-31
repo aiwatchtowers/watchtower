@@ -52,7 +52,8 @@
         "scope": "private",
         "typing_allowed": false,
         "linked_at": null,
-        "decided_at": null
+        "decided_at": null,
+        "ordered_actions": 1
       }
     },
     {
@@ -107,7 +108,8 @@
         "scope": "private",
         "typing_allowed": true,
         "linked_at": 1730000000,
-        "decided_at": 1730000001.5
+        "decided_at": 1730000001.5,
+        "ordered_actions": 1
       }
     },
     {
@@ -146,7 +148,8 @@
         "scope": "private",
         "typing_allowed": false,
         "linked_at": null,
-        "decided_at": 1730000100
+        "decided_at": 1730000100,
+        "ordered_actions": null
       }
     },
     {
@@ -183,7 +186,8 @@
         "scope": "private",
         "typing_allowed": true,
         "linked_at": 1730000000,
-        "decided_at": null
+        "decided_at": null,
+        "ordered_actions": null
       }
     },
     {
@@ -219,7 +223,8 @@
         "scope": "private",
         "typing_allowed": false,
         "linked_at": null,
-        "decided_at": null
+        "decided_at": null,
+        "ordered_actions": null
       }
     }
   ],
@@ -311,6 +316,314 @@
         "before": -1.5
       },
       "relay_coder": "{\"at\":1730000000.5,\"before\":-1.5,\"whole\":1730000000}"
+    }
+  ],
+  "action": [
+    {
+      "name": "ordered_pending",
+      "json": {
+        "id": "A7",
+        "kind": "target_done",
+        "entity_id": "42",
+        "params": {},
+        "created_at": 1730000000,
+        "status": "pending",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "action_seq": 7
+      },
+      "expect": {
+        "id": "A7",
+        "kind": "target_done",
+        "entity_id": "42",
+        "params": {},
+        "created_at": 1730000000,
+        "status": "pending",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "action_seq": 7
+      },
+      "kit": {
+        "action_seq": 7,
+        "record_name": "a-BBBBBBBB-0000-4000-8000-000000000002-7",
+        "status": "pending"
+      }
+    },
+    {
+      "name": "legacy_pending",
+      "json": {
+        "id": "A6",
+        "kind": "target_done",
+        "entity_id": "42",
+        "params": {},
+        "created_at": 1730000000,
+        "status": "pending",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001"
+      },
+      "expect": {
+        "id": "A6",
+        "kind": "target_done",
+        "entity_id": "42",
+        "params": {},
+        "created_at": 1730000000,
+        "status": "pending",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001"
+      },
+      "kit": {
+        "action_seq": null,
+        "record_name": "action-A6",
+        "status": "pending"
+      }
+    },
+    {
+      "name": "ordered_echo_applied",
+      "json": {
+        "id": "A8",
+        "kind": "probe",
+        "params": {
+          "nonce": "n1"
+        },
+        "created_at": 1730000000,
+        "status": "applied",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "result": {
+          "nonce": "n1",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001"
+        },
+        "action_seq": 8
+      },
+      "expect": {
+        "id": "A8",
+        "kind": "probe",
+        "params": {
+          "nonce": "n1"
+        },
+        "created_at": 1730000000,
+        "status": "applied",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "result": {
+          "nonce": "n1",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001"
+        },
+        "action_seq": 8
+      },
+      "kit": {
+        "action_seq": 8,
+        "record_name": "a-BBBBBBBB-0000-4000-8000-000000000002-8",
+        "status": "applied"
+      }
+    },
+    {
+      "name": "unknown_future_key",
+      "json": {
+        "id": "A9",
+        "kind": "target_done",
+        "entity_id": "42",
+        "params": {},
+        "created_at": 1730000000,
+        "status": "pending",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "action_seq": 9,
+        "future_field": 1
+      },
+      "expect": {
+        "id": "A9",
+        "kind": "target_done",
+        "entity_id": "42",
+        "params": {},
+        "created_at": 1730000000,
+        "status": "pending",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "action_seq": 9
+      },
+      "kit": {
+        "action_seq": 9,
+        "record_name": "a-BBBBBBBB-0000-4000-8000-000000000002-9",
+        "status": "pending"
+      }
+    }
+  ],
+  "control": [
+    {
+      "name": "skip_to",
+      "json": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "skip_to",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 12
+      },
+      "expect": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "skip_to",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 12
+      },
+      "kit": {
+        "kind": "skip_to",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 12,
+        "epoch": null,
+        "target": null,
+        "by": null,
+        "at": null,
+        "reason": null,
+        "retry_after_s": null,
+        "record_name": "c-DDDDDDDD-0000-4000-8000-000000000004"
+      }
+    },
+    {
+      "name": "resend_from",
+      "json": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "resend_from",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 5
+      },
+      "expect": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "resend_from",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 5
+      },
+      "kit": {
+        "kind": "resend_from",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 5,
+        "epoch": null,
+        "target": null,
+        "by": null,
+        "at": null,
+        "reason": null,
+        "retry_after_s": null,
+        "record_name": "c-DDDDDDDD-0000-4000-8000-000000000004"
+      }
+    },
+    {
+      "name": "transport_switch_rejected",
+      "json": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "transport_switch_rejected",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "reason": "not supported yet",
+        "retry_after_s": 3600
+      },
+      "expect": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "transport_switch_rejected",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "reason": "not supported yet",
+        "retry_after_s": 3600
+      },
+      "kit": {
+        "kind": "transport_switch_rejected",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": null,
+        "epoch": null,
+        "target": null,
+        "by": null,
+        "at": null,
+        "reason": "not supported yet",
+        "retry_after_s": 3600,
+        "record_name": "c-DDDDDDDD-0000-4000-8000-000000000004"
+      }
+    },
+    {
+      "name": "transport_switched_with_keybox",
+      "json": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "transport_switched",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "target": "relay",
+        "epoch": 2,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "at": 1730000000.5,
+        "keybox": {
+          "grant": {
+            "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+            "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+            "name": "Test Phone",
+            "scope": "private",
+            "linked": true,
+            "typing_allowed": false,
+            "start_sessions_allowed": true
+          },
+          "keys": {
+            "epoch": 2,
+            "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+            "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+            "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+          }
+        }
+      },
+      "expect": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "transport_switched",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "target": "relay",
+        "epoch": 2,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "at": 1730000000.5
+      },
+      "kit": {
+        "kind": "transport_switched",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": null,
+        "epoch": 2,
+        "target": "relay",
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "at": 1730000000.5,
+        "reason": null,
+        "retry_after_s": null,
+        "record_name": "c-DDDDDDDD-0000-4000-8000-000000000004"
+      }
+    },
+    {
+      "name": "unknown_kind",
+      "json": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "future_control",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 3
+      },
+      "expect": {
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "future_control",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 3
+      },
+      "kit": {
+        "kind": "future_control",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "seq": 3,
+        "epoch": null,
+        "target": null,
+        "by": null,
+        "at": null,
+        "reason": null,
+        "retry_after_s": null,
+        "record_name": "c-DDDDDDDD-0000-4000-8000-000000000004"
+      }
     }
   ]
 }
