@@ -38,7 +38,7 @@ PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS)"
 
-.PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check relay-go relay-interop
+.PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check relay-go relay-interop hub-smoke
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -344,6 +344,14 @@ relay-go:
 # warns when a git checkout is not at the vendored client's pin.
 relay-interop:
 	bash scripts/relay-interop.sh "$(RELAY)"
+
+# The headless hub smoke test (cmd/hub_headless_smoke_test.go, build tag
+# smoke): builds the binary, runs `sync --daemon` against an in-process fake
+# relay and session host, pairs a Go phone from the terminal-free `hub pair`
+# stream, starts a stub claude session and types one line into it. Live mode
+# on Linux, the test workspace mode on darwin. CI runs it on amd64 and arm64.
+hub-smoke:
+	go test -tags smoke ./cmd -run TestHeadlessSmoke -timeout 5m
 
 # Installs the repo's git hooks (scripts/git-hooks: pre-push runs leak-check)
 # for every worktree of this clone. Run once per clone.
