@@ -1,6 +1,6 @@
 # Go hub — one phone hub for the Mac and headless hosts (Linux, a headless host, a Mac without the app), over the relay and CloudKit
 
-**Status:** draft · **Date:** 2026-10-31 · **Owner decisions:** asks #709, #711, #713, #800, #801, #802
+**Status:** draft · **Date:** 2026-10-31 · **Owner decisions:** asks #709, #711, #713, #800, #801, #802, #827
 **Adapts:** [relay client design](2026-10-29-relay-client-design.md) (branch `feature/relay-client`, approved in ask #799; below: "relay client spec"). That spec's **hub half moves here and is implemented in Go**; its phone and Kit half stays there unchanged (§2).
 **Server contract:** `aiwatchtowers/relay` — [relay spec](https://github.com/aiwatchtowers/relay/blob/main/docs/superpowers/specs/2026-10-28-relay-design.md), the Cloudflare design, the App Attest design, `proto/relay/v1/relay.proto`, `proto/README.md`, `sim/README.md` ("sim rule N"), `docs/watchtower-client-requirements.md`.
 **E2E format:** [mobile E2E research](2026-10-12-mobile-e2e-encryption-research.md) and the Kit's `WatchtowerSync/Secure`.
@@ -118,8 +118,8 @@ Only phones attest with App Attest. **Every hub — desktop or headless — is a
 
 - A headless hub runs relay-only. The transport switch toward CloudKit is not offered for it (the phone hides it for a hub whose `device_grant` says `transports: [relay]`), and `entitlement_expired` leaves it with no transport: it keeps working locally, stops publishing, and the phone shows "This hub needs Relay" for it. The hub keeps its state and resumes when a paying phone is back.
 - A free (CloudKit-only) phone cannot link a headless host; linking says so before the QR is scanned.
-- The rule follows the bridge, not the OS: a Mac with only the CLI is a headless host (relay-only, terminal pairing, LaunchAgent); installing the Desktop app later makes it a desktop host: phones linked from then on may use CloudKit too; phones already linked over the relay keep using the relay for this host (they are paying phones; moving one of them to iCloud means linking it again by QR, which also accepts the CloudKit share). No phone has to re-pair for the host to keep working. Its hub identity lives in daemon-owned Keychain items, or the 0600 file under the same rule as §12.2.
-- Differences between hosts, all of them: the CloudKit bridge, recordings (need Desktop's transcriber), owner-away and keep-awake (darwin only; on Linux owner-away = always away), `.copied` clipboard fallback (desktop hosts only), `clonefile` (darwin, plain copy on Linux), service manager (launchd vs systemd), key store (Keychain vs 0600 file). The rest of the hub is one code path.
+- A Mac with only the CLI is a headless host: the same headless build for darwin (relay-only, terminal pairing, a LaunchAgent instead of systemd), its hub identity in the 0600 file in the hub state dir (phase 3 may move it into daemon-owned Keychain items under §12.2's rule). The live hub refuses to start on a Mac that has the Desktop app bundle or a `MobileHub/` dir — one check at start, reason `desktop_host`; nothing more: no stop or hand-over when the Desktop app is installed later (ask #827).
+- Differences between hosts, all of them: the CloudKit bridge, recordings (need Desktop's transcriber), owner-away and keep-awake (darwin only; on Linux owner-away = always away), `.copied` clipboard fallback (desktop hosts only), `clonefile` (darwin, plain copy on Linux), service manager (launchd vs systemd), key store (Keychain vs 0600 file). On Linux the `session-host` socket lives in `$XDG_RUNTIME_DIR` (fallback `<data root>/.run`, 0700), never the shared `/tmp`, and the daemon starts `session-host` as its own transient systemd user unit so a daemon restart keeps sessions — the PROJ-20 amendment, Linux only, approved in ask #827. The rest of the hub is one code path.
 
 ## 8. Actions (RC §5, hub side)
 
@@ -268,6 +268,10 @@ Package layout under `internal/hub`, the bridge's frame schema, the systemd unit
 - Desktop's local-PTY fallback (terminal inside the app when `session-host` is unavailable) is removed; every session on every host runs in `session-host`; PROJ-20 amended — owner, conversation 2026-10-31 and ask #811 (done separately as board #1281)
 - Hub keys on the Mac in daemon-owned Keychain items; if that fails without prompts, a 0600 file as on a headless host; the bridge never holds keys — ask #807
 - E2E is the red line: vectors, plaintext canaries on everything leaving the hub, one sealing choke point, two-way Kit interop — ask #807
+- CLI-only Mac = the headless build for darwin; the live hub refuses on a Mac with Desktop, nothing more — ask #827, conversation
+- On Linux the `session-host` socket is in `$XDG_RUNTIME_DIR` (fallback `<data root>/.run`) and `session-host` runs as its own transient systemd user unit; PROJ-20 amended for Linux only — ask #827
+- On a headless host the owner verbs go through `watchtower hub …`, confirmed by the terminal (a TTY and no agent marker); a thin management CLI for a headless Watchtower comes later — ask #827
+- Whether a hub can record is a simple on/off capability defined by the separate phone ↔ hub protocol document, approved by the owner on its own; until then a hub without a transcriber answers `failed(not_supported)` — ask #827, conversation
 Author's decisions, for the owner's approval in the review (each marked "my call" in the text):
 - The hub runs in the daemon of the active workspace; a workspace switch stops it there and starts it in the new daemon (§4).
 - The daemon may start `session-host` itself (headless hosts always; the Mac when Desktop is closed); Desktop attaches to the same host (§4).
@@ -279,7 +283,6 @@ Author's decisions, for the owner's approval in the review (each marked "my call
 - A headless hub without a paying phone has no transport: it keeps working locally, stops publishing, the phone shows "This hub needs Relay" (§7.3).
 - Typed-never-submitted delivery and prompt state move into `session-host`; Desktop's composer and the hub use one `Deliver` path (§8 p. 4b); PROJ-12 re-pointed to it with the same meaning — ask #812.
 - `session-host` protocol v2 for `Deliver`; no transition code: at the Go-hub release live sessions on a v1 host restart once with resume after an in-app **Continue** that comes back until done (v1 client, every scope, drop-then-signal so no cleanup, restart list, resumable, other workspaces flagged in the switcher; the daemon waits only while a v1 host answers) (§8 p. 4b) — owner, asks #813, #814 (one-time PROJ-20 exception accepted).
-- A CLI-only Mac that later gets the Desktop app offers CloudKit only to phones linked after that; relay-linked phones stay on the relay for it (§7.3).
 - Adoption runs once per Mac; a `MobileHub/` recreated by a downgraded app is never imported later (§12.1).
 - Mockups for every new or changed screen before its UI task (§12.4).
 - `Deliver` gains `hold_if_prompt_text` (host-decided `held(prompt_has_text)` for phone lines) and the `no_paste_mode` outcome; desktop host = fresh `hub desktop heartbeat`; a headless host answers recordings `failed(not_supported)`; new sidecar columns carry no content; owner stops carry `requested: true` (no cleanup); a failed start keeps its worktree (§8 p. 4a/4b, §11).
