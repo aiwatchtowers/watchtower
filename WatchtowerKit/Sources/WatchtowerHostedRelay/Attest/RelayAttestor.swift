@@ -38,6 +38,7 @@ public actor RelayAttestor {
 
     private let attest: any AppAttesting
     private let keys: any AppAttestKeyStore
+    /// Reserved for the client's retry loop; required by the init.
     private let clock: any RelayClock
     /// Transient failures since the last success; drives `backoff(failures:)`.
     private var failures = 0

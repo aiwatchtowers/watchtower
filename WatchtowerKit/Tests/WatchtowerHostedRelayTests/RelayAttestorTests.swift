@@ -131,6 +131,18 @@ final class RelayAttestorTests: XCTestCase {
         XCTAssertEqual(fake3.calls, ["generateKey", "attestKey", "generateKey", "attestKey"])
     }
 
+    func testAssertionServerUnavailableKeepsKeyAndBacksOff() async throws {
+        let fake = FakeAppAttest()
+        let old = fake.makeKeyID()
+        let keys = InMemoryAppAttestKeyStore(keyID: old)
+        fake.script(.generateAssertion, failures: [.serverUnavailable])
+        let attestor = makeAttestor(fake, keys: keys)
+        await assertThrows(.retryLater(after: .seconds(1))) { _ = try await attestor.loginAttestation(clientDataHash: self.loginHash) }
+        let stored = try await storedKey(keys)
+        XCTAssertEqual(stored, old)
+        XCTAssertEqual(fake.calls, ["generateAssertion"])
+    }
+
     func testLoginWithoutAStoredKeyAttestsAfresh() async throws {
         let fake = FakeAppAttest()
         let keys = InMemoryAppAttestKeyStore()
