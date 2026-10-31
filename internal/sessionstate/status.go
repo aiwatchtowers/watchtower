@@ -107,6 +107,16 @@ func Resolve(r Row, now time.Time) State {
 // mark), so a permission prompt on screen would show as needs_approval.
 func HooksReported(r Row) bool { return r.RunStartedAt != "" && (trustedHook(r) != "" || runMarked(r)) }
 
+// TrustedHookAt is SessionAgentStatus.at: the agent_state_at of the hook
+// state Resolve trusts (a known state written during the current run); ""
+// when it trusts none.
+func TrustedHookAt(r Row) string {
+	if trustedHook(r) == "" {
+		return ""
+	}
+	return *r.AgentStateAt
+}
+
 // IsIdle mirrors SessionControl.isIdle: the agent is idle for the current run
 // when the session is live and either a hook state of this run says its turn
 // ended (stopped, finished, waiting_for_you, ready_to_check, error) or the run
