@@ -24,6 +24,7 @@ import (
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay"
+	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy"
 )
@@ -94,6 +95,10 @@ type hubRuntime struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	watched map[string]bool // zones subscribed (worker only)
+	// subRetry backs off a zone whose subscription the relay refused, and
+	// admitted is the admission the last link upkeep saw (worker only).
+	subRetry map[string]*subRetry
+	admitted bool
 
 	passKick, linkKick, houseKick chan struct{}
 
@@ -136,13 +141,22 @@ func (o Options) relayTransport(ctx context.Context, id identity.Identity, st *s
 	if err := os.MkdirAll(assets, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: creating the asset dir: %w", ErrStartFailed, err)
 	}
-	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth), relay.Options{
-		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets,
+	var opts []client.Option
+	if o.httpClient != nil {
+		opts = append(opts, client.WithHTTPClient(o.httpClient))
+	}
+	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth, opts...), relay.Options{
+		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets, HTTP: o.httpClient,
 	})
 	if len(zones) == 0 {
 		return t, nil
 	}
-	if err := t.Connect(ctx, zones); err != nil {
+	// The relay refuses a subscription to the hub's own zones (FORBIDDEN)
+	// until a phone holds the hub in a slot, and Connect subscribes all or
+	// none: connect with none, so a hub not paired yet still gets
+	// PAIRING_OPENED, and the link upkeep subscribes each zone (WatchZone),
+	// retrying a refused one on its timer.
+	if err := t.Connect(ctx, nil); err != nil {
 		_ = t.Close()
 		return nil, err
 	}
@@ -167,7 +181,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		return nil, err
 	}
 	h := &hubRuntime{
-		sup: s, st: st, mode: mode, name: name, id: id, watched: map[string]bool{},
+		sup: s, st: st, mode: mode, name: name, id: id, watched: map[string]bool{}, subRetry: map[string]*subRetry{},
 		passKick: make(chan struct{}, 1), linkKick: make(chan struct{}, 1), houseKick: make(chan struct{}, 1),
 	}
 	ok := false
@@ -197,8 +211,11 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
 	}
-	for _, z := range zones {
-		h.watched[z] = true
+	if _, ok := h.tr.(zoneWatcher); !ok {
+		// A transport that sends every zone's events (memfake).
+		for _, z := range zones {
+			h.watched[z] = true
+		}
 	}
 
 	sealer := secure.NewSealer(h.kr)
@@ -363,7 +380,7 @@ func (h *hubRuntime) setUnreachable(v bool) {
 func (h *hubRuntime) work(ctx context.Context) {
 	passes := time.NewTicker(h.sup.o.passEvery)
 	defer passes.Stop()
-	links := time.NewTicker(linkEvery)
+	links := time.NewTicker(h.sup.o.linkEvery)
 	defer links.Stop()
 	house := time.NewTicker(houseEvery)
 	defer house.Stop()
@@ -392,6 +409,13 @@ func (h *hubRuntime) work(ctx context.Context) {
 // onEvent handles one transport event.
 func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 	switch {
+	case ev.Err != nil && ev.Zone != "":
+		// The relay dropped this zone's subscription (refused on a
+		// resubscribe): the link upkeep subscribes it again.
+		log.Printf("hub: the %s subscription dropped (%s): subscribed again", zoneKind(ev.Zone, h.data), errClass(ev.Err))
+		delete(h.watched, ev.Zone)
+		delete(h.subRetry, ev.Zone)
+		h.kick(h.linkKick)
 	case ev.Err != nil:
 		log.Printf("hub: transport event: %s", errClass(ev.Err))
 		h.setUnreachable(true)
@@ -471,23 +495,76 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 		}
 	}
 	if zw, ok := h.tr.(zoneWatcher); ok {
-		zones, err := h.zones()
-		if err != nil {
-			log.Printf("hub: reading the linked phones failed (%s)", errClass(err))
-		}
-		for _, z := range zones {
-			if h.watched[z] {
-				continue
-			}
-			if err := zw.WatchZone(ctx, z); err != nil {
-				log.Printf("hub: a mailbox not subscribed (%s): retried", errClass(err))
-				continue
-			}
-			h.watched[z] = true
-		}
+		h.watchZones(ctx, zw)
 	}
 	h.pass(ctx)
 	h.sup.poke()
+}
+
+// subRetry is one refused zone subscription: how often it failed in a row
+// and when the next attempt is due.
+type subRetry struct {
+	fails int
+	next  time.Time
+}
+
+// maxSubBackoff caps the wait between attempts to subscribe a refused zone.
+const maxSubBackoff = houseEvery
+
+// zoneKind names a zone in a log line (never its id).
+func zoneKind(zone, data string) string {
+	switch {
+	case zone == data:
+		return "data zone"
+	case strings.HasPrefix(zone, transport.PairZone("")):
+		return "pair zone"
+	default:
+		return "mailbox"
+	}
+}
+
+// watchZones subscribes the hub's zones not subscribed yet. The relay
+// refuses them (FORBIDDEN) until a phone holds the hub in a slot: a refused
+// zone waits linkEvery, doubling up to maxSubBackoff, and is logged once
+// until it succeeds; the hub becoming admitted (promote_pairing, which
+// sends the hub no event) clears the waits. A subscription that takes means
+// the relay is reachable.
+func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
+	if a, ok := h.tr.(admission); ok {
+		admitted := a.Admitted()
+		if admitted && !h.admitted {
+			clear(h.subRetry)
+		}
+		h.admitted = admitted
+	}
+	zones, err := h.zones()
+	if err != nil {
+		log.Printf("hub: reading the linked phones failed (%s)", errClass(err))
+	}
+	now := h.sup.o.Clock()
+	for _, z := range zones {
+		if h.watched[z] {
+			continue
+		}
+		r := h.subRetry[z]
+		if r != nil && now.Before(r.next) {
+			continue
+		}
+		if err := zw.WatchZone(ctx, z); err != nil {
+			if r == nil {
+				r = &subRetry{}
+				h.subRetry[z] = r
+				log.Printf("hub: the %s not subscribed (%s): retried with backoff", zoneKind(z, h.data), errClass(err))
+			}
+			r.fails++
+			wait := h.sup.o.linkEvery << min(r.fails-1, 10)
+			r.next = now.Add(min(wait, maxSubBackoff))
+			continue
+		}
+		delete(h.subRetry, z)
+		h.watched[z] = true
+		h.setUnreachable(false)
+	}
 }
 
 // housekeeping is the per-cycle upkeep: expired link requests, the epoch's
