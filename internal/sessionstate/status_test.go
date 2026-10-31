@@ -120,3 +120,27 @@ func mustExec(t *testing.T, d *db.DB, q string, args ...any) {
 		t.Fatal(err)
 	}
 }
+
+// TrustedHookAt names the stamp of a known state written during the run, and
+// nothing for an earlier run's state, an unknown value, the run's bare mark or
+// a session that is not live.
+func TestTrustedHookAt(t *testing.T) {
+	s := func(v string) *string { return &v }
+	run := "2026-10-03T12:00:00.000Z"
+	cases := []struct {
+		name string
+		r    Row
+		want string
+	}{
+		{"this run", Row{AgentState: s("working"), AgentStateAt: s("2026-10-03T12:00:01.000Z"), RunStartedAt: run}, "2026-10-03T12:00:01.000Z"},
+		{"earlier run", Row{AgentState: s("working"), AgentStateAt: s("2026-10-03T11:59:59.000Z"), RunStartedAt: run}, ""},
+		{"unknown value", Row{AgentState: s("dialog"), AgentStateAt: s("2026-10-03T12:00:01.000Z"), RunStartedAt: run}, ""},
+		{"mark only", Row{AgentStateAt: s("2026-10-03T12:00:01.000Z"), RunStartedAt: run}, ""},
+		{"not live", Row{AgentState: s("waiting"), AgentStateAt: s("2026-10-03T12:00:01.000Z")}, ""},
+	}
+	for _, c := range cases {
+		if got := TrustedHookAt(c.r); got != c.want {
+			t.Errorf("%s: TrustedHookAt = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
