@@ -147,8 +147,9 @@ func (s *session) wait() *int {
 	return &code
 }
 
-// ownerInput feeds one chunk of client input (an attached client's Input or
-// any client's InputTo) into the prompt state. The caller writes the chunk to
+// ownerInput feeds one chunk of the owner's typing — an attached client's
+// Input, never an InputTo (app writes such as the phone's Interrupt Esc are
+// not the owner's and leave no draft) — into the prompt state. The caller writes the chunk to
 // the PTY after this returns, so a delivery that checks the state under s.mu
 // sees the draft before its bytes land.
 func (s *session) ownerInput(b []byte) {

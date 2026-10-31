@@ -440,8 +440,10 @@ func (s *Server) running(c *conn, op string, row int64, run string, launch uint6
 
 // inputTo writes to a session's PTY without binding the connection: the
 // attached client (if any) keeps its session and sees the echo. The bytes are
-// fed into the prompt state like an attached client's Input. Nothing is
-// answered on success.
+// not the owner's typing (the phone's Interrupt Esc, say), so they never touch
+// the prompt state: only an attached pane's Input does, as Desktop's
+// ownerInput counts only the owner's keystrokes. Nothing is answered on
+// success.
 func (s *Server) inputTo(c *conn, p []byte) {
 	var req InputToReq
 	if err := json.Unmarshal(p, &req); err != nil {
@@ -452,7 +454,6 @@ func (s *Server) inputTo(c *conn, p []byte) {
 	if sess == nil {
 		return
 	}
-	sess.ownerInput(req.Data)
 	if _, err := sess.ptmx.Write(req.Data); err != nil {
 		c.sendError(fmt.Sprintf("input_to: %v", err))
 	}

@@ -287,24 +287,29 @@ func TestDeliverWhileOwnerTypesInAnotherClientLeavesTyped(t *testing.T) {
 	a.outputUntil(func(s string) bool { return strings.Contains(s, "z") })
 }
 
-// Every InputTo is fed into the prompt state like Input (the brief: every
-// byte of input passes through the host); a key there is a draft too.
-func TestInputToFeedsThePromptState(t *testing.T) {
+// InputTo is not the owner's typing (the phone's Interrupt sends its Esc
+// that way, as Desktop writes it past ownerInput today), so it never touches
+// the prompt state; an attached pane's Input keystroke still leaves a draft.
+func TestInputToDoesNotCreateADraft(t *testing.T) {
 	path, srv := startHost(t, Options{})
 	a := dial(t, path)
 	info := a.launchAgent(1, "claude", `exec cat`)
 	sess := hostSession(t, srv, 1)
 	b := dial(t, path)
 
-	b.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: info.Launch, Data: []byte("x")})
+	b.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: info.Launch, Data: []byte{0x1B}})
 	b.expectNoError()
+	if sess.promptHoldsText() {
+		t.Fatal("an InputTo Esc left a draft")
+	}
+	a.typeChunks([]byte("x"))
 	if !sess.promptHoldsText() {
-		t.Fatal("InputTo text left no draft")
+		t.Fatal("an Input keystroke left no draft")
 	}
 	b.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: info.Launch, Data: []byte{0x0D}})
 	b.expectNoError()
-	if sess.promptHoldsText() {
-		t.Fatal("InputTo's Return did not empty the prompt")
+	if !sess.promptHoldsText() {
+		t.Fatal("an InputTo Return cleared the owner's draft")
 	}
 }
 

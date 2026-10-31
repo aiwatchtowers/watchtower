@@ -29,7 +29,8 @@ type promptState struct {
 	ownerReturnInPause bool
 }
 
-// ownerInput feeds one chunk of client input (Input or InputTo) by
+// ownerInput feeds one chunk of the owner's typing (an attached client's
+// Input; InputTo never comes here) by
 // TerminalCenter.ownerInput's rule: input while a permission dialog is up
 // changes nothing; a submitting Return (IsSubmit) empties the prompt; any
 // other input leaves a draft.
