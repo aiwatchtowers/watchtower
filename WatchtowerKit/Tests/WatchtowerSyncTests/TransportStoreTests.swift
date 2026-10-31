@@ -529,6 +529,71 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertFalse(try reopened.adoptScope(.private, hubID: "hub-a"))
     }
 
+    /// Relay client Phase 1 (Task 2): every system-fields write is a new local version of the record, and a
+    /// fetched event names the version its batch stored.
+    func testRecordSeqBumpsWithEachSystemFieldsWrite() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay))
+
+        try store.saveSystemFields(Data("garbage".utf8), recordName: "c-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay)?.changeTag, "no decodable tag")
+
+        try store.bufferFetched(
+            changed: [record("c-1", zone: .relay)],
+            systemFields: [(name: "c-1", zone: .relay, data: Data("again".utf8))],
+            deleted: [:])
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 2)
+        XCTAssertEqual(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, 2)
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.first?.recordSeq, 2)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .data), "zone scoped")
+
+        try store.deleteSystemFields(recordNames: ["c-1"], zone: .relay)
+        XCTAssertNil(try store.recordVersion(recordName: "c-1", zone: .relay))
+        try store.bufferDeleted(recordNames: ["c-1"], zone: .relay)
+        XCTAssertNil(try store.latestEvent(recordName: "c-1", zone: .relay), "a deletion is no current record")
+    }
+
+    func testAStoreFromBeforeRecordSeqOpensWithZero() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+
+        do {
+            let legacy = try DatabaseQueue(path: path)
+            try legacy.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE system_fields (
+                        record_name TEXT NOT NULL,
+                        zone TEXT NOT NULL,
+                        data BLOB NOT NULL,
+                        PRIMARY KEY (record_name, zone)
+                    );
+                    INSERT INTO system_fields (record_name, zone, data) VALUES ('c-1', 'RelayZone', x'00');
+                    CREATE TABLE events (
+                        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                        zone TEXT NOT NULL,
+                        record_name TEXT NOT NULL,
+                        kind TEXT NOT NULL DEFAULT '',
+                        modified_at REAL NOT NULL DEFAULT 0,
+                        payload BLOB,
+                        deleted INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT INTO events (zone, record_name, kind, payload) VALUES ('RelayZone', 'c-1', 'envelope', x'01');
+                    """)
+            }
+        }
+
+        let store = try TransportStore(path: path)
+        let version = try XCTUnwrap(try store.recordVersion(recordName: "c-1", zone: .relay))
+        XCTAssertEqual(version.recordSeq, 0)
+        XCTAssertNil(version.changeTag)
+        XCTAssertNil(try store.latestEvent(recordName: "c-1", zone: .relay)?.recordSeq, "an old event names no version")
+        try store.saveSystemFields(Data("next".utf8), recordName: "c-1", zone: .relay)
+        XCTAssertEqual(try store.recordVersion(recordName: "c-1", zone: .relay)?.recordSeq, 1)
+    }
+
     func testAdoptingABrandNewStoreReportsNoWipe() throws {
         let store = try TransportStore.inMemory()
         XCTAssertFalse(try store.adoptScope(.private, hubID: "hub-a"), "nothing to wipe")
