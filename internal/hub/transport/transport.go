@@ -128,12 +128,16 @@ type Control struct {
 
 // Event is one live event. Zone set means "pull this zone" (it may have
 // changed); Control is a server control; Err is a transport-level failure the
-// runtime should see (the connection is gone, a login failed). Events are
-// best effort: a consumer still pulls on its own backstop timer.
+// runtime should see (the connection is gone, a login failed). Resync marks
+// a zone event that may stand for missed changes (the hosted relay's marker
+// after a reconnect or a folded overflow): the runtime republishes what the
+// phones wait for. Events are best effort: a consumer still pulls on its own
+// backstop timer.
 type Event struct {
 	Zone    string
 	Control *Control
 	Err     error
+	Resync  bool
 }
 
 // Transport is the record store under the sealer.

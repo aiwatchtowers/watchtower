@@ -447,7 +447,7 @@ func TestRelayTransport_ZoneChangedWithoutRecordMeansPull(t *testing.T) {
 	// The client's reconnect marker: a record-less ZoneChanged with seq 0.
 	h.relay.push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{Zone: h.data}}})
 	ev := nextEvent(t, h.tr)
-	if ev.Zone != h.data || ev.Control != nil || ev.Err != nil {
+	if ev.Zone != h.data || ev.Control != nil || ev.Err != nil || !ev.Resync {
 		t.Fatalf("event: %+v", ev)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -460,7 +460,7 @@ func TestRelayTransport_ZoneChangedWithoutRecordMeansPull(t *testing.T) {
 	// A ZoneChanged with a record is a pull too (the record is not trusted as the state).
 	h.relay.push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{
 		Zone: h.data, Seq: 4, Record: &relayv1.Record{Zone: h.data, Name: "n", RecordSeq: 4}}}})
-	if ev := nextEvent(t, h.tr); ev.Zone != h.data {
+	if ev := nextEvent(t, h.tr); ev.Zone != h.data || ev.Resync {
 		t.Fatalf("event: %+v", ev)
 	}
 	// Controls come through, mapped.

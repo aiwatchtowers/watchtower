@@ -39,6 +39,27 @@ func (t *Transport) WatchPairZone(ctx context.Context, slot string) error {
 	return nil
 }
 
+// WatchZone subscribes a mailbox zone of a phone linked after Connect
+// (Connect subscribes the zones it was given), so its records come as zone
+// events; the subscription is renewed after every reconnect. While
+// disconnected it is subscribed on the next connect; nil then. An error
+// before Connect.
+func (t *Transport) WatchZone(ctx context.Context, zone string) error {
+	if zone == "" || isPairZone(zone) {
+		return errors.New("relay: not a mailbox or data zone")
+	}
+	t.mu.Lock()
+	conn := t.conn
+	t.mu.Unlock()
+	if conn == nil {
+		return errors.New("relay: watching a zone before Connect")
+	}
+	if err := conn.Subscribe(ctx, zone); err != nil && !errors.Is(err, client.ErrDisconnected) {
+		return fmt.Errorf("relay: subscribe zone: %w", MapError(err))
+	}
+	return nil
+}
+
 // SetHubReaders names the phones that may read the hub's data zone (their
 // relay_device_ids); the relay replaces the whole set, and refuses all of it
 // (FORBIDDEN) when one phone does not hold the hub in a slot.
