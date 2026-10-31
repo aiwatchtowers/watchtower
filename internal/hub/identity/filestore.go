@@ -61,6 +61,8 @@ func (s FileStore) Load() (Identity, error) {
 	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 {
 		return Identity{}, ErrInsecureMode
 	}
+	// One byte more than a valid file: a longer file reads n == fileLen+1
+	// and is refused as malformed instead of being silently truncated.
 	var buf [fileLen + 1]byte
 	defer clear(buf[:])
 	n, err := io.ReadFull(f, buf[:])

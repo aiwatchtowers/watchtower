@@ -91,8 +91,10 @@ type Keyring struct {
 	now func() time.Time
 	seq *secure.SeqAllocator
 
-	mu    sync.Mutex
-	relay map[secure.ID]*relayMaterial
+	// mu guards relay and unusable; relay material is only read under it.
+	mu       sync.Mutex
+	relay    map[secure.ID]*relayMaterial
+	unusable map[secure.ID]string // last unusable row logged per device
 }
 
 // relayMaterial is one phone's relay inputs, checked once, and the keys
@@ -105,11 +107,15 @@ type relayMaterial struct {
 	keys         map[string][]byte
 }
 
+// wipe zeroes the derived keys and the nonce and drops them, so a stale
+// reference finds nothing rather than zero bytes.
 func (m *relayMaterial) wipe() {
 	for _, k := range m.keys {
 		clear(k)
 	}
 	clear(m.nonce)
+	m.keys, m.nonce, m.peer = nil, nil, nil
+	m.agreementKey, m.linkNonce = nil, ""
 }
 
 // NewKeyring opens the keyring over st, creating in one transaction what is
@@ -123,7 +129,7 @@ func NewKeyring(id Identity, st *state.Store, now func() time.Time) (*Keyring, e
 	if now == nil {
 		now = time.Now
 	}
-	k := &Keyring{id: id, st: st, now: now, relay: map[secure.ID]*relayMaterial{}}
+	k := &Keyring{id: id, st: st, now: now, relay: map[secure.ID]*relayMaterial{}, unusable: map[secure.ID]string{}}
 	err := st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		hubText, ok, err := state.MetaTx(tx, state.MetaHubID)
 		if err != nil {
@@ -370,8 +376,8 @@ func (k *Keyring) KeyboxKeys() (wire.KeyboxKeys, error) {
 // PreviousEpochGrace after it was retired (D10). false for a device without
 // usable relay material.
 func (k *Keyring) AcceptsRelayEpoch(epoch uint32, device secure.ID) (bool, error) {
-	m, err := k.material(device)
-	if err != nil || m == nil {
+	usable, err := k.hasMaterial(device)
+	if err != nil || !usable {
 		return false, err
 	}
 	current, previous, err := k.window()
@@ -385,27 +391,42 @@ func (k *Keyring) AcceptsRelayEpoch(epoch uint32, device secure.ID) (bool, error
 }
 
 // RelayKey is the pairwise relay key for one phone, epoch and direction.
-// The caller owns the returned slice; the cache keeps its own copy.
+// The caller owns the returned slice; the cache keeps its own copy. The
+// material is checked against the row, the key derived or read from the
+// cache and copied out under one hold of k.mu, so a concurrent re-link or
+// removal (which wipes the old material) can never hand out wiped bytes.
 func (k *Keyring) RelayKey(dir secure.Direction, device secure.ID, epoch uint32) ([]byte, error) {
-	m, err := k.material(device)
+	row, ok, err := k.st.Device(device.String())
 	if err != nil {
 		return nil, err
-	}
-	if m == nil {
-		return nil, ErrUnknownDevice
 	}
 	slot := string(dir) + "/" + strconv.FormatUint(uint64(epoch), 10)
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if key, ok := m.keys[slot]; ok {
-		return bytes.Clone(key), nil
+	m := k.materialLocked(device, row, ok)
+	if m == nil {
+		return nil, ErrUnknownDevice
 	}
-	key, err := secure.RelayKey(k.id.Agreement, m.peer, m.nonce, k.hub, device, epoch, dir)
-	if err != nil {
-		return nil, fmt.Errorf("identity: deriving a relay key: %w", err)
+	key, cached := m.keys[slot]
+	if !cached {
+		if key, err = secure.RelayKey(k.id.Agreement, m.peer, m.nonce, k.hub, device, epoch, dir); err != nil {
+			return nil, fmt.Errorf("identity: deriving a relay key: %w", err)
+		}
+	}
+	// Last line of defence: never hand out (or keep) a zeroed key.
+	if len(key) != 32 || allZero(key) {
+		return nil, ErrUnknownDevice
 	}
 	m.keys[slot] = key
 	return bytes.Clone(key), nil
+}
+
+func allZero(b []byte) bool {
+	var acc byte
+	for _, c := range b {
+		acc |= c
+	}
+	return acc == 0
 }
 
 // RelayDevices is every linked phone with usable relay material (the Swift
@@ -416,6 +437,8 @@ func (k *Keyring) RelayDevices() ([]secure.ID, error) {
 	if err != nil {
 		return nil, err
 	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	var out []secure.ID
 	keep := map[secure.ID]bool{}
 	for _, row := range rows {
@@ -424,59 +447,69 @@ func (k *Keyring) RelayDevices() ([]secure.ID, error) {
 			log.Printf("hub: a linked device id is not a UUID")
 			continue
 		}
-		m, err := k.material(id)
-		if err != nil {
-			return nil, err
-		}
-		if m != nil {
+		if k.materialLocked(id, row, true) != nil {
 			out = append(out, id)
 			keep[id] = true
 		}
 	}
-	k.mu.Lock()
-	for id, m := range k.relay {
+	for id := range k.relay {
 		if !keep[id] {
-			m.wipe()
-			delete(k.relay, id)
+			k.dropLocked(id)
 		}
 	}
-	k.mu.Unlock()
 	return out, nil
 }
 
-// material re-reads the device row and returns its cached material, kept
-// when the row's agreement_key and link_nonce are unchanged and rebuilt
-// otherwise; nil when the device is not linked or its row is unusable (a
-// key that does not parse or agree, a nonce that is not base64url).
-func (k *Keyring) material(device secure.ID) (*relayMaterial, error) {
+// hasMaterial re-reads the device row and reports whether it has usable
+// relay material.
+func (k *Keyring) hasMaterial(device secure.ID) (bool, error) {
 	row, ok, err := k.st.Device(device.String())
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	return k.materialLocked(device, row, ok) != nil, nil
+}
+
+// materialLocked returns the device's cached material for its current row
+// (ok false = not linked): kept when the row's agreement_key and link_nonce
+// are unchanged, rebuilt otherwise, nil (and the old entry dropped) when the
+// device is not linked or its row is unusable (a key that does not parse or
+// agree, a nonce that is not base64url). The caller holds k.mu, and the
+// result is used only while it still does.
+func (k *Keyring) materialLocked(device secure.ID, row state.Device, ok bool) *relayMaterial {
 	cached := k.relay[device]
+	if ok && cached != nil && bytes.Equal(cached.agreementKey, row.AgreementKey) && cached.linkNonce == row.LinkNonce {
+		return cached
+	}
+	k.dropLocked(device)
 	if !ok || len(row.AgreementKey) == 0 || row.LinkNonce == "" {
-		if cached != nil {
-			cached.wipe()
-			delete(k.relay, device)
-		}
-		return nil, nil
-	}
-	if cached != nil && bytes.Equal(cached.agreementKey, row.AgreementKey) && cached.linkNonce == row.LinkNonce {
-		return cached, nil
-	}
-	if cached != nil {
-		cached.wipe()
-		delete(k.relay, device)
+		delete(k.unusable, device)
+		return nil
 	}
 	m := k.makeMaterial(row)
 	if m == nil {
-		log.Printf("hub: relay material of device %s is unusable", device)
-		return nil, nil
+		// Logged once per row change, not on every lookup.
+		mark := string(row.AgreementKey) + "\x00" + row.LinkNonce
+		if k.unusable[device] != mark {
+			k.unusable[device] = mark
+			log.Printf("hub: relay material of device %s is unusable", device)
+		}
+		return nil
 	}
+	delete(k.unusable, device)
 	k.relay[device] = m
-	return m, nil
+	return m
+}
+
+// dropLocked wipes and forgets the device's cached material; the caller
+// holds k.mu.
+func (k *Keyring) dropLocked(device secure.ID) {
+	if m := k.relay[device]; m != nil {
+		m.wipe()
+		delete(k.relay, device)
+	}
 }
 
 func (k *Keyring) makeMaterial(row state.Device) *relayMaterial {
@@ -546,9 +579,18 @@ func (k *Keyring) Record(wireName string, sender secure.ID, epoch uint32, seq ui
 // stays readable for PreviousEpochGrace.
 func (k *Keyring) Rotate(r Reason) error { return k.RotateWith(r, nil) }
 
+// ErrSkipRotation is returned by RotateWith's also to end the rotation with
+// nothing written and RotateWith returns nil: Unlink returns it when the
+// device is not linked (the Swift hub's removeDeviceAndRotate returns nil and
+// writes nothing then).
+var ErrSkipRotation = errors.New("identity: rotation skipped")
+
 // RotateWith is Rotate with also run in the same transaction first: an
-// unlink removes the device there, so the device never leaves without the
-// rotation or the other way round. An error from also writes nothing.
+// unlink removes the device there (and writes its revoked row), so the
+// device never leaves without the rotation or the other way round. also
+// must only write through tx and stay short (it holds the write lock).
+// ErrSkipRotation from also writes nothing and returns nil; any other error
+// writes nothing and is returned.
 func (k *Keyring) RotateWith(r Reason, also func(*sql.Tx) error) error {
 	switch r {
 	case ReasonAge, ReasonCap, ReasonUnlink, ReasonManual:
@@ -583,6 +625,9 @@ func (k *Keyring) RotateWith(r Reason, also func(*sql.Tx) error) error {
 		}
 		return state.WipeSliceHashes(tx)
 	})
+	if errors.Is(err, ErrSkipRotation) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

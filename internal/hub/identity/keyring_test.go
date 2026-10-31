@@ -681,3 +681,124 @@ func TestKeyring_ReturnedKeysAreFreshCopies(t *testing.T) {
 		}
 	}
 }
+
+// Review fix: RelayKey against concurrent re-links and removals never hands
+// out a zeroed key or one derived from a wiped nonce (run with -race).
+func TestKeyring_RelayKeyRacesReLinkAndUnlink(t *testing.T) {
+	st := openStore(t)
+	k := newKeyring(t, st, newClock())
+	nonces := [][]byte{run(0xA0, 0xBF), run(0xB0, 0xCF)}
+	dev, phoneKX := linkPhone(t, st, nonces[0])
+	valid := map[string]bool{}
+	for _, n := range nonces {
+		for _, dir := range []secure.Direction{secure.PhoneToHub, secure.HubToPhone} {
+			key, err := secure.RelayKey(phoneKX, k.Agreement().PublicKey(), n, k.HubID(), dev, 1, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			valid[string(key)] = true
+		}
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan string, 8)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			dir := []secure.Direction{secure.PhoneToHub, secure.HubToPhone}[i%2]
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				key, err := k.RelayKey(dir, dev, 1)
+				if errors.Is(err, ErrUnknownDevice) {
+					continue
+				}
+				if err != nil {
+					errs <- err.Error()
+					return
+				}
+				if allZero(key) || !valid[string(key)] {
+					errs <- "RelayKey returned a zeroed or foreign key"
+					return
+				}
+				clear(key) // as the Sealer does
+			}
+		}(i)
+	}
+	for i := 0; i < 200; i++ {
+		if i%3 == 2 {
+			if err := st.WithTx(context.Background(), func(tx *sql.Tx) error {
+				_, err := tx.Exec(`DELETE FROM devices`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			linkPhone(t, st, nonces[i%2])
+		}
+		_, _ = k.RelayDevices()
+		_, _ = k.AcceptsRelayEpoch(1, dev)
+	}
+	close(stop)
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatal(e)
+	}
+}
+
+func TestKeyring_RotateWithSkipWritesNothing(t *testing.T) {
+	st := openStore(t)
+	k := newKeyring(t, st, newClock())
+	err := k.RotateWith(ReasonUnlink, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM hub_epochs`); err != nil {
+			return err
+		}
+		return ErrSkipRotation
+	})
+	if err != nil {
+		t.Fatalf("RotateWith with a skip = %v, want nil", err)
+	}
+	epochs, _ := st.Epochs()
+	if len(epochs) != 1 || epochs[0].Epoch != 1 || epochs[0].RetiredAt != nil {
+		t.Fatalf("a skipped rotation wrote: %+v", epochs)
+	}
+}
+
+func TestKeyring_UnusableRowLoggedOncePerChange(t *testing.T) {
+	sink := logcanary.Capture(t)
+	st := openStore(t)
+	k := newKeyring(t, st, newClock())
+	bad := secure.ID{0x77}
+	link := func(nonce string) {
+		t.Helper()
+		if err := st.WithTx(context.Background(), func(tx *sql.Tx) error {
+			return state.LinkDevice(tx, state.Device{ID: bad.String(), Name: "x", Scope: "private", AgreementKey: []byte{1, 2}, LinkNonce: nonce})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link("AAAA")
+	for i := 0; i < 5; i++ {
+		_, _ = k.RelayKey(secure.HubToPhone, bad, 1)
+	}
+	link("BBBB")
+	_, _ = k.RelayKey(secure.HubToPhone, bad, 1)
+	_, _ = k.RelayKey(secure.HubToPhone, bad, 1)
+	if n := strings.Count(sink.String(), "is unusable"); n != 2 {
+		t.Fatalf("unusable row logged %d times, want 2 (once per change)", n)
+	}
+}
+
+func TestRelayMaterialWipeLeavesNothing(t *testing.T) {
+	m := &relayMaterial{nonce: []byte{1, 2}, keys: map[string][]byte{"p2h/1": {3, 4}}}
+	key, nonce := m.keys["p2h/1"], m.nonce
+	m.wipe()
+	if m.keys != nil || m.nonce != nil || m.peer != nil || !allZero(key) || !allZero(nonce) {
+		t.Fatal("wipe left material reachable")
+	}
+}
