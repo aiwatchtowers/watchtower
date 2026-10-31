@@ -25,8 +25,18 @@ final class SessionHostPathsFixtureTests: XCTestCase {
                 case want
             }
         }
+        /// Machine-dependent: scope(dbPath) == scope(home + homeSuffix).
+        struct Home: Decodable {
+            let dbPath: String
+            let homeSuffix: String
+            enum CodingKeys: String, CodingKey {
+                case dbPath = "db_path"
+                case homeSuffix = "home_suffix"
+            }
+        }
         let socket: [Socket]
         let scope: [Scope]
+        let home: [Home]
     }
 
     func testGoAndSwiftAgreeOnSocketAndScope() throws {
@@ -44,6 +54,11 @@ final class SessionHostPathsFixtureTests: XCTestCase {
         }
         for c in fixture.scope {
             XCTAssertEqual(SessionHostPaths.scope(databasePath: c.dbPath), c.want, c.dbPath)
+        }
+        XCTAssertFalse(fixture.home.isEmpty)
+        for c in fixture.home {
+            XCTAssertEqual(SessionHostPaths.scope(databasePath: c.dbPath),
+                           SessionHostPaths.scope(databasePath: NSHomeDirectory() + c.homeSuffix), c.dbPath)
         }
     }
 }

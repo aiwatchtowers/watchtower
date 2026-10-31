@@ -9,6 +9,14 @@
     {"db_path": "/wt-fixture/acme/./watchtower.db", "want": "c7c13c98dbd3bd43"},
     {"db_path": "/wt-fixture/other/../acme/watchtower.db", "want": "c7c13c98dbd3bd43"},
     {"db_path": "/wt-fixture/acme//watchtower.db", "want": "c7c13c98dbd3bd43"},
-    {"db_path": "/wt-fixture/other/watchtower.db", "want": "9466c38972d9496b"}
+    {"db_path": "/wt-fixture/other/watchtower.db", "want": "9466c38972d9496b"},
+    {"db_path": "/tmp", "want": "e9671acd244849c5"},
+    {"db_path": "/private/tmp", "want": "e9671acd244849c5"},
+    {"db_path": "/private/tmp/", "want": "e9671acd244849c5"},
+    {"db_path": "/private/tmp/wt-fixture-none/watchtower.db", "want": "70773b66d87ded52"}
+  ],
+  "home": [
+    {"db_path": "~/wt-fixture/watchtower.db", "home_suffix": "/wt-fixture/watchtower.db"},
+    {"db_path": "~/", "home_suffix": ""}
   ]
 }

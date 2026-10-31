@@ -130,11 +130,20 @@ func (c *Client) Forget(ctx context.Context, row int64, run string) error {
 
 // Stop asks the host to stop a session and returns once it answered
 // Stopping; the Exit (Requested) follows on the attached clients and in List.
-func (c *Client) Stop(ctx context.Context, r StopReq) error {
-	if _, _, err := c.roundTrip(ctx, Stop, encode(r), Stopping); err != nil {
-		return fmt.Errorf("stop: %w", err)
+// alreadyExited: the run had exited before the request, so the stop did
+// nothing and its exit stays natural.
+func (c *Client) Stop(ctx context.Context, r StopReq) (alreadyExited bool, err error) {
+	_, p, err := c.roundTrip(ctx, Stop, encode(r), Stopping)
+	if err != nil {
+		return false, fmt.Errorf("stop: %w", err)
 	}
-	return nil
+	var m StoppingMsg
+	if len(p) > 0 {
+		if err := json.Unmarshal(p, &m); err != nil {
+			return false, fmt.Errorf("stop: %w", err)
+		}
+	}
+	return m.AlreadyExited, nil
 }
 
 // fireAndSync sends a frame the host answers only on failure, then a List as

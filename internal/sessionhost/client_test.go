@@ -149,8 +149,8 @@ func TestClientLaunchInputStopForget(t *testing.T) {
 		t.Fatal("Forget running: want an error")
 	}
 
-	if err := cl.Stop(ctx, StopReq{Row: 7, Run: "r1", Launch: info.Launch}); err != nil {
-		t.Fatal(err)
+	if already, err := cl.Stop(ctx, StopReq{Row: 7, Run: "r1", Launch: info.Launch}); err != nil || already {
+		t.Fatalf("Stop = %v, %v, want a stop under way", already, err)
 	}
 	var exit ExitMsg
 	if err := json.Unmarshal(pane.expect(Exit), &exit); err != nil {
@@ -163,8 +163,14 @@ func TestClientLaunchInputStopForget(t *testing.T) {
 	if err != nil || len(got) != 1 || !got[0].Exited {
 		t.Fatalf("list = %+v, %v", got, err)
 	}
+	if already, err := cl.Stop(ctx, StopReq{Row: 7, Run: "r1", Launch: info.Launch}); err != nil || !already {
+		t.Fatalf("Stop of an exited run = %v, %v, want already exited", already, err)
+	}
 	if err := cl.Forget(ctx, 7, "r1"); err != nil {
 		t.Fatal(err)
+	}
+	if already, err := cl.Stop(ctx, StopReq{Row: 7, Run: "r1", Launch: info.Launch}); err == nil || already {
+		t.Fatalf("Stop after forget = %v, %v, want no session", already, err)
 	}
 	if got, err := cl.List(ctx); err != nil || len(got) != 0 {
 		t.Fatalf("list after forget = %+v, %v", got, err)
@@ -227,5 +233,59 @@ func TestEnsureStartsAHostWhenNoneAnswers(t *testing.T) {
 	// A second Ensure finds it answering and starts nothing.
 	if err := Ensure(ctx, path, "/nonexistent/watchtower"); err != nil {
 		t.Fatalf("Ensure with a live v2 host = %v", err)
+	}
+}
+
+// A cancel while the request is in flight (the host never answers) ends the
+// call with ctx.Err() and closes the connection, which the host sees.
+func TestClientCancelMidCallClosesTheConnection(t *testing.T) {
+	path := socketPath(t)
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	gotRequest := make(chan struct{})
+	hostSawClose := make(chan struct{})
+	go func() {
+		nc, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = nc.Close() }()
+		if _, _, err := ReadFrame(nc); err != nil { // Hello
+			return
+		}
+		_ = WriteFrame(nc, HelloOK, encode(HelloMsg{Version: ProtocolVersion, Pid: 1}))
+		if _, _, err := ReadFrame(nc); err != nil { // the List, never answered
+			return
+		}
+		close(gotRequest)
+		_ = nc.SetReadDeadline(time.Now().Add(ioTimeout))
+		if _, _, err := ReadFrame(nc); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+			close(hostSawClose)
+		}
+	}()
+
+	cl, err := Dial(ctxT(t), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cl.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-gotRequest
+		cancel()
+	}()
+	if _, err := cl.List(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("List cancelled mid-call = %v, want context.Canceled", err)
+	}
+	select {
+	case <-hostSawClose:
+	case <-time.After(ioTimeout):
+		t.Fatal("the host never saw the connection close")
+	}
+	if _, err := cl.List(ctxT(t)); err == nil {
+		t.Fatal("a call after a mid-call cancel succeeded on an out-of-step connection")
 	}
 }

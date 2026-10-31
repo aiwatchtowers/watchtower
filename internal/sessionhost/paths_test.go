@@ -3,6 +3,7 @@ package sessionhost
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -16,6 +17,12 @@ type pathsFixture struct {
 		DBPath string `json:"db_path"`
 		Want   string `json:"want"`
 	} `json:"scope"`
+	// Home cases depend on the machine's home folder: the scope of db_path
+	// must equal the scope of home + home_suffix.
+	Home []struct {
+		DBPath     string `json:"db_path"`
+		HomeSuffix string `json:"home_suffix"`
+	} `json:"home"`
 }
 
 // TestPathsFixture pins SocketPath and Scope to testdata/paths.json, which
@@ -29,7 +36,7 @@ func TestPathsFixture(t *testing.T) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Socket) == 0 || len(f.Scope) == 0 {
+	if len(f.Socket) == 0 || len(f.Scope) == 0 || len(f.Home) == 0 {
 		t.Fatal("fixture has no cases")
 	}
 	for _, c := range f.Socket {
@@ -40,6 +47,18 @@ func TestPathsFixture(t *testing.T) {
 	for _, c := range f.Scope {
 		if got := Scope(c.DBPath); got != c.Want {
 			t.Errorf("Scope(%q) = %q, want %q", c.DBPath, got, c.Want)
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.Home {
+		if got, want := Scope(c.DBPath), Scope(home+c.HomeSuffix); got != want {
+			t.Errorf("Scope(%q) = %q, want the scope of home%s %q", c.DBPath, got, c.HomeSuffix, want)
+		}
+		if Scope(c.DBPath) == Scope(filepath.Join(os.TempDir(), c.DBPath)) {
+			t.Errorf("Scope(%q) did not expand the home folder", c.DBPath)
 		}
 	}
 }

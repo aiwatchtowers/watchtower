@@ -29,16 +29,40 @@ func SocketPath(bundleID, tempDir string) string {
 }
 
 // Scope is a workspace's session host scope: the first 16 hex of SHA-256 of
-// its database path, made absolute and cleaned. Swift twin:
-// SessionHostPaths.scope, whose standardizing also drops a leading /private
-// of an existing path and expands ~; workspace database paths have neither.
+// its standardized database path. Swift twin: SessionHostPaths.scope over
+// URL(fileURLWithPath:).standardizedFileURL, whose rules this repeats
+// (testdata/paths.json pins both): a leading "~/" is the home folder (a bare
+// "~" is a file of that name in the working folder, as in Foundation),
+// the path is made absolute and cleaned, and a leading /private/var/automount,
+// /var/automount or /private is dropped when what remains exists.
 func Scope(dbPath string) string {
-	p, err := filepath.Abs(dbPath)
-	if err != nil {
-		p = filepath.Clean(dbPath)
-	}
-	sum := sha256.Sum256([]byte(p))
+	sum := sha256.Sum256([]byte(standardizePath(dbPath)))
 	return hex.EncodeToString(sum[:8])
+}
+
+// standardizePath mirrors Foundation's path standardizing (see Scope).
+// "~user" forms are not expanded (Foundation would; no workspace uses one).
+func standardizePath(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			p = home + p[1:]
+		}
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = filepath.Clean(p)
+	}
+	for _, prefix := range []string{"/private/var/automount", "/var/automount", "/private"} {
+		rest, ok := strings.CutPrefix(abs, prefix)
+		if !ok || !strings.HasPrefix(rest, "/") {
+			continue
+		}
+		if _, err := os.Stat(rest); err == nil {
+			return rest
+		}
+		break
+	}
+	return abs
 }
 
 // DefaultSocket is the host socket: SocketEnv when set, else the shared

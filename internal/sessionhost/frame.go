@@ -155,6 +155,12 @@ type PromptHintMsg struct {
 	Dialog bool   `json:"dialog"`
 }
 
+// StoppingMsg is the payload of a Stopping frame. AlreadyExited: the run had
+// already exited, nothing was signalled, and its Exit carries no Requested.
+type StoppingMsg struct {
+	AlreadyExited bool `json:"already_exited,omitempty"`
+}
+
 // StopReq asks the host to stop a session: SIGHUP to its process group, then
 // SIGKILL after stopGrace. The run's Exit then carries Requested.
 type StopReq struct {

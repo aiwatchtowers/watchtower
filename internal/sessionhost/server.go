@@ -64,6 +64,11 @@ type Options struct {
 	RingSize int
 	// Now is the clock for session start times.
 	Now func() time.Time
+	// signalGroup replaces Stop's process-group signal (tests only).
+	signalGroup func(pgid int, sig syscall.Signal) error
+	// afterReap runs once a child is reaped, before its output drains and
+	// its exit is recorded (tests only: holds the drain window open).
+	afterReap func()
 }
 
 // Server owns hosted sessions and serves clients over a listener.
@@ -375,6 +380,10 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 		c.sendError(err.Error())
 		return nil
 	}
+	if s.opts.signalGroup != nil {
+		sess.signal = s.opts.signalGroup
+	}
+	sess.afterReap = s.opts.afterReap
 	s.launches[req.Row] = launch
 	s.sessions[key] = sess
 	if !req.Detach {
@@ -466,7 +475,8 @@ func (s *Server) promptHint(c *conn, p []byte) {
 
 // stop answers Stopping once the session's group was signalled; the Exit
 // follows on the attached connection and in List. A run that already exited
-// is answered Stopping too (nothing left to stop).
+// is answered Stopping{already_exited: true}: nothing was signalled and its
+// Exit carries no Requested.
 func (s *Server) stop(c *conn, p []byte) {
 	var req StopReq
 	if err := json.Unmarshal(p, &req); err != nil {
@@ -482,11 +492,12 @@ func (s *Server) stop(c *conn, p []byte) {
 		c.sendError(fmt.Sprintf("stop: session row %d run %q is launch %d, not %d", req.Row, req.Run, sess.launch, req.Launch))
 		return
 	}
-	if err := sess.stop(); err != nil {
+	already, err := sess.stop()
+	if err != nil {
 		c.sendError(err.Error())
 		return
 	}
-	c.send(Stopping, nil)
+	c.send(Stopping, encode(StoppingMsg{AlreadyExited: already}))
 }
 
 // watch records the child's exit and delivers it to a bound connection.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -221,5 +222,106 @@ func TestNaturalExitHasNoRequested(t *testing.T) {
 	}
 	if code, _ := raw["code"].(float64); code != 3 {
 		t.Fatalf("natural exit = %s, want code 3", p)
+	}
+}
+
+func TestHelloBelowMinimumVersionCloses(t *testing.T) {
+	path := startServer(t, Options{})
+	c := dialRaw(t, path)
+	c.send(Hello, HelloMsg{Version: 0})
+	if ft, _ := c.read(); ft != Error {
+		t.Fatalf("hello v0 reply = %#x, want Error", ft)
+	}
+	if _, _, err := c.readErr(); err == nil {
+		t.Fatal("connection still open after a v0 hello")
+	}
+}
+
+// readExit reads frames on c until an Exit and decodes it.
+func (c *client) readExit(within time.Duration) (ExitMsg, []byte) {
+	c.t.Helper()
+	_ = c.nc.SetReadDeadline(time.Now().Add(within))
+	for {
+		ft, p, err := ReadFrame(c.nc)
+		if err != nil {
+			c.t.Fatalf("read exit: %v", err)
+		}
+		if ft == Exit {
+			var m ExitMsg
+			if err := json.Unmarshal(p, &m); err != nil {
+				c.t.Fatal(err)
+			}
+			return m, p
+		}
+	}
+}
+
+func (c *client) stopping() StoppingMsg {
+	c.t.Helper()
+	var m StoppingMsg
+	if err := json.Unmarshal(c.expect(Stopping), &m); err != nil {
+		c.t.Fatal(err)
+	}
+	return m
+}
+
+// A Stop that lands after the child was reaped but before its exit is
+// recorded (the output drain) finds the exit natural: Stopping says
+// already_exited and the Exit has no requested. The afterReap hook holds
+// the window open until the Stop was answered.
+func TestStopDuringDrainKeepsTheExitNatural(t *testing.T) {
+	reaped := make(chan struct{})
+	release := make(chan struct{})
+	path := startServer(t, Options{afterReap: func() {
+		close(reaped)
+		<-release
+	}})
+	a := dial(t, path)
+	// The background sleep ignores SIGHUP and keeps the process group
+	// alive, so a SIGHUP in the window would be delivered (and wrongly
+	// mark the run); a.launch's cleanup kills the group.
+	info := a.launch(1, `trap '' HUP; sleep 30 & exit 0`)
+	select {
+	case <-reaped:
+	case <-time.After(ioTimeout):
+		t.Fatal("child not reaped")
+	}
+
+	b := dial(t, path)
+	b.send(Stop, StopReq{Row: 1, Run: "r1", Launch: info.Launch})
+	m := b.stopping()
+	close(release)
+	if !m.AlreadyExited {
+		t.Fatalf("stopping = %+v, want already_exited", m)
+	}
+	exit, raw := a.readExit(ioTimeout)
+	if exit.Requested {
+		t.Fatalf("exit = %s, want a natural exit", raw)
+	}
+	// After the Exit, a Stop still says the run had exited.
+	b.send(Stop, StopReq{Row: 1, Run: "r1", Launch: info.Launch})
+	if m := b.stopping(); !m.AlreadyExited {
+		t.Fatalf("stopping after exit = %+v, want already_exited", m)
+	}
+}
+
+// A SIGHUP that cannot be delivered is an Error and leaves the run
+// unmarked: its later exit is natural.
+func TestStopSignalFailureLeavesRequestedUnset(t *testing.T) {
+	path := startServer(t, Options{signalGroup: func(int, syscall.Signal) error { return syscall.EPERM }})
+	a := dial(t, path)
+	info := a.launch(1, `echo ready; sleep 30`)
+	a.outputUntil(func(s string) bool { return strings.Contains(s, "ready") })
+
+	b := dial(t, path)
+	b.send(Stop, StopReq{Row: 1, Run: "r1", Launch: info.Launch})
+	if msg := errMsg(t, b.expect(Error)); !strings.Contains(msg, "signal group") {
+		t.Fatalf("stop with EPERM = %q", msg)
+	}
+	if err := syscall.Kill(-info.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if exit, raw := a.readExit(ioTimeout); exit.Requested {
+		t.Fatalf("exit = %s, want no requested after a failed stop", raw)
 	}
 }
