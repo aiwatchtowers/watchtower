@@ -293,6 +293,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	}
 	pub = slices.NewPublisher(slices.Config{
 		Store: st, Transport: h.tr, Sealer: sealer, DataZone: h.data, Sources: srcs, Clock: o.Clock,
+		OnError: h.observe,
 		Linked: func() (bool, error) {
 			devices, err := st.Devices()
 			return len(devices) > 0, err

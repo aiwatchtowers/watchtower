@@ -122,6 +122,7 @@ type watchRig struct {
 	changes chan bool
 	mu      sync.Mutex
 	st      *relayv1.AccountState
+	err     error // every read fails with it while set
 }
 
 func newWatchRig(t *testing.T, st *relayv1.AccountState) *watchRig {
@@ -129,9 +130,12 @@ func newWatchRig(t *testing.T, st *relayv1.AccountState) *watchRig {
 	r := &watchRig{clock: newPayClock(), reads: make(chan time.Time, 16), changes: make(chan bool, 16), st: st}
 	r.w = NewPayingWatch(func(context.Context) (*relayv1.AccountState, error) {
 		r.mu.Lock()
-		st := r.st
+		st, err := r.st, r.err
 		r.mu.Unlock()
 		r.reads <- r.clock.Now()
+		if err != nil {
+			return nil, err
+		}
 		return st, nil
 	})
 	r.w.timer = r.clock.Timer
@@ -151,6 +155,66 @@ func (r *watchRig) set(st *relayv1.AccountState) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.st = st
+}
+
+func (r *watchRig) fail(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.err = err
+}
+
+// A paying hub re-reads its account state every NeedsRelayPoll too, so an
+// entitlement lost without a control still pauses it.
+func TestPayingHubRereadsTheAccountStateEvery5Min(t *testing.T) {
+	r := newWatchRig(t, onePaying())
+	start := r.nextRead(t)
+	if !r.nextChange(t) {
+		t.Fatal("one paying phone reported not paying")
+	}
+	if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
+		t.Fatalf("poll armed for %v while paying, want %v", d, NeedsRelayPoll)
+	}
+	r.set(notPaying())
+	r.clock.Advance(NeedsRelayPoll)
+	if at := r.nextRead(t); at.Sub(start) != NeedsRelayPoll {
+		t.Fatalf("read at %v, want %v", at.Sub(start), NeedsRelayPoll)
+	}
+	if r.nextChange(t) {
+		t.Fatal("the lost entitlement did not end paying")
+	}
+}
+
+// A recheck that fails (after ENTITLEMENT_EXPIRED) is retried after
+// ReadRetryFirst, doubling, until a read succeeds: the hub never stays
+// unpaused on a transient error.
+func TestFailedRecheckIsRetried(t *testing.T) {
+	r := newWatchRig(t, onePaying())
+	r.nextRead(t)
+	r.nextChange(t)
+	r.clock.waitArmed(t)
+	r.fail(transport.ErrUnavailable)
+	r.set(notPaying())
+	r.w.Observe(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}}, nil)
+	r.nextRead(t)
+	for _, want := range []time.Duration{ReadRetryFirst, 2 * ReadRetryFirst} {
+		if d := r.clock.waitArmed(t); d != want {
+			t.Fatalf("retry armed for %v, want %v", d, want)
+		}
+		r.clock.Advance(want)
+		r.nextRead(t)
+	}
+	r.fail(nil)
+	if d := r.clock.waitArmed(t); d != 4*ReadRetryFirst {
+		t.Fatalf("retry armed for %v, want %v", d, 4*ReadRetryFirst)
+	}
+	r.clock.Advance(4 * ReadRetryFirst)
+	r.nextRead(t)
+	if r.nextChange(t) {
+		t.Fatal("the retried read did not end paying")
+	}
+	if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
+		t.Fatalf("after a good read the poll is %v, want %v", d, NeedsRelayPoll)
+	}
 }
 
 func (r *watchRig) nextRead(t *testing.T) time.Time {
@@ -673,4 +737,35 @@ func TestRelayOnlyRulesNeedTheAccountState(t *testing.T) {
 	o.RelayOnlyRules = true
 	r.start(o)
 	r.waitState(StateStarting, ReasonStartFailed)
+}
+
+// askSource is an owner_ask slice whose payload the test changes.
+type askSource struct{ v atomic.Int32 }
+
+func (*askSource) Kind() hubslices.Kind { return "owner_ask" }
+func (s *askSource) Items(context.Context) ([]hubslices.Item, error) {
+	return []hubslices.Item{{ID: "1", Payload: fmt.Appendf(nil, `{"v":%d}`, s.v.Load())}}, nil
+}
+
+// A publisher save refused with ENTITLEMENT_INACTIVE re-reads the account
+// state at once (no poll fires): the hub pauses.
+func TestPublisherSaveInactiveRereadsAtOnce(t *testing.T) {
+	src := &askSource{}
+	r := startRelayOnly(t, true, onePaying(), true, func(o *Options) {
+		o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{src} }
+	})
+	r.waitState(StateRunning, "")
+	eventually(t, 10*time.Second, "the first publish", func() bool {
+		return len(liveRecords(t, r.fake, r.dataZone())) >= 2
+	})
+	r.settled()
+	reads := r.fake.AccountStateReads()
+	r.fake.SetAccountState(notPaying())
+	r.fake.FailNext("save", fmt.Errorf("relay: %w", transport.ErrEntitlementInactive))
+	src.v.Add(1)
+	r.fake.SendEvent(transport.Event{Zone: r.dataZone(), Resync: true}) // owner_ask is urgent
+	r.waitState(StatePaused, ReasonNeedsRelay)
+	if r.fake.AccountStateReads() <= reads {
+		t.Fatal("paused without a re-read")
+	}
 }

@@ -14,6 +14,10 @@ import (
 // account state (spec §7.3).
 const NeedsRelayPoll = 5 * time.Minute
 
+// ReadRetryFirst is the first wait after a failed account-state read; it
+// doubles up to NeedsRelayPoll.
+const ReadRetryFirst = 30 * time.Second
+
 // AccountState reads the hub's account state from the relay
 // (get_account_state: the phones holding the hub in a slot).
 type AccountState func(ctx context.Context) (*relayv1.AccountState, error)
@@ -26,9 +30,16 @@ type accountStater interface {
 
 // PayingWatch follows whether a phone holding the hub in a slot pays (spec
 // §7.3, relay-only rules): a headless hub without one pauses. It reads the
-// account state when Run starts, every NeedsRelayPoll while no phone pays,
-// and at once after an ENTITLEMENT_EXPIRED or SLOT_REMOVED control, an
-// ENTITLEMENT_INACTIVE error (Observe) or a link change (Recheck).
+// account state when Run starts, every NeedsRelayPoll (paying or not), after
+// a failed read on a shorter backoff, and at once after an
+// ENTITLEMENT_EXPIRED or SLOT_REMOVED control, an ENTITLEMENT_INACTIVE error
+// (Observe: events, mailbox passes, publisher saves) or a link change
+// (Recheck).
+//
+// What a pause leaves running, by decision: pairing; the POLICY-03 wipe when
+// the policy turns the hub off (deleting published data is the safe
+// direction and policy-ordered); held phone lines delivered into local
+// sessions (local work — their late echoes are queued, not written).
 type PayingWatch struct {
 	state AccountState
 	timer func(d time.Duration) (<-chan time.Time, func()) // a test's fake clock
@@ -66,9 +77,11 @@ func (a *PayingWatch) Recheck() {
 
 // Run reads the account state until ctx ends (it returns ctx.Err()) and
 // calls onChange with the first answer and with every change. A failed read
-// keeps the last answer and is retried on the next poll or kick.
+// keeps the last answer and is retried after ReadRetryFirst, doubling up to
+// NeedsRelayPoll (or at the next kick).
 func (a *PayingWatch) Run(ctx context.Context, onChange func(paying bool)) error {
 	known, last := false, false
+	var retry time.Duration
 	for {
 		rctx, cancel := context.WithTimeout(ctx, opTimeout)
 		st, err := a.state(rctx)
@@ -76,19 +89,19 @@ func (a *PayingWatch) Run(ctx context.Context, onChange func(paying bool)) error
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		wait := NeedsRelayPoll
 		if err != nil {
-			log.Printf("hub: reading the account state failed (%s)", errClass(err))
-		} else if p := paying(st); !known || p != last {
-			known, last = true, p
-			onChange(p)
+			retry = min(max(2*retry, ReadRetryFirst), NeedsRelayPoll)
+			wait = retry
+			log.Printf("hub: reading the account state failed (%s), retried in %s", errClass(err), wait)
+		} else {
+			retry = 0
+			if p := paying(st); !known || p != last {
+				known, last = true, p
+				onChange(p)
+			}
 		}
-		var (
-			fired <-chan time.Time
-			stop  = func() {}
-		)
-		if !last {
-			fired, stop = a.timer(NeedsRelayPoll)
-		}
+		fired, stop := a.timer(wait)
 		select {
 		case <-ctx.Done():
 			stop()

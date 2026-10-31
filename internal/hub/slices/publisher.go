@@ -87,6 +87,10 @@ type Config struct {
 	Spacing   time.Duration
 	Clock     func() time.Time
 	Linked    func() (bool, error)
+	// OnError (nil = none) sees every failed cycle's error in Run (the
+	// hub's relay-only rules re-read the account state on
+	// ENTITLEMENT_INACTIVE).
+	OnError func(error)
 }
 
 // CycleReport is what one cycle did. Skipped names records not published
@@ -319,6 +323,9 @@ func (p *Publisher) Run(ctx context.Context) error {
 			}
 			if err != nil {
 				log.Printf("hub slices: publish cycle failed (%s); %d kinds retried", errClass(err), len(rep.Unfinished))
+				if p.c.OnError != nil {
+					p.c.OnError(err)
+				}
 			}
 			after := p.mono()
 			clockNow := p.clock()

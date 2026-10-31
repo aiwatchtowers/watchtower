@@ -450,6 +450,7 @@ func (s *supervisor) reconcile(ctx context.Context) {
 	if h := s.hub; h != nil && (!want || h.mode != mode || h.name != name) {
 		switch {
 		case mode == policy.MobileOff:
+			// Also while paused: deleting published data is the safe direction.
 			s.stopHub(func(slices.Kind) bool { return false })
 		case mode == policy.MobileWorkbenchOnly && h.mode != mode:
 			s.stopHub(workbenchOnly)

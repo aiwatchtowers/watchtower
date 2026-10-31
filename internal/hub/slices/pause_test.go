@@ -2,6 +2,8 @@ package slices
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -71,5 +73,33 @@ func TestCycleWhilePausedWritesNothing(t *testing.T) {
 	r.advance(time.Second)
 	if rep := r.cycle(p); rep.Saved != 1 {
 		t.Fatalf("cycle after Resume = %+v", rep)
+	}
+}
+
+// Run hands a failed cycle's error to OnError (an ENTITLEMENT_INACTIVE save
+// makes the hub re-read its account state).
+func TestRunHandsAFailedSaveToOnError(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	r.tr.FailNext("save", fmt.Errorf("relay: %w", transport.ErrEntitlementInactive))
+	src := &fakeSource{kind: "owner_ask"}
+	src.set(item("1", `{"id":1}`))
+	seen := make(chan error, 4)
+	ft := newFakeTime()
+	p := r.publisherWith(Config{Clock: ft.Now, OnError: func(err error) { seen <- err }}, src)
+	p.mono, p.timer = ft.Now, ft.Timer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	select {
+	case err := <-seen:
+		if !errors.Is(err, transport.ErrEntitlementInactive) {
+			t.Fatalf("OnError got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnError never called")
 	}
 }
