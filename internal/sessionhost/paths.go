@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"watchtower/internal/config"
 )
 
@@ -80,16 +82,27 @@ var ErrRunDirUnusable = errors.New("run_dir_unusable")
 // runDirName is the Linux fallback socket folder under the data root.
 const runDirName = ".run"
 
+// maxSocketPath is the longest socket path this platform's sockaddr_un takes
+// with its terminating NUL (103 bytes on darwin, 107 on Linux).
+var maxSocketPath = len(unix.RawSockaddrUnix{}.Path) - 1
+
 // DefaultSocket is the host socket: SocketEnv when set, else the shared
-// socket in socketDirFor's folder (the user's temp folder on darwin, the
-// uid's runtime folder or <data root>/.run elsewhere).
+// socket in socketDirFor's folder — the user's temp folder on darwin, the
+// uid's /run/user folder or <data root>/.run elsewhere. Off darwin it may
+// create <data root>/.run (0700), so the host and every client agree on one
+// path; a data root that cannot be determined fails there before /run/user
+// is tried (an ErrRunDirUnusable error).
 func DefaultSocket() (string, error) {
 	if s := os.Getenv(SocketEnv); s != "" {
 		return s, nil
 	}
-	root, err := config.DataRoot()
-	if err != nil && runtime.GOOS != "darwin" { // darwin needs no data root
-		return "", runDirError(err.Error())
+	root := ""
+	if runtime.GOOS != "darwin" { // darwin needs no data root
+		r, err := config.DataRoot()
+		if err != nil {
+			return "", runDirError("no data root", err)
+		}
+		root = r
 	}
 	dir, err := socketDirFor(runtime.GOOS, os.TempDir(), root, os.Getuid(), os.Lstat)
 	if err != nil {
@@ -102,51 +115,74 @@ func DefaultSocket() (string, error) {
 // Desktop's Swift twin (testdata/paths.json). Elsewhere it is computed from
 // the uid alone, the same in the host and in every client, and reads no
 // environment variable (a caller's XDG_RUNTIME_DIR may be unset or differ):
-// /run/user/<uid> when stat (an lstat: never a symlink) shows a folder owned
-// by uid with mode 0700, else <dataRoot>/.run, created 0700 and tightened
-// when looser. Never the shared temp folder: a fallback that cannot be made
-// or is not ours is an ErrRunDirUnusable error.
+// /run/user/<uid> when stat (an lstat) passes usableRunUser, else
+// <dataRoot>/.run, created 0700 and checked and tightened through one
+// O_NOFOLLOW descriptor (no window between the check and the chmod). Never
+// the shared temp folder: a fallback that cannot be made, is not ours, or
+// whose socket path would not fit sockaddr_un is an ErrRunDirUnusable error.
 func socketDirFor(goos, tempDir, dataRoot string, uid int, stat func(string) (os.FileInfo, error)) (string, error) {
 	if goos == "darwin" {
 		return tempDir, nil
 	}
 	runUser := "/run/user/" + strconv.Itoa(uid)
-	if fi, err := stat(runUser); err == nil && fi.Mode().Type() == fs.ModeDir && fi.Mode().Perm() == 0o700 && ownedBy(fi, uid) {
+	if fi, err := stat(runUser); err == nil && usableRunUser(fi, uid) {
 		return runUser, nil
 	}
 	if dataRoot == "" || !filepath.IsAbs(dataRoot) {
-		return "", runDirError("no data root")
+		return "", runDirError("no data root", nil)
 	}
 	dir := filepath.Join(dataRoot, runDirName)
+	if n := len(SocketPath(BundleID, dir)); n > maxSocketPath {
+		return "", runDirError(fmt.Sprintf("socket path too long (%d bytes, at most %d) under %s", n, maxSocketPath, dir), nil)
+	}
 	if err := os.MkdirAll(dataRoot, 0o700); err != nil {
-		return "", runDirError(fmt.Sprintf("creating the data root: %v", err))
+		return "", runDirError("creating the data root", err)
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return "", runDirError(fmt.Sprintf("creating %s: %v", dir, err))
+		return "", runDirError("creating "+dir, err)
 	}
-	fi, err := stat(dir)
-	switch {
-	case err != nil:
-		return "", runDirError(fmt.Sprintf("reading %s: %v", dir, err))
-	case fi.Mode().Type() != fs.ModeDir:
-		return "", runDirError(dir + " is not a folder")
-	case !ownedBy(fi, uid):
-		return "", runDirError(dir + " belongs to another user")
-	}
-	if fi.Mode().Perm() != 0o700 {
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return "", runDirError(fmt.Sprintf("tightening %s: %v", dir, err))
-		}
+	if err := tightenOwnDir(dir, uid); err != nil {
+		return "", err
 	}
 	return dir, nil
 }
 
-func runDirError(why string) error {
-	return fmt.Errorf("[Watchtower] the session host cannot use its socket folder: %s (%w)", why, ErrRunDirUnusable)
+// tightenOwnDir opens dir without following a symlink, refuses it unless it
+// is a folder owned by uid, and sets mode 0700 on that same descriptor.
+func tightenOwnDir(dir string, uid int) error {
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return runDirError(dir+" is not a folder", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return runDirError("reading "+dir, err)
+	}
+	if int(st.Uid) != uid {
+		return runDirError(dir+" belongs to another user", nil)
+	}
+	if st.Mode&0o777 != 0o700 {
+		if err := unix.Fchmod(fd, 0o700); err != nil {
+			return runDirError("tightening "+dir, err)
+		}
+	}
+	return nil
 }
 
-// ownedBy reports whether fi's owner is uid.
-func ownedBy(fi os.FileInfo, uid int) bool {
+// runDirError is an ErrRunDirUnusable error; cause (may be nil) stays
+// reachable through errors.Is/As.
+func runDirError(why string, cause error) error {
+	const prefix = "[Watchtower] the session host cannot use its socket folder: "
+	if cause != nil {
+		return fmt.Errorf(prefix+"%s: %w (%w)", why, cause, ErrRunDirUnusable)
+	}
+	return fmt.Errorf(prefix+"%s (%w)", why, ErrRunDirUnusable)
+}
+
+// usableRunUser: a real folder (lstat, so never a symlink) owned by uid with
+// mode 0700.
+func usableRunUser(fi os.FileInfo, uid int) bool {
 	st, ok := fi.Sys().(*syscall.Stat_t)
-	return ok && int(st.Uid) == uid
+	return ok && fi.Mode().Type() == fs.ModeDir && fi.Mode().Perm() == 0o700 && int(st.Uid) == uid
 }

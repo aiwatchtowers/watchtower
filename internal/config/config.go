@@ -875,9 +875,11 @@ func AppSupportDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("could not determine home directory: %w", err)
 	}
-	root, err := DataRoot()
-	if err != nil {
-		return "", err
+	root := "" // darwin depends on the home folder alone
+	if runtime.GOOS != "darwin" {
+		if root, err = DataRoot(); err != nil {
+			return "", err
+		}
 	}
 	return appSupportDirFor(runtime.GOOS, home, root), nil
 }

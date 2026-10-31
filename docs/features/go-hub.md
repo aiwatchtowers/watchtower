@@ -127,7 +127,7 @@ checked against the code named).
 
 | Piece | darwin | Linux |
 |---|---|---|
-| `internal/sessionhost` socket (`DefaultSocket` → `socketDirFor`) | the user's temp folder (unchanged, `testdata/paths.json`) | `/run/user/<uid>` when it is a real folder owned by the uid with mode 0700, else `<data root>/.run` (created 0700, tightened when looser; a symlink, a file or another owner → `run_dir_unusable`); computed from the uid alone, no `XDG_RUNTIME_DIR`, never `/tmp` |
+| `internal/sessionhost` socket (`DefaultSocket` → `socketDirFor`) | the user's temp folder (unchanged, `testdata/paths.json`) | `/run/user/<uid>` when it is a real folder owned by the uid with mode 0700, else `<data root>/.run` (created 0700, checked and tightened through one `O_NOFOLLOW` descriptor; a symlink, a file, another owner or a socket path too long for `sockaddr_un` → `run_dir_unusable`; a data root that cannot be determined fails before `/run/user` is tried); computed from the uid alone, no `XDG_RUNTIME_DIR`, never `/tmp` |
 | `config.AppSupportDir` (`appSupportDirFor`) | `~/Library/Application Support/Watchtower` | `<data root>/.support`; `RecordingsDir`'s default follows (`<data root>/.support/recordings`, where a Linux host keeps none) |
 | Hub control socket peer check (`peer_darwin.go` / `peer_linux.go`) | `LOCAL_PEERCRED` | `SO_PEERCRED`; a failed read closes the connection before any request (`TestControlSocketClosesWhenPeerCredentialsFail`); other OSes refuse every client (`peer_other.go`) |
 | Live hub dir (`hub.DefaultDir`) | `<data root>/.hub` | the same; `.hub` is never a workspace name (`ValidWorkspaceRe`) |
@@ -141,7 +141,7 @@ checked against the code named).
 | `internal/chat` sandbox (`NewChildSandbox`) | `sandbox-exec` profile | refused ("needs macOS"), so claude.ai mode stays off |
 | `internal/planusage` (`DefaultCredentialSource`) | Keychain, then `~/.claude/.credentials.json` | the credentials file only, no Keychain |
 | `internal/daemon` process identity (`procident_other.go`) | `kern.proc.pid` sysctl start time | `ps -o lstart=` under `LC_ALL=C` |
-| Phone line without paste mode (`session_input.go`) | `.copied` to the clipboard while the Desktop's heartbeat is fresh | no Desktop heartbeat: `failed(cannot_type)` |
+| Phone line or ask answer the session cannot take (`internal/hub/actions/handlers`: `deps.go` `Clipboard`/`DesktopHost`, `session_input.go`, `ask.go`) | a line: copied to the clipboard (pbcopy) while the Desktop heartbeat is fresh, echo `failed(cannot_type)` saying so; an ask answer: saved, `failed(cannot_type)` | no Desktop heartbeat, so no clipboard: `failed(cannot_type)` with `CannotTypeMessage` (an ask answer still saved) |
 | `internal/sqlcipher` crypto (`wt_cgo.go`) | CommonCrypto | OpenSSL `libcrypto` (dynamic) |
 
 ## Measured cost
