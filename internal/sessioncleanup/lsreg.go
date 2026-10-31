@@ -67,16 +67,14 @@ func pathDepth(root, path string) int {
 // kLSApplicationNotFoundErr: a bundle LaunchServices never registered (an
 // .app inside an .xcarchive, say) has nothing to unregister.
 func (s SystemLaunchServices) Unregister(ctx context.Context, bundle string) error {
-	_, err := s.runner()(ctx, lsregisterBinary, "-u", canonicalPath(bundle))
-	if err != nil && strings.Contains(err.Error(), lsNotRegistered) {
+	path := canonicalPath(bundle)
+	_, err := s.runner()(ctx, lsregisterBinary, "-u", path)
+	// kLSApplicationNotFoundErr as lsregister prints it on stderr.
+	if err != nil && strings.Contains(err.Error(), "failed to scan "+path+": -10814") {
 		return nil
 	}
 	return err
 }
-
-// lsNotRegistered is kLSApplicationNotFoundErr as `lsregister -u` prints it
-// on stderr ("failed to scan <path>: -10814").
-const lsNotRegistered = ": -10814"
 
 // Register runs `lsregister <bundle>` with the bundle's canonical path. A
 // non-zero exit is an error.
