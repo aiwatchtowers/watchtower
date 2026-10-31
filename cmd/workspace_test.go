@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/features"
 )
 
 // workspaceInitHome isolates HOME (the data root) and points flagConfig at a
@@ -73,7 +75,7 @@ func TestWorkspaceInit_FreshHomeCreatesDefaultWorkspace(t *testing.T) {
 func TestWorkspaceInit_CustomName(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 
-	res, err := initWorkspace(configPath, "", "acme")
+	res, err := initWorkspace(configPath, "", "acme", false)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", res.Workspace)
 	assert.Equal(t, []string{"acme"}, workspaceDirs(t))
@@ -82,7 +84,7 @@ func TestWorkspaceInit_CustomName(t *testing.T) {
 func TestWorkspaceInit_RejectsInvalidName(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 
-	_, err := initWorkspace(configPath, "", "../escape")
+	_, err := initWorkspace(configPath, "", "../escape", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid workspace name")
 	assert.NoFileExists(t, configPath)
@@ -91,12 +93,12 @@ func TestWorkspaceInit_RejectsInvalidName(t *testing.T) {
 func TestWorkspaceInit_RepeatIsNoOp(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 
-	first, err := initWorkspace(configPath, "", "default")
+	first, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	before, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 
-	second, err := initWorkspace(configPath, "", "other")
+	second, err := initWorkspace(configPath, "", "other", false)
 	require.NoError(t, err)
 	assert.Equal(t, "default", second.Workspace, "an existing workspace wins over --name")
 	assert.False(t, second.Created)
@@ -112,7 +114,7 @@ func TestWorkspaceInit_KeepsAnExplicitWorkspace(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: acme\n"), 0o600))
 
-	res, err := initWorkspace(configPath, "", "default")
+	res, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", res.Workspace)
 	assert.True(t, res.Created, "the named workspace had no database yet")
@@ -126,7 +128,7 @@ func TestWorkspaceInit_AdoptsTheSingleExistingWorkspace(t *testing.T) {
 	home, configPath := workspaceInitHome(t)
 	seedWorkspaceDB(t, home, "acme")
 
-	res, err := initWorkspace(configPath, "", "default")
+	res, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", res.Workspace)
 	assert.False(t, res.Created)
@@ -140,7 +142,7 @@ func TestWorkspaceInit_RefusesWhenSeveralWorkspacesHoldADatabase(t *testing.T) {
 	seedWorkspaceDB(t, home, "alpha")
 	seedWorkspaceDB(t, home, "zenith")
 
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "several workspaces hold a database")
 	assert.ElementsMatch(t, []string{"alpha", "zenith"}, workspaceDirs(t))
@@ -152,7 +154,7 @@ func TestWorkspaceInit_RefusesWhenSeveralWorkspacesHoldADatabase(t *testing.T) {
 // commands, and a daemon that has no sources and idles.
 func TestWorkspaceInit_UnblocksCommandsWithoutSlack(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 
 	database, err := openDBFromConfig()
@@ -192,7 +194,7 @@ func TestWorkspaceInit_UnblocksCommandsWithoutSlack(t *testing.T) {
 func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
 	_, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 
 	result := &auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}
@@ -223,7 +225,7 @@ func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {
 // so account #1 of "default" is Acme.
 func connectAcme(t *testing.T, configPath string) {
 	t.Helper()
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
 	_, err = saveAuthResult(newSaveAuthResultCmd(),
@@ -319,7 +321,7 @@ func TestWorkspaceInit_HonoursTheWorkspaceFlag(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: acme\n"), 0o600))
 
-	res, err := initWorkspace(configPath, "beta", "default")
+	res, err := initWorkspace(configPath, "beta", "default", false)
 	require.NoError(t, err)
 	assert.Equal(t, "beta", res.Workspace)
 	assert.True(t, res.Created)
@@ -328,7 +330,7 @@ func TestWorkspaceInit_HonoursTheWorkspaceFlag(t *testing.T) {
 	assert.Equal(t, "active_workspace: acme\n", string(data), "an override does not switch the configured workspace")
 
 	_, freshConfig := workspaceInitHome(t)
-	res, err = initWorkspace(freshConfig, "beta", "default")
+	res, err = initWorkspace(freshConfig, "beta", "default", false)
 	require.NoError(t, err)
 	assert.Equal(t, "beta", res.Workspace)
 	data, err = os.ReadFile(freshConfig)
@@ -358,7 +360,7 @@ func TestWriteWorkspaceScaffold_UnreadableConfigIsAnError(t *testing.T) {
 func TestSaveAuthResult_HonoursTheWorkspaceFlag(t *testing.T) {
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
 	home, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	seedWorkspaceDB(t, home, "other")
 	old := flagWorkspace
@@ -394,7 +396,7 @@ func TestSaveAuthResult_UncheckableDatabaseFailsTheLogin(t *testing.T) {
 	}
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
 	_, configPath := workspaceInitHome(t)
-	res, err := initWorkspace(configPath, "", "default")
+	res, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	dir := filepath.Dir(res.DBPath)
 	require.NoError(t, os.Chmod(dir, 0o000))
@@ -410,7 +412,7 @@ func TestSaveAuthResult_UncheckableDatabaseFailsTheLogin(t *testing.T) {
 func TestSaveAuthResult_LegacyAccountWithoutTeamIsReused(t *testing.T) {
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
 	_, configPath := workspaceInitHome(t)
-	res, err := initWorkspace(configPath, "", "default")
+	res, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	database, err := db.Open(res.DBPath)
 	require.NoError(t, err)
@@ -440,4 +442,72 @@ func TestSaveAuthResult_WorkspaceFlagWithoutDatabaseIsCreated(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "chosen", info.Workspace)
 	assert.Equal(t, []string{"chosen"}, workspaceDirs(t))
+}
+
+// newWorkspaceInitTestCmd is a fresh command carrying workspace init's flags,
+// so a test never mutates the shared workspaceInitCmd.
+func newWorkspaceInitTestCmd(t *testing.T, args ...string) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+	c := &cobra.Command{}
+	c.Flags().String("name", defaultWorkspaceName, "")
+	c.Flags().Bool("json", false, "")
+	c.Flags().Bool("headless", false, "")
+	require.NoError(t, c.Flags().Parse(args))
+	var out bytes.Buffer
+	c.SetOut(&out)
+	return c, &out
+}
+
+func TestWorkspaceInitHeadlessTurnsOffEveryNonCoreFeature(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+
+	c, out := newWorkspaceInitTestCmd(t, "--headless", "--json")
+	require.NoError(t, runWorkspaceInit(c, nil))
+
+	var keys map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(out.Bytes(), &keys))
+	assert.ElementsMatch(t, []string{"workspace", "db_path", "created"}, mapKeys(keys),
+		"--json keys are unchanged by --headless")
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	var off int
+	for _, f := range features.All() {
+		if f.Core || f.ConfigKey == "" {
+			continue
+		}
+		off++
+		require.NotNil(t, f.Enabled, "feature %q", f.ID)
+		assert.False(t, f.Enabled(cfg), "feature %q stays on in the headless profile", f.ID)
+	}
+	assert.Positive(t, off)
+	assert.Equal(t, "default", cfg.ActiveWorkspace)
+}
+
+func TestWorkspaceInitHeadlessKeepsAnExistingConfig(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	require.NoError(t, os.WriteFile(configPath, []byte("digest:\n  enabled: true\nmemory:\n  enabled: true\n"), 0o600))
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	c, out := newWorkspaceInitTestCmd(t, "--headless")
+	require.NoError(t, runWorkspaceInit(c, nil))
+	assert.Contains(t, out.String(), "Kept your feature settings.")
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.Digest.Enabled)
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(after), "enabled: false",
+		"no feature is turned off in an existing config:\n%s\n(before:\n%s)", after, before)
+}
+
+func TestWorkspaceInitWithoutHeadlessLeavesFeaturesAtTheirDefaults(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	_, err := initWorkspace(configPath, "", "default", false)
+	require.NoError(t, err)
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, config.DefaultDigestEnabled, cfg.Digest.Enabled)
 }
