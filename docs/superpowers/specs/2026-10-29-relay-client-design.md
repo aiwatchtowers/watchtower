@@ -144,17 +144,19 @@ Implemented exactly as sim rules 8–16 (they change only together, relay spec �
 
 ## 13. Phases
 
-| Phase | Content | Depends on | Board |
+**Scope after ask #802.** The hub moves from the Swift Desktop to the Go daemon (asks #713, #800; on the Mac a thin Swift bridge serves CloudKit), and the hub side of this spec is written there in Go (ask #802), against the Go hub's own spec. This spec keeps the phone and the Kit. Its hub-side sections — §5 points 4–5 and 7 (hub order, echoes, control records), §6 (publishing on change), the hub halves of §8–9 and the Desktop indicators of §10 — stay the behaviour the Go hub must meet. The wire contract (proto, sim rules) and the E2E format do not change: the Go hub is byte-compatible with the Kit.
+
+| Phase | Content (phone + Kit) | Depends on | Board |
 |---|---|---|---|
-| 0a | Seam neutral (§3): `RecordOrigin`, `TransportAuthorPolicy`, `HubRoute`, `PhoneAccessService`/`LinkAccess`, `PushWake`, `LiveTransport`, factories. No behaviour change on CloudKit. | — | #1237 |
-| 0b | Publishing on change (§6) | ask #735 | #1238 |
-| 1 | Ordered actions and outbox on both transports (§5), `ConditionalTransport` on CloudKit, control-record queue, "not delivered" on the phone | 0a | new under #1240 |
+| 0a | Seam neutral (§3), phone and Kit only: `RecordOrigin`, `HubRoute`, `LinkAccess`, `PushWake`, `LiveTransport`, the phone's `TransportFactory`. No behaviour change on CloudKit. The Mac's `TransportAuthorPolicy`, `PhoneAccessService` and `HubTransportFactory` go to the Go hub. | — | #1237 |
+| 0b | Publishing on change (§6) — moved to the Go hub (ask #802) | — | #1238 |
+| 1 | Phone side of §5: `action_seq`, outbox, `ConditionalTransport` on CloudKit, control-record queue, skip and "not delivered". The hub's order and echoes are the Go hub's | 0a | new under #1240 |
 | 2 | Proto in the Kit, `HostedRelayClient`, `HostedRelayTransport`, `FakeHostedRelay`, sim twins | 0a, relay §12 p. 1 | #1239, #1240 |
-| 3 | Identity, linking over the relay, transport switch + epochs (§8–9), interop | 1, 2, relay §12 p. 2 | #1241, #1242, #1247 |
-| 4 | Subscription, pushes, Desktop indicators, measurements (§9–10), guide pages | 3 | #1243–#1246 |
+| 3 | Phone identity, linking from the phone, reaction to `transport_switched`, the phone's epoch keys; interop. Hub identity, slots, switch and epochs on the hub are the Go hub's | 1, 2, relay §12 p. 2, the Go hub | #1241, #1242, #1247 |
+| 4 | Phone: subscription, pushes, notification service, screens, measurements. Desktop indicators are the Go hub's | 3 | #1243, #1244, #1246 |
 | 5 | 7-day rotation with ephemeral X25519 (relay spec §7.4) — after launch | 3 | #1248 |
 
-Launch for users waits for Phases 0–4 and §12 p. 5. Each phase gets its own plan; phases 0a and 0b may run in parallel lanes.
+Launch for users waits for Phases 0a and 1–4, the Go hub's side and §12 p. 5. Each phase gets its own plan.
 
 ## 14. Contracts and docs this touches
 
@@ -170,6 +172,7 @@ Launch for users waits for Phases 0–4 and §12 p. 5. Each phase gets its own p
 - `relay.proto` and the generated Swift are copied into the Kit, pinned to a relay commit — ask #734
 - Interop tests against the real relay server run locally and in the relay repository's CI; public Watchtower CI uses a fake server — ask #734
 - On CloudKit a gap in a phone's actions may delay its later actions, Interrupt and permission answers included; accepted — ask #796
+- The hub side of this spec (hub order and echoes, publishing on change, hub identity, slots, switch and epochs, Desktop indicators) is written in the Go hub; this spec keeps the phone and the Kit — ask #802
 - Publishing on change: the nudge on both transports; minimum spacing ~2 s on CloudKit, 100–200 ms (150 ms) on the hosted relay only — ask #735
 - The relay server moves to Cloudflare; protocol v1 and the client rules stay; the client sends the session token on the WebSocket upgrade, pings every 30 s, reconnects after 1–3 s on `GoingAway`, retries `UNAVAILABLE` and resyncs a zone on `TOKEN_EXPIRED` — relay freeze PR #1 (`2643f78`), relay ask #763
 - Existing "Relay" names keep meaning the mailbox lane; the new server's types are `HostedRelay*`; the user-facing name stays "Relay" — author's decision, approved in ask #799
