@@ -37,3 +37,16 @@ var (
 
 // ErrSeqExhausted is SeqAllocatorError.exhausted.
 var ErrSeqExhausted = errors.New("secure: envelope seq exhausted")
+
+// Sealer and Opener errors. ErrWrongHub and ErrWrongSender are the Kit's
+// wrongHub / wrongSender: the AAD and signature bind the ids, these check them
+// against the hub and devices this side expects.
+var (
+	ErrUnsealed         = errors.New("secure: record did not pass the sealer")
+	ErrWrongHub         = errors.New("secure: envelope names another hub")
+	ErrWrongSender      = errors.New("secure: envelope from an unexpected sender")
+	ErrNameMismatch     = errors.New("secure: frame names another record")
+	ErrEpochNotAccepted = errors.New("secure: relay epoch not accepted")
+	ErrNoRelayKey       = errors.New("secure: no relay key opens the record")
+	ErrRolledBack       = errors.New("secure: older version of a relay record")
+)
