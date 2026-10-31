@@ -4,8 +4,8 @@
 
 **Goal:** Wire Phase 2's hosted relay transport into the iPhone app. The phone gets a `relay_auth` key and an App Attest key id in the Keychain, the App Attest entitlement and a relay origin build setting. It reads `LinkPayload` v4, links a Go hub over a relay pairing slot (`pair/<slot>`) and states its own `relay_device_id` in the sealed hello. It follows the hub's `transport_switched`, the transport marker and `hub_on_relay` (sim rules 12–15 and R32). It keeps every epoch key for 7 days after a newer one arrives and sends `epoch_ack`. A Kit phone is shown to link and drive the real Go hub on the relay's local stand. Phase 3 splits in two:
 
-- **Phase 3a** (Tasks 1–16) needs nothing that does not exist. It ships dark: a Release build has no relay origin, so it never builds a relay client.
-- **Phase 3b** (Tasks 17–21) is blocked on named relay and Go hub work.
+- **Phase 3a** (Tasks 1–18) needs nothing that does not exist: relay `bcca870` ships vouched hubs and `Changes.resync`. It ships dark: a Release build has no relay origin, so it never builds a relay client.
+- **Phase 3b** (Tasks 19–21) is blocked on Go hub Phase 3.
 
 **Architecture:**
 
@@ -13,7 +13,7 @@
   - `KeychainRelayIdentity`, the `relay_auth` signer and App Attest key id store, on the Kit's `KeychainBackend`;
   - `HostedRelaySession`, one client and one WebSocket per device, shared by every relay hub and pairing slot of the phone;
   - a pairing mode of `HostedRelayTransport`, in which both lanes map to `pair/<slot>`;
-  - `HostedRelayPairing`, which wraps `open_pairing`, `promote_pairing`, `close_pairing`, the slot pre-check and a vouch seam that stays empty until Phase 3b.
+  - `HostedRelayPairing`, which wraps `open_pairing`, `promote_pairing`, `close_pairing`, the slot pre-check and `vouch_hub` (Task 18).
 - **Kit, `WatchtowerSync`:**
   - `LinkPayload` reads v4 (it still issues v3 for the Swift hub);
   - `DeviceHello.relayDeviceID`, and `DeviceGrant` relay fields;
@@ -51,7 +51,7 @@
 - the Go hub plans `2026-10-31-go-hub-phase-{1,1b,2,3}.md`, including Phase 3's "Phone contract points" 1–8;
 - the Go hub code on `main`: `internal/hub/link/relay.go`, `link/hello.go`, `wire/{link,grant,payloads}.go`, `actions/control.go`, `hubtest/{phone,relay}.go`, `interop_test.go`, `cmd/hub_link.go` (`hub pair --json --stream`).
 
-**Relay contract:** relay `main` at `3a99bd7`: `proto/README.md` ("Control events", "Operations notes", "Slots", "Zone names", "Failure paths on the client") and `sim/README.md` (rules 8–16, "Bounded state", "Watchtower `hub_id` vs. the relay's ids", "Attestation scenarios"). Relay PR #3 (`fix/changes-resync`, `5d8b577`): `Changes.resync`.
+**Relay contract:** relay `main` at `bcca870` (PR #5, vouched hubs; it contains PR #3's `Changes.resync`, `1c6e9e0`): `proto/README.md` ("Control events", "Operations notes", "Errors", "Vouched hubs", "Slots", "Zone names", "Failure paths on the client") and `sim/README.md` (rules 8–16, "Bounded state", "Watchtower `hub_id` vs. the relay's ids", "Attestation scenarios"); board #1432's comment (the vouch hash vector). Phase 2 pinned `3a99bd7`; Task 17 moves the Kit to `bcca870`.
 
 **Mockups:** `docs/design/mockups/relay-client/index.html`.
 
@@ -66,14 +66,14 @@ Checked on 2026-10-31:
 | # | Dependency | Status | Blocks |
 |---|---|---|---|
 | E1 | **Go hub 1a/1b**: the hub half of linking over the relay. `OnPairingOpened` reads hellos in `pair/<slot>` and answers keyboxes there; `SyncReaders` calls `set_hub_readers`; the hello's `relay_device_id` is validated and stored. Also: the v4 QR, the ordered path, controls (records `epoch_ack`, rejects `transport_switch` "not supported yet"), `hub pair --json --stream`, the interop harness. | **Done**, on `main` | nothing: Phase 3a builds against it |
-| E2 | **Relay ask #805**: `DEVICE_KIND_HUB`, `vouch_hub{hub_device_id, auth_pub}` with the phone's assertion over the relay's vouch digest, `HUB_NOT_VOUCHED`. | **Not started on the relay**: no branch of `aiwatchtowers/relay` has `vouch_hub` or `DEVICE_KIND_HUB` (`3a99bd7`, `fix/changes-resync`, `ops/staging-rollout`, `feature/relay-cf`, `feature/relay-v1`, `protocol/v1-freeze`, `aa/task-2`, `aa/task-3`). The relay's App Attest rule reversal waits on the owner in relay ask #805. | Tasks 17–19, 21; any production relay admitting a hub |
-| E3 | **Go hub Phase 2 Task 10**: vouched admission on the hub. | **Blocked on E2**; the rest of Go hub Phase 2 is in progress on `feature/go-hub`: Tasks 3, 5, 6, 7 and 8 have merged there. | Task 18's interop, Task 21 |
+| E2 | **Relay ask #805**: `DEVICE_KIND_HUB`, `vouch_hub{hub_device_id, auth_pub, nonce, attestation}`, `CHALLENGE_PURPOSE_VOUCH`, `HUB_NOT_VOUCHED`, `SLOT_ADDED`. | **Done**: relay `main` `bcca870` (PR #5, "Vouched hubs"), deployed on staging; it includes `1c6e9e0` (PR #3, `Changes.resync`). Contract: `proto/README.md` "Vouched hubs" and board #1432's comment (vouch hash vector). | nothing: Tasks 17 and 18 are now Phase 3a |
+| E3 | **Go hub Phase 2 Task 10**: vouched admission on the hub (the Go copy's pin move, board task #1345). | **Unblocked by E2, not done**; the rest of Go hub Phase 2 is in progress on `feature/go-hub`. Phase 3a does not need it: on the stand at `bcca870` today's Go hub (copy at `3a99bd7`, registering as a MAC with no attestation) is a hub the phone vouches for, and it only reads its pair zone until it is in a slot. | Task 21 (a headless host with real vouched admission) |
 | E4 | **Go hub Phase 3 Tasks 18 and 20**: the hub's switcher, which writes `transport_switched` with the keybox, the transport marker and `hub_on_relay`, and handles epochs, entitlement and `resend_from` for retired epochs. **Go hub Phase 3 Tasks 12 and 21**: a Mac on the Go hub publishes its relay identity in `device_grant`. | **Not started**: the plan is approved (ask #856) | Tasks 19, 20, 21 |
-| E5 | **Relay PR #3** (`fix/changes-resync`, `5d8b577`): `Changes.resync = 4`. | **Open, not merged**; the Kit move is tracked by board #1430 | Task 17 |
+| E5 | **Relay PR #3** (`fix/changes-resync`): `Changes.resync = 4`. | **Done**: merged as `1c6e9e0`, contained in `bcca870` (board #1430) | nothing: Task 17 is Phase 3a |
 | E6 | **Relay §12 p. 4**: a job in the relay repository's CI that builds the Kit client and runs the interop. | **Relay session's work** (ask #734). Phase 3a provides the entry point (Task 14). | nothing in Phase 3a; it closes Phase 2's R15 fake-only gap when it lands |
 | E7 | **Relay §12 p. 5**: staging, the production origin, App Store Connect, APNs. | Before launch. The production origin is not announced yet. | the Release origin (R1); Phase 4 |
 
-Phase 3a = Tasks 1–16. Phase 3b = Tasks 17–21. Each 3b task names its blockers in its title and its `Depends on:` line.
+Phase 3a = Tasks 1–18; the gate, Task 16, runs last, after Tasks 17 and 18. Phase 3b = Tasks 19–21, drafts blocked on E4 (and E3 for Task 21). Each 3b task names its blockers in its title and its `Depends on:` line.
 
 ## Global Constraints
 
@@ -148,11 +148,11 @@ Phase 3a = Tasks 1–16. Phase 3b = Tasks 17–21. Each 3b task names its blocke
    - Task 9: `testAttestUnsupportedStaysOnCloudKit`, `testAnEmptyOriginBuildsNoRelayObject`. Task 10: `LinkRoutePolicyTests`.
 3. **Pairing leaves nothing half-done.**
    - The hello is written only into `pair/<slot>`.
-   - Promote comes only after the keys arrived.
-   - A failure before promote closes the slot and removes the hub's keys and session.
+   - Vouch, then promote, come only after the keys arrived.
+   - A failure before the owner's confirmation closes the slot and removes the hub's keys and session; after it, every definite refusal moves the link to `.needsOwner` with the keys kept, and only Cancel deletes them.
    - The slot limit is checked before `open_pairing`.
    - `FORBIDDEN` on the data zone before the first successful read is "not a reader yet" and is never a revocation; a failure after promote resumes or ends the link with the farewell and `remove_slot`, never half-linked.
-   - Tasks 5 and 10.
+   - Tasks 5, 10 and 18.
 4. **Epoch keys.**
    - No data or alert key is dropped earlier than 7 days after a newer epoch arrived.
    - `epoch_ack` is never lowered and is sent only to an ordered hub.
@@ -169,23 +169,23 @@ Phase 3a = Tasks 1–16. Phase 3b = Tasks 17–21. Each 3b task names its blocke
 
 ## Lanes
 
-- **A (Kit relay):** Task 3 → Task 5.
+- **A (Kit relay):** Task 17 (proto pin) → Task 3 → Task 5 → Task 18 (vouch).
 - **B (wire):** Task 4.
 - **C (identity and build settings):** Task 1 and Task 2, in parallel.
 - **D (keys and policy):** Task 6 and Task 7, in parallel; Task 7's twins need no other task.
 - **E (design):** Task 8, with no code dependency.
 - **Joins:**
   - Task 9 after 1, 2, 3, 4;
-  - Task 10 after 5, 8, 9;
+  - Task 10 after 5, 8, 9, 18;
   - Task 11 strictly after Task 10 (and after 6, 7, 8): never in parallel with it. Both edit `AppRoot.swift`, `LinkingViewModel.swift` and `HubSession.swift`, in that order: Task 10 first, Task 11 on top of it;
   - Task 12 after 11;
-  - Task 13 after 4 and 5, beside 9–12;
+  - Task 13 after 4, 5 and 18, beside 9–12;
   - Task 14 after 13;
   - Task 15 after 10–14;
-  - Task 16, the gate, after 1–15.
-- **Blocked (3b):** Task 17 waits for E5 and may run any time after Task 3 once E5 has landed. Tasks 18–21 wait for E2–E4.
+  - Task 16, the gate, after 1–15, 17 and 18.
+- **Blocked (3b):** Tasks 19–21 wait for E4 (Task 21 also for E3).
 
-Each parallel lane runs in its own worktree and branch, merged by the controller. The phone registry gets exactly one new migration in the whole phase, `v3-relay`, in Task 9; Tasks 10, 11 and 12 add no migration (their state lives in `LinkRecord`'s JSON and in the tables `v3-relay` creates). Tasks 1 and 2 both touch `WatchtowerMobile/project.yml`, so Task 2 rebases on Task 1 before `make mobile-gen`. Tasks 3 and 5 both touch `HostedRelayTransport`, so they run in one lane.
+Each parallel lane runs in its own worktree and branch, merged by the controller. The phone registry gets exactly one new migration in the whole phase, `v3-relay`, in Task 9; Tasks 10, 11 and 12 add no migration (their state lives in `LinkRecord`'s JSON and in the tables `v3-relay` creates). Tasks 1 and 2 both touch `WatchtowerMobile/project.yml`, so Task 2 rebases on Task 1 before `make mobile-gen`. Tasks 17, 3, 5 and 18 touch the proto, `HostedRelayTransport` and `HostedRelayPairing`, so they run in one lane, Task 17 first (every later task builds on the `bcca870` proto).
 
 ---
 
@@ -414,8 +414,8 @@ public struct HostedRelayPairing: Sendable {
     public func close(slot: String) async            // best effort, logged
     /// `remove_slot` with Phase 2's `UNAVAILABLE` retry; `NOT_FOUND` counts as done (R14).
     public func removeSlot(mac: String) async throws
-    /// Phase 3b: `vouch_hub`. Until relay ask #805 lands the relay has no such op: returns `.notAvailable` without a request.
-    public func vouch(hubDeviceID: String, authPub: Data) async -> VouchOutcome   // .notAvailable | .vouched | .refused(code)
+    /// `vouch_hub`: declared here, implemented in Task 18; until then it throws and has no caller.
+    public func vouch(hubDeviceID: String, authPub: Data) async throws
 }
 ```
 
@@ -431,7 +431,6 @@ public struct HostedRelayPairing: Sendable {
   - `testPromoteAfterExpiryIsPairingExpired`;
   - `testReplacementLimitOnPromote`;
   - `testCloseIsBestEffort`;
-  - `testVouchIsNotAvailableAndSendsNothing`;
   - `testOneStoreFromPairingToHubModeKeepsItsBufferTokens`.
 - [ ] **Step 2: Run, expect failure:** `make kit-test FILTER=HostedRelayPairingTests`.
 - [ ] **Step 3: Implement.**
@@ -590,7 +589,7 @@ public enum TransportFollowerPolicy {
   6. **A Mac on Relay, this iPhone can't use Relay.** "Work Mac runs over Relay" / "This iPhone can't use Relay, so it would get no updates from it. Link it when the Mac is back on iCloud." with **Scan again** only.
   7. **A never-live iCloud link ended (notice).** The existing `LinkNotice` banner on Now with "Work Mac runs over Relay — This iPhone can't use Relay, so it would get no updates from it. Link it when the Mac is back on iCloud." and its **OK**, and narrow.
 - **Finishing a promoted link (R5): a row in Settings → Macs, never a blocking screen**, for all three states (`.promoteSent`, `.promoted`, `.needsOwner`). Next to the linked Macs (mockup section 3's list):
-  - **needs the owner** (`.needsOwner`): sub line "Relay didn't confirm the link. Try again, or cancel it." with **Try Again** and **Cancel**;
+  - **needs the owner** (`.needsOwner(reason)`): one frame per reason with its sub line from Task 10 point 6's table (timed out, 3 Macs, replacement limit, Relay not active, Mac not on Relay yet, not confirmed, update Watchtower), each with **Try Again** and **Cancel**; the link screen's notice shows the same copy plus "See Settings → Macs." and **OK**;
   - **busy:** row "build-box" with the sub line "Finishing the link…" and a spinner; no actions while an attempt runs;
   - **error with Retry:** sub line "Couldn't finish the link. Watchtower tries again when it opens." with **Try Again** and **Cancel**;
   - Cancel's confirmation "Cancel the link to build-box? It frees its Relay slot." with **Cancel Link** (red) and **Keep Trying**;
@@ -722,20 +721,30 @@ A phone that can use Relay never ends a link this way; it follows the switch (Ta
 3. **Prepare.** `host.preparePairing(…)` makes a fresh session on the relay store in pairing mode.
 4. **Hello.** The hello is written with `relayDeviceID` = the session client's device id.
 5. **Wait.** `waitForGrant` is unchanged: it reads the keybox in the pair zone, and the code check and SAS stay as today.
-6. **Keys arrive.** In order:
-   - `vouch` (Phase 3a: `.notAvailable`, nothing sent);
-   - **before** `promote` is sent, in one `UserDefaults` write, the link moves from `store.pending` (the one link the link screen holds) to `store.promoted[hubID]` (`PromotedLink`: the `LinkRecord`, the slot, the Mac's relay id, `state`, `since`) with `state = .promoteSent`, and `store.pending` is cleared. So no kill can leave a promote the phone does not know about, and from here the link never belongs to the link screen. The same write deletes that Mac's `pending_slot_removals` row and that hub's relay `pending_farewells` row (point 9);
-   - `promote(slot:)`:
-     - `Ok` → `state = .promoted`;
-     - a definite refusal in the live flow (`PAIRING_EXPIRED`, `SLOT_LIMIT`, `SLOT_REPLACEMENT_LIMIT`, `ENTITLEMENT_INACTIVE`) → a failure before promote (point 8), shown on the failure screen;
-     - `NOT_FOUND` (a repeat after a kill: the first promote closed the slot, Worker `pairing.ts`) → `get_account_state`: the Mac in slots → `.promoted`; the account answers without the Mac → `state = .needsOwner` (below); the check fails → stays `.promoteSent`;
-     - unreachable or any transient answer → stays `.promoteSent`;
-   - one inline attempt: `host.prepare(route: .hostedRelay(mac), fresh: false)` on the same store, then `linked(…)` with `transport = .relay`, which removes `store.promoted[hubID]` and shows "Linked to <Mac>" as today. If it fails, point 9.
+6. **Keys arrive** (the owner confirmed the code on the Mac). In order:
+   - in one `UserDefaults` write, the link moves from `store.pending` (the one link the link screen holds) to `store.promoted[hubID]` (`PromotedLink`: the `LinkRecord`, the slot, the Mac's relay id, `state`, `since`) with `state = .confirmed`, and `store.pending` is cleared. The same write deletes that Mac's `pending_slot_removals` row and that hub's relay `pending_farewells` row (point 9). From here the link never belongs to the link screen, and **its keys are deleted only by the owner's Cancel**;
+   - `vouch(hubDeviceID:authPub:)` (Task 18) → `Ok`, then one write `state = .promoteSent`, then `promote(slot:)` within the vouch's 10 minutes;
+   - `promote` `Ok` → `state = .promoted`; `HUB_NOT_VOUCHED` (the vouch is missing or older than 10 min) → vouch again, then promote once more (`proto/README.md` client rules); a second `HUB_NOT_VOUCHED` → `.needsOwner(.notConfirmed)`;
+   - a repeated promote that answers `NOT_FOUND` (the first promote, sent before a kill, closed the slot, Worker `pairing.ts`) → `get_account_state`: the Mac in slots → `.promoted`; the account answers without the Mac → `.needsOwner(.notConfirmed)`; the check fails → state unchanged;
+   - **every definite refusal of `vouch` or `promote` after the `.confirmed` write, in the live flow or on a retry after a relaunch, moves the link to `.needsOwner(reason)` with the keys kept**:
+
+     | Answer | `reason` | Row and notice copy (from the Task 8 mockup) | **Try Again** does |
+     |---|---|---|---|
+     | `PAIRING_EXPIRED` (the slot passed its 600 s, typical on a relaunch retry) | `.slotExpired` | "The link timed out on Relay. Try again, or cancel it." | `open_pairing` for a new slot (no hello, no keybox: the keys are held), vouch, promote |
+     | `SLOT_LIMIT` (vouch or promote) | `.slotsFull` | "Relay already has 3 Macs. Unlink one in Settings → Macs, then try again, or cancel this link." | vouch, promote (a new slot first if the old one expired) |
+     | `SLOT_REPLACEMENT_LIMIT` | `.replacementLimit` | "Too many Mac changes on Relay. Try again later, or cancel this link." | same |
+     | `ENTITLEMENT_INACTIVE` (vouch or promote) | `.notPaying` | "Relay isn't active on this iPhone. Try again when it is, or cancel this link." | same |
+     | `NOT_FOUND` from `vouch` (the hub is not registered on the relay) | `.hubNotOnRelay` | "<Mac> isn't on Relay yet. Keep Watchtower open on it and try again, or cancel this link." | same |
+     | promote `NOT_FOUND` with the Mac not in slots; a second `HUB_NOT_VOUCHED`; `FORBIDDEN` (cannot happen for a phone session; logged) | `.notConfirmed` | "Relay didn't confirm the link. Try again, or cancel it." | new slot, vouch, promote |
+     | `ATTESTATION_REQUIRED`, or `ATTESTATION_FAILED` after Task 18's retries | `.updateApp` | "Update Watchtower to finish this link, or cancel it." | vouch, promote |
+
+     A transient answer (unreachable, attestation backoff, a failed account check) changes no state; the link is resumed (point 9). In the live flow the link screen shows no failure screen for these: it shows the reason's copy as the notice "… See Settings → Macs." with **OK**, returns to idle, and the row carries **Try Again** and **Cancel**. **A fresh scan of the same hub's code reuses the record**: it runs the reason's Try Again (a new slot where one is needed), never a second hello;
+   - one inline attempt once `.promoted`: `host.prepare(route: .hostedRelay(mac), fresh: false)` on the same store, then `linked(…)` with `transport = .relay`, which removes `store.promoted[hubID]` and shows "Linked to <Mac>" as today. If it fails, point 9.
 7. **Not a reader yet (R5).** Promote puts the hub in the phone's slots, and the Go hub adds the phone to `set_hub_readers` on its next readers sync; the relay sends neither side an event. Until the first data-zone read succeeds, a `FORBIDDEN` on `data/<mac>` is retried by the next pull (the transport's normal backoff) and changes nothing. Phase 3 never infers a removal from `FORBIDDEN`: a removal reaches the phone as today, through the hub's `revoked` keybox (`removedByMac`); a slot lost on the relay's side (`SLOT_REMOVED`, entitlement) is Phase 4's. Now shows the existing "Waiting for <Mac>" status meanwhile. There is no time window to tune.
-8. **Failure before promote.** `close(slot:)`, then today's `fail(…)`: the hub's keys, session and directory are removed.
+8. **Failure before the owner confirmed** (open, prepare, hello, the wait for the keys: nothing is confirmed, so nothing is kept). `close(slot:)`, then today's `fail(…)`: the hub's keys, session and directory are removed. No refusal of `vouch` or `promote` ever lands here: those come after the confirmation (point 6).
 9. **Failure after promote** (`prepare` or `linked` throws, or the app is killed). Rule:
-   - **Only the half before promote is bounded by the code's deadline** (open, hello, the wait for the keys, promote). A promoted link never is: it resumes until it succeeds or the owner cancels it.
-   - **One rule for every state past the link screen.** `store.promoted[hubID].state` is `.promoteSent` (promote sent, answer not known), `.promoted` (the relay holds the slot, `prepare`/`linked` still to run) or `.needsOwner` (a repeated promote answered `NOT_FOUND` and the account answered without the Mac: the slot may never have been granted). All three leave the link screen, show as a Settings → Macs row, never block scanning a code for another hub, resume at launch and on foreground, and keep the keys until the link completes or the owner cancels. Resuming means: `.promoteSent` → promote again (the outcomes above); `.promoted` → `prepare` and `linked`; `.needsOwner` → nothing automatic (the owner's **Try Again** promotes and checks again; **Cancel** runs the cancel path). Keys are never deleted without the owner's Cancel once the owner has confirmed the code.
+   - **Only the half before the owner's confirmation is bounded by the code's deadline** (open, hello, the wait for the keys). A confirmed link never is: it resumes until it succeeds or the owner cancels it.
+   - **One rule for every state past the link screen.** `store.promoted[hubID].state` is `.confirmed` (keys held, vouch not done), `.promoteSent` (vouched, promote sent, answer not known), `.promoted` (the relay holds the slot, `prepare`/`linked` still to run) or `.needsOwner(reason)` (a definite refusal, point 6). All four leave the link screen, show as a Settings → Macs row, never block scanning a code for another hub, resume at launch and on foreground, and keep the keys until the link completes or the owner cancels. Resuming means: `.confirmed` → vouch, then promote; `.promoteSent` → promote again (vouching again on `HUB_NOT_VOUCHED`); `.promoted` → `prepare` and `linked`; `.needsOwner` → nothing automatic (the reason's **Try Again**; **Cancel** runs the cancel path). Keys are never deleted without the owner's Cancel once the owner has confirmed the code.
    - **It resumes in the background, per hub, and never holds the link screen.** `PromotedLinkResumer` (app, one per `store.promoted` entry) retries `prepare` and `linked` with the keys already saved, at every launch, on every foreground, and on **Try Again**, with the transport's backoff between failed attempts; it never writes a second hello and never promotes again. After the inline attempt fails, the link screen shows the notice "<Mac> will finish linking in the background. See Settings → Macs." with **OK** and returns to idle: scanning is free.
    - **Scanning a code for the same hub resumes that promoted link.** `open(_:)` checks `store.promoted[code.hubID]` right after parsing, before the expiry check and before any relay call: it runs one resume attempt (the code itself is not used, so its expiry does not matter) and writes no hello.
    - **Scanning a code for a different hub works normally**, the pre-promote half with its own `store.pending`, as today one at a time.
@@ -743,7 +752,7 @@ A phone that can use Relay never ends a link this way; it follows the switch (Ta
    - **The cancel path of a promoted link** (also used by **Remove** on the slots screen for a promoted Mac). Cancel is pressed exactly when the hub transport may not come up, so no step waits on `prepare`:
      1. **Farewell, best effort, bounded.** The `unlinked` device record, sealed with the keys the phone holds, is written straight into the mailbox through `TransportFactory.sendDirectly` on the relay route (the shared client, no hub session needed), with a 10 s bound. A failure or timeout is logged by code and the sealed record is kept in `pending_farewells` (relay route, Task 9), so it is not dropped: at each launch it is sent before that Mac's pending slot removal is retried. Once the slot is freed the mailbox can no longer be written; a farewell still unsent then is deleted with one log line (`relay farewell undeliverable after slot removal`, no ids), since nothing can deliver it any more.
      2. **`remove_slot`, always**, whether the farewell went out or not, with Phase 2's `UNAVAILABLE` retry. A failure is kept as a `pending_slot_removals` row and retried at every launch until the relay answers `Ok` or `NOT_FOUND`; it is never dropped, except by a new link to the same Mac (below).
-     - **Never `remove_slot` for a Mac a local link names.** The row is keyed by the Mac's relay id, and a retry after a re-link would free the new link's slot. So: the `.promoteSent` write for that Mac deletes its `pending_slot_removals` row (and that hub's relay `pending_farewells` row); and the launch retry calls `remove_slot` only when no local link record names that Mac: no registry row, no `store.promoted` entry in any state, and no `store.pending` entry. When one does, the row is deleted instead. Test `testARelinkOfTheSameMacCancelsItsPendingSlotRemoval`.
+     - **Never `remove_slot` for a Mac a local link names.** The row is keyed by the Mac's relay id, and a retry after a re-link would free the new link's slot. So: the `.confirmed` write for that Mac deletes its `pending_slot_removals` row (and that hub's relay `pending_farewells` row); and the launch retry calls `remove_slot` only when no local link record names that Mac: no registry row, no `store.promoted` entry in any state, and no `store.pending` entry. When one does, the row is deleted instead. Test `testARelinkOfTheSameMacCancelsItsPendingSlotRemoval`.
      3. **Local state removed either way:** the hub's keys, session, directory and the `store.promoted` entry go at once, whatever steps 1 and 2 did.
      4. **What the Mac learns.** The Go hub does not read `device` records yet (protocol §5.5), so the farewell is for later hubs. The Mac learns from the freed slot: its `get_account_state` no longer lists this phone in `phones`, so its readers sync drops the phone from `set_hub_readers` and the phone can no longer read the data zone. The phone stays in the hub's device list until the owner presses **Remove…** on the Mac (stated in the feature note's v1 limits); while the slot removal is still pending, the phone holds no keys or state any more, so nothing it could read reaches it.
    - **Several promoted links at once are fine.** Each resume attaches its hub transport to the one `HostedRelaySession` (R2), so there is still one socket per device; the pairing-mode transport is not used after promote. Each promoted link already holds a relay slot, so `get_account_state`'s slot count (the pre-check before `open_pairing`) includes it; and it counts toward `HubRegistry.limit` (4 Macs on the phone) like a linked row, so a fifth code is refused with today's `.tooManyMacs`.
@@ -757,7 +766,7 @@ A phone that can use Relay never ends a link this way; it follows the switch (Ta
 | `.relayReplacementLimit` | "Too many Mac changes on Relay" | "Try again later" | true |
 | `.macOnRelay(macName:)` | "\(macName) runs over Relay" | "This iPhone can't use Relay, so it would get no updates from it. Link it when the Mac is back on iCloud." | true |
 
-No relay failure offers **Link over iCloud**: every one of them arises only for a Mac whose current transport is Relay (R4), which would answer an iCloud link with `hub_on_relay`. Spec §8's "adding the Mac over iCloud stays possible" holds for a Mac on iCloud, which links over iCloud anyway. The relay's `Error.message` is never shown (`proto/README.md`: "for logs, never for users"). `PAIRING_EXPIRED` maps to `.expired`.
+No relay failure offers **Link over iCloud**: every one of them arises only for a Mac whose current transport is Relay (R4), which would answer an iCloud link with `hub_on_relay`. Spec §8's "adding the Mac over iCloud stays possible" holds for a Mac on iCloud, which links over iCloud anyway. The relay's `Error.message` is never shown (`proto/README.md`: "for logs, never for users"). `PAIRING_EXPIRED` before the owner confirmed maps to `.expired`; after the confirmation it is `.needsOwner(.slotExpired)` (point 6).
 
 **Three Macs in slots (spec §8, mockup section 6).** Not a failure screen: `HostedRelayPairing.open` refuses `.slotsFull(macs:)` before any hello, and the phone shows the section 6 frame `RelaySlotsView` with `RelaySlotsModel`:
 
@@ -781,9 +790,15 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
 | 3. Prepare (pairing) | store bound elsewhere, local error | `close(slot:)`, `.local(reason)`, keys removed | `testAPairingPrepareFailureClosesTheSlot` |
 | 4. Hello | queued save throws (local store) | `close(slot:)`, `.local(reason)` | `testAHelloWriteFailureClosesTheSlot` |
 | 5. Wait | no answer by the deadline / refusal in the keybox / code mismatch | `close(slot:)`, today's `.noAnswer` / `.refused` / `.expired` | `testNoAnswerClosesTheSlot`, existing grant-wait tests |
-| 6. Vouch | `.notAvailable` (3a) | nothing sent, continue | `testVouchIsNotAvailableAndSendsNothing` (Task 5) |
-| 6. Promote | `PAIRING_EXPIRED` / `SLOT_LIMIT` / `SLOT_REPLACEMENT_LIMIT` / `ENTITLEMENT_INACTIVE` / unreachable | `close(slot:)`, keys removed; `.expired` / slots screen / `.relayReplacementLimit` / `.needsRelay` or `.macOnRelay` / `.relayUnreachable`; the Mac keeps a linked device the owner removes (R5 residual) | `testAPromoteRefusalClosesTheSlotAndRemovesTheKeys`, `testAnExpiredSlotClosesAndAsksForANewCode`, `testReplacementLimitOnPromote` |
-| 6. Promote | kill or failure after the `.promoteSent` write; a repeat answers `NOT_FOUND` | `.promoteSent` resumes like a promoted link (point 9); `NOT_FOUND` + Mac in slots → `.promoted`; `NOT_FOUND` + account answers without the Mac → `.needsOwner` (keys kept, row with Try Again and Cancel, Cancel decides); account check fails → stays `.promoteSent`, rechecked at launch and foreground | `testAPromoteRepeatedAfterAKillIsDoneWhenTheMacHoldsASlot`, `testNotFoundWithAnUnreachableAccountStateKeepsTheLinkAndRechecks`, `testNotFoundAndNotInSlotsKeepsTheKeysAndAsksTheOwner` |
+| 6. Keys arrive | the `.confirmed` write fails | the link stays in `store.pending`; at launch its resume writes `.confirmed` before any relay call | `testTheConfirmedWriteIsRetriedBeforeVouch` |
+| 6. Vouch | `ATTESTATION_FAILED` / `ATTESTATION_REQUIRED` / `ENTITLEMENT_INACTIVE` / `NOT_FOUND` / `SLOT_LIMIT` / transient | Task 18's retries, then `.needsOwner(.updateApp / .notPaying / .hubNotOnRelay / .slotsFull)`, keys kept; transient: state unchanged | `testEveryVouchRefusalKeepsTheKeysAndAsksTheOwner` (table), Task 18's Kit tests |
+| 6. Promote, live | `PAIRING_EXPIRED` / `SLOT_LIMIT` / `SLOT_REPLACEMENT_LIMIT` / `ENTITLEMENT_INACTIVE` | `.needsOwner(reason)`, keys kept, notice + row | `testAPromoteRefusalInTheLiveFlowKeepsTheKeysAndAsksTheOwner` (table over the four codes) |
+| 6. Promote, relaunch retry | `PAIRING_EXPIRED` (the slot passed 600 s while the app was dead) | `.needsOwner(.slotExpired)`; Try Again opens a new slot, vouches, promotes; no hello | `testPairingExpiredOnARelaunchRetryAsksTheOwnerAndTryAgainUsesANewSlot` |
+| 6. Promote, relaunch retry | `SLOT_LIMIT` / `SLOT_REPLACEMENT_LIMIT` / `ENTITLEMENT_INACTIVE` after `.promoteSent` | `.needsOwner(reason)`, keys kept | `testDefiniteRefusalsAfterPromoteSentAskTheOwner` (table over the three codes) |
+| 6. Promote | `HUB_NOT_VOUCHED` | vouch again, promote once more; twice → `.needsOwner(.notConfirmed)` | `testHubNotVouchedVouchesAgainOnce` |
+| Same hub scanned while `.needsOwner` | — | the reason's Try Again (a new slot where needed), no second hello | `testScanningTheSameHubWhileNeedsOwnerReusesTheRecord` |
+| 6. Promote | unreachable / transient | state unchanged (`.promoteSent`), resumed at launch and foreground | `testPromoteSentAndNeedsOwnerResumeAtLaunchAndForeground` |
+| 6. Promote | kill or failure after the `.promoteSent` write; a repeat answers `NOT_FOUND` | `.promoteSent` resumes (point 9); `NOT_FOUND` + Mac in slots → `.promoted`; `NOT_FOUND` + account answers without the Mac → `.needsOwner(.notConfirmed)` (keys kept, Cancel decides); account check fails → state unchanged, rechecked at launch and foreground | `testAPromoteRepeatedAfterAKillIsDoneWhenTheMacHoldsASlot`, `testNotFoundWithAnUnreachableAccountStateKeepsTheLinkAndRechecks`, `testNotFoundAndNotInSlotsKeepsTheKeysAndAsksTheOwner` |
 | 6. Inline `prepare`/`linked` | throws | point 9: background resume, notice, scanner free | `testAPromotedLinkNeverHoldsTheLinkScreen` |
 | 7. First data read | `FORBIDDEN` (not a reader yet) | retried, never a removal | `testForbiddenBeforeTheFirstReadIsRetriedAndNeverARemoval` |
 | 9. Resume | keeps failing | keeps resuming every launch, Settings row error with Try Again | `testAPromotedLinkKeepsResumingUntilItSucceeds`, `testKilledPastTheDeadlineAfterPromoteResumesOnRelaunch` |
@@ -812,7 +827,14 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
     - `testTheHelloCarriesThePhonesRelayDeviceID`;
     - `testSlotsFullRefusesBeforeAnyHello`;
     - `testAnExpiredSlotClosesAndAsksForANewCode`;
-    - `testAPromoteRefusalClosesTheSlotAndRemovesTheKeys`;
+    - `testAPromoteRefusalInTheLiveFlowKeepsTheKeysAndAsksTheOwner` (table: `PAIRING_EXPIRED`, `SLOT_LIMIT`, `SLOT_REPLACEMENT_LIMIT`, `ENTITLEMENT_INACTIVE`; keys and record kept, `.needsOwner(reason)`, the notice's copy per reason);
+    - `testPairingExpiredOnARelaunchRetryAsksTheOwnerAndTryAgainUsesANewSlot`;
+    - `testDefiniteRefusalsAfterPromoteSentAskTheOwner` (table: `SLOT_LIMIT`, `SLOT_REPLACEMENT_LIMIT`, `ENTITLEMENT_INACTIVE` on a relaunch retry);
+    - `testEveryVouchRefusalKeepsTheKeysAndAsksTheOwner`;
+    - `testHubNotVouchedVouchesAgainOnce`;
+    - `testScanningTheSameHubWhileNeedsOwnerReusesTheRecord`;
+    - `testTheConfirmedWriteIsRetriedBeforeVouch`;
+    - `testOnlyCancelDeletesTheKeysOfAConfirmedLink` (every state × every refusal: keys present until Cancel);
     - `testForbiddenBeforeTheFirstReadIsRetriedAndNeverARemoval`;
     - `testAFailureAfterPromoteResumesWithoutASecondHelloOrPromote`;
     - `testKilledPastTheDeadlineAfterPromoteResumesOnRelaunch` (promote done, app killed, the clock moved past the code's `exp`, relaunch: `prepare` and `linked` succeed in the background, no second hello or promote, the row's route is `.hostedRelay`);
@@ -835,7 +857,7 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
     - `testANeverLiveLinkThatGetsHubOnRelayEnds` (no heartbeat since `linkedAt`; `hub_on_relay` arrives later: the link ends with the notice);
     - `testALiveLinkThatGetsHubOnRelayIsKept`;
     - `testAPromotedMacIsNamedOnTheSlotsScreenAndItsRemoveCancels` (a promoted link's Mac reads "build-box" / "Finishing link"; Remove runs the cancel path: farewell attempt, `remove_slot`, local state gone);
-    - `testNotPayingAtOpenIsRefused`, `testOpenUnreachableIsRelayUnreachable`, `testAPairingPrepareFailureClosesTheSlot`, `testAHelloWriteFailureClosesTheSlot`, `testNoAnswerClosesTheSlot`, `testReplacementLimitOnPromote`, `testAPromoteRepeatedAfterAKillIsDoneWhenTheMacHoldsASlot`, `testRemoveFailureShowsTryAgain`;
+    - `testNotPayingAtOpenIsRefused`, `testOpenUnreachableIsRelayUnreachable`, `testAPairingPrepareFailureClosesTheSlot`, `testAHelloWriteFailureClosesTheSlot`, `testNoAnswerClosesTheSlot`, `testAPromoteRepeatedAfterAKillIsDoneWhenTheMacHoldsASlot`, `testRemoveFailureShowsTryAgain`;
     - `testTheHalfBeforePromoteIsBoundedByTheCodesDeadline`;
     - `testAnUnknownPayingAnswerIsRelayUnreachableNeverICloud`;
     - `testSlotsFullShowsTheMacsWithRemove`, `testRemovingALinkedMacUnlinksItThenLinksWithTheSameCode`, `testRemovingAnUnknownSlotCallsRemoveSlotOnly`;
@@ -844,10 +866,10 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
     - `testARelayLinkNeedsNoICloudAccount`.
   - `LinkingViewModelTests`: every existing test unchanged, plus `testFailureCopyMatchesTheMockup` for the four new cases and the finishing state's copy and `RelaySlotsModelTests` (create) for the slots screen's copy and states.
   - `OrangeToneTests`: the failure view's `toneUses`.
-  - `ScreenshotTourTests`: `link-needs-relay`, `link-relay-unreachable`, `link-relay-replacement-limit`, `relay-slots-full`, `relay-slots-removing`, `relay-slots-remove-error`, `link-mac-on-relay`, `link-finish-in-background`, `relay-slots-finishing-mac`, `notice-mac-on-relay`, `macs-finishing-row`, `macs-finishing-row-error`, `macs-finishing-row-needs-owner`, `macs-finishing-cancel-confirm`, each in light, dark and narrow.
+  - `ScreenshotTourTests`: `link-needs-relay`, `link-relay-unreachable`, `link-relay-replacement-limit`, `relay-slots-full`, `relay-slots-removing`, `relay-slots-remove-error`, `link-mac-on-relay`, `link-finish-in-background`, `relay-slots-finishing-mac`, `notice-mac-on-relay`, `macs-finishing-row`, `macs-finishing-row-error`, `macs-needs-owner-<reason>` for each of the seven reasons, `macs-finishing-cancel-confirm`, each in light, dark and narrow.
 - [ ] **Step 2: Run, expect failure:** `make mobile-gen`, then `make mobile-test SIM='iPhone 17 Pro' MOBILE_FILTER='LinkRoutePolicyTests|RelayLinkingTests|LinkingViewModelTests'`.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run:** the Step 2 filter plus `AppRootRelinkTests|WelcomeTests|ScreenshotTourTests|OrangeToneTests|HubRegistryTests`. All pass. Then run `make mobile-shots SIM='iPhone 17 Pro'` and compare every shot listed in Step 1 (fourteen, each light, dark and narrow) with Task 8's frames and section 6's "Add Mac" frame; record any difference in the commit body.
+- [ ] **Step 4: Run:** the Step 2 filter plus `AppRootRelinkTests|WelcomeTests|ScreenshotTourTests|OrangeToneTests|HubRegistryTests`. All pass. Then run `make mobile-shots SIM='iPhone 17 Pro'` and compare every shot listed in Step 1 (twenty, each light, dark and narrow) with Task 8's frames and section 6's "Add Mac" frame; record any difference in the commit body.
 - [ ] **Step 5: Lint and guard check.**
 - [ ] **Step 6: Commit:** `feat(mobile): link a hub over a Relay pairing slot; the new link failures (#1242)`
 
@@ -964,7 +986,7 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
 2. Register a `DEVICE_KIND_PHONE` with `FakeAppAttest` bytes; the stand's attestation is off. Grant the entitlement with `HTTPRelayStandControl`.
 3. `HostedRelayPairing.open`, then seal and write the hello with `relayDeviceID` into `pair/<slot>`.
 4. Read the awaiting keybox, compute SAS v2, write `pair.sas`, wait for `confirmed`, and read the keys.
-5. `promote`.
+5. `HostedRelayPairing.vouch` (Task 18; a phone on the dev stand sends no attestation), then `promote`. Before that, a `promote` without a vouch answers `HUB_NOT_VOUCHED` (asserted once); the Go hub, unvouched until promote, reads only its pair zone.
 6. Read the data zone through `HostedRelayTransport` (`.hub`) and `SecureTransport`. Open the `device_grant` and the `heartbeat`, and assert every slice kind the hub published opens (spec §13 E2E (3)).
 7. Enqueue three ordered actions through `ActionOutbox` with a canary marker, so the hub's `interop_mark` handler applies them. Read the `applied` echoes and delete them (`expect: .seq`).
 8. Merge the grant's keys and send `epoch_ack`.
@@ -973,7 +995,7 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
 11. **The slot is free:** `add_slot` of the same Mac succeeds (and the account still lists at most 3 Macs); write `readded`, wait for `go.done`.
 
 - [ ] **Step 1: Write** the Go test, the Kit test and the script tests. The script refuses a missing relay checkout or a held port.
-- [ ] **Step 2: Run:** `bash scripts/tests/test-relay-interop-kit-hub.sh`, and `go vet -tags interop ./internal/hub` (compiles the Go test). Then run `make relay-interop-kit-hub RELAY=<clean relay worktree at 3a99bd7> > "${TMPDIR:-/tmp}/p3-interop-hub.log" 2>&1; echo "exit=$?"`, expecting `exit=0`. Record the run (passed, skipped, failed) in the commit body.
+- [ ] **Step 2: Run:** `bash scripts/tests/test-relay-interop-kit-hub.sh`, and `go vet -tags interop ./internal/hub` (compiles the Go test). Then run `make relay-interop-kit-hub RELAY=<clean relay worktree at bcca870> > "${TMPDIR:-/tmp}/p3-interop-hub.log" 2>&1; echo "exit=$?"`, expecting `exit=0`. Record the run (passed, skipped, failed) in the commit body.
 - [ ] **Step 3:** `make lint-diff`, `make lint-swift`, `go test ./internal/hub/...` (interop excluded).
 - [ ] **Step 4: Commit:** `test: a Kit phone links, drives and unlinks the Go hub on the relay's stand (#1242)`
 
@@ -1001,7 +1023,7 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
 - Modify: `docs/guide/features/iphone.md`. Add one bullet under **When it's empty or wrong**: **"<hub> works over Relay only"**. That hub (a Linux box or a Mac without the Watchtower app) links only over Relay, which this version of Watchtower for iPhone doesn't offer; link it from the Mac app instead if it has one. The bullet follows `docs/guide/WRITING.md`: bold for UI text, no internals. There is no Learn card: nothing new to learn until Phase 4.
 - Modify: `docs/features/relay-client.md`:
   - a Phase 3 section: identity and Keychain items (R1 of Phase 3), origin and entitlement, `RelayAvailability`, the shared session (R2), pairing mode and `HostedRelayPairing`, the link route rule (R4), the follower, the side reader, epochs (R8–R10), the interop and CI entry point;
-  - v1 limits updated: `testAttestUnsupportedStaysOnCloudKit` done; the dark ship; a cancelled or unlinked relay link stays in the Go hub's device list until the owner removes it on the Mac (the Go hub reads no `device` records yet), although the freed slot already drops it from the readers; no vouch; no pushes, so a backgrounded app on the relay waits for the foreground; the promote residual (R5); the stalled-resync limit kept until Task 17.
+  - v1 limits updated: `testAttestUnsupportedStaysOnCloudKit` done; the dark ship; vouching proven on the stand (attestation off), a real assertion first on staging; a cancelled or unlinked relay link stays in the Go hub's device list until the owner removes it on the Mac (the Go hub reads no `device` records yet), although the freed slot already drops it from the readers; no vouch; no pushes, so a backgrounded app on the relay waits for the foreground; the promote residual (R5); the stalled-resync limit kept until Task 17.
 - Modify: `docs/features/mobile-companion.md`: linking (v4 codes, the relay pairing slot, the hello's `relay_device_id`), epochs (7-day retention, `epoch_ack`), the transport per hub and the follower (cite the protocol spec §7.6), and the per-route transport store file.
 - Modify: `CLAUDE.md` (the relay-client feature line names Phase 3a)
 - Modify: `docs/superpowers/specs/2026-10-29-relay-client-design.md`:
@@ -1019,7 +1041,7 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
 
 ### Task 16: Phase 3a gate
 
-**Depends on:** Tasks 1–15
+**Depends on:** Tasks 1–15, 17 and 18
 
 - [ ] **Step 1: Kit and Desktop:** `make test-swift > "${TMPDIR:-/tmp}/p3-swift.log" 2>&1; echo "exit=$?"`. Expect `exit=0`; interop classes skip.
 - [ ] **Step 2: Phone:** `make mobile-build SIM='iPhone 17 Pro'`, then `make mobile-test SIM='iPhone 17 Pro' > "${TMPDIR:-/tmp}/p3-mobile.log" 2>&1; echo "exit=$?"`. Expect `exit=0`.
@@ -1038,50 +1060,88 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
 
 ---
 
-## Phase 3b — blocked tasks
+### Task 17: Move the proto pin to relay `bcca870` and set `Changes.resync`
 
-**Draft, not approved with this plan.** Each task is an outline of what the dependency unlocks, so the 3a work leaves room for it. Op, field and error names are working names (relay ask #805 is not started). When a task's dependency lands, it is re-planned against the shipped relay commit and the Go hub code, and that plan goes to the owner for approval on its own. Task 17 is the exception: its dependency (relay PR #3) is written, so its text is final and its approval is item 10 below.
-
-### Task 17: Move the proto pin to relay PR #3 and set `Changes.resync` (after relay PR #3 merges)
-
-**Depends on:** E5 (relay PR #3, `fix/changes-resync` `5d8b577`, merged into relay `main`; board #1430); Task 3
+**Depends on:** none (E2 and E5 are done: `bcca870` contains `1c6e9e0`). First task of lane A: Tasks 3, 5 and 18 build on its proto.
 
 **Files:**
-- Regenerate: `WatchtowerKit/Sources/WatchtowerRelayProto/{relay.proto,relay.pb.swift,VERSION}` with `make relay-proto RELAY=<clean relay worktree> REF=<merge commit>`, committed alone first.
+- Regenerate: `WatchtowerKit/Sources/WatchtowerRelayProto/{relay.proto,relay.pb.swift,VERSION}` with `make relay-proto RELAY=<clean relay worktree> REF=bcca870`, committed alone first. New in the proto: `Changes.resync = 4`, `DEVICE_KIND_HUB = 3`, `CHALLENGE_PURPOSE_VOUCH = 2`, `Request.vouch_hub = 21` (`VouchHub{hub_device_id, auth_pub, nonce, attestation}`), `ERROR_CODE_HUB_NOT_VOUCHED = 22`, `CONTROL_KIND_SLOT_ADDED = 6`.
 - Modify: `WatchtowerKit/Sources/WatchtowerHostedRelay/Transport/HostedRelayTransport+Pull.swift`. Every page of a resync from 0 sends `resync = true`, and an incremental pull never does. The stall hold (`resyncStallHold`) stays only for a `TOKEN_EXPIRED` on a resync page with the flag set, which the README still allows for a `since_seq` above the zone's seq.
+- Modify: `HostedRelayTransport+Errors.swift`: `HUB_NOT_VOUCHED` on a mailbox op → `.permanent(code: "hub_not_vouched")` (it cannot happen for a phone; named so it is not a `relay_22` transient), pinned by `testErrorMapping`. The phone ignores `SLOT_ADDED` (a hub-only control).
 - Modify: `WatchtowerKit/Sources/WatchtowerHostedRelayTesting/FakeHostedRelay+Zones.swift` (the flag skips only the floor check)
 - Modify: `docs/features/relay-client.md` (v1 limit "Resync below the tombstone floor" removed; the pin line)
 - Test: `HostedRelayTransportTests`:
   - `testAResyncSetsTheFlagOnEveryPage`;
   - `testAnIncrementalPullNeverSetsIt`;
   - `testAResyncBelowTheFloorFinishesAndDeletesWhatItDidNotReturn`;
+  - `testErrorMapping` (with `HUB_NOT_VOUCHED`);
   - `RelayProtoPinTests` passes on the new `VERSION`.
 
-- [ ] **Step 1:** Run the failing tests, then regenerate, then implement.
-- [ ] **Step 2:** `make kit-test FILTER='HostedRelayTransportTests|RelayProtoPinTests|RelaySim'`, then `make relay-interop-kit RELAY=<worktree at the new pin>`.
-- [ ] **Step 3:** `make relay-go` is the Go hub session's choice (R14 of Phase 2: the pins are not forced equal). Note both pins in the PR body.
-- [ ] **Step 4: Commit:** `build(kit): relay proto at <commit>; full resyncs set Changes.resync (#1430)`
+- [ ] **Step 1:** Regenerate and commit the copy alone; then the failing tests, then implement.
+- [ ] **Step 2:** `make kit-test FILTER='HostedRelayTransportTests|RelayProtoPinTests|RelaySim'`, then `make relay-interop-kit RELAY=<clean relay worktree at bcca870>`.
+- [ ] **Step 3:** `make relay-go` is the Go hub session's (board task #1345; Phase 2's R14: the pins are not forced equal). Note both pins in the PR body.
+- [ ] **Step 4: Commit:** `build(kit): relay proto at bcca870 (vouched hubs, Changes.resync); full resyncs set the flag (#1430)`
 
-### Task 18: `vouch_hub` on a new link (blocked on relay ask #805)
+### Task 18: `vouch_hub` on the phone
 
-**Depends on:** E2 (relay `vouch_hub`, `DEVICE_KIND_HUB`, `HUB_NOT_VOUCHED` and the vouch digest bytes, in relay `main`); a Kit proto pin at that commit (Task 17's procedure); Task 10. E3 for its interop half.
+**Depends on:** Tasks 5 and 17
 
 **Files:**
-- `HostedRelayPairing.swift`: `vouch` sends the op with `RelayAttestor`'s assertion over the relay's vouch digest. The bytes are copied from the relay README, and a Go-generated vector extends `RelayAuthVectorTests`.
-- `FakeHostedRelay+Accounts.swift`: the vouch model and an unvouched hub.
-- `LinkingViewModel.swift`: vouch after the keys, before promote. A refusal (`ATTESTATION_*`, slot limit) closes the slot and shows the server's reason as `LinkFailure.vouchRefused(code)`, with mockup copy added to Task 8's section in this task.
-- `GoHubInteropTests`: `testVouchedHubLinksAndPublishes` against Go hub Phase 2 Task 10.
+- Modify: `WatchtowerKit/Sources/WatchtowerHostedRelay/Identity/RelayAuthMessages.swift`: `vouchClientDataHash(nonce:hubDeviceID:authPub:origin:)` = `SHA256("relay/v1/vouch" ‖ nonce ‖ hub_device_id ‖ auth_pub ‖ server_origin)`, strings as UTF-8.
+- Modify: `WatchtowerKit/Sources/WatchtowerHostedRelay/Client/HostedRelayClient+Ops.swift`: `challenge(purpose: .vouch) -> Data`, `vouchHub(_:)`.
+- Modify: `WatchtowerKit/Sources/WatchtowerHostedRelay/Attest/RelayAttestor.swift`: `vouchAssertion(clientDataHash:)`, and **one assertion at a time**. The attestor is the only caller of `generateAssertion`; login and vouch assertions go through one serial queue, and the next assertion is generated only after the previous request was answered (`proto/README.md` client rules: login and `vouch_hub` share the assertion counter, and a later assertion reaching the server first makes the earlier one fail).
+- Modify: `WatchtowerKit/Sources/WatchtowerHostedRelay/Transport/HostedRelayPairing.swift`: `vouch(hubDeviceID:authPub:)`.
+- Modify: `WatchtowerKit/Sources/WatchtowerHostedRelayTesting/FakeHostedRelay+Accounts.swift`, `+Auth.swift`: the vouch model of `proto/README.md` "Vouched hubs": the six checks in their order; a pending vouch per hub kept 10 min and renewed by a repeat; `add_slot`/`promote_pairing` of a hub not in slots consumes it or answers `HUB_NOT_VOUCHED`; a failing `add_slot` does not consume it; a hub already in slots needs none; the assertion counter shared with login; an unvouched hub limited to its pair zone; a phone on dev sends no attestation.
+- Test: Create `WatchtowerKit/Tests/WatchtowerHostedRelayTests/HostedRelayVouchTests.swift`; extend `RelayAuthVectorTests`, `RelayAttestorTests`
 
-**Tests:**
+**Interfaces:**
+```swift
+extension HostedRelayPairing {
+    public enum VouchRefusal: Error, Equatable { case notPaying, updateRequired, hubNotOnRelay, slotsFull, notConfirmed, unreachable, attestationBackoff(until: Date) }
+    /// GetChallenge{purpose: VOUCH} → assertion over the vouch hash → vouch_hub. Every attempt takes a new nonce and a new assertion.
+    public func vouch(hubDeviceID: String, authPub: Data) async throws   // throws VouchRefusal
+}
+```
 
-- `testVouchCarriesTheAssertionOverTheVouchDigest`;
-- `testAVouchRefusalKeepsTheHubOffTheRelay` (table: `ATTESTATION_REQUIRED`, `ATTESTATION_FAILED`, `SLOT_LIMIT`);
-- `testNoPromoteWithoutAVouch`;
-- the Go hub Phase 2 Task 12 vouch tests, which run on our script (Owner approval 9).
+**Answers.** The server checks in this order and answers the first failure: `FORBIDDEN` → `ENTITLEMENT_INACTIVE` → `ATTESTATION_REQUIRED` → `ATTESTATION_FAILED` → `NOT_FOUND` → `SLOT_LIMIT`.
 
-**Commit:** `feat: the phone vouches for the hub before promote (#1242)`
+| Answer | Phone action | Thrown |
+|---|---|---|
+| `Ok` | the pending vouch holds 10 min; promote or `add_slot` follows within it | — |
+| `ATTESTATION_FAILED` | a new `VOUCH` nonce and assertion, retry once; on a second failure the lost-key path (`RelayAttestor`'s fresh attestation at the next login, Phase 2), then retry once more; after that | `.updateRequired` |
+| `ATTESTATION_REQUIRED` | no retry | `.updateRequired` |
+| `ENTITLEMENT_INACTIVE` | no retry (the subscription screen is Phase 4) | `.notPaying` |
+| `NOT_FOUND` | no retry: the hub has not registered on the relay | `.hubNotOnRelay` |
+| `SLOT_LIMIT` | no retry | `.slotsFull` |
+| `FORBIDDEN` | cannot happen for a phone session; logged | `.notConfirmed` |
+| unreachable, `UNAVAILABLE` past 30 s, attestation `.retryLater` | the next attempt takes a new nonce and assertion | `.unreachable` / `.attestationBackoff` |
 
-### Task 19: Upgrade an existing CloudKit link to the relay (blocked on relay ask #805 and Go hub Phase 3)
+Task 10 maps these to `.needsOwner(reason)` (point 6) and handles `HUB_NOT_VOUCHED` from `promote_pairing`/`add_slot` (vouch again, then repeat once).
+
+- [ ] **Step 1: Failing tests:**
+  - `RelayAuthVectorTests.testVouchClientDataHashVector`: nonce `[1, 2]`, hub_device_id `"h"`, auth_pub `[3]`, origin `"https://r"` → `ecdda44ae74bd86e122f2edd43708cf2b8012cc194f78ed5728052e5c109956d` (the relay's vector, board #1432);
+  - `HostedRelayVouchTests`:
+    - `testVouchSendsAVouchChallengeThenTheAssertion` (purpose `VOUCH`; the assertion is over the vouch hash of that nonce, the hub's id and key);
+    - `testEveryRetryTakesANewNonceAndAssertion`;
+    - `testAttestationFailedRetriesOnceThenLostKeyThenOnceMoreThenUpdate`;
+    - `testAttestationRequiredIsUpdateRequired`;
+    - `testEntitlementInactiveIsNotPaying`, `testNotFoundIsHubNotOnRelay`, `testSlotLimitIsSlotsFull`;
+    - `testRefusalsComeInTheServersOrder` (the fake fails several checks at once; the first in the order is answered);
+    - `testPromoteWithoutAVouchIsHubNotVouched`, `testAVouchOlderThanTenMinutesIsHubNotVouched`, `testAFailedAddSlotDoesNotConsumeTheVouch`, `testAHubAlreadyInSlotsNeedsNoVouch`;
+  - `RelayAttestorTests.testLoginAndVouchAssertionsNeverOverlap`: a login and a vouch started together; the second assertion is generated only after the first request was answered, and the fake's counter never sees an older assertion after a newer one.
+- [ ] **Step 2: Run, expect failure:** `make kit-test FILTER='HostedRelayVouchTests|RelayAuthVectorTests|RelayAttestorTests'`.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run:** the Step 2 filter plus `HostedRelayPairingTests|HostedRelayAttestationTests|HostedRelayClientTests`, then `make relay-interop-kit RELAY=<clean relay worktree at bcca870>`.
+- [ ] **Step 5: Lint.**
+- [ ] **Step 6: Commit:** `feat(kit): the phone vouches for the hub — vouch_hub with a serialized assertion (#1242)`
+
+---
+
+## Phase 3b — blocked tasks
+
+**Drafts, not approved with this plan.** Each task outlines what its dependency unlocks, so the 3a work leaves room for it. When a dependency lands, its task is re-planned against the Go hub code and that plan goes to the owner for approval on its own.
+
+### Task 19: Upgrade an existing CloudKit link to the relay (blocked on Go hub Phase 3)
 
 **Depends on:** Task 18; E4 (a Mac on the Go hub publishes `relay_device_id` and `relay_auth_pub` in `device_grant`: Go hub Phase 3 Tasks 12 and 21)
 
@@ -1122,9 +1182,9 @@ This also closes Go hub Phase 3 Task 27's interop step for the Kit phone.
 
 **Commit:** `test: the Kit phone follows the Go hub's switch both ways (#1247)`
 
-### Task 21: Phase 3b gate (blocked on E2, E3, E4)
+### Task 21: Phase 3b gate (blocked on E3, E4)
 
-**Depends on:** Tasks 17–20
+**Depends on:** Tasks 19 and 20; E3
 
 1. Rerun Task 16's suites.
 2. Run `make relay-interop-kit-hub` with vouching.
@@ -1158,9 +1218,9 @@ Decisions taken where the spec is silent, outdated, or contradicts the code or t
 
     A relay identity in a CloudKit code is kept for Phase 3b's upgrade.
   - Cost if wrong: one function (`LinkRoutePolicy`).
-- **R5. Promote comes only after the keys; slots are checked first.**
-  - Why: spec §8 orders vouch and promote after the owner's confirmation. `promote_pairing` can still be refused after the Mac linked the phone (`PAIRING_EXPIRED` past 600 s, `SLOT_REPLACEMENT_LIMIT`). The slot count is checked before `open_pairing` from `get_account_state`, so the common refusal never reaches the Mac. Until the first data-zone read succeeds, `FORBIDDEN` is "not a reader yet" and is retried on the transport's backoff with no time window: the Go hub syncs readers after a link with no relay event, as `interop_test.go`'s `eventually` shows. Phase 3 never infers a removal from `FORBIDDEN` at all (removals come through the hub's `revoked` keybox, as today). After a successful promote the link moves out of the link screen into `store.promoted[hubID]` and resumes in the background, per hub, at every launch and foreground, with no time limit, until it succeeds or the owner cancels it from its Settings → Macs row; Cancel ends the link with the farewell and `remove_slot` (R14). It never blocks scanning: a code of the same hub resumes it without a hello, a code of another hub links normally. Only the half before promote is bounded by the code's deadline. Several promoted links share the one socket (R2), each holds its relay slot and counts toward the 4 Macs.
-  - Cost if wrong: a refused promote leaves a linked phone on the Mac that never reads. The owner removes it with **Remove…** (v1 limit). A Go hub that is slow to sync readers keeps the phone on "Waiting for <Mac>" longer, never unlinked.
+- **R5. Vouch and promote come only after the keys; slots are checked first; a confirmed link is never dropped without the owner.**
+  - Why: spec §8 and `proto/README.md` "Vouched hubs" order vouch, then promote, after the owner's confirmation. The slot count is checked before `open_pairing`, so the common refusal never reaches the Mac. Once the keys arrived (the owner confirmed), the link lives in `store.promoted` (`.confirmed` → `.promoteSent` → `.promoted`); every definite refusal of vouch or promote, live or on a relaunch retry (`PAIRING_EXPIRED` included), moves it to `.needsOwner(reason)` with the keys kept, and only the owner's Cancel deletes them. A confirmed link resumes in the background at every launch and foreground, never holds the link screen, and never blocks scanning another hub; a code of the same hub reuses the record (a new slot where needed, no second hello). Until the first data-zone read succeeds, `FORBIDDEN` is "not a reader yet", retried with no time window; Phase 3 never infers a removal from it. Several confirmed links share the one socket (R2), each holds its slot and counts toward the 4 Macs.
+  - Cost if wrong: a link refused for good after the confirmation waits as a row until the owner cancels it, and the Mac keeps a linked device that never reads until removed there (v1 limit). A slow readers sync keeps "Waiting for <Mac>" longer.
 - **R6. The Kit reads v3 and v4 and still issues v3.**
   - Why: the Swift hub issues v3 until the Go hub replaces it (Go hub Phase 3 Task 24). `container` and `owner_user` are optional only in v4. A v4 code's `relay_device_id` must equal the base32 SHA-256 of its `relay_auth_pub`: the phone vouches for that key and opens a slot for that id, and a mismatch would admit or address the wrong device.
   - Cost if wrong: a Go hub with a mismatched pair cannot be linked. The fixture now pins a coherent pair, and the Go hub derives both from one key (`HeadlessHost`).
@@ -1189,15 +1249,18 @@ Decisions taken where the spec is silent, outdated, or contradicts the code or t
 - **R14. Unlinking a relay hub frees its slot.**
   - Why: the farewell goes first, through the hub's mailbox while the phone can still write it, then `remove_slot` is called. A failed removal is kept and retried at launch. Without this the slot leaks and the subscription fills (3 slots). The relay counts a later add after a removal as a replacement (5 per 30 days); that is the relay's rule.
   - Cost if wrong: a slot the owner frees later in Phase 4's slots screen.
-- **R15. The Kit ↔ Go hub interop is Kit-level and needs no vouch.**
-  - Why: the app's link flow is covered by phone tests on the fake. The interop proves wire compatibility with the real Go hub (test mode, `WATCHTOWER_HUB_DIR`) on the real stand, which has attestation off, so the Go hub registers as a MAC device (`transport/relay/transport.go`). It takes over the non-vouch part of Go hub Phase 2 Task 12; the vouch part stays there and runs through our script (Task 18).
+- **R15. The Kit ↔ Go hub interop is Kit-level and runs on the stand at `bcca870`, vouch included.**
+  - Why: the app's link flow is covered by phone tests on the fake. The interop proves wire compatibility with the real Go hub (test mode, `WATCHTOWER_HUB_DIR`) on the real stand. With attestation off there, today's Go hub (copy at `3a99bd7`, registering as a MAC with no attestation) is a hub the phone vouches for, so the interop runs vouch → promote end to end without waiting for Go hub Phase 2 Task 10. It takes over Go hub Phase 2 Task 12's Kit half; that task keeps the headless-host checks.
   - Cost if wrong: a second harness if the Go hub session prefers its own.
 - **R16. The relay CI job is the relay session's; Phase 3a provides its entry point.**
   - Why: spec §12 p. 4 lists the job under what we need from the relay repository (ask #734). Task 14 gives it two non-interactive commands with a summary line.
   - Cost if wrong: none for this repository.
-- **R17. The proto pin moves only after relay PR #3 merges.**
-  - Why: pinning an unmerged branch would make the Kit speak a proto that `main` might never have. Until then, Phase 2's v1 limit (a resync below the tombstone floor stalls for 1 h, deleting nothing) stays.
-  - Cost: that limit stays until E5.
+- **R17. The Kit pins relay `bcca870`.**
+  - Why: it is relay `main` and deployed on staging, and it holds both what Phase 3 needs: `Changes.resync` (PR #3, `1c6e9e0`) and vouched hubs (PR #5). Task 17 runs first in lane A, so every relay task builds on that proto. The Go copy moves on its own train (#1345); the wire is additive, so a Go hub at `3a99bd7` and a Kit at `bcca870` interoperate.
+  - Cost: none known; moving again is `make relay-proto REF=<commit>`.
+- **R21. The phone vouches with a serialized assertion and a fresh nonce per attempt.**
+  - Why: `proto/README.md` "Vouched hubs" client rules. Login and `vouch_hub` share the App Attest counter, so `RelayAttestor` generates one assertion at a time and the next only after the previous request returned; `NOT_FOUND` and `SLOT_LIMIT` are checked after the nonce and counter were spent, so every retry takes a new `VOUCH` nonce and assertion. `ATTESTATION_FAILED` retries once, then the lost-key path, then once more; the hash is pinned by the relay's vector.
+  - Cost if wrong: a vouch that fails against a login racing it, which the serial queue rules out.
 - **R18. `testAttestUnsupportedStaysOnCloudKit` lives in `WatchtowerMobile/Tests/RelayAvailabilityTests.swift`.**
   - Why: Phase 2 R16 promised it in `WatchtowerMobile/Tests`. It asserts the routing half: `isSupported == false` → no relay, CloudKit transport.
   - Cost: none.
@@ -1212,9 +1275,9 @@ Decisions taken where the spec is silent, outdated, or contradicts the code or t
 
 These contract and behaviour changes are not approved yet. Approving this plan's review ask approves them; a refused item changes what its line names.
 
-1. **Split and dark ship (R1, External dependencies).** Phase 3 splits into 3a, shippable now, and 3b, blocked on relay ask #805 and Go hub Phase 3. 3a ships with no Release relay origin, against spec §4's "default the production origin", until §12 p. 5. What still runs in a Release build is listed in full under Global Constraints, "Dark ship" (v4 codes, epoch retention and `epoch_ack`, the rule 14 reseal, the follower on CloudKit that finds nothing until a Go hub can switch, one registry migration). The deviation from spec §4 is the author's: no production origin exists (E7), and the relay refuses pairing to a phone that cannot pay before Phase 4. Refused → Phase 3 waits for E2 and E4 as one phase, and the origin needs a value that does not exist yet.
+1. **Split and dark ship (R1, External dependencies).** Phase 3 splits into 3a (Tasks 1–18, vouch included now that relay `bcca870` ships it), shippable now, and 3b (Tasks 19–21), blocked on Go hub Phase 3. 3a ships with no Release relay origin, against spec §4's "default the production origin", until §12 p. 5. What still runs in a Release build is listed in full under Global Constraints, "Dark ship" (v4 codes, epoch retention and `epoch_ack`, the rule 14 reseal, the follower on CloudKit that finds nothing until a Go hub can switch, one registry migration). The deviation from spec §4 is the author's: no production origin exists (E7), and the relay refuses pairing to a phone that cannot pay before Phase 4. Refused → Phase 3 waits for E4 as one phase, and the origin needs a value that does not exist yet.
 2. **The link route rule (R4).** A v4 code links over the hub's current transport. A phone that cannot use Relay is refused for a Mac on Relay on every path, the iCloud path included: from the code's `transport`, or, when the code has none or is stale, from the hub's transport marker or a `hub_on_relay` control read in the link's completion fetch, or later on a link that never came alive (no heartbeat after its `linkedAt`), which then ends with the same copy as a notice. The alive/never-live boundary is the author's: a link that was alive is kept and follows Task 11, because its Mac can switch back. Refused for that part → every link that gets `hub_on_relay` on a phone that can't use Relay ends, alive or not. The copy is "<Mac> runs over Relay / This iPhone can't use Relay, so it would get no updates from it. Link it when the Mac is back on iCloud.", instead of spec §8's iCloud link that only receives `hub_on_relay`; no relay failure offers **Link over iCloud**, because each arises only for a Mac on Relay; a relay-only hub is refused with "<hub> works over Relay only / Relay isn't available on this iPhone". This copy reaches production phones from headless-host codes. Also: a failed paying check refuses with "Couldn't reach Relay" instead of falling back to iCloud; three Macs in slots shows mockup section 6's "Add Mac" screen with **Remove** (unlinks a Mac on this iPhone, or only frees an unknown slot) and without its "Or add this Mac over iCloud"; the replacement limit shows its own text, not the relay's message (`proto/README.md`: messages are for logs). Refused → a Mac on Relay links over iCloud as spec §8 says and the phone shows `hub_on_relay`'s Not delivered lines; `LinkRoutePolicy`, the slots screen and the Task 8 copy change.
-3. **Pairing order and its residual (R5).** The slot pre-check comes before `open_pairing`, and promote only after the keys. A promote refused after the Mac confirmed leaves a linked phone on the Mac for the owner to remove. From the moment promote is sent the link is kept in one of three states (promote sent, promoted, needs the owner), each a Settings → Macs row with Try Again and Cancel that never blocks scanning another hub; once the owner confirmed the code, keys are deleted only by the owner's Cancel, also when a repeated promote finds the Mac not in the slots ("Relay didn't confirm the link. Try again, or cancel it."). A slot removal is never retried for a Mac any local link names. Cancelling a promoted link (its row's Cancel, or Remove on the slots screen) tries the farewell for at most 10 s, calls `remove_slot` whether or not the farewell went out (a failed removal is kept and retried at launch), and removes the local state either way; the Mac learns from the freed slot and drops the phone from its readers, and keeps it in its device list until the owner removes it there. After a successful promote the link resumes in the background, per hub, at every launch and foreground with no time limit, until it succeeds or the owner cancels it; it never holds the link screen. It shows as a Settings → Macs row ("Finishing the link…", or "Couldn't finish the link. Watchtower tries again when it opens." with **Try Again** and **Cancel**), and the link screen says "<Mac> will finish linking in the background. See Settings → Macs." A code of the same hub resumes it with no new hello; a code of another hub links normally; a promoted link counts toward the 4 Macs and holds its relay slot. Cancel sends the farewell and calls `remove_slot`. Only the half before promote is bounded by the code's deadline. Refused → the link screen waits on a promoted link until it finishes or is cancelled. `FORBIDDEN` is never read as a removal in Phase 3. Refused → promote before the hello (against spec §8's order) or a farewell path through the hub; both are new contracts.
+3. **Pairing order, confirmed links and their residual (R5, R21).** The slot pre-check comes before `open_pairing`; vouch, then promote, only after the keys arrived. From the owner's confirmation on, the link is kept in `store.promoted` (`.confirmed`, `.promoteSent`, `.promoted`, `.needsOwner(reason)`); **every definite refusal of vouch or promote, in the live flow or on a retry after a relaunch, `PAIRING_EXPIRED` included, moves it to `.needsOwner` with the keys kept**, and only the owner's Cancel deletes them. Each state is a Settings → Macs row with **Try Again** and **Cancel** that never holds the link screen and never blocks scanning another hub; the row's copy follows the refusal ("The link timed out on Relay. Try again, or cancel it.", "Relay already has 3 Macs…", "Too many Mac changes on Relay…", "Relay isn't active on this iPhone…", "<Mac> isn't on Relay yet…", "Relay didn't confirm the link…", "Update Watchtower to finish this link…"). Try Again opens a new slot where needed (no second hello); a fresh scan of the same hub's code does the same. A slot removal is never retried for a Mac any local link names. Cancel tries the farewell for at most 10 s, calls `remove_slot` whether or not the farewell went out (a failed removal kept and retried at launch), and removes the local state either way; the Mac learns from the freed slot and keeps the phone in its device list until the owner removes it there. `FORBIDDEN` is never read as a removal in Phase 3. Refused → a refusal after the confirmation fails the link and deletes the keys at once (the owner scans again), and the link screen waits on a resuming link.
 4. **Epoch keys (R8–R10).**
    - Retention: 7 days after a newer epoch arrived, at most 8 epochs (`HubLinkKeys.maxEpochs` 2 → 8); the NSE's alert material follows.
    - `epoch_ack` to ordered hubs.
@@ -1238,8 +1301,8 @@ These contract and behaviour changes are not approved yet. Approving this plan's
    Refused → Tasks 11–12 change.
 7. **Unlink frees the relay slot (R14).** Unlinking a relay hub calls `remove_slot` after the farewell; a later add of another Mac counts toward the relay's 5 replacements per 30 days (the relay's rule, Worker `slots.ts`). The guide's unlink line says so when the relay ships to users (Phase 4). Refused → slots stay until Phase 4's slot screen, and three linked-then-unlinked Macs fill the subscription.
 8. **Relay links without iCloud (R19).** A relay-only link needs no Apple ID, and an iCloud account change does not end relay links. Refused → step 2 stays for every link.
-9. **Cross-plan interop ownership (R15).** This plan's Task 13 adds `internal/hub/interop_kit_test.go` (Go, test only, `-tags interop`) and `scripts/relay-interop-kit-hub.sh`. It takes over the non-vouch half of Go hub Phase 2 Task 12, whose vouch half runs on this script. Refused → Task 13 shrinks to a Kit test against the Go phone emulator's expectations, and Go hub Phase 2 Task 12 keeps the whole interop.
-10. **Task 17 (proto pin to relay PR #3, `Changes.resync`)** runs as soon as PR #3 merges, without a new plan review. Refused → Task 17 is re-planned after the merge. Tasks 18–21 are drafts and are not approved here; each is re-planned and approved when its dependency lands.
+9. **Cross-plan interop ownership (R15).** This plan's Task 13 adds `internal/hub/interop_kit_test.go` (Go, test only, `-tags interop`) and `scripts/relay-interop-kit-hub.sh`, and runs link, vouch, promote, actions and unlink against the real Go hub on the stand at `bcca870`. It takes over Go hub Phase 2 Task 12's Kit half; that task keeps the headless-host checks. Refused → Task 13 shrinks to a Kit test against the Go phone emulator's expectations, and Go hub Phase 2 Task 12 keeps the whole interop.
+10. **Tasks 17 and 18 are now part of what this plan approves.** Relay `bcca870` (PR #5, deployed on staging) shipped vouched hubs and contains PR #3, so Task 17 pins it and Task 18 builds the phone's `vouch_hub` (`GetChallenge{VOUCH}` → assertion → `vouch_hub`, then promote within 10 min; the server's refusal order; a new nonce and assertion per retry; assertions serialized with login; the relay's hash vector), with vouch → promote in Task 10. Refused → Tasks 17 and 18 go back to drafts and Task 10 promotes without a vouch, which `bcca870` refuses with `HUB_NOT_VOUCHED`: no relay link would work. Tasks 19–21 stay drafts, not approved here; each is re-planned and approved when Go hub Phase 3 lands.
 
 Already approved, listed for reference only:
 
