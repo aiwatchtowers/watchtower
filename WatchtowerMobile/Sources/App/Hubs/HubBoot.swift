@@ -15,20 +15,13 @@ struct HubSessionFactory {
     /// The session seals and opens with `keys` (the Keychain) for its hub
     /// (mobile E2E); the transport store's folder and stash take class C
     /// (D8, `AppEnvironment.liveTransportStore`).
-    static func live(paths: HubPaths, keys: any PhoneKeyStore) -> Self {
+    static func live(paths: HubPaths, keys: any PhoneKeyStore, transports: TransportFactory = .cloudKit) -> Self {
         Self { _, hubID, route, device in
-            guard let scope = route.cloudKitScope else { throw UnsupportedRouteError(route: route) }
             try paths.prepare(hubID)
             let energy = BatteryDiagnostics.shared.counter
             let active = UIApplication.shared.applicationState == .active
             let transportStore = try AppEnvironment.liveTransportStore(path: paths.transportStorePath(hubID))
-            let transport = CloudKitTransport(
-                store: transportStore,
-                scope: scope,
-                hubID: hubID,
-                role: .phone,
-                energy: energy
-            )
+            let transport = try transports.make(route, transportStore, hubID, energy)
             return try HubSession(
                 transport: transport,
                 replicaPath: paths.replicaPath(hubID),

@@ -23,7 +23,7 @@ final class BatteryDiagnostics: Sendable {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "BatteryDiagnostics")
 
     private static func live() -> BatteryDiagnostics {
-        let grouped = CloudKitTransport.entitlementPresent()
+        let grouped = TransportFactory.cloudKit.isAvailable()
         let defaults = grouped ? UserDefaults(suiteName: AppEnvironment.appGroupID) ?? .standard : .standard
         let directory: URL?
         do {
