@@ -748,7 +748,12 @@ func TestConfigRecordingsDir(t *testing.T) {
 		cfg := &Config{}
 		got := cfg.RecordingsDir()
 		require.NotEmpty(t, got, "default recordings dir must resolve when a home directory exists")
+		// The Swift recorder runs only on macOS; off darwin the default
+		// follows AppSupportDir (<data root>/.support).
 		suffix := filepath.Join("Library", "Application Support", "Watchtower", "recordings")
+		if runtime.GOOS != "darwin" {
+			suffix = filepath.Join(".local", "share", "watchtower", ".support", "recordings")
+		}
 		assert.True(t, strings.HasSuffix(got, suffix),
 			"default must match the Swift MeetingRecorderCenter path, got %q", got)
 	})
