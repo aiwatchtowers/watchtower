@@ -386,3 +386,22 @@ func TestHostNameStripsTheDomain(t *testing.T) {
 		t.Fatalf("display_name: %q", got)
 	}
 }
+
+// A live headless hub runs the relay-only rules (spec §7.3); the test mode
+// of a set WATCHTOWER_HUB_DIR keeps Phase 1's behaviour without them.
+func TestResolve_RelayOnlyRulesOnlyInLiveMode(t *testing.T) {
+	dir := liveHome(t)
+	t.Setenv(EnvRelayOrigin, "https://relay.example.com")
+	setMeta(t, dir, state.MetaEnabled, "1")
+	o, mode, err := resolve(&config.Config{}, nil, headless())
+	if err != nil || mode != ModeLive || !o.RelayOnlyRules {
+		t.Fatalf("live: mode %q rules %v err %v", mode, o.RelayOnlyRules, err)
+	}
+
+	t.Setenv(EnvHubDir, filepath.Join(t.TempDir(), "hub"))
+	t.Setenv(EnvTestWorkspace, "hubtest-a")
+	o, mode, err = resolve(&config.Config{ActiveWorkspace: "hubtest-a"}, nil, headless())
+	if err != nil || mode != ModeTest || o.RelayOnlyRules {
+		t.Fatalf("test mode: mode %q rules %v err %v", mode, o.RelayOnlyRules, err)
+	}
+}

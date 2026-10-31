@@ -25,8 +25,11 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
 // PageLimit is the most changes one Changes call returns (the hub's batch limit).
@@ -74,6 +77,8 @@ type Fake struct {
 	attCounter  uint64
 	pending     []transport.Event // events waiting for room in the channel
 	pumping     bool              // a pump goroutine owns pending
+	account     *relayv1.AccountState
+	accountRead int
 }
 
 var _ transport.Transport = (*Fake)(nil)
@@ -168,6 +173,40 @@ func (f *Fake) SendEvent(e transport.Event) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.emit(e)
+}
+
+// SetAccountState sets what AccountState answers (nil: no phone holds the
+// hub in a slot).
+func (f *Fake) SetAccountState(st *relayv1.AccountState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.account = nil
+	if st != nil {
+		f.account = proto.Clone(st).(*relayv1.AccountState)
+	}
+}
+
+// AccountState is the hosted relay's get_account_state over the fake: a copy
+// of what SetAccountState set, or an empty state; it fails while the fake is
+// down, and every call is counted (AccountStateReads).
+func (f *Fake) AccountState(context.Context) (*relayv1.AccountState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accountRead++
+	if f.down {
+		return nil, transport.ErrUnavailable
+	}
+	if f.account == nil {
+		return &relayv1.AccountState{}, nil
+	}
+	return proto.Clone(f.account).(*relayv1.AccountState), nil
+}
+
+// AccountStateReads is how many times AccountState was called.
+func (f *Fake) AccountStateReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.accountRead
 }
 
 // Write is the phone's side: it stores env under name in zone with no sealer

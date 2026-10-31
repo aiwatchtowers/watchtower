@@ -87,6 +87,10 @@ type Config struct {
 	Spacing   time.Duration
 	Clock     func() time.Time
 	Linked    func() (bool, error)
+	// OnError (nil = none) sees every failed cycle's error in Run (the
+	// hub's relay-only rules re-read the account state on
+	// ENTITLEMENT_INACTIVE).
+	OnError func(error)
 }
 
 // CycleReport is what one cycle did. Skipped names records not published
@@ -132,7 +136,9 @@ type Publisher struct {
 	// since one is.
 	unlinkedSeen bool
 
-	mu          sync.Mutex // guards the dirty set and lastPublish
+	mu          sync.Mutex // guards the dirty set, the pause and lastPublish
+	paused      bool       // Pause: no cycle runs, the dirty set waits
+	resumed     bool       // Resume: Run's next step is one full diff
 	dirty       map[Kind]bool
 	firstDirty  time.Time // monotonic, first PublishSoon of the dirty set
 	lastDirty   time.Time // monotonic, latest PublishSoon
@@ -189,6 +195,43 @@ func (p *Publisher) PublishSoon(kinds ...Kind) {
 	}
 }
 
+// Pause stops publishing (spec §7.3, a headless hub with no paying phone):
+// no cycle runs until Resume, and the kinds marked meanwhile stay dirty. It
+// returns once a cycle already running has ended, so nothing is saved or
+// deleted after it.
+func (p *Publisher) Pause() {
+	p.mu.Lock()
+	p.paused = true
+	p.mu.Unlock()
+	p.cycleMu.Lock()
+	p.cycleMu.Unlock() //nolint:staticcheck // SA2001: only waits for the running cycle
+}
+
+// Resume ends a Pause: Run's next step is one full diff, which covers what
+// changed during the pause. A Resume without a Pause does nothing.
+func (p *Publisher) Resume() {
+	p.mu.Lock()
+	if !p.paused {
+		p.mu.Unlock()
+		return
+	}
+	p.paused, p.resumed = false, true
+	p.mu.Unlock()
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+// pauseState reads the pause and takes a pending Resume's full diff.
+func (p *Publisher) pauseState() (paused, resumed bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	paused, resumed = p.paused, p.resumed
+	p.resumed = false
+	return paused, resumed
+}
+
 // LastPublishAt is the end of the last completed cycle (the heartbeat's
 // last_publish_at); ok is false before the first.
 func (p *Publisher) LastPublishAt() (time.Time, bool) {
@@ -233,6 +276,24 @@ func (p *Publisher) Run(ctx context.Context) error {
 	var backoff time.Duration
 	for {
 		now := p.mono()
+		paused, resumed := p.pauseState()
+		if paused {
+			// Nothing goes out; a PublishSoon's or a Resume's wake, or the
+			// full-diff period, brings Run back here.
+			fired, stop := p.timer(FullDiffEvery)
+			select {
+			case <-ctx.Done():
+				stop()
+				return ctx.Err()
+			case <-p.wake:
+			case <-fired:
+			}
+			stop()
+			continue
+		}
+		if resumed {
+			nextFull = now
+		}
 		var (
 			kinds []Kind
 			full  = !now.Before(nextFull)
@@ -262,6 +323,9 @@ func (p *Publisher) Run(ctx context.Context) error {
 			}
 			if err != nil {
 				log.Printf("hub slices: publish cycle failed (%s); %d kinds retried", errClass(err), len(rep.Unfinished))
+				if p.c.OnError != nil {
+					p.c.OnError(err)
+				}
 			}
 			after := p.mono()
 			clockNow := p.clock()
@@ -315,6 +379,18 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 	p.cycleMu.Lock()
 	defer p.cycleMu.Unlock()
 	rep := CycleReport{Deferred: map[Kind]time.Time{}}
+	p.mu.Lock()
+	paused := p.paused
+	p.mu.Unlock()
+	if paused {
+		// Paused after Run chose to cycle: nothing is read or written.
+		rep.Aborted = true
+		rep.Unfinished = kinds
+		if kinds == nil {
+			rep.Unfinished = p.sourceKinds()
+		}
+		return rep, nil
+	}
 	linked := true
 	if p.c.Linked != nil {
 		var err error

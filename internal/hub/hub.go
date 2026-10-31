@@ -151,6 +151,13 @@ type Options struct {
 	// a hub started without Resolve).
 	Mode Mode
 	Host hostkind.Kind
+	// RelayOnlyRules turns on spec §7.3's rules of a headless hub (the live
+	// mode sets it; FromEnv's test mode leaves it off): with no paying phone
+	// in the account state the hub pauses — it publishes nothing, applies no
+	// action and writes no echo or control, keeps its state and local work,
+	// and goes on pairing — and resumes when a paying phone is back. The
+	// transport must have the relay's get_account_state.
+	RelayOnlyRules bool
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)
@@ -174,6 +181,8 @@ type Options struct {
 	liveEvery    time.Duration       // 0 = livenessEvery
 	away         platform.Away       // nil = platform.NewAway(), the console's state
 	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
+	// payTimer is the PayingWatch's poll timer (nil = a real one).
+	payTimer func(time.Duration) (<-chan time.Time, func())
 }
 
 func (o Options) withDefaults() Options {
@@ -441,6 +450,7 @@ func (s *supervisor) reconcile(ctx context.Context) {
 	if h := s.hub; h != nil && (!want || h.mode != mode || h.name != name) {
 		switch {
 		case mode == policy.MobileOff:
+			// Also while paused: deleting published data is the safe direction.
 			s.stopHub(func(slices.Kind) bool { return false })
 		case mode == policy.MobileWorkbenchOnly && h.mode != mode:
 			s.stopHub(workbenchOnly)
@@ -567,6 +577,9 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		st.State, st.Reason = StateStarting, s.failure
 	default:
 		st.State, st.Reason = StateRunning, h.reason()
+		if h.isPaused() {
+			st.State = StatePaused
+		}
 		st.RelayDeviceID, st.Transport = h.relayID, string(h.tr.Kind())
 	}
 	s.setStatus(st)
