@@ -99,6 +99,7 @@ Rules (spec "Rule"): target valid **and on the board** → progress = its subtre
   - `TestProj14_GroupMoveTakesNoLeaves` — S2 stamps only group A → S1 keeps A's leaves.
   - `TestProj14_BoundSessionCountsOnlyItsSubtree` — bound to B, linked A → progress = B; no exclusion inside B even if S2 owns a B leaf.
   - `TestProj14_BoundTargetOffBoardFallsBackToRule2` — bound target archived → rule 2.
+  - `TestProj14_OwnerBoardMoveKeepsOwnership` (spec test 6) — S1 stamps a leaf, then `UpdateTargetStatus(..., db.ActorOwner)` → owners map unchanged, S1 still counts it.
   - Review Focus 1–3: `TestProgress_NoLinksNoTargetIsZero`, `TestProgress_UnownedCommentLeafStillCounts`, `TestProgress_OwnedDismissedLeafNeverCounts`.
 - [ ] **Step 2:** `go test ./internal/sessionreport -run 'Proj14_|Progress_'` → FAIL.
 - [ ] **Step 3:** Implement; `Summaries` loads owners once per workbench; `Build` (single session, `scope.go:217`) loads them too.
@@ -115,9 +116,12 @@ Rules (spec "Rule"): target valid **and on the board** → progress = its subtre
 
 **Interfaces:**
 - Consumes: `SetSessionTarget`, `terminalSessionOf`, `targetInWorkbench`, the board (`d.GetWorkbenchBoard`) to check on-board + collect subtree leaves.
-- Produces: `func NewSetSessionTarget(sessionEnv func() string) *Tool`; args `{target_id int64 (0 clears), reason string}`; result `{"session_id", "target_id" (0 when cleared), "stamped": N}`. Also an exported helper used by the CLI: `func BindSessionTarget(d *db.DB, workbenchID, sessionID, targetID int64) (stamped int, err error)` (validation: in workbench, on the board, not `dismissed`; collects leaves, calls `SetSessionTarget`).
+- Produces: `func NewSetSessionTarget(sessionEnv func() string) *Tool`; args `{target_id int64 (0 clears), reason string}`; result `{"session_id", "target_id" (0 when cleared), "stamped": N}`. Also an exported helper used by the CLI: `func BindSessionTarget(d *db.DB, workbenchID, sessionID, targetID int64) (stamped int, err error)`:
+  - the session row must be of `workbenchID` and of kind `claude`/`codex`; a `shell` row or another workbench's row → error `session N is not an agent session of this workbench` (no write);
+  - `targetID == 0` → no target checks, `SetSessionTarget(sessionID, sql.NullInt64{}, nil)`, `stamped = 0`;
+  - `targetID > 0` → in workbench (`targetInWorkbench`), on the board, not `dismissed`; collects the subtree's leaves; `SetSessionTarget(sessionID, valid(targetID), leaves)`.
 
-- [ ] **Step 1:** Failing tests: `TestProj14_SetSessionTargetNeedsSession` (refused, no row, no audit row), `TestProj14_SetSessionTargetRefusesOtherWorkbench` (Review Focus 5: error wraps `db.ErrNotInWorkbench`), `…RefusesArchived`, `…RefusesDismissed`, `…AllowsDone`, `…ClearKeepsLinks`, `…StampsSubtreeLeaves` (another unbound session loses them in `SessionLeafOwners`), `…AuditRow`.
+- [ ] **Step 1:** Failing tests: `TestProj14_SetSessionTargetNeedsSession` (refused, no row, no audit row), `TestProj14_SetSessionTargetRefusesOtherWorkbench` (Review Focus 5: error wraps `db.ErrNotInWorkbench`), `…RefusesArchived`, `…RefusesDismissed`, `…AllowsDone`, `…ClearKeepsLinks` (0 skips target checks), `…RefusesShellSession`, `…StampsSubtreeLeaves` (another unbound session loses them in `SessionLeafOwners`), `…AuditRow` (applied), `…FailedWriteAuditsFailed` (make `SetSessionTarget` fail at apply — e.g. delete a subtree leaf between `Scope` and `Execute`, or a db seam — → tool error, registry audit row `failed`, `target_id` unchanged).
 - [ ] **Step 2:** `go test ./internal/tools -run SetSessionTarget` → FAIL.
 - [ ] **Step 3:** Implement, register, bump counts/pack, write the docs paragraphs.
 - [ ] **Step 4:** `go test ./internal/tools ./internal/mcp ./internal/devpack` → PASS.
@@ -135,7 +139,7 @@ Rules (spec "Rule"): target valid **and on the board** → progress = its subtre
 - Consumes: `tools.BindSessionTarget`.
 - Produces: the command; `--json` prints one line `{"session_id":N,"target_id":M,"stamped":K}` (pinned keys); errors → non-zero exit, message on stderr.
 
-- [ ] **Step 1:** Failing tests: `TestWorkbenchSessionTarget_RefusedUnderAgent`, `…SetsAndPrintsJSON`, `…ClearSetsNull`, `…RequiresExactlyOneOfTargetClear`, `…UnknownSession`.
+- [ ] **Step 1:** Failing tests: `TestWorkbenchSessionTarget_RefusedUnderAgent`, `…SetsAndPrintsJSON`, `…ClearSetsNull`, `…RequiresExactlyOneOfTargetClear`, `…UnknownSession`, `…RefusesShellSession` (the helper's error, non-zero exit).
 - [ ] **Step 2:** `go test ./cmd -run WorkbenchSessionTarget` → FAIL.
 - [ ] **Step 3:** Implement (workbench id from the session row).
 - [ ] **Step 4:** `go test ./cmd -run WorkbenchSessionTarget` → PASS.
@@ -147,13 +151,13 @@ Rules (spec "Rule"): target valid **and on the board** → progress = its subtre
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionTargetMenu.swift`, `WatchtowerDesktop/Tests/Core/SessionTargetMenuTests.swift`
-- Modify: `WatchtowerDesktop/Sources/Views/Workbench/WorkbenchSessionsPanel.swift` (`SessionRowActions.setTarget: ((TerminalSession, Int64?) -> Void)?`), `WatchtowerDesktop/Sources/Views/Workbench/TerminalSessionRow.swift` (submenu between Rename… and Clean Up…, workbench agent sessions only), `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel.swift` (run the CLI through the existing CLIRunner, then the existing report refresh; failure → the failure line in the existing error surface), `docs/guide/` workbench sessions page (one short paragraph, `go test ./docs/guide`)
+- Modify: `WatchtowerDesktop/Sources/Views/Workbench/WorkbenchSessionsPanel.swift` (`SessionRowActions.setTarget: ((TerminalSession, Int64?) -> Void)?`), `WatchtowerDesktop/Sources/Views/Workbench/TerminalSessionRow.swift` (submenu between Rename… and Clean Up…, shown only where `setTarget` is non-nil — the panel passes it for workbench `claude`/`codex` rows, matching the Go helper's refusal of shell rows), `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel.swift` (new `func setSessionTarget(_ session: TerminalSession, targetID: Int64?) async` runs the CLI through the existing CLIRunner, then the existing report refresh; on failure sets a new `var sessionTargetError: String?` = `SessionTargetMenu.failureLine(stderr)`), `WorkbenchSessionsPanel.swift` (an `.alert` bound to `sessionTargetError`, the same shape as `deleteError`'s alert in `WorkbenchPageView.swift:87`), `docs/guide/` workbench sessions page (one short paragraph, `go test ./docs/guide`)
 
 **Interfaces:**
 - Consumes: CLI from Task 5; `WorkbenchBoardOutline.rows`/nodes for the board tree.
 - Produces: `enum SessionTargetMenu { static let title = "Session Target"; static let noneTitle = "None — Count What It Touched"; static func failureLine(_ error: String) -> String; static func items(roots: [WorkbenchBoardNode], current: Int64?) -> [Item] }` where `Item` = `.none(checked: Bool)` | `.target(id: Int64, title: String, checked: Bool, children: [Item])`; archived and dismissed targets left out; a group's first child item is the group itself (as in **Move to…**).
 
-- [ ] **Step 1:** Failing tests in `SessionTargetMenuTests`: strings exact; `items` checks `none` when `current == nil`; checks the current target; omits dismissed/archived; group carries itself first.
+- [ ] **Step 1:** Failing tests in `SessionTargetMenuTests`: strings exact; `items` checks `none` when `current == nil`; checks the current target; omits dismissed/archived; group carries itself first. Plus a view-model test (next to the existing `WorkbenchesViewModel` tests with a stub CLI runner): a non-zero exit sets `sessionTargetError == SessionTargetMenu.failureLine(<stderr>)`; success clears it.
 - [ ] **Step 2:** `make test-swift FILTER=SessionTargetMenuTests` → FAIL.
 - [ ] **Step 3:** Implement model + menu wiring.
 - [ ] **Step 4:** `make test-swift FILTER=SessionTargetMenuTests` → PASS; `make lint-swift` clean.
