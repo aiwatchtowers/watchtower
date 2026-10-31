@@ -382,3 +382,72 @@ func TestDeviceIDsStoredUppercase(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordSeen_NeverLowersAndReadsBack(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if _, _, ok, err := s.RelaySeen("w1", "dev"); err != nil || ok {
+		t.Fatalf("RelaySeen on empty = ok %v err %v", ok, err)
+	}
+	for _, v := range []struct {
+		epoch uint32
+		seq   uint64
+	}{{2, 9}, {2, 5}, {1, 100}} {
+		if err := s.WithTx(ctx, func(tx *sql.Tx) error { return RecordSeen(tx, "w1", "dev", v.epoch, v.seq) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	epoch, seq, ok, err := s.RelaySeen("w1", "DEV")
+	if err != nil || !ok || epoch != 2 || seq != 9 {
+		t.Fatalf("RelaySeen = %d/%d ok %v err %v, want 2/9", epoch, seq, ok, err)
+	}
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error { return RecordSeen(tx, "w1", "dev", 3, 1) }); err != nil {
+		t.Fatal(err)
+	}
+	if epoch, seq, _, _ = s.RelaySeen("w1", "dev"); epoch != 3 || seq != 1 {
+		t.Fatalf("a newer epoch did not replace the mark: %d/%d", epoch, seq)
+	}
+}
+
+func TestKeyboxRecipientKey_LinkedThenPendingRevokedRefused(t *testing.T) {
+	s := openTest(t)
+	if k, err := s.KeyboxRecipientKey("AA"); err != nil || k != nil {
+		t.Fatalf("no row: key %x err %v", k, err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := s.db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO link_refusals (device_id, name, scope, reason, at, agreement_key) VALUES ('AA', 'p', 'private', 'r', 1, x'04')`)
+	exec(`INSERT INTO revoked_devices (device_id, agreement_key, removed_at) VALUES ('AA', x'03', 1)`)
+	exec(`INSERT INTO pending_devices (device_id, agreement_key) VALUES ('AA', x'02')`)
+	for _, want := range []byte{2, 3, 4} {
+		k, err := s.KeyboxRecipientKey("aa")
+		if err != nil || len(k) != 1 || k[0] != want {
+			t.Fatalf("key %x err %v, want %02x", k, err, want)
+		}
+		switch want {
+		case 2:
+			exec(`DELETE FROM pending_devices`)
+		case 3:
+			exec(`DELETE FROM revoked_devices`)
+		}
+	}
+}
+
+func TestWipeSliceHashesKeepsWireNames(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error { return SetSliceState(tx, "target-1", "w", "h", time.Now()) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithTx(ctx, WipeSliceHashes); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SliceHashes("target")
+	if err != nil || got["target-1"] != (SliceRecord{Hash: "", WireName: "w"}) {
+		t.Fatalf("slice state = %+v err %v", got, err)
+	}
+}

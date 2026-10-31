@@ -18,9 +18,14 @@ const (
 )
 
 // Meta reads one hub_meta value; ok is false when the key is unset.
-func (s *Store) Meta(key string) (string, bool, error) {
+func (s *Store) Meta(key string) (string, bool, error) { return meta(s.db, key) }
+
+// MetaTx is Meta inside the caller's transaction.
+func MetaTx(tx *sql.Tx, key string) (string, bool, error) { return meta(tx, key) }
+
+func meta(q querier, key string) (string, bool, error) {
 	var v string
-	err := s.db.QueryRow(`SELECT value FROM hub_meta WHERE key = ?`, key).Scan(&v)
+	err := q.QueryRow(`SELECT value FROM hub_meta WHERE key = ?`, key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -76,16 +77,36 @@ func (s *Store) Phase(record string) (phase, outcome string, echo []byte, err er
 // RecordSeen writes the rollback mark for a record (relay_seen: the newest
 // epoch/seq seen under its wire name from sender) inside the caller's
 // transaction, the one that commits the first decision about the record.
-// sender is stored uppercase.
+// It never lowers a stored mark (the Swift hub's recordRelaySeen). sender is
+// stored uppercase.
 func RecordSeen(tx *sql.Tx, wire, sender string, epoch uint32, seq uint64) error {
 	v, err := u64(seq)
 	if err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO relay_seen (wire_name, sender_id, epoch, seq, at) VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(wire_name, sender_id) DO UPDATE SET epoch = excluded.epoch, seq = excluded.seq, at = excluded.at`,
+		ON CONFLICT(wire_name, sender_id) DO UPDATE SET epoch = excluded.epoch, seq = excluded.seq, at = excluded.at
+		WHERE excluded.epoch > relay_seen.epoch OR (excluded.epoch = relay_seen.epoch AND excluded.seq > relay_seen.seq)`,
 		wire, deviceKey(sender), int64(epoch), v, toReal(time.Now())); err != nil {
 		return fmt.Errorf("writing the rollback mark: %w", err)
 	}
 	return nil
+}
+
+// RelaySeen reads the rollback mark for (wire, sender); ok is false when none
+// was recorded.
+func (s *Store) RelaySeen(wire, sender string) (epoch uint32, seq uint64, ok bool, err error) {
+	var e, q int64
+	err = s.db.QueryRow(`SELECT epoch, seq FROM relay_seen WHERE wire_name = ? AND sender_id = ? COLLATE NOCASE`,
+		wire, sender).Scan(&e, &q)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("reading the rollback mark: %w", err)
+	}
+	if e < 0 || e > math.MaxUint32 || q < 0 {
+		return 0, 0, false, errors.New("rollback mark out of range")
+	}
+	return uint32(e), uint64(q), true, nil
 }
