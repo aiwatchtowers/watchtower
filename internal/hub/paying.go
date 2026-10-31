@@ -22,12 +22,6 @@ const ReadRetryFirst = 30 * time.Second
 // (get_account_state: the phones holding the hub in a slot).
 type AccountState func(ctx context.Context) (*relayv1.AccountState, error)
 
-// accountStater is the hosted relay's get_account_state, asserted on the
-// transport like admission (*relay.Transport and memfake have it).
-type accountStater interface {
-	AccountState(ctx context.Context) (*relayv1.AccountState, error)
-}
-
 // PayingWatch follows whether a phone holding the hub in a slot pays (spec
 // §7.3, relay-only rules): a headless hub without one pauses. It reads the
 // account state when Run starts, every NeedsRelayPoll (paying or not), after

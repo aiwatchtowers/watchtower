@@ -32,16 +32,11 @@ const (
 	ReasonLocked            = "locked"
 	ReasonNotTestWorkspace  = "not_test_workspace"
 	ReasonSidecarUnreadable = "sidecar_unreadable"
-	// ReasonNotAdmitted: vouched (in a phone's slot) but no phone holding
-	// the hub pays (test mode; a live hub is paused, needs_relay).
+	// ReasonNotAdmitted: in a slot, but no phone holding the hub pays.
 	ReasonNotAdmitted = "not_admitted"
-	// ReasonNotVouched: registered on the relay, in no phone's slot yet: no
-	// phone vouched for the hub (vouch_hub) and slotted it. Only pairing
-	// goes on.
+	// ReasonNotVouched: in no phone's slot yet; only pairing goes on.
 	ReasonNotVouched = "not_vouched"
-	// ReasonVouchRevoked: the relay answers HUB_NOT_VOUCHED after it had
-	// admitted the hub: it left every phone's slot. Publishing stops, the
-	// sidecar stays; a new `hub pair` and vouch admit it again.
+	// ReasonVouchRevoked: in no slot any more after an admission.
 	ReasonVouchRevoked     = "vouch_revoked"
 	ReasonRelayUnreachable = "relay_unreachable"
 	// ReasonNeedsRelay: paused, no phone holding the hub in a slot pays

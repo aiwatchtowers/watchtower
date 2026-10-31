@@ -2,6 +2,8 @@ package hub
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -39,7 +41,7 @@ func (c *setClock) Advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// accountReader answers polls inside UnvouchedPoll from the last read only
+// accountReader answers polls inside unvouchedPoll from the last read only
 // while the hub is unvouched; vouched, every poll reads.
 func TestAccountReaderThrottlesOnlyWhileUnvouched(t *testing.T) {
 	clock := &setClock{now: time.Unix(1_800_000_000, 0)}
@@ -61,7 +63,7 @@ func TestAccountReaderThrottlesOnlyWhileUnvouched(t *testing.T) {
 	}
 	poll()
 	poll()
-	clock.Advance(UnvouchedPoll - time.Second)
+	clock.Advance(unvouchedPoll - time.Second)
 	poll()
 	if reads != 1 {
 		t.Fatalf("%d reads inside one window", reads)
@@ -262,7 +264,7 @@ func TestUnvouchedHubOnlyWritesItsPairingSlot(t *testing.T) {
 
 // TestUnvouchedHubPollsTheAccountStateAtMostEvery30s: the short link retry
 // ticks fast after the link, but an unvouched hub reads the account state
-// at most once per UnvouchedPoll of its clock.
+// at most once per unvouchedPoll of its clock.
 func TestUnvouchedHubPollsTheAccountStateAtMostEvery30s(t *testing.T) {
 	r := startOnRelay(t, false)
 	r.link()
@@ -272,7 +274,7 @@ func TestUnvouchedHubPollsTheAccountStateAtMostEvery30s(t *testing.T) {
 	if n := r.accountReads() - base; n != 0 {
 		t.Fatalf("%d account-state reads inside one poll window", n)
 	}
-	r.clock.Advance(UnvouchedPoll)
+	r.clock.Advance(unvouchedPoll)
 	eventually(t, 5*time.Second, "one read after the window", func() bool { return r.accountReads() > base })
 	time.Sleep(200 * time.Millisecond)
 	if n := r.accountReads() - base; n != 1 {
@@ -413,4 +415,83 @@ func TestHubNeverCountsItselfOnTheRelayBeforeAdmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.waitState(StateRunning, "")
+}
+
+// restart stops r's Run and starts it again on the same dir and relay with
+// the link backstop off (linkEvery an hour), so only the start, a control
+// or a kick read the account state.
+func (r *vouchRig) restart(t *testing.T) *vouchRig {
+	t.Helper()
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+	r2 := &vouchRig{rig: newRig(t, r.dir), srv: r.srv, clock: r.clock}
+	o := r2.options()
+	o.newTransport, o.RelayOrigin, o.Clock, o.linkEvery = nil, r.srv.URL, r.clock.Now, time.Hour
+	r2.start(o)
+	return r2
+}
+
+// A hub that starts already vouched — every hub after migration 00007,
+// whose phones carry no stamp yet — stamps its phones from the account state
+// its start read (phones relay), and a later HUB_NOT_VOUCHED reads
+// vouch_revoked.
+func TestHubStartedVouchedStampsItsPhonesAtOnce(t *testing.T) {
+	r := startOnRelay(t, false)
+	l := r.link()
+	r.admit(l)
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devices, err := st.Devices()
+	if err == nil {
+		err = st.WithTx(t.Context(), func(tx *sql.Tx) error { return state.LinkDevice(tx, devices[0]) }) // stamp cleared
+	}
+	_ = st.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.device(t).RelayAdmittedAt.IsZero() {
+		t.Fatal("the stamp was not cleared")
+	}
+
+	r2 := r.restart(t)
+	r2.waitState(StateRunning, "")
+	eventually(t, 5*time.Second, "the phone stamped from the start's account state", func() bool {
+		return !r2.device(t).RelayAdmittedAt.IsZero()
+	})
+	r2.srv.RemoveSlot(l.phone.RelayDeviceID(), l.lp.RelayDeviceID)
+	r2.waitState(StateRunning, ReasonVouchRevoked)
+}
+
+// HUB_NOT_VOUCHED on a publisher write closes the gate at once: no poll
+// (the clock is frozen, so a poll inside the window reads the last answer)
+// is needed for the hub to stop and say vouch_revoked.
+func TestPublisherNotVouchedClosesTheGateAtOnce(t *testing.T) {
+	r := startOnRelay(t, false)
+	l := r.link()
+	r.srv.FailNextSaveIn(transport.DataZone(l.lp.RelayDeviceID), relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED)
+	if err := l.phone.VouchLink(t.Context(), l.lp); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.store.PromotePairing(t.Context(), l.slot); err != nil {
+		t.Fatal(err)
+	}
+	// The gate opens on SLOT_ADDED, the publisher's first data-zone save is
+	// refused, and the gate closes again without a new account read.
+	r.waitState(StateRunning, ReasonVouchRevoked)
+}
+
+func TestNotVouchedHasItsClassAndStartReason(t *testing.T) {
+	err := fmt.Errorf("relay: connect: %w", transport.ErrNotVouched)
+	if got := errClass(err); got != "not_vouched" {
+		t.Errorf("errClass = %q", got)
+	}
+	if got := startFailure(err); got != ReasonNotVouched {
+		t.Errorf("startFailure = %q", got)
+	}
 }

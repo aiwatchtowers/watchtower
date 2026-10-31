@@ -2,6 +2,7 @@ package hubtest
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"time"
@@ -77,27 +78,17 @@ func (s *RelayStore) OpenPairing(ctx context.Context, hubRelayID string) (string
 	return slot, nil
 }
 
-// VouchHub vouches, as this phone, for the hub with relay device id
-// hubDeviceID and key authPub (both from the hub's link code): a VOUCH
-// challenge for the phone's own device id, then vouch_hub with the nonce and
-// no attestation (the Go phone runs against a relay with App Attest off or
-// as an exempt device, like the relay's own Go client). Each call takes a
-// fresh nonce. The relay keeps the vouch 10 minutes for the next
-// promote_pairing or add_slot of that hub.
-func (s *RelayStore) VouchHub(ctx context.Context, hubDeviceID string, authPub []byte) error {
+// VouchHub vouches, as this phone, for the hub with key hubPub (the link
+// code's relay_auth_pub) through the relay client's VouchHub: a fresh VOUCH
+// challenge, then vouch_hub with no attestation (dev or an exempt device).
+// The relay keeps the vouch 10 minutes for the next promote_pairing or
+// add_slot of that hub.
+func (s *RelayStore) VouchHub(ctx context.Context, hubPub ed25519.PublicKey) error {
 	if s.C == nil {
 		return errors.New("hubtest: relay store has no client")
 	}
-	ch, err := s.do(ctx, &relayv1.Request{Op: &relayv1.Request_Challenge{Challenge: &relayv1.GetChallenge{
-		DeviceId: s.C.DeviceID(), Purpose: relayv1.ChallengePurpose_CHALLENGE_PURPOSE_VOUCH,
-	}}})
-	if err != nil {
-		return fmt.Errorf("hubtest: vouch challenge: %w", err)
-	}
-	if _, err := s.do(ctx, &relayv1.Request{Op: &relayv1.Request_VouchHub{VouchHub: &relayv1.VouchHub{
-		HubDeviceId: hubDeviceID, AuthPub: authPub, Nonce: ch.GetChallenge().GetNonce(),
-	}}}); err != nil {
-		return fmt.Errorf("hubtest: vouch_hub: %w", err)
+	if err := s.C.VouchHub(ctx, hubPub); err != nil {
+		return fmt.Errorf("hubtest: vouch_hub: %w", relay.MapError(err))
 	}
 	return nil
 }

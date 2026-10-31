@@ -230,14 +230,15 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   `set_hub_readers`, no data-zone or mailbox op, no wipe; status reason `not_vouched` (state `running` in test mode,
   `paused` live). `HUB_NOT_VOUCHED` (`transport.ErrNotVouched`) on any op clears the transport's slots and closes the
   gate — no re-register, no retry. `CONTROL_KIND_SLOT_ADDED` (`transport.SlotAdded`): the transport reads the account
-  state before handing the event on, the gate opens at once and the named phone gets `devices.relay_admitted_at`
-  (sidecar `00007`; every account state stamps the phones it lists). Polls while unvouched go through
-  `accountReader`: at most one `get_account_state` per `UnvouchedPoll` (30 s, the relay's limit) of the hub's clock —
-  the short link retry's 2 s ticks and the PayingWatch read the last answer in between; the link backstop
+  state before handing the event on, the gate opens at once and the listed phones get `devices.relay_admitted_at`
+  (sidecar `00007`). Every account-state read — the one `Connect` made at start, `SLOT_ADDED`'s, the readers sync,
+  the polls — goes through one door (`readAccount`/`followAccount`: stamps, then the gate), and while unvouched
+  `accountReader` makes at most one `get_account_state` per `unvouchedPoll` (30 s, the relay's limit) of the hub's
+  clock — the short link retry's 2 s ticks and the PayingWatch read the last answer in between; the link backstop
   (`linkEvery`) polls only with a phone linked (the hub expects a slot). Unvouched after a phone had been admitted
   is `vouch_revoked`: nothing published, the sidecar kept, also across a restart; a new vouch and slot (a new
   `hub pair`, or the phone's `add_slot`) admit it again. `hub phones` shows `transport` `pending` for a relay phone
-  without `relay_admitted_at`, `relay` with it. `hubtest.Phone.Vouch`/`VouchLink` (VOUCH challenge, then
+  without `relay_admitted_at`, `relay` with it. `hubtest.Phone.VouchLink` (the copied client's `VouchHub`: VOUCH challenge, then
   `vouch_hub` with no attestation) and `relaytest`'s vouch model (gate incl. open sockets, the relay's refusal order,
   10-minute pending vouch consumed by `promote_pairing`/`add_slot`, best-effort `SLOT_ADDED`, `RemoveSlot`).
 - **Session host under a service manager** (PROJ-20 amended for Linux, ask #827): socket dir `/run/user/<uid>` or
@@ -266,7 +267,7 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   window in which the link check runs every 2 s (`linkSoonEvery`) for at most 2 min (`linkSoonFor`) until every linked
   phone holds the hub in a slot — `SLOT_ADDED` is best effort, so otherwise a missed one waited for the next
   minute-long `linkEvery`. Each tick reads `get_account_state` first — while the hub is unvouched through
-  `accountReader`, so at most one real read per 30 s (`UnvouchedPoll`); once vouched (a second phone joining) the 2 s
+  `accountReader`, so at most one real read per 30 s (`unvouchedPoll`); once vouched (a second phone joining) the 2 s
   reads are allowed. The full link check (keyboxes, readers, subscriptions, a pass) runs only on the window's first
   tick and when the slotted set changed. When the window settles or runs out, `PayingWatch` re-reads, so a paused
   headless hub resumes as soon as a paying phone is there. A first admission normally comes by `SLOT_ADDED` at once.

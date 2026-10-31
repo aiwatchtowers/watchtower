@@ -1,6 +1,7 @@
 package relaytest_test
 
 import (
+	"encoding/base64"
 	"errors"
 	"slices"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/transport/relay/relayv1"
+	"watchtower/internal/hub/wire"
 )
 
 func codeOf(err error) relayv1.ErrorCode { return client.Code(err) }
@@ -203,10 +205,11 @@ func TestPhoneVouchSendsAChallengeThenVouchHub(t *testing.T) {
 	srv := relaytest.Start(t)
 	h := newHub(t, srv)
 	p, store := newPhone(t, srv, h)
-	if err := p.Vouch(t.Context(), h.relayID, h.sig); err != nil {
+	lp := wire.LinkPayload{RelayDeviceID: h.relayID, RelayAuthPub: base64.RawURLEncoding.EncodeToString(h.sig)}
+	if err := p.VouchLink(t.Context(), lp); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Vouch(t.Context(), h.relayID, h.sig); err != nil {
+	if err := p.VouchLink(t.Context(), lp); err != nil {
 		t.Fatal(err)
 	}
 	ch := srv.Requests("challenge")
@@ -232,7 +235,7 @@ func TestPhoneVouchSendsAChallengeThenVouchHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := memPhone.Vouch(t.Context(), h.relayID, h.sig); err == nil {
+	if err := memPhone.VouchLink(t.Context(), lp); err == nil {
 		t.Fatal("a phone off the relay vouched")
 	}
 }

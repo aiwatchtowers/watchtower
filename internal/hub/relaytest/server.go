@@ -71,6 +71,7 @@ type Server struct {
 	reqs         []*relayv1.Request
 	frames       [][]byte                       // every op body, WebSocket frame and blob received
 	fail         map[string][]relayv1.ErrorCode // op → codes, one per call
+	failSave     map[string]relayv1.ErrorCode   // zone → code for the next save into it
 	zones        map[string]*zone
 	blobs        map[string][]byte
 	blobHeaders  []http.Header
@@ -113,7 +114,7 @@ type pairing struct{ phone, mac string }
 func Start(t testing.TB) *Server {
 	t.Helper()
 	s := &Server{
-		fail: map[string][]relayv1.ErrorCode{}, zones: map[string]*zone{},
+		fail: map[string][]relayv1.ErrorCode{}, failSave: map[string]relayv1.ErrorCode{}, zones: map[string]*zone{},
 		blobs: map[string][]byte{}, attZone: map[string]string{},
 		pageLimit: 500, ready: make(chan struct{}),
 		kinds: map[string]relayv1.DeviceKind{}, pairings: map[string]pairing{},
@@ -152,6 +153,34 @@ func (s *Server) FailNext(op string, code relayv1.ErrorCode) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fail[op] = append(s.fail[op], code)
+}
+
+// FailNextSaveIn makes the next save with an item in zone answer code. With
+// HUB_NOT_VOUCHED the caller also leaves every slot at that moment, with no
+// control, so the account state agrees with the answer.
+func (s *Server) FailNextSaveIn(zone string, code relayv1.ErrorCode) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failSave[zone] = code
+}
+
+// failSaveInLocked takes a FailNextSaveIn code for caller's req; s.mu is
+// held.
+func (s *Server) failSaveInLocked(caller string, req *relayv1.Request) (relayv1.ErrorCode, bool) {
+	for _, it := range req.GetSave().GetItems() {
+		code, found := s.failSave[it.GetRecord().GetZone()]
+		if !found {
+			continue
+		}
+		delete(s.failSave, it.GetRecord().GetZone())
+		if code == relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED {
+			for phone, macs := range s.slots {
+				s.slots[phone] = slices.DeleteFunc(macs, func(m string) bool { return m == caller })
+			}
+		}
+		return code, true
+	}
+	return 0, false
 }
 
 // Ops is every op seen, in order; WebSocket requests are "ws:<op>".
@@ -386,6 +415,8 @@ func (s *Server) serveOp(w http.ResponseWriter, r *http.Request) {
 	if q := s.fail[op]; len(q) > 0 {
 		s.fail[op] = q[1:]
 		resp = errResp(q[0])
+	} else if code, found := s.failSaveInLocked(caller, &req); found {
+		resp = errResp(code)
 	} else {
 		resp = s.handle(caller, &req)
 	}

@@ -571,28 +571,24 @@ func FromLink(l wire.LinkPayload, f Records, clock func() time.Time) (*Phone, er
 // voucher is a phone record store that can vouch for a hub on the relay
 // (RelayStore).
 type voucher interface {
-	VouchHub(ctx context.Context, hubDeviceID string, authPub []byte) error
+	VouchHub(ctx context.Context, hubPub ed25519.PublicKey) error
 }
 
-// Vouch vouches for the hub on the hosted relay (phone contract point 3):
-// sent after the owner confirmed the code and the keybox opened, before
-// promote_pairing (or add_slot). hubDeviceID and authPub are the link code's
-// relay_device_id and relay_auth_pub. A refusal leaves the hub unvouched.
-func (p *Phone) Vouch(ctx context.Context, hubDeviceID string, authPub []byte) error {
+// VouchLink vouches for the hub of link code l on the hosted relay (phone
+// contract point 3): sent after the owner confirmed the code and the keybox
+// opened, before promote_pairing (or add_slot), for the code's
+// relay_auth_pub (the relay derives relay_device_id from it). A refusal
+// leaves the hub unvouched.
+func (p *Phone) VouchLink(ctx context.Context, l wire.LinkPayload) error {
 	v, ok := p.cfg.Transport.(voucher)
 	if !ok {
 		return errors.New("hubtest: this phone's record store cannot vouch (not on the hosted relay)")
 	}
-	return v.VouchHub(ctx, hubDeviceID, authPub)
-}
-
-// VouchLink is Vouch with the hub named by link code l.
-func (p *Phone) VouchLink(ctx context.Context, l wire.LinkPayload) error {
 	pub, err := base64.RawURLEncoding.DecodeString(l.RelayAuthPub)
 	if err != nil || len(pub) != ed25519.PublicKeySize {
 		return errors.New("hubtest: link relay_auth_pub is not an Ed25519 key")
 	}
-	return p.Vouch(ctx, l.RelayDeviceID, pub)
+	return v.VouchHub(ctx, pub)
 }
 
 // HelloName is the wire name of the phone's hello (and, with "keybox-",

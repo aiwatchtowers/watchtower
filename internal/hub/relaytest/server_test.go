@@ -141,7 +141,7 @@ func addSlotOnly(t *testing.T, store *hubtest.RelayStore, mac string) error {
 // vouch is the phone's vouch_hub for h (registered by newHub).
 func vouch(t *testing.T, store *hubtest.RelayStore, h *hub) {
 	t.Helper()
-	if err := store.VouchHub(t.Context(), h.relayID, h.sig); err != nil {
+	if err := store.VouchHub(t.Context(), h.sig); err != nil {
 		t.Fatal(err)
 	}
 }

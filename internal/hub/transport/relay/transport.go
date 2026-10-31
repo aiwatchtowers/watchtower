@@ -28,9 +28,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -368,22 +371,31 @@ func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, er
 // the mailboxes and set_hub_readers to it. A HUB_NOT_VOUCHED answer to any op
 // clears it until an account state says otherwise.
 func (t *Transport) Vouched() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.account.GetPhones()) > 0
+	return t.anyPhone(func(*relayv1.SlotHolder) bool { return true })
 }
 
 // Admitted reports whether the last account state shows the hub in a paying
 // phone's slot: only then does the hub count itself on the relay.
 func (t *Transport) Admitted() bool {
+	return t.anyPhone((*relayv1.SlotHolder).GetPaying)
+}
+
+// anyPhone: a phone of the last account state matches.
+func (t *Transport) anyPhone(match func(*relayv1.SlotHolder) bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for _, p := range t.account.GetPhones() {
-		if p.GetPaying() {
-			return true
-		}
+	return slices.ContainsFunc(t.account.GetPhones(), match)
+}
+
+// LastAccountState is a copy of the last account state read (an empty one
+// before any read, or after HUB_NOT_VOUCHED).
+func (t *Transport) LastAccountState() *relayv1.AccountState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.account == nil {
+		return &relayv1.AccountState{}
 	}
-	return false
+	return proto.Clone(t.account).(*relayv1.AccountState)
 }
 
 // do runs one op over HTTPS and maps its error. HUB_NOT_VOUCHED means the

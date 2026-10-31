@@ -27,6 +27,7 @@ import (
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/transport/relay/client"
+	"watchtower/internal/hub/transport/relay/relayv1"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy"
 )
@@ -72,9 +73,10 @@ func workbenchOnly(k slices.Kind) bool {
 	return false
 }
 
-// readersSetter is the hosted relay's set_hub_readers for the linked phones.
+// readersSetter is the hosted relay's set_hub_readers for the linked phones
+// held in a slot by the account state given.
 type readersSetter interface {
-	SetLinkedReaders(ctx context.Context, linked []string) error
+	SetReadersFrom(ctx context.Context, st *relayv1.AccountState, linked []string) error
 }
 
 // zoneWatcher is the hosted relay's subscription of a zone added after
@@ -82,10 +84,6 @@ type readersSetter interface {
 type zoneWatcher interface {
 	WatchZone(ctx context.Context, zone string) error
 }
-
-// admission is the hosted relay's view of whether the hub is in a paying
-// phone's slot.
-type admission interface{ Admitted() bool }
 
 // hubRuntime is the hub while it runs: the identity it borrows to the
 // keyring, the transport, the link center, the processor and the publisher,
@@ -108,22 +106,21 @@ type hubRuntime struct {
 	// paused is true while no phone pays (guarded by mu).
 	paying *PayingWatch
 	paused bool
-	// acct is the account-state poll (nil without one); unvouched is true
-	// while the relay has not vouched for the hub, held while the
-	// publisher and the processor hold for either reason (mu; gateMu
-	// orders the holds and releases).
+	// acct is the account-state door (nil without one); unvouched is true
+	// while the relay has not vouched for the hub (mu); gateHeld is the
+	// hold applyGate last applied (gateMu, which orders holds and releases).
 	acct      *accountReader
 	unvouched bool
-	held      bool
 	gateMu    sync.Mutex
+	gateHeld  bool
 
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 	watched map[string]bool // zones subscribed (worker only)
 	// subRetry backs off a zone whose subscription the relay refused, and
-	// admitted is the vouch state the last link upkeep saw (worker only).
-	subRetry map[string]*subRetry
-	admitted bool
+	// wasVouched is the vouch state the last link upkeep saw (worker only).
+	subRetry   map[string]*subRetry
+	wasVouched bool
 
 	passKick, linkKick, houseKick chan struct{}
 	// soonKick opens the link check's short-retry window (linkSoonFor).
@@ -246,7 +243,6 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if as, ok := h.tr.(accountStater); ok {
 		h.acct = &accountReader{read: as.AccountState, vouched: h.vouched, clock: o.Clock}
 	}
-	h.unvouched = !h.vouched() // Connect read the account state
 	if o.RelayOnlyRules {
 		if h.acct == nil {
 			return nil, fmt.Errorf("%w: the transport has no account state", ErrStartFailed)
@@ -329,14 +325,14 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		h.paused = true
 		log.Printf("hub: relay-only rules on: paused until the account state shows a paying phone")
 	}
-	if h.unvouched {
-		log.Printf("hub: not vouched on the relay (in no phone's slot): only pairing goes on")
+	if a, ok := h.tr.(relayAdmission); ok && h.acct != nil {
+		// The account state Connect read takes the one door: it stamps the
+		// phones it lists and sets the vouch state.
+		st := a.LastAccountState()
+		h.acct.seed(st)
+		h.followAccount(st)
 	}
-	if h.paused || h.unvouched {
-		h.held = true
-		pub.Pause()
-		h.proc.SetPaused(true)
-	}
+	h.applyGate()
 
 	hctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
@@ -498,7 +494,7 @@ func (h *hubRuntime) reason() string {
 	if h.isPaused() {
 		return ReasonNeedsRelay
 	}
-	if a, ok := h.tr.(admission); ok && !a.Admitted() {
+	if a, ok := h.tr.(relayAdmission); ok && !a.Admitted() {
 		return ReasonNotAdmitted
 	}
 	return ""
@@ -527,8 +523,9 @@ func (h *hubRuntime) isPaused() bool {
 // writes the queued echoes and controls.
 func (h *hubRuntime) setPaying(paying bool) {
 	h.mu.Lock()
-	changed := h.paused == paying
+	was := h.paused
 	h.paused = !paying
+	changed := was != h.paused
 	h.mu.Unlock()
 	if !changed {
 		return
@@ -638,7 +635,7 @@ func (h *hubRuntime) onControl(ctx context.Context, c transport.Control) {
 		log.Printf("hub: relay control %d: readers synced again", c.Kind)
 		h.kick(h.linkKick)
 	case transport.SlotAdded:
-		h.onSlotAdded(c.Detail)
+		h.onSlotAdded()
 	case transport.SessionExpired:
 		// The relay client signs in again by itself.
 	}
@@ -691,9 +688,17 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 		log.Printf("hub: pair keyboxes not written (%s)", errClass(err))
 	}
 	vouched := h.vouched()
-	if rs, ok := h.tr.(readersSetter); ok && vouched {
-		// set_hub_readers is closed to an unvouched hub.
-		if err := h.center.SyncReaders(ctx, rs.SetLinkedReaders); err != nil {
+	if rs, ok := h.tr.(readersSetter); ok && vouched && h.acct != nil {
+		// set_hub_readers is closed to an unvouched hub; the account state
+		// it is computed from comes through the one door.
+		set := func(ctx context.Context, linked []string) error {
+			st, err := h.readAccount(ctx)
+			if err != nil {
+				return fmt.Errorf("hub: readers: account state: %w", err)
+			}
+			return rs.SetReadersFrom(ctx, st, linked)
+		}
+		if err := h.center.SyncReaders(ctx, set); err != nil {
 			h.noteNotVouched(err)
 			log.Printf("hub: readers not synced (%s)", errClass(err))
 		}
@@ -703,7 +708,7 @@ func (h *hubRuntime) linkUpkeep(ctx context.Context) {
 	}
 	if !vouched && h.acct != nil && h.phoneLinked() {
 		// A linked phone and no slot: the hub expects one. SLOT_ADDED is
-		// best effort, so this backstop polls (at most every UnvouchedPoll).
+		// best effort, so this backstop polls (at most every unvouchedPoll).
 		if _, err := h.readAccount(ctx); err != nil {
 			log.Printf("hub: reading the account state failed (%s)", errClass(err))
 		}
@@ -724,10 +729,10 @@ type soonWindow struct {
 }
 
 // soonTick is one tick of the short-retry window. Per tick it costs one
-// get_account_state — while the hub is unvouched at most one per
-// UnvouchedPoll (the relay's limit; accountReader answers the ticks between
-// from the last read, and SLOT_ADDED reads at once) —; the full link check (keyboxes, readers, subscriptions,
-// a pass) runs only on the window's first tick and when the slotted set
+// get_account_state; while the hub is unvouched, at most one per
+// unvouchedPoll (the relay's limit: accountReader answers the ticks between
+// from the last read). The full link check (keyboxes, readers,
+// subscriptions, a pass) runs only on the window's first tick and when the slotted set
 // changed since the last one, so a phone that is never promoted costs one
 // read every linkSoonEvery for linkSoonFor, nothing more. The window ends
 // once every linked phone holds the hub in a slot, or at its end; either
@@ -821,12 +826,12 @@ func zoneKind(zone, data string) string {
 // sees a slot) clears the waits. A subscription that takes means
 // the relay is reachable.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
-	if _, ok := h.tr.(vouchState); ok {
-		admitted := h.vouched()
-		if admitted && !h.admitted {
+	if _, ok := h.tr.(relayAdmission); ok {
+		v := h.vouched()
+		if v && !h.wasVouched {
 			clear(h.subRetry)
 		}
-		h.admitted = admitted
+		h.wasVouched = v
 	}
 	zones, err := h.zones()
 	if err != nil {
