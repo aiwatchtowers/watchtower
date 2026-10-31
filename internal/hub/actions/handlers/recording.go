@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
 )
@@ -39,25 +40,12 @@ var uploadIDRE = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 // test workspace's own, never the live app-support folder.
 func RecordingsDirUnder(hubDir string) string { return filepath.Join(hubDir, "recordings") }
 
-// RecordingIntake is one recording_upload the processor decoded and
-// authenticated: the phone's device, its upload id, the hub it addressed (nil
-// = unchecked), the asset's descriptor (from the sealed frame; nil = the
-// record carried no asset) and Download, which writes the sealed attachment
-// to the given path.
-type RecordingIntake struct {
-	Device     secure.ID
-	UploadID   string
-	TargetHub  *secure.ID
-	ThisHub    secure.ID
-	Descriptor *secure.AssetDescriptor
-	Download   func(ctx context.Context, dst string) error
-}
-
-// RecordingOutcome is the upload's echo: Status received, held (non-final:
-// the processor retries each pass) or failed.
-type RecordingOutcome struct {
-	Status, Reason, Message string
-}
+// RecordingIntake and RecordingOutcome are the processor's types (the
+// processor calls IntakeRecording through Dispatcher.SetRecordings).
+type (
+	RecordingIntake  = actions.RecordingIntake
+	RecordingOutcome = actions.RecordingOutcome
+)
 
 func recFailed(reason, message string) RecordingOutcome {
 	return RecordingOutcome{Status: wire.StatusFailed, Reason: reason, Message: message}
@@ -100,6 +88,7 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 		return recFailed(reasonNotFound, MissingAudioMessage)
 	}
 	d := *in.Descriptor
+	defer clear(d.Key[:]) // the asset key never outlives the intake
 	switch {
 	case d.Header.TotalLength == 0:
 		return recFailed(reasonNotFound, EmptyAudioMessage)
@@ -144,4 +133,31 @@ func (h *Handlers) IntakeRecording(ctx context.Context, in RecordingIntake) Reco
 // RecordingAudioPath is where a queued upload's audio lives.
 func RecordingAudioPath(recordingsDir, uploadID string) string {
 	return filepath.Join(recordingsDir, uploadID+".m4a")
+}
+
+// SweepRecordingTemps removes what a crash leaves in dirs: a partial
+// plaintext (.asset-*) and a downloaded sealed file (.*.sealed). The runtime
+// calls it at start for the recordings dir and the asset dir; a missing dir
+// is skipped. It returns how many files went.
+func SweepRecordingTemps(dirs ...string) (int, error) {
+	n := 0
+	var firstErr error
+	for _, dir := range dirs {
+		for _, pat := range []string{".asset-*", ".*.sealed"} {
+			matches, err := filepath.Glob(filepath.Join(dir, pat))
+			if err != nil {
+				return n, err
+			}
+			for _, m := range matches {
+				if err := os.Remove(m); err != nil {
+					if firstErr == nil && !os.IsNotExist(err) {
+						firstErr = err
+					}
+					continue
+				}
+				n++
+			}
+		}
+	}
+	return n, firstErr
 }

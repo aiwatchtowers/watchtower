@@ -117,6 +117,9 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	reg("session_interrupt", h.sessionInterrupt)
 	reg("session_report_request", h.sessionReportRequest)
 	reg("session_chat_request", h.sessionChatRequest)
+	// recording_upload is no action kind: the processor calls the intake for
+	// the upload records, and a received one refreshes the recording_job slice.
+	d.SetRecordings(h.IntakeRecording, []string{"recording_job"})
 	return h
 }
 

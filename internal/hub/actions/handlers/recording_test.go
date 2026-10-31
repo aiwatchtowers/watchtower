@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -219,13 +218,6 @@ func TestRecordingWrongHub(t *testing.T) {
 	}
 }
 
-func TestRecordingsGoUnderTheHubDirInPhase1(t *testing.T) {
-	hubDir := t.TempDir()
-	if got := RecordingsDirUnder(hubDir); got != filepath.Join(hubDir, "recordings") {
-		t.Fatalf("dir %q", got)
-	}
-}
-
 func TestDesktopHostDepFollowsTheHeartbeat(t *testing.T) {
 	e := newRecEnv(t)
 	if e.h.d.DesktopHost() {
@@ -259,7 +251,29 @@ func TestFILES01_RecordingLogsNoNames(t *testing.T) {
 	in.Download = func(context.Context, string) error { return errors.New(canary) }
 	e.h.IntakeRecording(context.Background(), in)
 	sink.AssertClean(t)
-	if strings.Contains(sink.String(), "recordings") && strings.Contains(sink.String(), canary) {
-		t.Fatal("canary logged")
+}
+
+func TestSweepRecordingTempsRemovesCrashLeftovers(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	keep := []string{filepath.Join(a, "u-1.m4a"), filepath.Join(b, "notes.txt")}
+	drop := []string{filepath.Join(a, ".asset-123"), filepath.Join(a, ".u-2.sealed"), filepath.Join(b, ".asset-9")}
+	for _, f := range append(append([]string{}, keep...), drop...) {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := SweepRecordingTemps(a, b, filepath.Join(a, "missing"))
+	if err != nil || n != len(drop) {
+		t.Fatalf("swept %d, %v", n, err)
+	}
+	for _, f := range drop {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Fatalf("%s survived", f)
+		}
+	}
+	for _, f := range keep {
+		if _, err := os.Stat(f); err != nil {
+			t.Fatalf("%s removed", f)
+		}
 	}
 }

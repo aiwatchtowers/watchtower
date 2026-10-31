@@ -97,6 +97,8 @@ func TestHubRecordingClaimFinishJSONKeys(t *testing.T) {
 func TestHubRecordingFinishWithAnErrorStoresItsClassOnly(t *testing.T) {
 	dir := hubTestDir(t)
 	queueJob(t, dir, "u-1")
+	_, err := runHub(t, "recording", "claim", "--upload", "u-1")
+	require.NoError(t, err)
 	out, err := runHub(t, "recording", "finish", "--upload", "u-1", "--error", "Could not read /Users/x/a b.m4a", "--json")
 	require.NoError(t, err)
 	m := decodeKeys(t, out)

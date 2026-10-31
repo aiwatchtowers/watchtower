@@ -101,8 +101,10 @@ type registration struct {
 
 // Dispatcher maps action kinds to handlers; safe for concurrent use.
 type Dispatcher struct {
-	mu    sync.RWMutex
-	kinds map[string]registration
+	mu         sync.RWMutex
+	kinds      map[string]registration
+	recordings RecordingIntaker
+	recNudges  []string
 }
 
 // NewDispatcher returns an empty dispatcher: every kind is unsupported until
@@ -145,4 +147,19 @@ func (d *Dispatcher) lookup(kind string) (registration, bool) {
 	defer d.mu.RUnlock()
 	r, ok := d.kinds[kind]
 	return r, ok
+}
+
+// SetRecordings installs the recording-upload intake (Task 5) and the slice
+// kinds an upload it received refreshes. Without one, uploads stay pending
+// (a hub that cannot ingest them).
+func (d *Dispatcher) SetRecordings(fn RecordingIntaker, nudges []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.recordings, d.recNudges = fn, slices.Clone(nudges)
+}
+
+func (d *Dispatcher) recordingIntake() (RecordingIntaker, []string) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.recordings, d.recNudges
 }

@@ -39,6 +39,9 @@ func TestRecordingJobLifecycle(t *testing.T) {
 	if err := s.QueueRecording("u1", "ccdd", now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.FinishRecording("u1", nil, "boom", now); !errors.Is(err, ErrJobState) {
+		t.Fatalf("finish of a never-claimed job: %v", err)
+	}
 	job, err := s.ClaimRecording("u1", now.Add(time.Minute))
 	if err != nil || job.Status != RecordingClaimed || job.DeviceID != "AABB" {
 		t.Fatalf("claim: %+v %v", job, err)
@@ -68,6 +71,9 @@ func TestRecordingJobsHoldNoContent(t *testing.T) {
 	if err := s.QueueRecording("u1", "aabb", now); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.ClaimRecording("u1", now); err != nil {
+		t.Fatal(err)
+	}
 	text := "Could not open /Users/someone/Standup with Acme.m4a"
 	job, err := s.FinishRecording("u1", nil, text, now)
 	if err != nil || job.Status != RecordingFailed || job.ErrorClass != "other" {
@@ -78,6 +84,9 @@ func TestRecordingJobsHoldNoContent(t *testing.T) {
 		t.Fatalf("stored %q %v", stored, err)
 	}
 	if err := s.QueueRecording("u2", "aabb", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimRecording("u2", now); err != nil {
 		t.Fatal(err)
 	}
 	if job, _ := s.FinishRecording("u2", nil, "decode_failed", now); job.ErrorClass != "decode_failed" {

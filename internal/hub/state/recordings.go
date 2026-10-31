@@ -156,7 +156,7 @@ func ErrorClass(s string) string {
 	return "other"
 }
 
-// FinishRecording ends a claimed job: failed with errClass (stored as its
+// FinishRecording ends a claimed job (a job never claimed is ErrJobState): failed with errClass (stored as its
 // class only) when errClass is set, else done with the transcript id. A job
 // finished already is ErrJobState (the same outcome again is a no-op).
 func (s *Store) FinishRecording(uploadID string, transcriptID *int64, errClass string, now time.Time) (RecordingJob, error) {
@@ -169,6 +169,9 @@ func (s *Store) FinishRecording(uploadID string, transcriptID *int64, errClass s
 		job, err := recordingJobTx(tx, uploadID)
 		if err != nil {
 			return err
+		}
+		if job.Status == RecordingQueued {
+			return ErrJobState
 		}
 		if job.Status == RecordingDone || job.Status == RecordingFailed {
 			if job.Status == status && job.ErrorClass == class && equalID(job.TranscriptID, transcriptID) {
