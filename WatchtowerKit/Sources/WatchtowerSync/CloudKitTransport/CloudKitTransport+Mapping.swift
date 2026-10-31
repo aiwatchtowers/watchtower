@@ -102,6 +102,24 @@ extension CloudKitTransport {
         return archiver.encodedData
     }
 
+    /// `record` naming `recordSeq` as its stored version: a fetched record read back from the buffer carries its
+    /// event's version, and a conditional write's conflict the version it just stored of the server copy.
+    static func cloudRecord(_ record: CloudRecord, recordSeq: UInt64?) -> CloudRecord {
+        CloudRecord(
+            recordName: record.recordName,
+            zone: record.zone,
+            kind: record.kind,
+            modifiedAt: record.modifiedAt,
+            payload: record.payload,
+            notifyLevel: record.notifyLevel,
+            assetFileURL: record.assetFileURL,
+            origin: record.origin,
+            asset: record.asset,
+            sealed: record.sealed,
+            recordSeq: recordSeq
+        )
+    }
+
     /// `zone` is the kind of the record's zone, resolved by the caller
     /// through `HubZones` (a zone name carries the hub id).
     static func cloudRecord(from ck: CKRecord, zone: CloudZoneID) -> CloudRecord? {
