@@ -18,7 +18,7 @@ a{color:var(--url)}
 .bar span{margin-left:auto;color:var(--muted);font-size:11px}
 .term pre{margin:0;padding:10px 12px;color:var(--term-fg);font:inherit;line-height:1.25;
   white-space:pre-wrap;word-break:break-all;overflow-x:auto}
-.qr{display:block;line-height:1;white-space:pre;word-break:normal;color:#fff}
+.qr{display:inline-block;line-height:1;white-space:pre;word-break:normal;color:#000;background:#fff}
 .ps{color:var(--ps)}
 .url{color:var(--url)}
 .err{color:var(--err)}
@@ -30,60 +30,60 @@ a{color:var(--url)}
 <h1>watchtower hub pair — terminal (headless host)</h1>
 <p class="note">Go hub plan 2, Task 6 (spec §10, §12.4). One panel per state; the copy is the plan's, the SAS prompt is the spec's pinned line.
 Hub name <code>raspberrypi</code>, phone name <code>iPhone</code>, device id and URL are placeholders. The terminal look is a dark theme; the code is the same in any terminal.</p>
-<ul><li><a href="#qr">QR code and waiting</a></li><li><a href="#narrow">Narrow window</a></li><li><a href="#sas">SAS prompt</a></li><li><a href="#linked">Linked</a></li><li><a href="#r-used_code">Refused: used_code</a></li><li><a href="#r-expired_code">Refused: expired_code</a></li><li><a href="#r-unknown_code">Refused: unknown_code</a></li><li><a href="#r-not_confirmed">Refused: not_confirmed</a></li><li><a href="#r-too_many_requests">Refused: too_many_requests</a></li><li><a href="#r-unknown">Refused: unknown reason</a></li><li><a href="#notty">Not a terminal</a></li></ul>
+<ul><li><a href="#qr">QR code and waiting</a></li><li><a href="#narrow">Narrow window</a></li><li><a href="#sas">SAS prompt</a></li><li><a href="#linked">Linked</a></li><li><a href="#r-used_code">Refused: used_code</a></li><li><a href="#r-expired_code">Refused: expired_code</a></li><li><a href="#r-unknown_code">Refused: unknown_code</a></li><li><a href="#r-not_confirmed">Refused: not_confirmed</a></li><li><a href="#r-too_many_requests">Refused: too_many_requests</a></li><li><a href="#r-unknown">Refused: unknown reason</a></li><li><a href="#cancel">Ctrl-C</a></li><li><a href="#notty">Not a terminal</a></li></ul>
 <section id="qr">
 <h2>1. QR code and waiting</h2>
-<p class="note">The window is at least 93 columns wide (the QR's width for a headless hub's link, quiet zone included). The QR is real <code>termqr.Render</code> output of a placeholder URL as long as a v4 headless link. A dark module prints as the terminal background.</p>
+<p class="note">The window is at least 93 columns wide (the QR's width for a headless hub's link, quiet zone included). The QR is real <code>termqr.Render</code> output of a placeholder URL as long as a v4 headless link. It is drawn with explicit colours, black modules on a white background (quiet zone included), so it reads the same on a light and a dark terminal.</p>
 <div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
 Link your iPhone to raspberrypi
 
-<span class="qr">█████████████████████████████████████████████████████████████████████████████████████████████
-█████████████████████████████████████████████████████████████████████████████████████████████
-████ ▄▄▄▄▄ █▀▀█▄ ▀▀▄ ▄▄▄▄▀▄█  ▄ █ █ █▀▀█▄█▀ ▄▄▄▄▄▀▀▀ ▄▀▄▀ ▀█▀▄▀▀▀▀ █▄▀█▀▄▄ █▀▄ ▀▄█ ▄▄▄▄▄ ████
-████ █   █ █▀▄█▀ ▄ ▀▄▀▄▀▄ █▀▄███▀     ▄▀▀█▀█▄▀▄▀▄▀█ ▀▄▄▄▄█▀ ▀▀▀▄█ ▀▀▄▄█▄▄ ▀▄▄▄▄▀██ █   █ ████
-████ █▄▄▄█ █▀▀█▄ ▀▀▄ ▄▄▄▄▀▄█▄ ▄▄ ▄▄▄ ▀▀ ██▀█▀▄▄ █▀▀  ▄▀▀ ▄▄▄ ▄▀█ ▀ ▄▄▀███▄ ▀▀ ▄▀██ █▄▄▄█ ████
-████▄▄▄▄▄▄▄█▄▀▄█ ▀ █▄█ █ ▀▄▀ █▄█ █▄█ ▀ ▀ █▄▀▄█ █ █▄█▄▀ ▀ █▄█ █▄▀▄▀▄█ ▀▄▀▄▀▄▀▄█ ▀ █▄▄▄▄▄▄▄████
-████▄▄▄▄▄█▄▄▄██▀▄█▄█  ▀█▀▄▀▀▀▀▀█  ▄ ▄▄█▀ █▄▀  ▀ █▄█▄ ▀█   ▄▄▄ ▄█ ▄  ███▀█  ▀▀█ ▀  █▄█ █ █████
-████▀█▀ ▄ ▄▀ █▀ █ ▄█▀ █ ▀ █ █▄█ ▀ ▀ ▀  █▄█▄█ █▀█▀▄▄▄█▀ ▀█▄▄▀▄█▄▀▄ ▄█▀ █▀█▀▄▀▄▄   ▄▄▀▄ ▄▄ ████
-████▄▄▄ ██▄██ ▄███▄ ▄  █▀▄▀▄█▀▀ █ ▄▀▄▄█  █▄██ ▀ █▄█▄ ▀█ ▀▀▄▄▄ ▄█ ▄  ███▀█  ▀▀█ ▀  █▄▄ ▄▀█████
-████▀█ ▄▄ ▄ ▀█ ▀█▄█▄ ▄███ █▀█ ▀▀ ▄███▄ ▄▄█▄█▀█▀█▀▄▄▄█▀ ▀█▄▄█▄█▄▀▄ ▄█▀ █▀█▀▄▀▄▄ ▄▄█▄▀▄ ▄  ████
-████▄▄█▄██▄ █▀▄▄██▄▀█ █▄  ▄▄█▄▀ ▄▄▀▄█▄   ▄███ ▀ █▄█▄ ▀█ ▀▀▄▄  ▄█ ▄  ███▀█  ▀▀█ ▀▄  ▄▄ ▄ ▄████
-████▀█  ▄ ▄██▀▀▄▄█▀▀▀▄█ ▄ ▄▀█▄▀▀ ▄▀▄█▄▀▄▄▄██▀███▀ ▄▄██▄▀██▄ ▄▀▄▀▄▄▄█▀ █▀██▄▀▄▄  ▄▄▄▀▄ ▄  ████
-█████▄ ███▄▀▄▀█▄█▄▄▀█▀▀▄ ▄ ▄█▀▀ ▄▄▄█▄▄█  ▀███▀  █ ▄▄  ▄ ▀▀█▄ ▀▀█ █▄ ██▀▀█▀ ▀▀██▀▄  ▄▄ ▄ ▄████
-████▀▀ ▀█▄▄ ▀▀ ▄▄█▀▀▀▄█ ▄▀▀▀█ ▀▀ █ █▄▄ ▄▄▀ █▀▀▀█▀▄▄▄██▄▀███ ▄▀▄▀▄ ▄█▀▄▀▀██▄▀▄▄▄ ▄▄▄▀▄ ▄  ████
-████▀▄ █▀▄▄ █▀█▄█▄▄▀█▀▀▄ ▄▀▄█▀  ▄▄▄█▄█▄   ███   ███▄  █ ▀▀▄▄  ▀█ █▄ ██ ▀█ █▀▀▄█▀▄  ▄▄ ▄ ▄████
-██████ ▀▀█▄ ▀▀ ▄▄█▀▀▀▄█ ▄▀▀▀▀ ▀▀ █ █▄▄ ▄▄  ▀▀▀▀█▀█▄▄██▄▀██▄ ▄▀▄▀▄ ▄█▀▄▀▀ █▄▀▄▄█ ▄▄▄█▄ ▄  ████
-████▀█ █ ▄▄▄ ▀█▄█▄▄▀█▀▀▄ ▄▀▄▀▀ ▄ ▄▄▄ █▄▄  █ ▀   ▀██▄  █  ▄▄▄  ▀█▄█▄▄ █ ▀▄ █▀█▄██ ▄▄▄ ▄▄ ▄████
-████▀█ ▀ █▄█ ▀ ▄▄█▀▀█▄█ ▄▀▀█▄ ▀  █▄█ ▄ █▀  ▄█▀▀█▀█▄▄▄█▄▄ █▄█ ▀▄ █ ▄█▀▄▀▀ █▄ ▄▄█  █▄█ ▄█  ████
-████▀█ █▄▄▄ ▄▀██ ▄▄▀ ▀▀▀▄▄▀█▄▀ █▄  ▄ █▄▄█ █▄█  ▄███ ▄ █▀▄▄    ▀███▄  █ █  ██▀▄█▄▄  ▄ █ ▄▄████
-████▀█ ▀█ ▄ █ ▄▄▀███ █▀ ▄▀▀█  ▀ ▀█▀█▀▄ ▄█   ▀▀▀▄ █▄▄██▄▄ ▄▀▀ ▀▄ █ ▄▄▀▄▀▀ █▄▀▄▄█▄▄  █ ██▄▄████
-████▀█ ▀██▄ ▄  █ ▀ █ ▀▀▄▄▄▀▄ ▀ ▄▀▀ █▀█▄ ▄ █▀█  ▄███ ▄ █▀ █▀ ▀ ▀███▄  █ █  ██▀▄█▄█▀▀ ██ ▄█████
-████▀█▀ █ ▄ █▀▄▀▄ █  █▀▀██▀▄ ██▄ █▀█▀ ▄█▄  ▀▀▀▀▄ █▄▄██▄▄ ▄▀▀ ▀▄ █ ▄▄▀▄▀▀ █▄▀▄▄█▄▄  █▀██▄ ████
-████▀█▄ ██▄ ▄█▀▄█▄▀▀ ▄ ▄▄▀▀▄ █▄▄▄▀ ▀▀▀█ ▄▀ ▀█▄ ▄███ ▄ █▀ █▀ ▀ ▀███▄  █ █  ██▀▄█▀█▀█ ██ ▄▄████
-████▀██ █ ▄ ▄▀▀█▄▀▀ ▀ ▀▀█▄█▄ █ ▀▄█▀ ████▄▀▀▀▀▀▄▄ █ ▄█▀▄▄ ▄▀█▀▀▄ █▄▄▄▀▄▀▀ █▄▀▄ █▄▄ ▀█▀██▄ ████
-████ ▀ ▄██▄▀▄  ▄█ ▄▀ █▀▄▄▄ ▄ ▀▀▄▄▄ ▄▄▄█ ▄▀█▀█ ▀▄███ ▄ █▀ █▀ ▀  ███   █▄█  ▄█▀█▄▄▀██ ██ ▄▄████
-████ █ ██ ▄▄█▀ █▄▀  ▀  ▀█ █▄ ▄▀▀▄▄ ▄ ▄ █▄█▄▀▀██▄ ▀▄▄██▄▄ ▄▀██▀▄ █▄ ▄▀ ▀▀ █▄▀▄ ▄▄▄▀ █▀██▄ ████
-█████▀ █▀█▄    ▄█ ▄▀ █▀▄▄▄ ▄ ▀▀▄▄    ▄█ ▄▀█▀█▀ ▄█ ▄ ▄ ▄▀ ▄  ▀▀▀███▄  █▀█ ▀ █▀█ ▄▀██ ██ ▄▄████
-██████ ██▀▄██▀ █▄▀  ▀  ▀█ █▄▄▄▀▀▄▀█ █▄ █▄█▄█▀██▄  ▄▄██▄▄ ▄ ██▀▄ ▄▄▄▄▀ ▀▀██▄▀▄  ▄▄▀ █▀██▄ ████
-████   █ ▄▄▄   ▄█ ▄▀ █▀▄ ▄ ▄█▀▀▄ ▄▄▄ ▄█  ▀███▀  █ ▄▄  ▄█ ▄▄▄ ▀▀█ █▄ ██▀▀▄▀ ▀▀█   ▄▄▄ █▄▄▄████
-████▄▄ █ █▄█ ▀ █ ▀  ▀     █▀▀▄▀▀ █▄█ ▄   █▄▀████▀ ▄▄██▄▄ █▄█ ▀▄▀ ▄▄█▀ ▀ ▀█▄▀▄  █ █▄█ ▄█▄ ████
-████   █▄▄▄     ▄ ▄▄██▀█▀▄ ▀▀▀▀█▄▄  ▄▄█▀ ▀█▀ ▀ ▄█ ▄▄  ▄▄ ▄▄ ▄▀▀▀ █▄▄▄█▀█▀▀ █▄█ ▄ ▄▄ ▄▀▄  ████
-████▄▄ █▀█▄▀██  █▄▄█ ▄ ██ █ █▄▀▄▀▄▄ ▄▄ █▄█▄▀ ███▀ ▄███▄▄▄▀█▄▄▀▄▀ ▄▄▄▀ ▀▀▀█▄ ▄   ▀█▀▄█▄█▄▄████
-████   █▄▀▄▀▀▄███▀ ███▀▄ ▄ ▄█▀▀  ▄▀ █▄█  ▀█▀█▀ ▄█ ▄▄  ▄ ███▀█▀▀▀ █▄▄▄█▀█▀▀ █▄█ █▀▄▄▄▄ ▄█▄████
-████▄▄▄  █▄▀█ █▀▀ ██▀▄██▄ ███ ▀ ▄▄▄ ▄▄ █▄█▄▀ ▀██▀ ▄███▄ ▄▀█▄▄▀▄▀ ▄▄▄▀ ▀▀▀█▄ ▄   ▀█▀▄▄▄█▄ ████
-████   ▀▀█▄▀▀█ ▄ ▀▀▄▀▀▀▄  ▄▄█▄▀ ▄▄▀ █▄   ▄█▀█▀█▄█ ▄▄  ▄ ▄██▀█▀▀▀ █▄▄▄█▀█▀▀ █▄█ █▀▄▄▀▄ ▄▄█████
-████▄▄█▀ █▄▀█▄    ██▀  █▄  ███▀▄▀▄▄ ▄▄██▄▄█▀ ▀▄█▀ ▄███  ▄▀█▄▄█▄▀ ▄▄▄▀▄▀▀▀█▄ ▄▄  ██▀▀▀▄█▄ ████
-████▄ ▀▀▀█▄▀▀▄ ▄  █▄▀█▄▄ ▄ ▄█▀  ▄▄▀ ███   █▀█▀ ▄█▄█▄ ▀█ ▄██▀█ █▀ ▄█▄▄▄▄█▀ ▀█▄█ █▀▄▄▀▄ ▄▄█████
-█████ ▄  █▄▀▀▄▀   ▄█▀  █▄▄████ ▄▀▄▄█▄█▄█▄▀ ▀ ▀██▀▄ ██▀▄ ▄▀█▄ ▀▄▀ ▄█▄▀▄▀▀▀█▄ ▄▄█▄   ▀▀▄█▄ ████
-████ ▄  ▀█▄▀█▄ ▄  █▄▀█▄▄ ▄ ▄█▀▀ ▄▄██▄▄█  ▀█▀█ ▀▄███▄  █ ▄██ ▄  ▀ █ ▄▄█▄█▀ ▄█▄███▀ ▄▀▄ ▄▄█████
-████▄ ▄▀▄▀▄ ▄▄▀   ▄█▀  █▄▄██▀█▀▄▀▄▀▄█▄▄█▄▀ ▀ ▀██▀█ ██▀▄ ▄▀█▄ ▀▄▀█▄ ▄▀▄▀▀▀█▄ ▄▄▄▄  █▀▀▄█▄ ████
-████▄█████▄▄ ▄ ▄  █▄▀█▄▄▄▄ ▄ ▀▀▄ ▄▄▄ ▄█ ▄▀█▀█ ▀▄███ ▄ █▄ ▄▄▄   ███   █▄▀▀ ▄▀▄██▀ ▄▄▄  ▄▄█████
-████ ▄▄▄▄▄ █▄▄▀ ▄ ▄██  ▀█▄█▄▄█▀  █▄█ ▄▄█ ▀ ██▀█  █ ▄█▀▄  █▄█ ▀▄ █▄ ▄▀▄▀ ▀█▄ ▄▄▄█ █▄█ ▄█▄ ████
-████ █   █ █ ▄ ██ █▄▄█▄▀▄▄ █▄▀▀  ▄  ▄▄█▄█▀█▄█ ▀ ███   █▄▄ ▄▄   ███  ▄█▄█▀ ▄█ ██▄   ▄ █ ▄▀████
-████ █▄▄▄█ █  ▀▀▄▄▄██▄  ▄▄██ █▀██ ▀█▀▄▄▄█▀  ▀▀█  █ ▄▄▀▄▄███▀▀▀▄▀█▄ ▄▀▄▀ ▀█▄▀▄▄▄▀ ▀█▄█▄██ ████
-████▄▄▄▄▄▄▄█▄████████▄▄▄▄▄▄▄███▄███▄█▄█▄▄████▄█▄███▄▄▄█▄▄▄██▄▄▄███▄▄▄█▄██▄▄█▄████▄█▄▄▄▄▄▄████
-█████████████████████████████████████████████████████████████████████████████████████████████
-▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀</span>
+<span class="qr">                                                                                             
+                                                                                             
+    █▀▀▀▀▀█ ▄▄ ▀█▄▄▀█▀▀▀▀▄▀ ██▀█ █ █ ▄▄ ▀ ▄█▀▀▀▀▀▄▄▄█▀▄▀▄█▄ ▄▀▄▄▄▄█ ▀▄ ▄▀▀█ ▄▀█▄▀ █▀▀▀▀▀█    
+    █ ███ █ ▄▀ ▄█▀█▄▀▄▀▄▀█ ▄▀   ▄█████▀▄▄ ▄ ▀▄▀▄▀▄ █▄▀▀▀▀ ▄█▄▄▄▀ █▄▄▀▀ ▀▀█▄▀▀▀▀▄  █ ███ █    
+    █ ▀▀▀ █ ▄▄ ▀█▄▄▀█▀▀▀▀▄▀ ▀█▀▀█▀▀▀█▄▄█  ▄ ▄▀▀█ ▄▄██▀▄▄█▀▀▀█▀▄ █▄█▀▀▄   ▀█▄▄█▀▄  █ ▀▀▀ █    
+    ▀▀▀▀▀▀▀ ▀▄▀ █▄█ ▀ █ █▄▀▄█ ▀ █ ▀ █▄█▄█ ▀▄▀ █ █ ▀ ▀▄█▄█ ▀ █ ▀▄▀▄▀ █▄▀▄▀▄▀▄▀ █▄█ ▀▀▀▀▀▀▀    
+    ▀▀▀▀▀ ▀▀▀  ▄▀ ▀ ██▄ ▄▀▄▄▄▄▄ ██▀█▀▀ ▄█ ▀▄██▄█ ▀ ▀█▄ ███▀▀▀█▀ █▀██   ▄ ██▄▄ █▄██ ▀ █ █     
+    ▄ ▄█▀█▀▄█ ▄█ █▀ ▄█ █▄█ █ ▀ █▄█▄█▄██ ▀ ▀ █ ▄ ▄▀▀▀ ▄█▄ ▀▀▄▀ ▀▄▀█▀ ▄█ ▄ ▄▀▄▀▀███▀▀▄▀█▀▀█    
+    ▀▀▀█  ▀  █▀   ▀█▀██ ▄▀▄▀ ▄▄█ █▀▄▀▀ ██ ▀  █▄█ ▀ ▀█▄ █▄▄▀▀▀█▀ █▀██   ▄ ██▄▄ █▄██ ▀▀█▀▄     
+    ▄ █▀▀█▀█▄ █▄ ▀ ▀█▀   █ ▄ █▄▄█▀   ▀█▀▀ ▀ ▄ ▄ ▄▀▀▀ ▄█▄ ▀▀ ▀ ▀▄▀█▀ ▄█ ▄ ▄▀▄▀▀█▀▀ ▀▄▀█▀██    
+    ▀▀ ▀  ▀█ ▄▀▀  ▀▄ █ ▀██▀▀ ▀▄█▀▀▄▀ ▀███▀   █▄█ ▀ ▀█▄ █▄▄▀▀██▀ █▀██   ▄ ██▄▄ █▄▀██▀▀█▀█▀    
+    ▄ ██▀█▀  ▄▄▀▀ ▄▄▄▀ █▀█▀▄ ▀▄▄█▀▄▀ ▀▄▀▀▀  ▄   ▄█▀▀  ▀▄  ▀█▀▄▀▄▀▀▀ ▄█ ▄  ▀▄▀▀██▀▀▀▄▀█▀██    
+     ▀█   ▀▄▀▄ ▀ ▀▀▄ ▄▄▀█▀█▀ ▄▄█▀▀▀ ▀▀ ██▄   ▄██ █▀▀██▀█▄▄ ▀█▄▄ █ ▀█  ▄▄ ▄█▄▄  ▄▀██▀▀█▀█▀    
+    ▄▄█▄ ▀▀█▄▄█▀▀ ▄▄▄▀ █▀▄▄▄ █▄▄█ █ ▀▀█▀▀▄█ ▄▄▄ ▄▀▀▀  ▀▄   █▀▄▀▄▀█▀ ▄▀▄▄  ▀▄▀▀▀█▀▀▀▄▀█▀██    
+    ▄▀█ ▄▀▀█ ▄ ▀ ▀▀▄ ▄▄▀█▀▄▀ ▄██▀▀▀ ▀ ▀███   ███   ▀██ █▄▄▀▀██▄ █ ▀█  █▄ █ ▄▄▀ ▄▀██▀▀█▀█▀    
+      █▄▄ ▀█▄▄█▀▀ ▄▄▄▀ █▀▄▄▄▄█▄▄█ █ ▀▀█▀▀██▄▄▄▄ ▄ ▀▀  ▀▄  ▀█▀▄▀▄▀█▀ ▄▀▄▄█ ▀▄▀▀ █▀▀▀ ▀█▀██    
+    ▄ █ █▀▀▀█▄ ▀ ▀▀▄ ▄▄▀█▀▄▀▄▄█▀█▀▀▀█ ▀▀██ █▄███▄  ▀██ ██▀▀▀██▄ ▀ ▀▀█ █▄▀█ ▄ ▀  █▀▀▀█▀▀█▀    
+    ▄ █▄█ ▀ █▄█▀▀ ▄▄ ▀ █▀▄▄ ▀█▄██ ▀ █▀█ ▄██▀ ▄▄ ▄ ▀▀▀ ▀▀█ ▀ █▄▀█ █▀ ▄▀▄▄█ ▀█▀▀ ██ ▀ █▀ ██    
+    ▄ █ ▀▀▀█▀▄  █▀▀▄█▄▄▄▀▀▄ ▀▄█ ▀██▀█ ▀▀ █ ▀ ██▀   █▀█ ▄▀▀████▄   ▀██ █ ██  ▄▀ ▀▀██▀█ █▀▀    
+    ▄ █▄ █▀█ █▀▀▄   █ ▄█▀▄▄ ██▄█▄ ▄ ▄▀█▀ ███▄▄▄▀█ ▀▀  ▀▀█▀▄▄█▄▀█ █▀▀▄▀▄▄█ ▀▄▀▀ ▀▀██ █  ▀▀    
+    ▄ █▄  ▀█▀██ █▄█ █▄▄▀▀▀▄▀█▄█▀▄▄█ ▄ ▀█▀█ ▄ ██▀   █▀█ ▄█ ▄█▄█▄   ▀██ █ ██  ▄▀ ▀ ▄▄█  █▀     
+    ▄ ▄█ █▀█ ▄▀▄▀█ ██ ▄▄  ▄▀█  ▀█ ▄ ▄█▀ ▀██▄▄▄▄▀█ ▀▀  ▀▀█▀▄▄█▄▀█ █▀▀▄▀▄▄█ ▀▄▀▀ ▀▀██ ▄  ▀█    
+    ▄ ▀█  ▀█▀ ▄▀ ▀▄▄█▀█▀▀▄▄▀█ ▀▀▀▄█▄▄▄ █▀▄█▄ ▀█▀   █▀█ ▄█ ▄█▄█▄   ▀██ █ ██  ▄▀ ▄ ▄ █  █▀▀    
+    ▄  █ █▀█▀▄▄ ▀▄▄█▄█▄▄ ▀ ▀█ █▄▀ ▄█    ▀▄▄▄▄▄▀▀█ █▀ ▄▀▀█▀▄ ▄▄▀█ ▀▀▀▄▀▄▄█ ▀▄▀█ ▀▀█▄ ▄  ▀█    
+    █▄█▀  ▀▄▀██▀ █▀▄█ ▄▀▀▀█▀█▄▄▀▀▀█▀▀▀ █▀▄ ▄ █▄▀   █▀█ ▄█ ▄█▄██   ███ ▀ ██▀ ▄ ▀▀▄  █  █▀▀    
+    █ █  █▀▀ ▄█ ▀▄██▄██▄ █ ▀█▀▄▄▀▀█▀█▀█ ▀ ▀▄▄  ▀█▄▀▀  ▀▀█▀▄  ▄▀█ ▀█▀▄█▄▄█ ▀▄▀█▀▀▀▄█ ▄  ▀█    
+     ▄█ ▄ ▀████▀ █▀▄█ ▄▀▀▀█▀█▄▄▀▀████▀ █▀▄ ▄ ▄█▀ █▀█▀█▀▄█▀██▄▄▄   ▀██ ▄ █▄█ ▄ █▀▄  █  █▀▀    
+      █  ▄▀  ▄█ ▀▄██▄██▄ █ ▀▀▀▄▄▀▄ █ ▀█ ▀ ▀ ▄  ▀██▀▀  ▀▀█▀█  ▄▀█▀▀▀▀▄█▄▄  ▀▄▀██▀▀▄█ ▄  ▀█    
+    ███ █▀▀▀███▀ █▀▄█ ▄▀█▀█▀ ▄▄▀█▀▀▀█▀ ██▄   ▄██ █▀▀██▀ █▀▀▀█▄▄ █ ▀█  ▄▄▀▄█▄▄ ███▀▀▀█ ▀▀▀    
+    ▀▀█ █ ▀ █▄█ █▄██▄█████ ▄▄▀▄▄█ ▀ █▀███ ▀▄    ▄█▀▀  ▀▀█ ▀ █▄▀▄█▀▀ ▄█▄█▄ ▀▄▀██ █ ▀ █▀ ▀█    
+    ███ ▀▀▀█████▀█▀▀  ▄ ▄▀█▄▄▄▄ ▀▀██▀▀ ▄█▄ ▄█▄█▀ █▀▀██▀▀█▀▀█▀▄▄▄█ ▀▀▀ ▄ ▄▄█ ▀ █▀█▀▀█▀▄▀██    
+    ▀▀█ ▄ ▀▄  ██ ▀▀ █▀█  █ █ ▀▄▀▄▀▀█▀▀█ ▀ ▀▄█   ▄█▀   ▀▀▀▄ ▀▀▄▀▄█▀▀▀▄█▄▄▄ ▀█▀███▄ ▄▀ ▀ ▀▀    
+    ███ ▀▄▀▄▄▀   ▄█   ▄▀█▀█▀ ▄▄██▀▄█ ▀ ██▄ ▄ ▄█▀ █▀▀██▀█   ▄ ▄▄▄█ ▀▀▀ ▄ ▄▄█ ▀ █ ▄▀▀▀▀█▀ ▀    
+    ▀▀▀██ ▀▄ █ ▄▄█  ▄▀  ▀█   █▄█▀▀▀█▀▀█ ▀ ▀▄█▄  ▄█▀   ▀█▀▄ ▀▀▄▀▄█▀▀▀▄█▄▄▄ ▀█▀███▄ ▄▀▀▀ ▀█    
+    ███▄▄ ▀▄▄ █▀█▄▄▀▄▄▄▀██▀▀ ▀▄█▀▀▄█ ▀███▀ ▄ ▄ ▀ █▀▀██▀█▀  ▄ ▄▄▄█ ▀▀▀ ▄ ▄▄█ ▀ █ ▄▀▀▄▀█▀▀     
+    ▀▀ ▄█ ▀▄ ▀████  ▄██ ▀██   ▄▀▄▀▀█▀▀  ▀▀ ▄█▄▀ ▄█▀   ██▀▄ ▀▀ ▀▄█▀▀▀▄▀▄▄▄ ▀█▀▀██  ▄▄▄▀ ▀█    
+    ▀█▄▄▄ ▀▄▄▀█▀██ ▀▄ ▀▀█▀█▀ ▄██▀▀▄█   ███ ▄ ▄█▀ ▀ ▀█▄ █▀  ▄ █ ▄█▀ ▀▀▀▀ ▄█▄ ▀ █ ▄▀▀▄▀█▀▀     
+     █▀██ ▀▄▄▀▄███▀ ▄██ ▀▀    █▀▄▀▀ ▀ ▀ ▀▄█▄█▄  ▄▀█  ▄▀█▀▄ ▀█▄▀▄█▀ ▀▄▀▄▄▄ ▀█▀▀ ▀███▄▄▀ ▀█    
+    █▀██▄ ▀▄ ▀█▀██ ▀▄ ▀▀█▀█▀ ▄▄█▀▀  ▀▀ ██▄ ▄ █▄▀   ▀██ █▀  █▀██▄█ █▀▀ ▀ ▄█▀ ▀   ▄█▀▄▀█▀▀     
+    ▀█▀▄▀▄▀█▀▀▄███▀ ▄██ ▀▀  ▄ ▄▀▄▀▄▀ ▀▀ ▀▄█▄█▄  ▄ █  ▄▀█▀▄ ▀█▄▀▄ ▀█▀▄▀▄▄▄ ▀█▀▀▀▀██ ▄▄▀ ▀█    
+    ▀     ▀▀█▀█▀██ ▀▄ ▀▀▀▀█▀█▄▄▀█▀▀▀█▀ █▀▄ ▄ █▄▀   █▀█ ▀█▀▀▀███   ███ ▀▄▄█▀▄▀  ▄█▀▀▀██▀▀     
+    █▀▀▀▀▀█ ▀▀▄█▀█▀  ██▄ ▀ ▀▀ ▄██ ▀ █▀▀ █▄█  ▄ ██ █▀ ▄▀██ ▀ █▄▀█ ▀█▀▄▀▄█▄ ▀█▀▀▀ █ ▀ █▀ ▀█    
+    █ ███ █ █▀█  █ ▀▀ ▀▄▀▀█ ▀▄▄██▀██▀▀ ▀ ▄ ▀ █▄█   ███ ▀▀█▀▀███   ██▀ ▀ ▄█▀ █  ▀███▀█ █▀▄    
+    █ ▀▀▀ █ ██▄▄▀▀▀  ▀██▀▀  █ ▄  █▄ ▄▀▀▀ ▄██▄▄ ██ █▀▀▄▀▀   ▄▄▄▀▄ ▀█▀▄▀▄█▄ ▀▄▀▀▀▄█▄ ▀ ▀  █    
+    ▀▀▀▀▀▀▀ ▀        ▀▀▀▀▀▀▀   ▀   ▀ ▀ ▀▀    ▀ ▀   ▀▀▀ ▀▀▀  ▀▀▀   ▀▀▀ ▀  ▀▀ ▀    ▀ ▀▀▀▀▀▀    
+                                                                                             
+                                                                                             </span>
 
 Scan it with the Watchtower app on your iPhone, or open this link on the phone:
 <span class="url">https://example.com/link#placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-placeholder-place</span>
@@ -208,8 +208,20 @@ Waiting for your phone… (Ctrl-C cancels)
 <span class="err">Not linked (slot_full).</span>
 <span class="ps">owner@raspberrypi:~$</span> </pre></div>
 <div class="exit">exit 1</div>
+</section><section id="cancel">
+<h2>11. Ctrl-C</h2>
+<p class="note">The owner presses Ctrl-C while the code waits for a phone, or at the SAS prompt; at the prompt the hub is sent no first.</p>
+<div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair
+Link your iPhone to raspberrypi
+<span class="elided">… QR code, link and expiry as in panel 1 …</span>
+
+Waiting for your phone… (Ctrl-C cancels)
+^C
+<span class="err">Cancelled. Not linked.</span>
+<span class="ps">owner@raspberrypi:~$</span> </pre></div>
+<div class="exit">exit 130</div>
 </section><section id="notty">
-<h2>11. Not a terminal</h2>
+<h2>12. Not a terminal</h2>
 <p class="note">stdin or stdout is not a terminal. Nothing else is printed and no code is issued.</p>
 <div class="term" style="--cols:100"><div class="bar"><i></i><i></i><i></i><span>100 columns</span></div><pre><span class="ps">owner@raspberrypi:~$</span> watchtower hub pair | tee pair.log
 <span class="err">hub pair needs a terminal; scripts use --json --stream</span>

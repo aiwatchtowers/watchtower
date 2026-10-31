@@ -13,31 +13,44 @@ import (
 	"watchtower/internal/termqr"
 )
 
-// decode reads Render's half-block lines back into a module matrix (true =
-// dark module). Each line holds two module rows: the top and the bottom half
-// of every cell. A dark module prints as the terminal background, so
-// " " = both dark, "█" = both light, "▄" = top dark, "▀" = bottom dark. A QR
-// has an odd number of rows, so the last line's bottom half is padding.
+// The colour codes around every line, pinned: black modules on a bright
+// white background, then a reset (ask #883).
+const (
+	lineStart = "\x1b[30;107m"
+	lineEnd   = "\x1b[0m"
+)
+
+// decode reads Render's lines back into a module matrix (true = dark
+// module), through the colour codes. Each line holds two module rows: the
+// top and the bottom half of every cell, the foreground (black) being dark:
+// "█" = both dark, " " = both light, "▀" = top dark, "▄" = bottom dark. A
+// QR has an odd number of rows, so the last line's bottom half is padding.
 func decode(t *testing.T, lines []string, rows int) [][]bool {
 	t.Helper()
 	var m [][]bool
 	for _, line := range lines {
+		require.True(t, strings.HasPrefix(line, lineStart) && strings.HasSuffix(line, lineEnd),
+			"every line is wrapped in the colour codes: %q", line)
 		var top, bottom []bool
-		for _, r := range line {
+		for _, r := range strings.TrimSuffix(strings.TrimPrefix(line, lineStart), lineEnd) {
 			switch r {
-			case ' ':
-				top, bottom = append(top, true), append(bottom, true)
 			case '█':
+				top, bottom = append(top, true), append(bottom, true)
+			case ' ':
 				top, bottom = append(top, false), append(bottom, false)
-			case '▄':
-				top, bottom = append(top, true), append(bottom, false)
 			case '▀':
+				top, bottom = append(top, true), append(bottom, false)
+			case '▄':
 				top, bottom = append(top, false), append(bottom, true)
 			default:
 				t.Fatalf("unexpected rune %q in the QR output", r)
 			}
 		}
 		m = append(m, top, bottom)
+	}
+	require.Len(t, m, rows+1, "the last line's bottom half is padding")
+	for _, dark := range m[rows] {
+		require.False(t, dark, "the padding is background, never a dark half")
 	}
 	return m[:rows]
 }
@@ -60,13 +73,12 @@ func TestRenderMatchesTheBitmap(t *testing.T) {
 		lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
 		require.Len(t, lines, (len(want)+1)/2, "two module rows per line")
 		for _, line := range lines {
-			require.Equal(t, width, len([]rune(line)), "every line is the QR's width")
+			cells := strings.TrimSuffix(strings.TrimPrefix(line, lineStart), lineEnd)
+			require.Equal(t, width, len([]rune(cells)), "every line is the QR's width")
 		}
 		require.Equal(t, want, decode(t, lines, len(want)))
-		// The last line's bottom half is the terminal background, never a
-		// light block that would read as one more quiet-zone row.
-		require.NotContains(t, lines[len(lines)-1], "▄")
-		require.NotContains(t, lines[len(lines)-1], "█")
+		// The quiet zone is light (background): the first line is blank.
+		require.Equal(t, strings.Repeat(" ", width), strings.TrimSuffix(strings.TrimPrefix(lines[0], lineStart), lineEnd))
 
 		w, err := termqr.Width(text)
 		require.NoError(t, err)
