@@ -31,8 +31,13 @@ type runnerWake struct {
 	minimumGap time.Duration
 }
 
-func newRunnerWake() *runnerWake {
-	return &runnerWake{ch: make(chan struct{}, 1), minimumGap: runnerMinimumGap}
+// newRunnerWake builds a wake with gap as its minimum gap (0 =
+// runnerMinimumGap; anything else is a test seam).
+func newRunnerWake(gap time.Duration) *runnerWake {
+	if gap <= 0 {
+		gap = runnerMinimumGap
+	}
+	return &runnerWake{ch: make(chan struct{}, 1), minimumGap: gap}
 }
 
 // signal ends the wait in progress, or the next one.

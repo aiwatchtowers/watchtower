@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices"
+	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay"
@@ -47,14 +48,16 @@ const (
 const assetDirName = "assets"
 
 // workbenchOnly is what MobileSync = workbench_only keeps (the Swift
-// SliceKind.workbenchOnly): the workbench kinds and the hub's own liveness
-// and link records.
+// SliceKind.workbenchOnly): the sources' workbench kinds and the hub's own
+// liveness and link records.
 func workbenchOnly(k slices.Kind) bool {
-	switch k {
-	case "workbench", "workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
-		"session_timeline", slices.KindAskAlert, "permission_request", slices.KindSessionChat,
-		slices.KindHeartbeat, slices.KindDeviceGrant:
+	if k == slices.KindHeartbeat || k == slices.KindDeviceGrant {
 		return true
+	}
+	for _, w := range sources.WorkbenchOnlyKinds {
+		if w == k {
+			return true
+		}
 	}
 	return false
 }
@@ -90,6 +93,7 @@ type hubRuntime struct {
 	center  *link.Center
 	proc    *actions.Processor
 	pub     *slices.Publisher
+	wiring  *wiring // nil without a database
 
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -100,6 +104,7 @@ type hubRuntime struct {
 	mu          sync.Mutex
 	unreachable bool
 	lastRelay   time.Time
+	lastTouch   time.Time // a phone's last write the hub saw (the active poll)
 }
 
 // loadIdentity reads the hub identity from the hub dir's 0600 file,
@@ -173,6 +178,9 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	ok := false
 	defer func() {
 		if !ok {
+			if h.tr != nil {
+				closeTransport(h.tr)
+			}
 			if h.kr != nil {
 				h.kr.Wipe()
 			}
@@ -221,21 +229,35 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		HubRelayID: h.relayID, Clock: o.Clock,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
 	})
-	sources := []slices.Source{slices.GrantSource(h.center), slices.HeartbeatSource(h.heartbeat(st, name))}
+	sweepTemps(o)
+	if o.DB != nil {
+		// Registered after the processor exists: the handlers' start may
+		// already late-echo a held line it ends. No pass runs before the
+		// worker starts, so the table is complete by the first dispatch.
+		if h.wiring, err = h.buildWiring(o, st, mode, d, h.proc.LateEcho); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
+		}
+		// PROJ-16: a phone whose typing is taken away fails its held lines.
+		h.center.OnRevoke(h.wiring.handlers.Revoked)
+	}
+	srcs := []slices.Source{slices.GrantSource(h.center), slices.HeartbeatSource(h.heartbeat(st, name))}
+	if h.wiring != nil {
+		srcs = append(srcs, h.wiring.set.Sources...)
+	}
 	if o.Sources != nil {
-		sources = append(sources, o.Sources(st)...)
+		srcs = append(srcs, o.Sources(st)...)
 	}
 	if mode == policy.MobileWorkbenchOnly {
-		kept := sources[:0]
-		for _, src := range sources {
+		kept := srcs[:0]
+		for _, src := range srcs {
 			if workbenchOnly(src.Kind()) {
 				kept = append(kept, src)
 			}
 		}
-		sources = kept
+		srcs = kept
 	}
 	pub = slices.NewPublisher(slices.Config{
-		Store: st, Transport: h.tr, Sealer: sealer, DataZone: h.data, Sources: sources, Clock: o.Clock,
+		Store: st, Transport: h.tr, Sealer: sealer, DataZone: h.data, Sources: srcs, Clock: o.Clock,
 		Linked: func() (bool, error) {
 			devices, err := st.Devices()
 			return len(devices) > 0, err
@@ -245,6 +267,12 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 
 	hctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
+	if h.wiring != nil {
+		h.wiring.openWatch(ctx, o.DB, h.touched, o.Clock)
+		// Seeded before the publisher's start cycle reads the timeline.
+		h.startWiring(hctx, h.wiring)
+	}
+	h.trace("publisher")
 	h.wg.Add(3)
 	go func() {
 		defer h.wg.Done()
@@ -300,6 +328,40 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 		f.Accounts = slices.DBAccounts(h.sup.o.DB.DB)
 	}
 	return f
+}
+
+// publishSoon marks kinds dirty on the publisher (none before it is built).
+func (h *hubRuntime) publishSoon(kinds ...slices.Kind) {
+	if h.pub != nil {
+		h.pub.PublishSoon(kinds...)
+	}
+}
+
+// phoneLinked is the runners' gate: they work only while a phone is linked.
+func (h *hubRuntime) phoneLinked() bool {
+	devices, err := h.st.Devices()
+	return err == nil && len(devices) > 0
+}
+
+// touch records that a phone wrote to the hub just now.
+func (h *hubRuntime) touch() {
+	h.mu.Lock()
+	h.lastTouch = h.sup.o.Clock()
+	h.mu.Unlock()
+}
+
+// touched is when a phone last wrote to the hub (zero = not since start).
+func (h *hubRuntime) touched() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lastTouch
+}
+
+// trace tells a test the start's steps in order.
+func (h *hubRuntime) trace(step string) {
+	if h.sup.o.trace != nil {
+		h.sup.o.trace(step)
+	}
 }
 
 func toKinds(kinds []string) []slices.Kind {
@@ -409,6 +471,7 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 		case strings.HasPrefix(ev.Zone, transport.PairZone("")):
 			h.pairing(ctx, strings.TrimPrefix(ev.Zone, transport.PairZone("")))
 		case strings.HasPrefix(ev.Zone, transport.MailboxZone(h.relayID, "")):
+			h.touch()
 			h.pass(ctx)
 		}
 	}
@@ -448,6 +511,9 @@ func (h *hubRuntime) pass(ctx context.Context) {
 		}
 		h.mu.Lock()
 		h.lastRelay = h.sup.o.Clock()
+		if rep.Read > 0 {
+			h.lastTouch = h.lastRelay
+		}
 		h.mu.Unlock()
 		if rep.Remaining == 0 {
 			return
@@ -541,6 +607,7 @@ func (h *hubRuntime) forwardPairEvents(ctx context.Context) {
 func (h *hubRuntime) stop(keep func(slices.Kind) bool) {
 	h.cancel()
 	h.wg.Wait()
+	h.wiring.close()
 	if keep != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 		if published, err := publishedRecords(h.st, keep); err != nil {

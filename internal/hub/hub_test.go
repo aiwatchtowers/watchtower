@@ -718,7 +718,7 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 // its device_grant from the data zone with ordered_actions 1 — every record
 // on the fake sealed (no plaintext marker in any frame).
 func TestEndToEndOverMemfake(t *testing.T) {
-	runEndToEnd(t, "")
+	runEndToEnd(t, "", nil)
 }
 
 // TestFILES01_HubLogsNoNamesCodesOrKeys: the whole flow — a renamed hub
@@ -726,7 +726,7 @@ func TestEndToEndOverMemfake(t *testing.T) {
 // name, no link code or URL and no four-digit code.
 func TestFILES01_HubLogsNoNamesCodesOrKeys(t *testing.T) {
 	sink := logcanary.Capture(t)
-	e := runEndToEnd(t, logcanary.Text("hub.name"))
+	e := runEndToEnd(t, logcanary.Text("hub.name"), nil)
 	sink.AssertClean(t)
 	for what, v := range map[string]string{"link URL": e.url, "link nonce": e.nonce, "code": e.code, "phone name": "Test Phone"} {
 		if strings.Contains(sink.String(), v) {
@@ -735,17 +735,28 @@ func TestFILES01_HubLogsNoNamesCodesOrKeys(t *testing.T) {
 	}
 }
 
-// endToEnd is what a run showed the owner and the phone.
-type endToEnd struct{ url, nonce, code string }
+// endToEnd is what a run showed the owner and the phone, and the linked
+// phone and running hub for a test that goes on.
+type endToEnd struct {
+	url, nonce, code string
+	phone            *hubtest.Phone
+	rig              *rig
+	dir              string
+}
 
 // runEndToEnd is TestEndToEndOverMemfake; a non-empty name renames the hub
-// first (the hub restarts for it) and must reach the link code.
-func runEndToEnd(t *testing.T, name string) endToEnd {
+// first (the hub restarts for it) and must reach the link code; configure
+// (nil = none) adjusts the hub's options.
+func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 	t.Helper()
 	policytest.Set(t, nil)
 	dir := shortDir(t)
 	r := newRig(t, dir)
-	r.start(r.options())
+	o := r.options()
+	if configure != nil {
+		configure(&o)
+	}
+	r.start(o)
 	r.waitState(StateOff, ReasonDisabled)
 	eventually(t, 5*time.Second, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, SocketName))
@@ -884,5 +895,5 @@ func runEndToEnd(t *testing.T, name string) endToEnd {
 			}
 		}
 	}
-	return endToEnd{url: qr.URL, nonce: lp.Nonce, code: sas.Code}
+	return endToEnd{url: qr.URL, nonce: lp.Nonce, code: sas.Code, phone: phone, rig: r, dir: dir}
 }
