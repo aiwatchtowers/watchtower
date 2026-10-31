@@ -88,12 +88,28 @@ final class RelaySocketInteropTests: HostedRelayScenarioCase {
             frame.hello.protocolVersion = version
             frame.hello.sessionToken = helloToken
             try await socket.send(try frame.serializedData())
-            var closed: Int?
-            while closed == nil {
-                if case .closed(let got) = try await socket.receive() { closed = got }
-            }
+            let closed = try await Self.closeCode(of: socket, within: .seconds(10))
             XCTAssertEqual(closed, code, "version \(version)")
             await socket.close(code: 1000)
+        }
+    }
+
+    /// The code of the next close on `socket`, skipping binary frames; nil when none came
+    /// within `limit` (the read is cancelled and the socket closed).
+    private static func closeCode(of socket: any RelaySocket, within limit: Duration) async throws -> Int? {
+        try await withThrowingTaskGroup(of: Int?.self) { group in
+            group.addTask {
+                while true {
+                    if case .closed(let code) = try await socket.receive() { return code }
+                }
+            }
+            group.addTask {
+                try await Task.sleep(for: limit)
+                await socket.close(code: 1000)
+                return nil
+            }
+            defer { group.cancelAll() }
+            return try await group.next().flatMap { $0 }
         }
     }
 

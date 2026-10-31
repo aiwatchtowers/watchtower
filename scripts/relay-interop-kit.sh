@@ -25,6 +25,11 @@
 #
 # Environment: RELAY_INTEROP_PORT, RELAY_INTEROP_FILTER (default 'InteropTests'),
 # RELAY_INTEROP_KEEP=1 keeps the temp dir (wrangler's log and state).
+#
+# No `set -e`: the script reads exit codes itself (the readiness loop's curl, `wait` on
+# the test run, whose code is the script's), and an early exit there would skip the
+# messages around them; every failure that must stop the run goes through `die`, and the
+# EXIT trap reaps whatever was started.
 set -uo pipefail
 
 if [ $# -ne 1 ] || [ -z "$1" ]; then
@@ -53,6 +58,10 @@ if [ ! -d "$WORKER/node_modules" ]; then
 	(cd "$WORKER" && npm ci --no-audit --no-fund) >&2 || die "npm ci failed in $WORKER"
 fi
 [ -d "$WORKER/node_modules/wrangler" ] || die "no wrangler in $WORKER/node_modules"
+if command -v lsof >/dev/null 2>&1; then
+	holder="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { print $1 " (pid " $2 ")"; exit }')"
+	[ -z "$holder" ] || die "port $PORT is held by $holder: stop it or set RELAY_INTEROP_PORT"
+fi
 if curl -fsS -m 2 "$ORIGIN/healthz" >/dev/null 2>&1; then
 	die "something already answers on $ORIGIN: stop it or set RELAY_INTEROP_PORT"
 fi
@@ -67,11 +76,9 @@ else
 	echo "relay-interop-kit: $RELAY is not a git checkout; the Kit's proto is pinned to $PIN" >&2
 fi
 
-STATE="$(mktemp -d "${TMPDIR:-/tmp}/relay-interop-kit.XXXXXX")" || die "mktemp failed"
-LOG="$STATE/wrangler.log"
-SECRET="$(openssl rand -hex 32)"
 WPID=""
 TPID=""
+STATE=""
 
 # stop_group ends process group $1: SIGTERM, then SIGKILL after 10 s, and
 # waits until no process of the group is left.
@@ -103,16 +110,22 @@ cleanup() {
 		stop_group "$WPID"
 		WPID=""
 	fi
-	if [ "${RELAY_INTEROP_KEEP:-}" = 1 ]; then
+	if [ -n "$STATE" ] && [ "${RELAY_INTEROP_KEEP:-}" = 1 ]; then
 		echo "relay-interop-kit: kept $STATE" >&2
-	else
+	elif [ -n "$STATE" ]; then
 		rm -rf "$STATE"
 	fi
 	exit "$rc"
 }
+
+# The trap goes in right after mktemp, so no exit path leaves the temp dir behind.
+STATE="$(mktemp -d "${TMPDIR:-/tmp}/relay-interop-kit.XXXXXX")" || die "mktemp failed"
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+LOG="$STATE/wrangler.log"
+SECRET="$(openssl rand -hex 32)"
+[ -n "$SECRET" ] || die "openssl rand gave no session secret"
 
 # The stand's config: the worker's wrangler.jsonc copied into the temp dir with `main`
 # made absolute and REGISTER_LIMIT (10 registrations a minute per address) raised: the
