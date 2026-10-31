@@ -612,6 +612,64 @@ func TestWorkbenchOnlyRetriesAFailedDelete(t *testing.T) {
 	}
 }
 
+// refusingWatcher is the memfake with the relay's WatchZone, refusing each
+// zone's first subscription as the relay does while no phone holds the hub
+// in a slot.
+type refusingWatcher struct {
+	*memfake.Fake
+	mu      sync.Mutex
+	refused map[string]bool
+	watched map[string]int
+}
+
+func (w *refusingWatcher) WatchZone(_ context.Context, zone string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.refused[zone] {
+		w.refused[zone] = true
+		return transport.ErrForbidden
+	}
+	w.watched[zone]++
+	return nil
+}
+
+func (w *refusingWatcher) count(zone string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.watched[zone]
+}
+
+// TestRefusedZoneSubscriptionRetriedByLinkUpkeep: on a transport that
+// subscribes zones itself (the hosted relay) the hub starts without
+// counting any zone as subscribed — the relay refuses a hub not in a slot
+// yet, and a start must still get PAIRING_OPENED — and the link upkeep
+// subscribes each zone, retrying a refused one, then never again.
+func TestRefusedZoneSubscriptionRetriedByLinkUpkeep(t *testing.T) {
+	policytest.Set(t, nil)
+	dir := shortDir(t)
+	setMeta(t, dir, state.MetaEnabled, "1")
+	linkPhoneDirectly(t, dir)
+	r := newRig(t, dir)
+	w := &refusingWatcher{Fake: r.fake, refused: map[string]bool{}, watched: map[string]int{}}
+	o := r.options()
+	o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
+		return w, nil
+	}
+	o.linkEvery = 50 * time.Millisecond
+	r.start(o)
+	r.waitState(StateRunning, "")
+	s, err := ReadStatus(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := transport.DataZone(s.RelayDeviceID)
+	eventually(t, 10*time.Second, "the data zone subscribed after its refusal", func() bool { return w.count(data) == 1 })
+	time.Sleep(300 * time.Millisecond) // several more upkeeps
+	if n := w.count(data); n != 1 {
+		t.Fatalf("the data zone subscribed %d times", n)
+	}
+}
+
 // TestStartFailureHasItsOwnReason: a start step that is not a sidecar read
 // (here an identity file with loose permissions) reads starting/start_failed,
 // never sidecar_unreadable.

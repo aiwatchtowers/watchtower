@@ -24,6 +24,7 @@ import (
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay"
+	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy"
 )
@@ -136,13 +137,22 @@ func (o Options) relayTransport(ctx context.Context, id identity.Identity, st *s
 	if err := os.MkdirAll(assets, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: creating the asset dir: %w", ErrStartFailed, err)
 	}
-	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth), relay.Options{
-		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets,
+	var opts []client.Option
+	if o.httpClient != nil {
+		opts = append(opts, client.WithHTTPClient(o.httpClient))
+	}
+	t := relay.New(relay.NewClient(o.RelayOrigin, id.RelayAuth, opts...), relay.Options{
+		Origin: o.RelayOrigin, Store: st, Clock: o.Clock, AssetDir: assets, HTTP: o.httpClient,
 	})
 	if len(zones) == 0 {
 		return t, nil
 	}
-	if err := t.Connect(ctx, zones); err != nil {
+	// The relay refuses a subscription to the hub's own zones (FORBIDDEN)
+	// until a phone holds the hub in a slot, and Connect subscribes all or
+	// none: connect with none, so a hub not paired yet still gets
+	// PAIRING_OPENED, and the link upkeep subscribes each zone (WatchZone),
+	// retrying a refused one on its timer.
+	if err := t.Connect(ctx, nil); err != nil {
 		_ = t.Close()
 		return nil, err
 	}
@@ -197,8 +207,11 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if h.tr, err = o.newTransport(ctx, h.id, st, zones); err != nil {
 		return nil, err
 	}
-	for _, z := range zones {
-		h.watched[z] = true
+	if _, ok := h.tr.(zoneWatcher); !ok {
+		// A transport that sends every zone's events (memfake).
+		for _, z := range zones {
+			h.watched[z] = true
+		}
 	}
 
 	sealer := secure.NewSealer(h.kr)
@@ -363,7 +376,7 @@ func (h *hubRuntime) setUnreachable(v bool) {
 func (h *hubRuntime) work(ctx context.Context) {
 	passes := time.NewTicker(h.sup.o.passEvery)
 	defer passes.Stop()
-	links := time.NewTicker(linkEvery)
+	links := time.NewTicker(h.sup.o.linkEvery)
 	defer links.Stop()
 	house := time.NewTicker(houseEvery)
 	defer house.Stop()

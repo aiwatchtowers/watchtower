@@ -1,10 +1,11 @@
 // Package hubtest is the Go phone emulator the hub's tests drive (the relay
 // sim's Phone, on real envelopes): it holds a linked phone's keys, derives
 // the pairwise relay keys, seals relayToHub actions carrying action_seq into
-// its mailbox on a memfake transport, keeps them in an outbox until a final
-// echo, opens the hub's echoes and controls, answers resend_from (resending
-// with the same bytes, or skip_to when it no longer has an action) and
-// deletes what it read. Test-only: never imported by production code.
+// its mailbox (on a memfake transport, or on the hosted relay through
+// RelayStore), keeps them in an outbox until a final echo, opens the hub's
+// echoes and controls, answers resend_from (resending with the same bytes,
+// or skip_to when it no longer has an action) and deletes what it read.
+// Test-only: never imported by production code.
 package hubtest
 
 import (
@@ -30,9 +31,20 @@ import (
 	"watchtower/internal/hub/wire"
 )
 
+// Records is the record store a phone writes its own sealed bytes into and
+// reads the hub's from: the memfake, or the hosted relay (RelayStore).
+type Records interface {
+	Write(zone, name string, env []byte, expect transport.Expect) (transport.Outcome, error)
+	WriteWithAsset(zone, name string, env, asset []byte, expect transport.Expect) (transport.Outcome, error)
+	Changes(ctx context.Context, zone string, since uint64) (transport.Batch, error)
+	Delete(ctx context.Context, zone string, items []transport.DeleteItem) ([]transport.Outcome, error)
+}
+
+var _ Records = (*memfake.Fake)(nil)
+
 // Config is what a linked phone knows about its hub (the keybox and the link
 // code): its id, agreement key, K_meta and current epoch, plus the hub's relay
-// device id (the mailbox's first half), the shared fake and a clock.
+// device id (the mailbox's first half), the shared record store and a clock.
 type Config struct {
 	Hub        secure.ID
 	HubKX      *ecdh.PublicKey
@@ -40,7 +52,7 @@ type Config struct {
 	MetaKey    []byte
 	Epoch      uint32
 	HubRelayID string
-	Transport  *memfake.Fake
+	Transport  Records
 	Clock      func() time.Time
 }
 
@@ -120,6 +132,13 @@ func (p *Phone) Relink() error {
 
 // ID is the phone's device id.
 func (p *Phone) ID() secure.ID { return p.id }
+
+// RelayAuth is the key the phone signs in to the hosted relay with: its
+// signing key, whose relay_device_id the hello names.
+func (p *Phone) RelayAuth() ed25519.PrivateKey { return p.sig }
+
+// RelayDeviceID is the phone's relay_device_id.
+func (p *Phone) RelayDeviceID() string { return p.relayID }
 
 // Zone is the phone's mailbox zone.
 func (p *Phone) Zone() string { return p.zone }
@@ -488,7 +507,7 @@ func newUUID() string {
 // FromLink is a phone that scanned link code l: it knows the hub's id, keys
 // and relay device id from the code, and gets K_meta and the epoch from its
 // keybox once the owner confirmed (ReadKeybox). Its link nonce is the code's.
-func FromLink(l wire.LinkPayload, f *memfake.Fake, clock func() time.Time) (*Phone, error) {
+func FromLink(l wire.LinkPayload, f Records, clock func() time.Time) (*Phone, error) {
 	hub, err := secure.ParseID(l.HubID)
 	if err != nil {
 		return nil, fmt.Errorf("hubtest: link hub id: %w", err)
