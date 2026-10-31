@@ -4,6 +4,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -95,17 +96,7 @@ func Execute() int {
 	err := rootCmd.Execute()
 	auditCLIRun(os.Getenv, err)
 	if err != nil {
-		// The final error is for the owner (a terminal, or the Desktop that
-		// shows a failed command's stderr), so CLI stderr and HTTP bodies
-		// show in full (logredact.Full) — except in the detached daemon,
-		// whose stderr is watchtower.log.
-		switch {
-		case err.Error() == "": // errQuietExit: the exit code says it all
-		case os.Getenv(daemon.DetachEnvKey) == "1":
-			fmt.Fprintln(os.Stderr, err)
-		default:
-			fmt.Fprintln(os.Stderr, logredact.Full(err))
-		}
+		printFinalError(os.Stderr, err, os.Getenv(daemon.DetachEnvKey) == "1")
 		var ec *exitCodeError
 		if errors.As(err, &ec) {
 			return ec.code
@@ -113,6 +104,21 @@ func Execute() int {
 		return 1
 	}
 	return 0
+}
+
+// printFinalError prints the command's final error. It is for the owner (a
+// terminal, or the Desktop that shows a failed command's stderr), so CLI
+// stderr and HTTP bodies show in full (logredact.Full) — except in the
+// detached daemon, whose stderr is watchtower.log. errQuietExit prints
+// nothing: its exit code says it all.
+func printFinalError(w io.Writer, err error, detached bool) {
+	switch {
+	case errors.Is(err, errQuietExit):
+	case detached:
+		_, _ = fmt.Fprintln(w, err)
+	default:
+		_, _ = fmt.Fprintln(w, logredact.Full(err))
+	}
 }
 
 // staleTempAge matches the daemon's sweep: a live call never keeps a prompt
