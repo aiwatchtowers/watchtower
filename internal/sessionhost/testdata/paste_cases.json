@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {"name": "plain text", "line": "fix the test", "keep_line_breaks": false, "keep_format": false, "want": "fix the test"},
+    {"name": "empty", "line": "", "keep_line_breaks": false, "keep_format": false, "want": ""},
+    {"name": "non-ASCII letters", "line": "Привет, café", "keep_line_breaks": false, "keep_format": false, "want": "Привет, café"},
+    {"name": "an ESC cannot end the paste", "line": "a\u001b[201~b", "keep_line_breaks": false, "keep_format": false, "want": "a[201~b"},
+    {"name": "C0 and DEL dropped", "line": "a\u0000b\u0003c\u007fd\u0007e", "keep_line_breaks": false, "keep_format": false, "want": "abcde"},
+    {"name": "C1 controls dropped", "line": "a\u0080b\u009bc", "keep_line_breaks": false, "keep_format": false, "want": "abc"},
+    {"name": "line breaks dropped", "line": "one\ntwo\r\nthree\rfour", "keep_line_breaks": false, "keep_format": false, "want": "onetwothreefour"},
+    {"name": "every newline scalar dropped", "line": "a\u000bb\u000cc\u0085d e f", "keep_line_breaks": false, "keep_format": false, "want": "abcdef"},
+    {"name": "tab dropped", "line": "a\tb", "keep_line_breaks": false, "keep_format": false, "want": "ab"},
+    {"name": "line breaks kept as LF", "line": "one\ntwo\r\nthree\rfour", "keep_line_breaks": true, "keep_format": false, "want": "one\ntwo\nthree\nfour"},
+    {"name": "every newline scalar kept as LF", "line": "a\u000bb\u000cc\u0085d e f", "keep_line_breaks": true, "keep_format": false, "want": "a\nb\nc\nd\ne\nf"},
+    {"name": "LF CR is two breaks", "line": "a\n\rb", "keep_line_breaks": true, "keep_format": false, "want": "a\n\nb"},
+    {"name": "tab kept with line breaks", "line": "a\tb", "keep_line_breaks": true, "keep_format": false, "want": "a\tb"},
+    {"name": "other controls still dropped with line breaks", "line": "a\u001b[0mb\u0000\n", "keep_line_breaks": true, "keep_format": false, "want": "a[0mb\n"},
+    {"name": "format characters dropped", "line": "👩‍💻 ‮evil­﻿", "keep_line_breaks": false, "keep_format": false, "want": "👩💻 evil"},
+    {"name": "format characters kept", "line": "👩‍💻 ‮evil­﻿", "keep_line_breaks": false, "keep_format": true, "want": "👩‍💻 ‮evil­﻿"},
+    {"name": "format kept, controls dropped", "line": "a‍b\u001bc\nd", "keep_line_breaks": false, "keep_format": true, "want": "a‍bcd"},
+    {"name": "both kept", "line": "a‍b\r\nc\td\u0007", "keep_line_breaks": true, "keep_format": true, "want": "a‍b\nc\td"}
+  ]
+}

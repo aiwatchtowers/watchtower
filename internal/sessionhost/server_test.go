@@ -30,6 +30,14 @@ func socketPath(t *testing.T) string {
 // startServer runs an in-process server and stops it in t.Cleanup.
 func startServer(t *testing.T, opts Options) string {
 	t.Helper()
+	path, _ := startHost(t, opts)
+	return path
+}
+
+// startHost is startServer that also returns the server, for tests that read
+// a session's state.
+func startHost(t *testing.T, opts Options) (string, *Server) {
+	t.Helper()
 	path := socketPath(t)
 	l, err := Listen(path)
 	if err != nil {
@@ -37,7 +45,8 @@ func startServer(t *testing.T, opts Options) string {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- NewServer(opts).Serve(ctx, l) }()
+	srv := NewServer(opts)
+	go func() { done <- srv.Serve(ctx, l) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -46,7 +55,7 @@ func startServer(t *testing.T, opts Options) string {
 			t.Error("Serve did not return after cancel")
 		}
 	})
-	return path
+	return path, srv
 }
 
 type client struct {
@@ -149,9 +158,15 @@ func (c *client) list() []SessionInfo {
 // group and waits until the host has reaped it.
 func (c *client) launch(row int64, script string, env ...string) SessionInfo {
 	c.t.Helper()
+	return c.launchAgent(row, "", script, env...)
+}
+
+// launchAgent is launch with LaunchReq.Agent set.
+func (c *client) launchAgent(row int64, agent, script string, env ...string) SessionInfo {
+	c.t.Helper()
 	c.send(Launch, LaunchReq{
 		Row: row, Run: "r1", Executable: "/bin/sh", Args: []string{"-c", script},
-		Env: env, Cwd: os.TempDir(), Cols: 80, Rows: 24,
+		Env: env, Cwd: os.TempDir(), Cols: 80, Rows: 24, Agent: agent,
 	})
 	var info SessionInfo
 	if err := json.Unmarshal(c.expect(Launched), &info); err != nil {

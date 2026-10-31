@@ -58,3 +58,19 @@ func TestModeTracker_OversizedPendingDropped(t *testing.T) {
 		t.Fatalf("got %q", m.ReplayPrefix())
 	}
 }
+
+func TestModeTracker_OnReadsDefaultsAndChanges(t *testing.T) {
+	var m ModeTracker
+	if m.On(bracketedPasteMode) || !m.On(25) || m.On(9999) {
+		t.Fatal("defaults: 2004 off, 25 on, untracked off")
+	}
+	m.Observe([]byte("\x1b[?20"))
+	m.Observe([]byte("04h"))
+	if !m.On(bracketedPasteMode) {
+		t.Fatal("2004 set across a split sequence reads off")
+	}
+	m.Observe([]byte("\x1b[?2004l"))
+	if m.On(bracketedPasteMode) {
+		t.Fatal("2004 reset reads on")
+	}
+}
