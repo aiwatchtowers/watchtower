@@ -81,6 +81,9 @@ type wiring struct {
 	// port is the real session port the wiring built (nil when Options
 	// carried one, or no socket); closed with the wiring.
 	port *sessionstart.Port
+	// live is the sources' liveness over the port's host list (nil when the
+	// port cannot list: nothing is live).
+	live *liveness
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -135,12 +138,28 @@ func (g gatedSource) Items(ctx context.Context) ([]slices.Item, error) {
 func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *actions.Dispatcher,
 	lateEcho func(context.Context, actions.Request, actions.Outcome) error,
 ) (*wiring, error) {
+	w := &wiring{}
+	port, err := w.sessionPort(context.Background(), o)
+	if err != nil {
+		return nil, err
+	}
+	// The sources see the same host list the handlers' Live reads; a port
+	// that cannot list (no session host) leaves nothing live.
+	var live func() sources.Liveness
+	if l, ok := port.(runLister); ok {
+		w.live = newLiveness(l, h.phoneLinked, o.liveEvery, func() { h.publishSoon(livenessKinds...) })
+		live = w.live.get
+	}
+	away := o.away
+	if away == nil {
+		away = platform.NewAway()
+	}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()
 	set, err := sources.All(sources.Config{
-		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode,
+		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode, Live: live,
 		AssetDir: filepath.Join(o.Dir, assetDirName, transcriptAssetDir),
-		Home:     home, Away: platform.NewAway(), Active: h.phoneLinked,
+		Home:     home, Away: away, Active: h.phoneLinked,
 		OnChatChange:   func() { h.publishSoon(slices.KindSessionChat) },
 		OnReportChange: func() { h.publishSoon(reportKinds...) },
 		OnGitChange:    func() { h.publishSoon("workbench") },
@@ -150,13 +169,10 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		Now:            o.Clock,
 	})
 	if err != nil {
+		w.close()
 		return nil, err
 	}
-	w := &wiring{set: set}
-	port, err := w.sessionPort(context.Background(), o)
-	if err != nil {
-		return nil, err
-	}
+	w.set = set
 	w.handlers = handlers.Register(d, handlerDeps(o, st, set, watches, h.kr, port, lateEcho))
 
 	w.lane = newStateLane(o.DB.DB, o.Clock)
@@ -325,6 +341,14 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 			w.retrySeed(ctx)
 		}()
 	}
+	if w.live != nil {
+		// Before the runners: the first list settles the liveness soon.
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.live.run(ctx)
+		}()
+	}
 	h.trace("runners")
 	for _, r := range w.set.Runners {
 		h.wg.Add(1)
@@ -350,6 +374,9 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 		_ = w.watch.Run(ctx, func(kinds ...slices.Kind) {
 			h.publishSoon(kinds...)
 			w.lane.kick()
+			if w.live != nil {
+				w.live.kick() // a start or an exit wrote its row
+			}
 		})
 	}()
 }
