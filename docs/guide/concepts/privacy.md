@@ -145,11 +145,10 @@ A company's configuration profile can restrict sources, iPhone sync, Quick Conne
 
 A [headless host](../features/headless-host.md) keeps the same promise: everything it sends your phone is end-to-end encrypted, and the relay carries only ciphertext. A few things differ from the Mac app.
 
-- **The host's key is a file.** With no Keychain or Secure Enclave, the hub's identity is `~/.local/share/watchtower/.hub/identity.key`, readable only by your user (the folder is 0700, the file 0600). Anyone who can read your files as you can read it, so keep the box's disk and account to yourself.
-- **The session host's socket** is in `/run/user/<uid>` on Linux (else `~/.local/share/watchtower/.run`), never the shared `/tmp`, and only your user can reach it.
-- **No audit line in a system log.** Off macOS the content-free read line described above is not written. The read limits still hold.
-- **No organization policy.** A configuration profile exists only on macOS, so nothing is managed on a Linux host.
-- **The service holds no secret.** The systemd unit or LaunchAgent sets only `PATH`. The service's own output carries ids, counts and error classes, as Watchtower's logs do.
+- **The host's key is a file.** The host keeps its identity in a file instead of the Keychain, in `~/.local/share/watchtower/.hub`, readable only by your user. Keep the box's disk and your account to yourself.
+- **No audit line in a system log on Linux.** There the content-free read line described above is not written. The read limits still hold.
+- **No organization policy on Linux.** A configuration profile exists only on macOS, so nothing is managed on a Linux host.
+- **The service holds no secret.** Its logs carry ids, counts and errors, as Watchtower's logs do on the Mac.
 
 ## Related
 
