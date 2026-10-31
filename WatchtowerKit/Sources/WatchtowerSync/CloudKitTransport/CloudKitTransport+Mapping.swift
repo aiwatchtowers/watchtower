@@ -131,8 +131,7 @@ extension CloudKitTransport {
             // path stashes a durable copy before persisting the event.
             assetFileURL: (ck["asset"] as? CKAsset)?.fileURL,
             // The owner's own records read `CKCurrentUserDefaultName` here.
-            creatorUserRecordName: ck.creatorUserRecordID?.recordName,
-            serverModifiedAt: ck.modificationDate
+            origin: RecordOrigin(author: ck.creatorUserRecordID?.recordName, serverAt: ck.modificationDate)
         )
     }
 }

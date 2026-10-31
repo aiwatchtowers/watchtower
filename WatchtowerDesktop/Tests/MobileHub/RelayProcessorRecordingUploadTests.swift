@@ -272,7 +272,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         try FileManager.default.copyItem(at: asset.sealed, to: copy)
         return CloudRecord(
             recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
-            payload: record.payload, assetFileURL: copy, creatorUserRecordName: record.creatorUserRecordName)
+            payload: record.payload, assetFileURL: copy, origin: record.origin)
     }
 
     /// Review Focus 2: the phone's relaunch retry re-sends the stored envelope byte for byte. The hub takes it

@@ -54,16 +54,24 @@ final class TransportStoreTests: XCTestCase {
     }
 
     /// The hub's device gate reads who wrote a relay record (spec §5.2 rule 4).
-    func testBufferedEventKeepsTheRecordCreator() throws {
+    func testAnEventKeepsItsOrigin() throws {
         let store = try TransportStore.inMemory()
+        let t = Date(timeIntervalSince1970: 1_700_000_000)
         let written = CloudRecord(
             recordName: "device-d1", zone: .relay, kind: "device", modifiedAt: stamp, payload: Data("{}".utf8),
-            creatorUserRecordName: "_colleague-a"
+            origin: RecordOrigin(author: "_colleague-a", serverAt: t)
         )
         try store.bufferChanged([written, record("action-1", zone: .relay)])
 
         let changed = try store.changes(in: .relay, since: nil).changed
-        XCTAssertEqual(changed.map(\.creatorUserRecordName), ["_colleague-a", nil])
+        XCTAssertEqual(changed.map(\.origin), [RecordOrigin(author: "_colleague-a", serverAt: t), .unknown])
+    }
+
+    func testAnEventWithoutOriginReadsBackAsUnknown() throws {
+        let store = try TransportStore.inMemory()
+        try store.bufferChanged([record("action-1", zone: .relay)])
+        let changed = try store.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(changed.map(\.origin), [.unknown])
     }
 
     func testZonesIsolatedInBuffer() throws {
@@ -273,17 +281,17 @@ final class TransportStoreTests: XCTestCase {
         let claimsFresh = CloudRecord(
             recordName: "action-claims-fresh", zone: .relay, kind: "action",
             modifiedAt: now.addingTimeInterval(365 * 86_400), payload: Data("{}".utf8),
-            serverModifiedAt: now.addingTimeInterval(-35 * 86_400)
+            origin: RecordOrigin(serverAt: now.addingTimeInterval(-35 * 86_400))
         )
         let claimsAged = CloudRecord(
             recordName: "action-claims-aged", zone: .relay, kind: "action",
             modifiedAt: Date(timeIntervalSince1970: 1), payload: Data("{}".utf8),
-            serverModifiedAt: now.addingTimeInterval(-60)
+            origin: RecordOrigin(serverAt: now.addingTimeInterval(-60))
         )
         try store.bufferChanged([claimsFresh, claimsAged])
         let batch = try store.changes(in: .relay, since: nil)
-        let buffered = batch.changed.compactMap { $0.serverModifiedAt?.timeIntervalSince1970 }
-        let expected = [claimsFresh, claimsAged].compactMap { $0.serverModifiedAt?.timeIntervalSince1970 }
+        let buffered = batch.changed.compactMap { $0.origin.serverAt?.timeIntervalSince1970 }
+        let expected = [claimsFresh, claimsAged].compactMap { $0.origin.serverAt?.timeIntervalSince1970 }
         XCTAssertEqual(buffered.count, 2)
         for (got, want) in zip(buffered, expected) { XCTAssertEqual(got, want, accuracy: 0.001) }
 

@@ -455,7 +455,7 @@ enum TestRelayPhone {
         plainNames.withLock { $0[wire] = plain.recordName }
         return CloudRecord(
             recordName: wire, zone: .relay, kind: WireKind.envelope, modifiedAt: plain.modifiedAt, payload: envelope,
-            assetFileURL: plain.assetFileURL, creatorUserRecordName: plain.creatorUserRecordName)
+            assetFileURL: plain.assetFileURL, origin: plain.origin)
     }
 
     /// A hub echo opened by `identity`'s phone; throws (`EnvelopeError.authenticationFailed`) when it was not
@@ -662,7 +662,7 @@ enum TestHello {
             context: EnvelopeContext(zone: .relay, wireName: plain.recordName), signer: signer ?? phone.signing)
         return CloudRecord(
             recordName: plain.recordName, zone: .relay, kind: wire ? WireKind.envelope : plain.kind,
-            modifiedAt: plain.modifiedAt, payload: envelope, creatorUserRecordName: creator)
+            modifiedAt: plain.modifiedAt, payload: envelope, origin: RecordOrigin(author: creator))
     }
 
     /// The code `phone` shows for the QR `code` once its waiting keybox brought the hub's `confirmNonce` (SAS v2).

@@ -20,6 +20,26 @@ final class SecureTransportTests: XCTestCase {
             payload: Data("{\"device_id\":\"\(deviceID.uuidString)\",\"id\":\"\(id)\",\"status\":\"\(status)\"}".utf8))
     }
 
+    /// Stamps every fetched record with a fixed origin, as a server-backed transport would.
+    private struct OriginStampingTransport: CloudSyncTransport, Sendable {
+        let base: InMemoryCloudTransport
+        let origin: RecordOrigin
+
+        func save(_ records: [CloudRecord]) async throws { try await base.save(records) }
+        func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+            try await base.delete(recordNames: recordNames, in: zone)
+        }
+        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+            let batch = try await base.changes(in: zone, since: token)
+            let stamped = batch.changed.map {
+                CloudRecord(
+                    recordName: $0.recordName, zone: $0.zone, kind: $0.kind, modifiedAt: $0.modifiedAt,
+                    payload: $0.payload, notifyLevel: $0.notifyLevel, assetFileURL: $0.assetFileURL, origin: origin)
+            }
+            return CloudChangeBatch(changed: stamped, deletedRecordNames: batch.deletedRecordNames, newToken: batch.newToken)
+        }
+    }
+
     private final class Rejections: @unchecked Sendable {
         private let lock = NSLock()
         private var items: [(wireName: String, reason: String)] = []
@@ -251,6 +271,30 @@ final class SecureTransportTests: XCTestCase {
         let mine = try await phone.changes(in: .relay, since: nil).changed
         XCTAssertEqual(mine.map(\.recordName), ["action-a1"])
         XCTAssertEqual(mine.first?.sealed?.senderID, TestE2E.deviceID)
+    }
+
+    func testOpeningKeepsTheRecordOrigin() async throws {
+        let base = InMemoryCloudTransport()
+        let origin = RecordOrigin(author: "_owner-acme", serverAt: stamp.addingTimeInterval(5))
+        let inner = OriginStampingTransport(base: base, origin: origin)
+        let phone = try phoneTransport(inner: inner)
+        try await phone.save([action()])
+
+        let opened = try await phone.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(opened.map(\.origin), [origin])
+    }
+
+    func testTheHygieneScanCarriesTheOriginOfUnopenableRecords() async throws {
+        let base = InMemoryCloudTransport()
+        let stranger = try phoneTransport(inner: base, keys: TestE2E.stranger())
+        try await stranger.save([action("s1", deviceID: TestE2E.strangerDeviceID)])
+        let origin = RecordOrigin(author: "_colleague-a", serverAt: stamp.addingTimeInterval(7))
+        let hub = hubTransport(inner: OriginStampingTransport(base: base, origin: origin))
+
+        let scan = try await hub.relayHygieneScan()
+
+        XCTAssertEqual(scan.unopenable.map(\.origin), [origin])
+        XCTAssertEqual(scan.unopenable.first?.reason, "noRelayKey")
     }
 
     func testAnUnknownSendersRelayRecordIsDroppedAndReported() async throws {

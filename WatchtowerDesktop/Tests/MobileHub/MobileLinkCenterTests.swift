@@ -270,7 +270,7 @@ final class MobileLinkCenterTests: XCTestCase {
         let record = try CloudRecordFactory.record(for: payload, modifiedAt: clock.now)
         return CloudRecord(
             recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
-            payload: record.payload, creatorUserRecordName: creator
+            payload: record.payload, origin: RecordOrigin(author: creator)
         )
     }
 
@@ -829,7 +829,7 @@ final class MobileLinkCenterTests: XCTestCase {
         return try TestRelayPhone.seal(
             CloudRecord(
                 recordName: record.recordName, zone: record.zone, kind: record.kind, modifiedAt: record.modifiedAt,
-                payload: record.payload, creatorUserRecordName: creator
+                payload: record.payload, origin: RecordOrigin(author: creator)
             ),
             as: deviceID == phoneB ? TestE2E.strangerIdentity : TestE2E.deviceIdentity)
     }
