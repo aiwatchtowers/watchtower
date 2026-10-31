@@ -268,6 +268,8 @@ final class HubSession {
     @ObservationIgnored private(set) var fetchCycles = 0
 
     @ObservationIgnored private let transport: any CloudSyncTransport & Sendable
+    /// `transport` when it has a lifecycle and live events (nil for an in-memory stand-in).
+    @ObservationIgnored private let liveTransport: (any LiveTransport)?
     /// The CloudKit transport's own store (nil for any other transport):
     /// read-only here, for what still waits in its send queue.
     @ObservationIgnored let transportStore: TransportStore?
@@ -400,8 +402,8 @@ final class HubSession {
     ) throws {
         // The demo kind picks the fixed demo keys: never over CloudKit.
         precondition(
-            !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
-            "a CloudKitTransport must not run under the demo kind"
+            !(transport is any LiveTransport && transportKind == .inMemoryDemo),
+            "a live transport must not run under the demo kind"
         )
         let hubLink = try Self.ownHubLink(keys, hubID: hubID, kind: transportKind, transportStore: transportStore)
         self.sleep = sleep
@@ -410,6 +412,7 @@ final class HubSession {
         self.alertCleaner = alertCleaner ?? .live
         isActive = startsActive
         self.transport = transport
+        liveTransport = transport as? any LiveTransport
         self.transportStore = transportStore
         self.transportKind = transportKind
         self.hubID = hubID
@@ -571,7 +574,7 @@ final class HubSession {
 
     /// The private database's saver, only for a `CloudKitTransport` in an entitled process.
     private static func liveSaver(transport: any CloudSyncTransport) -> (any SubscriptionSaving)? {
-        guard transport is CloudKitTransport, CloudKitTransport.entitlementPresent() else { return nil }
+        guard transport is any LiveTransport, TransportFactory.cloudKit.isAvailable() else { return nil }
         return CloudKitSubscriptionSaver()
     }
 
@@ -607,7 +610,7 @@ final class HubSession {
         _ transport: any CloudSyncTransport
     ) -> (@Sendable (RemoteFetchDepth) async throws -> Void)? {
         let grace = pushEngineGrace
-        return (transport as? CloudKitTransport).map { cloud in
+        return (transport as? any LiveTransport).map { cloud in
             { @Sendable depth in
                 switch depth {
                 case .full:
@@ -716,7 +719,7 @@ final class HubSession {
             if !startsEngine {
                 Self.logger.notice("no link keys for this hub: its CloudKit engine is not started")
             }
-            if !stopped, startsEngine, let cloud = transport as? CloudKitTransport {
+            if !stopped, startsEngine, let cloud = liveTransport {
                 // Before the engine starts, so no signal goes unseen; each
                 // reaches whatever hook the link flow set by then.
                 await cloud.setEventHandler { [weak self] event in
@@ -1294,7 +1297,7 @@ final class HubSession {
     /// wait for the first fetch, which a slow network can hold for long.
     func sendNow() async {
         await transportStartTask?.value
-        await (transport as? CloudKitTransport)?.sendNow()
+        await liveTransport?.sendNow()
     }
 
     /// Stops the loop for good (tests' teardown; the app never stops).
@@ -1314,7 +1317,7 @@ final class HubSession {
     func shutDown() async {
         stop()
         await bootstrapTask?.value
-        await (transport as? CloudKitTransport)?.stop()
+        await liveTransport?.stop()
     }
 
     /// Closes the replica and the transport store, after `shutDown()` and

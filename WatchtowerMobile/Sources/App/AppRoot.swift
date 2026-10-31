@@ -44,7 +44,7 @@ final class AppRoot {
         /// that cannot be read, reads as settled: the removal does not wait
         /// on what it cannot see. A kept farewell goes out by a direct save
         /// of its sealed record within `cap` (`resendDirectly`,
-        /// `CloudKitTransport.saveDirectly`).
+        /// `TransportFactory.sendDirectly`).
         static var live: Self {
             var delivery = Self { session, record in
                 guard let store = session.transportStore else { return false }
@@ -57,8 +57,7 @@ final class AppRoot {
             }
             delivery.resend = { [cap = delivery.cap] farewell in
                 await AppRoot.resendDirectly(farewell, cap: cap) { farewell in
-                    guard let scope = farewell.route.cloudKitScope else { throw UnsupportedRouteError(route: farewell.route) }
-                    try await CloudKitTransport.saveDirectly(farewell.record, scope: scope, hubID: farewell.hubID)
+                    try await TransportFactory.cloudKit.sendDirectly(farewell.record, farewell.route, farewell.hubID)
                 }
             }
             return delivery
@@ -193,7 +192,7 @@ final class AppRoot {
     /// boot waits for it).
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
-        guard CloudKitTransport.entitlementPresent() else {
+        guard TransportFactory.cloudKit.isAvailable() else {
             return try demo(try AppEnvironment.demo(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         // A demo tour a kill cut short (#174): its files and settings go.
