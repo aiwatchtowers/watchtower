@@ -689,7 +689,7 @@ final class MobileLinkCenter {
     /// unlinked device's record changes nothing.
     private func handleLinkedRewrite(_ record: CloudRecord, _ payload: DevicePayload) async throws {
         guard let device = try sidecar.linkedDevice(payload.deviceID) else { return }
-        guard payload.scope == device.scope, device.accepts(creator: record.creatorUserRecordName),
+        guard payload.scope == device.scope, device.accepts(creator: record.origin.author),
               await creatorMatches(record, payload) else {
             logger.warning("device record \(record.recordName, privacy: .public) not written by its linked phone: ignored")
             return
@@ -752,8 +752,8 @@ final class MobileLinkCenter {
     /// the Mac's user wrote it (a stranger on a share cannot pass as a
     /// same-Apple-ID phone). An unknown creator passes `private` only.
     private func creatorMatches(_ record: CloudRecord, _ payload: DevicePayload) async -> Bool {
-        guard payload.scope == .private else { return record.creatorUserRecordName == payload.userRecordName }
-        guard let creator = record.creatorUserRecordName, creator != CKCurrentUserDefaultName else { return true }
+        guard payload.scope == .private else { return record.origin.author == payload.userRecordName }
+        guard let creator = record.origin.author, creator != CKCurrentUserDefaultName else { return true }
         return creator == (await resolveOwnerUser())
     }
 

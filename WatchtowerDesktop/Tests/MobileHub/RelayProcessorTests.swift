@@ -336,7 +336,7 @@ final class RelayProcessorTests: XCTestCase {
                 as: TestE2E.strangerIdentity)
             return CloudRecord(
                 recordName: sealed.recordName, zone: sealed.zone, kind: sealed.kind, modifiedAt: sealed.modifiedAt,
-                payload: sealed.payload, serverModifiedAt: server)
+                payload: sealed.payload, origin: RecordOrigin(serverAt: server))
         }
         let claimsFresh = try stranger("claims-fresh", claims: now.addingTimeInterval(365 * 86_400), server: old)
         let claimsAged = try stranger("claims-aged", claims: Date(timeIntervalSince1970: 1), server: now)

@@ -44,7 +44,7 @@ final class AppRoot {
         /// that cannot be read, reads as settled: the removal does not wait
         /// on what it cannot see. A kept farewell goes out by a direct save
         /// of its sealed record within `cap` (`resendDirectly`,
-        /// `CloudKitTransport.saveDirectly`).
+        /// `TransportFactory.sendDirectly`).
         static var live: Self {
             var delivery = Self { session, record in
                 guard let store = session.transportStore else { return false }
@@ -57,7 +57,7 @@ final class AppRoot {
             }
             delivery.resend = { [cap = delivery.cap] farewell in
                 await AppRoot.resendDirectly(farewell, cap: cap) { farewell in
-                    try await CloudKitTransport.saveDirectly(farewell.record, scope: farewell.scope, hubID: farewell.hubID)
+                    try await TransportFactory.cloudKit.sendDirectly(farewell.record, farewell.route, farewell.hubID)
                 }
             }
             return delivery
@@ -192,7 +192,7 @@ final class AppRoot {
     /// boot waits for it).
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
-        guard CloudKitTransport.entitlementPresent() else {
+        guard TransportFactory.cloudKit.isAvailable() else {
             return try demo(try AppEnvironment.demo(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         // A demo tour a kill cut short (#174): its files and settings go.
@@ -231,7 +231,7 @@ final class AppRoot {
             factory: factory,
             identity: identity,
             defaults: defaults,
-            linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity, keys: keys),
+            linking: LinkingViewModel(access: CloudKitLinkAccess(), store: store, identity: identity, keys: keys),
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live
         )
@@ -265,7 +265,7 @@ final class AppRoot {
             identity: identity,
             defaults: defaults,
             linking: LinkingViewModel(
-                container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity,
+                access: CloudKitLinkAccess(), store: LinkStore(defaults: defaults), identity: identity,
                 keys: InMemoryPhoneKeyStore()
             ),
             startWork: nil,
@@ -635,7 +635,7 @@ final class AppRoot {
     private func keepFarewell(_ sealed: CloudRecord, of row: HubRow?) -> PendingFarewell? {
         guard let row else { return nil }
         let farewell = PendingFarewell(
-            hubID: row.hubID, scope: row.link.databaseScope, userRecordName: row.link.userRecordName,
+            hubID: row.hubID, route: row.link.route, userRecordName: row.link.userRecordName,
             record: sealed, since: Date()
         )
         do {
@@ -759,7 +759,7 @@ extension AppRoot: LinkHost {
         env.reorder(linking.links.map(\.hubID))
     }
 
-    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
+    func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
         // The launch's orphan pass never deletes the files of a hub being
         // linked (a cold launch by a link URL); a removal of this hub still
@@ -770,7 +770,7 @@ extension AppRoot: LinkHost {
         _ = await resends[hubID]?.value
         let frozen = (try registry.row(hubID))?.state == .unlinkedByMac
         if let session = env.session(hubID) {
-            if session.databaseScope == scope, !frozen, !fresh {
+            if session.route == route, !frozen, !fresh {
                 return session.linkTransport
             }
             // Another database's zones, a hub the Mac removed, or a new
@@ -780,7 +780,7 @@ extension AppRoot: LinkHost {
                 Self.logger.error("recordings at a rescan: \(problem, privacy: .public)")
             }
         }
-        let session = try factory.make(nil, hubID, scope, nil)
+        let session = try factory.make(nil, hubID, route, nil)
         // Before anything is sealed (no await since the build): the seqs a
         // removal of this hub left in this process are never reused (F29).
         if let floor = seqFloors[hubID] {

@@ -236,7 +236,7 @@ final class RelayProcessor: Sendable {
 
         init(_ record: CloudRecord) {
             sealed = record.sealed
-            creator = record.creatorUserRecordName
+            creator = record.origin.author
         }
     }
 
@@ -773,7 +773,7 @@ final class RelayProcessor: Sendable {
     /// records nobody here can open (a removed phone's, a stranger's, another
     /// hub's leftovers, an older version the rollback guard refused) are
     /// deleted by wire name once older than 7 days. Age is the server's
-    /// `serverModifiedAt` (`CKRecord.modificationDate`), never the sender's
+    /// `origin.serverAt` (`CKRecord.modificationDate`), never the sender's
     /// own `modifiedAt` claim, which falls in only for an event buffered
     /// before the server date was kept. Then the local event buffer is swept (strictly
     /// after the record pass, and never past the stored token, so an
@@ -796,7 +796,7 @@ final class RelayProcessor: Sendable {
             record.sealed?.wireName ?? (record.kind == RelayRecordKind.hello.rawValue ? record.recordName : nil)
         }
         let staleUnopenable = scan.unopenable
-            .filter { current.timeIntervalSince($0.serverModifiedAt ?? $0.modifiedAt) > Self.actionMaxAge }
+            .filter { current.timeIntervalSince($0.origin.serverAt ?? $0.modifiedAt) > Self.actionMaxAge }
             .map(\.wireName)
         let stale = staleOpened + staleUnopenable
         if !stale.isEmpty {
@@ -810,7 +810,7 @@ final class RelayProcessor: Sendable {
     }
 
     private func isStale(_ record: CloudRecord, at current: Date) throws -> Bool {
-        guard current.timeIntervalSince(record.serverModifiedAt ?? record.modifiedAt) > Self.actionMaxAge else { return false }
+        guard current.timeIntervalSince(record.origin.serverAt ?? record.modifiedAt) > Self.actionMaxAge else { return false }
         switch record.kind {
         case RelayRecordKind.action.rawValue:
             let action = try? RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)

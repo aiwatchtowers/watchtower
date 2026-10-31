@@ -67,13 +67,13 @@ public struct UnopenableRecord: Equatable, Sendable {
     public let modifiedAt: Date      // plaintext on the wire (spec §2.4)
     /// A short code (`authenticationFailed`, `noRelayKey`, `rolledBack`, ...); never key material.
     public let reason: String
-    /// The server's own date for the record (`CloudRecord.serverModifiedAt`).
-    public let serverModifiedAt: Date?
+    /// The record's server-side origin (`CloudRecord.origin`); hygiene ages by `origin.serverAt`.
+    public let origin: RecordOrigin
 
-    public init(wireName: String, modifiedAt: Date, reason: String, serverModifiedAt: Date? = nil) {
+    public init(wireName: String, modifiedAt: Date, reason: String, origin: RecordOrigin = .unknown) {
         self.wireName = wireName
         self.modifiedAt = modifiedAt
         self.reason = reason
-        self.serverModifiedAt = serverModifiedAt
+        self.origin = origin
     }
 }

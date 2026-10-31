@@ -1,36 +1,6 @@
-import CloudKit
 import Foundation
 import os
 import WatchtowerSync
-
-/// Saves and deletes CloudKit subscriptions; the live one is the private `CKDatabase`, a fake in tests.
-protocol SubscriptionSaving: Sendable {
-    func save(_ subscription: CKSubscription) async throws
-    func delete(id: CKSubscription.ID) async throws
-}
-
-/// The live saver: one container's private database.
-struct CloudKitSubscriptionSaver: SubscriptionSaving {
-    let containerID: String
-
-    init(containerID: String = WatchtowerCloud.containerID) {
-        self.containerID = containerID
-    }
-
-    private var database: CKDatabase { CKContainer(identifier: containerID).privateCloudDatabase }
-
-    func save(_ subscription: CKSubscription) async throws {
-        _ = try await database.save(subscription)
-    }
-
-    func delete(id: CKSubscription.ID) async throws {
-        do {
-            _ = try await database.deleteSubscription(withID: id)
-        } catch let error as CKError where error.code == .unknownItem {
-            // Already gone: what was asked for.
-        }
-    }
-}
 
 /// One hub's work-alert push subscription (D14): registered while the phone's "When work stops" switch is on, removed
 /// when it is off. A private-scope hub gets the `WatchtowerSignal` query subscription (saving by ID replaces, so a
@@ -41,18 +11,18 @@ final class AlertSubscriptionRegistrar {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AlertSubscription")
 
     private let hubID: String
-    private let scope: CloudDatabaseScope
-    private let saver: any SubscriptionSaving
+    private let route: HubRoute
+    private let wake: any PushWake
     private enum Applied { case unknown, registered, removed }
 
     /// What this process last got CloudKit to do; `unknown` until the first success, so a failure is retried by the
     /// next call (the next launch, or the next toggle).
     private var applied = Applied.unknown
 
-    init(hubID: String, scope: CloudDatabaseScope, saver: any SubscriptionSaving) {
+    init(hubID: String, route: HubRoute, wake: any PushWake) {
         self.hubID = hubID
-        self.scope = scope
-        self.saver = saver
+        self.route = route
+        self.wake = wake
     }
 
     /// The newest requested state.
@@ -79,10 +49,9 @@ final class AlertSubscriptionRegistrar {
         guard applied != wanted else { return }
         do {
             if enabled {
-                guard let subscription = AskAlertSubscription.subscription(for: scope, hubID: hubID) else { return }
-                try await saver.save(subscription)
-            } else if AskAlertSubscription.subscription(for: scope, hubID: hubID) != nil {
-                try await saver.delete(id: AskAlertSubscription.subscriptionID(hubID: hubID))
+                guard try await wake.subscribeAlerts(hubID: hubID, route: route) else { return }
+            } else {
+                try await wake.unsubscribeAlerts(hubID: hubID, route: route)
             }
             applied = wanted
         } catch {

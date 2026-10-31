@@ -26,7 +26,7 @@ final class AppRootRelinkTests: XCTestCase {
 
     private var paths: HubPaths!
     private var registry: HubRegistry!
-    private var container: FakeLinkContainer!
+    private var container: FakeLinkAccess!
     private var keyStore: InMemoryPhoneKeyStore!
     private let linkClock = GateLinkClock()
     /// The hub's zones: every session of a hub runs over the same transport.
@@ -56,12 +56,12 @@ final class AppRootRelinkTests: XCTestCase {
         self.keyStore = keyStore
         let defaults = try makeDefaults()
         registry = try HubRegistry(path: paths.registryPath)
-        container = FakeLinkContainer(log: LinkEventLog())
+        container = FakeLinkAccess(log: LinkEventLog())
         container.userRecordNameValue = "_colleague-a"
         let identity = DeviceIdentity(deviceID: try keyStore.deviceID()?.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0")
         let engine = FakeAudioEngine()
         let clock = FakeClock()
-        let factory = HubSessionFactory { [weak self] _, hubID, scope, device in
+        let factory = HubSessionFactory { [weak self] _, hubID, route, device in
             guard let self else { throw CancellationError() }
             try paths.prepare(hubID)
             let zone = zones[hubID] ?? InMemoryCloudTransport()
@@ -76,7 +76,7 @@ final class AppRootRelinkTests: XCTestCase {
                 defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory),
-                databaseScope: scope
+                route: route
             ) { uploader in
                 PhoneRecorderController(
                     uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil
@@ -101,7 +101,7 @@ final class AppRootRelinkTests: XCTestCase {
             identity: identity,
             defaults: defaults,
             linking: LinkingViewModel(
-                container: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: linkClock
+                access: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: linkClock
             ),
             startWork: { [weak self] name in
                 self?.workBegun.append(name)
@@ -148,7 +148,7 @@ final class AppRootRelinkTests: XCTestCase {
     /// A kept farewell of the test hub (#143), its sealed record `payload`.
     private func keptFarewell(_ payload: Data = Data([1])) -> PendingFarewell {
         PendingFarewell(
-            hubID: hubID, scope: .shared(ownerName: owner), userRecordName: "_colleague-a",
+            hubID: hubID, route: .cloudKit(.shared(ownerName: owner)), userRecordName: "_colleague-a",
             record: CloudRecord(recordName: "wire", zone: .relay, kind: WireKind.envelope, modifiedAt: Date(), payload: payload),
             since: Date()
         )
@@ -187,7 +187,7 @@ final class AppRootRelinkTests: XCTestCase {
         try await link(root, code(iat: start))
         weak var first = root.env.session(hubID)
         let firstReader = try XCTUnwrap(first?.store.reader)
-        XCTAssertEqual(first?.databaseScope, .shared(ownerName: owner), "another Apple ID: the shared database")
+        XCTAssertEqual(first?.route, .cloudKit(.shared(ownerName: owner)), "another Apple ID: the shared database")
         try await assertReadsAndWrites(try XCTUnwrap(first), heartbeatAt: Date(timeIntervalSince1970: 1_800_000_000))
 
         await root.linking.unlink(hubID)
@@ -214,7 +214,7 @@ final class AppRootRelinkTests: XCTestCase {
         XCTAssertFalse(root.env.holdsRetainedSession, "the relinked hub's activation let the retired one go")
         try await poll({ first == nil }, "the retired session (and its replica) is freed")
         XCTAssertEqual(container.accepted.count, 2, "the shares are accepted again")
-        XCTAssertEqual(second.databaseScope, .shared(ownerName: owner))
+        XCTAssertEqual(second.route, .cloudKit(.shared(ownerName: owner)))
         XCTAssertEqual(try registry.rows().map(\.hubID), [hubID])
         XCTAssertEqual(root.env.activeHubID, hubID)
         XCTAssertFalse(root.showsOnboarding)
@@ -307,7 +307,7 @@ final class AppRootRelinkTests: XCTestCase {
         XCTAssertTrue(second)
         XCTAssertTrue(try registry.pendingFarewells().isEmpty)
         XCTAssertEqual(saved.withLock { $0.map(\.record.payload) }, [Data([1]), Data([1])], "the sealed record as kept")
-        XCTAssertEqual(saved.withLock { $0.last?.scope }, .shared(ownerName: owner))
+        XCTAssertEqual(saved.withLock { $0.last?.route }, .cloudKit(.shared(ownerName: owner)))
     }
 
     /// Review round 1 (F4): a direct save still running at the cap reads as

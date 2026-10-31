@@ -28,7 +28,7 @@ final class LinkingViewModelTests: XCTestCase {
     private let relayShare = "https://www.icloud.com/share/acme-relay"
 
     private var log: LinkEventLog!
-    private var container: FakeLinkContainer!
+    private var container: FakeLinkAccess!
     private var host: FakeLinkHost!
     private var clock: FakeLinkClock!
     private var defaults: UserDefaults!
@@ -38,7 +38,7 @@ final class LinkingViewModelTests: XCTestCase {
     override func setUp() async throws {
         keyStore = try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
         log = LinkEventLog()
-        container = FakeLinkContainer(log: log)
+        container = FakeLinkAccess(log: log)
         container.userRecordNameValue = owner
         host = FakeLinkHost(log: log)
         host.keys = keyStore
@@ -48,7 +48,7 @@ final class LinkingViewModelTests: XCTestCase {
 
     private func makeModel() -> LinkingViewModel {
         let model = LinkingViewModel(
-            container: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: clock
+            access: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: clock
         )
         model.host = host
         return model
@@ -135,15 +135,15 @@ final class LinkingViewModelTests: XCTestCase {
         await model.open(payload.url())
 
         XCTAssertTrue(container.accepted.isEmpty, "an owner's phone never accepts its own share")
-        XCTAssertEqual(host.prepared, [.private])
+        XCTAssertEqual(host.prepared, [.cloudKit(.private)])
         XCTAssertEqual(host.preparedHubIDs, [acme], "the scan syncs the code's hub")
-        let writes = try await host.deviceWrites(in: .private)
+        let writes = try await host.deviceWrites(in: .cloudKit(.private))
         XCTAssertEqual(writes.count, 1)
         XCTAssertEqual(writes.first?.linkNonce, payload.nonce)
         XCTAssertEqual(writes.first?.scope, .private)
         XCTAssertEqual(writes.first?.userRecordName, owner)
         XCTAssertEqual(model.phase, .linked(macName: "Acme Mac"))
-        XCTAssertEqual(model.links.first?.link.databaseScope, .private)
+        XCTAssertEqual(model.links.first?.link.route, .cloudKit(.private))
         XCTAssertEqual(host.linkedCalls.last?.device.scope, .private)
     }
 
@@ -159,14 +159,14 @@ final class LinkingViewModelTests: XCTestCase {
 
         XCTAssertEqual(container.accepted, [[try XCTUnwrap(URL(string: dataShare)), try XCTUnwrap(URL(string: relayShare))]])
         XCTAssertEqual(log.events, ["accept 2", "prepare shared(\(owner))"])
-        XCTAssertEqual(host.prepared, [.shared(ownerName: owner)])
-        let shared = try await host.deviceWrites(in: .shared(ownerName: owner))
+        XCTAssertEqual(host.prepared, [.cloudKit(.shared(ownerName: owner))])
+        let shared = try await host.deviceWrites(in: .cloudKit(.shared(ownerName: owner)))
         XCTAssertEqual(shared.count, 1, "the device record goes to the shared database")
         XCTAssertEqual(shared.first?.scope, .shared)
         XCTAssertEqual(shared.first?.userRecordName, "_colleague-a")
-        let privateWrites = try await host.deviceWrites(in: .private)
+        let privateWrites = try await host.deviceWrites(in: .cloudKit(.private))
         XCTAssertTrue(privateWrites.isEmpty)
-        XCTAssertEqual(model.links.first?.link.databaseScope, .shared(ownerName: owner))
+        XCTAssertEqual(model.links.first?.link.route, .cloudKit(.shared(ownerName: owner)))
         XCTAssertEqual(model.links.first?.link.dataShareURL, dataShare)
         XCTAssertEqual(model.links.first?.link.relayShareURL, relayShare)
     }
@@ -392,7 +392,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         await relaunched.resumePendingLink()
 
-        XCTAssertEqual(host.prepared.last, .shared(ownerName: owner), "the wait reads the scan's database")
+        XCTAssertEqual(host.prepared.last, .cloudKit(.shared(ownerName: owner)), "the wait reads the scan's database")
         XCTAssertEqual(host.preparedHubIDs.last, acme, "and the scan's hub")
         XCTAssertEqual(relaunched.phase, .failed(.noAnswer))
         XCTAssertGreaterThanOrEqual(clock.slept, 690)
@@ -416,7 +416,7 @@ final class LinkingViewModelTests: XCTestCase {
         await flow.value
         XCTAssertEqual(container.accepted.count, 1)
         let pending = try XCTUnwrap(LinkStore(defaults: defaults).pending, "the accept is followed by a resumable wait")
-        XCTAssertEqual(pending.link.databaseScope, .shared(ownerName: owner))
+        XCTAssertEqual(pending.link.route, .cloudKit(.shared(ownerName: owner)))
         XCTAssertEqual(pending.link.hubID, acme, "the relaunch resumes the scan's hub")
 
         XCTAssertFalse(pending.baselineCaptured, "nothing is written before the baseline")
@@ -615,7 +615,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.unlink(acme)
 
-        let writes = try await host.deviceWrites(in: .private)
+        let writes = try await host.deviceWrites(in: .cloudKit(.private))
         XCTAssertEqual(writes.last?.unlinked, true)
         XCTAssertEqual(
             Array(log.events.suffix(2)), ["remove \(acme)", "farewell private"],
@@ -709,7 +709,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(container.leftHubIDs, [acme], "the linked hub's shares are left")
         XCTAssertEqual(host.farewells.map(\.hubID), [acme], "unlinked is written to the linked hub's zones")
         XCTAssertEqual(host.removedHubIDs, [acme], "board #70: one removal empties the queue")
-        let writes = try await host.deviceWrites(in: .shared(ownerName: owner))
+        let writes = try await host.deviceWrites(in: .cloudKit(.shared(ownerName: owner)))
         XCTAssertEqual(writes.last?.unlinked, true)
         XCTAssertEqual(host.farewells.count, 1)
         XCTAssertNil(model.notice, "nothing was waiting")
@@ -729,7 +729,7 @@ final class LinkingViewModelTests: XCTestCase {
             ["remove \(acme)", "farewell shared(\(owner))", "leave \(owner)"],
             "remove, write unlinked in the shared database, leave"
         )
-        XCTAssertEqual(host.farewells.first?.scope, .shared(ownerName: owner))
+        XCTAssertEqual(host.farewells.first?.route, .cloudKit(.shared(ownerName: owner)))
         XCTAssertEqual(host.removals.map(\.keepRecordings), [true], "an unlink holds the hub's recordings")
     }
 
@@ -737,10 +737,10 @@ final class LinkingViewModelTests: XCTestCase {
 
     /// A kept farewell of `hubID`, made on `account` at `since`.
     private func keptFarewell(
-        _ hubID: String = acme, scope: CloudDatabaseScope = .private, account: String = "_colleague-a", since: Date? = nil
+        _ hubID: String = acme, route: HubRoute = .cloudKit(.private), account: String = "_colleague-a", since: Date? = nil
     ) -> PendingFarewell {
         PendingFarewell(
-            hubID: hubID, scope: scope, userRecordName: account,
+            hubID: hubID, route: route, userRecordName: account,
             record: CloudRecord(recordName: "wire-\(hubID)", zone: .relay, kind: "wt", modifiedAt: start, payload: Data([1])),
             since: since ?? start
         )
@@ -764,7 +764,7 @@ final class LinkingViewModelTests: XCTestCase {
     /// shared link leaves the shares then.
     func testAKeptFarewellSentAgainLeavesTheSharesAndIsNoLongerKept() async throws {
         container.userRecordNameValue = "_colleague-a"
-        host.keptFarewells = [keptFarewell(scope: .shared(ownerName: owner))]
+        host.keptFarewells = [keptFarewell(route: .cloudKit(.shared(ownerName: owner)))]
         host.resendSucceeds = true
         let model = makeModel()
 
@@ -779,7 +779,7 @@ final class LinkingViewModelTests: XCTestCase {
     /// next launch.
     func testAKeptFarewellThatFailsAgainStaysKept() async throws {
         container.userRecordNameValue = "_colleague-a"
-        host.keptFarewells = [keptFarewell(scope: .shared(ownerName: owner))]
+        host.keptFarewells = [keptFarewell(route: .cloudKit(.shared(ownerName: owner)))]
         let model = makeModel()
 
         await model.retryFarewells()
@@ -800,9 +800,9 @@ final class LinkingViewModelTests: XCTestCase {
         ))
         let expiredSince = start.addingTimeInterval(-LinkingViewModel.farewellLifetime - 1)
         host.keptFarewells = [
-            keptFarewell(acme, scope: .shared(ownerName: owner), since: expiredSince),
-            keptFarewell(homeID, scope: .shared(ownerName: owner)),
-            keptFarewell(studio, scope: .shared(ownerName: owner), account: "_someone-else")
+            keptFarewell(acme, route: .cloudKit(.shared(ownerName: owner)), since: expiredSince),
+            keptFarewell(homeID, route: .cloudKit(.shared(ownerName: owner))),
+            keptFarewell(studio, route: .cloudKit(.shared(ownerName: owner)), account: "_someone-else")
         ]
         host.resendSucceeds = true
         let model = makeModel()
@@ -825,7 +825,8 @@ final class LinkingViewModelTests: XCTestCase {
     /// are not left, and Acme's stale farewell is not sent.
     func testAFarewellRetryObservesLinksBegunWhileAResendIsOut() async throws {
         container.userRecordNameValue = "_colleague-a"
-        host.keptFarewells = [keptFarewell(homeID, scope: .shared(ownerName: owner)), keptFarewell(scope: .shared(ownerName: owner))]
+        let sharedRoute = HubRoute.cloudKit(.shared(ownerName: owner))
+        host.keptFarewells = [keptFarewell(homeID, route: sharedRoute), keptFarewell(route: sharedRoute)]
         host.resendSucceeds = true
         host.parksResend = true
         let model = makeModel()
@@ -1587,7 +1588,7 @@ final class LinkingViewModelTests: XCTestCase {
         let flow = Task { await model.open(payload.url()) }
         try await poll { model.phase == .waiting(macName: "Acme Mac") && model.linkCode != nil }
 
-        let sealed = await host.transport(for: .private).sealed
+        let sealed = await host.transport(for: .cloudKit(.private)).sealed
         XCTAssertEqual(sealed.map(\.recordName), ["hello-\(TestE2E.deviceID.uuidString)"], "D7: named by the key-derived id")
         XCTAssertEqual(sealed.first?.kind, WireKind.envelope, "sealed, the kind inside")
         let opened = try TestPhone.openHello(try XCTUnwrap(sealed.first), code: payload)
@@ -1639,7 +1640,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.open(payload.url())
 
-        let sealed = await host.transport(for: .private).sealed
+        let sealed = await host.transport(for: .cloudKit(.private)).sealed
         let hello = try XCTUnwrap(sealed.first)
         let first = try TestPhone.openHello(hello, code: payload).sas
         let second = try TestPhone.openHello(
@@ -1669,7 +1670,7 @@ final class LinkingViewModelTests: XCTestCase {
         let flow = Task { await model.open(payload.url()) }
         try await poll { model.phase == .waiting(macName: "Acme Mac") && model.linkCode != nil }
 
-        let sealed = await host.transport(for: .private).sealed
+        let sealed = await host.transport(for: .cloudKit(.private)).sealed
         XCTAssertEqual(model.linkCode, try TestPhone.openHello(try XCTUnwrap(sealed.first), code: payload).sas)
         XCTAssertTrue(model.macSeesPhone)
         XCTAssertTrue(model.links.isEmpty)
@@ -1839,7 +1840,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         XCTAssertNil(try keyStore.hubLink(acme), "unlink deletes the hub's keys")
         XCTAssertNil(try keyStore.hubSigningKey(acme))
-        let sealed = await host.transport(for: .private).sealed
+        let sealed = await host.transport(for: .cloudKit(.private)).sealed
         XCTAssertEqual(sealed.count, 2, "the hello and the sealed unlinked record")
         XCTAssertEqual(sealed.last?.kind, WireKind.envelope)
 
@@ -2046,7 +2047,7 @@ final class LinkingViewModelTests: XCTestCase {
     /// (`DataZone-<hub_id>`, `RelayZone-<hub_id>`), never the single-hub
     /// build's fixed-name zones.
     func testLeavingSharesTargetsTheLinkedHubsZones() {
-        let ids = CloudKitLinkContainer.shareRecordIDs(ownerName: owner, hubID: acme)
+        let ids = CloudKitLinkAccess.shareRecordIDs(ownerName: owner, hubID: acme)
 
         XCTAssertEqual(ids.map(\.zoneID.zoneName).sorted(), ["DataZone-\(acme)", "RelayZone-\(acme)"])
         XCTAssertEqual(Set(ids.map(\.zoneID.ownerName)), [owner])
@@ -2055,18 +2056,18 @@ final class LinkingViewModelTests: XCTestCase {
 
     /// Target 168: only the hub's two zone-wide shares, owned by the code's owner, are accepted.
     func testOnlyTheHubsOwnSharesAreAccepted() {
-        let expected = CloudKitLinkContainer.shareRecordIDs(ownerName: owner, hubID: acme)
+        let expected = CloudKitLinkAccess.shareRecordIDs(ownerName: owner, hubID: acme)
         func check(_ shares: [(owner: String?, recordID: CKRecord.ID)]) -> Bool {
-            (try? CloudKitLinkContainer.checkShares(shares, ownerName: owner, hubID: acme)) != nil
+            (try? CloudKitLinkAccess.checkShares(shares, ownerName: owner, hubID: acme)) != nil
         }
         XCTAssertTrue(check(expected.map { (owner: owner, recordID: $0) }))
         XCTAssertTrue(check(expected.reversed().map { (owner: owner, recordID: $0) }), "order does not matter")
 
         XCTAssertFalse(check(expected.map { (owner: "_someone-else", recordID: $0) }), "another owner")
         XCTAssertFalse(check(expected.map { (owner: nil, recordID: $0) }), "no owner identity")
-        let otherHub = CloudKitLinkContainer.shareRecordIDs(ownerName: owner, hubID: "other-hub")
+        let otherHub = CloudKitLinkAccess.shareRecordIDs(ownerName: owner, hubID: "other-hub")
         XCTAssertFalse(check(otherHub.map { (owner: owner, recordID: $0) }), "another hub's zones")
-        let foreignZone = CloudKitLinkContainer.shareRecordIDs(ownerName: "_someone-else", hubID: acme)
+        let foreignZone = CloudKitLinkAccess.shareRecordIDs(ownerName: "_someone-else", hubID: acme)
         XCTAssertFalse(check(foreignZone.map { (owner: owner, recordID: $0) }), "zones of another owner")
         XCTAssertFalse(check([(owner: owner, recordID: expected[0]), (owner: owner, recordID: expected[0])]), "one zone twice")
         let recordShare = CKRecord.ID(recordName: "some-record", zoneID: expected[0].zoneID)

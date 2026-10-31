@@ -340,8 +340,8 @@ public final class TransportStore: Sendable {
                 arguments: [
                     record.zone.rawValue, record.recordName, record.kind,
                     record.modifiedAt.timeIntervalSince1970, record.payload,
-                    record.notifyLevel, record.assetFileURL?.path, record.creatorUserRecordName,
-                    record.serverModifiedAt?.timeIntervalSince1970
+                    record.notifyLevel, record.assetFileURL?.path, record.origin.author,
+                    record.origin.serverAt?.timeIntervalSince1970
                 ]
             )
         }
@@ -396,8 +396,9 @@ public final class TransportStore: Sendable {
                         payload: row["payload"] ?? Data(),
                         notifyLevel: row["notify_level"],
                         assetFileURL: (row["asset_path"] as String?).map(URL.init(fileURLWithPath:)),
-                        creatorUserRecordName: row["creator"],
-                        serverModifiedAt: (row["server_modified_at"] as Double?).map(Date.init(timeIntervalSince1970:))
+                        origin: RecordOrigin(
+                            author: row["creator"],
+                            serverAt: (row["server_modified_at"] as Double?).map(Date.init(timeIntervalSince1970:)))
                     ))
                 }
             }

@@ -31,6 +31,21 @@ public struct SealedInfo: Equatable, Sendable {
     }
 }
 
+/// Server-side facts about a fetched record. `author` is who wrote it (the hub's device gate checks it in
+/// `shared` scope, spec §5.2 rule 4); `serverAt` is when the server last stored it. Unlike `CloudRecord.modifiedAt`
+/// (the writer's own claim) no client sets `serverAt`, so relay hygiene ages records by it.
+public struct RecordOrigin: Equatable, Sendable {
+    public let author: String?
+    public let serverAt: Date?
+
+    public init(author: String? = nil, serverAt: Date? = nil) {
+        self.author = author
+        self.serverAt = serverAt
+    }
+
+    public static let unknown = Self()
+}
+
 /// One record on the wire: identity + opaque payload. The real transport
 /// (Plan 2) maps this 1:1 onto a CKRecord with `payload` in encryptedValues.
 public struct CloudRecord: Equatable, Sendable {
@@ -53,19 +68,12 @@ public struct CloudRecord: Equatable, Sendable {
     /// stash is cleaned up. nil means no asset field, and a rewrite with nil
     /// REMOVES a previously attached asset.
     public let assetFileURL: URL?
-    /// `CKRecord.creatorUserRecordID.recordName` of a fetched record: who
-    /// wrote it. The hub's device gate checks it in `shared` scope (spec
-    /// §5.2 rule 4). Read-only server metadata: never sent on a save, nil
-    /// for a record this device built, in the in-memory fake unless a test
-    /// sets it, and for an event buffered before the field existed.
-    public let creatorUserRecordName: String?
-    /// `CKRecord.modificationDate` of a fetched record: when the server last
-    /// stored it. Unlike `modifiedAt` (the writer's own claim), no client
-    /// sets it, so relay hygiene ages records by it. Read-only server
-    /// metadata like `creatorUserRecordName`: nil for a record this device
-    /// built, in the in-memory fake unless a test sets it, and for an event
-    /// buffered before the field existed.
-    public let serverModifiedAt: Date?
+    /// Read-only server metadata, never sent on a save: who wrote the record and when the server last stored
+    /// it. CloudKit fills `author` from `creatorUserRecordID.recordName` and `serverAt` from `modificationDate`;
+    /// the Go hub must produce the same values (the same author string and server date) for the records it reads.
+    /// `.unknown` for a record this device built, in the in-memory fake unless a test sets it, and for an event
+    /// buffered before the fields existed.
+    public let origin: RecordOrigin
     /// The descriptor of a sealed asset: on save, the caller's descriptor of the ciphertext `assetFileURL`
     /// (`SecureTransport` puts it in the inner frame); on read, taken from the opened frame. Never on the
     /// wire record itself (the sealed file is header-less, mobile E2E spec §2.5).
@@ -81,8 +89,7 @@ public struct CloudRecord: Equatable, Sendable {
         payload: Data,
         notifyLevel: String? = nil,
         assetFileURL: URL? = nil,
-        creatorUserRecordName: String? = nil,
-        serverModifiedAt: Date? = nil,
+        origin: RecordOrigin = .unknown,
         asset: AssetDescriptor? = nil,
         sealed: SealedInfo? = nil
     ) {
@@ -93,8 +100,7 @@ public struct CloudRecord: Equatable, Sendable {
         self.payload = payload
         self.notifyLevel = notifyLevel
         self.assetFileURL = assetFileURL
-        self.creatorUserRecordName = creatorUserRecordName
-        self.serverModifiedAt = serverModifiedAt
+        self.origin = origin
         self.asset = asset
         self.sealed = sealed
     }

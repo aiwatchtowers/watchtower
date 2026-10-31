@@ -1,19 +1,22 @@
 import Foundation
 import WatchtowerSync
 
-/// The phone's iCloud identity and the zone shares the link flow accepts
-/// (spec §2.3 steps 2–3). `CloudKitLinkContainer` is the live one.
-protocol LinkContainer: Sendable {
-    func accountStatus() async -> CloudAvailability
+/// The phone's account identity and the access a hub's route needs before
+/// it can be read (spec §2.3 steps 2–3). `CloudKitLinkAccess` is the live one.
+protocol LinkAccess: Sendable {
+    func availability() async -> CloudAvailability
     /// `CKContainer.userRecordID().recordName`.
-    func userRecordName() async throws -> String
-    /// Fetches every URL's share metadata, then accepts them all; throws if
-    /// any metadata fetch or accept fails, or if the shares are not exactly
-    /// `hubID`'s two zone-wide shares owned by `ownerName` (nothing accepted).
-    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws
-    /// Leaves the Mac's shares: deletes the accepted zone-wide share records
-    /// of `hubID`'s two zones from this phone's shared database.
-    func leaveShares(ownerName: String, hubID: String) async throws
+    func identity() async throws -> String
+    /// CloudKit shared route: fetches both share URLs' metadata, then accepts
+    /// them; throws if any fetch or accept fails, or if the shares are not
+    /// exactly `hubID`'s two zone-wide shares owned by the route's owner
+    /// (nothing accepted). Private route: nothing. Hosted relay:
+    /// `UnsupportedRouteError`.
+    func join(_ invitation: LinkInvitation, route: HubRoute, hubID: String) async throws
+    /// CloudKit shared route: deletes the accepted zone-wide share records of
+    /// `hubID`'s two zones from this phone's shared database. Private route:
+    /// nothing. Hosted relay: `UnsupportedRouteError`.
+    func leave(route: HubRoute, hubID: String) async throws
 }
 
 /// The link flow's clock: the grant wait and the expiry check run on it.
@@ -50,15 +53,15 @@ protocol LinkHost: AnyObject {
     func unreadableHubIDs() -> [String]
     /// Settings → Macs: `hubID` moves to `index` in the registry's order.
     func moveHub(_ hubID: String, to index: Int)
-    /// `hubID`'s transport in `scope`'s database, sealing with the phone's
-    /// keys for that hub: its session if one runs in that scope; else a new
-    /// session in its own directory (a row in another scope, or frozen, is
+    /// `hubID`'s transport on `route`, sealing with the phone's
+    /// keys for that hub: its session if one runs on that route; else a new
+    /// session in its own directory (a row on another route, or frozen, is
     /// removed first with its recordings held). `fresh` (a new pairing:
     /// the replica must not keep an old link's rollback marks, outbox or
     /// sealed recordings) removes a running session of the hub first too.
     /// A new session's seqs start above the ceiling a removal of the same
     /// hub left in this process (F29).
-    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport
+    func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport
     /// One fetch of `hubID`'s session, then this phone's keybox there
     /// (`device_grant-<device_id>`, the epoch keys included).
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox?

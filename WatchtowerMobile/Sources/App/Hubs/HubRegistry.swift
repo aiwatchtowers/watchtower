@@ -32,9 +32,9 @@ struct HubRow: Equatable, Sendable {
 /// (deleted with the link) are not needed to send it.
 struct PendingFarewell: Equatable, Sendable {
     var hubID: String
-    /// The removed link's database: a `shared` link leaves its shares only
-    /// once the record is out (it could not reach the zones after).
-    var scope: CloudDatabaseScope
+    /// The removed link's route: a `shared` CloudKit link leaves its shares
+    /// only once the record is out (it could not reach the zones after).
+    var route: HubRoute
     /// The iCloud account the link was made on: another account's phone
     /// cannot reach the zones, so its farewell is dropped.
     var userRecordName: String
@@ -52,6 +52,8 @@ struct PendingFarewell: Equatable, Sendable {
 enum HubRegistryError: Error {
     /// The registry already holds `HubRegistry.limit` hubs.
     case full
+    /// The route has no place in a registry that serves CloudKit only (a hosted relay).
+    case unsupportedRoute
 }
 
 /// The phone's linked Macs, up to `limit`, in a small SQLite file outside
@@ -291,7 +293,7 @@ final class HubRegistry {
                 let owner: String? = row["owner_name"]
                 return PendingFarewell(
                     hubID: row["hub_id"],
-                    scope: owner.map { .shared(ownerName: $0) } ?? .private,
+                    route: .cloudKit(owner.map { .shared(ownerName: $0) } ?? .private),
                     userRecordName: row["user_record_name"],
                     record: CloudRecord(
                         recordName: row["record_name"], zone: zone, kind: row["kind"],
@@ -305,7 +307,12 @@ final class HubRegistry {
 
     /// Keeps `farewell`, replacing one kept for the same hub.
     func savePendingFarewell(_ farewell: PendingFarewell) throws {
-        let owner: String? = if case let .shared(ownerName) = farewell.scope { ownerName } else { nil }
+        let owner: String?
+        switch farewell.route {
+        case .cloudKit(.shared(let ownerName)): owner = ownerName
+        case .cloudKit(.private): owner = nil
+        case .hostedRelay: throw HubRegistryError.unsupportedRoute
+        }
         try queue.write { db in
             try db.execute(
                 sql: """

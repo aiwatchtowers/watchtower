@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Relay client mockups</title>
+<style>
+body{margin:0;padding:24px;background:#0f0f10;color:#e6e6e8;font-family:-apple-system,system-ui,sans-serif;font-size:13px}
+h1{font-size:18px}
+h2{font-size:14px;color:#a1a1a6;margin:28px 0 10px}
+.note{color:#8e8e93;font-size:12px;max-width:900px;margin:4px 0 12px}
+.row{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+/* macOS settings form */
+.mac{width:640px;background:#1e1e20;border:1px solid #3a3a3c;border-radius:12px;padding:18px 22px}
+.sec{color:#8e8e93;font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin:16px 0 6px}
+.group{background:#2a2a2d;border-radius:8px}
+.item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px}
+.item .btn.red{visibility:hidden}
+.item:hover,.item.hover{background:#333336}
+.item:hover .btn.red,.item.hover .btn.red{visibility:visible}
+.grow{flex:1}
+.sub{color:#8e8e93;font-size:12px;margin-top:2px}
+.btn{background:#3a3a3d;border-radius:6px;padding:3px 10px;color:#e6e6e8;font-size:12px}
+.btn.blue{background:#0a64d0;color:#fff}
+.btn.red{color:#ff6961}
+.pill{border-radius:10px;padding:1px 8px;font-size:11px}
+.p-icloud{background:#283a52;color:#8fc2ff}
+.p-relay{background:#2a4632;color:#7ee29a}
+.p-none{background:#4a3324;color:#ffb36b}
+.warn{color:#ffb36b}
+.err{color:#ff6961}
+.num{font-variant-numeric:tabular-nums}
+table{border-collapse:collapse;width:100%}
+td,th{padding:6px 12px;text-align:left}
+th{color:#8e8e93;font-weight:500;border-top:0}
+/* iPhone */
+.phone{width:300px;height:620px;background:#000;border:1px solid #3a3a3c;border-radius:38px;padding:14px 12px;box-sizing:border-box;display:flex;flex-direction:column}
+.status{display:flex;justify-content:space-between;font-size:12px;padding:2px 14px 8px}
+.nav{font-size:22px;font-weight:700;padding:6px 8px 10px}
+.back{color:#0a84ff;font-size:14px;padding:0 8px}
+.igroup{background:#1c1c1e;border-radius:10px;margin:0 4px 14px}
+.iitem{display:flex;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid #2c2c2e;font-size:14px}
+.iitem:first-child{border-top:0}
+.ihead{color:#8e8e93;font-size:12px;text-transform:uppercase;padding:0 16px 6px}
+.ifoot{color:#8e8e93;font-size:12px;padding:0 16px 14px;margin-top:-8px}
+.chev{color:#5a5a5e}
+.check{color:#0a84ff}
+.banner{background:#3a2a17;color:#ffcf8a;border-radius:10px;margin:0 4px 12px;padding:10px 12px;font-size:13px}
+.cta{background:#0a84ff;color:#fff;border-radius:12px;text-align:center;padding:12px;font-weight:600;margin:8px 4px}
+.link{color:#0a84ff}
+</style></head><body>
+<h1>Relay client — mockups (2026-10-29)</h1>
+<div class="note">Spec: docs/superpowers/specs/2026-10-29-relay-client-design.md. Copy and layout only; colours follow the design kit when built (docs/design/desktop-style-guide.md): Desktop rows are `SettingsSection` + `.kitRow`, no separators, row actions on hover. Sample names are neutral.</div>
+
+<h2>1. Desktop — Settings → Mobile → Phones (this Mac runs over Relay)</h2>
+<div class="note">Each phone shows its transport. A phone without a subscription is told it gets no updates while the Mac runs over Relay. The hub line says who switched and when. Spec §10.</div>
+<div class="row"><div class="mac">
+<div class="sec">Hub</div>
+<div class="group">
+<div class="item"><div class="grow">Transport<div class="sub">Switched to Relay from “iPhone A” · today 10:42</div></div><span class="pill p-relay">Relay</span></div>
+<div class="item"><div class="grow">Relay<div class="sub num">Connected · last change delivered 0.3 s ago</div></div></div>
+</div>
+<div class="sec">Phones</div>
+<div class="group">
+<div class="item hover"><div class="grow">iPhone A<div class="sub">Linked 12 Oct · subscribed · row hovered: Remove shows</div></div><span class="pill p-relay">Relay</span><span class="btn red">Remove…</span></div>
+<div class="item"><div class="grow">iPhone B<div class="sub warn">Doesn't get updates: this Mac runs over Relay. Switch this Mac to iCloud from a subscribed phone, or subscribe on iPhone B.</div></div><span class="pill p-none">No updates</span><span class="btn red">Remove…</span></div>
+<div class="item"><div class="grow">iPhone C<div class="sub warn">2 actions from this phone were not delivered — it shows them with Retry.</div></div><span class="pill p-relay">Relay</span><span class="btn red">Remove…</span></div>
+</div>
+</div>
+
+<div class="mac">
+<div class="sec">Hub — states</div>
+<div class="group">
+<div class="item"><div class="grow">Relay<div class="sub warn">Relay unavailable for 2 min. Phones keep their changes and send them when it is back.</div></div></div>
+<div class="item"><div class="grow">Relay<div class="sub err">This Mac's Relay storage is full (5 GB). New changes are not sent until older recordings are removed.</div></div></div>
+<div class="item"><div class="grow">Transport<div class="sub">iCloud · no subscribed phone</div></div><span class="pill p-icloud">iCloud</span></div>
+</div>
+</div></div>
+
+<h2>2. Desktop — Settings → Mobile → Diagnostics (on-device measurements)</h2>
+<div class="note">Content-free timings kept on this Mac only. Spec §10.</div>
+<div class="row"><div class="mac">
+<div class="sec">Delivery times · last 7 days</div>
+<div class="group"><table>
+<tr><th>Step</th><th>Transport</th><th class="num">p50</th><th class="num">p90</th><th class="num">Samples</th></tr>
+<tr><td>Phone action read → applied</td><td>Relay</td><td class="num">38 ms</td><td class="num">120 ms</td><td class="num">214</td></tr>
+<tr><td>Applied → slice saved</td><td>Relay</td><td class="num">190 ms</td><td class="num">410 ms</td><td class="num">214</td></tr>
+<tr><td>Phone action read → applied</td><td>iCloud</td><td class="num">2.1 s</td><td class="num">9.8 s</td><td class="num">31</td></tr>
+<tr><td>Applied → slice saved</td><td>iCloud</td><td class="num">2.4 s</td><td class="num">4.0 s</td><td class="num">31</td></tr>
+</table></div>
+</div></div>
+
+<h2>3. iPhone — Settings → Macs (subscribed phone)</h2>
+<div class="note">Transport per Mac; only a subscribed phone can pick Relay. Spec §9.</div>
+<div class="row">
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Settings</div><div class="nav">Macs</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Work Mac<div class="sub">Relay · switched by this iPhone, 10:42</div></span><span class="chev">›</span></div>
+<div class="iitem"><span class="grow">Home Mac<div class="sub">iCloud</div></span><span class="chev">›</span></div>
+</div>
+<div class="igroup"><div class="iitem link">Add Mac</div></div>
+<div class="ihead">Relay</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Subscription</span><span style="color:#8e8e93">Active</span></div>
+<div class="iitem"><span class="grow">Macs on this subscription</span><span style="color:#8e8e93">2 of 3</span></div>
+</div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Macs</div><div class="nav">Work Mac</div>
+<div class="ihead">Connection</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Relay<div class="sub">Instant, encrypted end to end</div></span><span class="check">✓</span></div>
+<div class="iitem"><span class="grow">iCloud<div class="sub">Free, slower</div></span></div>
+</div>
+<div class="ifoot">Applies to every phone of this Mac. Last changed by this iPhone at 10:42.</div>
+<div class="igroup"><div class="iitem" style="color:#ff453a">Forget This Mac</div></div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Macs</div><div class="nav">Work Mac</div>
+<div class="ihead">Connection</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Relay<div class="sub warn">Switching to Relay is possible again in 4 min</div></span></div>
+<div class="iitem"><span class="grow">iCloud</span><span class="check">✓</span></div>
+</div>
+<div class="ifoot">The Mac was switched less than 5 minutes ago.</div>
+</div>
+</div>
+
+<h2>4. iPhone — subscription (free phone)</h2>
+<div class="note">StoreKit 2 paywall from Settings → Macs → Relay. Spec §9. Price comes from App Store Connect.</div>
+<div class="row">
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Macs</div><div class="nav">Relay</div>
+<div class="igroup" style="padding:12px 14px;font-size:14px;line-height:1.45">
+Changes reach your phone in under a second instead of tens of seconds.<br><br>
+• Up to 3 Macs on this iPhone<br>
+• Encrypted end to end: our server can't read anything<br>
+• Switch back to iCloud at any time
+</div>
+<div class="cta">Subscribe — <span>price</span> / month</div>
+<div class="ifoot" style="margin-top:4px">Restore Purchases · Terms · Privacy</div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="nav">Now</div>
+<div class="banner">Work Mac runs over Relay. This iPhone doesn't get updates from it. <span class="link">Subscribe</span> or switch the Mac to iCloud from a subscribed phone.</div>
+<div class="igroup"><div class="iitem" style="color:#8e8e93">Last update from Work Mac: 10:41</div></div>
+</div>
+</div>
+
+<h2>5. iPhone — Relay unavailable and undelivered actions</h2>
+<div class="note">After 60 s a line; after 10 min the switch offer. Undelivered actions with Retry (sim rules 6, 16). Spec §5, §9.</div>
+<div class="row">
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="nav">Now</div>
+<div class="banner">Relay unavailable for 11 min. Your changes wait on this iPhone. <span class="link">Switch Work Mac to iCloud</span></div>
+<div class="igroup"><div class="iitem"><span class="grow">Waiting to send</span><span style="color:#8e8e93">3</span></div></div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Now</div><div class="nav">Not delivered</div>
+<div class="ifoot" style="margin-top:0">These actions never reached Work Mac. Retry sends them again, after anything you did since.</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Answer “Use the staging DB?” — Yes<div class="sub">Today 09:58</div></span><span class="link">Retry</span></div>
+<div class="iitem"><span class="grow">Move “Fix login” to Done<div class="sub">Today 09:59</div></span><span class="link">Retry</span></div>
+</div>
+<div class="igroup"><div class="iitem" style="color:#ff453a">Dismiss All</div></div>
+</div>
+</div>
+
+<h2>6. iPhone — Diagnostics and edge states</h2>
+<div class="note">Phone-side timings (spec §10); Mac needs an update (§5.10); subscription moved (§9); app too old for the relay (§7); three Macs in slots (§8).</div>
+<div class="row">
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Settings</div><div class="nav">Diagnostics</div>
+<div class="ihead">Action → result on screen · 7 days</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Relay<div class="sub">214 actions</div></span><span style="color:#8e8e93">p50 0.31 s · p90 0.7 s</span></div>
+<div class="iitem"><span class="grow">iCloud<div class="sub">31 actions</div></span><span style="color:#8e8e93">p50 6.8 s · p90 22 s</span></div>
+</div>
+<div class="ifoot">Measured on this iPhone only. Nothing is sent anywhere.</div>
+<div class="ihead">Battery</div>
+<div class="igroup"><div class="iitem" style="color:#8e8e93">(today's battery report)</div></div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Macs</div><div class="nav">Home Mac</div>
+<div class="ihead">Connection</div>
+<div class="igroup">
+<div class="iitem"><span class="grow" style="color:#8e8e93">Relay<div class="sub warn">Update Watchtower on this Mac to use Relay</div></span></div>
+<div class="iitem"><span class="grow">iCloud</span><span class="check">✓</span></div>
+</div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="nav">Now</div>
+<div class="banner">Your Relay subscription moved to another iPhone. This iPhone is back on iCloud. <span class="link">Restore Purchases</span></div>
+<div class="banner">Update Watchtower from the App Store to keep using Relay.</div>
+</div>
+
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="back">‹ Macs</div><div class="nav">Add Mac</div>
+<div class="banner">Your subscription already has 3 Macs. Remove one to add this Mac over Relay.</div>
+<div class="igroup">
+<div class="iitem"><span class="grow">Work Mac</span><span style="color:#ff453a">Remove</span></div>
+<div class="iitem"><span class="grow">Home Mac</span><span style="color:#ff453a">Remove</span></div>
+<div class="iitem"><span class="grow">Studio Mac</span><span style="color:#ff453a">Remove</span></div>
+</div>
+<div class="ifoot">Up to 5 replacements in 30 days. Or add this Mac over iCloud.</div>
+</div>
+</div>
+</body></html>

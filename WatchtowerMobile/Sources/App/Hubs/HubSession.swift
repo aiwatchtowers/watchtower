@@ -182,9 +182,9 @@ final class HubSession {
     /// The hub whose zones this session syncs: held recordings of this hub
     /// are adopted here.
     let hubID: String
-    /// The database this session's link lives in, which a silent push
-    /// names (`AppEnvironment.handlePush`); nil for the demo.
-    let databaseScope: CloudDatabaseScope?
+    /// Where this session's link lives, which a silent push names
+    /// (`AppEnvironment.handlePush`); nil for the demo.
+    let route: HubRoute?
     /// Recordings a wipe carried over (board #63), outside the replica,
     /// shared by every hub; nil holds nothing.
     @ObservationIgnored let hold: RecordingHold?
@@ -268,6 +268,8 @@ final class HubSession {
     @ObservationIgnored private(set) var fetchCycles = 0
 
     @ObservationIgnored private let transport: any CloudSyncTransport & Sendable
+    /// `transport` when it has a lifecycle and live events (nil for an in-memory stand-in).
+    @ObservationIgnored private let liveTransport: (any LiveTransport)?
     /// The CloudKit transport's own store (nil for any other transport):
     /// read-only here, for what still waits in its send queue.
     @ObservationIgnored let transportStore: TransportStore?
@@ -370,7 +372,7 @@ final class HubSession {
     /// `startWork` then keeps the boot running and the replica usable until
     /// the boot ends (a launch into the background by a silent push).
     /// `hold` is the hold folder shared by every hub (nil holds nothing);
-    /// `databaseScope` is the link's database, which routes silent pushes.
+    /// `route` is the link's route, which routes silent pushes.
     init(
         transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
@@ -383,9 +385,9 @@ final class HubSession {
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
         hold: RecordingHold? = nil,
-        databaseScope: CloudDatabaseScope? = nil,
+        route: HubRoute? = nil,
         notifications: NotificationCenter = .default,
-        subscriptionSaver: (any SubscriptionSaving)? = nil,
+        pushWake: (any PushWake)? = nil,
         alertCleaner: DeliveredAlertCleaner? = nil,
         alertPosting: LocalAlertPosting? = nil,
         startsActive: Bool = true,
@@ -400,8 +402,8 @@ final class HubSession {
     ) throws {
         // The demo kind picks the fixed demo keys: never over CloudKit.
         precondition(
-            !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
-            "a CloudKitTransport must not run under the demo kind"
+            !(transport is any LiveTransport && transportKind == .inMemoryDemo),
+            "a live transport must not run under the demo kind"
         )
         let hubLink = try Self.ownHubLink(keys, hubID: hubID, kind: transportKind, transportStore: transportStore)
         self.sleep = sleep
@@ -410,11 +412,12 @@ final class HubSession {
         self.alertCleaner = alertCleaner ?? .live
         isActive = startsActive
         self.transport = transport
+        liveTransport = transport as? any LiveTransport
         self.transportStore = transportStore
         self.transportKind = transportKind
         self.hubID = hubID
         self.hold = hold
-        self.databaseScope = databaseScope
+        self.route = route
         self.defaults = defaults
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
@@ -479,9 +482,9 @@ final class HubSession {
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
-            scope: databaseScope, transport: transport, saver: subscriptionSaver)
+            route: route, wake: pushWake)
         sharedAlerts = Self.makeSharedAlerts(
-            hubID: hubID, scope: databaseScope, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
+            hubID: hubID, route: route, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
         workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
@@ -514,13 +517,13 @@ final class HubSession {
     /// without keys. A private-scope hub never posts locally: its push subscription delivers.
     private static func makeSharedAlerts(
         hubID: String,
-        scope: CloudDatabaseScope?,
+        route: HubRoute?,
         keys: PhoneKeys?,
         store: ReplicaStore,
         defaults: UserDefaults,
         posting: LocalAlertPosting?
     ) -> SharedAlertPoster? {
-        guard case .shared = scope, let keys else { return nil }
+        guard case .cloudKit(.shared)? = route, let keys else { return nil }
         return SharedAlertPoster(hubID: hubID, store: store, keys: keys.store, defaults: defaults, posting: posting ?? .live)
     }
 
@@ -539,9 +542,8 @@ final class HubSession {
         kind: TransportKind,
         hubID: String,
         device: LinkedDevice?,
-        scope: CloudDatabaseScope?,
-        transport: any CloudSyncTransport,
-        saver: (any SubscriptionSaving)?
+        route: HubRoute?,
+        wake: (any PushWake)?
     ) -> (DeviceSettings, AlertSubscriptionRegistrar?) {
         let settings = DeviceSettings(
             transport: secure, defaults: defaults,
@@ -549,30 +551,20 @@ final class HubSession {
             hubID: hubID
         )
         settings.linkedDevice = device
-        let registrar = makeAlertRegistrar(hubID: hubID, kind: kind, scope: scope, transport: transport, saver: saver)
+        let registrar = makeAlertRegistrar(hubID: hubID, kind: kind, route: route, wake: wake)
         return (settings, registrar)
     }
 
-    /// The hub's alert subscription, only over the live engine (or a saver a test injects). A CloudKit container
-    /// raises an uncatchable exception in a process without the app's iCloud entitlement (the unsigned test host,
-    /// where a `CloudKitTransport` never starts its engine either), so the live saver needs both.
+    /// The hub's alert subscription, only for a CloudKit hub with a route and a wake (the boot passes a wake only in
+    /// a process with the app's iCloud entitlement: CloudKit raises an uncatchable exception without it).
     private static func makeAlertRegistrar(
         hubID: String,
         kind: TransportKind,
-        scope: CloudDatabaseScope?,
-        transport: any CloudSyncTransport,
-        saver: (any SubscriptionSaving)?
+        route: HubRoute?,
+        wake: (any PushWake)?
     ) -> AlertSubscriptionRegistrar? {
-        guard kind == .cloudKit, let scope,
-              let saver = saver ?? liveSaver(transport: transport)
-        else { return nil }
-        return AlertSubscriptionRegistrar(hubID: hubID, scope: scope, saver: saver)
-    }
-
-    /// The private database's saver, only for a `CloudKitTransport` in an entitled process.
-    private static func liveSaver(transport: any CloudSyncTransport) -> (any SubscriptionSaving)? {
-        guard transport is CloudKitTransport, CloudKitTransport.entitlementPresent() else { return nil }
-        return CloudKitSubscriptionSaver()
+        guard kind == .cloudKit, let route, let wake else { return nil }
+        return AlertSubscriptionRegistrar(hubID: hubID, route: route, wake: wake)
     }
 
     /// The recording uploader: sealed through `secure`, re-sending only
@@ -607,7 +599,7 @@ final class HubSession {
         _ transport: any CloudSyncTransport
     ) -> (@Sendable (RemoteFetchDepth) async throws -> Void)? {
         let grace = pushEngineGrace
-        return (transport as? CloudKitTransport).map { cloud in
+        return (transport as? any LiveTransport).map { cloud in
             { @Sendable depth in
                 switch depth {
                 case .full:
@@ -716,7 +708,7 @@ final class HubSession {
             if !startsEngine {
                 Self.logger.notice("no link keys for this hub: its CloudKit engine is not started")
             }
-            if !stopped, startsEngine, let cloud = transport as? CloudKitTransport {
+            if !stopped, startsEngine, let cloud = liveTransport {
                 // Before the engine starts, so no signal goes unseen; each
                 // reaches whatever hook the link flow set by then.
                 await cloud.setEventHandler { [weak self] event in
@@ -1294,7 +1286,7 @@ final class HubSession {
     /// wait for the first fetch, which a slow network can hold for long.
     func sendNow() async {
         await transportStartTask?.value
-        await (transport as? CloudKitTransport)?.sendNow()
+        await liveTransport?.sendNow()
     }
 
     /// Stops the loop for good (tests' teardown; the app never stops).
@@ -1314,7 +1306,7 @@ final class HubSession {
     func shutDown() async {
         stop()
         await bootstrapTask?.value
-        await (transport as? CloudKitTransport)?.stop()
+        await liveTransport?.stop()
     }
 
     /// Closes the replica and the transport store, after `shutDown()` and

@@ -70,16 +70,16 @@ final class LinkEventLog {
 
 /// The phone's iCloud identity and share accept, scripted.
 @MainActor
-final class FakeLinkContainer: LinkContainer {
+final class FakeLinkAccess: LinkAccess {
     var status: CloudAvailability = .available
     var userRecordNameValue = "_owner-acme"
     var acceptError: (any Error)?
     var leaveError: (any Error)?
     private(set) var accepted: [[URL]] = []
     private(set) var left: [String] = []
-    /// The hub of each `leaveShares`, in call order.
+    /// The hub of each `leave`, in call order.
     private(set) var leftHubIDs: [String] = []
-    /// Runs inside `leaveShares`, before it returns: what arrives while the
+    /// Runs inside `leave`, before it returns: what arrives while the
     /// Mac's zones go away.
     var onLeave: (@MainActor () async -> Void)?
     let log: LinkEventLog
@@ -88,17 +88,19 @@ final class FakeLinkContainer: LinkContainer {
         self.log = log
     }
 
-    func accountStatus() async -> CloudAvailability { status }
+    func availability() async -> CloudAvailability { status }
 
-    func userRecordName() async throws -> String { userRecordNameValue }
+    func identity() async throws -> String { userRecordNameValue }
 
-    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws {
+    func join(_ invitation: LinkInvitation, route: HubRoute, hubID: String) async throws {
+        let urls = [invitation.dataShare, invitation.relayShare].compactMap { $0.flatMap(URL.init(string:)) }
         log.append("accept \(urls.count)")
         if let acceptError { throw acceptError }
         accepted.append(urls)
     }
 
-    func leaveShares(ownerName: String, hubID: String) async throws {
+    func leave(route: HubRoute, hubID: String) async throws {
+        guard case let .cloudKit(.shared(ownerName)) = route else { return }
         log.append("leave \(ownerName)")
         if let leaveError { throw leaveError }
         left.append(ownerName)
@@ -160,7 +162,7 @@ final class FakeLinkHost: LinkHost {
     let log: LinkEventLog
     /// Keyed by `describe(scope)`: the scope type is not Hashable.
     private(set) var transports: [String: SaveLogTransport] = [:]
-    private(set) var prepared: [CloudDatabaseScope] = []
+    private(set) var prepared: [HubRoute] = []
     /// The hub of each `prepare`, in call order.
     private(set) var preparedHubIDs: [String] = []
     /// The saved links, in order.
@@ -174,7 +176,7 @@ final class FakeLinkHost: LinkHost {
     /// Every `markRemovedByMac` call.
     private(set) var markedRemoved: [String] = []
     /// Every farewell a removal sent: the hub's scope and the hub.
-    private(set) var farewells: [(scope: CloudDatabaseScope, hubID: String)] = []
+    private(set) var farewells: [(route: HubRoute, hubID: String)] = []
     private(set) var permissionRequests = 0
     private(set) var openedNow = 0
     /// What the next removal reports as not sent (once).
@@ -228,16 +230,16 @@ final class FakeLinkHost: LinkHost {
     /// Thrown by `prepare` (the sync stack could not restart).
     var prepareError: (any Error)?
 
-    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
-        log.append("prepare \(Self.describe(scope))")
-        prepared.append(scope)
+    func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
+        log.append("prepare \(Self.describe(route))")
+        prepared.append(route)
         preparedHubIDs.append(hubID)
         preparedFresh.append(fresh)
         while parksPrepare {
             try await Task.sleep(for: .milliseconds(5))
         }
         if let prepareError { throw prepareError }
-        let transport = transport(for: scope)
+        let transport = transport(for: route)
         if let keys {
             let provider = try PhoneKeyProvider(store: keys, hubID: hubID, seq: SeqAllocator(load: { 1 }, store: { _ in }))
             await transport.setSealer(SecureTransport(inner: InMemoryCloudTransport(), keys: provider, rollback: InMemoryRollbackGuard()))
@@ -322,12 +324,12 @@ final class FakeLinkHost: LinkHost {
     func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe {
         log.append("remove \(hubID)")
         removals.append((hubID, keepRecordings))
-        let scope = row(hubID)?.link.databaseScope
+        let route = row(hubID)?.link.route
         rows.removeAll { $0.hubID == hubID }
-        if let farewell, let scope {
-            log.append("farewell \(Self.describe(scope))")
-            farewells.append((scope, hubID))
-            try? await transport(for: scope).save([farewell])
+        if let farewell, let route {
+            log.append("farewell \(Self.describe(route))")
+            farewells.append((route, hubID))
+            try? await transport(for: route).save([farewell])
         }
         if activeHubID == hubID {
             activeHubID = rows.first?.hubID
@@ -400,16 +402,16 @@ final class FakeLinkHost: LinkHost {
         openedNow += 1
     }
 
-    func transport(for scope: CloudDatabaseScope) -> SaveLogTransport {
-        if let existing = transports[Self.describe(scope)] { return existing }
+    func transport(for route: HubRoute) -> SaveLogTransport {
+        if let existing = transports[Self.describe(route)] { return existing }
         let created = SaveLogTransport()
-        transports[Self.describe(scope)] = created
+        transports[Self.describe(route)] = created
         return created
     }
 
     /// Every `device` record written to one database, in write order.
-    func deviceWrites(in scope: CloudDatabaseScope) async throws -> [DevicePayload] {
-        guard let transport = transports[Self.describe(scope)] else { return [] }
+    func deviceWrites(in route: HubRoute) async throws -> [DevicePayload] {
+        guard let transport = transports[Self.describe(route)] else { return [] }
         return try await transport.deviceWrites()
     }
 
@@ -422,10 +424,11 @@ final class FakeLinkHost: LinkHost {
         return all
     }
 
-    static func describe(_ scope: CloudDatabaseScope) -> String {
-        switch scope {
-        case .private: "private"
-        case let .shared(ownerName): "shared(\(ownerName))"
+    static func describe(_ route: HubRoute) -> String {
+        switch route {
+        case .cloudKit(.private): "private"
+        case let .cloudKit(.shared(ownerName)): "shared(\(ownerName))"
+        case let .hostedRelay(macDeviceID): "hostedRelay(\(macDeviceID))"
         }
     }
 }

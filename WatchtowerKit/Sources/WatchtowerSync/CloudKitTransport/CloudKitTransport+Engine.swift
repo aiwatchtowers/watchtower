@@ -380,8 +380,7 @@ extension CloudKitTransport {
                 payload: record.payload,
                 notifyLevel: record.notifyLevel,
                 assetFileURL: stashed,
-                creatorUserRecordName: record.creatorUserRecordName,
-                serverModifiedAt: record.serverModifiedAt
+                origin: record.origin
             )
         }
         var deletedByZone: [CloudZoneID: [String]] = [:]
