@@ -101,15 +101,12 @@ func (b *board) hasDoneWork(e *boardEntry) bool {
 	return slices.ContainsFunc(b.leavesUnder(e.id()), func(l *boardEntry) bool { return l.target.Status == "done" })
 }
 
-// boundTarget is the entry of a session's bound target id when the binding
-// takes effect: on the board, not archived and not dismissed. Any other bound
+// bindingTakesEffect reports whether a session bound to target id is bound in
+// effect: id is on the board, not archived and not dismissed. Any other bound
 // target leaves the session on rule 2 and gives it no binding stamp.
-func (b *board) boundTarget(id int64) (*boardEntry, bool) {
+func (b *board) bindingTakesEffect(id int64) bool {
 	e, ok := b.byID[id]
-	if id == 0 || !ok || e.archived || !e.counted() {
-		return nil, false
-	}
-	return e, true
+	return id != 0 && ok && !e.archived && e.counted()
 }
 
 // scope is a session's targets (board #1352). in is the wide set the report
@@ -126,7 +123,7 @@ type scope struct {
 
 // newScope builds the scope of session sessionID. in is the wide set (the
 // lists). The progress set is narrower (board #1352): a session whose bound
-// target takes effect (boundTarget) counts that target's subtree leaves; any
+// target takes effect (bindingTakesEffect) counts that target's subtree leaves; any
 // other session counts the wide set minus leaves another session owns
 // (owners: leaf id -> owning session id, see leafOwners).
 func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []int64, owners map[int64]int64) scope {
@@ -139,7 +136,7 @@ func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []i
 	for _, r := range roots {
 		b.walk(r, func(e *boardEntry) { s.in[e.id()] = true })
 	}
-	if _, ok := b.boundTarget(s.session); ok {
+	if b.bindingTakesEffect(s.session) {
 		for _, e := range b.leavesUnder(s.session) {
 			s.progress[e.id()] = true
 		}
@@ -160,7 +157,7 @@ func newScope(b *board, sessionID int64, sessionTarget sql.NullInt64, linked []i
 func leafOwners(b *board, links map[int64]db.LeafStamp, binds []db.SessionBinding) map[int64]int64 {
 	best := maps.Clone(links)
 	for _, bd := range binds {
-		if _, ok := b.boundTarget(bd.TargetID); !ok {
+		if !b.bindingTakesEffect(bd.TargetID) {
 			continue
 		}
 		for _, e := range b.leavesUnder(bd.TargetID) {
