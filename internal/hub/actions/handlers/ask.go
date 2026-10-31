@@ -31,7 +31,18 @@ const (
 	deliveryCopied     = "copied"
 	deliveryNoSession  = "no_session"
 	deliveryAutomation = "automation"
+	// deliveryCannotType is kept, never echoed as a delivery: the answer is
+	// stored but its line could not be typed (echo failed cannot_type).
+	deliveryCannotType = "cannot_type"
 )
+
+// cannotTypeSavedMessage is an ask answer's cannot_type echo: the answer
+// itself was stored, only its line could not be typed.
+const cannotTypeSavedMessage = "Your answer was saved. " + CannotTypeMessage
+
+// heldMetaKey is the hub_meta key of the held answers: ask, session and run
+// ids only (no content); the line is rebuilt from owner_asks at start.
+const heldMetaKey = "handlers_held_asks"
 
 // heldAnswer is an answer's line waiting for its session to leave a
 // permission prompt, a failed state read or the owner's draft
@@ -39,8 +50,19 @@ const (
 // launch (that launch's brief lists the answer).
 type heldAnswer struct {
 	askID, sessionID int64
-	run              uint64
-	line             string
+	// run is the launch the line was meant for, when known (pinned): a line
+	// held because the host could not be read has none yet.
+	run    uint64
+	pinned bool
+	line   string
+}
+
+// heldRecord is a held answer as hub_meta keeps it.
+type heldRecord struct {
+	Ask     int64  `json:"ask"`
+	Session int64  `json:"session"`
+	Run     uint64 `json:"run"`
+	Pinned  bool   `json:"pinned"`
 }
 
 // askAnswer is `ask_answer` (params {workbench_id, answer}, entity the ask
@@ -102,11 +124,11 @@ func (h *Handlers) applyAskAnswer(ctx context.Context, r actions.Request) action
 	if !stored {
 		return failed(reasonAskNotOpen, "")
 	}
-	delivery, refused := h.deliverAnswer(ctx, ask, asks.DeliveryLine(askID, ask.Kind, answer))
-	if refused != nil {
-		return *refused
-	}
+	delivery := h.deliverAnswer(ctx, ask, asks.DeliveryLine(askID, ask.Kind, answer))
 	h.rememberDelivery(r.RecordName, delivery)
+	if delivery == deliveryCannotType {
+		return failed(reasonCannotType, cannotTypeSavedMessage)
+	}
 	if ask.AutomationRunID.Valid {
 		h.wake()
 	}
@@ -128,6 +150,9 @@ func (h *Handlers) rerun(r actions.Request, ask *db.OwnerAsk, payload asks.Paylo
 	delivery, err := h.keptDelivery(r.RecordName)
 	if err != nil {
 		return failed(reasonWriteFailed, err.Error())
+	}
+	if delivery == deliveryCannotType {
+		return failed(reasonCannotType, cannotTypeSavedMessage)
 	}
 	return actions.Outcome{Status: wire.StatusApplied, Delivery: delivery}
 }
@@ -172,41 +197,43 @@ func (h *Handlers) storeAnswer(askID, workbenchID int64, a asks.Answer) (bool, e
 	return n == 1, err
 }
 
-// deliverAnswer types the answer's line into its session. refused is set only
-// for a line that cannot be typed on this host (cannot_type).
-func (h *Handlers) deliverAnswer(ctx context.Context, ask *db.OwnerAsk, line string) (string, *actions.Outcome) {
+// deliverAnswer types the answer's line into its session; deliveryCannotType
+// when this host cannot take it.
+func (h *Handlers) deliverAnswer(ctx context.Context, ask *db.OwnerAsk, line string) string {
 	// Never typed, held or queued for an automation's ask, whatever session
 	// it names.
 	if ask.AutomationRunID.Valid {
-		return deliveryAutomation, nil
+		return deliveryAutomation
 	}
 	if !ask.SessionID.Valid {
-		return deliveryNoSession, nil
+		return deliveryNoSession
 	}
-	return h.deliverLine(ctx, heldAnswer{askID: ask.ID, sessionID: ask.SessionID.Int64, line: line}, false)
+	return h.deliverLine(ctx, heldAnswer{askID: ask.ID, sessionID: ask.SessionID.Int64, line: line})
 }
 
-// deliverLine is SessionLineDelivery.deliver for an answer: no live session →
-// no_session; a failed state read or a permission prompt → held; otherwise
-// session-host's Deliver with HoldIfPromptText, whose held answer is held
-// too. pinned: line.run is the launch a held line was meant for.
-func (h *Handlers) deliverLine(ctx context.Context, line heldAnswer, pinned bool) (string, *actions.Outcome) {
+// deliverLine is SessionLineDelivery.deliver for an answer (PROJ-12): no
+// live session (or, for a held line, another launch) → no_session; a failed
+// read of the host or of the state, or a permission prompt → held; otherwise
+// session-host's Deliver without HoldIfPromptText, so a line beside the
+// owner's draft is pasted and left typed, as on the Mac. A held line whose
+// launch is known (line.pinned) goes only into that launch.
+func (h *Handlers) deliverLine(ctx context.Context, line heldAnswer) string {
 	live, ok, err := h.d.Sessions.Live(ctx, line.sessionID)
 	if err != nil {
 		log.Printf("hub handlers: ask %d: session %d not read from the host", line.askID, line.sessionID)
-		return deliveryNoSession, nil
+		h.hold(line)
+		return deliveryHeld
 	}
-	if !ok || live.Exited || (pinned && live.Run != line.run) {
-		return deliveryNoSession, nil
+	if !ok || live.Exited || (line.pinned && live.Run != line.run) {
+		return deliveryNoSession
 	}
-	line.run = live.Run
+	line.run, line.pinned = live.Run, true
 	if s, _, fresh := h.readState(ctx, line.sessionID, live); !fresh || sessionstate.NeedsApproval(s) {
 		h.hold(line)
-		return deliveryHeld, nil
+		return deliveryHeld
 	}
 	res, err := h.d.Sessions.Deliver(ctx, DeliverRequest{
-		SessionID: line.sessionID, Run: live.Run, Text: line.line,
-		HoldIfPromptText: true, Settle: submitSettle,
+		SessionID: line.sessionID, Run: live.Run, Text: line.line, Settle: submitSettle,
 		Check: func(ctx context.Context) CheckAnswer {
 			s, r, fresh := h.readState(ctx, line.sessionID, live)
 			return CheckAnswer{
@@ -218,34 +245,33 @@ func (h *Handlers) deliverLine(ctx context.Context, line heldAnswer, pinned bool
 	})
 	if err != nil {
 		log.Printf("hub handlers: ask %d: session %d did not take the line", line.askID, line.sessionID)
-		return deliveryNoSession, nil
+		return deliveryNoSession
 	}
 	switch res.Outcome {
 	case DeliverSubmitted:
-		return deliverySubmitted, nil
+		return deliverySubmitted
 	case DeliverTyped:
-		return deliveryTyped, nil
+		return deliveryTyped
 	case DeliverHeld:
 		h.hold(line)
-		return deliveryHeld, nil
+		return deliveryHeld
 	case DeliverNoPasteMode:
 		return h.copyLine(line)
 	}
-	return deliveryNoSession, nil
+	return deliveryNoSession
 }
 
 // copyLine is the .copied fallback: the line on the clipboard, only on a
 // desktop host (a fresh Desktop heartbeat shows the hint); anywhere else the
 // session cannot take the line.
-func (h *Handlers) copyLine(line heldAnswer) (string, *actions.Outcome) {
+func (h *Handlers) copyLine(line heldAnswer) string {
 	if h.d.DesktopHost() && h.d.Clipboard != nil {
 		if err := h.d.Clipboard(line.line); err == nil {
-			return deliveryCopied, nil
+			return deliveryCopied
 		}
 		log.Printf("hub handlers: ask %d: clipboard write failed", line.askID)
 	}
-	o := failed(reasonCannotType, CannotTypeMessage)
-	return "", &o
+	return deliveryCannotType
 }
 
 // readState reads the session's agent status for live's run; fresh is false
@@ -265,21 +291,76 @@ func (h *Handlers) hold(line heldAnswer) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.held = append(h.held, line)
+	h.saveHeldLocked()
+}
+
+// saveHeldLocked writes the held answers' ids to hub_meta, so a hub restart
+// (session-host keeps the sessions) still delivers them. Called with h.mu.
+func (h *Handlers) saveHeldLocked() {
+	recs := make([]heldRecord, 0, len(h.held))
+	for _, l := range h.held {
+		recs = append(recs, heldRecord{Ask: l.askID, Session: l.sessionID, Run: l.run, Pinned: l.pinned})
+	}
+	b, err := json.Marshal(recs)
+	if err == nil {
+		err = h.d.Store.SetMeta(heldMetaKey, string(b))
+	}
+	if err != nil {
+		log.Printf("hub handlers: held answers not kept (%d)", len(recs))
+	}
+}
+
+// loadHeld rebuilds the held answers at start: each kept id whose ask is
+// still answered (not delivered by the brief since) in the same session gets
+// its line again from owner_asks.
+func (h *Handlers) loadHeld() {
+	raw, ok, err := h.d.Store.Meta(heldMetaKey)
+	if err != nil || !ok {
+		if err != nil {
+			log.Printf("hub handlers: held answers not read")
+		}
+		return
+	}
+	var recs []heldRecord
+	if err := json.Unmarshal([]byte(raw), &recs); err != nil {
+		log.Printf("hub handlers: held answers unreadable")
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, rec := range recs {
+		ask, err := h.d.DB.GetOwnerAskByID(rec.Ask)
+		if err != nil || ask.Status != "answered" || !ask.SessionID.Valid || ask.SessionID.Int64 != rec.Session ||
+			ask.AutomationRunID.Valid {
+			continue
+		}
+		a, err := asks.ParseAnswer([]byte(ask.Answer))
+		if err != nil {
+			log.Printf("hub handlers: ask %d: held answer unreadable", rec.Ask)
+			continue
+		}
+		h.held = append(h.held, heldAnswer{askID: rec.Ask, sessionID: rec.Session, run: rec.Run, pinned: rec.Pinned,
+			line: asks.DeliveryLine(rec.Ask, ask.Kind, a)})
+	}
+	h.saveHeldLocked()
 }
 
 // DeliverHeld tries every held answer again (after a read of the session
 // states): one whose session still waits on a permission prompt, or whose
-// state still cannot be read, is held again; one whose session stopped or
+// host or state cannot be read, is held again; one whose session stopped or
 // runs another launch goes nowhere — the session's brief lists it. Taken
-// from the queue before any wait, so an overlapping call never sends a line
-// twice.
+// from the queue (and from hub_meta) before any wait, so neither an
+// overlapping call nor a restart mid-delivery sends a line twice.
 func (h *Handlers) DeliverHeld(ctx context.Context) {
 	h.mu.Lock()
 	held := h.held
 	h.held = nil
+	if len(held) > 0 {
+		h.saveHeldLocked()
+	}
 	h.mu.Unlock()
 	for _, line := range held {
-		if _, refused := h.deliverLine(ctx, line, true); refused != nil {
+		if h.deliverLine(ctx, line) == deliveryCannotType {
 			log.Printf("hub handlers: ask %d: held answer cannot be typed", line.askID)
 		}
 	}

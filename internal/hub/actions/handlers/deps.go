@@ -87,6 +87,7 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 		deps.DesktopHost = func() bool { return false }
 	}
 	h := &Handlers{d: deps, answering: map[int64]bool{}}
+	h.loadHeld()
 	reg := func(kind string, fn actions.Handler) {
 		if len(NudgeTable[kind]) == 0 {
 			panic("handlers: " + kind + " has no NudgeTable entry")

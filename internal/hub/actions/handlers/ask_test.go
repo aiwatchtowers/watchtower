@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -264,21 +265,23 @@ func TestEveryOutcomeMapsToItsEcho(t *testing.T) {
 	}
 }
 
-// Every answer line is a phone line: HoldIfPromptText, one line, the
-// submitSettle pause, PROJ-12's format (no kept line breaks or format
-// characters).
-func TestEveryPhoneAnswerLineHoldsIfPromptText(t *testing.T) {
+// PROJ-12 (controller ruling, Swift parity): an answer line is one line with
+// the submitSettle pause and no kept line breaks or format characters, sent
+// without HoldIfPromptText — over the owner's draft the host pastes it and
+// leaves it typed, and the echo says typed.
+func TestAnAnswerLineIsTypedBesideTheOwnersDraft(t *testing.T) {
 	e := newEnv(t)
 	s := e.seedAsk(asks.KindQuestion, questions)
 	e.port.start(s.session)
-	e.h.askAnswer(context.Background(), e.answerAction(s, yes))
+	e.port.result = DeliverResult{Outcome: DeliverTyped}
+	wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryTyped)
 	lines := e.port.lines()
 	if len(lines) != 1 {
 		t.Fatalf("lines = %d", len(lines))
 	}
 	l := lines[0]
 	want := asks.DeliveryLine(s.ask, asks.KindQuestion, asks.Answer{})
-	if !l.HoldIfPromptText || l.KeepLineBreaks || l.KeepFormat || l.Settle != submitSettle || l.Run != 1 || l.Text != want {
+	if l.HoldIfPromptText || l.KeepLineBreaks || l.KeepFormat || l.Settle != submitSettle || l.Run != 1 || l.Text != want {
 		t.Fatalf("request = %+v", l)
 	}
 }
@@ -344,18 +347,60 @@ func TestAHeldAnswerGoesOnTheNextStateRead(t *testing.T) {
 	}
 }
 
-// The host held the line over the owner's draft: echoed held and retried
-// like the hook-fed holds.
-func TestHostHeldPromptTextIsHeldAndRetried(t *testing.T) {
+// A held answer survives a hub restart (session-host keeps the session):
+// hub_meta keeps only its ids, the line comes back from owner_asks.
+func TestAHeldAnswerSurvivesAHubRestart(t *testing.T) {
 	e := newEnv(t)
 	s := e.seedAsk(asks.KindQuestion, questions)
 	e.port.start(s.session)
-	e.port.result = DeliverResult{Outcome: DeliverHeld, Reason: "prompt_has_text"}
+	e.hooksReport(s.session, "approval")
 	wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
-	e.port.result = DeliverResult{Outcome: DeliverSubmitted}
+	if raw, _, _ := e.store.Meta(heldMetaKey); strings.Contains(raw, "answered") || !strings.Contains(raw, `"ask":`) {
+		t.Fatalf("hub_meta = %q, want ids only", raw)
+	}
+
+	restarted := Register(actions.NewDispatcher(), e.h.d)
+	e.hooksReport(s.session, "waiting")
+	restarted.DeliverHeld(context.Background())
+
+	lines := e.port.lines()
+	if len(lines) != 1 || lines[0].Text != asks.DeliveryLine(s.ask, asks.KindQuestion, asks.Answer{}) {
+		t.Fatalf("lines = %+v", lines)
+	}
+	if again := Register(actions.NewDispatcher(), e.h.d); len(again.held) != 0 {
+		t.Fatal("a delivered answer is not held again after the next restart")
+	}
+}
+
+// An answer the brief delivered meanwhile is not rebuilt at start.
+func TestAHeldAnswerTheBriefDeliveredIsDropped(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk(asks.KindQuestion, questions)
+	e.port.start(s.session)
+	e.hooksReport(s.session, "approval")
+	e.h.askAnswer(context.Background(), e.answerAction(s, yes))
+	e.exec(`UPDATE owner_asks SET status = 'delivered' WHERE id = ?`, s.ask)
+
+	if restarted := Register(actions.NewDispatcher(), e.h.d); len(restarted.held) != 0 {
+		t.Fatal("a delivered answer is not held")
+	}
+}
+
+// A failed read of the host holds the answer, as a failed state read does.
+func TestALiveErrorHoldsTheAnswer(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk(asks.KindQuestion, questions)
+	e.port.start(s.session)
+	e.port.liveErr = errors.New("host busy")
+	wantDelivery(t, e.h.askAnswer(context.Background(), e.answerAction(s, yes)), deliveryHeld)
 	e.h.DeliverHeld(context.Background())
-	if n := len(e.port.lines()); n != 2 || len(e.h.held) != 0 {
-		t.Fatalf("lines = %d held = %d", n, len(e.h.held))
+	if len(e.h.held) != 1 || len(e.port.lines()) != 0 {
+		t.Fatal("still held while the host cannot be read")
+	}
+	e.port.liveErr = nil
+	e.h.DeliverHeld(context.Background())
+	if len(e.h.held) != 0 || len(e.port.lines()) != 1 {
+		t.Fatal("goes once the host answers")
 	}
 }
 
@@ -378,15 +423,22 @@ func TestNoPasteModeIsCannotTypeOnACLIOnlyMac(t *testing.T) {
 	e.port.start(s.session)
 	e.port.result = DeliverResult{Outcome: DeliverNoPasteMode}
 
-	got := e.h.askAnswer(context.Background(), e.answerAction(s, yes))
+	req := e.answerAction(s, yes)
+
+	got := e.h.askAnswer(context.Background(), req)
 
 	wantOutcome(t, got, wire.StatusFailed, reasonCannotType)
-	if got.Message != "This session can't take typed text right now" {
+	if got.Message != "Your answer was saved. This session can't take typed text right now" {
 		t.Fatalf("message = %q", got.Message)
 	}
 	if len(e.clip) != 0 {
 		t.Fatal("the clipboard is never used without a Desktop heartbeat")
 	}
+	if st, _ := e.stored(s.ask); st != "answered" {
+		t.Fatal("the answer itself is stored")
+	}
+	// A re-run of the action says the same, never applied.
+	wantOutcome(t, e.h.askAnswer(context.Background(), req), wire.StatusFailed, reasonCannotType)
 }
 
 // The guarded UPDATE … WHERE status='open' commits before Deliver is called;
@@ -531,6 +583,23 @@ func TestAWhitespaceOnlyCommentIsInvalidAnswer(t *testing.T) {
 	}
 	if st, _ := e.stored(s.ask); st != "open" {
 		t.Fatal("still open")
+	}
+}
+
+// A finished author loop whose ledger cannot be read is an error, never sent
+// as plain review comments.
+func TestAnUnreadableLoopLedgerIsWriteFailed(t *testing.T) {
+	e := newEnv(t)
+	s := e.seedAsk(asks.KindReview, "{}")
+	e.exec(`INSERT INTO spec_reviews (ask_id, status, queued_at, loop, ledger) VALUES (?, 'done', '2026-10-25T10:00:00Z', 'owner', '{not json')`, s.ask)
+	e.exec(`INSERT INTO spec_review_marks (ask_id, item_key, state, body, about, updated_at)
+		VALUES (?, 'ag:1', 'comment', 'say when', 'Mute lasts a day', '2026-10-25T10:00:00Z')`, s.ask)
+
+	got := e.h.askAnswer(context.Background(), e.answerAction(s, review("changes")))
+
+	wantOutcome(t, got, wire.StatusFailed, reasonWriteFailed)
+	if st, _ := e.stored(s.ask); st != "open" {
+		t.Fatal("nothing stored")
 	}
 }
 

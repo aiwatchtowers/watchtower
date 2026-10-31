@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"unicode"
@@ -43,7 +44,13 @@ func (h *Handlers) specReviewAnswer(ask *db.OwnerAsk, a asks.Answer) (asks.Answe
 		}
 		if row.Loop == "owner" {
 			loop = true
-			_ = json.Unmarshal([]byte(row.Ledger), &ledger)
+			// An unreadable ledger is an error, never "no loop": the loop's
+			// comments would be sent as plain review comments.
+			if strings.TrimSpace(row.Ledger) != "" {
+				if err := json.Unmarshal([]byte(row.Ledger), &ledger); err != nil {
+					return a, fmt.Errorf("the author loop's ledger is unreadable")
+				}
+			}
 		}
 	}
 	hasComment := false

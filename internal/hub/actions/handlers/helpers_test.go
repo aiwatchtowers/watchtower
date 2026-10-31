@@ -32,6 +32,7 @@ func TestMain(m *testing.M) {
 type fakePort struct {
 	mu        sync.Mutex
 	live      map[int64]LiveRun
+	liveErr   error
 	result    DeliverResult
 	err       error
 	delivered []DeliverRequest
@@ -53,6 +54,9 @@ func (p *fakePort) start(sessionID int64) {
 func (p *fakePort) Live(_ context.Context, id int64) (LiveRun, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.liveErr != nil {
+		return LiveRun{}, false, p.liveErr
+	}
 	l, ok := p.live[id]
 	return l, ok, nil
 }

@@ -75,8 +75,9 @@ func wantApplied(t *testing.T, got actions.Outcome, key string, value any) {
 // MARK: - Status
 
 // PROJ-06: the phone's change is the owner's in the history; PROJ-05: the
-// chain rolls up.
-func TestAStatusChangeIsTheOwnersAndNeverNotifiesTheMac(t *testing.T) {
+// chain rolls up. (The Swift twin's "never notifies the Mac" half is the
+// Desktop notifier's, keyed off this history actor in phase 3.)
+func TestAStatusChangeIsTheOwnersAndRollsUp(t *testing.T) {
 	e := newEnv(t)
 	wb, root, _, leaf := e.seedChain()
 
