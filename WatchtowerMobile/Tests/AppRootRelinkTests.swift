@@ -26,7 +26,7 @@ final class AppRootRelinkTests: XCTestCase {
 
     private var paths: HubPaths!
     private var registry: HubRegistry!
-    private var container: FakeLinkContainer!
+    private var container: FakeLinkAccess!
     private var keyStore: InMemoryPhoneKeyStore!
     private let linkClock = GateLinkClock()
     /// The hub's zones: every session of a hub runs over the same transport.
@@ -56,7 +56,7 @@ final class AppRootRelinkTests: XCTestCase {
         self.keyStore = keyStore
         let defaults = try makeDefaults()
         registry = try HubRegistry(path: paths.registryPath)
-        container = FakeLinkContainer(log: LinkEventLog())
+        container = FakeLinkAccess(log: LinkEventLog())
         container.userRecordNameValue = "_colleague-a"
         let identity = DeviceIdentity(deviceID: try keyStore.deviceID()?.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0")
         let engine = FakeAudioEngine()
@@ -101,7 +101,7 @@ final class AppRootRelinkTests: XCTestCase {
             identity: identity,
             defaults: defaults,
             linking: LinkingViewModel(
-                container: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: linkClock
+                access: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: linkClock
             ),
             startWork: { [weak self] name in
                 self?.workBegun.append(name)

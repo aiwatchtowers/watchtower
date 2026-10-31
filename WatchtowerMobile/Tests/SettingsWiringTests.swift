@@ -725,7 +725,7 @@ final class SettingsWiringTests: XCTestCase {
         return AppRoot(
             env: env, registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults,
             linking: LinkingViewModel(
-                container: FakeLinkContainer(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity,
+                access: FakeLinkAccess(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity,
                 keys: try TestE2E.phoneStore()
             ),
             startWork: nil,

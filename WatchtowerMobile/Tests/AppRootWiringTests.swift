@@ -39,7 +39,7 @@ final class AppRootWiringTests: XCTestCase {
     private var paths: HubPaths!
     private var registry: HubRegistry!
     private var defaults: UserDefaults!
-    private var container: FakeLinkContainer!
+    private var container: FakeLinkAccess!
     /// Each look at an unlink's `unlinked` record in its hub's send queue:
     /// the hub, the record, and whether the session was still running.
     private var farewellChecks: [(hubID: String, record: CloudRecord, running: Bool)] = []
@@ -191,7 +191,7 @@ final class AppRootWiringTests: XCTestCase {
         if let active {
             try registry.setActive(active)
         }
-        container = FakeLinkContainer(log: LinkEventLog())
+        container = FakeLinkAccess(log: LinkEventLog())
         let identity = DeviceIdentity(
             deviceID: try keyStore.deviceID()?.uuidString, name: device.name, model: device.model, appVersion: device.appVersion
         )
@@ -222,7 +222,7 @@ final class AppRootWiringTests: XCTestCase {
             identity: identity,
             defaults: defaults,
             linking: LinkingViewModel(
-                container: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: linkClock
+                access: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: linkClock
             ),
             startWork: starter,
             farewellDelivery: AppRoot.FarewellDelivery(

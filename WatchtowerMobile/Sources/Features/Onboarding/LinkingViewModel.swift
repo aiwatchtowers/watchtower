@@ -81,7 +81,7 @@ final class LinkingViewModel {
     @ObservationIgnored weak var host: (any LinkHost)? {
         didSet { refreshLinks() }
     }
-    @ObservationIgnored private let container: any LinkContainer
+    @ObservationIgnored private let access: any LinkAccess
     @ObservationIgnored private let store: LinkStore
     /// The device id is filled in when the link flow creates the device keys.
     @ObservationIgnored private var identity: DeviceIdentity
@@ -98,13 +98,13 @@ final class LinkingViewModel {
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "LinkingViewModel")
 
     init(
-        container: any LinkContainer,
+        access: any LinkAccess,
         store: LinkStore,
         identity: DeviceIdentity,
         keys: any PhoneKeyStore,
         clock: any LinkClock = SystemLinkClock()
     ) {
-        self.container = container
+        self.access = access
         self.store = store
         self.identity = identity
         self.keys = keys
@@ -229,13 +229,13 @@ final class LinkingViewModel {
             return
         }
         // Step 2.
-        guard await container.accountStatus() == .available else {
+        guard await access.availability() == .available else {
             phase = .failed(.signIn)
             return
         }
         let userRecordName: String
         do {
-            userRecordName = try await container.userRecordName()
+            userRecordName = try await access.identity()
         } catch {
             phase = .failed(.iCloud(error.localizedDescription))
             return
@@ -268,14 +268,16 @@ final class LinkingViewModel {
         if userRecordName == payload.ownerUser {
             route = .cloudKit(.private)
         } else {
-            guard let data = payload.dataShare.flatMap(URL.init(string:)),
-                  let relay = payload.relayShare.flatMap(URL.init(string:))
+            guard payload.dataShare.flatMap(URL.init(string:)) != nil,
+                  payload.relayShare.flatMap(URL.init(string:)) != nil
             else {
                 phase = .failed(.cannotShare)
                 return
             }
             do {
-                try await container.acceptShares([data, relay], ownerName: payload.ownerUser, hubID: payload.hubID)
+                try await access.join(
+                    LinkInvitation(dataShare: payload.dataShare, relayShare: payload.relayShare),
+                    route: .cloudKit(.shared(ownerName: payload.ownerUser)), hubID: payload.hubID)
             } catch {
                 Self.logger.error("share accept failed: \(error.localizedDescription, privacy: .public)")
                 phase = .failed(.cannotShare)
@@ -783,10 +785,10 @@ final class LinkingViewModel {
     func retryFarewells() async {
         guard let host, !isBusy else { return }
         let kept = host.pendingFarewells()
-        guard !kept.isEmpty, await container.accountStatus() == .available else { return }
+        guard !kept.isEmpty, await access.availability() == .available else { return }
         let account: String
         do {
-            account = try await container.userRecordName()
+            account = try await access.identity()
         } catch {
             Self.logger.warning("account check before the farewells failed: \(error.localizedDescription, privacy: .public)")
             return
@@ -807,12 +809,10 @@ final class LinkingViewModel {
             }
             // The resend awaited: a link of this hub begun meanwhile has its own shares.
             guard !isLinked(hubID) else { continue }
-            if case let .cloudKit(.shared(ownerName)) = farewell.route {
-                do {
-                    try await container.leaveShares(ownerName: ownerName, hubID: hubID)
-                } catch {
-                    Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
-                }
+            do {
+                try await access.leave(route: farewell.route, hubID: hubID)
+            } catch {
+                Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -829,10 +829,10 @@ final class LinkingViewModel {
     func accountChanged() async {
         refreshLinks()
         guard !links.isEmpty else { return }
-        guard await container.accountStatus() == .available else { return }
+        guard await access.availability() == .available else { return }
         let current: String
         do {
-            current = try await container.userRecordName()
+            current = try await access.identity()
         } catch {
             Self.logger.warning("account check failed: \(error.localizedDescription, privacy: .public)")
             return
@@ -971,9 +971,9 @@ final class LinkingViewModel {
         removeKeys(hubID)
         refreshLinks()
         // A kept farewell still needs the zones: the shares go once it is out (`retryFarewells`).
-        if linked, !wipe.farewellKept, case let .cloudKit(.shared(ownerName)) = route {
+        if linked, !wipe.farewellKept {
             do {
-                try await container.leaveShares(ownerName: ownerName, hubID: hubID)
+                try await access.leave(route: route, hubID: hubID)
             } catch {
                 Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
             }

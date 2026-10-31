@@ -2,11 +2,16 @@ import CloudKit
 import Foundation
 import WatchtowerSync
 
-/// The live `LinkContainer`: the app's CloudKit container (spec §2.3).
+/// The live `LinkAccess`: the app's CloudKit container (spec §2.3).
 /// Share accept runs `CKFetchShareMetadataOperation` on every URL, then one
 /// `CKAcceptSharesOperation`. Not verified on a device yet for a different
 /// Apple ID (the `shared` scope).
-struct CloudKitLinkContainer: LinkContainer {
+/// The invitation cannot be joined: a share URL is missing or not a URL.
+enum LinkAccessError: Error, Equatable {
+    case invalidInvitation
+}
+
+struct CloudKitLinkAccess: LinkAccess {
     private let containerID: String
 
     init(containerID: String = WatchtowerCloud.containerID) {
@@ -15,7 +20,7 @@ struct CloudKitLinkContainer: LinkContainer {
 
     private var container: CKContainer { CKContainer(identifier: containerID) }
 
-    func accountStatus() async -> CloudAvailability {
+    func availability() async -> CloudAvailability {
         do {
             switch try await container.accountStatus() {
             case .available: return .available
@@ -30,11 +35,27 @@ struct CloudKitLinkContainer: LinkContainer {
         }
     }
 
-    func userRecordName() async throws -> String {
+    func identity() async throws -> String {
         try await container.userRecordID().recordName
     }
 
-    func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws {
+    func join(_ invitation: LinkInvitation, route: HubRoute, hubID: String) async throws {
+        switch route {
+        case .hostedRelay: throw UnsupportedRouteError(route: route)
+        case .cloudKit(.private): return
+        case let .cloudKit(.shared(ownerName)):
+            guard let urls = Self.shareURLs(invitation) else { throw LinkAccessError.invalidInvitation }
+            try await acceptShares(urls, ownerName: ownerName, hubID: hubID)
+        }
+    }
+
+    private static func shareURLs(_ invitation: LinkInvitation) -> [URL]? {
+        guard let data = invitation.dataShare.flatMap(URL.init(string:)),
+              let relay = invitation.relayShare.flatMap(URL.init(string:)) else { return nil }
+        return [data, relay]
+    }
+
+    private func acceptShares(_ urls: [URL], ownerName: String, hubID: String) async throws {
         let metadatas = try await fetchMetadata(urls)
         try Self.checkShares(
             metadatas.map { (owner: $0.ownerIdentity.userRecordID?.recordName, recordID: $0.share.recordID) },
@@ -64,7 +85,15 @@ struct CloudKitLinkContainer: LinkContainer {
     /// A zone-wide share's record lives in its zone under
     /// `CKRecordNameZoneWideShare`; deleting it from the shared database
     /// leaves the share.
-    func leaveShares(ownerName: String, hubID: String) async throws {
+    func leave(route: HubRoute, hubID: String) async throws {
+        switch route {
+        case .hostedRelay: throw UnsupportedRouteError(route: route)
+        case .cloudKit(.private): return
+        case let .cloudKit(.shared(ownerName)): try await leaveShares(ownerName: ownerName, hubID: hubID)
+        }
+    }
+
+    private func leaveShares(ownerName: String, hubID: String) async throws {
         let ids = Self.shareRecordIDs(ownerName: ownerName, hubID: hubID)
         let results = try await container.sharedCloudDatabase.modifyRecords(saving: [], deleting: ids)
         for (_, result) in results.deleteResults {

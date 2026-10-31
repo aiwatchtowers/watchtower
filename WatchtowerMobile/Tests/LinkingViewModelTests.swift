@@ -28,7 +28,7 @@ final class LinkingViewModelTests: XCTestCase {
     private let relayShare = "https://www.icloud.com/share/acme-relay"
 
     private var log: LinkEventLog!
-    private var container: FakeLinkContainer!
+    private var container: FakeLinkAccess!
     private var host: FakeLinkHost!
     private var clock: FakeLinkClock!
     private var defaults: UserDefaults!
@@ -38,7 +38,7 @@ final class LinkingViewModelTests: XCTestCase {
     override func setUp() async throws {
         keyStore = try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
         log = LinkEventLog()
-        container = FakeLinkContainer(log: log)
+        container = FakeLinkAccess(log: log)
         container.userRecordNameValue = owner
         host = FakeLinkHost(log: log)
         host.keys = keyStore
@@ -48,7 +48,7 @@ final class LinkingViewModelTests: XCTestCase {
 
     private func makeModel() -> LinkingViewModel {
         let model = LinkingViewModel(
-            container: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: clock
+            access: container, store: LinkStore(defaults: defaults), identity: identity, keys: keyStore, clock: clock
         )
         model.host = host
         return model
@@ -2047,7 +2047,7 @@ final class LinkingViewModelTests: XCTestCase {
     /// (`DataZone-<hub_id>`, `RelayZone-<hub_id>`), never the single-hub
     /// build's fixed-name zones.
     func testLeavingSharesTargetsTheLinkedHubsZones() {
-        let ids = CloudKitLinkContainer.shareRecordIDs(ownerName: owner, hubID: acme)
+        let ids = CloudKitLinkAccess.shareRecordIDs(ownerName: owner, hubID: acme)
 
         XCTAssertEqual(ids.map(\.zoneID.zoneName).sorted(), ["DataZone-\(acme)", "RelayZone-\(acme)"])
         XCTAssertEqual(Set(ids.map(\.zoneID.ownerName)), [owner])
@@ -2056,18 +2056,18 @@ final class LinkingViewModelTests: XCTestCase {
 
     /// Target 168: only the hub's two zone-wide shares, owned by the code's owner, are accepted.
     func testOnlyTheHubsOwnSharesAreAccepted() {
-        let expected = CloudKitLinkContainer.shareRecordIDs(ownerName: owner, hubID: acme)
+        let expected = CloudKitLinkAccess.shareRecordIDs(ownerName: owner, hubID: acme)
         func check(_ shares: [(owner: String?, recordID: CKRecord.ID)]) -> Bool {
-            (try? CloudKitLinkContainer.checkShares(shares, ownerName: owner, hubID: acme)) != nil
+            (try? CloudKitLinkAccess.checkShares(shares, ownerName: owner, hubID: acme)) != nil
         }
         XCTAssertTrue(check(expected.map { (owner: owner, recordID: $0) }))
         XCTAssertTrue(check(expected.reversed().map { (owner: owner, recordID: $0) }), "order does not matter")
 
         XCTAssertFalse(check(expected.map { (owner: "_someone-else", recordID: $0) }), "another owner")
         XCTAssertFalse(check(expected.map { (owner: nil, recordID: $0) }), "no owner identity")
-        let otherHub = CloudKitLinkContainer.shareRecordIDs(ownerName: owner, hubID: "other-hub")
+        let otherHub = CloudKitLinkAccess.shareRecordIDs(ownerName: owner, hubID: "other-hub")
         XCTAssertFalse(check(otherHub.map { (owner: owner, recordID: $0) }), "another hub's zones")
-        let foreignZone = CloudKitLinkContainer.shareRecordIDs(ownerName: "_someone-else", hubID: acme)
+        let foreignZone = CloudKitLinkAccess.shareRecordIDs(ownerName: "_someone-else", hubID: acme)
         XCTAssertFalse(check(foreignZone.map { (owner: owner, recordID: $0) }), "zones of another owner")
         XCTAssertFalse(check([(owner: owner, recordID: expected[0]), (owner: owner, recordID: expected[0])]), "one zone twice")
         let recordShare = CKRecord.ID(recordName: "some-record", zoneID: expected[0].zoneID)

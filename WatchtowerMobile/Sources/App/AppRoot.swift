@@ -232,7 +232,7 @@ final class AppRoot {
             factory: factory,
             identity: identity,
             defaults: defaults,
-            linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity, keys: keys),
+            linking: LinkingViewModel(access: CloudKitLinkAccess(), store: store, identity: identity, keys: keys),
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live
         )
@@ -266,7 +266,7 @@ final class AppRoot {
             identity: identity,
             defaults: defaults,
             linking: LinkingViewModel(
-                container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity,
+                access: CloudKitLinkAccess(), store: LinkStore(defaults: defaults), identity: identity,
                 keys: InMemoryPhoneKeyStore()
             ),
             startWork: nil,
