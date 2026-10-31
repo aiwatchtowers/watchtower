@@ -1,9 +1,22 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 )
+
+// ReadTx runs fn in one read-only transaction (deferred: it never takes the
+// write lock, so a reader never blocks the hub's writes). The link center
+// reads its tables through it; fn must not write.
+func (s *Store) ReadTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("beginning a hub state read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return fn(tx)
+}
 
 // LinkDevice writes d as a linked phone, replacing a row with the same id
 // (a re-pair); the id is stored uppercase. user_record_name, a CloudKit-only Swift column, is written
