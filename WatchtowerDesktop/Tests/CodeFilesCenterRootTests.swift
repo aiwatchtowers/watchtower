@@ -467,7 +467,7 @@ final class CodeFilesActiveRootTests: XCTestCase {
         (project, sessionID) = try await pool.write { db -> (Workbench, Int64) in
             let id = try TestDatabase.insertWorkbench(db, name: "acme", folder: folder.path)
             let row = try TerminalSessionQueries.create(db, .init(
-                projectID: id, kind: .claude, title: "s", folderPath: folder.path, claudeSessionID: "uuid-1"
+                projectID: id, kind: .claude, title: "s", folderPath: folder.path, claudeSessionID: "11111111-2222-3333-4444-555555555555"
             ))
             try db.execute(
                 sql: "UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = ? WHERE id = ?",
@@ -482,9 +482,11 @@ final class CodeFilesActiveRootTests: XCTestCase {
         try? FileManager.default.removeItem(at: base)
     }
 
-    private func makeVM() -> WorkbenchesViewModel {
+    private func makeVM(terminalCenter: TerminalCenter? = nil) -> WorkbenchesViewModel {
         let runner = SessionPlaceViewModelTests.RoutingRunner(workbenchID: project.id)
-        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        let vm = WorkbenchesViewModel(
+            dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults, terminalCenter: terminalCenter
+        )
         vm.makeGitWatcher = { _, _, onChange in SessionPlaceViewModelTests.FakeWatcher(onChange: onChange) }
         vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
         vm.gitNotificationCenter = NotificationCenter()
@@ -513,7 +515,40 @@ final class CodeFilesActiveRootTests: XCTestCase {
         vm.setLayout(layout(.board), projectID: project.id)
         XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot, "no session on the page")
         vm.setLayout(layout(.files), projectID: project.id)
-        XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot, "the Files pane alone")
+        XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot, "the Files pane alone, no live session")
+    }
+
+    /// A FILES click with a lone terminal puts Files in its place: the page
+    /// keeps the live session's worktree, the board alone the main folder
+    /// (asks #783, #788).
+    func testTheFilesPaneAloneFollowsTheLiveSession() async throws {
+        let terminals = TerminalCenter(
+            makeProcess: { FakeTerminalSession(pid: 0) },
+            signaller: ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
+        )
+        terminals.shell = { "/bin/zsh" }
+        terminals.transcriptExists = { _ in false }
+        let id = sessionID
+        let row = try await pool.read { try XCTUnwrap(TerminalSessionQueries.fetch($0, id: id)) }
+        terminals.start(row, fresh: true)
+        XCTAssertEqual(terminals.liveAgentIDs, [sessionID])
+        let vm = makeVM(terminalCenter: terminals)
+        try await pool.write { db in
+            // The live run started before its cwd report: the cwd is its place.
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_cwd_at = '2026-10-12T10:00:00.000Z',
+                           agent_turns = '{"since":"2026-10-12T09:00:00.000Z"}' WHERE id = ?
+                    """,
+                arguments: [id]
+            )
+        }
+        await placed(vm)
+
+        vm.setLayout(layout(.files), projectID: project.id)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), CodeRoot(workbenchID: project.id, worktree: worktree))
+        vm.setLayout(layout(.board), projectID: project.id)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot, "the board keeps the main folder")
     }
 
     func testASessionInAWorktreePutsThePageThere() async {

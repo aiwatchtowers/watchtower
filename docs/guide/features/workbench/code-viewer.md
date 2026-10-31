@@ -20,7 +20,7 @@ action: nav:projects
 
 The **FILES** section at the bottom of the sessions panel lists the folder. A file opens in the **Files** pane in an editor with tabs. A single click opens a preview tab that the next click replaces; a double click, or your first edit, keeps it. Folders such as `.git` and `node_modules` are not listed.
 
-Files carry git marks (modified, added, untracked, deleted, conflicted). When the session you look at works in a git worktree, the viewer follows it to that worktree, with its own tabs. See [Worktrees and cleanup](worktrees-and-cleanup.md).
+Files carry git marks (modified, added, untracked, deleted, conflicted). When the session you look at works in a git worktree, the viewer follows it to that worktree, with its own tabs — also when a file you click replaces the session's terminal on screen. See [Worktrees and cleanup](worktrees-and-cleanup.md).
 
 Edits save themselves about a second after you stop typing, and at once when you switch tab. Watchtower never saves over a version it has not seen. If the file changed on disk meanwhile, a banner offers **Reload from disk** or to keep your edit. A file deleted under your edits is only written back when you choose to.
 

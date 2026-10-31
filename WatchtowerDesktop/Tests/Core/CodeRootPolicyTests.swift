@@ -22,8 +22,12 @@ final class CodeRootPolicyTests: XCTestCase {
             ("two sessions, focus empty, primary wins", layout(.session(9), .session(3)), [], 9),
             ("two sessions, focus holds neither, primary wins", layout(.sessionReport(9), .session(3)), [1, 2], 9),
             ("expanded session over a board split", layout(.board, .session(6), expanded: .session(6)), [], 6),
-            ("board only", layout(.board), [1], nil),
-            ("board and Files", layout(.board, .files), [1], nil)
+            ("board only, no session", layout(.board), [], nil),
+            ("Files alone, no session", layout(.files), [], nil),
+            ("board only keeps the main folder", layout(.board), [1], nil),
+            ("Files in the terminal's place", layout(.files), [4, 2], 2),
+            ("board and Files", layout(.board, .files), [1], 1),
+            ("Files under an expanded board", layout(.board, .files, expanded: .board), [1], nil)
         ]
         for (name, layout, focus, want) in cases {
             XCTAssertEqual(CodeRootPolicy.activeSessionID(layout: layout, focusOrder: focus), want, name)

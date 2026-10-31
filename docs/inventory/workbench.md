@@ -1013,6 +1013,11 @@ Since 2026-10-12 (board #565/#569, owner approved 2026-10-12, ask #188): the
 branch button and popover work on the worktree of the session the page shows
 — the workbench folder when the page holds no session or the session's place
 is the main folder, unknown, stale, outside the repository or removed.
+Amended 2026-10-31 (owner approved, asks #783, #788): a page holding no
+session but showing the Files pane (a FILES click puts it in a lone
+terminal's place) counts as showing the workbench's active live agent
+session (`TerminalCenter.activeSession`), so the button follows that
+session's worktree; the board or analytics alone stay on the workbench folder.
 `workbench git status|branches|switch|create` take `--folder F` (the Desktop
 passes it for a worktree root only, so the main folder's argv is unchanged;
 since board #563 `fetch` and `checkout` take the same rule). Go first lists

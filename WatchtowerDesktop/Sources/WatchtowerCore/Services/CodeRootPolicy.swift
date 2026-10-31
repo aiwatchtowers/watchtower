@@ -8,13 +8,17 @@ package enum CodeRootPolicy {
     /// as a terminal or a Session view, in either slot — on screen or under
     /// an expanded pane. Two different sessions → the one focused last
     /// (`focusOrder` is oldest → newest), else the primary slot's. No session
-    /// in the layout (the board or the Files alone) → nil, the main folder.
+    /// in the layout: with the Files pane on screen (a FILES click puts it in
+    /// a lone terminal's place) → the last of `focusOrder`, so the file opens
+    /// where that session works (asks #783, #788); otherwise (the board, the
+    /// analytics) or with no such session → nil, the main folder.
     package static func activeSessionID(layout: WorkspaceLayout, focusOrder: [Int64]) -> Int64? {
         var held: [Int64] = []
         for pane in [layout.primary, layout.secondary] {
             guard let id = sessionID(of: pane), !held.contains(id) else { continue }
             held.append(id)
         }
+        guard !held.isEmpty else { return layout.visiblePanes.contains(.files) ? focusOrder.last : nil }
         guard held.count > 1 else { return held.first }
         return focusOrder.last(where: held.contains) ?? held.first
     }
