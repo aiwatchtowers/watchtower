@@ -9,7 +9,7 @@
 
 The owner wants Watchtower to keep workbenches — Claude Code sessions in its folders — on **any host**, driven from the iPhone the way the phone drives the Mac's sessions today. There are only two roles: **host** and **client** (the phone). A host may be a Mac with the Desktop app, a Mac without it, a Linux box or a Raspberry Pi, typically with no monitor and not reachable from the internet. Watchtower is not tied to the Pi; the Pi is just one such host.
 
-**Terms used below.** *Desktop host* = a Mac with the Desktop app installed (has the CloudKit bridge, §6.2). *Headless host* = any host without the Desktop app: Linux (`arm64`/`amd64`, e.g. a Pi or a PC) or a Mac with only the CLI. "The Mac" in this text means a desktop host. Everything the hub does is the same code on both; the differences are listed in §7.3 and §9 ("Mac-only inputs").
+**Terms used below.** *Desktop host* = a Mac with the Desktop app installed (has the CloudKit bridge, §6.2). *Headless host* = any host without the Desktop app: Linux (`arm64`/`amd64`, e.g. a Pi or a PC) or a Mac with only the CLI (arm64 only; Intel Macs are not supported for the CLI-only build). "The Mac" in this text means a desktop host. Everything the hub does is the same code on both; the differences are listed in §7.3 and §9 ("Mac-only inputs").
 
 Today the phone hub (slices, the action mailbox, E2E, linking) lives in the Desktop app's Swift code and talks only CloudKit; sessions are created only by Desktop. Neither exists on Linux. The owner's choice (ask #713) is **one Go hub inside the daemon, built for darwin and linux** — not a second implementation for a headless host — and to move the Mac to it at the same time (ask #800). Since the relay client work was about to put the relay's hub side into the Swift hub, that hub side is written directly in Go instead (ask #802).
 
@@ -33,7 +33,7 @@ Everything the relay client spec decided for the hub (Decisions list there: one 
 ## 3. Goals, non-goals, anti-goals
 
 **Goals**
-1. One Go hub (`internal/hub/…`) in the daemon, built for `darwin/arm64`, `darwin/amd64`, `linux/arm64` (and `linux/amd64` because CI is there). It replaces the Swift hub in `WatchtowerDesktop/Sources/Services/MobileHub/` entirely; that code is deleted in the release that ships the Go hub.
+1. One Go hub (`internal/hub/…`) in the daemon, built for `darwin/arm64` (desktop hosts and the CLI-only Mac build; Intel Macs are not supported for the CLI-only build), `linux/arm64` (and `linux/amd64` because CI is there). It replaces the Swift hub in `WatchtowerDesktop/Sources/Services/MobileHub/` entirely; that code is deleted in the release that ships the Go hub.
 2. The Go hub speaks both transports through one hub logic: the hosted relay (both platforms) and CloudKit (desktop hosts only, through a Swift bridge, §6.2). Free Mac users keep CloudKit with today's crypto, zones, shares and pairing.
 3. A headless host runs the CLI, the daemon and `session-host`, holds workbenches, and is a hub on the relay: the phone sees it as one more host in its hub switcher (multi-hub F2), starts and stops sessions there, reads the workchat, answers asks and permission requests, types lines, moves board cards.
 4. Sessions are created in Go: one start path (`watchtower workbench session start …`) used by the phone handler on both platforms and by Desktop's **New Session** on the Mac (§11).
@@ -235,7 +235,7 @@ The phone/Kit side (relay client spec, `feature/relay-client`) and the Go hub me
 | Phase | Content | Depends on |
 |---|---|---|
 | 1 | Go hub core on the relay: secure port + vectors, sidecar, processor/dispatcher/handlers, slices, publishing on change, relay transport, `hub` CLI, Go session start. Verified in a **separate test workspace** (own database, own sidecar dir, own hub identity, `WATCHTOWER_HUB_DIR`) so it never touches the real workspace's asks, permission requests or sessions while the Swift hub runs; real data first in phase 3 (adoption) and on a headless host in phase 2 (my call). | relay change §15 p. 1 for real linking; the relay's local stand for tests |
-| 2 | Headless hosts: linux/arm64 + linux/amd64 builds, a headless Mac (CLI only), systemd units, headless pairing, vouching end to end, relay-only rules (§7.3), guide page. Gate: a real headless host (a Pi) driven from a real phone. | 1; relay client spec Phases 2–3 on the phone |
+| 2 | Headless hosts: linux/arm64 + linux/amd64 builds, a headless Mac (CLI only, arm64), systemd units, headless pairing, vouching end to end, relay-only rules (§7.3), guide page. Gate: a real headless host (a Pi) driven from a real phone. | 1; relay client spec Phases 2–3 on the phone |
 | 3 | Mac on the Go hub: CloudKit bridge, adoption (§12), Desktop Settings → Mobile over `hub …`, New Session through Go, transport switch both ways (sim rules 8–16) with epochs, Swift hub deleted. | 1; relay client spec Phase 1 on the phone for ordered actions |
 | 4 | Pushes (`send_alert` per paying phone), Desktop indicators and hub-side measurements (RC §10), mobile-companion feature note rewritten. | 3; relay client spec Phase 4 |
 
@@ -269,6 +269,7 @@ Package layout under `internal/hub`, the bridge's frame schema, the systemd unit
 - Hub keys on the Mac in daemon-owned Keychain items; if that fails without prompts, a 0600 file as on a headless host; the bridge never holds keys — ask #807
 - E2E is the red line: vectors, plaintext canaries on everything leaving the hub, one sealing choke point, two-way Kit interop — ask #807
 - CLI-only Mac = the headless build for darwin; the live hub refuses on a Mac with Desktop, nothing more — ask #827, conversation
+- Linux hosts need a systemd user manager; no detached session-host — follows the owner's one-path rule (conversation 2026-10-31); the owner confirms on this review (ask #829)
 - On Linux the `session-host` socket is in `/run/user/<uid>` (fallback `<data root>/.run`) and `session-host` runs as its own transient systemd user unit; PROJ-20 amended for Linux only — ask #827
 - On a headless host the owner verbs go through `watchtower hub …`, confirmed by the terminal (a TTY and no agent marker); a thin management CLI for a headless Watchtower comes later — ask #827
 - Whether a hub can record is a simple on/off capability defined by the separate phone ↔ hub protocol document, approved by the owner on its own; until then a hub without a transcriber answers `failed(not_supported)` — ask #827, conversation
