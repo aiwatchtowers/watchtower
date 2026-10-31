@@ -147,6 +147,18 @@ func RegisterClientDataHash(nonce []byte, authPub ed25519.PublicKey, serverOrigi
 	return h.Sum(nil)
 }
 
+// VouchClientDataHash is the hash a phone attests a hub with:
+// SHA-256("relay/v1/vouch" ‖ nonce ‖ hub_device_id ‖ auth_pub ‖ server_origin), the strings as UTF-8.
+func VouchClientDataHash(nonce []byte, hubDeviceID string, authPub ed25519.PublicKey, serverOrigin string) []byte {
+	h := sha256.New()
+	h.Write([]byte("relay/v1/vouch"))
+	h.Write(nonce)
+	h.Write([]byte(hubDeviceID))
+	h.Write(authPub)
+	h.Write([]byte(serverOrigin))
+	return h.Sum(nil)
+}
+
 // DeviceID returns this device's relay_device_id.
 func (c *Client) DeviceID() string { return c.id }
 
@@ -186,6 +198,23 @@ func (c *Client) AccountID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.accountID
+}
+
+// VouchHub vouches, as this phone, for the hub with key hubPub, so that a following add_slot or
+// promote_pairing of that hub succeeds within the 10-minute vouch window. It takes a VOUCH challenge
+// for this phone and sends vouch_hub without an attestation: the Go client runs against a relay with
+// App Attest off or as a device on RELAY_ATTEST_EXEMPT_DEVICES.
+func (c *Client) VouchHub(ctx context.Context, hubPub ed25519.PublicKey) error {
+	ch, err := c.Do(ctx, &relayv1.Request{Op: &relayv1.Request_Challenge{Challenge: &relayv1.GetChallenge{
+		DeviceId: c.id, Purpose: relayv1.ChallengePurpose_CHALLENGE_PURPOSE_VOUCH,
+	}}})
+	if err != nil {
+		return err
+	}
+	_, err = c.Do(ctx, &relayv1.Request{Op: &relayv1.Request_VouchHub{VouchHub: &relayv1.VouchHub{
+		HubDeviceId: DeviceID(hubPub), AuthPub: hubPub, Nonce: ch.GetChallenge().GetNonce(),
+	}}})
+	return err
 }
 
 // Login opens a new session by challenge-response.
