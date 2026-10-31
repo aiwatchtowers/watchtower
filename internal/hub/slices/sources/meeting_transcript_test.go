@@ -367,30 +367,19 @@ func TestTranscriptPhoneRecordingIDFromTheQueue(t *testing.T) {
 	}
 }
 
-// MEETPRIV-01..05: a private recording and the recap it owns are never published.
-func TestTranscriptPrivateRecordingAndItsRecapAreNeverPublished(t *testing.T) {
+// Swift parity: MEETPRIV protects the readers that feed prompts; the phone is
+// the owner's own end-to-end encrypted view, so private recordings publish
+// with their own recap.
+func TestTranscriptPrivateRecordingPublishesWithItsRecap(t *testing.T) {
 	r := newTrRig(t, nil)
-	exec(t, r.d, `INSERT INTO calendar_events (id, calendar_id, title, start_time, end_time) VALUES ('ev', 'cal', 'M', ?, ?)`,
-		isoStamp(calNow), isoStamp(calNow.Add(time.Hour)))
-	priv := r.transcript(t, trSeed{event: "ev", private: true, text: "secret words", summary: recapJSON})
-	pub := r.transcript(t, trSeed{event: "ev", text: "public words"})
-	// A recap owned by the private recording is attached to the event too: the
-	// public sibling must not borrow it.
-	exec(t, r.d, `INSERT INTO meeting_recaps (event_id, transcript_id, source_text, recap_json) VALUES ('ev', ?, '', ?)`, priv, recapJSON)
-	items := r.items(t)
-	if len(items) != 1 || items[0].ID != fmt.Sprint(pub) {
-		t.Fatalf("published %d items, want only the public one", len(items))
+	priv := r.transcript(t, trSeed{private: true, text: "secret words", summary: recapJSON})
+	p, asset := r.one(t, priv)
+	if p["summary"] != "S" || !strings.Contains(asset, "secret words") {
+		t.Errorf("private recording must publish like any other: %v %s", p["summary"], asset)
 	}
-	if p := decode(t, items[0].Payload); p["summary"] != nil {
-		t.Errorf("the public sibling borrowed the private recording's recap: %v", p["summary"])
-	}
-	if strings.Contains(r.asset(t, items[0]), "secret") {
-		t.Error("private text in a public asset")
-	}
-	// Making a published recording private removes its record.
-	exec(t, r.d, `UPDATE meeting_transcripts SET private = 1 WHERE id = ?`, pub)
-	if n := len(r.items(t)); n != 0 {
-		t.Errorf("%d items after the flip", n)
+	exec(t, r.d, `INSERT INTO meeting_recaps (transcript_id, source_text, recap_json) VALUES (?, '', ?)`, priv, strings.Replace(recapJSON, `"S"`, `"owned"`, 1))
+	if p, _ := r.one(t, priv); p["summary"] != "owned" {
+		t.Errorf("the recap a private recording owns must publish: %v", p["summary"])
 	}
 }
 

@@ -33,7 +33,8 @@ type Config struct {
 	// Mode is the MobileSync scope: "allowed" or "workbench_only".
 	Mode string
 	// AssetDir stages the sealed segments.json files of meeting_transcript
-	// (only used in "allowed" mode).
+	// (only used in "allowed" mode); it must be a dedicated directory, the first
+	// call sweeps its *.asset files.
 	AssetDir string
 
 	Home         string
@@ -71,7 +72,8 @@ type Set struct {
 //     requests, alerts, the session chat and the report;
 //   - allowed: those plus calendar events, meeting transcripts and recording
 //     jobs;
-//   - any other mode (off, unknown): nothing, fail closed.
+//   - any other mode (off, unknown): nothing; unknown modes fail closed on
+//     purpose, so a mistyped policy never widens what the phone sees.
 //
 // The hub's own device_grant and heartbeat are not in the set.
 func All(c Config) (*Set, error) {

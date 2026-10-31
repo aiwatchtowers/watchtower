@@ -448,8 +448,7 @@ func (c *chapterItem) UnmarshalJSON(b []byte) error {
 
 // linkedTargets is event id → the targets converted from its transcripts'
 // chapter action items, oldest transcript first. Not on a board only
-// (project_id IS NULL, PROJ-01); a deleted target drops out; a private
-// recording's chapters link nothing (MEETPRIV-02).
+// (project_id IS NULL, PROJ-01); a deleted target drops out.
 func (s *calendarSource) linkedTargets(ctx context.Context, tx *sql.Tx, ids []string) (map[string][]linkedTarget, error) {
 	out := map[string][]linkedTarget{}
 	if len(ids) == 0 {
@@ -462,7 +461,7 @@ func (s *calendarSource) linkedTargets(ctx context.Context, tx *sql.Tx, ids []st
 	}
 	var converted []conv
 	err := scanRows(ctx, tx, `SELECT id, event_id, chapters_json FROM meeting_transcripts
-		WHERE chapters_json IS NOT NULL AND chapters_json != '' AND private = 0 AND event_id IN (`+ph+`)
+		WHERE chapters_json IS NOT NULL AND chapters_json != '' AND event_id IN (`+ph+`)
 		ORDER BY created_at, id`, args, func(r *sql.Rows) error {
 		var id int64
 		var event, js string

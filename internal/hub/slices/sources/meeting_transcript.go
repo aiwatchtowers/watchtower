@@ -42,7 +42,8 @@ const (
 )
 
 // TranscriptOptions wires the meeting_transcript source. AssetDir (required)
-// is where the sealed segments.json files are staged (0700); Store (nil =
+// is where the sealed segments.json files are staged (0700); it must be a
+// dedicated directory, the first call sweeps its *.asset files; Store (nil =
 // none) gives a phone upload's id (the done recording_jobs row holding the
 // transcript); Now and Location are the calendar window's.
 type TranscriptOptions struct {
@@ -63,8 +64,9 @@ type TranscriptOptions struct {
 // recordings). Never read, so never published: audio_path, speakers_json
 // (voice embeddings), notes_md and the chapters other than overall_summary.
 //
-// A private recording (meeting_transcripts.private, MEETPRIV-01..05) is never
-// published, and neither is a recap it owns (db.RecapNotPrivate).
+// Private recordings publish like any other: MEETPRIV protects the readers
+// that feed prompts, and the phone is the owner's own end-to-end encrypted
+// view (the Swift twin publishes them too).
 //
 // An unchanged transcript is neither read in full nor sealed again: its
 // record is kept while a light key (small columns, the big columns' lengths,
@@ -349,7 +351,7 @@ func (s *transcriptSource) phoneIDs(ctx context.Context) (map[int64]*string, err
 	return out, nil
 }
 
-// window is the window's transcripts, newest first (public ones only), and
+// window is the window's transcripts, newest first and
 // their event ids.
 func (s *transcriptSource) window(ctx context.Context, tx *sql.Tx, now time.Time) ([]int64, map[int64]*string, error) {
 	events, err := calendarWindowEventIDs(ctx, tx, now, s.o.loc())
@@ -366,7 +368,7 @@ func (s *transcriptSource) window(ctx context.Context, tx *sql.Tx, now time.Time
 	var ids []int64
 	eventIDs := map[int64]*string{}
 	err = scanRows(ctx, tx, `SELECT id, event_id FROM meeting_transcripts
-		WHERE private = 0 AND (created_at >= ?`+clause+`)
+		WHERE (created_at >= ?`+clause+`)
 		ORDER BY created_at DESC, id DESC LIMIT `+strconv.Itoa(maxTranscripts), args, func(r *sql.Rows) error {
 		var id int64
 		var ev sql.NullString
@@ -383,7 +385,7 @@ func (s *transcriptSource) window(ctx context.Context, tx *sql.Tx, now time.Time
 	return ids, eventIDs, err
 }
 
-// recaps is the non-empty, non-private meeting_recaps rows of the window's
+// recaps is the non-empty meeting_recaps rows of the window's
 // transcripts (id and updated_at only), by transcript_id and by event_id.
 func (s *transcriptSource) recaps(ctx context.Context, tx *sql.Tx, ids []int64, eventIDs map[int64]*string) (recapIndex, error) {
 	out := recapIndex{byTranscript: map[int64][]recapRef{}, byEvent: map[string][]recapRef{}}
@@ -407,7 +409,7 @@ func (s *transcriptSource) recaps(ctx context.Context, tx *sql.Tx, ids []int64, 
 	}
 	err := scanRows(ctx, tx, `SELECT r.id, r.event_id, r.transcript_id, r.updated_at FROM meeting_recaps r
 		WHERE (r.transcript_id IN (`+ph+`)`+clause+`)
-		  AND r.recap_json IS NOT NULL AND r.recap_json != '' AND `+db.RecapNotPrivate+`
+		  AND r.recap_json IS NOT NULL AND r.recap_json != ''
 		ORDER BY r.updated_at DESC, r.id DESC`, args, func(r *sql.Rows) error {
 		var ref recapRef
 		var ev sql.NullString

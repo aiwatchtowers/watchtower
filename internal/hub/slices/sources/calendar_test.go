@@ -161,14 +161,15 @@ func TestCalendarKeptCopyCarriesPrepAndTargetsOfTheDroppedCopy(t *testing.T) {
 	}
 }
 
-func TestCalendarPrivateRecordingLinksNoTargets(t *testing.T) {
+func TestCalendarPrivateRecordingStillLinksItsTargets(t *testing.T) {
 	r := newCalRig(t, time.UTC)
 	r.event(t, evSeed{id: "e"})
 	tg := execID(t, r.d, `INSERT INTO targets (text, period_start, period_end) VALUES ('Secret plan', '2026-10-01', '2026-10-31')`)
 	exec(t, r.d, `INSERT INTO meeting_transcripts (event_id, title, transcript_text, chapters_json, private) VALUES ('e', 'T', '', ?, 1)`,
 		fmt.Sprintf(`{"chapters":[{"action_items":[{"text":"x","converted_target_id":%d}]}]}`, tg))
-	if lt := r.byID(t)["e"]["linked_targets"].([]any); len(lt) != 0 {
-		t.Errorf("a private recording linked %v", lt)
+	// Swift parity: MEETPRIV covers prompt readers, not the owner's phone.
+	if lt := r.byID(t)["e"]["linked_targets"].([]any); len(lt) != 1 {
+		t.Errorf("a private recording's converted target must link, got %v", lt)
 	}
 }
 
