@@ -20,7 +20,7 @@ const (
 
 // Control is one queued write to a phone's mailbox: RecordName is the opaque
 // wire name, Envelope a sealed envelope, Expect the save condition
-// (ExpectSeq with ExpectSeq's value).
+// (ExpectSeq with ExpectSeq's value, any 64-bit record version).
 type Control struct {
 	ID         int64
 	Mailbox    string
@@ -42,11 +42,10 @@ func Enqueue(tx *sql.Tx, c Control) error {
 	switch c.Expect {
 	case ExpectNone, ExpectAbsent:
 	case ExpectSeq:
-		v, err := u64(c.ExpectSeq)
-		if err != nil {
-			return err
-		}
-		seq = v
+		// A record version: the hosted relay's record_seq or a CloudKit
+		// change tag, which is opaque and uses all 64 bits, so it is stored
+		// bit for bit (two's complement) and read back the same way.
+		seq = int64(c.ExpectSeq)
 	default:
 		return fmt.Errorf("unknown control expect %q", c.Expect)
 	}
@@ -75,7 +74,7 @@ func (s *Store) PendingControls(mailbox string) ([]Control, error) {
 		if err := rows.Scan(&c.ID, &c.Mailbox, &c.RecordName, &c.Kind, &c.Envelope, &c.Expect, &seq, &c.Attempts); err != nil {
 			return nil, fmt.Errorf("reading a control: %w", err)
 		}
-		c.ExpectSeq = uint64(max(seq.Int64, 0))
+		c.ExpectSeq = uint64(seq.Int64)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {

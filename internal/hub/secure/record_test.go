@@ -687,3 +687,38 @@ func TestOpener_MetaKeyFailureSurfaces(t *testing.T) {
 		t.Errorf("locked keyring: %v, want the keyring's error", err)
 	}
 }
+
+func TestOpener_RequeueOnlyRebuildsTheHubsOwnRecords(t *testing.T) {
+	ks := newKeySource(t)
+	s := NewSealer(ks)
+	o := NewOpener(ks, newGuard())
+	dev := ks.k.deviceID
+	plain := "c-" + dev.String()
+	wire, _ := s.WireName(ZoneRelay, plain)
+	ctl, err := s.ToPhone("mb", dev, wire, "control", plain, []byte(`{"kind":"resend_from"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := o.Requeue("mb", dev, wire, ctl.Envelope())
+	if err != nil || !rec.Sealed() || rec.Zone() != "mb" || rec.WireName() != wire || !bytes.Equal(rec.Envelope(), ctl.Envelope()) {
+		t.Fatalf("requeue: %+v, %v", rec, err)
+	}
+	if _, err := o.Requeue("", dev, wire, ctl.Envelope()); err == nil {
+		t.Error("requeue without a zone")
+	}
+	other, _ := s.WireName(ZoneRelay, "c-other")
+	if _, err := o.Requeue("mb", dev, other, ctl.Envelope()); err == nil {
+		t.Error("requeue under another name")
+	}
+	actionPlain := "a-" + dev.String() + "-1"
+	actionWire, action := phoneAction(t, ks, actionPlain, 1, 1, fixtureHubID, dev)
+	if _, err := o.Requeue("mb", dev, actionWire, action); !errors.Is(err, ErrWrongClass) {
+		t.Errorf("a phone's record requeued: %v", err)
+	}
+	if _, err := o.Requeue("mb", ID{0xee}, wire, ctl.Envelope()); !errors.Is(err, ErrNoRelayKey) {
+		t.Errorf("requeued for another device: %v", err)
+	}
+	if _, err := o.Requeue("mb", dev, wire, []byte("not an envelope")); err == nil {
+		t.Error("garbage requeued")
+	}
+}

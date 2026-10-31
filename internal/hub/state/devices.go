@@ -124,3 +124,19 @@ func updateDevice(tx *sql.Tx, device string, v uint64, query string) error {
 	}
 	return nil
 }
+
+// LinkNonceTx reads a linked phone's link nonce inside the caller's
+// transaction (ok false when it is not linked): a decision about a phone's
+// action commits only while the link it was read under still stands, since a
+// re-link or unlink resets the phone's action order.
+func LinkNonceTx(tx *sql.Tx, id string) (nonce string, ok bool, err error) {
+	var n sql.NullString
+	err = tx.QueryRow(`SELECT link_nonce FROM devices WHERE device_id = ? COLLATE NOCASE`, id).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading a device: %w", err)
+	}
+	return n.String, true, nil
+}

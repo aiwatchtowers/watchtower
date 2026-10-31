@@ -123,8 +123,8 @@ func canonicalID(raw string) string {
 // The kinds the Sealer seals, as the Kit's SecureTransport accepts them.
 // dataKinds is SliceKind without device_grant (Keybox) and ask_alert (Alert);
 // relayKinds is SecureTransport.relayKinds. A new Kit kind is added here in the
-// same change; the RC control kind joins relayKinds with the control queue
-// (Task 10).
+// same change. "control" is the RC control record (`c-<uuid>`: resend_from,
+// skip_to and the switch controls, wire.Control in the payload).
 var (
 	dataKinds = []string{
 		"briefing", "inbox_item", "target", "track", "digest", "digest_topic", "calendar_event", "person_card",
@@ -133,7 +133,7 @@ var (
 		"workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
 		"session_timeline", "permission_request", "session_chat",
 	}
-	relayKinds = []string{"action", "recording_upload", "device"}
+	relayKinds = []string{"action", "recording_upload", "device", "control"}
 )
 
 // Sealer is the single sealing choke point: every Record comes from here.
@@ -414,6 +414,39 @@ func (o *Opener) OwnEcho(_, wireName string, envelope []byte) (Opened, error) {
 		return o.accept(wireName, opened, f)
 	}
 	return Opened{}, ErrNoRelayKey
+}
+
+// Requeue rebuilds the Record of a relayToPhone envelope the hub sealed
+// earlier for device and kept (the control queue holds sealed envelopes, not
+// Records): it must open as the hub's own record under wireName with
+// device's h2p key — the device whose mailbox zone names — so bytes the
+// Sealer never produced, or produced for another phone, never become a Record
+// for this zone.
+func (o *Opener) Requeue(zone string, device ID, wireName string, envelope []byte) (Record, error) {
+	if zone == "" {
+		return Record{}, errors.New("secure: record without a zone")
+	}
+	h, err := o.header(envelope)
+	if err != nil {
+		return Record{}, err
+	}
+	if h.Class != ClassRelayToPhone {
+		return Record{}, fmt.Errorf("%w: %d", ErrWrongClass, h.Class)
+	}
+	if h.Sender != h.Hub {
+		return Record{}, ErrWrongSender
+	}
+	opened, f, err := o.openRelay(envelope, wireName, ClassRelayToPhone, HubToPhone, device, h.Epoch)
+	if errors.Is(err, ErrAuthenticationFailed) || errors.Is(err, ErrEpochNotAccepted) {
+		return Record{}, ErrNoRelayKey
+	}
+	if err != nil {
+		return Record{}, err
+	}
+	if _, err := o.accept(wireName, opened, f); err != nil {
+		return Record{}, err
+	}
+	return Record{zone: zone, wireName: wireName, envelope: bytes.Clone(envelope), sealed: true}, nil
 }
 
 // openRelay opens env under device's relay key for dir at epoch.
