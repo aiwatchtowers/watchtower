@@ -164,6 +164,23 @@ class HostedRelayClientScenarios: HostedRelayScenarioCase {
         }
     }
 
+    /// The server applies a save and dies before answering: the client reports the write as
+    /// unacknowledged (`.unreachable`), and a reader still finds the record.
+    func testCrashAfterSaveLeavesTheWriteUnacknowledged() async throws {
+        let relay = try requireFake(Self.r15)
+        let (mac, phone) = try await hub()
+        let zone = "data/\(mac.deviceID)"
+        let (writer, writerEvents) = await connect(mac, [])
+        let connected = await waitFor(.connected, writerEvents)
+        XCTAssertTrue(connected)
+
+        relay.crashAfterNext("save")
+        await assertRelayError(.unreachable) { _ = try await writer.send(Self.saveOp(zone, "unacked")) }
+        relay.restart()
+        let page = try await phone.changes(Self.changesRequest(zone, since: 0))
+        XCTAssertEqual(page.changed.map(\.name), ["unacked"])
+    }
+
     /// A fresh device registers and logs in with App Attest (enforce mode on the fake:
     /// a fresh attestation at register, an assertion at login) and its writes land.
     func testRegisterLoginAndSaveOnAFreshDevice() async throws {

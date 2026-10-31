@@ -15,7 +15,11 @@ import WatchtowerRelayProto
 /// Store keys does), push (`send_alert` checks its rules and answers `Ok`; a stand
 /// without an APNs key answers "not implemented" instead), the Hello timeout,
 /// session-expiry timers (an expired session ends a socket at its next frame or
-/// event, or through `expireSessions`), the attachment settle and orphan timers.
+/// event, or through `expireSessions`), the attachment settle and orphan timers, the
+/// 1009 close of an oversized socket frame (the fake answers it with a `RECORD_TOO_LARGE`
+/// `Response`), signed blob URLs (a blob GET checks only that the attachment is committed
+/// and live), deleting a dropped attachment's bytes (they stay in the blob store,
+/// unreachable through the gone row).
 public final class FakeHostedRelay: @unchecked Sendable {
     public enum AttestMode: Sendable, Equatable {
         /// README "Who must attest": every device attests, except the listed ones
@@ -94,7 +98,8 @@ public final class FakeHostedRelay: @unchecked Sendable {
         }
         response.id = request.id
         if case .error(let error) = response.result, error.code == .unauthenticated { status = 401 }
-        fanOut(since: before)
+        fanOut(since: before, inline: inlineRecord(response))
+        if let op = request.op, takeCrashAfter(Self.name(op)) { crashNow() }
         return (status, response)
     }
 

@@ -394,6 +394,16 @@ final class FakeHostedRelayTests: XCTestCase {
         XCTAssertEqual(unauthenticated.status, 401)
     }
 
+    func testHeaderNamesAreCaseInsensitive() async throws {
+        let (relay, _, phone) = try await pairedWorld()
+        let url = try XCTUnwrap(URL(string: "\(origin)/v1/op"))
+        let body = try request(.getAccountState(.init())).serializedData()
+        let answer = try await relay.http.post(url, body: body, headers: ["relay-protocol-version": "1", "authorization": "Bearer \(phone.token)"])
+        XCTAssertEqual(answer.status, 200)
+        XCTAssertNil(code(try Relay_V1_Response(serializedBytes: answer.body)))
+        _ = try await relay.sockets.dial(Self.socketURL, headers: ["AUTHORIZATION": "Bearer \(phone.token)"])
+    }
+
     func testSocketHelloSubscribeAndZoneEvents() async throws {
         let (relay, mac, phone) = try await pairedWorld()
         let zone = "data/\(mac.id)"
@@ -442,6 +452,76 @@ final class FakeHostedRelayTests: XCTestCase {
 
         // A newer socket of the device displaces this one: GoingAway, then 1001.
         _ = try await relay.sockets.dial(url, headers: bearer)
+        guard case .goingAway = try await frame(socket).kind else { return XCTFail("want GoingAway") }
+        let closed = try await socket.receive()
+        XCTAssertEqual(closed, .closed(code: 1001))
+    }
+
+    func testDeleteFansOutABareZoneChanged() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        _ = try saveResult(relay, mac, [item(zone, "a", "1")])
+        let socket = try await liveSocket(relay, phone, subscribe: [zone])
+        _ = try deleteResult(relay, mac, zone, [deleteItem("a")])
+        let deleted = try await frame(socket).event.zoneChanged
+        XCTAssertEqual(deleted.seq, 2)
+        XCTAssertFalse(deleted.hasRecord, "a tombstone is never inlined")
+    }
+
+    // MARK: - Faults
+
+    func testFailNextAnswersNTimesThenClears() async throws {
+        let (relay, _, phone) = try await pairedWorld()
+        relay.failNext("getAccountState", with: .unavailable, times: 2)
+        XCTAssertEqual(try errorCode(relay, phone, .getAccountState(.init())), .unavailable)
+        XCTAssertEqual(try errorCode(relay, phone, .getAccountState(.init())), .unavailable)
+        XCTAssertNil(try errorCode(relay, phone, .getAccountState(.init())))
+    }
+
+    func testRefuseNextDialThrowsNTimes() async throws {
+        let (relay, _, phone) = try await pairedWorld()
+        relay.refuseNextDial(status: 503, times: 2)
+        for _ in 0..<2 {
+            do {
+                _ = try await relay.sockets.dial(Self.socketURL, headers: ["Authorization": "Bearer \(phone.token)"])
+                XCTFail("refused")
+            } catch {
+                XCTAssertEqual(error as? RelayDialError, .http(status: 503))
+            }
+        }
+        _ = try await relay.sockets.dial(Self.socketURL, headers: ["Authorization": "Bearer \(phone.token)"])
+    }
+
+    func testPingWithoutPongsHangsUntilTheSocketCloses() async throws {
+        let (relay, _, phone) = try await pairedWorld()
+        let socket = try await liveSocket(relay, phone, subscribe: [])
+        try await socket.ping()
+        relay.setPongs(false)
+        let pinging = Task { try await socket.ping() }
+        for _ in 0..<200 { await Task.yield() }
+        relay.deploy()
+        do {
+            try await pinging.value
+            XCTFail("a ping without a pong must not return")
+        } catch {}
+    }
+
+    func testSilencedSubscribeGetsNoResponseOnce() async throws {
+        let (relay, mac, phone) = try await pairedWorld()
+        let zone = "data/\(mac.id)"
+        let socket = try await liveSocket(relay, phone, subscribe: [])
+        relay.silenceSubscribe(zone: zone)
+        try await socket.send(subscribeFrame([zone], id: 1))
+        try await socket.send(subscribeFrame([zone], id: 2))
+        let answer = try await frame(socket).response
+        XCTAssertEqual(answer.id, 2, "the silenced subscribe got no answer")
+        XCTAssertNil(code(answer))
+    }
+
+    func testDisplaceSendsGoingAwayThen1001() async throws {
+        let (relay, _, phone) = try await pairedWorld()
+        let socket = try await liveSocket(relay, phone, subscribe: [])
+        relay.displace(deviceID: phone.id)
         guard case .goingAway = try await frame(socket).kind else { return XCTFail("want GoingAway") }
         let closed = try await socket.receive()
         XCTAssertEqual(closed, .closed(code: 1001))
@@ -914,6 +994,27 @@ final class FakeHostedRelayTests: XCTestCase {
         changes.sinceSeq = since
         changes.limit = limit
         return .changes(changes)
+    }
+
+    private static let socketURL = URL(string: "wss://relay.example.com/v1/ws")!
+
+    private func subscribeFrame(_ zones: [String], id: UInt64) throws -> Data {
+        var frame = Relay_V1_Frame()
+        frame.request.id = id
+        frame.request.subscribe.zones = zones
+        return try frame.serializedData()
+    }
+
+    /// A socket of `device` past Hello, subscribed to `zones` (when any).
+    private func liveSocket(_ relay: FakeHostedRelay, _ device: Device, subscribe zones: [String]) async throws -> any RelaySocket {
+        let socket = try await relay.sockets.dial(Self.socketURL, headers: ["Authorization": "Bearer \(device.token)"])
+        try await socket.send(hello(device.token))
+        guard case .helloOk = try await frame(socket).kind else { throw Failure.unexpected("no HelloOk") }
+        if !zones.isEmpty {
+            try await socket.send(subscribeFrame(zones, id: 1))
+            if let code = code(try await frame(socket).response) { throw Failure.unexpected("subscribe \(code)") }
+        }
+        return socket
     }
 
     private func hello(_ token: String) throws -> Data {

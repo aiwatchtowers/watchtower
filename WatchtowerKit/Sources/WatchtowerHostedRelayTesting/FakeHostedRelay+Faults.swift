@@ -13,6 +13,8 @@ extension FakeHostedRelay {
         var pongs = true
         /// Zones whose next subscribe gets no answer.
         var silenced: Set<String> = []
+        /// Op case name → how many of its next calls run and then crash the server unanswered.
+        var crashAfter: [String: Int] = [:]
     }
 
     /// The next `times` calls of `op` (the oneof case name: `save`, `createUpload`,
@@ -45,11 +47,27 @@ extension FakeHostedRelay {
     /// The server dies: every socket is cut (no close frame, unread frames lost), dials and
     /// HTTPS requests fail as unreachable until `restart()`.
     public func crash() {
-        locked {
-            state.faults.crashed = true
-            for socket in state.sockets { socket.cut() }
-            state.sockets = []
-        }
+        locked { crashNow() }
+    }
+
+    /// The next call of `op` runs (its writes stay) and then the server crashes before the
+    /// answer is queued: the caller cannot tell whether it ran. `restart()` brings it back.
+    public func crashAfterNext(_ op: String) {
+        locked { state.faults.crashAfter[op, default: 0] += 1 }
+    }
+
+    /// `crash` with the lock held.
+    func crashNow() {
+        state.faults.crashed = true
+        for socket in state.sockets { socket.cut() }
+        state.sockets = []
+    }
+
+    /// Whether `crashAfterNext` armed a crash for this call of `op`, consumed (lock held).
+    func takeCrashAfter(_ op: String) -> Bool {
+        guard let count = state.faults.crashAfter[op], count > 0 else { return false }
+        state.faults.crashAfter[op] = count > 1 ? count - 1 : nil
+        return true
     }
 
     /// The server is back with the state it had.

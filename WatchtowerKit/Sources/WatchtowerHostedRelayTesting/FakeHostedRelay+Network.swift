@@ -32,13 +32,15 @@ extension FakeHostedRelay {
             guard !state.faults.crashed else { throw URLError(.cannotConnectToHost) }
             guard url.path == "/v1/op" else { return (404, Data()) }
             var answer: (status: Int, response: Relay_V1_Response)
-            if headers["Relay-Protocol-Version"] != String(HostedRelay.protocolVersion) {
+            if Self.header("Relay-Protocol-Version", in: headers) != String(HostedRelay.protocolVersion) {
                 answer = (400, Self.failure(.unsupportedVersion, "unsupported protocol version"))
             } else if let request = try? Relay_V1_Request(serializedBytes: body) {
                 answer = respond(request, bearer: Self.bearer(headers))
             } else {
                 answer = (400, Self.failure(.unspecified, "invalid request"))
             }
+            // `crashAfterNext`: the op ran, the answer never leaves.
+            guard !state.faults.crashed else { throw URLError(.networkConnectionLost) }
             return (answer.status, try answer.response.serializedData())
         }
     }
@@ -78,8 +80,13 @@ extension FakeHostedRelay {
     }
 
     static func bearer(_ headers: [String: String]) -> String? {
-        guard let value = headers["Authorization"], value.hasPrefix("Bearer ") else { return nil }
+        guard let value = header("Authorization", in: headers), value.hasPrefix("Bearer ") else { return nil }
         return String(value.dropFirst("Bearer ".count))
+    }
+
+    /// HTTP header names are case-insensitive.
+    static func header(_ name: String, in headers: [String: String]) -> String? {
+        headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
     }
 
     // MARK: - WebSocket
@@ -125,6 +132,8 @@ extension FakeHostedRelay {
                 response = answer
             default:
                 response = respond(request, bearer: socket.token).response
+                // `crashAfterNext`: the op ran, the socket was cut before the answer.
+                if state.faults.crashed { return }
             }
             response.id = request.id
             var out = Relay_V1_Frame()
@@ -195,18 +204,27 @@ extension FakeHostedRelay {
         return Dictionary(zones.map { ($0, state.zones[$0]?.lastSeq ?? 0) }) { first, _ in first }
     }
 
-    /// Worker `fanout.ts`: a `ZoneChanged` for every zone whose seq moved, carrying the record
-    /// when the write produced exactly one and its envelope fits 64 KiB, to every socket past
-    /// Hello subscribed to the zone whose session still holds (else it ends, 4001) and may read it.
-    func fanOut(since before: [String: UInt64]) {
+    /// Worker `zone.ts` `save`/`delete`: a save whose call stored exactly one record inlines it
+    /// when its envelope fits 64 KiB; a delete never inlines its tombstone.
+    func inlineRecord(_ response: Relay_V1_Response) -> Relay_V1_Record? {
+        guard case .save(let result) = response.result, result.saved.count == 1, let saved = result.saved.first,
+              let stored = state.zones[saved.zone]?.records[saved.name], stored.seq == saved.recordSeq,
+              stored.envelope.count <= Self.maxInlineRecordBytes
+        else { return nil }
+        return Self.proto(stored, zone: saved.zone, envelope: true)
+    }
+
+    /// Worker `fanout.ts`: a `ZoneChanged` for every zone whose seq moved (with `inline` when it
+    /// is that zone's new record) to every socket past Hello subscribed to the zone whose session
+    /// still holds (else it ends, 4001) and may read it.
+    func fanOut(since before: [String: UInt64], inline: Relay_V1_Record?) {
         for (name, old) in before.sorted(by: { $0.key < $1.key }) {
             guard let zone = state.zones[name], zone.lastSeq > old else { continue }
             var changed = Relay_V1_ZoneChanged()
             changed.zone = name
             changed.seq = zone.lastSeq
-            if zone.lastSeq == old + 1, let record = zone.records.values.first(where: { $0.seq == zone.lastSeq }),
-               record.envelope.count <= Self.maxInlineRecordBytes {
-                changed.record = Self.proto(record, zone: name, envelope: true)
+            if let inline, inline.zone == name, inline.recordSeq == zone.lastSeq {
+                changed.record = inline
             }
             var frame = Relay_V1_Frame()
             frame.event.zoneChanged = changed
