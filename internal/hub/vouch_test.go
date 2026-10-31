@@ -81,6 +81,42 @@ func TestAccountReaderThrottlesOnlyWhileUnvouched(t *testing.T) {
 	}
 }
 
+// After HUB_NOT_VOUCHED the reader forgets its last answer: a pre-revoke
+// state seeded inside the window is not answered again (the PayingWatch
+// cannot read "paying" from it); the next read goes to the relay. An empty
+// seed arms no window.
+func TestAccountReaderInvalidateAndEmptySeed(t *testing.T) {
+	clock := &setClock{now: time.Unix(1_800_000_000, 0)}
+	reads := 0
+	r := &accountReader{
+		read: func(context.Context) (*relayv1.AccountState, error) {
+			reads++
+			return &relayv1.AccountState{}, nil
+		},
+		vouched: func() bool { return false },
+		clock:   clock.Now,
+	}
+	r.seed(&relayv1.AccountState{})
+	r.seed(nil)
+	if _, err := r.State(t.Context()); err != nil || reads != 1 {
+		t.Fatalf("after an empty seed: %d reads, %v", reads, err)
+	}
+
+	r.seed(onePaying())
+	st, err := r.State(t.Context())
+	if err != nil || reads != 1 || !paying(st) {
+		t.Fatalf("inside the window: %d reads, %v, %v", reads, st, err)
+	}
+	r.invalidate()
+	st, err = r.State(t.Context())
+	if err != nil || reads != 2 || paying(st) {
+		t.Fatalf("after invalidate: %d reads, %v, %v", reads, st, err)
+	}
+	if _, err := r.State(t.Context()); err != nil || reads != 2 {
+		t.Fatalf("the window holds again after the read: %d reads", reads)
+	}
+}
+
 // vouchRig is a test-mode Run (rules off unless asked) over the production
 // relay transport against relaytest.
 type vouchRig struct {

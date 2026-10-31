@@ -54,11 +54,25 @@ type accountReader struct {
 	lastErr error
 }
 
-// seed records a read the transport made by itself (Connect's).
+// seed records a read the transport made by itself (Connect's, SLOT_ADDED's).
+// An empty state is no read (the transport may never have read one, or
+// forgot its slots on HUB_NOT_VOUCHED): it arms no window.
 func (r *accountReader) seed(st *relayv1.AccountState) {
+	if len(st.GetPhones()) == 0 {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.at, r.last, r.lastErr = r.clock(), st, nil
+}
+
+// invalidate forgets the last answer after HUB_NOT_VOUCHED: the next read
+// goes to the relay (the window's limit holds again from that read), so a
+// pre-revoke state is never answered from the cache.
+func (r *accountReader) invalidate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.at, r.last, r.lastErr = time.Time{}, nil, nil
 }
 
 // State is one read of the account state. The window starts when a read
@@ -144,8 +158,8 @@ func (h *hubRuntime) vouched() bool {
 // refreshGate follows the transport's vouch state: an unvouched hub writes
 // nothing but its pairing zones, so its publisher and processor hold.
 func (h *hubRuntime) refreshGate() {
-	v := h.vouched()
 	h.mu.Lock()
+	v := h.vouched() // under mu: concurrent callers set unvouched in read order
 	was := h.unvouched
 	h.unvouched = !v
 	changed := was != h.unvouched
@@ -237,6 +251,9 @@ func (h *hubRuntime) onSlotAdded() {
 // SLOT_ADDED open the gate again.
 func (h *hubRuntime) noteNotVouched(err error) {
 	if errors.Is(err, transport.ErrNotVouched) {
+		if h.acct != nil {
+			h.acct.invalidate()
+		}
 		h.refreshGate()
 	}
 }
