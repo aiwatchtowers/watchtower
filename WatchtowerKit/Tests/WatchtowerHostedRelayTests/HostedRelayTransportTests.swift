@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import os
 @testable import WatchtowerHostedRelay
@@ -10,7 +9,7 @@ import XCTest
 /// `HostedRelayTransport` in the phone role on `FakeHostedRelay`: a phone and a test Mac,
 /// the Mac writing its data zone through `perform`. Twins of the Go hub's
 /// `internal/hub/transport/relay/transport_test.go` (same names) plus the phone's own
-/// rules (R4–R11). Not final: Task 12 runs it against the stand.
+/// rules (R4–R11). Not final: `HostedRelayTransportInteropTests` runs it against the stand.
 class HostedRelayTransportTests: HostedRelayScenarioCase {
     static let stamp = Date(timeIntervalSince1970: 1_700_000_000)
     static let stampMs: Int64 = 1_700_000_000_000
@@ -59,9 +58,14 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         return (transport, log)
     }
 
+    /// The fake (its faults and limits); `XCTSkip` on the stand (R15).
     var relay: FakeHostedRelay {
-        get throws { try requireFake("needs the fake's log and faults") }
+        get throws { try requireFake("needs the fake's faults or limits (fake only, R15)") }
     }
+
+    /// Why a test that moves the relay's clock (session ends, 30-day tombstone purge,
+    /// attestation deadlines) runs on the fake only.
+    static let needsClock = "moves the relay's clock (fake only, R15)"
 
     func mailboxRecord(_ name: String, asset: URL? = nil) -> CloudRecord {
         CloudRecord(
@@ -113,14 +117,14 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         let upload = try await mac.createUpload(create)
         let file = try directory().appendingPathComponent("upload")
         try bytes.write(to: file)
-        let status = try await relay.http.put(try XCTUnwrap(URL(string: upload.url)), file: file, headers: upload.headers)
+        let status = try await backend.http.put(try XCTUnwrap(URL(string: upload.url)), file: file, headers: upload.headers)
         XCTAssertEqual(status, 200)
         return upload.attachmentID
     }
 
     /// The `since_seq` of every `changes` of `zone`, in order.
     func changesSinces(_ zone: String) throws -> [UInt64] {
-        try relay.log.compactMap { op in
+        backend.opLog.compactMap { op in
             guard case .changes(let changes) = op, changes.zone == zone else { return nil }
             return changes.sinceSeq
         }
@@ -128,11 +132,11 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
 
     /// The case names of the ops in the log, in order.
     func opNames() throws -> [String] {
-        try relay.log.map { HostedRelayClient.name($0) }
+        backend.opLog.map { HostedRelayClient.name($0) }
     }
 
     func savedNames() throws -> [[String]] {
-        try relay.log.compactMap { op in
+        backend.opLog.compactMap { op in
             guard case .save(let save) = op else { return nil }
             return save.items.map(\.record.name)
         }
@@ -156,7 +160,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
             ConditionalSave(record: mailboxRecord("b"), expect: .none)
         ])
         XCTAssertEqual(first, [.saved(recordSeq: 1), .saved(recordSeq: 2)])
-        guard case .save(let wire) = try relay.log.last else { return XCTFail("no save on the wire") }
+        guard case .save(let wire) = backend.opLog.last else { return XCTFail("no save on the wire") }
         XCTAssertEqual(wire.items.map(\.record.zone), [mailbox(mac, phone), mailbox(mac, phone)])
         XCTAssertEqual(wire.items[0].mustNotExist, true)
         XCTAssertNil(wire.items[1].expect)
@@ -224,6 +228,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
 
     /// `TOKEN_EXPIRED` sends the zone back to 0; the resync deletes what the server purged (R10).
     func testTokenExpiredResetsZoneToZero() async throws {
+        _ = try requireFake(Self.needsClock)
         let (mac, phone) = try await hub()
         try await macSave(mac, dataZone(mac), "a")
         try await macSave(mac, dataZone(mac), "b")
@@ -327,7 +332,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         try await macSave(mac, dataZone(mac), "before")
         await transport.start()
         await eventually { (try? self.buffered(store, .data).changed.map(\.recordName)) == ["before"] }
-        let states = try relay.log.filter { if case .getAccountState = $0 { true } else { false } }.count
+        let states = backend.opLog.filter { if case .getAccountState = $0 { true } else { false } }.count
 
         // Written while the phone is away: only the reconnect's record-less event tells it.
         try relay.deploy()
@@ -359,7 +364,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         let create = try XCTUnwrap(names.firstIndex(of: "createUpload"))
         let save = try XCTUnwrap(names.firstIndex(of: "save"))
         XCTAssertLessThan(create, save)
-        guard case .save(let wire) = try relay.log[save] else { return XCTFail("save") }
+        guard case .save(let wire) = backend.opLog[save] else { return XCTFail("save") }
         let attachment = wire.items[0].record.attachmentID
         XCTAssertFalse(attachment.isEmpty)
         XCTAssertEqual(wire.items[0].record.envelope, Data("envelope-upload-1".utf8))
@@ -370,7 +375,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         download.attachmentID = attachment
         let url = try await mac.getDownload(download).url
         let out = directory.appendingPathComponent("mac-copy")
-        let status = try await relay.http.get(try XCTUnwrap(URL(string: url)), to: out, maxBytes: 1 << 20, headers: [:])
+        let status = try await backend.http.get(try XCTUnwrap(URL(string: url)), to: out, maxBytes: 1 << 20, headers: [:])
         XCTAssertEqual(status, 200)
         XCTAssertEqual(try Data(contentsOf: out), bytes)
 
@@ -501,7 +506,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
     func testDeviceIDMatchesIdentity() async throws {
         let (mac, phone) = try await hub()
         let (transport, _) = try await makeTransport(phone, mac: mac, store: TransportStore.inMemory())
-        let signer = Ed25519RelaySigner(try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 2, count: 32)))
+        let signer = try backend.signer(seed: 2)
         XCTAssertEqual(phone.deviceID, RelayAuthMessages.deviceID(publicKey: signer.publicKey))
         XCTAssertEqual(transport.mailboxZone, "relay/\(mac.deviceID)/\(phone.deviceID)")
         XCTAssertEqual(transport.dataZone, "data/\(mac.deviceID)")
@@ -520,7 +525,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         XCTAssertFalse(try opNames().contains("save"), "nothing sent before a flush")
 
         await transport.sendNow()
-        let writes = try relay.log.compactMap { op -> String? in
+        let writes = backend.opLog.compactMap { op -> String? in
             switch op {
             case .save(let save): return "save " + save.items.map(\.record.name).joined(separator: ",")
             case .delete(let delete): return "delete " + delete.items.map(\.name).joined(separator: ",")
@@ -557,7 +562,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         let (mac, phone) = try await hub()
         let store = try TransportStore.inMemory()
         let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
-        let ops = try relay.log.count
+        let ops = backend.opLog.count
         let record = CloudRecord(recordName: "x", zone: .data, kind: WireKind.envelope, modifiedAt: Self.stamp, payload: Data())
         let forbidden = HostedRelayError.server(code: .forbidden, retryAfter: nil)
 
@@ -578,17 +583,17 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         let deleted = try await transport.delete([ConditionalDelete(recordName: "x", zone: .data, expect: .none)])
         XCTAssertEqual(deleted, [.refused(.permanent(code: "forbidden"))])
 
-        XCTAssertEqual(try relay.log.count, ops, "no request")
+        XCTAssertEqual(backend.opLog.count, ops, "no request")
         XCTAssertFalse(try store.isPending(recordName: "x", zone: .data))
     }
 
     func testAnAbsentDeleteIsRefusedWithoutARequest() async throws {
         let (mac, phone) = try await hub()
         let (transport, _) = try await makeTransport(phone, mac: mac, store: TransportStore.inMemory())
-        let ops = try relay.log.count
+        let ops = backend.opLog.count
         let outcomes = try await transport.delete([ConditionalDelete(recordName: "a", zone: .relay, expect: .absent)])
         XCTAssertEqual(outcomes, [.refused(.permanent(code: "unsupported_precondition"))])
-        XCTAssertEqual(try relay.log.count, ops)
+        XCTAssertEqual(backend.opLog.count, ops)
     }
 
     /// R7: `RecordOrigin.serverAt` is the writer's `client_modified_at_ms`, kept across a reopen.
@@ -703,7 +708,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         await waitForRelayEvent(log, .attestation(.retryLater(after: .seconds(1))))
 
         let calls = attest.calls.count
-        let ops = try relay.log.count
+        let ops = backend.opLog.count
         do {
             try await transport.pull()
             XCTFail("a pull before the deadline went out")
@@ -715,7 +720,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         await transport.sendNow()
         try await transport.fetchForPush(since: Self.stamp, grace: 0, pollOnFallback: false)
         XCTAssertEqual(attest.calls.count, calls, "no App Attest call before the deadline")
-        XCTAssertEqual(try relay.log.count, ops, "no request before the deadline")
+        XCTAssertEqual(backend.opLog.count, ops, "no request before the deadline")
 
         manualClock?.advance(by: .seconds(1))
         try await transport.pull()
@@ -734,7 +739,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         await waitForRelayEvent(log, .attestation(.updateRequired))
         XCTAssertTrue(try store.isPending(recordName: "queued", zone: .relay), "the queued write is kept")
 
-        let ops = try relay.log.count
+        let ops = backend.opLog.count
         let outcomes = try await transport.save([ConditionalSave(record: mailboxRecord("c"), expect: .absent)])
         XCTAssertEqual(outcomes, [.refused(.unreachable)])
         let deleted = try await transport.delete([ConditionalDelete(recordName: "c", zone: .relay, expect: .none)])
@@ -746,7 +751,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
             XCTAssertEqual(error as? HostedRelayError, .attestation(.updateRequired))
         }
         await transport.sendNow()
-        XCTAssertEqual(try relay.log.count, ops, "no request once stopped")
+        XCTAssertEqual(backend.opLog.count, ops, "no request once stopped")
         let availability = await transport.availability()
         XCTAssertEqual(availability, .unavailable("relay"))
         XCTAssertEqual(log.relayEvents.filter { $0 == .attestation(.updateRequired) }.count, 1, "reported once")
@@ -763,14 +768,14 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         await waitForRelayEvent(log, .attestation(.notSupported))
         let outcomes = try await transport.save([ConditionalSave(record: mailboxRecord("a"), expect: .absent)])
         XCTAssertEqual(outcomes, [.refused(.unreachable)])
-        XCTAssertEqual(try relay.log.count, 0, "no request at all")
+        XCTAssertEqual(backend.opLog.count, 0, "no request at all")
         XCTAssertEqual(attest.calls, [])
         XCTAssertEqual(log.relayEvents.filter { $0 == .attestation(.notSupported) }.count, 1)
     }
 
     func testAStoreBoundToCloudKitRefusesTheRelay() async throws {
         let (mac, phone) = try await hub()
-        let ops = try relay.log.count
+        let ops = backend.opLog.count
         let cloudKit = try TransportStore.inMemory()
         try cloudKit.adoptScope(.private, hubID: "hub-a")
         XCTAssertThrowsError(try HostedRelayTransport(client: phone, store: cloudKit, macDeviceID: mac.deviceID)) {
@@ -781,7 +786,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         XCTAssertThrowsError(try HostedRelayTransport(client: phone, store: otherMac, macDeviceID: mac.deviceID)) {
             XCTAssertEqual($0 as? TransportStoreError, .boundToAnotherRoute)
         }
-        XCTAssertEqual(try relay.log.count, ops, "no request")
+        XCTAssertEqual(backend.opLog.count, ops, "no request")
     }
 
     func testEntitlementInactiveIsReportedOnRelayEvents() async throws {
@@ -845,7 +850,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         async let second: Void = transport.sendNow()
         _ = await (first, second)
         await transport.sendNow()
-        let writes = try relay.log.compactMap { op -> String? in
+        let writes = backend.opLog.compactMap { op -> String? in
             switch op {
             case .save(let save): return "save " + save.items.map(\.record.name).joined(separator: ",")
             case .delete(let delete): return "delete " + delete.items.map(\.name).joined(separator: ",")
@@ -932,6 +937,7 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
 
     /// A `.retryLater` at `start()` leaves no socket; the first successful pull after the deadline dials it.
     func testARetryLaterAtStartDialsAfterTheDeadline() async throws {
+        _ = try requireFake(Self.needsClock)
         let (mac, _) = try await hub()
         // The same phone in a new process: not registered here yet, no App Attest key in its store.
         let phone = try await makeClient(kind: .phone, seed: 2, register: false)

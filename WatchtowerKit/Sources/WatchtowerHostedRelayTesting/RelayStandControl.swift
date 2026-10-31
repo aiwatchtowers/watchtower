@@ -3,7 +3,7 @@ import WatchtowerRelayProto
 
 /// What a test may do to the server besides the protocol: the stand's `/dev`
 /// endpoints (relay@3a99bd7 `worker/src/http/dev.ts`), on `FakeHostedRelay`
-/// or on the local stand (Task 12).
+/// or on the local stand (`HTTPRelayStandControl` in the interop tests).
 public protocol RelayStandControl: Sendable {
     /// `POST /dev/entitlement`: `state` is active|grace|expired|revoked; a paying
     /// state needs `duration > 0` (until = now + duration), the others keep the current until.

@@ -160,6 +160,11 @@ final class SimRelayPhoneLeg: SimTransport {
         await transport.stop()
     }
 
+    /// Whether the transport's socket is connected now (the stand's `socketsReady`).
+    var isLive: Bool {
+        get async { await transport.connection?.isLive ?? false }
+    }
+
     func save(_ zone: String, _ items: [SimSaveItem]) async -> [SaveOutcome] {
         guard zone == transport.mailboxZone else { return items.map { _ in .refused(.permanent(code: "forbidden")) } }
         let saves = items.map { item in
@@ -232,6 +237,11 @@ final class SimRelayHubLeg: SimTransport {
 
     deinit {
         socket.withLock { $0?.1.cancel() }
+    }
+
+    /// Whether the socket is connected now (the stand's `socketsReady`).
+    var isLive: Bool {
+        socket.withLock { $0?.0.isLive ?? false }
     }
 
     /// Opens the socket; its controls go to `takeControls`.
