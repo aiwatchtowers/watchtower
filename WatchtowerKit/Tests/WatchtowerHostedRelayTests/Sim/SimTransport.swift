@@ -53,8 +53,10 @@ protocol SimTransport: AnyObject, Sendable {
     func changes(_ zone: String, since: UInt64) async throws -> SimChanges
     /// Whether the last attempt to reach the transport succeeded.
     func available() async -> Bool
-    /// The server control events not taken yet (the relay's; CloudKit has none).
+    /// The server control events not taken yet (the relay's; CloudKit has none), taken.
     func takeControls() async -> [SimControl]
+    /// The same, left in place (Go `PendingControls`).
+    func pendingControls() -> [SimControl]
 }
 
 extension SimTransport {
@@ -81,10 +83,11 @@ extension Sim {
         return refusal
     }
 
-    /// Go `retryable`: the write did not happen and may succeed later.
+    /// Go `retryable`: the write did not happen and may succeed later (unreachable, rate
+    /// limited). Every other refusal is for good, as a Go protocol error is.
     static func retryable(_ refusal: TransportRefusal?) -> Bool {
         switch refusal {
-        case .unreachable, .rateLimited, .transient: return true
+        case .unreachable, .rateLimited: return true
         default: return false
         }
     }
@@ -113,12 +116,19 @@ final class SimControlBuffer: Sendable {
             return taken
         }
     }
+
+    var pending: [SimControl] {
+        controls.withLock { $0 }
+    }
 }
 
 /// The phone's relay leg: the real `HostedRelayTransport` (R12). The mailbox is written
 /// through its `ConditionalTransport` calls; reads `pull()` both zones and serve the local
-/// buffer, so the cursor is the buffer's change token. Controls come from its `relayEvents`
-/// (when a socket is open).
+/// buffer, so the cursor is the buffer's change token. `start()` opens the transport's socket
+/// (as every Go device is connected): its server controls arrive through `relayEvents`. The
+/// socket's own zone events also `pull()` in the background; that only prefetches into the
+/// buffer, and the sim's cursors stay the sim's (`SimPhone.cursors`), so a read sees each
+/// change once whichever pull buffered it.
 final class SimRelayPhoneLeg: SimTransport {
     let kind = SimKind.relay
     let transport: HostedRelayTransport
@@ -141,6 +151,15 @@ final class SimRelayPhoneLeg: SimTransport {
         reader.cancel()
     }
 
+    /// Opens the socket (and registers, flushes, pulls: `HostedRelayTransport.start()`).
+    func start() async {
+        await transport.start()
+    }
+
+    func close() async {
+        await transport.stop()
+    }
+
     func save(_ zone: String, _ items: [SimSaveItem]) async -> [SaveOutcome] {
         guard zone == transport.mailboxZone else { return items.map { _ in .refused(.permanent(code: "forbidden")) } }
         let saves = items.map { item in
@@ -152,7 +171,7 @@ final class SimRelayPhoneLeg: SimTransport {
         do {
             return try await transport.save(saves)
         } catch {
-            return items.map { _ in .refused(.transient(code: "local")) }
+            return items.map { _ in .refused(.unreachable) } // a local failure: retried next pass
         }
     }
 
@@ -161,10 +180,13 @@ final class SimRelayPhoneLeg: SimTransport {
         do {
             return try await transport.delete(items.map { ConditionalDelete(recordName: $0.name, zone: .relay, expect: $0.expect) })
         } catch {
-            return items.map { _ in .refused(.transient(code: "local")) }
+            return items.map { _ in .refused(.unreachable) } // a local failure: retried next pass
         }
     }
 
+    /// Pulls both zones (the transport has no single-zone pull), then reads `zone`'s buffer
+    /// after `since`. A pull that fails at the data zone (a phone that does not read the Mac's
+    /// data zone) reads nothing, the mailbox included.
     func changes(_ zone: String, since: UInt64) async throws -> SimChanges {
         guard let id = transport.cloudZone(zone) else { throw SimRefused(refusal: .permanent(code: "forbidden")) }
         do {
@@ -185,20 +207,52 @@ final class SimRelayPhoneLeg: SimTransport {
     func takeControls() async -> [SimControl] {
         controls.take()
     }
+
+    func pendingControls() -> [SimControl] {
+        controls.pending
+    }
 }
 
-/// The hub's relay leg: a `HostedRelayClient` with `DEVICE_KIND_MAC` (Go `RelayTransport`
-/// without a connection: Watch never fires and no control arrives, so `takeControls` is
-/// empty). The Mac reads every phone's mailbox and writes its data zone.
+/// The hub's relay leg: a `HostedRelayClient` with `DEVICE_KIND_MAC` (Go `RelayTransport`).
+/// Ops go over HTTPS; `connect()` opens the client's socket (no zones: the sim polls), whose
+/// `.control` events are the hub's server controls. The Mac reads every phone's mailbox and
+/// writes its data zone.
 final class SimRelayHubLeg: SimTransport {
     let kind = SimKind.relay
     let client: HostedRelayClient
     private let clock: any RelayClock
     private let failed = OSAllocatedUnfairLock(initialState: false)
+    private let controls = SimControlBuffer()
+    private let socket = OSAllocatedUnfairLock<(HostedRelayConnection, Task<Void, Never>)?>(initialState: nil)
 
     init(client: HostedRelayClient, clock: any RelayClock) {
         self.client = client
         self.clock = clock
+    }
+
+    deinit {
+        socket.withLock { $0?.1.cancel() }
+    }
+
+    /// Opens the socket; its controls go to `takeControls`.
+    func connect() async {
+        let connection = await client.connect(zones: [])
+        let events = connection.events
+        let reader = Task { [controls] in
+            for await event in events {
+                if case let .control(kind, detail) = event { controls.append(SimControl(kind: kind, detail: detail)) }
+            }
+        }
+        socket.withLock { $0 = (connection, reader) }
+    }
+
+    func close() async {
+        guard let (connection, reader) = socket.withLock({ current in
+            defer { current = nil }
+            return current
+        }) else { return }
+        reader.cancel()
+        await connection.close()
     }
 
     func save(_ zone: String, _ items: [SimSaveItem]) async -> [SaveOutcome] {
@@ -285,7 +339,11 @@ final class SimRelayHubLeg: SimTransport {
     }
 
     func takeControls() async -> [SimControl] {
-        []
+        controls.take()
+    }
+
+    func pendingControls() -> [SimControl] {
+        controls.pending
     }
 
     /// Runs one call and records whether the server was reachable (Go `do`).

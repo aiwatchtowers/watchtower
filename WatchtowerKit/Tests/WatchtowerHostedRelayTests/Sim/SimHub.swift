@@ -37,6 +37,8 @@ struct SimApplied: Equatable, Sendable {
     let payload: String
 }
 
+/// Driven one pass at a time: the twins never call into it concurrently (`SimWorld.syncAll`).
+/// The actor only keeps its state safe; a second pass entering at an `await` is not modelled.
 actor SimHub {
     private struct HeldAction {
         let kind: SimKind
@@ -394,7 +396,7 @@ actor SimHub {
     private func switchedEnvelope(_ target: SimKind) -> SimEnvelope {
         SimEnvelope(
             kind: SimEnvelope.kindSwitched, sender: id, epoch: epoch, target: target, by: lastBy,
-            atMs: lastSwitch.map { Int64(($0.timeIntervalSince1970 * 1000).rounded()) } ?? 0)
+            atMs: lastSwitch.map(SimEnvelope.unixMilli) ?? 0)
     }
 
     /// Decides on one transport_switch (§4.2 p. 1, 3; §6).

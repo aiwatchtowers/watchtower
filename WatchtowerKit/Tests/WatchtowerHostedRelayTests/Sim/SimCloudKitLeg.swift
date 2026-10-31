@@ -72,7 +72,7 @@ final class SimCloudKitLeg: SimTransport {
         do {
             return try await target.store.save(saves)
         } catch {
-            return items.map { _ in .refused(.transient(code: "local")) }
+            return items.map { _ in .refused(.unreachable) } // a local failure: retried next pass
         }
     }
 
@@ -81,7 +81,7 @@ final class SimCloudKitLeg: SimTransport {
         do {
             return try await target.store.delete(items.map { ConditionalDelete(recordName: $0.name, zone: target.id, expect: $0.expect) })
         } catch {
-            return items.map { _ in .refused(.transient(code: "local")) }
+            return items.map { _ in .refused(.unreachable) } // a local failure: retried next pass
         }
     }
 
@@ -95,6 +95,10 @@ final class SimCloudKitLeg: SimTransport {
     }
 
     func takeControls() async -> [SimControl] {
+        []
+    }
+
+    func pendingControls() -> [SimControl] {
         []
     }
 

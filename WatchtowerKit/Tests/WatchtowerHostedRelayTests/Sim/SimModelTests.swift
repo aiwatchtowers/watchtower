@@ -24,6 +24,18 @@ final class SimModelTests: HostedRelayScenarioCase {
         XCTAssertEqual(String(bytes: SimEnvelope(kind: SimEnvelope.kindEcho).marshal(), encoding: .utf8), #"{"kind":"echo","sender":""}"#)
         XCTAssertEqual(try SimEnvelope.open(Data(#"{"kind":"epoch_ack"}"#.utf8)), SimEnvelope(kind: SimEnvelope.kindEpochAck))
 
+        // Go 1.22+ writes \b and \f short; other control characters as \u00XX.
+        let controls = SimEnvelope(kind: SimEnvelope.kindAction, payload: "\u{08}\u{0C}\u{01}")
+        XCTAssertEqual(String(bytes: controls.marshal(), encoding: .utf8), #"{"kind":"action","sender":"","payload":"\b\f\u0001"}"#)
+        // Go's Kind is a string: an unknown target is kept as sent.
+        let unknown = #"{"kind":"transport_switched","sender":"mac","target":"pigeon"}"#
+        let opened = try SimEnvelope.open(Data(unknown.utf8))
+        XCTAssertNil(opened.target)
+        XCTAssertEqual(opened.targetName, "pigeon")
+        XCTAssertEqual(String(bytes: opened.marshal(), encoding: .utf8), unknown)
+        // UnixMilli truncates.
+        XCTAssertEqual(SimEnvelope.unixMilli(Date(timeIntervalSince1970: 1.9999)), 1_999)
+
         XCTAssertEqual(SimEnvelope.kindOf(Data("not json".utf8)), "?")
         XCTAssertEqual(SimEnvelope.kindOf(action.marshal()), "action")
         XCTAssertEqual(Sim.actionName(12), "a-12")
@@ -33,7 +45,7 @@ final class SimModelTests: HostedRelayScenarioCase {
     }
 
     func testAPhoneActionReachesTheHubOverTheRelay() async throws {
-        let world = try await SimWorld(backend: backend)
+        let world = try await simWorld()
         let phone = try await world.addPhone(paying: true)
 
         let seq = await phone.act("a1")
@@ -57,7 +69,7 @@ final class SimModelTests: HostedRelayScenarioCase {
     }
 
     func testAPhoneActionReachesTheHubOverCloudKit() async throws {
-        let world = try await SimWorld(backend: backend)
+        let world = try await simWorld()
         let phone = try await world.addPhone(paying: true)
         await phone.switchTransport(to: .cloudkit)
         try await world.syncAll()
@@ -115,5 +127,113 @@ final class SimModelTests: HostedRelayScenarioCase {
         XCTAssertEqual(changes.changed.first?.payload, Data("x".utf8))
         let unknown = await leg.save("ck/mac/p2", [item])
         XCTAssertEqual(unknown, [.refused(.permanent(code: "no_zone"))], "an unknown zone")
+    }
+
+    // MARK: - Server controls
+
+    func testTheHubReceivesEntitlementExpiredNamingThePhone() async throws {
+        let world = try await simWorld()
+        let phone = try await world.addPhone(paying: true)
+        await phone.setOffline(true)
+        await phone.act("a1")
+
+        try await world.expireEntitlement(phone)
+        let hubControls = await world.controlsDelivered(to: SimWorld.hubOwner)
+        let phoneControls = await world.controlsDelivered(to: phone.id)
+        XCTAssertEqual(hubControls, [SimControl(kind: .entitlementExpired, detail: phone.id)])
+        XCTAssertEqual(phoneControls, [SimControl(kind: .entitlementExpired, detail: "")])
+
+        // The Go `TestHubActsOnEntitlementControl`: the hub falls back on the control alone.
+        try await world.syncAll()
+        let hubTransport = await world.hub.transport
+        XCTAssertEqual(hubTransport, .cloudkit)
+        await phone.setOffline(false)
+        try await world.syncAll()
+        let phoneTransport = await phone.transport
+        let applied = await world.hub.applied(from: phone)
+        XCTAssertEqual(phoneTransport, .cloudkit)
+        XCTAssertEqual(applied, ["1:a1"])
+    }
+
+    // MARK: - Fault seam
+
+    func testEveryLegOfEveryDeviceHasAFaultSeam() async throws {
+        let world = try await simWorld()
+        let paying = try await world.addPhone(paying: true)
+        let free = try await world.addPhone(paying: false)
+        XCTAssertEqual(world.fault(SimWorld.hubOwner, .relay)?.kind, .relay)
+        XCTAssertEqual(world.fault(SimWorld.hubOwner, .cloudkit)?.kind, .cloudkit)
+        XCTAssertEqual(world.fault(paying.id, .relay)?.kind, .relay)
+        XCTAssertEqual(world.fault(paying.id, .cloudkit)?.kind, .cloudkit)
+        XCTAssertNil(world.fault(free.id, .relay), "a free phone has no relay leg")
+        XCTAssertEqual(world.fault(free.id, .cloudkit)?.kind, .cloudkit)
+    }
+
+    func testFailControlsFailsEveryWriteButActions() async throws {
+        let leg = SimCloudKitLeg(clock: ManualRelayClock())
+        leg.addMailbox("ck/mac/p1")
+        let faulty = SimFaulty(leg)
+        faulty.failControls = true
+        let control = await faulty.save("ck/mac/p1", [Sim.saveItem(Sim.controlName("p1-1"), SimEnvelope(kind: SimEnvelope.kindEpochAck))])
+        let marker = await faulty.save("ck/mac/p1", [SimSaveItem(name: Sim.markerName, envelope: Data(), expect: .none)])
+        let action = await faulty.save("ck/mac/p1", [Sim.saveItem(Sim.actionName(1), SimEnvelope(kind: SimEnvelope.kindAction, seq: 1))])
+        XCTAssertEqual(control, [.refused(.unreachable)])
+        XCTAssertEqual(marker, [.refused(.unreachable)])
+        XCTAssertEqual(action, [.saved(recordSeq: 1)])
+
+        // In a world: the hub's resend_from stays queued until its relay leg writes again.
+        let world = try await simWorld()
+        let phone = try await world.addPhone(paying: true)
+        await phone.loseNextWrite()
+        await phone.act("a1")
+        await phone.act("a2")
+        let hubRelay = try XCTUnwrap(world.fault(SimWorld.hubOwner, .relay))
+        hubRelay.failControls = true
+        await world.hub.sync()
+        let resends = await world.hub.resendRequests
+        XCTAssertEqual(resends, [1])
+        let held = try await world.relayMailbox(phone)
+        XCTAssertEqual(held, ["a-2"], "no resend_from written")
+        hubRelay.failControls = false
+        try await world.syncAll()
+        let applied = await world.hub.applied(from: phone)
+        XCTAssertEqual(applied, ["1:a1", "2:a2"])
+    }
+
+    func testRefuseActionsRateLimitsTheNextActionWrites() async throws {
+        let world = try await simWorld()
+        let phone = try await world.addPhone(paying: true)
+        let relay = try XCTUnwrap(world.fault(phone.id, .relay))
+        relay.refuseActions = 1
+        await phone.act("a1")
+        let unsent = await phone.outbox
+        let mailbox = try await world.relayMailbox(phone)
+        XCTAssertEqual(unsent, [1])
+        XCTAssertEqual(mailbox, [], "the refused write left nothing")
+        XCTAssertEqual(relay.refuseActions, 0)
+
+        try await world.syncAll()
+        let applied = await world.hub.applied(from: phone)
+        XCTAssertEqual(applied, ["1:a1"], "the refused action goes out on the next pass")
+    }
+
+    func testHoldControlsKeepsControlsFromTheDevice() async throws {
+        let world = try await simWorld()
+        let phone = try await world.addPhone(paying: true)
+        await phone.setOffline(true)
+        let hubRelay = try XCTUnwrap(world.fault(SimWorld.hubOwner, .relay))
+        hubRelay.holdControls = true
+
+        try await world.expireEntitlement(phone)
+        await world.controlsDelivered(to: SimWorld.hubOwner)
+        await world.hub.sync()
+        let held = await world.hub.transport
+        XCTAssertEqual(held, .relay, "the control has not reached the hub")
+        XCTAssertEqual(hubRelay.pendingControls().count, 1, "held, not taken")
+
+        hubRelay.holdControls = false
+        await world.hub.sync()
+        let released = await world.hub.transport
+        XCTAssertEqual(released, .cloudkit)
     }
 }

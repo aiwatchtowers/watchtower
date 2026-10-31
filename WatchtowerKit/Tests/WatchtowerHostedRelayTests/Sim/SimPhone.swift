@@ -40,6 +40,8 @@ enum SimPhoneError: Error, Equatable {
     case notUndelivered(UInt64)
 }
 
+/// Driven one pass at a time: the twins never call into it concurrently (`SimWorld.syncAll`).
+/// The actor only keeps its state safe; a second pass entering at an `await` is not modelled.
 actor SimPhone {
     private final class OutItem {
         let seq: UInt64

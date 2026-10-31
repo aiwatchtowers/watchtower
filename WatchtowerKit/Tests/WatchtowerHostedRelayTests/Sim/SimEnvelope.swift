@@ -63,7 +63,8 @@ struct SimEnvelope: Equatable, Sendable {
     var payload = ""
     /// Identifies a control record across its copies on both transports.
     var id = ""
-    var target: SimKind?
+    /// The `target` string as sent: Go's `Kind` is a string, so an unknown name is kept as is.
+    var targetName = ""
     var reason = ""
     /// echo: applied or duplicate.
     var status = ""
@@ -72,6 +73,44 @@ struct SimEnvelope: Equatable, Sendable {
     /// Who switched the hub and when (transport_switched).
     var by = ""
     var atMs: Int64 = 0
+
+    init(
+        kind: String,
+        sender: String = "",
+        epoch: UInt64 = 0,
+        seq: UInt64 = 0,
+        payload: String = "",
+        id: String = "",
+        target: SimKind? = nil,
+        reason: String = "",
+        status: String = "",
+        retryAfterMs: Int64 = 0,
+        by: String = "",
+        atMs: Int64 = 0
+    ) {
+        self.kind = kind
+        self.sender = sender
+        self.epoch = epoch
+        self.seq = seq
+        self.payload = payload
+        self.id = id
+        self.targetName = target?.rawValue ?? ""
+        self.reason = reason
+        self.status = status
+        self.retryAfterMs = retryAfterMs
+        self.by = by
+        self.atMs = atMs
+    }
+
+    /// The target transport; nil when absent or not a known transport name.
+    var target: SimKind? {
+        SimKind(rawValue: targetName)
+    }
+
+    /// Go's `time.Time.UnixMilli`: milliseconds since 1970, truncated.
+    static func unixMilli(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1000).rounded(.towardZero))
+    }
 
     /// "Seals" the envelope (Go `Marshal`).
     func marshal() -> Data {
@@ -83,7 +122,7 @@ struct SimEnvelope: Equatable, Sendable {
         add("seq", String(seq), when: seq != 0)
         add("payload", Self.quote(payload), when: !payload.isEmpty)
         add("id", Self.quote(id), when: !id.isEmpty)
-        add("target", Self.quote(target?.rawValue ?? ""), when: target != nil)
+        add("target", Self.quote(targetName), when: !targetName.isEmpty)
         add("reason", Self.quote(reason), when: !reason.isEmpty)
         add("status", Self.quote(status), when: !status.isEmpty)
         add("retry_after_ms", String(retryAfterMs), when: retryAfterMs != 0)
@@ -97,11 +136,12 @@ struct SimEnvelope: Equatable, Sendable {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let wire = try decoder.decode(Wire.self, from: data)
-        return Self(
+        var env = Self(
             kind: wire.kind ?? "", sender: wire.sender ?? "", epoch: wire.epoch ?? 0, seq: wire.seq ?? 0,
-            payload: wire.payload ?? "", id: wire.id ?? "", target: wire.target.flatMap(SimKind.init(rawValue:)),
-            reason: wire.reason ?? "", status: wire.status ?? "", retryAfterMs: wire.retryAfterMs ?? 0,
-            by: wire.by ?? "", atMs: wire.atMs ?? 0)
+            payload: wire.payload ?? "", id: wire.id ?? "", reason: wire.reason ?? "", status: wire.status ?? "",
+            retryAfterMs: wire.retryAfterMs ?? 0, by: wire.by ?? "", atMs: wire.atMs ?? 0)
+        env.targetName = wire.target ?? ""
+        return env
     }
 
     /// The kind of a sealed envelope, or "?" when it does not open (Go `KindOf`).
@@ -124,7 +164,7 @@ struct SimEnvelope: Equatable, Sendable {
         let atMs: Int64?
     }
 
-    /// A JSON string as Go's `encoding/json` writes it (HTML-safe escaping, `/` kept).
+    /// A JSON string as Go's `encoding/json` (1.22+) writes it (HTML-safe escaping, `\b` and `\f`, `/` kept).
     private static func quote(_ text: String) -> String {
         var out = "\""
         for scalar in text.unicodeScalars {
@@ -134,6 +174,8 @@ struct SimEnvelope: Equatable, Sendable {
             case "\n": out += "\\n"
             case "\r": out += "\\r"
             case "\t": out += "\\t"
+            case "\u{08}": out += "\\b" // Go 1.22+
+            case "\u{0C}": out += "\\f" // Go 1.22+
             case "<", ">", "&", "\u{2028}", "\u{2029}", "\u{00}"..."\u{1F}":
                 out += String(format: "\\u%04x", scalar.value)
             default:
