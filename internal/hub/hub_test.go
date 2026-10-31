@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
@@ -764,6 +765,10 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 			}
 		}
 	}()
+	// The reading client paces the sends: the next pair goes out only once
+	// it has read the previous qr event, so at most one event waits on its
+	// stream and a slow runner can never make it look stalled; the stalled
+	// client gets all n and must overflow.
 	const n = 120 // × ~600-byte qr events: far past 2 × 4 KiB buffers plus 8 queued
 	for i := range n {
 		if err := good.Send(ControlRequest{Op: OpPair}); err != nil {
@@ -777,8 +782,14 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("pair %d: no answer: the stalled client holds the hub up", i)
 		}
+		eventually(t, 5*time.Second, fmt.Sprintf("qr event %d on the reading stream", i+1), func() bool {
+			return qrs.Load() >= int32(i+1)
+		})
 	}
-	eventually(t, 10*time.Second, "every qr event on the reading stream", func() bool { return qrs.Load() >= n })
+	// n, or n+1 when the stalled client's own pair reached this stream.
+	if got := qrs.Load(); got < n {
+		t.Fatalf("%d qr events on the reading stream, want %d", got, n)
+	}
 
 	// The stalled stream was closed: draining it ends in EOF, not a timeout.
 	_ = stalled.c.SetReadDeadline(time.Now().Add(10 * time.Second))
