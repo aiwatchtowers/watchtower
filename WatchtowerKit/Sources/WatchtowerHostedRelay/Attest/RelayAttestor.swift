@@ -53,6 +53,11 @@ public actor RelayAttestor {
         self.clock = clock
     }
 
+    /// `AppAttesting.isSupported`: the client refuses before any request when false (R16).
+    nonisolated public var isSupported: Bool {
+        attest.isSupported
+    }
+
     /// For `register`: a fresh attestation over `clientDataHash` (generateKey when no key is stored).
     public func registerAttestation(clientDataHash: Data) async throws -> Relay_V1_Attestation {
         guard attest.isSupported else { throw HostedRelayAttestError.notSupported }
