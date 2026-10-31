@@ -44,10 +44,12 @@ enum PushScope: Equatable, Sendable {
     case `private`
     case shared
 
-    init(_ scope: CloudDatabaseScope) {
-        switch scope {
-        case .private: self = .private
-        case .shared: self = .shared
+    /// nil for a route that has no CloudKit database (a hosted relay).
+    init?(_ route: HubRoute) {
+        switch route {
+        case .cloudKit(.private): self = .private
+        case .cloudKit(.shared): self = .shared
+        case .hostedRelay: return nil
         }
     }
 

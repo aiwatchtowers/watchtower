@@ -7,7 +7,7 @@ import WatchtowerSync
 /// a hub that has no registry row yet (a link being made, an orphan being
 /// cleared).
 struct HubSessionFactory {
-    let make: @MainActor (_ row: HubRow?, _ hubID: String, _ scope: CloudDatabaseScope, _ device: LinkedDevice?) throws -> HubSession
+    let make: @MainActor (_ row: HubRow?, _ hubID: String, _ route: HubRoute, _ device: LinkedDevice?) throws -> HubSession
 
     /// The live app: a `CloudKitTransport` on the hub's own transport store
     /// and a session on the hub's replica and recordings folder, sharing
@@ -16,7 +16,8 @@ struct HubSessionFactory {
     /// (mobile E2E); the transport store's folder and stash take class C
     /// (D8, `AppEnvironment.liveTransportStore`).
     static func live(paths: HubPaths, keys: any PhoneKeyStore) -> Self {
-        Self { _, hubID, scope, device in
+        Self { _, hubID, route, device in
+            guard let scope = route.cloudKitScope else { throw UnsupportedRouteError(route: route) }
             try paths.prepare(hubID)
             let energy = BatteryDiagnostics.shared.counter
             let active = UIApplication.shared.applicationState == .active
@@ -38,7 +39,7 @@ struct HubSessionFactory {
                 keys: PhoneKeys(store: keys, hubID: hubID),
                 recordingsDirectory: paths.recordingsDirectory(hubID),
                 hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
-                databaseScope: scope,
+                route: route,
                 startsActive: active,
                 uploadRetriesAllowed: active,
                 replicaObservesSuspension: true,
@@ -162,7 +163,7 @@ enum HubBoot {
     ) async throws {
         let linked = Set(try registry.hubIDs())
         for hubID in try paths.hubIDsOnDisk() where !linked.contains(hubID) && hubID != pendingHubID {
-            let session = try factory.make(nil, hubID, .private, nil)
+            let session = try factory.make(nil, hubID, .cloudKit(.private), nil)
             // Stopped before its boot runs: no engine starts, no fetch.
             session.stop()
             await session.shutDown()

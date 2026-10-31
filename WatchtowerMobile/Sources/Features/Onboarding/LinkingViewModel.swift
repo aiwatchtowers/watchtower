@@ -264,9 +264,9 @@ final class LinkingViewModel {
         // Step 3: same Apple ID → the private database, share URLs ignored
         // (an owner cannot accept their own share). Another Apple ID → both
         // shares, then the shared database.
-        let scope: CloudDatabaseScope
+        let route: HubRoute
         if userRecordName == payload.ownerUser {
-            scope = .private
+            route = .cloudKit(.private)
         } else {
             guard let data = payload.dataShare.flatMap(URL.init(string:)),
                   let relay = payload.relayShare.flatMap(URL.init(string:))
@@ -281,7 +281,7 @@ final class LinkingViewModel {
                 phase = .failed(.cannotShare)
                 return
             }
-            scope = .shared(ownerName: payload.ownerUser)
+            route = .cloudKit(.shared(ownerName: payload.ownerUser))
         }
         // The device keys (created here, in the foreground, on the first scan:
         // F14; one identity for every hub) and the hub's keys from the code.
@@ -295,7 +295,7 @@ final class LinkingViewModel {
             return
         }
         identity.deviceID = deviceKeys.deviceID.uuidString
-        let shared = scope != .private
+        let shared = route != .cloudKit(.private)
         let record = LinkRecord(
             hubID: payload.hubID,
             macName: payload.macName,
@@ -321,7 +321,7 @@ final class LinkingViewModel {
         // old link's rollback marks: a reset hub's seqs start again).
         let transport: any CloudSyncTransport
         do {
-            transport = try await host.prepare(scope: scope, hubID: record.hubID, fresh: true)
+            transport = try await host.prepare(route: route, hubID: record.hubID, fresh: true)
         } catch is CancellationError {
             // Torn down mid-prepare: the pending link stays for the relaunch.
             return
@@ -460,7 +460,7 @@ final class LinkingViewModel {
         }
         phase = .checking
         do {
-            _ = try await host?.prepare(scope: pending.link.databaseScope, hubID: pending.link.hubID, fresh: false)
+            _ = try await host?.prepare(route: pending.link.route, hubID: pending.link.hubID, fresh: false)
         } catch {
             await fail(.local(error.localizedDescription), hubID: pending.link.hubID)
             return
@@ -807,7 +807,7 @@ final class LinkingViewModel {
             }
             // The resend awaited: a link of this hub begun meanwhile has its own shares.
             guard !isLinked(hubID) else { continue }
-            if case let .shared(ownerName) = farewell.scope {
+            if case let .cloudKit(.shared(ownerName)) = farewell.route {
                 do {
                     try await container.leaveShares(ownerName: ownerName, hubID: hubID)
                 } catch {
@@ -958,7 +958,7 @@ final class LinkingViewModel {
         ending.insert(hubID)
         defer { ending.remove(hubID) }
         let linked = row.state == .linked && sendsFarewell
-        let scope = row.link.databaseScope
+        let route = row.link.route
         var farewell: CloudRecord?
         if linked, let device = identity.linkedDevice(for: row.link) {
             do {
@@ -971,7 +971,7 @@ final class LinkingViewModel {
         removeKeys(hubID)
         refreshLinks()
         // A kept farewell still needs the zones: the shares go once it is out (`retryFarewells`).
-        if linked, !wipe.farewellKept, case let .shared(ownerName) = scope {
+        if linked, !wipe.farewellKept, case let .cloudKit(.shared(ownerName)) = route {
             do {
                 try await container.leaveShares(ownerName: ownerName, hubID: hubID)
             } catch {

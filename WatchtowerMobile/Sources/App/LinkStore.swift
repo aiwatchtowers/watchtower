@@ -30,9 +30,9 @@ struct LinkRecord: Codable, Equatable, Sendable {
     /// newer than it.
     var linkedAt: Date?
 
-    /// The database the phone's transport syncs for this link.
-    var databaseScope: CloudDatabaseScope {
-        scope == .shared ? .shared(ownerName: ownerName) : .private
+    /// Where the phone's transport syncs this link: a CloudKit database.
+    var route: HubRoute {
+        scope == .shared ? .cloudKit(.shared(ownerName: ownerName)) : .cloudKit(.private)
     }
 }
 

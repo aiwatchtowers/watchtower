@@ -38,7 +38,7 @@ final class SharedAlertWiringTests: XCTestCase {
 
     private func session(
         transport: InMemoryCloudTransport,
-        scope: CloudDatabaseScope,
+        route: HubRoute,
         posted: Posted,
         replicaPath: String? = nil,
         defaults: UserDefaults? = nil
@@ -51,7 +51,7 @@ final class SharedAlertWiringTests: XCTestCase {
             keys: try TestPhone.keys(),
             defaults: try defaults ?? makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
-            databaseScope: scope,
+            route: route,
             alertPosting: posted.posting,
             sleep: { _ in try await Task.sleep(for: .seconds(3_600)) } // swiftlint:disable:this trailing_closure
         )
@@ -70,7 +70,7 @@ final class SharedAlertWiringTests: XCTestCase {
         try await publish(payload("ask-41", ask: 41), id: "41", into: transport)
         try await publish(payload("stop-7-1700000000000"), id: "stop-7", into: transport)
         let (posted, defaults) = (Posted(), try makeDefaults())
-        let env = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: posted, defaults: defaults)
+        let env = try session(transport: transport, route: .cloudKit(.shared(ownerName: "_owner")), posted: posted, defaults: defaults)
         keepWorkAlerts(env.deviceSettings)
         env.deviceSettings.workAlerts = true
 
@@ -85,7 +85,7 @@ final class SharedAlertWiringTests: XCTestCase {
         let transport = InMemoryCloudTransport()
         try await publish(payload("ask-41", ask: 41), id: "41", into: transport)
         let posted = Posted()
-        let env = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: posted)
+        let env = try session(transport: transport, route: .cloudKit(.shared(ownerName: "_owner")), posted: posted)
         keepWorkAlerts(env.deviceSettings)
         env.deviceSettings.workAlerts = true
 
@@ -116,7 +116,9 @@ final class SharedAlertWiringTests: XCTestCase {
         let transport = InMemoryCloudTransport()
         let (path, defaults) = (try makeReplicaPath(), try makeDefaults())
         let first = Posted()
-        let before = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: first, replicaPath: path, defaults: defaults)
+        let before = try session(
+            transport: transport, route: .cloudKit(.shared(ownerName: "_owner")), posted: first, replicaPath: path, defaults: defaults
+        )
         keepWorkAlerts(before.deviceSettings)
         before.deviceSettings.workAlerts = true
         _ = await before.refresh(.pull)
@@ -127,7 +129,9 @@ final class SharedAlertWiringTests: XCTestCase {
         before.closeDatabases()
 
         let second = Posted()
-        let after = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: second, replicaPath: path, defaults: defaults)
+        let after = try session(
+            transport: transport, route: .cloudKit(.shared(ownerName: "_owner")), posted: second, replicaPath: path, defaults: defaults
+        )
         _ = await after.refresh(.pull)
         XCTAssertTrue(second.requests.isEmpty, "a relaunch never posts an alert again")
 
@@ -141,7 +145,7 @@ final class SharedAlertWiringTests: XCTestCase {
         let transport = InMemoryCloudTransport()
         try await publish(payload("ask-42", ask: 42), id: "42", into: transport)
         let posted = Posted()
-        let env = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: posted)
+        let env = try session(transport: transport, route: .cloudKit(.shared(ownerName: "_owner")), posted: posted)
         keepWorkAlerts(env.deviceSettings)
         env.deviceSettings.workAlerts = false
 
@@ -155,7 +159,7 @@ final class SharedAlertWiringTests: XCTestCase {
         let transport = InMemoryCloudTransport()
         try await publish(payload("ask-42", ask: 42), id: "42", into: transport)
         let posted = Posted()
-        let env = try session(transport: transport, scope: .private, posted: posted)
+        let env = try session(transport: transport, route: .cloudKit(.private), posted: posted)
         keepWorkAlerts(env.deviceSettings)
         env.deviceSettings.workAlerts = true
 
@@ -167,7 +171,7 @@ final class SharedAlertWiringTests: XCTestCase {
     func testAnAlertThatDoesNotOpenIsSkipped() async throws {
         let transport = InMemoryCloudTransport()
         let posted = Posted()
-        let env = try session(transport: transport, scope: .shared(ownerName: "_owner"), posted: posted)
+        let env = try session(transport: transport, route: .cloudKit(.shared(ownerName: "_owner")), posted: posted)
         keepWorkAlerts(env.deviceSettings)
         env.deviceSettings.workAlerts = true
         _ = await env.refresh(.pull)

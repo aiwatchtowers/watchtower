@@ -57,7 +57,8 @@ final class AppRoot {
             }
             delivery.resend = { [cap = delivery.cap] farewell in
                 await AppRoot.resendDirectly(farewell, cap: cap) { farewell in
-                    try await CloudKitTransport.saveDirectly(farewell.record, scope: farewell.scope, hubID: farewell.hubID)
+                    guard let scope = farewell.route.cloudKitScope else { throw UnsupportedRouteError(route: farewell.route) }
+                    try await CloudKitTransport.saveDirectly(farewell.record, scope: scope, hubID: farewell.hubID)
                 }
             }
             return delivery
@@ -635,7 +636,7 @@ final class AppRoot {
     private func keepFarewell(_ sealed: CloudRecord, of row: HubRow?) -> PendingFarewell? {
         guard let row else { return nil }
         let farewell = PendingFarewell(
-            hubID: row.hubID, scope: row.link.databaseScope, userRecordName: row.link.userRecordName,
+            hubID: row.hubID, route: row.link.route, userRecordName: row.link.userRecordName,
             record: sealed, since: Date()
         )
         do {
@@ -759,7 +760,7 @@ extension AppRoot: LinkHost {
         env.reorder(linking.links.map(\.hubID))
     }
 
-    func prepare(scope: CloudDatabaseScope, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
+    func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
         // The launch's orphan pass never deletes the files of a hub being
         // linked (a cold launch by a link URL); a removal of this hub still
@@ -770,7 +771,7 @@ extension AppRoot: LinkHost {
         _ = await resends[hubID]?.value
         let frozen = (try registry.row(hubID))?.state == .unlinkedByMac
         if let session = env.session(hubID) {
-            if session.databaseScope == scope, !frozen, !fresh {
+            if session.route == route, !frozen, !fresh {
                 return session.linkTransport
             }
             // Another database's zones, a hub the Mac removed, or a new
@@ -780,7 +781,7 @@ extension AppRoot: LinkHost {
                 Self.logger.error("recordings at a rescan: \(problem, privacy: .public)")
             }
         }
-        let session = try factory.make(nil, hubID, scope, nil)
+        let session = try factory.make(nil, hubID, route, nil)
         // Before anything is sealed (no await since the build): the seqs a
         // removal of this hub left in this process are never reused (F29).
         if let floor = seqFloors[hubID] {
