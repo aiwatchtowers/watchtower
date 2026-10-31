@@ -1,5 +1,5 @@
-/// Where the device's App Attest key id lives. Phase 2 keeps it in memory
-/// only; Phase 3 adds the Keychain store (R2).
+/// Where the device's App Attest key id lives. The phone's store is
+/// `KeychainRelayIdentity` (R2); `InMemoryAppAttestKeyStore` stays for tests.
 public protocol AppAttestKeyStore: Sendable {
     func keyID() async -> String?
     func setKeyID(_ id: String?) async

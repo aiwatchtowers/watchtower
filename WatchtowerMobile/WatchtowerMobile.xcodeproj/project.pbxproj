@@ -84,8 +84,9 @@
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
 		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
 		46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */; };
+		4775CC25932238F3DE9B47AE /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		49581B2DB8F7B23814B73BBA /* MacsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACB75AFB86CD8FA28BE4C1B3 /* MacsView.swift */; };
-		4CC11EBE1DF90C0C89628B34 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
+		4CC11EBE1DF90C0C89628B34 /* WatchtowerHostedRelay in Frameworks */ = {isa = PBXBuildFile; productRef = 7FD33DE7CAA4EFCB621F1395 /* WatchtowerHostedRelay */; };
 		4CF6B8088DE86AE15CD85609 /* HubListSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23FAC5D7A97B8E470DD52F4A /* HubListSheet.swift */; };
 		4D6748338C1E07858C8D01CE /* AppNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8CBE8F6FE96F94C560CA24 /* AppNavigation.swift */; };
 		505F74FA09855E7BDA56ADB0 /* SessionInputSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A806A63CB29EB2AAA0A4132 /* SessionInputSender.swift */; };
@@ -228,6 +229,7 @@
 		F68A1D786C431F915FD26888 /* RecorderFakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAA24B2C4477589205240AF /* RecorderFakes.swift */; };
 		F7B8E24A6579D709545DD78A /* RecapModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DAFF0E5198E84EF086B49F0 /* RecapModel.swift */; };
 		FB663831976B7F90B3275229 /* HubPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1BEF5D37AF70BBF7FB6C533 /* HubPaths.swift */; };
+		FC9C26E4A3E2C0EA3C2005F0 /* RelayKeychainDeviceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E4EA3D2A7BAFFCDB7ADE84 /* RelayKeychainDeviceTests.swift */; };
 		FCD29A2F591EE6CBFA85E2E2 /* CachingPhoneKeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D467487E4F392B60617E94FE /* CachingPhoneKeyStoreTests.swift */; };
 		FDDD889A450FB1417C3D82E0 /* MacsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C16FF4E0A505B91DDC1D96D /* MacsModel.swift */; };
 /* End PBXBuildFile section */
@@ -415,6 +417,7 @@
 		9DAFF0E5198E84EF086B49F0 /* RecapModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecapModel.swift; sourceTree = "<group>"; };
 		9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		9E536113D190B5A87FCE4F46 /* CloudKitLinkAccessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKitLinkAccessTests.swift; sourceTree = "<group>"; };
+		A6E4EA3D2A7BAFFCDB7ADE84 /* RelayKeychainDeviceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayKeychainDeviceTests.swift; sourceTree = "<group>"; };
 		A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardWriteWiringTests.swift; sourceTree = "<group>"; };
 		A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationViewController.swift; sourceTree = "<group>"; };
 		A823E1CEA4B6D46AB737DB8D /* BatteryReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryReport.swift; sourceTree = "<group>"; };
@@ -512,7 +515,8 @@
 				45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */,
 				ECBCFA171FBB2757D78073D8 /* WatchtowerSync in Frameworks */,
 				C5A4DBFA5BA08D2CEE2ABA22 /* WatchtowerE2ETesting in Frameworks */,
-				4CC11EBE1DF90C0C89628B34 /* GRDB in Frameworks */,
+				4CC11EBE1DF90C0C89628B34 /* WatchtowerHostedRelay in Frameworks */,
+				4775CC25932238F3DE9B47AE /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -608,6 +612,7 @@
 				528BE8894EDA75D94D9DDF64 /* RecordingHoldTests.swift */,
 				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
 				8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */,
+				A6E4EA3D2A7BAFFCDB7ADE84 /* RelayKeychainDeviceTests.swift */,
 				49728A0913682F844134761D /* ReplicaKindTrackingTests.swift */,
 				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
 				232CD623FB978407C3F5E7DE /* ResilientObservationTests.swift */,
@@ -989,6 +994,7 @@
 				EB447CB107767855A2DBBA0F /* WatchtowerKit */,
 				82E2DC2033E6312FAD9B717C /* WatchtowerSync */,
 				6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */,
+				7FD33DE7CAA4EFCB621F1395 /* WatchtowerHostedRelay */,
 				5CF9E51BB968298C0AAB2FD5 /* GRDB */,
 			);
 			productName = WatchtowerMobileTests;
@@ -1288,6 +1294,7 @@
 				598F0F750CFB3F8CF52F078F /* RecordingHoldTests.swift in Sources */,
 				2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */,
 				D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */,
+				FC9C26E4A3E2C0EA3C2005F0 /* RelayKeychainDeviceTests.swift in Sources */,
 				3F4CE8C40D6A23A14D2DD4C4 /* ReplicaKindTrackingTests.swift in Sources */,
 				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,
 				C753034B078CF1407190AFEF /* ResilientObservationTests.swift in Sources */,
@@ -1742,6 +1749,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DA3BC80CE33AA1AD726F3AA6 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
 			productName = GRDB;
+		};
+		7FD33DE7CAA4EFCB621F1395 /* WatchtowerHostedRelay */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerHostedRelay;
 		};
 		82E2DC2033E6312FAD9B717C /* WatchtowerSync */ = {
 			isa = XCSwiftPackageProductDependency;
