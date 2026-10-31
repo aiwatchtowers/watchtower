@@ -128,6 +128,36 @@ final class OrderedActionsWiringTests: XCTestCase {
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent)
     }
 
+    /// `shutDown()` waits for the outbox's whole chain, not only the session's last pass: a flush an enqueue
+    /// started on its own still ends before the transport stops and the replica closes.
+    func testShutDownWaitsForTheOutboxChain() async throws {
+        let transport = SwitchableTransport()
+        let env = try await orderedSession(over: transport)
+        let savesBefore = await transport.conditionalSaves.count
+        await transport.holdNextSave()
+        addTeardownBlock { await transport.releaseHeldSave() }
+        try await env.boardWriter.setStatus(.done, on: try target(415))
+        let deadline = Date().addingTimeInterval(5)
+        while await transport.conditionalSaves.count == savesBefore, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let held = await transport.conditionalSaves.count
+        XCTAssertGreaterThan(held, savesBefore, "the enqueue's own flush is held in its save")
+
+        var shutDown = false
+        let shutting = Task {
+            await env.shutDown()
+            shutDown = true
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(shutDown, "the outbox's flush is still running")
+
+        await transport.releaseHeldSave()
+        await shutting.value
+        XCTAssertTrue(shutDown)
+        XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent, "the pass ended before shutDown returned")
+    }
+
     /// The flush an enqueue starts on its own reaches the backlog too, not only the session's.
     func testAFlushTheOutboxStartsItselfSetsLastFlushStopped() async throws {
         let transport = SwitchableTransport()

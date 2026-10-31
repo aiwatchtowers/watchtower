@@ -104,6 +104,15 @@ extension ActionOutbox {
         return task
     }
 
+    /// Returns once every operation on the chain has ended, including ones queued while it waited (a shutdown's
+    /// last wait: no write runs after the transport stops).
+    public func drain() async {
+        while let tail = chainTail {
+            await tail.value
+            if chainTail == tail { return }
+        }
+    }
+
     /// One flush pass on the chain. A call while a flush is queued joins it; a call while one runs queues one more
     /// after it (or joins the one already queued), so at most one waits and every caller's rows are attempted.
     public func flush() async throws -> OutboxFlushReport {

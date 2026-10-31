@@ -325,6 +325,34 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(try row(phone, two.id)?.delivery, .sent)
     }
 
+    /// `drain()` returns once every operation on the chain has ended: the running flush and the one queued after it.
+    func testDrainWaitsForTheWholeChain() async throws {
+        let phone = try await makePhone()
+        try await insert(phone)
+        let gate = await phone.inner.suspendNextSave()
+        let outbox = phone.outbox
+        let first = Task { try await outbox.flush() }
+        await gate.waitUntilReached()
+        try await insert(phone)
+        let second = Task { try await outbox.flush() }
+        try await settle(phone)
+        let drained = OSAllocatedUnfairLock(initialState: false)
+        let draining = Task {
+            await outbox.drain()
+            drained.withLock { $0 = true }
+        }
+        try await settle(phone)
+        XCTAssertFalse(drained.withLock { $0 }, "a flush is still running")
+
+        gate.open()
+        await draining.value
+
+        let events = await phone.recorder.events
+        XCTAssertEqual(events, ["save", "saved", "save", "saved"], "both passes ended before drain returned")
+        _ = try await first.value
+        _ = try await second.value
+    }
+
     /// Every flush pass reaches the report observer: the ones an enqueue or `resend_from` starts as well as an
     /// explicit `flush()`, so the phone's "last flush stopped" line never misses one.
     func testEveryFlushReachesTheReportObserver() async throws {
