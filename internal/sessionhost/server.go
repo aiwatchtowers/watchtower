@@ -668,7 +668,7 @@ type conn struct {
 	// checks: this connection's deliveries waiting for a
 	// DeliverCheckReply, by request id.
 	checksMu sync.Mutex
-	checks   map[string]chan DeliverCheckReplyMsg
+	checks   map[string]*pendingCheck
 }
 
 func newConn(nc net.Conn) *conn {

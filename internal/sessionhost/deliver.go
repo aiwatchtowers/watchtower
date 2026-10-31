@@ -30,6 +30,10 @@ const (
 	OutcomeNoPasteMode = "no_paste_mode"
 )
 
+// MaxSettle caps DeliverReq.SettleMs: a longer pause would keep the
+// pending Return, and with it every phone line held, that long.
+const MaxSettle = CheckTimeout
+
 // HeldPromptHasText is the one hold the host decides: under
 // HoldIfPromptText the prompt held the owner's draft, a line in its pause or
 // a line left typed.
@@ -70,7 +74,7 @@ type DeliverReq struct {
 	KeepLineBreaks bool `json:"keep_line_breaks,omitempty"`
 	KeepFormat     bool `json:"keep_format,omitempty"`
 	// SettleMs is the pause between paste and Return; zero or less uses
-	// the agent profile's PasteSettle.
+	// the agent profile's PasteSettle, more than MaxSettle is MaxSettle.
 	SettleMs int `json:"settle_ms,omitempty"`
 	// SubmitIf is the caller's pre-check: false only pastes.
 	SubmitIf bool `json:"submit_if,omitempty"`
@@ -125,6 +129,12 @@ func (s *Server) deliver(c *conn, p []byte) {
 	}
 	if req.ID == "" {
 		c.sendError("deliver: empty id")
+		return
+	}
+	// A line that cleans to nothing types nothing: no empty paste, no
+	// Return into an empty prompt.
+	if PasteText(req.Text, req.KeepLineBreaks, req.KeepFormat) == "" {
+		c.sendError("deliver: empty text")
 		return
 	}
 	replies, ok := c.expectCheck(req.ID)
@@ -195,19 +205,25 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 		return DeliveredMsg{Outcome: OutcomeTyped, Reason: reason}
 	}
 
-	settle := time.Duration(req.SettleMs) * time.Millisecond
-	if settle <= 0 {
-		settle = sess.profile.PasteSettle
-	}
-	time.Sleep(settle)
+	time.Sleep(settleFor(req.SettleMs, sess.profile))
 	reply := s.recheck(c, req.ID, replies)
 	return s.afterPause(sess, req, reply)
+}
+
+// settleFor is the pause for settleMs: the profile's PasteSettle for zero or
+// less, at most MaxSettle.
+func settleFor(settleMs int, prof Profile) time.Duration {
+	if settleMs <= 0 {
+		return prof.PasteSettle
+	}
+	return min(time.Duration(settleMs)*time.Millisecond, MaxSettle)
 }
 
 // recheck sends the DeliverCheck and waits for its reply. A reply that
 // does not come within the check timeout, or a connection that drops,
 // reads as not fresh.
 func (s *Server) recheck(c *conn, id string, replies <-chan DeliverCheckReplyMsg) DeliverCheckReplyMsg {
+	c.checkSent(id)
 	c.send(DeliverCheck, encode(DeliverCheckMsg{ID: id}))
 	timer := time.NewTimer(s.opts.checkTimeout)
 	defer timer.Stop()
@@ -291,14 +307,31 @@ func (c *conn) expectCheck(id string) (<-chan DeliverCheckReplyMsg, bool) {
 	c.checksMu.Lock()
 	defer c.checksMu.Unlock()
 	if c.checks == nil {
-		c.checks = map[string]chan DeliverCheckReplyMsg{}
+		c.checks = map[string]*pendingCheck{}
 	}
 	if _, ok := c.checks[id]; ok {
 		return nil, false
 	}
-	ch := make(chan DeliverCheckReplyMsg, 1)
-	c.checks[id] = ch
-	return ch, true
+	pc := &pendingCheck{replies: make(chan DeliverCheckReplyMsg, 1)}
+	c.checks[id] = pc
+	return pc.replies, true
+}
+
+// pendingCheck is one delivery waiting on its connection. sent: the host
+// asked its DeliverCheck; a reply before that is not an answer to it.
+type pendingCheck struct {
+	replies chan DeliverCheckReplyMsg
+	sent    bool
+}
+
+// checkSent marks the delivery's DeliverCheck as asked, from here on a
+// reply counts.
+func (c *conn) checkSent(id string) {
+	c.checksMu.Lock()
+	defer c.checksMu.Unlock()
+	if pc := c.checks[id]; pc != nil {
+		pc.sent = true
+	}
 }
 
 func (c *conn) dropCheck(id string) {
@@ -308,7 +341,8 @@ func (c *conn) dropCheck(id string) {
 }
 
 // answerCheck hands a DeliverCheckReply to its waiting delivery. A reply
-// for no delivery in flight (late, or a second one) is dropped.
+// for no delivery in flight (late, or a second one), or one sent before the
+// host asked (a pre-answer), is dropped.
 func (c *conn) answerCheck(p []byte) {
 	var m DeliverCheckReplyMsg
 	if err := json.Unmarshal(p, &m); err != nil {
@@ -316,13 +350,16 @@ func (c *conn) answerCheck(p []byte) {
 		return
 	}
 	c.checksMu.Lock()
-	ch := c.checks[m.ID]
+	var replies chan DeliverCheckReplyMsg
+	if pc := c.checks[m.ID]; pc != nil && pc.sent {
+		replies = pc.replies
+	}
 	c.checksMu.Unlock()
-	if ch == nil {
+	if replies == nil {
 		return
 	}
 	select {
-	case ch <- m:
+	case replies <- m:
 	default:
 	}
 }
@@ -333,7 +370,12 @@ var deliverIDs atomic.Uint64
 // Deliver types r.Text into a session (PROJ-12) and returns the host's
 // outcome. After the pause the host asks for a re-check: check runs with a
 // context bounded by CheckTimeout and its answer decides the Return. check
-// must not use this Client (the call holds it). An empty r.ID is filled in.
+// must not use this Client. The call holds the Client for the whole delivery
+// — the pause (up to MaxSettle) plus up to CheckTimeout for the re-check —
+// so every other call on it (PromptHint, an Interrupt's InputTo, List, Stop)
+// waits behind it: deliver on a Client of its own and send hints and
+// interrupts on another. An empty r.ID is filled in. Text that cleans to
+// nothing is refused (a *HostError), nothing written.
 func (c *Client) Deliver(ctx context.Context, r DeliverReq, check func(context.Context) DeliverCheckReplyMsg) (DeliveredMsg, error) {
 	if r.ID == "" {
 		r.ID = "d" + strconv.FormatUint(deliverIDs.Add(1), 10)

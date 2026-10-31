@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"syscall"
@@ -167,7 +168,7 @@ func TestProj12_AnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn(t *te
 		if el := time.Since(start); el < testSettle*time.Millisecond {
 			t.Errorf("re-check after %v, before the pause ended", el)
 		}
-		atCheck = st.ring()[st.from:]
+		atCheck = st.waitRing(string(pasteEnd))[st.from:] // the paste echoed
 		return okCheck(context.Background())
 	})
 	wantOutcome(t, out, OutcomeSubmitted, "")
@@ -541,4 +542,56 @@ func TestDeliverToNoSession(t *testing.T) {
 	unknown.Row = 99
 	wantOutcome(t, st.deliver(cl, unknown, noCheck(t)), OutcomeNoSession, "")
 	wantBytes(t, st.written(), nil, "no session")
+}
+
+// A line that cleans to nothing is refused: no empty paste, no Return.
+func TestDeliverRefusesTextThatCleansToNothing(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
+	_, err := cl.Deliver(ctxT(t), st.req("\n\r\x1b"), noCheck(t))
+	var he *HostError
+	if !errors.As(err, &he) || !strings.Contains(he.Message, "empty text") {
+		t.Fatalf("deliver empty = %v, want the empty-text refusal", err)
+	}
+	wantBytes(t, st.written(), nil, "empty text")
+	if st.sess.promptHoldsText() {
+		t.Fatal("a refused line marked the prompt")
+	}
+	// The Client stays usable after the refusal.
+	wantOutcome(t, st.deliver(cl, st.req("after"), nil), OutcomeSubmitted, "")
+}
+
+func TestSettleIsClampedToMaxSettle(t *testing.T) {
+	prof := ProfileFor("claude")
+	cases := map[int]time.Duration{
+		0:                                 prof.PasteSettle,
+		-5:                                prof.PasteSettle,
+		500:                               500 * time.Millisecond,
+		int(MaxSettle / time.Millisecond): MaxSettle,
+		1 << 30:                           MaxSettle,
+	}
+	for ms, want := range cases {
+		if got := settleFor(ms, prof); got != want {
+			t.Errorf("settleFor(%d) = %v, want %v", ms, got, want)
+		}
+	}
+}
+
+// A reply sent before the host asked its DeliverCheck is no answer to it:
+// a pre-answered Fresh/CanSubmit gets no Return.
+func TestACheckReplyBeforeTheCheckIsIgnored(t *testing.T) {
+	st := newStub(t, Options{checkTimeout: 200 * time.Millisecond}, "claude", rawEchoAgent)
+	raw := dial(t, st.path)
+	r := st.req("answer")
+	r.ID = "x1"
+	r.SettleMs = 300
+	raw.send(Deliver, r)
+	raw.send(DeliverCheckReply, DeliverCheckReplyMsg{ID: "x1", Fresh: true, CanSubmit: true})
+	raw.expect(DeliverCheck) // asked, never answered after it
+	var out DeliveredMsg
+	if err := json.Unmarshal(raw.expect(Delivered), &out); err != nil {
+		t.Fatal(err)
+	}
+	wantOutcome(t, out, OutcomeTyped, TypedCheckFailed)
+	wantBytes(t, st.written(), paste("answer"), "no Return on a pre-answer")
 }
