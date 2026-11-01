@@ -936,7 +936,11 @@ extension WorkbenchesViewModel {
             if await wasDeleted(id) { throw TargetStartError.failed(Self.deletedBeforeStart(id)) }
         }
         await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket, setup: setup)
-        if lock != nil { await waitUntilListed(row.id) }
+        if lock != nil {
+            await waitUntilListed(row.id)
+            lock?.release()
+            lock = nil
+        }
         if let setup, let projectID = row.projectID, launchFailure(row) != nil {
             // The setup runs only on a placed row's first launch; a resume never runs it.
             let line = "The worktree setup command did not run — run it in the terminal: "
@@ -1164,9 +1168,12 @@ extension WorkbenchesViewModel {
 
     /// A row deleted while it was Starting…: the run Go launched for it is
     /// stopped (the host's Stop, no worktree cleanup) and the pane closed.
+    /// With no run seen it is stopped anyway (idempotent): Go may have
+    /// launched it after the last host read (Go's finish also stops a run
+    /// whose row is gone right after its launch).
     private func stopDeletedStart(_ id: Int64, run: SessionHostSessionInfo?) async {
         await terminalCenter?.close(sessionID: id)
-        guard let run, !run.exited, let cli else { return }
+        guard run?.exited != true, let cli else { return }
         do {
             try await cli.sessionStop(sessionID: id)
         } catch {

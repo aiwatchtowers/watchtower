@@ -592,6 +592,9 @@ func (s *newStart) finish(ctx context.Context) error {
 		s.markFailed(ctx, "the session could not be read before its launch")
 		return fmt.Errorf("reading session %d: %w", s.id, err)
 	}
+	if beforeLaunch != nil {
+		beforeLaunch(s.id)
+	}
 	m := Mode{Agent: string(s.agent), SessionID: s.claudeID, AutomationRunID: s.automationRun}
 	if s.prompt != "" {
 		p := s.prompt
@@ -601,6 +604,16 @@ func (s *newStart) finish(ctx context.Context) error {
 	release()
 	if err != nil {
 		return err
+	}
+	// The owner's delete (the Desktop's Undo batch committing) can land
+	// between the check above and the launch: a run whose row is gone is
+	// stopped at once, never left running.
+	if err := s.d.DB.QueryRowContext(context.WithoutCancel(ctx), `SELECT 1 FROM terminal_sessions WHERE id = ?`,
+		s.id).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+		if serr := stopOn(context.WithoutCancel(ctx), c, s.d.scope(), s.id); serr != nil {
+			log.Printf("sessionstart: session %d: the run of a deleted row could not be stopped (%s)", s.id, errClass(serr))
+		}
+		return fmt.Errorf("Session #%d was deleted before it started.", s.id) //nolint:staticcheck // Swift's sentence, verbatim
 	}
 	return watchLaunch(ctx, s.d, c, s.id, run, s.agent)
 }

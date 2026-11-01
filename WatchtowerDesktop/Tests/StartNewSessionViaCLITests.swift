@@ -210,6 +210,22 @@ final class StartNewSessionViaCLITests: XCTestCase {
         XCTAssertNil(vm.startNotice[projectID])
     }
 
+    /// The delete committed before any run was seen: the row is gone, and
+    /// the stop still goes to the host (Go may launch after the last read).
+    func testADeleteCommittedBeforeAnyRunStillStops() async throws {
+        onSleep = { [weak self] id, n in
+            guard let self, n == 1 else { return }
+            try? await pool.write { try TerminalSessionQueries.delete($0, id: id) }
+        }
+        await vm.newSession(projectID: projectID, agent: .claude)
+
+        let id = try XCTUnwrap(runner.startedIDs.first)
+        XCTAssertEqual(runner.invocations.filter { $0.starts(with: ["workbench", "session", "stop"]) },
+                       [["workbench", "session", "stop", "--session", String(id), "--json"]])
+        XCTAssertNil(center.process(for: id))
+        XCTAssertNil(vm.sessionActionErrors[projectID])
+    }
+
     /// No Desktop placement turn: a second start shows its row while the
     /// first is still Starting… (Go's placement lock orders them).
     func testASecondStartShowsItsRowWhileTheFirstIsStarting() async throws {

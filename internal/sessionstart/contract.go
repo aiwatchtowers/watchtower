@@ -34,6 +34,10 @@ const (
 // same workbench (inside finishBudget); a test seam.
 var placementLockWait = 60 * time.Second
 
+// beforeLaunch runs between a finish's row check and its launch (a test
+// seam for the delete that lands in between); nil in production.
+var beforeLaunch func(sessionID int64)
+
 // PlacementLockPath is the per-workbench placement lock beside the database:
 // every start of the workbench — Go's finish, the Desktop's own launch path —
 // holds it from deciding the place until the run is in the session host, so

@@ -209,3 +209,21 @@ func TestFinishCancelledBeforeTheLaunchFailsTheRow(t *testing.T) {
 	assert.True(t, r.failed, "a cancelled launch is recorded on the row")
 	assert.Equal(t, "wt/session-1", r.branch, "moved into the worktree it got")
 }
+
+// The owner's delete lands between the finish's row check and its launch:
+// the run that started for the gone row is stopped at once.
+func TestADeleteBetweenTheCheckAndTheLaunchStopsTheRun(t *testing.T) {
+	w := newWorld(t)
+	id := w.begin(handlers.StartRequest{Workbench: w.wb})
+	beforeLaunch = func(sid int64) {
+		_, err := w.db.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, sid)
+		require.NoError(t, err)
+	}
+	t.Cleanup(func() { beforeLaunch = nil })
+	err := Finish(context.Background(), w.deps(), id, "auto", "", false)
+	require.ErrorContains(t, err, "was deleted before it started")
+	eventually(t, "the run is stopped", func() bool {
+		info, ok := findRun(w.list(), w.deps().scope(), id)
+		return !ok || info.Exited
+	})
+}

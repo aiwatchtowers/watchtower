@@ -75,4 +75,20 @@ final class GoSessionStartContractFixtureTests: XCTestCase {
         XCTAssertNotNil(second)
         second?.release()
     }
+
+    /// A cancelled wait gives up at once with nil, the holder untouched.
+    func testACancelledWaitReturnsNil() async throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbench-\(UUID().uuidString).place.lock").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let taken = await PlacementLock.acquire(path: path, waitingUpTo: .zero)
+        let holder = try XCTUnwrap(taken)
+        defer { holder.release() }
+        let waiter = Task { await PlacementLock.acquire(path: path, waitingUpTo: .seconds(60)) }
+        waiter.cancel()
+        let started = ContinuousClock.now
+        let got = await waiter.value
+        XCTAssertNil(got)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "no wait to the deadline")
+    }
 }

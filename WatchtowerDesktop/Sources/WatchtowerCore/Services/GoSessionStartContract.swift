@@ -27,8 +27,8 @@ package enum GoSessionStartContract {
 
 /// An exclusive advisory flock on a placement lock file (Go's
 /// `fsutil.LockFile` on the same path). Taken without blocking, retried
-/// every `step` until `deadline`; nil when it could not be taken. The
-/// kernel drops it if the app dies.
+/// every `step` until `deadline`; nil when it could not be taken or the
+/// task was cancelled meanwhile. The kernel drops it if the app dies.
 package final class PlacementLock: @unchecked Sendable {
     private let fd: Int32
 
@@ -47,7 +47,12 @@ package final class PlacementLock: @unchecked Sendable {
                 Darwin.close(fd)
                 return nil
             }
-            try? await Task.sleep(for: step)
+            do {
+                try await Task.sleep(for: step)
+            } catch {
+                Darwin.close(fd) // cancelled: never a hot spin
+                return nil
+            }
         }
     }
 
