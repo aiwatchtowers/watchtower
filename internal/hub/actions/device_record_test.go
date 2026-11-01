@@ -1,7 +1,9 @@
 package actions
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"watchtower/internal/hub/link"
@@ -174,5 +176,80 @@ func TestDeviceRecordOnTheRelayChangesNothing(t *testing.T) {
 	w.rewrite(wire.DevicePayload{TypingRequested: true, Name: "Renamed"})
 	if d := w.device(w.phone); d.Name != "Test Phone" || d.TypingRequested {
 		t.Fatalf("device %+v", d)
+	}
+}
+
+// ownerMailbox is the shared mailbox on a transport that names the Mac's
+// iCloud user (transport.CloudUser), as the CloudKit bridge does.
+type ownerMailbox struct {
+	sharedMailbox
+	owner string
+}
+
+func (o ownerMailbox) OwnerUser(context.Context) (string, error) { return o.owner, nil }
+func (ownerMailbox) AccountStatus(context.Context) (transport.Account, error) {
+	return transport.AccountAvailable, nil
+}
+func (ownerMailbox) EnsureShares(context.Context) (string, string, error)       { return "", "", nil }
+func (ownerMailbox) SetPublicLink(context.Context, bool) error                  { return nil }
+func (ownerMailbox) RemoveParticipants(context.Context, string, []string) error { return nil }
+func (ownerMailbox) Participants(context.Context, string) ([]transport.Participant, error) {
+	return nil, nil
+}
+
+// The device record's CloudKit creator (Swift LinkedDevice.accepts(creator:)
+// and creatorMatches): in shared scope the phone's own user — the one stored
+// at the link and named in the record — and in private scope the Mac's user
+// (no creator, the current-user name, or the owner's name). Another creator
+// is refused before an unlink or a rewrite.
+func TestDeviceRecordCreatorCheck(t *testing.T) {
+	const owner, phoneUser = "_owner-user", "_phone-user"
+	for _, tc := range []struct {
+		name, scope, stored, creator string
+		ok                           bool
+	}{
+		{"private/no creator", wire.ScopePrivate, owner, "", true},
+		{"private/current user", wire.ScopePrivate, owner, transport.CurrentUserCreator, true},
+		{"private/owner", wire.ScopePrivate, owner, owner, true},
+		{"private/stranger", wire.ScopePrivate, owner, "_stranger", false},
+		{"private/the phone's user", wire.ScopePrivate, owner, phoneUser, false},
+		{"shared/phone user", wire.ScopeShared, phoneUser, phoneUser, true},
+		{"shared/stranger", wire.ScopeShared, phoneUser, "_stranger", false},
+		{"shared/owner", wire.ScopeShared, phoneUser, transport.CurrentUserCreator, false},
+		{"shared/no creator", wire.ScopeShared, phoneUser, "", false},
+	} {
+		for _, unlink := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/unlink=%v", tc.name, unlink), func(t *testing.T) {
+				w := newWorld(t, kindShared)
+				w.proc.cfg.Transport = ownerMailbox{sharedMailbox{w.fake}, owner}
+				if err := w.st.WithTx(w.ctx, func(tx *sql.Tx) error {
+					_, err := tx.Exec(`UPDATE devices SET scope = ?, user_record_name = ? WHERE device_id = ?`,
+						tc.scope, tc.stored, w.phone.ID().String())
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				w.phone.Creator = tc.creator
+				d := wire.DevicePayload{Scope: tc.scope, UserRecordName: phoneUser, Name: "Renamed"}
+				if unlink {
+					on := true
+					d.Unlinked = &on
+				}
+				w.rewrite(d)
+				_, linked, err := w.st.Device(w.phone.ID().String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if unlink {
+					if linked == tc.ok {
+						t.Fatalf("linked %v after an unlink by creator %q", linked, tc.creator)
+					}
+					return
+				}
+				if renamed := w.device(w.phone).Name == "Renamed"; renamed != tc.ok {
+					t.Fatalf("renamed %v by creator %q", renamed, tc.creator)
+				}
+			})
+		}
 	}
 }

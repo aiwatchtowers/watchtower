@@ -9,15 +9,19 @@ import (
 	"strings"
 
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
 
 // DeviceRecord is a linked phone's own device record (protocol §5.5) as the
 // processor read it: the payload, already bound to the record's
-// authenticated sender. What the transport tells about who wrote the record
-// joins it here, for the checks the Swift hub makes on it.
+// authenticated sender, the record's CloudKit creator (Stored.Creator, ""
+// when the transport gives none) and the transport it came from, whose
+// CloudUser names the Mac's iCloud user (nil: unknown).
 type DeviceRecord struct {
 	Payload wire.DevicePayload
+	Creator string
+	Shares  transport.Shares
 }
 
 // ApplyDeviceRecord applies a linked phone's own rewrite of its device
@@ -37,7 +41,17 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 	if !linked {
 		return nil
 	}
-	if !accepts(row, r) {
+	var storedUser string
+	if err := c.st.ReadTx(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRow(`SELECT user_record_name FROM devices WHERE device_id = ? COLLATE NOCASE`, device).Scan(&storedUser)
+	}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("reading a phone's link: %w", err)
+	}
+	if !accepts(row, r) || !acceptsCreator(row.Scope, storedUser, r.Creator) ||
+		!c.deviceCreatorMatches(ctx, r) {
 		log.Printf("hub link: device record of phone %s not written by its linked phone: ignored", strings.ToUpper(device))
 		return nil
 	}
@@ -55,6 +69,32 @@ func (c *Center) ApplyDeviceRecord(ctx context.Context, device string, r DeviceR
 // phone's link: written in the link's scope.
 func accepts(row state.Device, r DeviceRecord) bool {
 	return r.Payload.Scope == row.Scope
+}
+
+// acceptsCreator is the Swift LinkedDevice.accepts(creator:) (the device
+// gate's creator check, spec §5.2 rule 4): in shared scope the record's
+// creator is the phone's user record name stored at the link; in private
+// scope no creator (a transport that names none), the current-user name or
+// the stored name.
+func acceptsCreator(scope, storedUser, creator string) bool {
+	if scope == wire.ScopeShared {
+		return creator != "" && creator == storedUser
+	}
+	if creator == "" {
+		return true
+	}
+	return creator == transport.CurrentUserCreator || (storedUser != "" && creator == storedUser)
+}
+
+// deviceCreatorMatches is the Swift creatorMatches for a device record: a
+// shared phone's record was created by the user it names, a private phone's
+// by the Mac's user (creatorMatches, the owner read through r.Shares).
+func (c *Center) deviceCreatorMatches(ctx context.Context, r DeviceRecord) bool {
+	owner := ""
+	if r.Payload.Scope == wire.ScopePrivate && r.Creator != "" && r.Creator != transport.CurrentUserCreator && r.Shares != nil {
+		owner = c.owner(ctx, r.Shares)
+	}
+	return creatorMatches(r.Payload, r.Creator, owner)
 }
 
 // rewrite is ApplyDeviceRecord's rewrite of a linked phone.

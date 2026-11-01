@@ -98,6 +98,9 @@ type Phone struct {
 	Controls []wire.Control
 	// Undelivered lists the actions a skip_to gave up on.
 	Undelivered []uint64
+	// Creator, when set, is the iCloud user WriteDeviceRecord writes as
+	// (Stored.Creator, on a transport with WriteAs such as the memfake).
+	Creator string
 }
 
 // New makes a phone with fresh keys.
@@ -341,6 +344,12 @@ func (p *Phone) WriteDeviceRecord(d wire.DevicePayload, id string) (string, erro
 	env, err := p.seal(name, secure.InnerFrame{Kind: "device", ID: id, Payload: payload})
 	if err != nil {
 		return "", err
+	}
+	if as, ok := p.cfg.Transport.(interface {
+		WriteAs(creator, zone, name string, env []byte, expect transport.Expect) (transport.Outcome, error)
+	}); ok && p.Creator != "" {
+		_, err = as.WriteAs(p.Creator, p.zone, name, env, transport.Expect{Mode: transport.ExpectNone})
+		return name, err
 	}
 	_, err = p.cfg.Transport.Write(p.zone, name, env, transport.Expect{Mode: transport.ExpectNone})
 	return name, err

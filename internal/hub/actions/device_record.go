@@ -36,7 +36,7 @@ type Links interface {
 // that phone — the payload's device_id must be the authenticated sender too
 // (a linked phone writing another's unlink or start-sessions choice is
 // dropped) — and a payload carrying a link nonce asks for a link, which only
-// a hello makes. The link center checks the record against the link (scope)
+// a hello makes. The link center checks the record against the link (scope and CloudKit creator)
 // and applies an unlink or a rewrite. The record's rollback mark commits
 // after it was applied, so a crash in between applies it again (the rewrite
 // is idempotent) and an older copy is refused (ErrRolledBack in FromPhone).
@@ -59,7 +59,9 @@ func (p *Processor) handleDeviceRecord(ctx context.Context, b mailbox, rec trans
 		log.Printf("hub: device record of device %s carries a code: a link needs a hello, ignored", b.id)
 		return p.markRead(ctx, b, rec, o)
 	}
-	if err := p.cfg.Links.ApplyDeviceRecord(ctx, b.id.String(), link.DeviceRecord{Payload: d}); err != nil {
+	shares, _ := p.cfg.Transport.(transport.Shares)
+	r := link.DeviceRecord{Payload: d, Creator: rec.Creator, Shares: shares}
+	if err := p.cfg.Links.ApplyDeviceRecord(ctx, b.id.String(), r); err != nil {
 		return err
 	}
 	err := p.decide(ctx, b, func(tx *sql.Tx) error { return mark(tx, b, rec.Name, o) })
