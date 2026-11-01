@@ -9,7 +9,7 @@
 # (the list is in internal/hub/interop_kit_test.go):
 #
 #   go test -tags interop -run '^TestInterop_KitPhone$' ./internal/hub -relay=<origin> -kit-dir=<dir>
-#   WATCHTOWER_RELAY_INTEROP_URL=<origin> WT_GO_HUB_INTEROP_DIR=<dir> make kit-test FILTER=GoHubInteropTests
+#   WATCHTOWER_RELAY_INTEROP_URL=<origin> WT_GO_HUB_INTEROP_DIR=<dir> make kit-test FILTER=KitGoHubInteropTests
 #
 # Before the stand starts, both are built (the Go test run with -run '^$', the
 # Kit class without the variables, where it skips), so neither half waits on
@@ -24,11 +24,90 @@
 # other reads, so neither waits out its timeouts. Exits 0 only when both pass.
 #
 # Environment: RELAY_INTEROP_PORT (default 8787), RELAY_INTEROP_KEEP=1 keeps
-# the temp dir (wrangler's log, the handoff files).
+# the temp dir (wrangler's log, the handoff files). WATCHTOWER_CHECKOUT is the
+# Watchtower checkout to test (default: this script's repo; needs a Makefile and
+# WatchtowerKit/), so a relay CI job can call it. RELAY_INTEROP_CI=1 is the CI
+# mode (scripts/relay-interop-ci-lib.sh): stdin from /dev/null, both halves'
+# output goes to stderr when they end, the last stdout line is
+# `relay-interop: passed=N skipped=M failed=K` (the Go half's PASS/SKIP/FAIL
+# lines plus the Kit half's XCTest totals), and a run where no test passed or
+# failed exits 1.
 #
 # No `set -e`: the script reads exit codes itself; every refusal goes through
 # `die` and the EXIT trap reaps whatever was started.
 set -uo pipefail
+
+# shellcheck source=relay-interop-ci-lib.sh
+. "$(dirname "$0")/relay-interop-ci-lib.sh" || exit 1
+
+WPID=""
+GOPID=""
+KPID=""
+STATE=""
+GOLOG=""
+KLOG=""
+LOGS_SHOWN=0
+
+die() {
+	echo "relay-interop-kit-hub: $*" >&2
+	exit 1
+}
+
+# report_logs shows both halves' output on stderr and counts it, once (CI mode):
+# after a normal end, or from cleanup when a signal cut the run short.
+report_logs() {
+	[ "$CI_MODE" = 1 ] && [ "$LOGS_SHOWN" != 1 ] || return 0
+	LOGS_SHOWN=1
+	if [ -n "$GOLOG" ] && [ -f "$GOLOG" ]; then
+		cat "$GOLOG" >&2
+		ci_add_go "$GOLOG"
+	fi
+	if [ -n "$KLOG" ] && [ -f "$KLOG" ]; then
+		cat "$KLOG" >&2
+		ci_add_xctest "$KLOG"
+	fi
+}
+
+# stop_group ends process group $1: SIGTERM, then SIGKILL after 10 s, and
+# waits until no process of the group is left.
+stop_group() {
+	local pg="$1" i
+	kill -TERM -- "-$pg" 2>/dev/null
+	for i in $(seq 1 100); do
+		kill -0 -- "-$pg" 2>/dev/null || break
+		sleep 0.1
+	done
+	kill -KILL -- "-$pg" 2>/dev/null
+	for i in $(seq 1 50); do
+		kill -0 -- "-$pg" 2>/dev/null || break
+		sleep 0.1
+	done
+	wait "$pg" 2>/dev/null
+}
+
+cleanup() {
+	local rc=$?
+	# A second Ctrl-C or TERM must not cut the stop short and orphan a group.
+	trap - EXIT
+	trap '' INT TERM
+	local pg
+	for pg in "$KPID" "$GOPID" "$WPID"; do
+		[ -n "$pg" ] && stop_group "$pg"
+	done
+	KPID="" GOPID="" WPID=""
+	report_logs
+	if [ -n "$STATE" ] && [ "${RELAY_INTEROP_KEEP:-}" = 1 ]; then
+		echo "relay-interop-kit-hub: kept $STATE" >&2
+	elif [ -n "$STATE" ]; then
+		rm -rf "$STATE"
+	fi
+	ci_exit "$rc"
+}
+
+# The trap is first, so no exit path (a refusal too) skips the cleanup and the CI summary.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage() {
 	echo "usage: $0 <relay checkout>   (or: make relay-interop-kit-hub RELAY=<dir>)" >&2
@@ -40,14 +119,9 @@ if [ $# -ne 1 ] || [ -z "$1" ]; then
 fi
 RELAY="$1"
 WORKER="$RELAY/worker"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(ci_checkout "$(cd "$(dirname "$0")" && pwd)")" || die "no usable Watchtower checkout"
 PORT="${RELAY_INTEROP_PORT:-8787}"
 ORIGIN="http://127.0.0.1:$PORT"
-
-die() {
-	echo "relay-interop-kit-hub: $*" >&2
-	exit 1
-}
 
 case "$PORT" in
 '' | *[!0-9]*)
@@ -85,51 +159,8 @@ else
 	echo "relay-interop-kit-hub: $RELAY is not a git checkout (Kit pin $KIT_PIN, Go hub pin $GO_PIN)" >&2
 fi
 
-WPID=""
-GOPID=""
-KPID=""
-STATE=""
-
-# stop_group ends process group $1: SIGTERM, then SIGKILL after 10 s, and
-# waits until no process of the group is left.
-stop_group() {
-	local pg="$1" i
-	kill -TERM -- "-$pg" 2>/dev/null
-	for i in $(seq 1 100); do
-		kill -0 -- "-$pg" 2>/dev/null || break
-		sleep 0.1
-	done
-	kill -KILL -- "-$pg" 2>/dev/null
-	for i in $(seq 1 50); do
-		kill -0 -- "-$pg" 2>/dev/null || break
-		sleep 0.1
-	done
-	wait "$pg" 2>/dev/null
-}
-
-cleanup() {
-	local rc=$?
-	# A second Ctrl-C or TERM must not cut the stop short and orphan a group.
-	trap - EXIT
-	trap '' INT TERM
-	local pg
-	for pg in "$KPID" "$GOPID" "$WPID"; do
-		[ -n "$pg" ] && stop_group "$pg"
-	done
-	KPID="" GOPID="" WPID=""
-	if [ -n "$STATE" ] && [ "${RELAY_INTEROP_KEEP:-}" = 1 ]; then
-		echo "relay-interop-kit-hub: kept $STATE" >&2
-	elif [ -n "$STATE" ]; then
-		rm -rf "$STATE"
-	fi
-	exit "$rc"
-}
-
-# The trap goes in right after mktemp, so no exit path leaves the temp dir behind.
+# The temp dir is created after the checks; the EXIT trap above removes it.
 STATE="$(mktemp -d "${TMPDIR:-/tmp}/relay-interop-kit-hub.XXXXXX")" || die "mktemp failed"
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 LOG="$STATE/wrangler.log"
 HANDOFF="$STATE/handoff"
 mkdir -m 700 "$HANDOFF" || die "could not create the handoff folder"
@@ -138,7 +169,7 @@ cd "$ROOT" || exit 1
 echo "relay-interop-kit-hub: building the Go test and the Kit tests" >&2
 go test -count=1 -tags interop -run '^$' ./internal/hub >"$STATE/go-build.log" 2>&1 </dev/null ||
 	{ tail -n 40 "$STATE/go-build.log" >&2; die "the Go interop test does not build"; }
-env -u WATCHTOWER_RELAY_INTEROP_URL -u WT_GO_HUB_INTEROP_DIR make kit-test FILTER=GoHubInteropTests \
+env -u WATCHTOWER_RELAY_INTEROP_URL -u WT_GO_HUB_INTEROP_DIR make kit-test FILTER=KitGoHubInteropTests \
 	>"$STATE/kit-build.log" 2>&1 </dev/null ||
 	{ tail -n 40 "$STATE/kit-build.log" >&2; die "the Kit tests do not build"; }
 
@@ -204,12 +235,29 @@ mark() {
 	printf '%s' "$2" >"$HANDOFF/.$1.tmp" && mv "$HANDOFF/.$1.tmp" "$HANDOFF/$1"
 }
 
+run_go() {
+	go test -count=1 -timeout 30m -tags interop -run '^TestInterop_KitPhone$' -v ./internal/hub \
+		-relay="$ORIGIN" -kit-dir="$HANDOFF" </dev/null
+}
+run_kit() {
+	WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" make kit-test FILTER=KitGoHubInteropTests </dev/null
+}
+GOLOG="$STATE/go-test.log"
+KLOG="$STATE/kit-test.log"
 set -m
-go test -count=1 -timeout 30m -tags interop -run '^TestInterop_KitPhone$' -v ./internal/hub \
-	-relay="$ORIGIN" -kit-dir="$HANDOFF" </dev/null &
-GOPID=$!
-WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" make kit-test FILTER=GoHubInteropTests </dev/null &
-KPID=$!
+if [ "$CI_MODE" = 1 ]; then
+	# stdout is only the summary line: each half's output is kept for the count
+	# and shown on stderr when both have ended.
+	run_go >"$GOLOG" 2>&1 &
+	GOPID=$!
+	run_kit >"$KLOG" 2>&1 &
+	KPID=$!
+else
+	run_go &
+	GOPID=$!
+	run_kit &
+	KPID=$!
+fi
 set +m
 
 # Whichever half ends first: a failed one leaves its mark, so the other stops waiting.
@@ -230,6 +278,7 @@ while [ -z "$kit_rc" ] || [ -z "$go_rc" ]; do
 	sleep 0.5
 done
 
+report_logs
 echo "relay-interop-kit-hub: Go hub exit $go_rc, Kit phone exit $kit_rc" >&2
 if [ "$go_rc" -ne 0 ] || [ "$kit_rc" -ne 0 ]; then
 	echo "relay-interop-kit-hub: FAIL; handoff files: $(ls -A "$HANDOFF" | tr '\n' ' ')" >&2

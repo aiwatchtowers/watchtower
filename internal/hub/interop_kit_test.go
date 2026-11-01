@@ -3,7 +3,7 @@
 // The Kit phone against this Go hub on the relay's local stand (relay client
 // Phase 3 Task 13): `make relay-interop-kit-hub RELAY=<relay checkout>`
 // starts the stand, runs TestInterop_KitPhone with -kit-dir and, beside it,
-// the Kit's GoHubInteropTests with the same folder. The two sides hand off
+// the Kit's KitGoHubInteropTests with the same folder. The two sides hand off
 // through files in that folder, each written whole (temp file + rename):
 //
 //	hub → phone  pair.url       the link code (link.EventQR's URL)

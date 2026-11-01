@@ -17,7 +17,7 @@ import XCTest
 /// It uses only Kit pieces the phone app links with (the app's own link screens are not in the Kit):
 /// `LinkPayload`, `HostedRelayClient`/`Session`/`Pairing`/`Transport`, `SecureTransport`,
 /// `PhoneKeyProvider`, `EnvelopeReplicaOpener`, `ReplicaStore`, `ActionOutbox` and `RelayFeed`.
-final class GoHubInteropTests: HostedRelayScenarioCase {
+final class KitGoHubInteropTests: HostedRelayScenarioCase {
     static let handoffVariable = "WT_GO_HUB_INTEROP_DIR"
     /// A step the Go side answers in seconds; the long ones (the hub's checks) get `goWait`.
     static let stepWait: TimeInterval = 120

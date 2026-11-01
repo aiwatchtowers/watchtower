@@ -999,8 +999,8 @@ No relay failure offers **Link over iCloud**: every one of them arises only for 
   5. it then waits for `actions.done`, checks `interop_mark` was applied for `action_seq` 1..3 in order and once each, checks the device's `acked_epoch` equals the hub's epoch and that the canary is absent from every tapped stream, and writes `go.ok`, or `go.fail` with the failed check's name;
   6. it reads the farewell before `remove_slot` (handoff `farewell.sent` / `farewell.ok`), because at `bcca870` a hub that no slot holds is unvouched again and the relay answers its mailbox `changes` with `HUB_NOT_VOUCHED`; then it waits for `unlinked`. It checks, against the stand: the phone's `device-<DEVICE_ID>` record in its mailbox opens with the hub's opener and carries `unlinked: true` (the Go hub does not act on `device` records yet, protocol §5.5, so the check is that the farewell arrived intact); the hub's `get_account_state` no longer lists the phone in `phones`; writes `unlink.ok`;
   7. it waits for `readded`, checks the hub's `get_account_state` lists the phone again, and writes `go.done`.
-- Create: `scripts/relay-interop-kit-hub.sh`. It starts the stand as `relay-interop-kit.sh` does, starts the Go test in its own process group, runs `make kit-test FILTER=GoHubInteropTests` with `WATCHTOWER_RELAY_INTEROP_URL` and `WT_GO_HUB_INTEROP_DIR`, waits for both, and reaps both groups and wrangler on every path. Make target `relay-interop-kit-hub`.
-- Create: `WatchtowerKit/Tests/WatchtowerHostedRelayTests/Interop/GoHubInteropTests.swift`. It skips unless both variables are set.
+- Create: `scripts/relay-interop-kit-hub.sh`. It starts the stand as `relay-interop-kit.sh` does, starts the Go test in its own process group, runs `make kit-test FILTER=KitGoHubInteropTests` with `WATCHTOWER_RELAY_INTEROP_URL` and `WT_GO_HUB_INTEROP_DIR`, waits for both, and reaps both groups and wrangler on every path. Make target `relay-interop-kit-hub`.
+- Create: `WatchtowerKit/Tests/WatchtowerHostedRelayTests/Interop/KitGoHubInteropTests.swift`. It skips unless both variables are set.
 - Test: `scripts/tests/test-relay-interop-kit-hub.sh` (argument and environment refusals, no stand needed)
 
 **Kit test flow** (`testKitPhoneLinksDrivesAndUnlinksTheGoHub`). It uses Kit pieces only, the same ones the phone app uses:
@@ -1190,7 +1190,7 @@ Task 10 maps these to `.needsOwner(reason)` (point 6) and handles `HUB_NOT_VOUCH
 
 **Depends on:** Task 19; E4 (Go hub Phase 3 Tasks 18 and 20 on `main`; the Mac's CloudKit leg through `bridgefake` in the Go interop)
 
-**Files:** `internal/hub/interop_kit_test.go` gains `TestInterop_KitPhoneFollowsASwitch`; `GoHubInteropTests` gains `testKitPhoneFollowsBothWays`.
+**Files:** `internal/hub/interop_kit_test.go` gains `TestInterop_KitPhoneFollowsASwitch`; `KitGoHubInteropTests` gains `testKitPhoneFollowsBothWays`.
 
 **What it checks:**
 
