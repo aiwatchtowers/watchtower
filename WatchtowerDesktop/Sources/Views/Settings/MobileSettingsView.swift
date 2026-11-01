@@ -352,9 +352,7 @@ struct MobileMovedView: View {
 
     var body: some View {
         SettingsSection(title: title) {
-            Text(message)
-                .fixedSize(horizontal: false, vertical: true)
-                .kitRow(isSelected: false)
+            SettingRow(title: message) { EmptyView() }
         }
         .padding(.vertical, Spacing.medium)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

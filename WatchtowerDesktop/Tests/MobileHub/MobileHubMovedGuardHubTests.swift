@@ -46,8 +46,11 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
 
     /// An AppState over `hubDir` with the toggle on; `storageBuilds` counts
     /// every open of the hub's storage (sidecar, keychain, transport).
-    private func makeAppState(storageBuilds: @escaping () -> Void) throws -> AppState {
-        let appState = AppState()
+    /// `policy` is the organization's managed preferences.
+    private func makeAppState(
+        policy: [String: Any] = [:], storageBuilds: @escaping () -> Void
+    ) throws -> AppState {
+        let appState = AppState { policy }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.mobileSyncDefaults = defaults
         appState.mobileHubDirectory = hubDir
@@ -117,18 +120,70 @@ final class MobileHubMovedGuardHubTests: XCTestCase {
         defer { stopAll(appState) }
         runInitWorkbenches(appState)
         appState.setMobileSyncEnabled(true)
-        appState.retryPolicyOffWipe()
 
         XCTAssertEqual(builds, 0, "the hub's storage is never opened")
         XCTAssertNil(appState.mobileHub)
         XCTAssertNil(appState.mobileHubInitError, "moved is not an error")
         XCTAssertTrue(appState.isMobileHubMoved)
-        let model = MobileSettingsViewModel(host: appState, entitlementPresent: true)
-        XCTAssertEqual(model.state, .movedToNewerApp(message: MobileHubMovedGuard.message))
+        XCTAssertEqual(MobileSettingsViewModel(host: appState, entitlementPresent: true).state,
+                       .movedToNewerApp(message: MobileHubMovedGuard.message))
 
-        // The polled parts read nothing while moved.
+        // Turning it off still goes through.
+        appState.setMobileSyncEnabled(false)
+        XCTAssertFalse(defaults.bool(forKey: Constants.mobileSyncEnabledKey))
+    }
+
+    /// `MobileSync = off` with the toggle on would build the hub once to wipe
+    /// the phone; moved, it builds nothing and the policy tick stops trying.
+    func testMovedSkipsThePolicyOffWipe() throws {
+        try writeNote("hub_impl=go\n")
+        var builds = 0
+        let appState = try makeAppState(policy: ["MobileSync": "off"]) { builds += 1 }
+        defer { stopAll(appState) }
+        appState.managedPolicy.refresh()
+        XCTAssertEqual(appState.mobileSyncPolicy.current, "off")
+        runInitWorkbenches(appState)
+        appState.retryPolicyOffWipe()
+        appState.managedPolicy.refresh()
+
+        XCTAssertEqual(builds, 0, "no wipe build while moved")
+        XCTAssertNil(appState.mobileHub)
+    }
+
+    /// The note is read at launch and at each hub build, not on a view read:
+    /// a note that appears later shows after the next build.
+    func testMovedIsResolvedAtTheHubBuild() throws {
+        var builds = 0
+        let appState = try makeAppState { builds += 1 }
+        defer { stopAll(appState) }
+        runInitWorkbenches(appState)
+        XCTAssertEqual(builds, 1)
+        try writeNote("hub_impl=go\n")
+        XCTAssertFalse(appState.isMobileHubMoved, "not re-read on a view read")
+
+        runInitWorkbenches(appState)
+        XCTAssertTrue(appState.isMobileHubMoved)
+        XCTAssertNil(appState.mobileHub, "the rebuilt hub is not started")
+    }
+
+    /// Moved with a hub still present: the Settings model polls nothing.
+    func testMovedSettingsPollNothing() async throws {
+        let fixture = try MobileSettingsFixture()
+        await fixture.startHub()
+        fixture.host.isMobileHubMoved = true
+        final class Counter: @unchecked Sendable { var sleeps = 0 }
+        let counter = Counter()
+        let model = MobileSettingsViewModel(host: fixture.host, entitlementPresent: true) { _ in
+            counter.sleeps += 1
+            withUnsafeCurrentTask { $0?.cancel() } // a loop that ran ends after one pass
+        }
+
         await model.refresh()
+        XCTAssertNil(model.account, "no iCloud probe while moved")
+        await model.windowVisibility(true)
+        XCTAssertEqual(counter.sleeps, 0, "no polling loop while moved")
         XCTAssertNil(model.account)
+        await fixture.tearDown()
     }
 
     func testANoteWithoutTheImplLineIsIgnored() async throws {

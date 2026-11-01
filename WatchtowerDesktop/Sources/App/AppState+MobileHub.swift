@@ -1,5 +1,6 @@
 import AppKit
 import GRDB
+import os
 import WatchtowerCore
 
 /// Settings → Mobile drives the toggle and reads the hub through these.
@@ -25,8 +26,8 @@ extension AppState {
         // MobileSync = off (#608) cannot be turned on from here, whatever
         // the view shows; the stored toggle is left as it was.
         if enabled, mobileSyncLockedByPolicy { return }
-        // Moved to a newer Watchtower: the toggle is not shown and does nothing.
-        if isMobileHubMoved { return }
+        // Moved to a newer Watchtower: nothing turns on here; off still goes through.
+        if enabled, resolveMobileHubMoved() { return }
         mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
         guard enabled else {
             mobileHub?.disable()
@@ -41,9 +42,15 @@ extension AppState {
 
     var mobileSyncLockedByPolicy: Bool { managedPolicy.policy.mobileSyncMode == "off" }
 
-    /// A newer Watchtower left `MOVED` in the Swift hub's directory: this app
-    /// starts no hub and Settings → Mobile shows only that (spec §12.1).
-    var isMobileHubMoved: Bool { MobileHubMovedGuard.isMoved(mobileHubDir: mobileHubDirectory) }
+    /// Reads the downgrade guard's `MOVED` note into `isMobileHubMoved` and
+    /// returns it: a newer Watchtower runs the phone hub, so this app starts
+    /// none and Settings → Mobile shows only that (spec §12.1).
+    @discardableResult
+    func resolveMobileHubMoved() -> Bool {
+        let moved = MobileHubMovedGuard.isMoved(mobileHubDir: mobileHubDirectory)
+        if moved != isMobileHubMoved { isMobileHubMoved = moved }
+        return moved
+    }
 
     /// Every policy tick: a wipe under `MobileSync = off` whose hub could not
     /// be built (no storage yet) is tried again (`wipeHubForPolicyOff` runs
@@ -68,7 +75,7 @@ extension AppState {
             } else if let pool = mobileHubPool {
                 wipeHubForPolicyOff(dbPool: pool)
             }
-        } else if previous == "off", isMobileSyncEnabled {
+        } else if previous == "off", isMobileSyncEnabled, !resolveMobileHubMoved() {
             if let hub = mobileHub {
                 Task { await hub.start() }
             } else if let pool = mobileHubPool {
@@ -314,5 +321,75 @@ extension AppState {
         ) { [weak self] in self?.isMobileSyncEnabled ?? false }
         linkCenter?.attach(to: hub)
         return hub
+    }
+}
+
+extension AppState {
+    private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
+
+    /// Tears down the previous hub and, while the toggle is on, builds and
+    /// starts a new one over the run's one transport and sidecar. Called at
+    /// the end of `initWorkbenches`. With the toggle off nothing is opened —
+    /// unless the organization's `MobileSync = off` must still wipe the
+    /// phone (`wipeHubForPolicyOff`).
+    func initMobileHub(dbPool: DatabasePool) {
+        let previous = mobileHub
+        previous?.dispose()
+        mobileHub = nil
+        mobileHubPool = dbPool
+        guard isMobileSyncEnabled else {
+            wipeHubForPolicyOff(dbPool: dbPool)
+            return
+        }
+        guard let hub = buildRunHub(dbPool: dbPool) else { return }
+        Task {
+            // The replaced hub's relay pass ends first: two never overlap.
+            await previous?.waitUntilStopped()
+            await hub.start()
+        }
+    }
+
+    /// `MobileSync = off` (#608) found the owner's toggle on and no hub
+    /// running (a profile installed while the app was quit): the hub is
+    /// built once and disabled, so what the phone held is removed. Once per
+    /// run; the toggle itself is kept.
+    func wipeHubForPolicyOff(dbPool: DatabasePool) {
+        guard mobileSyncPolicy.current == "off", mobileHub == nil, !policyOffWipeDone,
+              mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey) else { return }
+        guard let hub = buildRunHub(dbPool: dbPool) else {
+            // Moved to a newer Watchtower: that app owns the phone now; the
+            // policy tick does not retry.
+            if isMobileHubMoved { policyOffWipeDone = true }
+            return
+        }
+        policyOffWipeDone = true
+        hub.disable()
+    }
+
+    /// Builds the run's hub over its one storage (opened on first use) into
+    /// `mobileHub`; nil (the error kept) when it cannot be built, and nil with
+    /// no error once a newer Watchtower runs the hub (spec §12.1).
+    private func buildRunHub(dbPool: DatabasePool) -> MobileHubService? {
+        guard !resolveMobileHubMoved() else {
+            Self.mobileHubLogger.notice("mobile hub moved to a newer Watchtower; not starting")
+            return nil
+        }
+        do {
+            let directory = mobileHubDirectory
+            let storage = try mobileHubStorage ?? (makeMobileHubStorage ?? { try MobileHubStorage.live(directory: directory) })()
+            if mobileHubStorage == nil {
+                // Once per run, with the storage: CKSyncEngine learns of
+                // remote changes from pushes (the relay poll is the backstop).
+                storage.registerForPushes?()
+            }
+            mobileHubStorage = storage
+            mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
+            mobileHubInitError = nil
+            return mobileHub
+        } catch {
+            mobileHubInitError = error.localizedDescription
+            Self.mobileHubLogger.error("mobile hub unavailable: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 }
