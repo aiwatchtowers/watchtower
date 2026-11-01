@@ -186,7 +186,11 @@ Recorded for the owner; each was a review ruling during phase 1.
      line, then `{event: status, state, reason}`, `{event: recording_queued, upload_id}`, `{event: pair, pair,
      device_id}` (never a URL or a code) and, from the transport switch on, `{event: switched}` lines.
 
-   The owner-write notice from the history actor is still pending (Task 9).
+   **Done (phase 3 Task 9): the owner-write notice.** Desktop announces a target's done only when the newest
+   `target_status_history` row is not `owner` (`WorkbenchOwnerNoticePolicy`, filled by
+   `WorkbenchQueries.activitySnapshot`); a rollup (`system`) row written in the same statement as a child's change
+   takes that change's actor. **Accepted effect:** an unclaimed CLI status write (`watchtower targets done N`) is
+   recorded as `owner` too and is no longer announced on the Mac.
 4. **Test mode is a `hubtest-*` test workspace** (`WATCHTOWER_HUB_TEST_WORKSPACE`). Since phase 2 a headless host also
    runs the live mode (see "Phase 2 — headless hosts"); a desktop host gets the Go hub only in phase 3.
 5. **The refusing session port (test mode only).** In test mode, unless `WATCHTOWER_SESSION_HOST_SOCKET` is set, the hub

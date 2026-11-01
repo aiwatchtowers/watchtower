@@ -146,8 +146,11 @@ final class WorkbenchNotificationCenter {
         guard run == generation else { return }
         // Writes recorded while the read ran stay pending for the next poll
         // too: their effect may or may not be in this snapshot.
-        current.ownerTouched = ownerTouched[project.id] ?? []
-        ownerTouched[project.id] = current.ownerTouched.subtracting(touchedBefore)
+        let inProcess = ownerTouched[project.id] ?? []
+        ownerTouched[project.id] = inProcess.subtracting(touchedBefore)
+        // The reader filled what the history says the owner wrote (the phone
+        // through the hub carries no `onOwnerWrite`); add this process's own.
+        current.ownerTouched.formUnion(inProcess)
         if let previous, sending {
             for notice in WorkbenchNotificationPolicy.decide(previous: previous, current: current) {
                 notifier.sendWorkbenchNotice(notice)
