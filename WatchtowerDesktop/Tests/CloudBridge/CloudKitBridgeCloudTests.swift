@@ -146,6 +146,30 @@ final class CloudKitBridgeCloudTests: XCTestCase {
         }
     }
 
+    func testCreatorsComeFromCloudKitAsReported() async throws {
+        db.put(name: "mine", zone: zoneID(relay), payload: env, tag: "t1", creator: CKCurrentUserDefaultName)
+        db.put(name: "theirs", zone: zoneID(relay), payload: env, tag: "t2", creator: "_user-b")
+        db.put(name: "unknown", zone: zoneID(relay), payload: env, tag: "t3", creator: nil)
+        db.page = FakeDatabase.Page(names: ["mine", "theirs", "unknown"], failing: [], deletions: [], token: Data([1]), more: false)
+        let page = try await cloud.changes(zone: relay, since: nil)
+        let creators = Dictionary(uniqueKeysWithValues: page.changed.map { ($0.name, $0.creator) })
+        XCTAssertEqual(creators["mine"], .some("__defaultOwner__"))
+        XCTAssertEqual(creators["theirs"], .some("_user-b"))
+        XCTAssertEqual(creators["unknown"], .some(nil))
+        let conflict = try await cloud.save(zone: relay, [CloudWrite(name: "theirs", envelope: env, precondition: .absent)])
+        guard case .conflict(let copy?) = conflict[0] else { return XCTFail("\(conflict)") }
+        XCTAssertEqual(copy.creator, "_user-b", "a conflict's server copy carries its creator")
+    }
+
+    func testOwnerUserFromTheContainer() async throws {
+        db.owner = "_owner-acme"
+        let named = try await cloud.ownerUser()
+        XCTAssertEqual(named, "_owner-acme")
+        db.owner = nil
+        let none = try await cloud.ownerUser()
+        XCTAssertEqual(none, "", "no signed-in account: empty")
+    }
+
     func testWithoutTheEntitlementNothingIsTouched() async {
         let unsigned = CloudKitBridgeCloud(hubID: hub, database: db) { false }
         do {
@@ -205,12 +229,25 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
         set { lock.withLock { _page = newValue } }
     }
 
-    func put(name: String, zone: CKRecordZone.ID, payload: Data, tag: String, asset: URL? = nil) {
+    private var _owner: String?
+    var owner: String? {
+        get { lock.withLock { _owner } }
+        set { lock.withLock { _owner = newValue } }
+    }
+
+    func ownerUserRecordName() async throws -> String? {
+        lock.withLock {
+            _calls += 1
+            return _owner
+        }
+    }
+
+    func put(name: String, zone: CKRecordZone.ID, payload: Data, tag: String, asset: URL? = nil, creator: String? = nil) {
         let ck = CKRecord(recordType: "WatchtowerEnvelope", recordID: CKRecord.ID(recordName: name, zoneID: zone))
         ck.encryptedValues["payload"] = payload
         ck["kind"] = "wt"
         if let asset { ck["asset"] = CKAsset(fileURL: asset) }
-        lock.withLock { store[ck.recordID] = DatabaseRecord(record: ck, changeTag: tag) }
+        lock.withLock { store[ck.recordID] = DatabaseRecord(record: ck, changeTag: tag, creator: creator) }
     }
 
     func record(name: String, zone: CKRecordZone.ID) -> CKRecord? {

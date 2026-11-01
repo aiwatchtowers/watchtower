@@ -79,6 +79,8 @@ public enum BridgeOp: Equatable, Sendable {
     case setPublicLink(open: Bool)
     case participants(zone: String)
     case removeParticipants(zone: String, userRecordNames: [String])
+    /// The Mac's iCloud user record name; answered `ownerUser`.
+    case ownerUser
 }
 
 /// Every frame the Go hub writes.
@@ -102,13 +104,19 @@ public struct BridgeRecord: Equatable, Sendable {
     public var tagSeq: UInt64
     public var serverAtMs: Int64
     public var assetID: String
+    /// `CKRecord.creatorUserRecordID.recordName` as CloudKit reports it: `__defaultOwner__` for the Mac's own
+    /// user, "" when CloudKit gives none.
+    public var creator: String
 
-    public init(name: String, envelope: Data = Data(), tagSeq: UInt64 = 0, serverAtMs: Int64 = 0, assetID: String = "") {
+    public init(
+        name: String, envelope: Data = Data(), tagSeq: UInt64 = 0, serverAtMs: Int64 = 0, assetID: String = "", creator: String = ""
+    ) {
         self.name = name
         self.envelope = envelope
         self.tagSeq = tagSeq
         self.serverAtMs = serverAtMs
         self.assetID = assetID
+        self.creator = creator
     }
 }
 
@@ -160,11 +168,14 @@ public struct BridgeEvent: Equatable, Sendable {
     public var zone: String
     public var pullNow: Bool
     public var errorClass: String
+    /// The Mac's iCloud account changed (`CKAccountChanged`).
+    public var accountChanged: Bool
 
-    public init(zone: String = "", pullNow: Bool = false, errorClass: String = "") {
+    public init(zone: String = "", pullNow: Bool = false, errorClass: String = "", accountChanged: Bool = false) {
         self.zone = zone
         self.pullNow = pullNow
         self.errorClass = errorClass
+        self.accountChanged = accountChanged
     }
 }
 
@@ -177,6 +188,8 @@ public enum BridgeResult: Equatable, Sendable {
     case account(status: String)
     case shares(dataURL: String, relayURL: String)
     case participants([BridgeParticipant])
+    /// "" while the account has no user.
+    case ownerUser(userRecordName: String)
     case failure(class: String)
     case event(BridgeEvent)
 }
@@ -429,6 +442,8 @@ extension BridgeRequest {
             w.message(10) { $0.put(1, zone) }
         case let .removeParticipants(zone, names):
             w.message(11) { $0.put(1, zone); $0.putEach(2, names) }
+        case .ownerUser:
+            w.message(12) { _ in }
         case nil:
             break
         }
@@ -440,7 +455,7 @@ extension BridgeRequest {
         try ProtoReader.fields(data) { field, value in
             switch field {
             case 1: request.id = try value.uint64(field)
-            case 2...11: request.op = try decodeOp(field, try value.data(field))
+            case 2...12: request.op = try decodeOp(field, try value.data(field))
             default: break
             }
         }
@@ -502,6 +517,8 @@ extension BridgeRequest {
             var zone = ""
             try ProtoReader.fields(body) { f, v in if f == 1 { zone = try v.string(f) } }
             return .participants(zone: zone)
+        case 12:
+            return .ownerUser
         default:
             var zone = "", names: [String] = []
             try ProtoReader.fields(body) { f, v in
@@ -521,6 +538,7 @@ extension BridgeRecord {
         w.put(3, tagSeq)
         w.put(4, serverAtMs)
         w.put(5, assetID)
+        w.put(6, creator)
     }
 
     static func decode(_ data: Data) throws -> Self {
@@ -532,6 +550,7 @@ extension BridgeRecord {
             case 3: r.tagSeq = try value.uint64(field)
             case 4: r.serverAtMs = try value.int64(field)
             case 5: r.assetID = try value.string(field)
+            case 6: r.creator = try value.string(field)
             default: break
             }
         }
@@ -592,6 +611,7 @@ extension BridgeEvent {
         w.put(1, zone)
         w.put(2, pullNow)
         w.put(3, errorClass)
+        w.put(4, accountChanged)
     }
 
     static func decode(_ data: Data) throws -> Self {
@@ -601,6 +621,7 @@ extension BridgeEvent {
             case 1: e.zone = try value.string(field)
             case 2: e.pullNow = try value.bool(field)
             case 3: e.errorClass = try value.string(field)
+            case 4: e.accountChanged = try value.bool(field)
             default: break
             }
         }
@@ -633,6 +654,8 @@ extension BridgeResponse {
             w.message(9) { $0.put(1, failureClass) }
         case .event(let event):
             w.message(10) { event.encode(&$0) }
+        case .ownerUser(let name):
+            w.message(11) { $0.put(1, name) }
         case nil:
             break
         }
@@ -644,7 +667,7 @@ extension BridgeResponse {
         try ProtoReader.fields(data) { field, value in
             switch field {
             case 1: response.id = try value.uint64(field)
-            case 2...10: response.result = try decodeResult(field, try value.data(field))
+            case 2...11: response.result = try decodeResult(field, try value.data(field))
             default: break
             }
         }
@@ -693,8 +716,12 @@ extension BridgeResponse {
             var failureClass = ""
             try ProtoReader.fields(body) { f, v in if f == 1 { failureClass = try v.string(f) } }
             return .failure(class: failureClass)
-        default:
+        case 10:
             return .event(try BridgeEvent.decode(body))
+        default:
+            var name = ""
+            try ProtoReader.fields(body) { f, v in if f == 1 { name = try v.string(f) } }
+            return .ownerUser(userRecordName: name)
         }
     }
 }

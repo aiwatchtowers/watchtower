@@ -93,6 +93,8 @@ public actor BridgeService {
                 return .participants(list.compactMap { p in
                     p.userRecordName.map { BridgeParticipant(userRecordName: $0, accepted: p.accepted) }
                 })
+            case .ownerUser:
+                return .ownerUser(userRecordName: try await backends.cloud.ownerUser())
             case let .removeParticipants(zone, names):
                 try ownZone(zone, hubID: hubID)
                 try await backends.shares.removeParticipants(inZoneNamed: zone, userRecordNames: names)
@@ -157,7 +159,7 @@ public actor BridgeService {
         return BridgeRecord(
             name: item.name, envelope: item.envelope, tagSeq: seq,
             serverAtMs: item.serverAt.map { Int64(($0.timeIntervalSince1970 * 1000).rounded(.down)) } ?? 0,
-            assetID: item.hasAsset ? item.name : "")
+            assetID: item.hasAsset ? item.name : "", creator: item.creator ?? "")
     }
 
     /// The CloudKit precondition for an `Expect`, or the outcome when it cannot hold: a tag of another

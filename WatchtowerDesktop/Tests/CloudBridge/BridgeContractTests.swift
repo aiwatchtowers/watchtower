@@ -257,6 +257,38 @@ final class BridgeContractTests: XCTestCase {
         assertResult(await ask(.participants(zone: "RelayZone-other")), .failure(class: "unsupported_zone"))
     }
 
+    func testRecordsCarryTheirCreatorAndOwnerUserAnswers() async throws {
+        _ = try await hello()
+        await cloud.write(zone: relay, name: "hello-DEVICE-9", envelope: env, creator: "_user-b")
+        await cloud.write(zone: relay, name: "device-DEVICE-9", envelope: env, creator: "__defaultOwner__")
+        await cloud.write(zone: relay, name: "a-DEVICE-9-1", envelope: env, creator: nil)
+        let b = batch(await ask(.changes(zone: relay, since: 0, generation: "")))
+        let creators = Dictionary(uniqueKeysWithValues: b.changed.map { ($0.name, $0.creator) })
+        XCTAssertEqual(creators, ["hello-DEVICE-9": "_user-b", "device-DEVICE-9": "__defaultOwner__", "a-DEVICE-9-1": ""])
+        let conflict = outcomes(await ask(.save([
+            BridgeSaveItem(zone: relay, name: "hello-DEVICE-9", envelope: env, expect: BridgeExpect(mode: .absent))
+        ])))
+        XCTAssertEqual(conflict.first?.conflict?.creator, "_user-b")
+
+        assertResult(await ask(.ownerUser), .ownerUser(userRecordName: ""), "no account yet: empty")
+        await cloud.setOwner("_owner-acme")
+        assertResult(await ask(.ownerUser), .ownerUser(userRecordName: "_owner-acme"))
+    }
+
+    func testAccountChangeIsAnEvent() throws {
+        let server = try startServer()
+        let client = try SocketClient(path: hubDir.appendingPathComponent("bridge.sock").path)
+        defer { client.close() }
+        try client.send(BridgeRequest(id: 1, op: .hello(version: 1, hubID: hub)))
+        _ = try client.read()
+        let center = NotificationCenter()
+        let push = PushReceiver { server.broadcast($0) }
+        let token = push.observeAccountChanges(on: center)
+        defer { center.removeObserver(token) }
+        center.post(name: .CKAccountChanged, object: nil)
+        XCTAssertEqual(try client.read(), BridgeResponse(id: 0, result: .event(BridgeEvent(accountChanged: true))))
+    }
+
     func testAccountWordsMatchTheProtocol() {
         XCTAssertEqual(ZoneShareAccount.available.wireStatus, "available")
         XCTAssertEqual(ZoneShareAccount.noAccount.wireStatus, "no_account")

@@ -13,6 +13,11 @@ actor FakeBridgeCloud: BridgeCloud {
     private var counter = 0
     private var assets: [String: Data] = [:]
     var pageLimit = 100
+    var owner = ""
+
+    func setOwner(_ name: String) { owner = name }
+
+    func ownerUser() async throws -> String { owner }
     /// Every envelope handed to save, as received.
     private(set) var savedEnvelopes: [Data] = []
 
@@ -57,11 +62,11 @@ actor FakeBridgeCloud: BridgeCloud {
 
     /// A phone's (or anyone's) write straight into the store.
     @discardableResult
-    func write(zone: String, name: String, envelope: Data, asset: Data? = nil) -> CloudItem {
+    func write(zone: String, name: String, envelope: Data, asset: Data? = nil, creator: String? = "__defaultOwner__") -> CloudItem {
         let t = tag()
         let item = CloudItem(
             name: name, envelope: envelope, changeTag: t, systemFields: Data(t.utf8),
-            serverAt: Date(timeIntervalSince1970: 1_800_000_000.123), hasAsset: asset != nil)
+            serverAt: Date(timeIntervalSince1970: 1_800_000_000.123), hasAsset: asset != nil, creator: creator)
         if let asset { assets[zone + "/" + name] = asset }
         put(zone, item, name: name)
         return item

@@ -46,6 +46,10 @@ final class BridgeFramesFixtureTests: XCTestCase {
         }
         XCTAssertGreaterThan(requests, 0)
         XCTAssertGreaterThan(responses, 0)
+        let names = Set(all.map(\.name))
+        for added in ["batch_creators", "owner_user", "owner_user_info", "owner_user_info_empty", "event_account_changed"] {
+            XCTAssertTrue(names.contains(added), "fixture case \(added) is gone")
+        }
     }
 
     func testFramingCapsTheMessage() throws {
@@ -102,6 +106,7 @@ private extension BridgeRecord {
         if tagSeq != 0 { d["tag_seq"] = u64(tagSeq) }
         if serverAtMs != 0 { d["server_at_ms"] = String(serverAtMs) }
         if !assetID.isEmpty { d["asset_id"] = assetID }
+        if !creator.isEmpty { d["creator"] = creator }
         return d
     }
 }
@@ -163,6 +168,8 @@ extension BridgeRequest {
             if !zone.isEmpty { m["zone"] = zone }
             if !names.isEmpty { m["user_record_names"] = names }
             d["remove_participants"] = m
+        case .ownerUser:
+            d["owner_user"] = [String: Any]()
         case nil:
             break
         }
@@ -220,7 +227,10 @@ extension BridgeResponse {
             if !e.zone.isEmpty { m["zone"] = e.zone }
             if e.pullNow { m["pull_now"] = true }
             if !e.errorClass.isEmpty { m["error_class"] = e.errorClass }
+            if e.accountChanged { m["account_changed"] = true }
             d["event"] = m
+        case .ownerUser(let name):
+            d["owner_user"] = name.isEmpty ? [:] : ["user_record_name": name]
         case nil:
             break
         }

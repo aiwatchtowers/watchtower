@@ -129,6 +129,8 @@ public protocol BridgeCloud: Sendable {
     func changes(zone: String, since token: Data?) async throws -> CloudPage
     /// Writes the record's asset (sealed bytes) to `dst` (0600).
     func downloadAsset(zone: String, name: String, to dst: URL) async throws
+    /// The Mac's iCloud user record name; "" while the account has no user.
+    func ownerUser() async throws -> String
 }
 
 /// The protocol's class word for an error a CloudKit call threw.
@@ -152,10 +154,14 @@ public func bridgeFailureClass(_ error: any Error) -> String {
 public struct DatabaseRecord: @unchecked Sendable {
     public let record: CKRecord
     public let changeTag: String
+    /// `creatorUserRecordID.recordName` as CloudKit reports it (`__defaultOwner__` for the Mac's own user);
+    /// nil when it gives none.
+    public let creator: String?
 
-    public init(record: CKRecord, changeTag: String) {
+    public init(record: CKRecord, changeTag: String, creator: String? = nil) {
         self.record = record
         self.changeTag = changeTag
+        self.creator = creator
     }
 }
 
@@ -211,6 +217,8 @@ public protocol BridgeDatabase: Sendable {
     func records(_ ids: [CKRecord.ID], desiredKeys: [String]?) async throws -> [CKRecord.ID: DatabaseRecord]
     func zoneChanges(_ zone: CKRecordZone.ID, since token: Data?, desiredKeys: [String], limit: Int) async throws -> DatabaseChanges
     func saveZones(_ ids: [CKRecordZone.ID]) async throws
+    /// `CKContainer.userRecordID().recordName`; nil when there is no signed-in account.
+    func ownerUserRecordName() async throws -> String?
 }
 
 /// The live seam: the container's private database.
@@ -224,7 +232,7 @@ public struct LiveBridgeDatabase: BridgeDatabase {
     private var db: CKDatabase { CKContainer(identifier: containerID).privateCloudDatabase }
 
     private static func tagged(_ ck: CKRecord) -> DatabaseRecord {
-        DatabaseRecord(record: ck, changeTag: ck.recordChangeTag ?? "")
+        DatabaseRecord(record: ck, changeTag: ck.recordChangeTag ?? "", creator: ck.creatorUserRecordID?.recordName)
     }
 
     public func save(_ saves: [DatabaseSave], policy: CKModifyRecordsOperation.RecordSavePolicy) async throws -> [CKRecord.ID: DatabaseSaveResult] {
@@ -280,6 +288,14 @@ public struct LiveBridgeDatabase: BridgeDatabase {
 
     public func saveZones(_ ids: [CKRecordZone.ID]) async throws {
         _ = try await db.modifyRecordZones(saving: ids.map { CKRecordZone(zoneID: $0) }, deleting: [])
+    }
+
+    public func ownerUserRecordName() async throws -> String? {
+        do {
+            return try await CKContainer(identifier: containerID).userRecordID().recordName
+        } catch let error as CKError where error.code == .notAuthenticated {
+            return nil
+        }
     }
 }
 
@@ -343,7 +359,7 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         return CloudItem(
             name: ck.recordID.recordName, envelope: record.payload, changeTag: fetched.changeTag,
             systemFields: CloudKitTransport.archivedSystemFields(of: ck), serverAt: ck.modificationDate,
-            hasAsset: kind == .relay, creator: record.origin.author)
+            hasAsset: kind == .relay, creator: fetched.creator)
     }
 
     public func save(zone name: String, _ writes: [CloudWrite]) async throws -> [CloudWriteResult] {
@@ -485,6 +501,10 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         }
         try FileManager.default.copyItem(at: url, to: dst)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
+    }
+
+    public func ownerUser() async throws -> String {
+        try await db().ownerUserRecordName() ?? ""
     }
 }
 

@@ -23,6 +23,15 @@ public final class PushReceiver: @unchecked Sendable {
         emit(BridgeEvent(pullNow: true))
     }
 
+    /// Turns every `CKAccountChanged` posted on `center` into `Event{account_changed}`: the hub drops what
+    /// names the old user and closes an open link code. The token keeps the observation; drop it to stop.
+    public func observeAccountChanges(on center: NotificationCenter = .default) -> NSObjectProtocol {
+        let emit = emit
+        return center.addObserver(forName: .CKAccountChanged, object: nil, queue: nil) { _ in
+            emit(BridgeEvent(accountChanged: true))
+        }
+    }
+
     /// The bridge's own database subscription id for one hub.
     public static func databaseSubscriptionID(hubID: String) -> String { "watchtower-bridge-db-\(hubID)" }
 
@@ -73,6 +82,7 @@ public final class BridgeAppDelegate: NSObject, NSApplicationDelegate {
     private let arguments: BridgeArguments
     private var server: BridgeSocketServer?
     private var push: PushReceiver?
+    private var accountObservation: NSObjectProtocol?
 
     public init(arguments: BridgeArguments) {
         self.arguments = arguments
@@ -122,7 +132,9 @@ public final class BridgeAppDelegate: NSObject, NSApplicationDelegate {
             exit(4)
         }
         self.server = server
-        push = PushReceiver { [weak server] event in server?.broadcast(event) }
+        let push = PushReceiver { [weak server] event in server?.broadcast(event) }
+        self.push = push
+        accountObservation = push.observeAccountChanges()
         if entitled { NSApplication.shared.registerForRemoteNotifications() }
     }
 
