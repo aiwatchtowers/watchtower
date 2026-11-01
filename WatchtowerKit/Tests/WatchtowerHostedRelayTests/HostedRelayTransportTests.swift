@@ -130,6 +130,20 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         }
     }
 
+    /// `(since_seq, resync)` of every `changes` of `zone`, in order.
+    func changesFlags(_ zone: String) throws -> [ChangesFlag] {
+        backend.opLog.compactMap { op in
+            guard case .changes(let changes) = op, changes.zone == zone else { return nil }
+            return ChangesFlag(since: changes.sinceSeq, resync: changes.resync)
+        }
+    }
+
+    struct ChangesFlag: Equatable, CustomStringConvertible {
+        let since: UInt64
+        let resync: Bool
+        var description: String { "\(since)\(resync ? "r" : "")" }
+    }
+
     /// The case names of the ops in the log, in order.
     func opNames() throws -> [String] {
         backend.opLog.map { HostedRelayClient.name($0) }
@@ -294,7 +308,8 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
             (server(.attachmentTooLarge), .permanent(code: "record_too_large")),
             (server(.forbidden), .permanent(code: "forbidden")),
             (server(.notFound), .permanent(code: "not_found")),
-            (server(.unspecified), .permanent(code: "unspecified"))
+            (server(.unspecified), .permanent(code: "unspecified")),
+            (server(.hubNotVouched), .permanent(code: "hub_not_vouched"))
         ]
         for (error, refusal) in cases {
             XCTAssertEqual(HostedRelayTransport.refusal(for: error), refusal, "\(error)")
@@ -861,9 +876,53 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         XCTAssertFalse(try store.isPending(recordName: "x", zone: .relay))
     }
 
-    /// A resync that expires again after its first page (relay `records.ts` checks the floor on
-    /// middle pages) is marked stalled and held until a backoff or `start()`.
-    func testAResyncThatExpiresPartwayIsHeld() async throws {
+    /// Every page of a resync from 0 carries `resync = true` (relay README "Changes"), and so does
+    /// a first pull, which also starts at 0.
+    func testAResyncSetsTheFlagOnEveryPage() async throws {
+        let (mac, phone) = try await hub()
+        let zone = dataZone(mac)
+        for name in ["a", "b", "c"] { try await macSave(mac, zone, name) }
+        var limits = try relay.limits
+        limits.changesPageBytes = 1
+        try relay.limits = limits
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.pull()
+        XCTAssertEqual(try changesFlags(zone).map(\.description), ["0r", "1r", "2r"], "a first pull from 0")
+
+        // A refused token sends the zone back to 0: every page of that resync sets the flag.
+        try relay.failNext("changes", with: .tokenExpired)
+        try await macSave(mac, zone, "d")
+        let before = try changesFlags(zone).count
+        try await transport.pull()
+        let resync = try changesFlags(zone).dropFirst(before)
+        XCTAssertEqual(resync.map(\.description), ["3", "0r", "1r", "2r", "3r"])
+        XCTAssertFalse(try store.relayResyncPending(.data))
+    }
+
+    /// A pull from a stored cursor never sets the flag, on any page.
+    func testAnIncrementalPullNeverSetsIt() async throws {
+        let (mac, phone) = try await hub()
+        let zone = dataZone(mac)
+        try await macSave(mac, zone, "a")
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.pull()
+        for name in ["b", "c", "d"] { try await macSave(mac, zone, name) }
+        var limits = try relay.limits
+        limits.changesPageBytes = 1
+        try relay.limits = limits
+        let before = try changesFlags(zone).count
+        try await transport.pull()
+        let incremental = try changesFlags(zone).dropFirst(before)
+        XCTAssertEqual(incremental.map(\.description), ["1", "2", "3"])
+        XCTAssertEqual(try buffered(store, .data).changed.map(\.recordName), ["a", "b", "c", "d"])
+    }
+
+    /// With the flag the relay skips the tombstone floor on middle pages, so a resync of a zone
+    /// whose tombstones were purged finishes and deletes what it did not return (R10).
+    func testAResyncBelowTheFloorFinishesAndDeletesWhatItDidNotReturn() async throws {
+        _ = try requireFake(Self.needsClock)
         let (mac, phone) = try await hub()
         let zone = dataZone(mac)
         for name in ["a", "b", "x"] { try await macSave(mac, zone, name) }
@@ -879,6 +938,53 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         limits.changesPageBytes = 1
         try relay.limits = limits
         try await transport.pull()
+        XCTAssertFalse(try store.relayResyncStalled(.data))
+        XCTAssertFalse(try store.relayResyncPending(.data))
+        XCTAssertEqual(try store.relayCursor(zone: .data), 4)
+        let after = try buffered(store, .data, since: floor)
+        XCTAssertEqual(after.changed.map(\.recordName), ["a", "b"], "the resync buffers the live set again")
+        XCTAssertEqual(after.deletedRecordNames, ["x"], "the purged record is deleted here too")
+        XCTAssertTrue(try changesFlags(zone).filter { $0.since < 3 && $0.since > 0 }.allSatisfy(\.resync),
+                      "the middle pages below the floor carried the flag")
+    }
+
+    /// A flagged resync page that still expires (README: a `since_seq` above the zone's seq, e.g. the
+    /// zone was rebuilt mid-resync) is marked stalled and held until a backoff or `start()`.
+    func testAResyncThatExpiresPartwayIsHeld() async throws {
+        var http: InterceptingRelayHTTP?
+        let (mac, phone) = try await hub { base in
+            let intercepting = InterceptingRelayHTTP(base)
+            http = intercepting
+            return intercepting
+        }
+        let intercepting = try XCTUnwrap(http)
+        let zone = dataZone(mac)
+        for name in ["a", "b", "x"] { try await macSave(mac, zone, name) }
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.pull()
+        let floor = try buffered(store, .data).newToken
+
+        // x's purged tombstone expires the cursor; the resync's second page (since 1) is refused too.
+        try await macDelete(mac, zone, ["x"])
+        manualClock?.advance(by: .seconds(31 * 86_400))
+        var limits = try relay.limits
+        limits.changesPageBytes = 1
+        try relay.limits = limits
+        let refusals = OSAllocatedUnfairLock(initialState: 0)
+        intercepting.answer { request in
+            guard case .changes(let changes) = request.op, changes.zone == zone, changes.resync, changes.sinceSeq == 1 else {
+                return nil
+            }
+            refusals.withLock { $0 += 1 }
+            var refused = Relay_V1_Error()
+            refused.code = .tokenExpired
+            var response = Relay_V1_Response()
+            response.error = refused
+            return response
+        }
+        try await transport.pull()
+        XCTAssertEqual(refusals.withLock { $0 }, 1)
         XCTAssertTrue(try store.relayResyncStalled(.data))
         XCTAssertTrue(try store.relayResyncPending(.data))
         XCTAssertEqual(try store.relayCursor(zone: .data), 1)
@@ -894,7 +1000,8 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         try await transport.pull()
         let retried = try changesSinces(zone)
         XCTAssertGreaterThan(retried.count, asked)
-        XCTAssertEqual(retried.suffix(2), [0, 1], "a fresh resync from 0")
+        XCTAssertEqual(retried.last, 0, "a fresh resync from 0")
+        XCTAssertEqual(refusals.withLock { $0 }, 2, "refused at since 1 again")
         let held = retried.count
         try await transport.pull()
         XCTAssertEqual(try changesSinces(zone).count, held, "held again")

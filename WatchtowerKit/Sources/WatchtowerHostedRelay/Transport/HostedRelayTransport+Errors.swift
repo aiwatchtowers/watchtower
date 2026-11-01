@@ -43,6 +43,9 @@ extension HostedRelayTransport {
             return .permanent(code: "forbidden")
         case .notFound:
             return .permanent(code: "not_found")
+        case .hubNotVouched:
+            // A hub-only answer (README "Vouched hubs"); named so it is not a `relay_22` transient.
+            return .permanent(code: "hub_not_vouched")
         case .unspecified:
             return .permanent(code: "unspecified")
         default:
