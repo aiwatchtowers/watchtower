@@ -334,11 +334,15 @@ final class TransportFollowerWiringTests: XCTestCase {
 // MARK: - The bed
 
 /// One hub, two routes: CloudKit (`cloud`, in memory) and the relay (`FakeHostedRelay`, the Mac `mac`), the live root
-/// over them, and the scripted hub.
+/// over them, and the scripted hub. The side mailbox readers (Task 12) build the other route's transport the same way
+/// (the relay through `TransportFactory.live` on the shared session), read the clock `clock` and never tick by
+/// themselves: a test calls `tick()`.
 @MainActor
-private final class Bed {
+final class Bed {
     static let switchedAt = Date(timeIntervalSince1970: 1_800_000_100)
     let hubID = TestE2E.hubID.uuidString
+    let fake: FakeHostedRelay
+    let sockets: SocketCounter
     let phone: HostedRelayClient
     let mac: HostedRelayClient
     let cloud: RecordingCloud
@@ -346,19 +350,29 @@ private final class Bed {
     let relayOps: FakeRelayOps
     let root: AppRoot
     let registry: HubRegistry
+    let clock: SideClock
+    let sides: SideBuilds
     /// The last `transport_switched` written.
     private(set) var switchID = ""
     private(set) var switchName = ""
 
     private init(
+        fake: FakeHostedRelay,
+        sockets: SocketCounter,
         phone: HostedRelayClient,
         mac: HostedRelayClient,
         cloud: RecordingCloud,
         keys: InMemoryPhoneKeyStore,
         relayOps: FakeRelayOps,
         root: AppRoot,
-        registry: HubRegistry
+        registry: HubRegistry,
+        clock: SideClock,
+        sides: SideBuilds
     ) {
+        self.fake = fake
+        self.sockets = sockets
+        self.clock = clock
+        self.sides = sides
         self.phone = phone
         self.mac = mac
         self.cloud = cloud
@@ -373,9 +387,10 @@ private final class Bed {
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
+        let sockets = SocketCounter(inner: fake.sockets)
         let parts = RelayParts(
             attest: FakeAppAttest(), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: fake.http,
-            sockets: fake.sockets, clock: relayClock
+            sockets: sockets, clock: relayClock
         )
         let shared = SharedRelaySession(config: RelayConfig.parse(fake.origin)) { parts }
         let phone = try XCTUnwrap(try shared.session()).client
@@ -415,7 +430,15 @@ private final class Bed {
         let identity = DeviceIdentity(
             deviceID: TestE2E.deviceID.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0")
         let cloud = RecordingCloud()
-        let factory = Self.factory(paths: paths, cloud: cloud, shared: shared, keys: keys, defaults: defaults)
+        let sides = SideBuilds()
+        var factory = Self.factory(paths: paths, cloud: cloud, shared: shared, keys: keys, defaults: defaults)
+        factory.makeSide = { hubID, route in
+            sides.routes.append(route)
+            guard case .hostedRelay = route else { return SideTransport(transport: cloud, store: nil) }
+            let store = try TransportStore(path: paths.transportStorePath(hubID, route: route))
+            return SideTransport(transport: try TransportFactory.live(relay: shared).make(route, store, hubID, nil), store: store)
+        }
+        let clock = SideClock()
         let relayOps = FakeRelayOps(clock: FakeLinkClock(now: Date()))
         let env = try AppEnvironment.live(
             registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults, relay: shared
@@ -427,7 +450,8 @@ private final class Bed {
                 keys: keys, clock: FakeLinkClock(now: Date()), relay: relayOps
             ),
             startWork: nil,
-            farewellDelivery: AppRoot.FarewellDelivery { _, _ in false }
+            farewellDelivery: AppRoot.FarewellDelivery { _, _ in false },
+            sideMailbox: SideMailboxTiming(now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) })
         )
         root.linking.refreshLinks()
         test.addTeardownBlock { @MainActor in
@@ -436,7 +460,9 @@ private final class Bed {
                 session.closeDatabases()
             }
         }
-        return Bed(phone: phone, mac: mac, cloud: cloud, keys: keys, relayOps: relayOps, root: root, registry: registry)
+        return Bed(
+            fake: fake, sockets: sockets, phone: phone, mac: mac, cloud: cloud, keys: keys, relayOps: relayOps, root: root,
+            registry: registry, clock: clock, sides: sides)
     }
 
     /// Sessions on the hub's own files: CloudKit on `cloud`, the relay on `shared`'s session over the route's own store.
@@ -718,6 +744,22 @@ private final class Bed {
             .map { try RelayCoder.makeDecoder().decode(ControlPayload.self, from: $0.payload) }
             .filter { $0.kind == kind }
     }
+}
+
+/// The side mailbox readers' clock.
+@MainActor
+final class SideClock {
+    var now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func advance(_ seconds: TimeInterval) {
+        now = now.addingTimeInterval(seconds)
+    }
+}
+
+/// The other routes the side mailbox readers built transports for, in order.
+@MainActor
+final class SideBuilds {
+    var routes: [HubRoute] = []
 }
 
 /// The in-memory CloudKit stand-in: records every conditional save and delete; refuses saves while `refusal` is set.

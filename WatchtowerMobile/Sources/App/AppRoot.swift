@@ -108,6 +108,10 @@ final class AppRoot {
     @ObservationIgnored private var pairingHubs: Set<String> = []
     /// The route move running per hub (`moveSession`): a session rebuilt on its row's new route; a test awaits it.
     @ObservationIgnored private(set) var routeMoves: [String: Task<Void, Never>] = [:]
+    /// The side mailbox readers' clock and wait (relay client Phase 3 Task 12).
+    @ObservationIgnored private let sideMailbox: SideMailboxTiming
+    /// The left mailboxes whose drain a relay account refused this launch (sim rule 16).
+    @ObservationIgnored private let drainRefusals = SideDrainRefusals()
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     init(
@@ -119,8 +123,10 @@ final class AppRoot {
         defaults: UserDefaults,
         linking: LinkingViewModel,
         startWork: BackgroundWork.Starter?,
-        farewellDelivery: FarewellDelivery
+        farewellDelivery: FarewellDelivery,
+        sideMailbox: SideMailboxTiming = .live
     ) {
+        self.sideMailbox = sideMailbox
         self.env = env
         self.registry = registry
         self.paths = paths
@@ -397,6 +403,13 @@ final class AppRoot {
         let on = session.route.map(HubSession.transportKind(of:)) ?? .cloudKit
         session.transportSignals.onControl = { control in await follower.handle(control: control, on: on) }
         session.transportSignals.onMarker = { marker in await follower.handle(marker: marker, on: on) }
+        // The mailbox on the hub's other transport (Task 12), only for a hub with both routes.
+        if session.sideReader == nil, followerLink(hubID: hubID)?.otherRoute != nil {
+            let factory = factory
+            session.attach(SideMailboxReader(
+                session: session, follower: follower, host: self, refusals: drainRefusals, timing: sideMailbox
+            ) { route in try factory.makeSide(hubID, route) })
+        }
     }
 
     /// Takes the link flow's and the follower's hooks off a session that is being closed.

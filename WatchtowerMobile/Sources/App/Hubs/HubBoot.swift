@@ -14,6 +14,12 @@ struct HubSessionFactory {
         throw UnsupportedRouteError(route: .hostedRelay(macDeviceID: mac))
     }
 
+    /// The transport of `hubID`'s other route, on that route's own store (relay client Phase 3 Task 12): the side
+    /// mailbox reader's (`SideMailboxReader`). Unsupported unless the factory serves the route.
+    var makeSide: @MainActor (_ hubID: String, _ route: HubRoute) throws -> SideTransport = { _, route in
+        throw UnsupportedRouteError(route: route)
+    }
+
     init(make: @escaping @MainActor (_ row: HubRow?, _ hubID: String, _ route: HubRoute, _ device: LinkedDevice?) throws -> HubSession) {
         self.make = make
     }
@@ -38,6 +44,18 @@ struct HubSessionFactory {
                 transports: transports
             ) { store, energy in
                 try transports.makePairing(macDeviceID, slot, store, energy)
+            }
+        }
+        factory.makeSide = { hubID, route in
+            // Refused before the route's store is opened, as a session's: no empty file for a route not served.
+            guard transports.serves(route) else { throw UnsupportedRouteError(route: route) }
+            let store = try AppEnvironment.liveTransportStore(path: paths.transportStorePath(hubID, route: route))
+            do {
+                return SideTransport(
+                    transport: try transports.make(route, store, hubID, BatteryDiagnostics.shared.counter), store: store)
+            } catch {
+                try? store.close()
+                throw error
             }
         }
         return factory

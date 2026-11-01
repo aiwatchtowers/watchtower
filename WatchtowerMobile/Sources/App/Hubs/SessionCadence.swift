@@ -26,6 +26,11 @@ enum SessionCadence {
         }
     }
 
+    /// How often the mailbox on the hub's other transport is looked at while the app is active (relay client Phase 3
+    /// Task 12): a relay outage's CloudKit poll (sim rule 12, `TransportFollowerPolicy.otherMailboxEvery`) and the
+    /// drain of a mailbox the phone left (rule 15).
+    static let otherMailboxInterval: Duration = .seconds(TransportFollowerPolicy.otherMailboxEvery)
+
     /// The return to the foreground fetches at once unless the last
     /// successful fetch is younger than this: a Control Center peek for
     /// the session on screen, five minutes for the others.

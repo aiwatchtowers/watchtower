@@ -68,3 +68,27 @@ struct TransportFactory: Sendable {
         return factory
     }
 }
+
+/// A transport for a hub's other route and the store it runs on (nil for a stand-in without one), for the side
+/// mailbox reader (relay client Phase 3 Task 12), which stops the one and closes the other when done with them.
+struct SideTransport {
+    let transport: any CloudSyncTransport & Sendable
+    let store: TransportStore?
+    /// Makes the next pull read the whole mailbox again: the store is the route's own, which the session that left it
+    /// read and compacted, and a drain must see everything there. On the relay a resync of the mailbox zone; on
+    /// CloudKit the store is wiped before its engine starts (its leftover send queue with it: nothing more goes out
+    /// on a transport the hub left); nothing for a stand-in without a store.
+    let readFromStart: @Sendable () async throws -> Void
+
+    init(transport: any CloudSyncTransport & Sendable, store: TransportStore?) {
+        self.transport = transport
+        self.store = store
+        if let relay = transport as? HostedRelayTransport {
+            readFromStart = { try await relay.readFromStart(.relay) }
+        } else if let store {
+            readFromStart = { try store.wipe() }
+        } else {
+            readFromStart = {}
+        }
+    }
+}

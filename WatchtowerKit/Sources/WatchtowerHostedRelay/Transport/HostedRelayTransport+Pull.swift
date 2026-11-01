@@ -108,6 +108,13 @@ extension HostedRelayTransport {
         return buffered
     }
 
+    /// The next pull reads `zone` from 0 again, as a `TOKEN_EXPIRED` resync does (what the server no longer holds
+    /// leaves the buffer at its end): for a reader that must see what an earlier consumer of this store read and
+    /// compacted (relay client Phase 3 Task 12, the drain of a mailbox the phone left).
+    public func readFromStart(_ zone: CloudZoneID) throws {
+        try store.beginRelayResync(zone)
+    }
+
     /// Holds the stalled resync of `zone` for `resyncStallHold`; returns the deadline.
     @discardableResult
     private func holdResync(_ zone: CloudZoneID) -> Date {
