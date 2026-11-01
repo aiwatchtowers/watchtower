@@ -324,7 +324,6 @@ func TestUnvouchedHubPollsTheAccountStateAtMostEvery30s(t *testing.T) {
 func TestVouchAcceptedAdmitsTheHub(t *testing.T) {
 	r := startOnRelay(t, false)
 	l := r.link()
-	reads := r.accountReads()
 	r.admit(l)
 	data := transport.DataZone(l.lp.RelayDeviceID)
 	eventually(t, 10*time.Second, "the device_grant in the data zone", func() bool {
@@ -334,9 +333,43 @@ func TestVouchAcceptedAdmitsTheHub(t *testing.T) {
 	if r.device(t).RelayAdmittedAt.IsZero() {
 		t.Fatal("the admitted phone carries no relay_admitted_at")
 	}
-	if n := r.accountReads() - reads; n > 3 {
-		t.Fatalf("%d account-state reads to learn of the slot", n)
+	if n := r.readsToOpenTheGate(); n < 1 || n > 3 {
+		t.Fatalf("%d account-state reads from promote_pairing to the open gate, want 1..3", n)
 	}
+}
+
+// readsToOpenTheGate counts the get_account_state ops between the phone's
+// promote_pairing and the hub's first set_hub_readers (an op the relay
+// refuses an unvouched hub, so the gate is open by then). Counting from a
+// moment before the admission, or to the end of the test, would also count
+// the vouched hub's link backstop (one read every linkEvery of real time),
+// which grows with how slow the machine is. Within this span the clock is
+// fixed, so an unvouched hub's polls are answered from the last read; the
+// reads are the SLOT_ADDED one, then at most one soon tick's slot check and
+// the readers' own read — never a poll for the slot.
+func (r *vouchRig) readsToOpenTheGate() int {
+	r.t.Helper()
+	ops := r.srv.Ops()
+	from := -1
+	for i, op := range ops {
+		if strings.TrimPrefix(op, "ws:") == "promote_pairing" {
+			from = i
+		}
+	}
+	if from < 0 {
+		r.t.Fatalf("no promote_pairing in %v", ops)
+	}
+	n := 0
+	for _, op := range ops[from+1:] {
+		switch strings.TrimPrefix(op, "ws:") {
+		case "get_account_state":
+			n++
+		case "set_hub_readers":
+			return n
+		}
+	}
+	r.t.Fatalf("no set_hub_readers after promote_pairing in %v", ops[from:])
+	return 0
 }
 
 // TestVouchRefusedKeepsTheHubOffTheRelay: a refused vouch_hub leaves the
