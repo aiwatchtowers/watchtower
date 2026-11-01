@@ -560,6 +560,9 @@ func TestSetSessionTarget_OneTransaction(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT target_id FROM terminal_sessions WHERE id = ?`, s).Scan(&tid))
 	assert.False(t, tid.Valid, "target_id must be unchanged")
 	assert.False(t, boundAt(t, d, s).Valid, "target_bound_at must be unchanged")
+	row, err := d.GetTerminalSession(s)
+	require.NoError(t, err)
+	assert.Equal(t, "s", row.Title, "the target title must roll back with the binding")
 }
 
 // TestSetSessionTarget_WritesBindingStampAndOneLink: binding a group links the
@@ -597,6 +600,48 @@ func TestSetSessionTarget_ClearKeepsLinks(t *testing.T) {
 	assert.False(t, tid.Valid)
 	assert.False(t, boundAt(t, d, s).Valid, "clearing clears the binding stamp")
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM terminal_session_targets WHERE session_id = ?`, s))
+}
+
+func TestSetSessionTarget_NamesAutoAgentSessions(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	first := insertWorkbenchTargetRow(t, d, pid, "Fix login redirect")
+	second := insertWorkbenchTargetRow(t, d, pid, "Add session search")
+	for _, kind := range []string{"claude", "codex", "shell"} {
+		for _, source := range []string{"auto", "ai", "user"} {
+			t.Run(kind+"/"+source, func(t *testing.T) {
+				s := newAgentStateRow(t, d, pid, kind, nextSessionUUID())
+				_, err := d.Exec(`UPDATE terminal_sessions SET title = 'New session', title_source = ? WHERE id = ?`, source, s)
+				require.NoError(t, err)
+				for i, target := range []int64{first, first, second} {
+					if i == 1 {
+						// Existing sessions may already be bound but still carry
+						// the provisional name from before this fix.
+						_, err := d.Exec(`UPDATE terminal_sessions SET title = 'New session' WHERE id = ?`, s)
+						require.NoError(t, err)
+					}
+					require.NoError(t, d.SetSessionTarget(s, nullID(target)))
+					row, err := d.GetTerminalSession(s)
+					require.NoError(t, err)
+					want := "New session"
+					if source == "auto" && kind != "shell" {
+						want = "Fix login redirect"
+						if target == second {
+							want = "Add session search"
+						}
+					}
+					assert.Equal(t, want, row.Title)
+					assert.Equal(t, source, row.TitleSource)
+				}
+				before, err := d.GetTerminalSession(s)
+				require.NoError(t, err)
+				require.NoError(t, d.SetSessionTarget(s, sql.NullInt64{}))
+				after, err := d.GetTerminalSession(s)
+				require.NoError(t, err)
+				assert.Equal(t, before.Title, after.Title, "clearing the target keeps the session's name")
+			})
+		}
+	}
 }
 
 // TestSessionBindings_StampIsBoundAtElseCreatedAt: a session bound after
