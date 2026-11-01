@@ -8,6 +8,11 @@ import WatchtowerSync
 // plan's interface has them: `Send` → `act`, `RequestSwitch` → `switchTransport(to:)`,
 // `Current` → `transport`, `Sync` → `sync`. `Run` (the live loop) is not ported: the Swift
 // twins drive every pass themselves.
+//
+// The switch decisions (rules 12, 12a, 13, 15 and R32) are not ported: the phone hands every
+// `transport_switched`, `hub_on_relay`, transport marker and relay outage to the production
+// `TransportFollowerPolicy` and executes its commands on the sim's legs, so the switch twins pin
+// the app's decision logic.
 
 /// An action the hub did not apply and never will unless the user retries it (Go `Undelivered`).
 struct SimUndelivered: Equatable, Sendable {
@@ -69,9 +74,8 @@ actor SimPhone {
     nonisolated let id: String
     private let cfg: SimPhoneConfig
 
-    private var current: SimKind
-    private(set) var epoch: UInt64 = 1
-    private var ackedEpoch: UInt64 = 1
+    /// Route, epoch, whether the phone may use the relay, the mailbox left behind, the relay outage.
+    private var follower: FollowerState
     private var nextSeq: UInt64 = 1
     /// By seq; kept until the hub's echo.
     private var outItems: [OutItem] = []
@@ -89,9 +93,6 @@ actor SimPhone {
     private var rejected: TimeInterval = 0
     private(set) var lastSwitch = SimSwitchInfo()
     private(set) var hubOnRelay = false
-    /// Left with records still there.
-    private var dirty: Set<SimKind> = []
-    private var downSince: [SimKind: Date] = [:]
     private var nextCtl = 0
     private var offline = false
     private var loseNext = false
@@ -100,7 +101,8 @@ actor SimPhone {
     init(_ cfg: SimPhoneConfig) {
         self.cfg = cfg
         self.id = cfg.id
-        self.current = cfg.current
+        self.follower = FollowerState(
+            route: TransportKind(cfg.current), newestEpoch: 1, canUseRelay: cfg.mailbox[.relay] != nil ? .yes : .no)
     }
 
     // MARK: - State
@@ -108,6 +110,15 @@ actor SimPhone {
     /// The transport the phone uses (Go `Current`).
     var transport: SimKind {
         current
+    }
+
+    /// The newest epoch the phone adopted.
+    var epoch: UInt64 {
+        UInt64(follower.newestEpoch)
+    }
+
+    private var current: SimKind {
+        SimKind(follower.route)
     }
 
     /// The seqs still waiting for the hub's echo.
@@ -189,6 +200,7 @@ actor SimPhone {
 
     /// The relay refused a write because the subscription ended: back to CloudKit (§6).
     private func lapsed() async {
+        follower.canUseRelay = .no
         if current == .relay, pending == nil {
             await requestSwitch(.cloudkit, SimEnvelope.reasonEntitlementExpired)
         }
@@ -304,14 +316,17 @@ actor SimPhone {
             }
         }
         await writePendingSwitch()
-        await read(current)
+        let reached = await read(current)
+        if current == .relay {
+            await follow(.relayReachable(reached, at: cfg.clock.now())) // rule 12: may poll CloudKit
+        }
         await readMarker()
         await flush()
         await flushControls()
         for kind in kinds().dropFirst() {
-            if dirty.contains(kind) {
+            if follower.leftTransport == TransportKind(kind) {
                 await cleanup(kind)
-            } else if pending != nil || currentDownLong() {
+            } else if pending != nil {
                 await read(kind)
             }
         }
@@ -326,34 +341,29 @@ actor SimPhone {
         else { return }
         dataCursor = res.newSeq
         for rec in res.changed where rec.recordName == Sim.markerName {
-            if let env = try? SimEnvelope.open(rec.payload), env.kind == SimEnvelope.kindSwitched, env.epoch > epoch {
-                progress = true
-                await switched(env)
-            }
+            guard let env = try? SimEnvelope.open(rec.payload), env.kind == SimEnvelope.kindSwitched else { continue }
+            let marker = FollowerInput.marker(
+                target: target(env), epoch: UInt32(clamping: env.epoch), by: env.by, at: switchedAt(env), on: .relay)
+            if await follow(marker) != [.ignore] { progress = true }
         }
     }
 
-    /// The current transport has been unreachable for longer than `pollOtherAfter`.
-    private func currentDownLong() -> Bool {
-        guard let since = downSince[current] else { return false }
-        return cfg.clock.now().timeIntervalSince(since) > Sim.pollOtherAfter
-    }
-
-    /// Processes the records written to the mailbox on `kind` since the last read.
-    private func read(_ kind: SimKind) async {
+    /// Processes the records written to the mailbox on `kind` since the last read. Reports
+    /// whether the transport answered (an error other than an outage is an answer).
+    @discardableResult
+    private func read(_ kind: SimKind) async -> Bool {
         let res: SimChanges
         do {
             res = try await transport(kind).changes(mailbox(kind), since: cursors[kind] ?? 0)
         } catch {
-            if error is SimUnavailable, downSince[kind] == nil { downSince[kind] = cfg.clock.now() }
-            return
+            return !(error is SimUnavailable)
         }
-        downSince[kind] = nil
         if !res.changed.isEmpty || !res.deleted.isEmpty { progress = true }
         for rec in res.changed {
             await handle(kind, rec)
         }
         cursors[kind] = res.newSeq
+        return true
     }
 
     /// Processes one record of the mailbox on `kind`. The phone's own records are left alone.
@@ -372,12 +382,16 @@ actor SimPhone {
         case SimEnvelope.kindResendFrom:
             await resendFrom(env.seq)
         case SimEnvelope.kindSwitched:
-            await switched(env)
+            let input = FollowerInput.switched(
+                target: target(env), epoch: UInt32(clamping: env.epoch), by: env.by, at: switchedAt(env),
+                keyboxOpened: true, controlID: env.id, on: TransportKind(kind))
+            // Undecided (unknown paying, keybox not opened): the record stays for a later pass.
+            guard await follow(input).contains(.markHandled(controlID: env.id)) else { return }
         case SimEnvelope.kindSwitchRejected:
             pending = nil
             rejected = TimeInterval(env.retryAfterMs) / 1000
         case SimEnvelope.kindHubOnRelay:
-            await hubWithoutUs()
+            guard await follow(.hubOnRelay(controlID: env.id)).contains(.markHandled(controlID: env.id)) else { return }
         default:
             break
         }
@@ -388,15 +402,11 @@ actor SimPhone {
         await Sim.deleteRecord(transport, zone, rec) // the recipient deletes what it read (§7.2)
     }
 
-    /// hub_on_relay: the hub is on the relay and this phone cannot follow. The phone goes to (or
-    /// stays on) CloudKit; every action without an echo is listed as undelivered.
-    private func hubWithoutUs() async {
+    /// R32: the hub is on the relay and this phone cannot follow (the policy already moved it to
+    /// CloudKit); every action without an echo is listed as undelivered.
+    private func listUndelivered() async {
         hubOnRelay = true
         pending = nil
-        if current == .relay, cfg.mailbox[.cloudkit] != nil {
-            dirty.insert(.relay)
-            current = .cloudkit
-        }
         for item in outItems {
             markUndelivered(item.seq)
             if current != .relay {
@@ -442,27 +452,43 @@ actor SimPhone {
         await flush()
     }
 
-    /// transport_switched (or the hub's marker): adopt the new epoch, move to the target
-    /// transport, resend every action without an echo there with the same bytes, then confirm
-    /// the epoch. An announcement older than the phone's epoch is stale and ignored.
-    private func switched(_ env: SimEnvelope) async {
-        guard env.epoch >= epoch else { return }
-        if !env.by.isEmpty {
-            lastSwitch = SimSwitchInfo(target: env.target, by: env.by, at: Date(timeIntervalSince1970: TimeInterval(env.atMs) / 1000))
+    /// Hands `input` to `TransportFollowerPolicy` and executes its commands on the sim's legs.
+    /// Returns the commands, so the caller sees whether the control was handled.
+    @discardableResult
+    private func follow(_ input: FollowerInput) async -> [FollowerCommand] {
+        let (next, commands) = TransportFollowerPolicy.decide(input, state: follower, now: cfg.clock.now())
+        follower = next
+        for command in commands {
+            switch command {
+            case .mergeKeybox, .markHandled, .ignore:
+                break // no keys in the sim; the caller deletes a handled control
+            case let .moveRoute(target, _, by, at):
+                pending = nil
+                if !by.isEmpty { lastSwitch = SimSwitchInfo(target: SimKind(target), by: by, at: at) }
+                if target == .cloudKit { hubOnRelay = false }
+            case .resendUnechoedOnNewTransport:
+                for item in outItems { item.sent = false }
+                await flush()
+            case let .sendEpochAck(epoch):
+                await writeControl(SimEnvelope(kind: SimEnvelope.kindEpochAck, epoch: UInt64(epoch)))
+            case .listUnechoedAsUndelivered:
+                await listUndelivered()
+            case .drainMailbox:
+                break // `sync` drains `follower.leftTransport` at the end of every pass
+            case let .pollOtherMailbox(on):
+                await read(SimKind(on))
+            }
         }
-        pending = nil
-        epoch = env.epoch
-        if env.target == .cloudkit { hubOnRelay = false }
-        if let target = env.target, target != current, cfg.mailbox[target] != nil {
-            dirty.insert(current)
-            current = target
-            for item in outItems { item.sent = false }
-            await flush()
-        }
-        if epoch > ackedEpoch {
-            ackedEpoch = epoch
-            await writeControl(SimEnvelope(kind: SimEnvelope.kindEpochAck, epoch: epoch))
-        }
+        return commands
+    }
+
+    /// The switch target an announcement names (none: the transport the phone is on).
+    private func target(_ env: SimEnvelope) -> TransportKind {
+        env.target.map(TransportKind.init) ?? follower.route
+    }
+
+    private func switchedAt(_ env: SimEnvelope) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(env.atMs) / 1000)
     }
 
     /// Empties the mailbox on a transport the phone left: hub records not seen yet are handled
@@ -483,7 +509,19 @@ actor SimPhone {
         }
         if done {
             cursors[kind] = res.newSeq
-            dirty.remove(kind)
+            await follow(.oldMailboxDrained(TransportKind(kind)))
         }
+    }
+}
+
+private extension SimKind {
+    init(_ kind: TransportKind) {
+        self = kind == .relay ? .relay : .cloudkit
+    }
+}
+
+private extension TransportKind {
+    init(_ kind: SimKind) {
+        self = kind == .relay ? .relay : .cloudKit
     }
 }
