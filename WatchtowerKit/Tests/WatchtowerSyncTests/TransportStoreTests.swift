@@ -804,6 +804,27 @@ extension TransportStoreTests {
         XCTAssertFalse(try store.isRelayOwnAttachment("att-4", name: "wiped", zone: .relay))
     }
 
+    /// A finished resync also drops the rows of uploads whose save never landed (a name neither the
+    /// server returned nor the send queue holds), and keeps a queued one and a server-held one.
+    func testAFinishedResyncDropsOrphanOwnAttachments() throws {
+        let store = try TransportStore.inMemory()
+        try store.noteRelayOwnAttachment("att-orphan", name: "never-saved", zone: .relay)
+        try store.enqueueSave([relayRecord("queued", seq: 0, zone: .relay)])
+        try store.noteRelayOwnAttachment("att-queued", name: "queued", zone: .relay)
+        try store.noteRelayOwnAttachment("att-held", name: "held", zone: .relay)
+        try store.noteRelayOwnAttachment("att-data", name: "never-saved", zone: .data)
+
+        try store.beginRelayResync(.relay)
+        try store.bufferRelayPage(
+            zone: .relay, changed: [relayRecord("held", seq: 1, zone: .relay)], deleted: [], newSeq: 1, resync: true)
+        XCTAssertEqual(try store.finishRelayResync(.relay), [])
+
+        XCTAssertFalse(try store.isRelayOwnAttachment("att-orphan", name: "never-saved", zone: .relay))
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-queued", name: "queued", zone: .relay))
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-held", name: "held", zone: .relay))
+        XCTAssertTrue(try store.isRelayOwnAttachment("att-data", name: "never-saved", zone: .data), "another lane is left")
+    }
+
     /// A finished resync deletes the names the server once returned and this resync did not.
     func testAFinishedResyncDeletesOnlyUnseenKnownNames() throws {
         let store = try TransportStore.inMemory()

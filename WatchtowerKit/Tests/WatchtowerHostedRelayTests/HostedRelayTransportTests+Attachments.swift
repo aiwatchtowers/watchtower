@@ -87,10 +87,16 @@ extension HostedRelayTransportTests {
         // The next pull reads the rewrite.
         try await transport.pull()
         XCTAssertEqual(try store.relayCursor(zone: .data), rewrite)
+        let second = try buffered(store, .data, since: first.newToken)
+        XCTAssertEqual(second.changed.map(\.recordName), ["report"], "the second pull buffers the rewrite")
+        let latest = try XCTUnwrap(second.changed.first)
+        XCTAssertEqual(latest.recordSeq, rewrite)
+        XCTAssertNil(latest.assetFileURL)
     }
 
-    /// The blob is gone by the time of the GET (404): the record is buffered without a file and
-    /// the cursor moves. Any other non-2xx still fails the page (`testDownloadCappedAndRedirectsChecked`).
+    /// The blob is gone by the time of the GET (404) and `get_download` then answers `NOT_FOUND`:
+    /// the record is buffered without a file and the cursor moves past the page. Any other non-2xx
+    /// still fails the page (`testDownloadCappedAndRedirectsChecked`).
     func testABlobGoneAtItsGetLeavesThePullWhole() async throws {
         var http: InterceptingRelayHTTP?
         let (mac, phone) = try await hub { base in
@@ -106,13 +112,50 @@ extension HostedRelayTransportTests {
         let store = try TransportStore(path: path)
         let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
 
-        intercepting.download { _ in 404 }
-        try await transport.pull()
+        // The blob GET finds nothing; the Mac rewrites the record without its attachment before
+        // the transport asks `get_download` again, so the relay agrees it is gone.
+        intercepting.download { _ in
+            intercepting.holdNext { request in
+                if case .getDownload = request.op { return true }
+                return false
+            }
+            return 404
+        }
+        let pull = Task { try await transport.pull() }
+        await eventually { intercepting.holding }
+        try await macSave(mac, dataZone(mac), "report")
+        intercepting.release()
+        try await pull.value
         let event = try XCTUnwrap(try buffered(store, .data).changed.first)
         XCTAssertEqual(event.recordName, "report")
         XCTAssertNil(event.assetFileURL)
         XCTAssertEqual(try store.relayCursor(zone: .data), seq)
         XCTAssertEqual((try? FileManager.default.contentsOfDirectory(atPath: stash.path)) ?? [], [], "no file left")
+    }
+
+    /// A blob GET 404 while `get_download` still serves the attachment is not "gone": the page
+    /// fails and the cursor stays.
+    func testABlobMissingUnderALiveAttachmentFailsThePage() async throws {
+        var http: InterceptingRelayHTTP?
+        let (mac, phone) = try await hub { base in
+            let intercepting = InterceptingRelayHTTP(base)
+            http = intercepting
+            return intercepting
+        }
+        let intercepting = try XCTUnwrap(http)
+        let attachment = try await macUpload(mac, dataZone(mac), Data(repeating: 7, count: 100))
+        try await macSave(mac, dataZone(mac), "report", attachmentID: attachment)
+        let store = try TransportStore(path: try storePath())
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+
+        intercepting.download { _ in 404 }
+        do {
+            try await transport.pull()
+            XCTFail("a 404 under a live attachment was taken for a gone one")
+        } catch HostedRelayError.undecodable(status: 404) {}
+        XCTAssertEqual(backend.opLog.filter { if case .getDownload = $0 { return true }; return false }.count, 2)
+        XCTAssertEqual(try store.relayCursor(zone: .data), 0)
+        XCTAssertEqual(try buffered(store, .data).changed, [])
     }
 
     /// Only `NOT_FOUND` means gone: another refusal of `get_download` still fails the page.
