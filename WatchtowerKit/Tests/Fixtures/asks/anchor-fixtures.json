@@ -1,5 +1,5 @@
 {
-  "_comment": "Review comment anchors (mobile POC spec 6.2): a review ask's doc_snapshot (markdown), the plain text Core's DocumentRendering renders it to (headings with UTF-16 offsets into it), a selection on that text (UTF-16 location/length) and the anchor Core's CommentAnchor makes of it (context_length characters on either side, the nearest preceding heading). Core's CommentAnchorFixtureTests and the Kit's CommentAnchorBuilderTests both run every case. A doc_clipped case is the head of a snapshot the hub cut at the last newline before its cap (OwnerAskSlice.clipSnapshot).",
+  "_comment": "Review comment anchors (mobile POC spec 6.2): a review ask's doc_snapshot (markdown), the plain text Core's DocumentRendering renders it to (headings with UTF-16 offsets into it), a selection on that text (UTF-16 location/length) and the anchor Core's CommentAnchor makes of it (context_length characters on either side, the nearest preceding heading). Core's CommentAnchorFixtureTests and the Kit's CommentAnchorBuilderTests both run every case. A doc_clipped case is the head of a snapshot the hub cut at the last newline before its cap (OwnerAskSlice.clipSnapshot). The spec_review_comment_on_a_rendered_list_item case is also where SpecReviewAnswer (Core) and the Go hub place a review finding quoting \"Copy the **users** table\": the same quote, prefix, suffix and heading.",
   "context_length": 64,
   "cases": [
     {
@@ -90,6 +90,31 @@
         "heading": "Appendix"
       },
       "doc_clipped": true
+    },
+    {
+      "name": "spec_review_comment_on_a_rendered_list_item",
+      "markdown": "# Migration plan for café acme\n\nEvery step runs behind the `migrate` flag on example.com.\n\n## Steps\n\n- Copy the **users** table in batches of 500.\n- Switch reads to the new table once the copy is verified.\n",
+      "text": "Migration plan for café acme\n\nEvery step runs behind the migrate flag on example.com.\n\nSteps\n\n• Copy the users table in batches of 500.\n• Switch reads to the new table once the copy is verified.\n\n",
+      "headings": [
+        {
+          "offset": 0,
+          "title": "Migration plan for café acme"
+        },
+        {
+          "offset": 87,
+          "title": "Steps"
+        }
+      ],
+      "selection": {
+        "location": 96,
+        "length": 20
+      },
+      "anchor": {
+        "quote": "Copy the users table",
+        "prefix": "ery step runs behind the migrate flag on example.com.\n\nSteps\n\n• ",
+        "suffix": " in batches of 500.\n• Switch reads to the new table once the cop",
+        "heading": "Steps"
+      }
     }
   ]
 }
