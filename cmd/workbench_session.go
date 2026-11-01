@@ -59,6 +59,10 @@ var workbenchSessionShell = ""
 // the launch.
 const finishBudget = 3 * time.Minute
 
+// finishLaunchWatch is how long a finish watches its launch for the agent's
+// exit 127 (a test seam).
+var finishLaunchWatch = 3 * time.Second
+
 // workbenchSessionFinishSpawn continues a start in a detached
 // `workbench session finish` (its own session, no terminal, stdout and
 // stderr to /dev/null) so start answers at once. A non-empty brief goes to
@@ -181,6 +185,16 @@ func runWorkbenchSessionStart(cmd *cobra.Command, _ []string) error {
 	}
 	d := sessionStartDeps(cfg, database)
 	res, err := sessionstart.Begin(ctx, d, r)
+	var notFound *handlers.AgentNotFoundError
+	if errors.As(err, &notFound) {
+		// The Desktop's pinned answer (testdata/desktop_contract.json): no row.
+		if werr := writeJSON(cmd.OutOrStdout(), map[string]string{
+			"error": sessionstart.AgentNotFoundClass, "agent": notFound.Agent,
+		}); werr != nil {
+			return werr
+		}
+		return &exitCodeError{code: sessionstart.AgentNotFoundExit, err: err}
+	}
 	if err != nil {
 		return err
 	}
@@ -228,7 +242,11 @@ func runWorkbenchSessionFinish(cmd *cobra.Command, _ []string) error {
 	}
 	ctx, cancel := context.WithTimeout(cmdContext(cmd), finishBudget)
 	defer cancel()
-	return sessionstart.Finish(ctx, sessionStartDeps(cfg, database), sessionFlagSession, sessionFlagPlace, brief, false)
+	d := sessionStartDeps(cfg, database)
+	// An agent that exits 127 right after the launch records
+	// "<agent> was not found" on the row for the Desktop.
+	d.LaunchWatch = finishLaunchWatch
+	return sessionstart.Finish(ctx, d, sessionFlagSession, sessionFlagPlace, brief, false)
 }
 
 func runWorkbenchSessionStop(cmd *cobra.Command, _ []string) error {

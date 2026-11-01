@@ -1049,14 +1049,38 @@ struct WorkbenchCLI {
 
     /// Starts a workbench agent session in Go (`workbench session start`):
     /// the row is written and answered at once, then placed and launched in
-    /// the session host by a detached finish (Go hub 3 Task 8).
-    func sessionStart(_ r: SessionStartRequest) async throws -> SessionStartResult {
-        let data = if let stdin = r.stdin {
-            try await runner.run(args: r.args, stdin: stdin)
-        } else {
-            try await runner.run(args: r.args)
+    /// the session host by a detached finish (Go hub 3 Task 8). A missing
+    /// agent binary (exit `GoSessionStartContract.agentNotFoundExit`) is
+    /// `WorkbenchCLIError.agentNotFound`; a call past `timeout` seconds is
+    /// ended and thrown as the runner's timeout.
+    func sessionStart(_ r: SessionStartRequest, timeout: TimeInterval = 30) async throws -> SessionStartResult {
+        let data: Data
+        do {
+            if let stdin = r.stdin {
+                let runner = runner
+                data = try await withThrowingTaskGroup(of: Data.self) { group in
+                    group.addTask { try await runner.run(args: r.args, stdin: stdin) }
+                    group.addTask {
+                        try await Task.sleep(for: .seconds(timeout))
+                        throw CLIRunnerError.nonZeroExit(code: -1, stderr: "timed out after \(Int(timeout)) s")
+                    }
+                    defer { group.cancelAll() }
+                    guard let first = try await group.next() else { throw CancellationError() }
+                    return first
+                }
+            } else {
+                data = try await runner.run(args: r.args, timeout: timeout)
+            }
+        } catch CLIRunnerError.nonZeroExit(code: GoSessionStartContract.agentNotFoundExit, _) {
+            throw WorkbenchCLIError.agentNotFound(r.agent)
         }
         return try JSONDecoder().decode(SessionStartResult.self, from: data)
+    }
+
+    /// Stops session `sessionID` in the session host (`workbench session
+    /// stop`, the host's Stop request: no worktree cleanup).
+    func sessionStop(sessionID: Int64) async throws {
+        _ = try await runner.run(args: ["workbench", "session", "stop", "--session", String(sessionID), "--json"])
     }
 
     /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`)

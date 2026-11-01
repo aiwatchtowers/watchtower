@@ -52,11 +52,14 @@ func sessionHostForTest(t *testing.T) string {
 		}
 	})
 	t.Setenv(sessionhost.SocketEnv, socket)
+	// The stub records its arguments and the first prompt it was handed
+	// (WATCHTOWER_FIRST_PROMPT) in args.txt beside the socket, then sleeps.
 	shell := filepath.Join(dir, "loginshell")
-	require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0o700))
-	prev := workbenchSessionShell
-	workbenchSessionShell = shell
-	t.Cleanup(func() { workbenchSessionShell = prev })
+	require.NoError(t, os.WriteFile(shell, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" \"$WATCHTOWER_FIRST_PROMPT\" > \""+
+		filepath.Join(dir, "args.txt")+"\"\nexec /bin/sleep 30\n"), 0o700))
+	prev, prevWatch := workbenchSessionShell, finishLaunchWatch
+	workbenchSessionShell, finishLaunchWatch = shell, 300*time.Millisecond
+	t.Cleanup(func() { workbenchSessionShell, finishLaunchWatch = prev, prevWatch })
 	return socket
 }
 
@@ -246,4 +249,52 @@ func TestWorkbenchSessionFinishReadsTheBriefFromStdin(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 	assert.Equal(t, sid, list[0].Row)
+	args := filepath.Join(filepath.Dir(socket), "args.txt")
+	require.Eventually(t, func() bool { _, err := os.Stat(args); return err == nil }, 5*time.Second, 20*time.Millisecond)
+	b, err := os.ReadFile(args)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "sweep the board", "the brief reached the launch")
+}
+
+// A missing agent before any row: the pinned class on stdout and exit 3
+// (sessionstart.AgentNotFoundExit), nothing written.
+func TestWorkbenchSessionStartAnswersAgentNotFound(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	sessionHostForTest(t)
+	spawned := spawnedFinishes(t)
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "codex", "--json")
+	var exit *exitCodeError
+	require.ErrorAs(t, err, &exit)
+	assert.Equal(t, 3, exit.code)
+	assert.JSONEq(t, `{"error":"agent_not_found","agent":"codex"}`, out)
+	assert.Empty(t, *spawned)
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM terminal_sessions`).Scan(&n))
+	assert.Zero(t, n)
+}
+
+// An agent that exits 127 at once: the finish's launch watch records
+// "<agent> was not found" on the row.
+func TestWorkbenchSessionFinishRecordsAMissingAgent(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	socket := sessionHostForTest(t)
+	spawnedFinishes(t)
+	missing := filepath.Join(filepath.Dir(socket), "exit127")
+	require.NoError(t, os.WriteFile(missing, []byte("#!/bin/sh\nexit 127\n"), 0o700))
+	workbenchSessionShell = missing // restored by sessionHostForTest's cleanup
+	finishLaunchWatch = 3 * time.Second
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude", "--json")
+	require.NoError(t, err, out)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	sid := strconv.FormatInt(int64(m["session_id"].(float64)), 10)
+	_, err = runSession(t, "finish", "--session", sid)
+	require.Error(t, err)
+	var failure string
+	require.NoError(t, database.QueryRow(`SELECT agent_error FROM terminal_sessions WHERE id = ?`, sid).Scan(&failure))
+	assert.Equal(t, "claude was not found", failure)
 }

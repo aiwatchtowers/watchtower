@@ -329,6 +329,9 @@ final class WorkbenchesViewModel {
     /// starts them; it stays for the Swift hub's phone starts and its tests
     /// until Go hub 3 Task 24 removes both.
     @ObservationIgnored var goSessionStart: GoSessionStartWait?
+    /// Per workbench, how many Go starts began: a start's place notice
+    /// replaces `startNotice` only while no later start of it began.
+    @ObservationIgnored var goStartSerials: [Int64: Int] = [:]
     /// Per workbench, the ticket of the session switch the owner asked for
     /// last (`beginSwitch`); only that switch may still move the layout.
     @ObservationIgnored var latestSwitch: [Int64: Int] = [:]
