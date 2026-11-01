@@ -43,7 +43,7 @@ func Open(dir string) (*Store, error) {
 	if err := ensurePrivateDir(dir); err != nil {
 		return nil, err
 	}
-	migrations, err := fs.Sub(migrationsFS, "migrations")
+	migrations, err := Migrations()
 	if err != nil {
 		return nil, err
 	}
@@ -57,6 +57,46 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("opening the hub state: %w", err)
 	}
 	return s, nil
+}
+
+// Migrations is the sidecar's goose migrations (the files at its root): the
+// set Open applies.
+func Migrations() (fs.FS, error) { return fs.Sub(migrationsFS, "migrations") }
+
+// WithSecureDeleteTx is WithTx on one connection set to secure_delete before
+// the transaction begins, so what fn overwrites or deletes is zeroed on disk
+// (adoption blanking the Swift rows' text). The connection is set back after.
+func (s *Store) WithSecureDeleteTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	c, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning a hub state transaction: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := c.ExecContext(ctx, `PRAGMA secure_delete = ON`); err != nil {
+		return fmt.Errorf("beginning a hub state transaction: %w", err)
+	}
+	defer func() { _, _ = c.ExecContext(context.Background(), `PRAGMA secure_delete = OFF`) }()
+	tx, err := c.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning a hub state transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing a hub state transaction: %w", err)
+	}
+	return nil
+}
+
+// Checkpoint copies the WAL into the file and truncates it (adoption, so no
+// blanked text stays behind in the log).
+func (s *Store) Checkpoint() error {
+	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("checkpointing the hub state: %w", err)
+	}
+	return nil
 }
 
 // OpenReadOnly opens an existing <dir>/hubstate.db for reading only (the

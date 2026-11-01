@@ -15,6 +15,9 @@ const (
 	MetaHubImpl     = "hub_impl"
 	MetaEnabled     = "enabled"
 	MetaDisplayName = "display_name"
+	// MetaTransport is the transport the hub runs on, "cloudkit" | "relay"
+	// (adoption writes "cloudkit").
+	MetaTransport = "transport"
 )
 
 // Meta reads one hub_meta value; ok is false when the key is unset.

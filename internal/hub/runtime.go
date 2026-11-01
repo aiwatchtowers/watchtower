@@ -286,7 +286,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishSoon(toKinds(kinds)...) },
 	})
-	sweepTemps(o)
+	sweepTemps(o, st)
 	if o.DB != nil {
 		// Registered after the processor exists: the handlers' start may
 		// already late-echo a held line it ends. No pass runs before the
@@ -907,6 +907,7 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 			wipe(ctx, h.st, h.tr, h.data, left)
 		}
 	}
+	pruneRecordingJobs(h.sup.o, h.st)
 	if rep, err := h.proc.Hygiene(ctx); err != nil {
 		log.Printf("hub: hygiene failed (%s)", errClass(err))
 	} else if rep.Ran {

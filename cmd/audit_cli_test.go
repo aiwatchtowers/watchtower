@@ -237,6 +237,7 @@ var cliNoContentCommands = map[string]bool{
 	"gmail purge":                      true,
 	"gmail status":                     true,
 	"guide learn":                      true,
+	"hub adopt":                        true,
 	"hub allow":                        true,
 	"hub desktop heartbeat":            true,
 	"hub disable":                      true,
