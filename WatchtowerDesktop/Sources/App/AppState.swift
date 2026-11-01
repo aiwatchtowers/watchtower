@@ -411,8 +411,9 @@ final class AppState {
     /// The policy's `MobileSync` mode for the hub's background parts (#608).
     @ObservationIgnored let mobileSyncPolicy = MobileSyncPolicyBox()
     @ObservationIgnored private var policyOffWipeDone = false
-    /// Opens the hub's transport and sidecar; tests pass a stub.
+    /// Opens the hub's transport and sidecar, and where `isMobileHubMoved` looks for `MOVED`; tests pass a stub and a temp dir.
     @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
+    @ObservationIgnored var mobileHubDirectory: URL = MobileHubStorage.directory()
     /// Built once per run and kept across hub rebuilds and toggles.
     @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
     @ObservationIgnored private(set) var mobileHubPool: DatabasePool?
@@ -1875,11 +1876,9 @@ final class AppState {
 
     private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
 
-    /// Tears down the previous hub and, while the toggle is on, builds and
-    /// starts a new one over the run's one transport and sidecar. Called at
-    /// the end of `initWorkbenches`. With the toggle off nothing is opened —
-    /// unless the organization's `MobileSync = off` must still wipe the
-    /// phone (`wipeHubForPolicyOff`).
+    /// Tears down the previous hub and, while the toggle is on, builds and starts a new one over the run's one
+    /// transport and sidecar. Called at the end of `initWorkbenches`. With the toggle off nothing is opened —
+    /// unless the organization's `MobileSync = off` must still wipe the phone (`wipeHubForPolicyOff`).
     func initMobileHub(dbPool: DatabasePool) {
         let previous = mobileHub
         previous?.dispose()
@@ -1909,9 +1908,10 @@ final class AppState {
         hub.disable()
     }
 
-    /// Builds the run's hub over its one storage (opened on first use) into
-    /// `mobileHub`; nil (the error kept) when it cannot be built.
+    /// Builds the run's hub over its one storage (opened on first use) into `mobileHub`; nil (the error kept)
+    /// when it cannot be built, and nil with no error once a newer Watchtower runs the hub (spec §12.1).
     private func buildRunHub(dbPool: DatabasePool) -> MobileHubService? {
+        guard !isMobileHubMoved else { return nil }
         do {
             let storage = try mobileHubStorage ?? makeMobileHubStorage()
             if mobileHubStorage == nil {

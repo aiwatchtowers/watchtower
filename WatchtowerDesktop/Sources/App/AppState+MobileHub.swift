@@ -25,6 +25,8 @@ extension AppState {
         // MobileSync = off (#608) cannot be turned on from here, whatever
         // the view shows; the stored toggle is left as it was.
         if enabled, mobileSyncLockedByPolicy { return }
+        // Moved to a newer Watchtower: the toggle is not shown and does nothing.
+        if isMobileHubMoved { return }
         mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
         guard enabled else {
             mobileHub?.disable()
@@ -38,6 +40,10 @@ extension AppState {
     }
 
     var mobileSyncLockedByPolicy: Bool { managedPolicy.policy.mobileSyncMode == "off" }
+
+    /// A newer Watchtower left `MOVED` in the Swift hub's directory: this app
+    /// starts no hub and Settings → Mobile shows only that (spec §12.1).
+    var isMobileHubMoved: Bool { MobileHubMovedGuard.isMoved(mobileHubDir: mobileHubDirectory) }
 
     /// Every policy tick: a wipe under `MobileSync = off` whose hub could not
     /// be built (no storage yet) is tried again (`wipeHubForPolicyOff` runs
