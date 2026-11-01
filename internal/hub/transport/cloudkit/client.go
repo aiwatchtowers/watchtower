@@ -89,7 +89,7 @@ func New(c Config) *Client {
 		c.Clock = time.Now
 	}
 	return &Client{
-		c: c, peerUID: platform.PeerUID, gens: newGenerations(c.Dir),
+		c: c, peerUID: platform.PeerUID, gens: newGenerations(c.Dir, DataZoneName(c.HubID), RelayZoneName(c.HubID)),
 		events: make(chan transport.Event, eventBuffer), done: make(chan struct{}),
 	}
 }
@@ -272,7 +272,10 @@ func (c *Client) Changes(ctx context.Context, zoneName string, since uint64) (tr
 	if _, err := c.connect(ctx); err != nil {
 		return transport.Batch{}, fmt.Errorf("cloudkit: changes: %w", err)
 	}
-	if !c.gens.sinceOK(z.ck, since) {
+	switch ok, err := c.gens.sinceOK(z.ck, since); {
+	case err != nil:
+		return transport.Batch{}, fmt.Errorf("cloudkit: changes: %w", err)
+	case !ok:
 		return transport.Batch{}, fmt.Errorf("cloudkit: changes: a cursor of an older bridge generation: %w", transport.ErrTokenExpired)
 	}
 	resp, err := c.do(ctx, &bridgepb.Request{Op: &bridgepb.Request_Changes{Changes: &bridgepb.Changes{
@@ -292,9 +295,7 @@ func (c *Client) Changes(ctx context.Context, zoneName string, since uint64) (tr
 	if changed && since != 0 {
 		return transport.Batch{}, fmt.Errorf("cloudkit: changes: the bridge's generation changed: %w", transport.ErrTokenExpired)
 	}
-	if since == 0 {
-		c.gens.readFromZero(z.ck)
-	}
+	c.gens.handedOut(z.ck, b.GetNewSeq())
 	out := transport.Batch{Deleted: b.GetDeleted(), NewSeq: b.GetNewSeq(), More: b.GetMore(), Reset: since == 0}
 	for _, r := range b.GetChanged() {
 		c.gens.note(z.ck, r.GetName(), r.GetTagSeq())

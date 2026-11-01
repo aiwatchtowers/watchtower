@@ -1,6 +1,7 @@
 package cloudkit_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -44,9 +45,9 @@ func (r *rig) fillData(n int) {
 // TestLostBridgeStateResetsNotSkips: the bridge lost bridge.db (a new
 // generation, cursors restarting): a cursor of the old generation is
 // ErrTokenExpired — never read against the new feed, where it would skip
-// records silently — and the read from 0 is a Reset with every record.
-// The same holds for a client started after the loss (the hub restarted),
-// through the generation it stored.
+// records silently — and the read from 0 is a Reset with every record. The
+// zone stops pending only when the consumer comes back with a new cursor;
+// after that a restart keeps the cursors.
 func TestLostBridgeStateResetsNotSkips(t *testing.T) {
 	r := newRig(t)
 	r.fillData(3)
@@ -55,11 +56,6 @@ func TestLostBridgeStateResetsNotSkips(t *testing.T) {
 		t.Fatalf("before: %+v, %v", b, err)
 	}
 	cursor := b.NewSeq
-	gen1 := r.fake.Generation()
-	if stored, _ := os.ReadFile(filepath.Join(r.dir, cloudkit.GenerationFile)); string(stored) != gen1 {
-		t.Fatalf("stored generation %q, want %q", stored, gen1)
-	}
-
 	r.loseState()
 	r.fillData(5) // the new feed's counter passes the old cursor
 	ck := cloudkit.DataZoneName(r.hub)
@@ -70,6 +66,9 @@ func TestLostBridgeStateResetsNotSkips(t *testing.T) {
 	if r.changesSince(ck, cursor) != before {
 		t.Fatal("an old-generation cursor was sent to the bridge")
 	}
+	if st := r.storedGeneration(); st.Generation != r.fake.Generation() || len(st.Pending) != 2 {
+		t.Fatalf("stored %+v, want the new generation with both zones pending", st)
+	}
 	b, err = r.c.Changes(r.ctx, dataZone, 0)
 	if err != nil || !b.Reset || len(b.Changed) != 5 {
 		t.Fatalf("read from 0: %+v, %v", b, err)
@@ -77,27 +76,94 @@ func TestLostBridgeStateResetsNotSkips(t *testing.T) {
 	if next, err := r.c.Changes(r.ctx, dataZone, b.NewSeq); err != nil || len(next.Changed) != 0 {
 		t.Fatalf("the new generation's cursor: %+v, %v", next, err)
 	}
-
-	// The hub restarts after another loss: its stored cursor is refused too.
-	cursor = b.NewSeq
-	_ = r.c.Close()
-	r.fake.LoseState()
-	r.fillData(8)
-	r.c = cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub, RelayID: relayID})
-	if _, err := r.c.Changes(r.ctx, dataZone, cursor); !errors.Is(err, transport.ErrTokenExpired) {
-		t.Fatalf("stored cursor after a restart and a loss: %v, want ErrTokenExpired", err)
+	if st := r.storedGeneration(); len(st.Pending) != 1 || st.Pending[0] != cloudkit.RelayZoneName(r.hub) {
+		t.Fatalf("stored %+v, want only the relay zone pending", st)
 	}
-	if b, err := r.c.Changes(r.ctx, dataZone, 0); err != nil || !b.Reset || len(b.Changed) != 8 {
-		t.Fatalf("read from 0 after the restart: %+v, %v", b, err)
-	}
-
-	// A restart without a loss keeps the cursors.
-	b, _ = r.c.Changes(r.ctx, dataZone, 0)
 	_ = r.c.Close()
 	r.c = cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub, RelayID: relayID})
 	if _, err := r.c.Changes(r.ctx, dataZone, b.NewSeq); err != nil {
-		t.Fatalf("same generation after a restart: %v", err)
+		t.Fatalf("a rebased zone's cursor after a restart: %v", err)
 	}
+}
+
+// TestRestartBeforeTheResetStillRefusesOldState: the client saw the new
+// generation (and even read from 0) but the hub stopped before it came back
+// with a new cursor — its stored state may still be the old one. After the
+// restart the old cursors and tags are refused, as they were before it.
+func TestRestartBeforeTheResetStillRefusesOldState(t *testing.T) {
+	r := newRig(t)
+	r.fillData(3)
+	b, err := r.c.Changes(r.ctx, dataZone, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := b.NewSeq
+	tag := r.save(transport.SaveItem{Record: r.data("workbench-1", []byte(`{"v":1}`))})[0].RecordSeq
+	r.loseState()
+	r.fillData(6)
+	if _, err := r.c.Changes(r.ctx, dataZone, 0); err != nil { // seen, read, not committed
+		t.Fatal(err)
+	}
+	_ = r.c.Close() // the crash
+	r.c = cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub, RelayID: relayID})
+	if _, err := r.c.Changes(r.ctx, dataZone, cursor); !errors.Is(err, transport.ErrTokenExpired) {
+		t.Fatalf("old cursor after the restart: %v, want ErrTokenExpired", err)
+	}
+	o := r.save(transport.SaveItem{Record: r.data("workbench-1", []byte(`{"v":2}`)), Expect: transport.Expect{Mode: transport.ExpectSeq, Seq: tag}})[0]
+	if !errors.Is(o.Refused, cloudkit.ErrStaleTag) {
+		t.Fatalf("old tag after the restart: %+v", o)
+	}
+}
+
+// TestMissingGenerationFileIsARebase: with no GenerationFile (an upgrade, a
+// deleted file) nothing says which generation the stored cursors are of, so
+// they are refused until the zone is read again from 0.
+func TestMissingGenerationFileIsARebase(t *testing.T) {
+	r := newRig(t)
+	r.fillData(3)
+	b, err := r.c.Changes(r.ctx, dataZone, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.c.Close()
+	if err := os.Remove(filepath.Join(r.dir, cloudkit.GenerationFile)); err != nil {
+		t.Fatal(err)
+	}
+	r.c = cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub, RelayID: relayID})
+	if _, err := r.c.Changes(r.ctx, dataZone, b.NewSeq); !errors.Is(err, transport.ErrTokenExpired) {
+		t.Fatalf("a stored cursor without the file: %v, want ErrTokenExpired", err)
+	}
+	fi, err := os.Stat(filepath.Join(r.dir, cloudkit.GenerationFile))
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the file was not written 0600: %v", err)
+	}
+	// An existing file of a looser mode is tightened.
+	if err := os.Chmod(filepath.Join(r.dir, cloudkit.GenerationFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.c.Close()
+	r.c = cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub, RelayID: relayID})
+	if _, err := r.c.Changes(r.ctx, dataZone, 0); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Join(r.dir, cloudkit.GenerationFile)); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", fi.Mode().Perm())
+	}
+}
+
+func (r *rig) storedGeneration() (st struct {
+	Generation string   `json:"generation"`
+	Pending    []string `json:"pending"`
+}) {
+	r.t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.dir, cloudkit.GenerationFile))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		r.t.Fatal(err)
+	}
+	return st
 }
 
 // TestConditionalWriteWithAnOldGenerationTagIsRefused: a tag_seq handed out
@@ -164,26 +230,28 @@ func TestEventQueueFoldsWhileNobodyReads(t *testing.T) {
 		r.fake.SendError("rate_limited")
 		r.fake.PullNow()
 	}
+	r.fake.SendError("forbidden") // the sentinel: the last event, a class of its own
 	// An answer after them: the reader has handled every event frame.
 	if _, err := r.c.Changes(r.ctx, dataZone, 0); err != nil {
 		t.Fatal(err)
 	}
 	var got []transport.Event
-	for {
+	deadline := time.After(10 * time.Second)
+	for len(got) == 0 || !errors.Is(got[len(got)-1].Err, transport.ErrForbidden) {
 		select {
 		case e := <-r.c.Events():
 			got = append(got, e)
-			continue
-		case <-time.After(200 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("no sentinel after %d events", len(got))
 		}
-		break
 	}
-	// The buffer, the one the pump holds, and one waiting per class.
-	if len(got) < 256 || len(got) > 256+1+3 {
+	// The buffer, the one the pump held, and one waiting per class (four
+	// classes with the sentinel's).
+	if len(got) < 256 || len(got) > 256+1+4 {
 		t.Fatalf("%d events delivered, want the buffer and at most one waiting per class", len(got))
 	}
 	var unavailable, rate, pull int
-	for _, e := range got[256:] {
+	for _, e := range got[256 : len(got)-1] {
 		switch {
 		case errors.Is(e.Err, transport.ErrUnavailable):
 			unavailable++

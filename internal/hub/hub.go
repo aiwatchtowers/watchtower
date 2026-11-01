@@ -175,6 +175,7 @@ type Options struct {
 	writeTimeout time.Duration
 	pairQueue    int // events one pairing stream may have waiting (0 = pairQueue)
 	trace        func(step string)
+	onPass       func()              // called as a mailbox pass starts
 	reportFetch  sources.ReportFetch // nil = the in-process report
 	gitFetch     sources.GitFetch    // nil = the in-process git status
 	laneBackstop time.Duration       // 0 = laneBackstop

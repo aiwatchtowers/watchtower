@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,8 +60,10 @@ func TestSharedMailboxEventRunsAPass(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g := &gatedFake{out: make(chan transport.Event, 64)}
+	var passes atomic.Int64
 	e := runEndToEnd(t, "", func(o *Options) {
 		o.passEvery, o.linkEvery = time.Hour, time.Hour
+		o.onPass = func() { passes.Add(1) }
 		orig := o.newTransport
 		o.newTransport = func(ctx2 context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
 			tr, err := orig(ctx2, id, st, zones)
@@ -79,16 +82,27 @@ func TestSharedMailboxEventRunsAPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.gate()
+	// The startup's events, already forwarded, are consumed (each may run a
+	// pass) before the count is taken.
+	eventually(t, 10*time.Second, "the startup events consumed", func() bool { return len(g.out) == 0 })
+	settled := passes.Load()
+	for {
+		time.Sleep(100 * time.Millisecond)
+		if n := passes.Load(); n == settled {
+			break
+		} else {
+			settled = n
+		}
+	}
 	seq, err := e.phone.Act("probe")
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(time.Second)
 	if _, err := e.phone.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if st := e.phone.Echoes[seq].Status; st != "" {
-		t.Fatalf("a pass ran without an event (echo %q): the test proves nothing", st)
+	if n := passes.Load(); n != settled || e.phone.Echoes[seq].Status != "" {
+		t.Fatalf("a pass ran without an event (%d passes, echo %q): the test proves nothing", n-settled, e.phone.Echoes[seq].Status)
 	}
 	g.out <- transport.Event{Zone: transport.SharedMailboxZone(status.RelayDeviceID)}
 	eventually(t, 10*time.Second, "the echo after the shared mailbox event", func() bool {
@@ -97,4 +111,7 @@ func TestSharedMailboxEventRunsAPass(t *testing.T) {
 		}
 		return e.phone.Echoes[seq].Status != ""
 	})
+	if passes.Load() == settled {
+		t.Fatal("the echo came without a pass")
+	}
 }

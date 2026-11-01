@@ -3,6 +3,7 @@ package cloudkit_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -65,9 +66,21 @@ func newRig(t *testing.T, opts ...bridgefake.Option) *rig {
 	t.Cleanup(cancel)
 	r := &rig{t: t, ctx: ctx, dir: dir, hub: kr.HubID().String(), st: st, ident: ident, kr: kr, sealer: secure.NewSealer(kr)}
 	r.fake = bridgefake.Serve(t, dir, opts...)
+	r.settle()
 	r.c = cloudkit.New(cloudkit.Config{Dir: dir, HubID: r.hub, RelayID: relayID})
 	t.Cleanup(func() { _ = r.c.Close() })
 	return r
+}
+
+// settle stores the bridge's generation with nothing pending: a hub whose
+// stored state is already of this bridge (the tests of bridge-level
+// behaviour start there; generation_test starts elsewhere too).
+func (r *rig) settle() {
+	r.t.Helper()
+	b, _ := json.Marshal(map[string]string{"generation": r.fake.Generation()})
+	if err := os.WriteFile(filepath.Join(r.dir, cloudkit.GenerationFile), b, 0o600); err != nil {
+		r.t.Fatal(err)
+	}
 }
 
 func (r *rig) data(plain string, payload []byte) secure.Record {

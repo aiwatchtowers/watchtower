@@ -663,6 +663,9 @@ func (h *hubRuntime) pass(ctx context.Context) {
 	if h.isHeld() {
 		return
 	}
+	if h.sup.o.onPass != nil {
+		h.sup.o.onPass()
+	}
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
 		rep, err := h.proc.Pass(pctx)

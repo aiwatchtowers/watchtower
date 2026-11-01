@@ -172,6 +172,7 @@ func TestSupervisorStopsTheWholeProcessGroup(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
