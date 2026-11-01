@@ -252,6 +252,19 @@ final class SessionHostClient {
     /// (it exited idle after the old app's sessions ended) is used as v2.
     private(set) var hostVersion = SessionHostHello.protocolVersion
 
+    /// The connected host's pid, from its HelloOK (nil from a host that
+    /// does not send it). The one-time v1-host restart (`HostRestartStep`)
+    /// sends it SIGTERM once its runs are gone.
+    private(set) var hostPID: Int?
+
+    /// Ends the control connection — the host it reached was replaced (the
+    /// v1-host restart stopped it) — so the next `ensureRunning` connects
+    /// afresh, or starts a host, and settles `hostVersion` again.
+    func dropConnection() {
+        dropControl()
+        hostPID = nil
+    }
+
     /// Whether the connected host has v2's `Deliver`, `Stop` and
     /// `PromptHint`; a v1-only host gets the app's own typing and hang-up.
     var speaksV2: Bool { hostVersion >= SessionHostHello.protocolVersion }
@@ -293,7 +306,8 @@ final class SessionHostClient {
         }
         control = transport
         do {
-            _ = try await request(.json(.hello, SessionHostHello(version: version)), expecting: .helloOK)
+            let reply = try await request(.json(.hello, SessionHostHello(version: version)), expecting: .helloOK)
+            hostPID = (try? reply.decoded(SessionHostHello.self))?.pid
             return .connected
         } catch {
             if control === transport { dropControl() }

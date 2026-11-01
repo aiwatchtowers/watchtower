@@ -365,6 +365,26 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "mobileSettingsMoved-narrow", size: NSSize(width: 320, height: 180)) {
                 MobileMovedShotFixtures.screen()
+            },
+            // The one-time v1-host restart (go hub phase 3 Task 19): the notice waiting, busy,
+            // failed with Retry and narrow; the other workspaces' wait lines, wide and narrow.
+            DesignShot(name: "hostRestartNotice", size: NSSize(width: 760, height: 64)) {
+                HostRestartShotFixtures.notice(.waitingForContinue)
+            },
+            DesignShot(name: "hostRestartBusy", size: NSSize(width: 760, height: 72)) {
+                HostRestartShotFixtures.notice(.stopping(done: 2, total: 5))
+            },
+            DesignShot(name: "hostRestartError", size: NSSize(width: 760, height: 72)) {
+                HostRestartShotFixtures.notice(.failed(HostRestartStep.hostDidNotStart))
+            },
+            DesignShot(name: "hostRestartNotice-narrow", size: NSSize(width: 360, height: 96)) {
+                HostRestartShotFixtures.notice(.waitingForContinue)
+            },
+            DesignShot(name: "workspaceSwitcherWaitLine", size: NSSize(width: 420, height: 110)) {
+                HostRestartShotFixtures.waitLines()
+            },
+            DesignShot(name: "workspaceSwitcherWaitLine-narrow", size: NSSize(width: 220, height: 110)) {
+                HostRestartShotFixtures.waitLines()
             }
         ] + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.

@@ -18,6 +18,10 @@ struct SystemSettings: View {
                     Text(config.activeWorkspace ?? "None")
                         .foregroundStyle(.secondary)
                 }
+                // Other workspaces' sessions the v1-host restart left for their launch (go hub spec §8 p. 4b).
+                if let waiting = appState.hostRestart?.waitingWorkspaces, !waiting.isEmpty {
+                    HostRestartWaitLines(workspaces: waiting)
+                }
             }
             aiSection
             workbenchSection
