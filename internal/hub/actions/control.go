@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -16,34 +17,104 @@ import (
 
 // The control queue and the phone's controls (Go hub spec §8 p. 3, relay sim
 // rules 6, 7a and 15). The control kinds are wire.Control*; the hub writes
-// resend_from and transport_switch_rejected in phase 1 (transport_switched
-// and hub_on_relay come with the switch, phase 3) and reads skip_to,
-// epoch_ack and transport_switch.
+// resend_from and transport_switch_rejected, transport_switched and
+// hub_on_relay (the switcher's, through SealControlFor and Stale), and reads
+// skip_to, epoch_ack and transport_switch.
 
-// switchNotSupported is transport_switch_rejected's reason while the hub
-// cannot switch transports (phase 1): the phone stops waiting at once.
-const switchNotSupported = "not supported yet"
+// SwitchNotSupported is transport_switch_rejected's reason on a hub that
+// cannot switch transports (no Switch): the phone stops waiting at once.
+const SwitchNotSupported = "not supported yet"
+
+// Switch is the hub's transport switcher as a processor sees it
+// (internal/hub/switcher). A hub without one (headless, relay-only) answers
+// every transport_switch "not supported yet". With one, the hub runs a
+// processor per transport and each owns its own queue keys.
+type Switch interface {
+	// Active reports whether k is the transport the hub applies actions
+	// from. On any other a processor applies nothing (sim rule 12a): it
+	// answers a phone's action with Stale's control and leaves the record
+	// to the phone, and reads only transport_switch, epoch_ack and the
+	// phones' device records.
+	IsActive(k transport.Kind) bool
+	// Request is a phone's transport_switch toward target (from = its
+	// device id): nil accepts it, *SwitchRejected rejects it, any other
+	// error leaves it for the next pass. It must not call back into a
+	// processor (it runs inside a pass).
+	Request(ctx context.Context, from string, target transport.Kind, reason string) error
+	// Stale is the answer to device's action read on the inactive
+	// transport k: the control to queue there and the epoch to seal it in
+	// (0 = the current one), or ok false for none. Called once per record
+	// version; it must not call back into a processor.
+	Stale(ctx context.Context, k transport.Kind, device string) (c wire.Control, epoch uint32, ok bool, err error)
+}
+
+// SwitchRejected is Switch.Request's refusal: the reason and the wait the
+// phone gets in transport_switch_rejected (0 = no retry_after_s).
+type SwitchRejected struct {
+	Reason     string
+	RetryAfter time.Duration
+}
+
+func (e *SwitchRejected) Error() string { return "transport switch rejected: " + e.Reason }
+
+// SealControlFor seals c for device's mailbox on this processor's transport
+// as a control_queue row, in epoch (0 = the current one), keeping c's id
+// when it has one (one control id, a copy per transport). ok is false when
+// the phone has no mailbox here (not linked, or no relay device id on the
+// hosted relay). The caller enqueues the row (state.Enqueue).
+func (p *Processor) SealControlFor(device string, c wire.Control, epoch uint32) (row state.Control, ok bool, err error) {
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return state.Control{}, false, err
+	}
+	for _, b := range boxes {
+		if !sameID(device, b.id) {
+			continue
+		}
+		sealer := p.cfg.Sealer
+		if epoch != 0 {
+			sealer = sealer.InEpoch(epoch)
+		}
+		q, err := p.sealControlIn(sealer, b, c)
+		if err != nil {
+			return state.Control{}, false, err
+		}
+		return q.control(b.queue), true, nil
+	}
+	return state.Control{}, false, nil
+}
 
 // sealControl seals c as a hub control c-<uuid> for b's phone: a new id, and
 // device_id and hub_id naming the phone and this hub. It is queued with
 // ExpectAbsent (a new record).
 func (p *Processor) sealControl(b mailbox, c wire.Control) (queued, error) {
-	id, err := newUUID()
-	if err != nil {
-		return queued{}, err
+	c.ID = ""
+	return p.sealControlIn(p.cfg.Sealer, b, c)
+}
+
+// sealControlIn is sealControl with sealer (the Sealer, or one pinned to an
+// older epoch) and c's own id when it has one: the switcher writes one
+// control id as two copies, one per transport.
+func (p *Processor) sealControlIn(sealer *secure.Sealer, b mailbox, c wire.Control) (queued, error) {
+	if c.ID == "" {
+		id, err := newUUID()
+		if err != nil {
+			return queued{}, err
+		}
+		c.ID = id
 	}
 	device, hub := b.id.String(), p.cfg.Keys.HubID().String()
-	c.ID, c.DeviceID, c.HubID = id, &device, &hub
+	c.DeviceID, c.HubID = &device, &hub
 	payload, err := wire.Marshal(c)
 	if err != nil {
 		return queued{}, err
 	}
-	plain := "c-" + id
-	name, err := p.cfg.Sealer.WireName(secure.ZoneRelay, plain)
+	plain := "c-" + c.ID
+	name, err := sealer.WireName(secure.ZoneRelay, plain)
 	if err != nil {
 		return queued{}, err
 	}
-	rec, err := p.cfg.Sealer.ToPhone(b.zone, b.id, name, kindControl, plain, payload)
+	rec, err := sealer.ToPhone(b.zone, b.id, name, kindControl, plain, payload)
 	if err != nil {
 		return queued{}, fmt.Errorf("actions: sealing %s: %w", c.Kind, err)
 	}
@@ -103,7 +174,10 @@ func (p *Processor) readControl(ctx context.Context, b mailbox, rec transport.St
 	case wire.ControlEpochAck:
 		return p.epochAck(ctx, b, rec, o, c)
 	case wire.ControlSwitch:
-		return p.rejectSwitch(ctx, b, rec, o)
+		if p.cfg.Switch == nil {
+			return p.rejectSwitch(ctx, b, rec, o)
+		}
+		return p.requestSwitch(ctx, b, rec, o, c)
 	}
 	return p.markRead(ctx, b, rec, o)
 }
@@ -170,12 +244,58 @@ func (p *Processor) epochAck(ctx context.Context, b mailbox, rec transport.Store
 	})
 }
 
+// requestSwitch hands a phone's transport_switch to the hub's switcher
+// (sim rules 8–10). Accepted, the request is marked read and the switcher
+// carries the switch out after the pass; rejected (*SwitchRejected), the
+// phone gets transport_switch_rejected with the reason and retry_after_s,
+// queued with the read mark; any other error leaves the request unread for
+// the next pass. A target that is no transport is read with no effect.
+func (p *Processor) requestSwitch(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, c wire.Control) error {
+	if c.Target == nil || (*c.Target != wire.TransportRelay && *c.Target != wire.TransportCloudKit) {
+		log.Printf("hub: a transport_switch of device %s names no transport: dropped", b.id)
+		return p.markRead(ctx, b, rec, o)
+	}
+	reason := ""
+	if c.Reason != nil {
+		reason = *c.Reason
+	}
+	err := p.cfg.Switch.Request(ctx, b.id.String(), transport.Kind(*c.Target), reason)
+	var rej *SwitchRejected
+	switch {
+	case err == nil:
+		return p.markRead(ctx, b, rec, o)
+	case errors.As(err, &rej):
+		why := rej.Reason
+		ctl := wire.Control{Kind: wire.ControlSwitchRejected, Reason: &why}
+		if rej.RetryAfter > 0 {
+			secs := uint32((rej.RetryAfter + time.Second - 1) / time.Second)
+			ctl.RetryAfterS = &secs
+		}
+		q, err := p.sealControl(b, ctl)
+		if err != nil {
+			return err
+		}
+		if err := p.decide(ctx, b, func(tx *sql.Tx) error {
+			if err := mark(tx, b, rec.Name, o); err != nil {
+				return err
+			}
+			return state.Enqueue(tx, q.control(b.queue))
+		}); err != nil {
+			return err
+		}
+		log.Printf("hub: device %s asked for a transport switch: rejected, %s", b.id, why)
+		return nil
+	}
+	return err
+}
+
 // rejectSwitch answers a phone's transport_switch with
 // transport_switch_rejected("not supported yet"), queued in the transaction
 // that reads the request (so it is retried until written); the hub's
-// transport does not change. Phase 3 implements the switch (sim rules 8–16).
+// transport does not change. A hub without a switcher (a headless,
+// relay-only hub) keeps this answer.
 func (p *Processor) rejectSwitch(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened) error {
-	reason := switchNotSupported
+	reason := SwitchNotSupported
 	q, err := p.sealControl(b, wire.Control{Kind: wire.ControlSwitchRejected, Reason: &reason})
 	if err != nil {
 		return err

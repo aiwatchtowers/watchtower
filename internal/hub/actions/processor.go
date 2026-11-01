@@ -35,6 +35,9 @@ type Config struct {
 	// Links applies the phones' device records (device_record.go); nil
 	// leaves them alone.
 	Links Links
+	// Switch is the hub's transport switcher (control.go); nil on a hub
+	// with one transport, which rejects every transport_switch.
+	Switch Switch
 }
 
 // Processor reads the phones' mailboxes and applies their actions. Pass and
@@ -57,6 +60,9 @@ type Processor struct {
 	// strikes holds, per record version of a shared zone, the failures of
 	// its content (shared.go); guarded by mu.
 	strikes map[string]*strikeEntry
+	// staleSeen is the record versions answered on standby (standby.go):
+	// zone and wire name → RecordSeq; guarded by mu.
+	staleSeen map[string]uint64
 }
 
 // SetPaused pauses the processor (spec §7.3, a headless hub with no paying
@@ -150,7 +156,9 @@ func (p *Processor) mailboxes() ([]mailbox, error) {
 		b := mailbox{id: id, zone: zone, queue: zone, link: d.LinkNonce, linkedAt: d.LinkedAt}
 		if zone == shared {
 			b.queue, b.shared = shared+"@"+id.String(), true
-			if d.RelayDeviceID != "" {
+			// With a switcher the relay mailbox's queue is the relay
+			// processor's own, never moved here.
+			if d.RelayDeviceID != "" && p.cfg.Switch == nil {
 				b.oldQueues = []string{transport.MailboxZone(p.cfg.HubRelayID, d.RelayDeviceID)}
 			}
 		}
@@ -245,10 +253,7 @@ func (p *Processor) Pass(ctx context.Context) (PassReport, error) {
 		for _, b := range g.boxes {
 			// Held actions that are next in line first: a drain an earlier
 			// pass left at the batch limit (or a crash) resumes here.
-			err := p.drainHeld(ctx, b, ps)
-			if err == nil {
-				err = p.retryUploads(ctx, b, ps)
-			}
+			err := p.drainHeldActive(ctx, b, ps)
 			if err == nil {
 				err = p.readMailbox(ctx, b, ps)
 			}
@@ -405,6 +410,11 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 			return err
 		}
 		if err := p.fault("opened " + b.id.String() + " " + rec.Name); err != nil {
+			return err
+		}
+	}
+	if p.standby() {
+		if left, err := p.onStandby(ctx, b, rec, opened); left || err != nil {
 			return err
 		}
 	}

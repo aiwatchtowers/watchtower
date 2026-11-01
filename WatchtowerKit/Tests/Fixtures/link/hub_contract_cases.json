@@ -605,5 +605,113 @@
         "keeps_audio": true
       }
     }
+  ],
+  "transport_switched": [
+    {
+      "name": "switched_with_keybox",
+      "json": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "keybox": "AQIDBAUGBwg",
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "expect": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "keybox": "AQIDBAUGBwg",
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "kit": {
+        "target": "relay",
+        "epoch": 3,
+        "keybox": "AQIDBAUGBwg"
+      }
+    },
+    {
+      "name": "switched_by_entitlement",
+      "json": {
+        "at": 1730000000.5,
+        "by": "entitlement_expired",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 4,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000005",
+        "keybox": "AQIDBAUGBwg",
+        "kind": "transport_switched",
+        "target": "cloudkit"
+      },
+      "expect": {
+        "at": 1730000000.5,
+        "by": "entitlement_expired",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 4,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000005",
+        "keybox": "AQIDBAUGBwg",
+        "kind": "transport_switched",
+        "target": "cloudkit"
+      },
+      "kit": {
+        "target": "cloudkit",
+        "epoch": 4,
+        "keybox": "AQIDBAUGBwg"
+      }
+    },
+    {
+      "name": "keybox_object_reads_as_none",
+      "json": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000006",
+        "keybox": {"grant": {}},
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "expect": null,
+      "kit": {
+        "target": "relay",
+        "epoch": 3,
+        "keybox": null
+      }
+    },
+    {
+      "name": "transport_marker",
+      "json": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "expect": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "kit": {
+        "target": "relay",
+        "epoch": 3,
+        "keybox": null
+      }
+    }
   ]
 }

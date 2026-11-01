@@ -1,0 +1,117 @@
+package actions
+
+import (
+	"context"
+	"database/sql"
+	"log"
+
+	"watchtower/internal/hub/secure"
+	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/wire"
+)
+
+// Standby (relay sim rule 12a): with a switcher the hub runs a processor per
+// transport, and only the active transport's applies anything. The other one
+// is polled for the phones' controls (sim rule 11): a transport_switch and an
+// epoch_ack are read as on the active side, and so are CloudKit's device
+// records (a phone may unlink while the hub runs on the relay). Every other
+// phone record — an action, an upload, another control — is left to the
+// phone, never applied, deleted or marked: a phone that has not followed the
+// switch gets the switcher's answer (transport_switched again or
+// hub_on_relay), once per record version, and its outbox resends the same
+// bytes on the transport it follows to (sim rule 13), where the ledger
+// applies each action once.
+
+// maxStaleSeen caps the standby answer table; it is cleared when full.
+const maxStaleSeen = 4096
+
+// standby reports whether this processor's transport is not the hub's
+// active one.
+func (p *Processor) standby() bool {
+	return p.cfg.Switch != nil && !p.cfg.Switch.IsActive(p.cfg.Transport.Kind())
+}
+
+// drainHeldActive drains b's held actions and retries its held uploads,
+// on the active transport only: on standby nothing is applied.
+func (p *Processor) drainHeldActive(ctx context.Context, b mailbox, ps *pass) error {
+	if p.standby() {
+		return nil
+	}
+	if err := p.drainHeld(ctx, b, ps); err != nil {
+		return err
+	}
+	return p.retryUploads(ctx, b, ps)
+}
+
+// onStandby routes one opened phone record on standby: left is true when it
+// was left to the phone (answered at most once per record version); false
+// for the records read as on the active side.
+func (p *Processor) onStandby(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened) (left bool, err error) {
+	switch o.Frame.Kind {
+	case kindDevice:
+		return false, nil
+	case kindControl:
+		var c wire.Control
+		if decodes(o.Frame.Payload, &c) && (c.Kind == wire.ControlSwitch || c.Kind == wire.ControlEpochAck) {
+			return false, nil
+		}
+	case kindAction, kindRecordingUpload:
+	default:
+		return true, nil // an unknown kind has no work on either side
+	}
+	return true, p.answerStale(ctx, b, rec)
+}
+
+// answerStale queues the switcher's answer to a record b's phone left on
+// this standby transport, once per record version.
+func (p *Processor) answerStale(ctx context.Context, b mailbox, rec transport.Stored) error {
+	key := b.zone + "\x00" + rec.Name
+	if seq, ok := p.staleSeen[key]; ok && seq == rec.RecordSeq {
+		return nil
+	}
+	c, epoch, ok, err := p.cfg.Switch.Stale(ctx, p.cfg.Transport.Kind(), b.id.String())
+	if err != nil {
+		return err
+	}
+	if ok {
+		sealer := p.cfg.Sealer
+		if epoch != 0 {
+			sealer = sealer.InEpoch(epoch)
+		}
+		q, err := p.sealControlIn(sealer, b, c)
+		if err != nil {
+			return err
+		}
+		if err := p.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error { return state.Enqueue(tx, q.control(b.queue)) }); err != nil {
+			return err
+		}
+		log.Printf("hub: device %s wrote on the standby %s transport: answered %s", b.id, p.cfg.Transport.Kind(), c.Kind)
+	}
+	if p.staleSeen == nil || len(p.staleSeen) >= maxStaleSeen {
+		p.staleSeen = map[string]uint64{}
+	}
+	p.staleSeen[key] = rec.RecordSeq
+	return nil
+}
+
+// Rewind resets the stored change tokens of every phone mailbox on this
+// processor's transport, so its next pass reads each mailbox from the start:
+// the switcher calls it when the transport becomes active, so the records
+// left there on standby are read now (repeats are answered from the ledger,
+// never applied twice).
+func (p *Processor) Rewind() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	boxes, err := p.mailboxes()
+	if err != nil {
+		return err
+	}
+	for _, g := range byZone(boxes) {
+		if err := p.cfg.Store.SetZoneToken(g.zone, 0); err != nil {
+			return err
+		}
+	}
+	p.staleSeen = nil
+	return nil
+}

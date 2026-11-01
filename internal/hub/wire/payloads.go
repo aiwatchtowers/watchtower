@@ -23,6 +23,13 @@ const (
 	ControlSwitched       = "transport_switched"
 	ControlSwitchRejected = "transport_switch_rejected"
 	ControlHubOnRelay     = "hub_on_relay"
+
+	// SwitchedByEntitlement is transport_switched's by when the relay
+	// entitlement lapsed rather than a phone asking.
+	SwitchedByEntitlement = "entitlement_expired"
+	// SwitchTooSoon is transport_switch_rejected's reason within the
+	// anti-flap window (with retry_after_s).
+	SwitchTooSoon = "too_soon"
 )
 
 // Heartbeat flavors and sharing states.
@@ -59,7 +66,7 @@ type ActionRequest struct {
 //	resend_from, skip_to           Seq
 //	epoch_ack                      Epoch
 //	transport_switch               Target (phone -> hub; Reason on entitlement_expired)
-//	transport_switched             Target, Epoch, By, At, Keybox (the new epoch's keybox)
+//	transport_switched             Target, Epoch, By, At, Keybox (the new epoch's sealed keybox)
 //	transport_switch_rejected      Reason, RetryAfterS
 //	hub_on_relay                   none
 type Control struct {
@@ -71,15 +78,34 @@ type Control struct {
 	Epoch    *uint32 `json:"epoch,omitempty"`
 	// Target is a transport: TransportRelay or TransportCloudKit.
 	Target *string `json:"target,omitempty"`
-	// By is the device id of the phone whose switch this answers.
+	// By is the device id of the phone whose switch this answers, or
+	// SwitchedByEntitlement.
 	By *string `json:"by,omitempty"`
 	At *Time   `json:"at,omitempty"`
-	// Keybox carries the new epoch's keys inside transport_switched.
-	Keybox *Keybox `json:"keybox,omitempty"`
+	// Keybox, inside transport_switched, is the unpadded base64url of the
+	// sealed keybox-<DEVICE_ID> envelope of the new epoch for that phone
+	// (signed by hub_sig, sealed to its dev_kx: the bytes the data zone
+	// would carry). A phone reads a value that is not a string as no keybox.
+	Keybox *string `json:"keybox,omitempty"`
 	Reason *string `json:"reason,omitempty"`
 	// RetryAfterS is whole seconds (the relay proto's retry_after_s).
 	RetryAfterS *uint32 `json:"retry_after_s,omitempty"`
 }
+
+// Marker is the transport marker's payload for a transport_switched c
+// (protocol §7.6, phone contract point 4): c without its keybox and
+// device_id, the same for every phone.
+func (c Control) Marker() Control {
+	c.Keybox, c.DeviceID = nil, nil
+	return c
+}
+
+// Transport marker record: plain kind "transport", id "marker", in a
+// transport's data zone.
+const (
+	MarkerKind  = "transport"
+	MarkerPlain = MarkerKind + "-marker"
+)
 
 // HeartbeatAccount is one read-only account row: label and status only.
 type HeartbeatAccount struct {
