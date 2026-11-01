@@ -261,3 +261,37 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
 - A CLI-only Mac runs the daemon only after a GUI login (LaunchAgent; no linger equivalent without sudo, ask #881).
 - Vouching (`not_vouched`, `vouch_revoked`) needs relay ask #805; until it ships the hub registers as a Mac with no
   attestation, which only the local stand accepts.
+
+## Phase 3 — the identity store on a desktop host
+
+`identity.ForDesktopHost(st, dir, identity.KeychainUsable)` picks the store once and records it in `hub_meta`
+`identity_store` (`keychain` | `file`); later starts follow the record and never re-decide. `KeychainStore` keeps four
+generic-password items (service `com.watchtower.hub`, accounts `hub_sig`, `hub_kx`, `wrap`, `relay_auth`, staged copies
+`<name>.staged`), never synchronizable, with every query set to fail instead of prompting. `FileStore` gained the same
+staged trio (`identity.staged.key`, 0600; promote = one rename). `KeychainUsable` comes from the string ldflag
+`identity.KeychainBuildFlag` (`-X` sets strings only); a plain `go build` defaults to the Keychain.
+
+### Keychain check (2026-11-01, Task 1 Step 1)
+
+`scripts/hub-keychain-check.sh` (run from a plain Terminal; refuses under an agent marker) builds two `watchtower`
+binaries of different versions, signs both as `scripts/build-app.sh` signs `Contents/MacOS/watchtower` (same identity
+selection, identifier `watchtower`, hardened runtime, no entitlements), and runs the hidden owner-only
+`hub keychain-probe write|read|delete` on a throwaway service: the older build writes, the newer build reads and
+deletes, in Terminal and in a temporary user LaunchAgent.
+
+Result on a real Mac (Developer ID identity, unlocked login keychain), both contexts:
+
+| Step | Result |
+|---|---|
+| older build: write | ok |
+| newer build: read | ok, no prompt |
+| newer build: delete | `errSecInvalidOwnerEdit` (-25244) |
+
+**Result: fail → file store.** The newer build may read the items (the login keychain's partition list trusts the
+team id) but it is not their owner, so it cannot delete them: a hand-over finished by an updated build, an unlink-all
+or a reset could not remove the old keys. The data-protection keychain, where `kSecAttrAccessible` would apply, is not
+reachable: a binary without a `keychain-access-groups` entitlement gets `errSecMissingEntitlement` (-34018), and the
+CLI has no provisioning profile of its own. Both `scripts/build-app.sh` and the `Makefile` therefore pass
+`-X watchtower/internal/hub/identity.KeychainBuildFlag=false` (pinned by `scripts/tests/test-build-app-relay.sh`), so a
+desktop host keeps its identity in `<hub dir>/identity.key` (0600), like a headless host (owner, ask #807). The guide's
+privacy page says so in Task 24.

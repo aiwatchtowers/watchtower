@@ -162,7 +162,18 @@ test_cli_zip_only_on_the_signed_branch() {
     echo "ok: test_cli_zip_only_on_the_signed_branch"
 }
 
+test_cli_carries_the_keychain_build_flag() {
+    local builds
+    builds=$(grep -E '^[[:space:]]*([A-Z_]+=[^ ]+ )*go build' -A2 "$BUILD_APP" | grep -- '-ldflags' || true)
+    case "$builds" in
+        *'-X watchtower/internal/hub/identity.KeychainBuildFlag=false'*) ;;
+        *) note_fail "ldflag: the CLI build does not set identity.KeychainBuildFlag=false (Go hub phase 3 Task 1 check failed)"; return ;;
+    esac
+    echo "ok: test_cli_carries_the_keychain_build_flag"
+}
+
 test_cli_carries_the_relay_origin_ldflag
+test_cli_carries_the_keychain_build_flag
 test_release_build_refuses_an_empty_relay_origin
 test_cli_zip_only_on_the_signed_branch
 

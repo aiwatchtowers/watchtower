@@ -37,8 +37,8 @@ var fileMagic = [8]byte{'W', 'T', 'H', 'U', 'B', 'I', 'D', 1}
 const fileLen = len(fileMagic) + 4*32
 
 // FileStore keeps the identity in one 0600 file (<hub dir>/identity.key) in
-// a 0700 dir: the headless host's store, and the desktop's until phase 3's
-// Keychain store. A file with any group or other permission bit is refused
+// a 0700 dir: the headless host's store, and a desktop host's when
+// ForDesktopHost recorded "file". A file with any group or other permission bit is refused
 // with ErrInsecureMode, never read.
 type FileStore struct{ Path string }
 
@@ -125,6 +125,59 @@ func (s FileStore) Save(id Identity) (err error) {
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync()
 		_ = d.Close()
+	}
+	return nil
+}
+
+// StagedFileName is the staged identity's file next to the live one: an
+// identity handed over by the Swift hub waits there until it is adopted.
+const StagedFileName = "identity.staged.key"
+
+func (s FileStore) staged() FileStore {
+	return FileStore{Path: filepath.Join(filepath.Dir(s.Path), StagedFileName)}
+}
+
+// Staged reads the staged identity; ok is false when none is staged. The
+// file follows the live one's rules (0600, else ErrInsecureMode).
+func (s FileStore) Staged() (Identity, bool, error) {
+	id, err := s.staged().Load()
+	if errors.Is(err, ErrNoIdentity) {
+		return Identity{}, false, nil
+	}
+	if err != nil {
+		return Identity{}, false, err
+	}
+	return id, true, nil
+}
+
+// SaveStaged writes the staged identity file (0600, atomic).
+func (s FileStore) SaveStaged(id Identity) error { return s.staged().Save(id) }
+
+// PromoteStaged makes the staged identity the live one with one rename.
+// The staged file is checked first (mode, format), never promoted blind;
+// ErrNoIdentity when nothing is staged.
+func (s FileStore) PromoteStaged() error {
+	st := s.staged()
+	id, err := st.Load()
+	if err != nil {
+		return err
+	}
+	id.Zero()
+	if err := os.Rename(st.Path, s.Path); err != nil {
+		return fmt.Errorf("identity: promoting the staged identity: %w", err)
+	}
+	if d, err := os.Open(filepath.Dir(s.Path)); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
+// DeleteStaged removes the staged identity file; a missing file is not an
+// error.
+func (s FileStore) DeleteStaged() error {
+	if err := os.Remove(s.staged().Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("identity: removing the staged identity: %w", err)
 	}
 	return nil
 }
