@@ -206,6 +206,9 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 	}
 
 	time.Sleep(settleFor(req.SettleMs, sess.profile))
+	if s.opts.inPause != nil {
+		s.opts.inPause()
+	}
 	reply := s.recheck(c, req.ID, replies)
 	return s.afterPause(sess, req, reply)
 }

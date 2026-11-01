@@ -159,7 +159,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	set, err := sources.All(sources.Config{
 		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode, Live: live,
 		AssetDir: filepath.Join(o.Dir, assetDirName, transcriptAssetDir),
-		Home:     home, Away: away, Active: h.phoneLinked,
+		Home:     home, Away: away, Active: h.phoneLinked, View: h.sup.desktopView,
 		OnChatChange:   func() { h.publishSoon(slices.KindSessionChat) },
 		OnReportChange: func() { h.publishSoon(reportKinds...) },
 		OnGitChange:    func() { h.publishSoon("workbench") },
@@ -173,7 +173,11 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		return nil, err
 	}
 	w.set = set
-	w.handlers = handlers.Register(d, handlerDeps(o, st, set, watches, h.kr, port, lateEcho))
+	deps := handlerDeps(o, st, set, watches, h.kr, port, lateEcho)
+	deps.RecordingQueued = func(uploadID string) {
+		h.sup.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: uploadID})
+	}
+	w.handlers = handlers.Register(d, deps)
 
 	w.lane = newStateLane(o.DB.DB, o.Clock)
 	if o.laneBackstop > 0 {

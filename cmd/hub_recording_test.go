@@ -107,6 +107,59 @@ func TestHubRecordingClaimFinishJSONKeys(t *testing.T) {
 	assert.EqualValues(t, 42, m["transcript_id"])
 }
 
+// TestHubRecordingProgressJSONKeys: `hub recording progress --json` pins
+// {upload_id, status, phase, percent}; percent is null outside transcribing.
+func TestHubRecordingProgressJSONKeys(t *testing.T) {
+	dir := hubTestDir(t)
+	queueJob(t, dir, "u-1")
+	_, err := runHub(t, "recording", "claim", "--upload", "u-1")
+	require.NoError(t, err)
+	out, err := runHub(t, "recording", "progress", "--upload", "u-1", "--phase", "transcribing", "--percent", "40", "--json")
+	require.NoError(t, err)
+	m := decodeKeys(t, out)
+	assert.ElementsMatch(t, []string{"upload_id", "status", "phase", "percent"}, hubKeysOf(m))
+	assert.Equal(t, "u-1", m["upload_id"])
+	assert.Equal(t, "claimed", m["status"])
+	assert.Equal(t, "transcribing", m["phase"])
+	assert.EqualValues(t, 40, m["percent"])
+
+	out, err = runHub(t, "recording", "progress", "--upload", "u-1", "--phase", "diarizing", "--json")
+	require.NoError(t, err)
+	m = decodeKeys(t, out)
+	assert.Equal(t, "diarizing", m["phase"])
+	assert.Nil(t, m["percent"])
+
+	_, err = runHub(t, "recording", "progress", "--upload", "u-1", "--phase", "summarizing", "--percent", "5")
+	assert.ErrorContains(t, err, "malformed")
+	_, err = runHub(t, "recording", "progress", "--upload", "u-1")
+	assert.ErrorContains(t, err, "usage")
+}
+
+// TestDesktopOpsRefusedUnderAnAgentMarker: the Desktop's progress verb is
+// refused under every agent marker and writes nothing (desktop_view and
+// desktop_watch have no CLI verb: the 0600 socket is Desktop's alone).
+func TestDesktopOpsRefusedUnderAnAgentMarker(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			dir := hubTestDir(t)
+			queueJob(t, dir, "u-1")
+			_, err := runHub(t, "recording", "claim", "--upload", "u-1")
+			require.NoError(t, err)
+			t.Setenv(marker, "1")
+			_, err = runHub(t, "recording", "progress", "--upload", "u-1", "--phase", "diarizing")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "under an AI agent")
+			assert.Contains(t, err.Error(), marker)
+			st, err := state.Open(dir)
+			require.NoError(t, err)
+			defer func() { _ = st.Close() }()
+			job, err := st.RecordingJob("u-1")
+			require.NoError(t, err)
+			assert.Empty(t, job.Phase, "no progress written")
+		})
+	}
+}
+
 func TestHubRecordingFinishWithAnErrorStoresItsClassOnly(t *testing.T) {
 	dir := hubTestDir(t)
 	queueJob(t, dir, "u-1")
