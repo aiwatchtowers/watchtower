@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -117,7 +118,7 @@ final class HubBootTests: XCTestCase {
             let session = try HubSession(
                 transport: InMemoryCloudTransport(),
                 replicaPath: paths.replicaPath(hubID),
-                transportKind: .cloudKit,
+                backend: .live,
                 hubID: hubID,
                 linkedDevice: device,
                 keys: try TestHub.keys(hubID),
@@ -443,6 +444,34 @@ final class HubBootTests: XCTestCase {
         XCTAssertEqual(env.session(TestHub.acme)?.linkedDevice, device)
         XCTAssertEqual(env.session(TestHub.home)?.route, .cloudKit(.private))
         XCTAssertEqual(try registry.activeHubID, TestHub.home)
+    }
+
+    /// A relay row's session runs on a relay transport over its own store file (R12), never the CloudKit one.
+    func testARelayRowBootsOnItsStore() async throws {
+        let paths = try makePaths()
+        let spies = RelaySpies()
+        let factory = HubSessionFactory.live(
+            paths: paths, keys: try TestE2E.phoneStore(), transports: .live(relay: try spies.relay())
+        )
+        var relayLink = link(TestHub.acme, mac: "build-box")
+        relayLink.transport = .relay
+        relayLink.relayMacDeviceID = "mac-acme"
+        let row = HubRow(
+            link: relayLink, flavor: nil, sortOrder: 0, state: .linked, grantMissingSince: nil, lastHeartbeatAt: nil,
+            linkedOn: Date()
+        )
+
+        let session = try factory.make(row, TestHub.acme, relayLink.route, device)
+        session.stop()
+
+        XCTAssertEqual(session.route, .hostedRelay(macDeviceID: "mac-acme"))
+        XCTAssertEqual(session.backend, .live)
+        XCTAssertNotNil(session.transportStore)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.transportStorePath(TestHub.acme, route: relayLink.route)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.transportStorePath(TestHub.acme)), "the CloudKit store is not made")
+        XCTAssertEqual(spies.network.attempts, 0, "a stopped session connects nothing")
+        await session.shutDown()
+        session.closeDatabases()
     }
 
     func testARowTheMacRemovedBootsFrozen() async throws {

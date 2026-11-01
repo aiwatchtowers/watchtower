@@ -32,8 +32,9 @@ struct HubRow: Equatable, Sendable {
 /// (deleted with the link) are not needed to send it.
 struct PendingFarewell: Equatable, Sendable {
     var hubID: String
-    /// The removed link's route: a `shared` CloudKit link leaves its shares
-    /// only once the record is out (it could not reach the zones after).
+    /// The removed link's route, which the record goes out on: a `shared`
+    /// CloudKit link leaves its shares only once the record is out (it could
+    /// not reach the zones after); a relay link's goes to its Mac's mailbox.
     var route: HubRoute
     /// The iCloud account the link was made on: another account's phone
     /// cannot reach the zones, so its farewell is dropped.
@@ -52,8 +53,6 @@ struct PendingFarewell: Equatable, Sendable {
 enum HubRegistryError: Error {
     /// The registry already holds `HubRegistry.limit` hubs.
     case full
-    /// The route has no place in a registry that serves CloudKit only (a hosted relay).
-    case unsupportedRoute
 }
 
 /// The phone's linked Macs, up to `limit`, in a small SQLite file outside
@@ -114,6 +113,18 @@ final class HubRegistry {
                   kind TEXT NOT NULL,
                   modified_at REAL NOT NULL,
                   payload BLOB NOT NULL,
+                  since REAL NOT NULL
+                );
+                """)
+        }
+        // Relay client Phase 3: a kept farewell's route kind and relay Mac (both NULL in a row an earlier build
+        // kept: CloudKit), and the relay slot removals a failed unlink left to retry (Task 10). Ids and a date only.
+        migrator.registerMigration("v3-relay") { db in
+            try db.execute(sql: """
+                ALTER TABLE pending_farewells ADD COLUMN route_kind TEXT;
+                ALTER TABLE pending_farewells ADD COLUMN relay_mac_device_id TEXT;
+                CREATE TABLE pending_slot_removals (
+                  mac_device_id TEXT PRIMARY KEY,
                   since REAL NOT NULL
                 );
                 """)
@@ -280,8 +291,9 @@ final class HubRegistry {
 
     // MARK: Pending farewells (#143)
 
-    /// Every kept farewell; one that does not read back (an unknown zone)
-    /// is logged and skipped.
+    /// Every kept farewell; one that does not read back (an unknown zone,
+    /// an unknown route kind, a relay route without its Mac) is logged and
+    /// skipped.
     func pendingFarewells() throws -> [PendingFarewell] {
         try queue.read { db in
             try Row.fetchAll(db, sql: "SELECT * FROM pending_farewells ORDER BY since").compactMap { row in
@@ -290,10 +302,13 @@ final class HubRegistry {
                     Self.logger.error("pending farewell with an unknown zone skipped")
                     return nil
                 }
-                let owner: String? = row["owner_name"]
+                guard let route = Self.farewellRoute(row) else {
+                    Self.logger.error("pending farewell with an unknown route skipped")
+                    return nil
+                }
                 return PendingFarewell(
                     hubID: row["hub_id"],
-                    route: .cloudKit(owner.map { .shared(ownerName: $0) } ?? .private),
+                    route: route,
                     userRecordName: row["user_record_name"],
                     record: CloudRecord(
                         recordName: row["record_name"], zone: zone, kind: row["kind"],
@@ -305,28 +320,48 @@ final class HubRegistry {
         }
     }
 
-    /// Keeps `farewell`, replacing one kept for the same hub.
+    /// Keeps `farewell`, replacing one kept for the same hub. A CloudKit
+    /// route keeps `route_kind` NULL, as an earlier build's row.
     func savePendingFarewell(_ farewell: PendingFarewell) throws {
-        let owner: String?
+        var owner: String?
+        var routeKind: String?
+        var relayMac: String?
         switch farewell.route {
         case .cloudKit(.shared(let ownerName)): owner = ownerName
-        case .cloudKit(.private): owner = nil
-        case .hostedRelay: throw HubRegistryError.unsupportedRoute
+        case .cloudKit(.private): break
+        case .hostedRelay(let macDeviceID):
+            routeKind = TransportKind.relay.rawValue
+            relayMac = macDeviceID
         }
         try queue.write { db in
             try db.execute(
                 sql: """
                     INSERT OR REPLACE INTO pending_farewells
-                        (hub_id, owner_name, user_record_name, record_name, zone, kind, modified_at, payload, since)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (hub_id, owner_name, user_record_name, record_name, zone, kind, modified_at, payload, since,
+                         route_kind, relay_mac_device_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     farewell.hubID, owner, farewell.userRecordName, farewell.record.recordName,
                     farewell.record.zone.rawValue, farewell.record.kind,
                     farewell.record.modifiedAt.timeIntervalSince1970, farewell.record.payload,
-                    farewell.since.timeIntervalSince1970
+                    farewell.since.timeIntervalSince1970, routeKind, relayMac
                 ]
             )
+        }
+    }
+
+    /// A kept farewell's route: NULL `route_kind` (or `cloudkit`) is CloudKit by its owner, `relay` the relay Mac.
+    private static func farewellRoute(_ row: Row) -> HubRoute? {
+        let owner: String? = row["owner_name"]
+        let cloudKit = HubRoute.cloudKit(owner.map { .shared(ownerName: $0) } ?? .private)
+        guard let kind: String = row["route_kind"] else { return cloudKit }
+        switch TransportKind(rawValue: kind) {
+        case .cloudKit: return cloudKit
+        case .relay:
+            let mac: String? = row["relay_mac_device_id"]
+            return mac.map { .hostedRelay(macDeviceID: $0) }
+        case nil: return nil
         }
     }
 

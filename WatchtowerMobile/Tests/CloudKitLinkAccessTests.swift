@@ -6,20 +6,11 @@ import XCTest
 final class CloudKitLinkAccessTests: XCTestCase {
     private let access = CloudKitLinkAccess()
 
-    func testAHostedRelayRouteIsRefused() async {
+    /// The relay's access is its pairing slot (R19): iCloud has nothing to join or leave for it.
+    func testAHostedRelayRouteJoinsAndLeavesWithoutACall() async throws {
         let route = HubRoute.hostedRelay(macDeviceID: "mac-acme")
-        do {
-            try await access.join(.none, route: route, hubID: "hub-acme")
-            XCTFail("join should refuse a hosted relay route")
-        } catch {
-            XCTAssertEqual(error as? UnsupportedRouteError, UnsupportedRouteError(route: route))
-        }
-        do {
-            try await access.leave(route: route, hubID: "hub-acme")
-            XCTFail("leave should refuse a hosted relay route")
-        } catch {
-            XCTAssertEqual(error as? UnsupportedRouteError, UnsupportedRouteError(route: route))
-        }
+        try await access.join(.none, route: route, hubID: "hub-acme")
+        try await access.leave(route: route, hubID: "hub-acme")
     }
 
     func testAnInvitationWithoutShareURLsIsRefusedBeforeAnyCall() async {

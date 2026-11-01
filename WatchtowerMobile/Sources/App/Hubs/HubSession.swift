@@ -4,12 +4,14 @@ import os
 import UIKit
 @_spi(DemoTransport) import WatchtowerSync
 
-/// Which transport a `HubSession` runs on: chosen by `AppEnvironment`'s
-/// live and demo builders, injectable through the designated init for
-/// tests. `.cloudKit` NEVER seeds: a real install starts empty and hydrates
-/// from the user's own zone.
-enum TransportKind: String, Sendable {
-    case cloudKit
+/// What a `HubSession` runs on: a live transport (CloudKit or the hosted
+/// relay, by the hub's route) or the in-memory demo. Chosen by
+/// `AppEnvironment`'s live and demo builders, injectable through the
+/// designated init for tests. `.live` NEVER seeds: a real install starts
+/// empty and hydrates from the user's own zones. (The Kit's
+/// `TransportKind` names the live transport itself.)
+enum SessionBackend: String, Sendable {
+    case live
     case inMemoryDemo
 }
 
@@ -143,7 +145,7 @@ final class HubSession {
     nonisolated static let placeholderHubID = "00000000-0000-0000-0000-000000000000"
 
     let store: ReplicaStore
-    let transportKind: TransportKind
+    let backend: SessionBackend
     let outbox: ActionOutbox
     /// `session_report_request` on opening a session detail, throttled per
     /// session for the app's lifetime.
@@ -363,7 +365,7 @@ final class HubSession {
     /// `CloudKitTransport` (none for any other transport). `linkedDevice`
     /// is the saved link (the demo kind is always `DemoSeed.device`). `keys` is the phone's
     /// E2E key material; nil: the demo pairing on the demo kind, none on
-    /// the CloudKit kind. Keys whose store holds no device id yet, or whose
+    /// the live backend. Keys whose store holds no device id yet, or whose
     /// hub id is not a UUID, wire no keys either (F14: the identity is never
     /// created here, only read; nothing is sealed or opened). `seqFloor`
     /// raises the phone's seq allocator above a wiped replica's ceiling.
@@ -386,7 +388,7 @@ final class HubSession {
     init(
         transport: any CloudSyncTransport & Sendable,
         replicaPath: String,
-        transportKind: TransportKind = .inMemoryDemo,
+        backend: SessionBackend = .inMemoryDemo,
         transportStore: TransportStore? = nil,
         hubID: String = DemoSeed.hubID,
         linkedDevice: LinkedDevice? = nil,
@@ -412,10 +414,10 @@ final class HubSession {
     ) throws {
         // The demo kind picks the fixed demo keys: never over CloudKit.
         precondition(
-            !(transport is any LiveTransport && transportKind == .inMemoryDemo),
+            !(transport is any LiveTransport && backend == .inMemoryDemo),
             "a live transport must not run under the demo kind"
         )
-        let hubLink = try Self.ownHubLink(keys, hubID: hubID, kind: transportKind, transportStore: transportStore)
+        let hubLink = try Self.ownHubLink(keys, hubID: hubID, kind: backend, transportStore: transportStore)
         self.sleep = sleep
         self.now = now
         self.energy = energy
@@ -424,15 +426,15 @@ final class HubSession {
         self.transport = transport
         liveTransport = transport as? any LiveTransport
         self.transportStore = transportStore
-        self.transportKind = transportKind
+        self.backend = backend
         self.hubID = hubID
         self.hold = hold
         self.route = route
         self.defaults = defaults
-        let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
+        let device = backend == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
         // The demo pairing only on the demo path: the demo kind over the in-memory transport.
-        let demoKeys = transportKind == .inMemoryDemo && transport is InMemoryCloudTransport
+        let demoKeys = backend == .inMemoryDemo && transport is InMemoryCloudTransport
         let sealed = try Self.sealedStack(
             transport: transport, replicaPath: replicaPath,
             keys: try keys ?? (demoKeys ? DemoSeed.phoneKeys() : nil), seqFloor: seqFloor,
@@ -494,7 +496,7 @@ final class HubSession {
         feed = RelayFeed(transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrateAfterEcho)
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
-            secure: secure, defaults: defaults, kind: transportKind, hubID: hubID, device: device,
+            secure: secure, defaults: defaults, kind: backend, hubID: hubID, device: device,
             route: route, wake: pushWake)
         sharedAlerts = Self.makeSharedAlerts(
             hubID: hubID, route: route, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
@@ -553,7 +555,7 @@ final class HubSession {
     private static func makeDeviceSettings(
         secure: SecureTransport,
         defaults: UserDefaults,
-        kind: TransportKind,
+        kind: SessionBackend,
         hubID: String,
         device: LinkedDevice?,
         route: HubRoute?,
@@ -561,7 +563,7 @@ final class HubSession {
     ) -> (DeviceSettings, AlertSubscriptionRegistrar?) {
         let settings = DeviceSettings(
             transport: secure, defaults: defaults,
-            alertDefaults: kind == .cloudKit ? UserDefaults(suiteName: AppEnvironment.appGroupID) : nil,
+            alertDefaults: kind == .live ? UserDefaults(suiteName: AppEnvironment.appGroupID) : nil,
             hubID: hubID
         )
         settings.linkedDevice = device
@@ -573,11 +575,11 @@ final class HubSession {
     /// a process with the app's iCloud entitlement: CloudKit raises an uncatchable exception without it).
     private static func makeAlertRegistrar(
         hubID: String,
-        kind: TransportKind,
+        kind: SessionBackend,
         route: HubRoute?,
         wake: (any PushWake)?
     ) -> AlertSubscriptionRegistrar? {
-        guard kind == .cloudKit, let route, let wake else { return nil }
+        guard kind == .live, let route, let wake else { return nil }
         return AlertSubscriptionRegistrar(hubID: hubID, route: route, wake: wake)
     }
 
@@ -707,7 +709,7 @@ final class HubSession {
         )
         // A raise this phone has not acknowledged yet (no session was up, or the Keychain was locked).
         acknowledgeNewestEpoch()
-        switch transportKind {
+        switch backend {
         case .inMemoryDemo:
             do {
                 // Each launch builds a new in-memory transport whose change
@@ -731,7 +733,7 @@ final class HubSession {
             } catch {
                 Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
             }
-        case .cloudKit:
+        case .live:
             // A session stopped before its boot ran (a frozen hub, an
             // orphan being cleared) never starts its engine.
             // Nor does a hub without stored link keys (`startsEngine`): its
@@ -1365,9 +1367,9 @@ final class HubSession {
     /// pairing): another hub's keys throw. Returns whether the hub's link keys are stored; a hub without them
     /// has its transport store's queue wiped here, before anything could start its engine.
     private static func ownHubLink(
-        _ keys: PhoneKeys?, hubID: String, kind: TransportKind, transportStore: TransportStore?
+        _ keys: PhoneKeys?, hubID: String, kind: SessionBackend, transportStore: TransportStore?
     ) throws -> HubLinkPresence {
-        guard kind == .cloudKit else { return .present }
+        guard kind == .live else { return .present }
         if let keys, keys.hubID != hubID {
             throw HubSessionError.keysOfAnotherHub
         }

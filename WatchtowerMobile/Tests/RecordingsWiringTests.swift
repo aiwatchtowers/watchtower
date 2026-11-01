@@ -523,7 +523,7 @@ final class RecordingsWiringTests: XCTestCase {
         let session = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .cloudKit,
+            backend: .live,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory()
         ) { uploader in

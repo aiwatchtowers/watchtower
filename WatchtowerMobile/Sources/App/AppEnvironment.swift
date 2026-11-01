@@ -35,7 +35,10 @@ final class AppEnvironment {
 
     /// The transport every session runs on (`Boot.make` registers for
     /// pushes on the live one only).
-    let transportKind: TransportKind
+    let backend: SessionBackend
+    /// The process's one hosted relay session (R2), built on first use and only while the relay is available;
+    /// `.off` on the demo and in tests.
+    @ObservationIgnored let relay: SharedRelaySession
     /// The selected tab and the Calendar stack.
     let navigation = AppNavigation()
     /// The ready recaps the owner has opened on this phone.
@@ -74,12 +77,14 @@ final class AppEnvironment {
     /// `setBadge` sets the app icon's badge to the open asks across every
     /// hub (`openAskTotal`), called whenever that total changes.
     init(
-        transportKind: TransportKind,
+        backend: SessionBackend,
         defaults: UserDefaults,
         registry: HubRegistry? = nil,
+        relay: SharedRelaySession = .off,
         setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge
     ) {
-        self.transportKind = transportKind
+        self.backend = backend
+        self.relay = relay
         self.registry = registry
         self.setBadge = setBadge
         recordingsSeen = RecordingsSeenStore(defaults: defaults)
@@ -89,7 +94,7 @@ final class AppEnvironment {
     /// One session, active: the tests and the boot until the registry
     /// holds the hubs.
     static func single(_ session: HubSession, defaults: UserDefaults) -> AppEnvironment {
-        let env = AppEnvironment(transportKind: session.transportKind, defaults: defaults)
+        let env = AppEnvironment(backend: session.backend, defaults: defaults)
         env.add(session)
         env.activate(session.hubID)
         return env
@@ -491,9 +496,10 @@ final class AppEnvironment {
         factory: HubSessionFactory,
         identity: DeviceIdentity,
         defaults: UserDefaults,
+        relay: SharedRelaySession = .off,
         setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge
     ) throws -> AppEnvironment {
-        let env = AppEnvironment(transportKind: .cloudKit, defaults: defaults, registry: registry, setBadge: setBadge)
+        let env = AppEnvironment(backend: .live, defaults: defaults, registry: registry, relay: relay, setBadge: setBadge)
         let rows = try registry.rows()
         for row in rows {
             do {
@@ -528,7 +534,7 @@ final class AppEnvironment {
             // A hub without stored link keys (made before E2E) is built
             // stopped, before its boot runs: no engine, no fetch, no send;
             // the launch's `dropUnencryptedLinks` removes it.
-            if session.transportKind == .cloudKit, !session.startsEngine {
+            if session.backend == .live, !session.startsEngine {
                 session.stop()
             }
             return session
@@ -537,6 +543,12 @@ final class AppEnvironment {
         session.stop()
         Task { await session.freeze(as: device) }
         return session
+    }
+
+    /// The live app's relay: the origin from Info.plist (`RelayConfig`); with none, nothing relay-shaped is built
+    /// and DeviceCheck is never asked (the dark ship of every Release build).
+    nonisolated static func liveRelay(bundle: Bundle = .main) throws -> SharedRelaySession {
+        try SharedRelaySession(config: RelayConfig.from(bundle: bundle)) { try RelayParts.live(bundle: bundle) }
     }
 
     /// The demo on an unsigned build (simulator, CI): one session over the
@@ -566,7 +578,7 @@ final class AppEnvironment {
         energy: EnergyCounter? = nil,
         setBadge: @escaping @MainActor (Int) -> Void = AppEnvironment.setAppBadge
     ) throws -> AppEnvironment {
-        let env = AppEnvironment(transportKind: .inMemoryDemo, defaults: defaults, setBadge: setBadge)
+        let env = AppEnvironment(backend: .inMemoryDemo, defaults: defaults, setBadge: setBadge)
         let files = try sandbox.map { DemoFiles(replicas: $0, recordings: $0.appendingPathComponent("recordings", isDirectory: true)) }
             ?? DemoFiles(
                 replicas: applicationSupportDirectory(),
@@ -597,7 +609,7 @@ final class AppEnvironment {
         return try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: files.replicas.appendingPathComponent(replica).path,
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             hubID: hub.hubID,
             defaults: defaults,
             recordingsDirectory: recordings,
@@ -609,6 +621,8 @@ final class AppEnvironment {
 
     /// The CloudKit transport's store file.
     nonisolated static let transportStoreFileName = "cloudkit-transport.sqlite"
+    /// The relay transport's store file, beside the CloudKit one (R12).
+    nonisolated static let relayTransportStoreFileName = "relay-transport.sqlite"
 
     /// The live CloudKit transport's store, in the app's own Application
     /// Support: outside the app group, which no extension reads it from,
