@@ -56,12 +56,15 @@ extension CloudKitTransport {
 
     // MARK: - Mapping (pure, unit-tested)
 
+    // ckRecord, archivedSystemFields and cloudRecord are public for the Go hub's CloudKit bridge (the
+    // Desktop package's CloudBridgeCore), which writes and reads the same records as this transport.
+
     /// Builds the outgoing CKRecord, seeded from archived system fields when
     /// present so the save carries the server change tag (identity + metadata
     /// come from the archive). nil or undecodable blob → fresh record, the
     /// pre-system-fields behaviour. Payload/kind/modifiedAt always come from
     /// the CloudRecord — the archive never carries payload fields.
-    static func ckRecord(from record: CloudRecord, in zoneID: CKRecordZone.ID, systemFields: Data?) -> CKRecord {
+    public static func ckRecord(from record: CloudRecord, in zoneID: CKRecordZone.ID, systemFields: Data?) -> CKRecord {
         let ck: CKRecord
         if let systemFields,
            let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: systemFields),
@@ -95,7 +98,7 @@ extension CloudKitTransport {
     }
 
     /// Archives identity + server metadata (change tag) without payload fields.
-    static func archivedSystemFields(of record: CKRecord) -> Data {
+    public static func archivedSystemFields(of record: CKRecord) -> Data {
         let archiver = NSKeyedArchiver(requiringSecureCoding: true)
         record.encodeSystemFields(with: archiver)
         archiver.finishEncoding()
@@ -104,7 +107,7 @@ extension CloudKitTransport {
 
     /// `zone` is the kind of the record's zone, resolved by the caller
     /// through `HubZones` (a zone name carries the hub id).
-    static func cloudRecord(from ck: CKRecord, zone: CloudZoneID) -> CloudRecord? {
+    public static func cloudRecord(from ck: CKRecord, zone: CloudZoneID) -> CloudRecord? {
         let payload: Data
         switch ck.recordType {
         case Self.recordType:
