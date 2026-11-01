@@ -44,10 +44,21 @@ set -uo pipefail
 WPID=""
 TPID=""
 STATE=""
+KLOG=""
+LOGS_SHOWN=0
 
 die() {
 	echo "relay-interop-kit: $*" >&2
 	exit 1
+}
+
+# report_logs shows the test run's output on stderr and counts it, once (CI mode):
+# after a normal end, or from cleanup when a signal cut the run short.
+report_logs() {
+	[ "$CI_MODE" = 1 ] && [ "$LOGS_SHOWN" != 1 ] && [ -n "$KLOG" ] && [ -f "$KLOG" ] || return 0
+	LOGS_SHOWN=1
+	cat "$KLOG" >&2
+	ci_add_xctest "$KLOG"
 }
 
 # stop_group ends process group $1: SIGTERM, then SIGKILL after 10 s, and
@@ -80,6 +91,7 @@ cleanup() {
 		stop_group "$WPID"
 		WPID=""
 	fi
+	report_logs
 	if [ -n "$STATE" ] && [ "${RELAY_INTEROP_KEEP:-}" = 1 ]; then
 		echo "relay-interop-kit: kept $STATE" >&2
 	elif [ -n "$STATE" ]; then
@@ -209,10 +221,7 @@ set +m
 wait "$TPID"
 rc=$?
 TPID=""
-if [ "$CI_MODE" = 1 ]; then
-	cat "$KLOG" >&2
-	ci_add_xctest "$KLOG"
-fi
+report_logs
 if [ "$rc" -ne 0 ]; then
 	echo "relay-interop-kit: FAIL (exit $rc); wrangler log tail:" >&2
 	tail -n 60 "$LOG" >&2

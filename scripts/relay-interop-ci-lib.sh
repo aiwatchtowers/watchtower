@@ -9,7 +9,7 @@
 #   - exit non-zero on any failure and when no test ran (passed + failed is 0,
 #     even if tests were skipped).
 # The counts come from the test runners' own output (XCTest's "Executed N tests,
-# with S tests skipped and K failures" line, `go test -v`'s top-level
+# with S tests skipped and K failures" line and its "Test Case ... failed" lines, `go test -v`'s top-level
 # "--- PASS/SKIP/FAIL" lines), not from the scripts' exit codes. A run that
 # failed without a test failing (a build error, a timeout) has failed=0 and a
 # non-zero exit.
@@ -33,7 +33,12 @@ ci_add_xctest() {
 	case "$line" in
 	*" skipped and "*) s="$(sed -E 's/.* with ([0-9]+) tests? skipped and.*/\1/' <<<"$line")" ;;
 	esac
-	f="$(sed -E 's/.* ([0-9]+) failures?.*/\1/' <<<"$line")"
+	# XCTest's "K failures" counts failed assertions; the failed tests are the
+	# "Test Case '...' failed" lines (the total is the fallback if there are none).
+	f="$(grep -cE "^Test Case '.*' failed " "$1" 2>/dev/null)" || true
+	if [ "${f:-0}" -eq 0 ]; then
+		f="$(sed -E 's/.* ([0-9]+) failures?.*/\1/' <<<"$line")"
+	fi
 	p=$((n - s - f))
 	[ "$p" -ge 0 ] || p=0
 	CI_PASSED=$((CI_PASSED + p))
@@ -57,6 +62,7 @@ ci_add_go() {
 ci_exit() {
 	local rc="$1"
 	if [ "$CI_MODE" = 1 ]; then
+		[ "$CI_FAILED" -gt 0 ] && [ "$rc" -eq 0 ] && rc=1
 		if [ $((CI_PASSED + CI_FAILED)) -eq 0 ] && [ "$rc" -eq 0 ]; then
 			echo "relay-interop: no test ran (passed + failed is 0)" >&2
 			rc=1

@@ -138,6 +138,10 @@ setup_run() {
 
 # xc <tests> <skipped> <failures>: an XCTest total line.
 xc() {
+	local i
+	for ((i = 0; i < ${4:-$3}; i++)); do
+		printf "Test Case '-[T t%d]' failed (0.1 seconds).\n" "$i"
+	done
 	printf '\t Executed %s tests, with %s tests skipped and %s failures (0 unexpected) in 0.1 (0.1) seconds\n' "$1" "$2" "$3"
 }
 
@@ -223,6 +227,32 @@ OUT="$(env PATH="$C/stub:$PATH" WATCHTOWER_CHECKOUT="$C/wt" RELAY_INTEROP_PORT=1
 RC=$?
 [ "$RC" -eq 0 ] || note_fail "no-ci: exit $RC, want 0"
 case "$OUT" in *"relay-interop: passed="*) note_fail "no-ci: printed a summary: $OUT" ;; esac
+
+# A TERM while the run hangs (a cancelled or timed-out CI job): the stand and the
+# run are killed, the partial output reaches stderr, and the summary is still
+# the last line of stdout with a non-zero exit.
+setup_run term-mid-run
+echo "--- PASS: TestInterop_KitPhone (1.20s)" >"$C/go.out"
+printf '#!/bin/bash\necho "partial output from make"\n[ -n "${WATCHTOWER_RELAY_INTEROP_URL:-}" ] || exit 0\necho $$ > "%s/make.pid"\ntouch "%s/make.started"\nexec sleep 300\n' "$C" "$C" >"$C/stub/make"
+env PATH="$C/stub:$PATH" RELAY_INTEROP_CI=1 WATCHTOWER_CHECKOUT="$C/wt" RELAY_INTEROP_PORT=18997 \
+	bash "$SUT" "$C/relay" >"$C/out" 2>"$C/err" </dev/null &
+SUT_PID=$!
+for _ in $(seq 1 100); do
+	[ -e "$C/make.started" ] && break
+	sleep 0.1
+done
+[ -e "$C/make.started" ] || note_fail "term-mid-run: the run never started"
+kill -TERM "$SUT_PID" 2>/dev/null
+wait "$SUT_PID"
+RC=$?
+OUT="$(cat "$C/out")"
+ERR="$(cat "$C/err")"
+[ "$RC" -ne 0 ] || note_fail "term-mid-run: exit 0 after TERM"
+expect_summary term-mid-run "$RC" "passed=1 skipped=0 failed=0"
+case "$ERR" in *"partial output from make"*) ;; *) note_fail "term-mid-run: the run's output is not on stderr: $ERR" ;; esac
+if kill -0 "$(cat "$C/make.pid")" 2>/dev/null; then
+	note_fail "term-mid-run: the test run is still alive"
+fi
 
 if [ "$FAILURES" -ne 0 ]; then
 	echo "test-relay-interop-kit-hub: $FAILURES failure(s)"

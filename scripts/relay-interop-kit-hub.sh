@@ -44,10 +44,28 @@ WPID=""
 GOPID=""
 KPID=""
 STATE=""
+GOLOG=""
+KLOG=""
+LOGS_SHOWN=0
 
 die() {
 	echo "relay-interop-kit-hub: $*" >&2
 	exit 1
+}
+
+# report_logs shows both halves' output on stderr and counts it, once (CI mode):
+# after a normal end, or from cleanup when a signal cut the run short.
+report_logs() {
+	[ "$CI_MODE" = 1 ] && [ "$LOGS_SHOWN" != 1 ] || return 0
+	LOGS_SHOWN=1
+	if [ -n "$GOLOG" ] && [ -f "$GOLOG" ]; then
+		cat "$GOLOG" >&2
+		ci_add_go "$GOLOG"
+	fi
+	if [ -n "$KLOG" ] && [ -f "$KLOG" ]; then
+		cat "$KLOG" >&2
+		ci_add_xctest "$KLOG"
+	fi
 }
 
 # stop_group ends process group $1: SIGTERM, then SIGKILL after 10 s, and
@@ -77,6 +95,7 @@ cleanup() {
 		[ -n "$pg" ] && stop_group "$pg"
 	done
 	KPID="" GOPID="" WPID=""
+	report_logs
 	if [ -n "$STATE" ] && [ "${RELAY_INTEROP_KEEP:-}" = 1 ]; then
 		echo "relay-interop-kit-hub: kept $STATE" >&2
 	elif [ -n "$STATE" ]; then
@@ -259,11 +278,7 @@ while [ -z "$kit_rc" ] || [ -z "$go_rc" ]; do
 	sleep 0.5
 done
 
-if [ "$CI_MODE" = 1 ]; then
-	cat "$GOLOG" "$KLOG" >&2
-	ci_add_go "$GOLOG"
-	ci_add_xctest "$KLOG"
-fi
+report_logs
 echo "relay-interop-kit-hub: Go hub exit $go_rc, Kit phone exit $kit_rc" >&2
 if [ "$go_rc" -ne 0 ] || [ "$kit_rc" -ne 0 ]; then
 	echo "relay-interop-kit-hub: FAIL; handoff files: $(ls -A "$HANDOFF" | tr '\n' ' ')" >&2
