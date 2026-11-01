@@ -278,8 +278,12 @@ PURGE_DEFAULT="${WATCHTOWER_PURGE_DEFAULT:-}"
 LINK_FETCH_DENY_HOSTS="${WATCHTOWER_LINK_FETCH_DENY_HOSTS:-}"
 # -tags codegrammars: the code index's full grammar set (an untagged build
 # carries only Go, Swift and Python).
+# identity.KeychainBuildFlag=false: the Go hub keeps its identity in the file
+# store on a desktop host — the real-Mac Keychain check (scripts/hub-keychain-check.sh,
+# docs/features/go-hub.md "Keychain check") failed: a newer build cannot
+# delete the items an older build created.
 GOARCH=arm64 CGO_ENABLED=1 go build -tags codegrammars \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN_DEFAULT}" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/linear.DefaultLinearClientID=${LINEAR_ID} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID} -X watchtower/internal/purge.BuildDefault=${PURGE_DEFAULT} -X watchtower/internal/media.BuildDenyHosts=${LINK_FETCH_DENY_HOSTS} -X watchtower/internal/hub.DefaultRelayOrigin=${RELAY_ORIGIN_DEFAULT} -X watchtower/internal/hub/identity.KeychainBuildFlag=false" \
     -o "$STAGE_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$STAGE_DIR/watchtower" | cut -f1))"
 

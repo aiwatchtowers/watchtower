@@ -305,3 +305,45 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   (the stand runs with attestation off), so a real phone vouching is first checked at the Task 13 device gate.
 - `SLOT_ADDED` is best effort: a hub whose socket was closed at that moment learns of its slot from a poll, at most
   every 30 s during the short link retry and about once a minute after it (the link backstop).
+
+## Phase 3 — the identity store on a desktop host
+
+`identity.ForDesktopHost(st, dir, identity.KeychainUsable)` picks the store once and records it in `hub_meta`
+`identity_store` (`keychain` | `file`); later starts follow the record and never re-decide. `KeychainStore` keeps the whole
+identity as one generic-password item (service `com.watchtower.hub`, account `identity`; the staged copy is a second item,
+`identity.staged`), its data one blob in the identity file's format (`WTHUBID` + version byte, then the four raw keys),
+never synchronizable, with every query set to fail instead of prompting. Save, SaveStaged and the promote's write are
+each one `SecItemAdd`/`SecItemUpdate`; promote = write the live item from the staged blob, then delete the staged item,
+so a crash in between leaves two equal items and a repeat finishes. A staged item that is missing or not a valid blob
+reads as nothing staged (SaveStaged overwrites it) and `PromoteStaged` answers `identity.ErrNothingStaged` (wraps
+`ErrNoIdentity`) without touching the live item; Task 16 treats it as done when the identity is already adopted. Items
+are requested `AfterFirstUnlockThisDeviceOnly`, but the file-based login keychain keeps no accessibility class, so
+nothing relies on it. `FileStore` gained the same staged trio (`identity.staged.key`, 0600; promote = one rename; a
+malformed staged file is nothing staged too). The probe refuses every service starting with `com.watchtower` (any
+case). `KeychainUsable` comes from the string ldflag
+`identity.KeychainBuildFlag` (`-X` sets strings only); a plain `go build` defaults to the Keychain.
+
+### Keychain check (2026-11-01, Task 1 Step 1)
+
+`scripts/hub-keychain-check.sh` (run from a plain Terminal; refuses under an agent marker) builds two `watchtower`
+binaries of different versions, signs both as `scripts/build-app.sh` signs `Contents/MacOS/watchtower` (same identity
+selection, identifier `watchtower`, hardened runtime, no entitlements), and runs the hidden owner-only
+`hub keychain-probe write|read|delete` on a throwaway service: the older build writes, the newer build reads and
+deletes, in Terminal and in a temporary user LaunchAgent.
+
+Result on a real Mac (Developer ID identity, unlocked login keychain), both contexts:
+
+| Step | Result |
+|---|---|
+| older build: write | ok |
+| newer build: read | ok, no prompt |
+| newer build: delete | `errSecInvalidOwnerEdit` (-25244) |
+
+**Result: fail → file store.** The newer build may read the items (the login keychain's partition list trusts the
+team id) but it is not their owner, so it cannot delete them: a hand-over finished by an updated build, an unlink-all
+or a reset could not remove the old keys. The data-protection keychain, where `kSecAttrAccessible` would apply, is not
+reachable: a binary without a `keychain-access-groups` entitlement gets `errSecMissingEntitlement` (-34018), and the
+CLI has no provisioning profile of its own. Both `scripts/build-app.sh` and the `Makefile` therefore pass
+`-X watchtower/internal/hub/identity.KeychainBuildFlag=false` (pinned by `scripts/tests/test-build-app-relay.sh`), so a
+desktop host keeps its identity in `<hub dir>/identity.key` (0600), like a headless host (owner, ask #807). The guide's
+privacy page says so in Task 24.
