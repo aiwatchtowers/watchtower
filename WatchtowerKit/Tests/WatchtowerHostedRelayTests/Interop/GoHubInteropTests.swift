@@ -157,18 +157,7 @@ final class GoHubInteropTests: XCTestCase {
         let failed = try await GoHubWait.until("the recording's final echo", within: 120) { () -> PhoneRecording? in
             _ = try await GoHubWait.step("the upload pass", quiet: true) { try await phone.uploader.uploadPending() }
             await phone.hub.sendNow()
-            do {
-                _ = try await phone.feed.pollOnce()
-            } catch let error as HostedRelayError where error == .server(code: .notFound, retryAfter: nil)
-                || error == .undecodable(status: 404) {
-                // The Kit pull downloads every attachment it pages, the phone's own upload included; the
-                // hub's echo rewrites that record without one, and a page read before the rewrite whose
-                // download comes after it finds the attachment gone: `get_download` NOT_FOUND, or a 404 from
-                // the blob URL. The next pull reads the echo. (Reported: the Kit transport fails the whole
-                // pull instead of paging the zone again.)
-                print("GoHubInteropTests: a mailbox pull met an attachment that is gone (\(error)); pulling again")
-                return nil
-            }
+            _ = try await GoHubWait.step("the mailbox poll", quiet: true) { try await phone.feed.pollOnce() }
             guard let row = try phone.replica.phoneRecording(id: id) else { return nil }
             if row.state == .delivered { throw GoHubInteropError.unexpected("a headless hub took the recording") }
             return row.state == .failed ? row : nil

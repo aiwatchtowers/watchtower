@@ -49,7 +49,8 @@
 # Every process it started (stand, session host, daemon, pairing, Kit suite)
 # is stopped on every exit path. Seams for scripts/tests: RELAY_INTEROP_WATCHTOWER
 # (a built CLI instead of `go build`), RELAY_INTEROP_KIT_CMD (instead of
-# `make kit-test FILTER=GoHubInteropTests`; it also lifts the macOS check),
+# `make kit-test FILTER='^WatchtowerHostedRelayTests.GoHubInteropTests'`, exact so
+# KitGoHubInteropTests never runs here; it also lifts the macOS check),
 # RELAY_INTEROP_HUB_MODE=live|test (instead of the /Applications rule).
 set -uo pipefail
 
@@ -386,7 +387,7 @@ EOF
 	fi
 	write_atomic "$KIT_DIR/pair.url" "$(grep -E '"event":[[:space:]]*"qr"' "$KIT_HOME/pair.out" | head -n 1 | json_field url)"
 
-	kitcmd="${RELAY_INTEROP_KIT_CMD:-make -C '$ROOT' kit-test FILTER=GoHubInteropTests}"
+	kitcmd="${RELAY_INTEROP_KIT_CMD:-make -C '$ROOT' kit-test FILTER='^WatchtowerHostedRelayTests.GoHubInteropTests'}"
 	echo "relay-interop: running the Kit suite: $kitcmd" >&2
 	set -m
 	WT_RELAY_INTEROP_URL="$ORIGIN" WT_HUB_INTEROP_DIR="$KIT_DIR" sh -c "$kitcmd" </dev/null &
