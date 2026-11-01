@@ -45,6 +45,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     let owner = SessionOwner()
     /// Attached to the session (its socket wanted); cleared by `stop()` and by a `.stopped` socket.
     var attached = false
+    /// Counts this transport's attaches: a `.stopped` routed to an earlier one is stale.
+    var attachGeneration = 0
     /// Set by an App Attest `.notSupported`/`.updateRequired`; cleared by `start()`.
     var stoppedBy: HostedRelayAttestError?
     /// Set by an App Attest `.retryLater`; cleared by `start()` and by an op that reached the relay.
@@ -239,7 +241,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// connection sends a record-less one per zone after every connect, so a reconnect pulls
     /// both), a connect flushes the plain queue, a refusal goes to `relayEvents`. Controls and the
     /// account state are the session's (`session.events`).
-    func handle(_ event: HostedRelayClientEvent) async {
+    /// `generation`: the attach the event was routed to (nil: the current one).
+    func handle(_ event: HostedRelayClientEvent, generation: Int? = nil) async {
         switch event {
         case .zoneChanged(let zone, _):
             guard let id = cloudZone(zone) else { return }
@@ -259,6 +262,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         case .disconnected:
             setReachable(false)
         case .stopped(let error):
+            // A stop of an earlier attach: the current one is still attached.
+            if let generation, generation != attachGeneration { return }
             // The session detached every owner and reported the stop on `session.events`.
             attached = false
             stopped(by: error)
@@ -276,9 +281,11 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     func connectIfWanted() async {
         guard wantsSocket, !attached, held() == nil else { return }
         attached = true
+        attachGeneration += 1
+        let generation = attachGeneration
         let id = ObjectIdentifier(owner)
         await session.attach(owner: id, zones: [dataZone, mailboxZone]) { [weak self] event in
-            await self?.handle(event)
+            await self?.handle(event, generation: generation)
         }
         // A `stop()` while attaching.
         if !wantsSocket || !attached { await session.detach(owner: id) }

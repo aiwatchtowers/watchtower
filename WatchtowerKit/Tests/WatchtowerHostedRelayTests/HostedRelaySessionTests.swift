@@ -171,6 +171,62 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         XCTAssertEqual(tally.dials, 1)
     }
 
+    /// `events` is level-like: a latched account case is reported once per state, until the
+    /// socket is reachable again or another case comes.
+    func testALatchedAccountCaseIsReportedOncePerState() async throws {
+        let (phone, _, _) = try await paired(macs: [])
+        let session = HostedRelaySession(client: phone)
+        let collected = collect(session.events)
+        let marker = HostedRelayEvent.control(kind: .slotRemoved, detail: "end")
+        for event: HostedRelayEvent in [
+            .entitlementInactive, .entitlementInactive, // one transport and another: one notice
+            .reachable(true), .entitlementInactive, // a new state
+            .unsupportedVersion, .unsupportedVersion, .entitlementInactive, marker
+        ] {
+            session.publish(event)
+        }
+        await eventually { collected.events.contains(marker) }
+        XCTAssertEqual(collected.events, [
+            .entitlementInactive, .reachable(true), .entitlementInactive, .unsupportedVersion, .entitlementInactive, marker
+        ])
+    }
+
+    /// An App Attest stop or an unsupported version met by the account read is reported, not only logged.
+    func testTheAccountReadReportsAStop() async throws {
+        let relay = try requireFake("fails the phone's login (fake only, R15)")
+        let (phone, _, _) = try await paired(macs: [])
+        let session = HostedRelaySession(client: phone)
+        let collected = collect(session.events)
+        relay.expireSessions(of: phone.deviceID)
+        relay.failNext("login", with: .attestationRequired)
+        await session.readAccountState()
+        await eventually { collected.events.contains(.attestation(.updateRequired)) }
+    }
+
+    /// An owner attaching to an open socket is told its state at once.
+    func testAnOwnerAttachingToAnOpenSocketGetsItsState() async throws {
+        let (phone, _, macs) = try await paired(macs: [1])
+        let session = HostedRelaySession(client: phone)
+        let first = await probe(session, zones: [dataZone(macs[0])])
+        await eventually { first.events.contains(.connected) }
+        let late = await probe(session, zones: [])
+        await eventually { late.events.contains(.connected) }
+    }
+
+    /// A `.stopped` routed to an earlier attach of the transport leaves the current one attached.
+    func testAStoppedFromAnOlderAttachIsIgnored() async throws {
+        let (phone, _, macs) = try await paired(macs: [1])
+        let session = HostedRelaySession(client: phone)
+        let transport = try transport(session, mac: macs[0])
+        await transport.start()
+        let generation = await transport.attachGeneration
+        await transport.handle(.stopped(.unsupportedVersion), generation: generation - 1)
+        let attached = await transport.attached
+        let wantsSocket = await transport.wantsSocket
+        XCTAssertTrue(attached)
+        XCTAssertTrue(wantsSocket)
+    }
+
     // MARK: - Helpers
 
     /// Dials and displacements (`GoingAway`) of one client.

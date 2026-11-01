@@ -24,11 +24,16 @@ public actor HostedRelaySession {
     /// Account-level relay signals: socket controls (`ENTITLEMENT_EXPIRED`, `SUBSCRIPTION_MOVED`,
     /// `SLOT_REMOVED`; `PAIRING_OPENED` is never sent to a phone), `.entitlementInactive`,
     /// `.unsupportedVersion`, `.attestation(…)` and the socket's `.reachable(Bool)`. For one reader.
+    /// Level-like: a latched case (`.entitlementInactive`, `.unsupportedVersion`, `.attestation`)
+    /// is reported once per state, not once per transport or per reconnect; its repeat is dropped
+    /// until `.reachable(true)` or another latched case comes. Controls are never dropped.
     nonisolated public let events: AsyncStream<HostedRelayEvent>
     nonisolated private let sink: AsyncStream<HostedRelayEvent>.Continuation
     /// A private session's transport (`HostedRelayTransport(client:…)`): every account-level
     /// signal but `.reachable` is also its `relayEvents`, Phase 2's one-transport shape.
     nonisolated private let mirror: AsyncStream<HostedRelayEvent>.Continuation?
+    /// The latched case `events` last reported (nil after `.reachable(true)`).
+    nonisolated private let latched = OSAllocatedUnfairLock<HostedRelayEvent?>(initialState: nil)
 
     private struct Owner {
         var zones: [String]
@@ -49,6 +54,8 @@ public actor HostedRelaySession {
     /// The socket's reachability last published (`reachabilityKnown` false before any).
     private var reachable = false
     private var reachabilityKnown = false
+    /// The open connection's last `.connected` / `.disconnected`: nil before its first `connected`.
+    private var socketState: HostedRelayClientEvent?
 
     public init(client: HostedRelayClient) {
         self.init(client: client, mirror: nil)
@@ -89,6 +96,8 @@ public actor HostedRelaySession {
             for await event in stream { await handler(event) }
         }
         owners[id] = Owner(zones: zones, inbox: inbox, reader: reader)
+        // A late owner learns the open socket's state at once.
+        if connection != nil, let socketState { inbox.yield(socketState) }
         if connection == nil {
             await open()
         } else {
@@ -112,11 +121,39 @@ public actor HostedRelaySession {
 
     // MARK: - Account-level signals
 
-    /// Yields `event` on `events` (and on a private session's transport).
+    /// Yields `event` on `events`, dropping a latched case's repeat (and on a private session's
+    /// transport, which keeps Phase 2's one notice per call).
     nonisolated func publish(_ event: HostedRelayEvent) {
-        sink.yield(event)
+        let repeated = latched.withLock { last in
+            switch event {
+            case .reachable(true):
+                last = nil
+            case .entitlementInactive, .unsupportedVersion, .attestation:
+                if last == event { return true }
+                last = event
+            default:
+                break
+            }
+            return false
+        }
+        if !repeated { sink.yield(event) }
         if case .reachable = event { return }
         mirror?.yield(event)
+    }
+
+    /// Publishes an error that stops the relay (`.unsupportedVersion`, an App Attest
+    /// `.notSupported`/`.updateRequired`); false for any other.
+    @discardableResult
+    nonisolated func publishStop(_ error: HostedRelayError) -> Bool {
+        switch error {
+        case .unsupportedVersion:
+            publish(.unsupportedVersion)
+        case .attestation(.notSupported), .attestation(.updateRequired):
+            if case .attestation(let outcome) = error { publish(.attestation(outcome)) }
+        default:
+            return false
+        }
+        return true
     }
 
     /// `get_account_state`: an entitlement that does not pay is `.entitlementInactive`.
@@ -126,6 +163,7 @@ public actor HostedRelaySession {
             let inactive: [Relay_V1_EntitlementKind] = [Relay_V1_EntitlementKind.none, .expired, .revoked]
             if inactive.contains(state.entitlement.state) { publish(.entitlementInactive) }
         } catch {
+            if let error = error as? HostedRelayError, publishStop(error) { return }
             Self.logger.error("relay account state failed")
         }
     }
@@ -144,6 +182,7 @@ public actor HostedRelaySession {
             return
         }
         self.connection = connection
+        socketState = nil
         sentZones = zones
         let events = connection.events
         socketReader = Task { [weak self] in
@@ -160,6 +199,7 @@ public actor HostedRelaySession {
         accountRead?.cancel()
         accountRead = nil
         sentZones = []
+        socketState = nil
         let connection = connection
         self.connection = nil
         await connection?.close()
@@ -196,23 +236,24 @@ public actor HostedRelaySession {
         case let .control(kind, detail):
             publish(.control(kind: kind, detail: detail))
         case .connected:
+            socketState = event
             deliver(event, to: order)
             setReachable(true)
             accountRead?.cancel()
             accountRead = Task { await self.readAccountState() }
         case .disconnected:
+            socketState = event
             deliver(event, to: order)
             setReachable(false)
         case .stopped(let error):
             socketReader = nil
+            accountRead?.cancel()
+            accountRead = nil
             self.connection = nil
+            socketState = nil
             sentZones = []
             setReachable(false)
-            switch error {
-            case .unsupportedVersion: publish(.unsupportedVersion)
-            case .attestation(let outcome): publish(.attestation(outcome))
-            default: break
-            }
+            publishStop(error)
             let stopped = order.compactMap { owners[$0] }
             owners = [:]
             order = []

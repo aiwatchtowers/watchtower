@@ -123,6 +123,7 @@ extension HostedRelayTransport {
         case .unsupportedVersion:
             wantsSocket = false
         case .attestation(let outcome):
+            // Never comes: a socket stops only on `.notSupported`/`.updateRequired`.
             if case .retryLater = outcome { return }
             guard stoppedBy == nil else { return }
             stoppedBy = outcome
