@@ -49,6 +49,10 @@ final class MicRecorder: MicRecording {
     /// (`SystemAudioRecorder.swift:80-82, 140-141`).
     private let convertQueue = DispatchQueue(label: "com.watchtower.dictation.mic-recorder")
     private var converter: AVAudioConverter?
+    /// Set only by start(), guarded by convertQueue. Reading engine.inputNode
+    /// lazily opens the audio device, so stop-before-start must not read it.
+    /// Retained after stop so a second stop still tears down a racing start.
+    private var captureInput: AVAudioInputNode?
     /// Guarded by `convertQueue`, like `converter`.
     private var paused = false
     /// Guarded by `convertQueue`. Latched by `stop()` so a stop that races a
@@ -89,6 +93,7 @@ final class MicRecorder: MicRecording {
         guard convertQueue.sync(execute: { !stopped }) else { return }
 
         let inputNode = engine.inputNode
+        convertQueue.sync { captureInput = inputNode }
         let inputFormat = inputNode.outputFormat(forBus: 0)
         guard let outputFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: Self.outputSampleRate, channels: 1, interleaved: false
@@ -131,9 +136,14 @@ final class MicRecorder: MicRecording {
     /// the engine, so an engine that came hot between the latch checks and
     /// the first stop is torn down for real.
     func stop() {
-        convertQueue.sync { stopped = true }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        let inputNode = convertQueue.sync {
+            stopped = true
+            return captureInput
+        }
+        if let inputNode {
+            inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
         // Barrier on convertQueue so an in-flight appendDownsampled (already
         // dispatched by the tap before removeTap took effect) finishes before
         // converter is torn down — the SystemAudioRecorder.stop() precedent.

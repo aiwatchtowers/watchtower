@@ -8,6 +8,7 @@ final class MicRecorderTests: XCTestCase {
     func testStopWithoutStartFinishesStream() async {
         let recorder = MicRecorder()
         recorder.stop()
+        recorder.stop()
 
         var received: [[Float]] = []
         for await chunk in recorder.samples {
@@ -42,6 +43,10 @@ final class MicRecorderTests: XCTestCase {
             // expected
         } catch {
             XCTFail("unexpected error: \(error)")
+        }
+        recorder.stop()
+        for await _ in recorder.samples {
+            XCTFail("a denied capture must not yield samples")
         }
     }
 }
