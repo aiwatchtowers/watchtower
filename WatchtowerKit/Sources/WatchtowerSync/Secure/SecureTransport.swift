@@ -130,6 +130,27 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             payload: envelope, notifyLevel: nil, assetFileURL: record.assetFileURL)
     }
 
+    /// Opens a keybox envelope taken from a control (`transport_switched`'s `keybox`, relay client Phase 3) as the
+    /// replica opens the data zone's: under its wire name `keybox-<DEVICE_ID>` on the data lane, signed by `hub_sig`
+    /// and sealed to this phone's `dev_kx`. Phone only, for this phone's own device id. The envelope and the keys it
+    /// carries are secrets: never logged.
+    public func openKeybox(sealed: Data, deviceID: UUID) throws -> Keybox {
+        guard case let .phone(hubID, own) = keys.role, own == deviceID else { throw SecureTransportError.wrongRole }
+        let header = try Envelope.parse(sealed).header
+        guard header.hubID == hubID else { throw EnvelopeError.wrongHub }
+        guard header.senderID == hubID else { throw EnvelopeError.wrongSender }
+        guard header.envelopeClass == .keybox else { throw EnvelopeError.wrongClass(header.envelopeClass) }
+        let context = EnvelopeContext(zone: .data, wireName: Keybox.recordName(deviceID: deviceID.uuidString))
+        let frame = try SealedBox.open(
+            sealed, envelopeClass: .keybox, recipient: try keys.deviceAgreement(),
+            info: SealedBox.keyboxInfo(hubID: hubID, deviceID: deviceID), context: context,
+            verifier: try keys.hubSigningPublicKey()
+        ).frame
+        do { return try RelayCoder.makeDecoder().decode(Keybox.self, from: frame.payload) } catch {
+            throw EnvelopeError.frameMalformed
+        }
+    }
+
     private func sealAsHub(_ record: CloudRecord, frame: InnerFrame, context: EnvelopeContext, hubID: UUID) throws -> Data {
         let epoch = try keys.currentEpoch()
         switch record.zone {

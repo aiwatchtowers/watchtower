@@ -209,6 +209,73 @@ extension RelayFeedTests {
         XCTAssertFalse(try rig.store.isControlHandled(id: onRelay.id))
     }
 
+    /// Relay client Phase 3 (Phase 1 Ruling 9 ends): `transport_switched` and `hub_on_relay` reach the transport
+    /// handler on the ordered and on the legacy path; once it returns true each is marked handled and deleted, and a
+    /// second copy is deleted unread.
+    func testSwitchedAndHubOnRelayReachTheHandler() async throws {
+        for ordered in [true, false] {
+            let rig = try await OrderedRig.make(ordered: ordered)
+            let seen = ControlLog()
+            await rig.feed.setTransportHandler { control in
+                await seen.add(control)
+                return true
+            }
+            let switched = ControlPayload(
+                id: UUID().uuidString, kind: .transportSwitched, deviceID: TestE2E.deviceID.uuidString,
+                hubID: TestE2E.hubID.uuidString, epoch: 2, target: "relay", by: TestE2E.deviceID.uuidString,
+                at: OrderedRig.base, keybox: "sealed-keybox")
+            let onRelay = await rig.hub.control(.hubOnRelay)
+            try await rig.hub.writeControl(switched)
+            try await rig.hub.writeControl(onRelay)
+
+            _ = try await rig.feed.pollOnce()
+
+            let handed = await seen.all
+            XCTAssertEqual(handed.map(\.id), [switched.id, onRelay.id], "ordered: \(ordered)")
+            XCTAssertEqual(handed.first?.keybox, "sealed-keybox", "the keybox reaches the handler")
+            XCTAssertTrue(try rig.store.isControlHandled(id: switched.id))
+            XCTAssertTrue(try rig.store.isControlHandled(id: onRelay.id))
+            let mailbox = try await rig.mailboxNames()
+            XCTAssertTrue(mailbox.isEmpty, "both deleted")
+
+            try await rig.hub.writeControl(switched, expect: .none)
+            _ = try await rig.feed.pollOnce()
+            let again = await seen.all
+            XCTAssertEqual(again.count, 2, "a second copy is not handed again")
+            let afterCopy = try await rig.mailboxNames()
+            XCTAssertTrue(afterCopy.isEmpty)
+        }
+    }
+
+    /// A handler that cannot decide yet (false) leaves the control in the mailbox, unmarked; the next cycle hands it
+    /// again.
+    func testUnhandledSwitchedStaysInTheMailbox() async throws {
+        let rig = try await OrderedRig.make()
+        let answers = ControlLog()
+        await rig.feed.setTransportHandler { control in
+            await answers.add(control)
+            return await answers.all.count > 1
+        }
+        let switched = await rig.hub.control(.transportSwitched)
+        try await rig.hub.writeControl(switched)
+
+        _ = try await rig.feed.pollOnce()
+
+        XCTAssertFalse(try rig.store.isControlHandled(id: switched.id))
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertEqual(mailbox, [try rig.wire(switched)], "left for the next pass")
+        let deletes = await rig.recorder.conditionalDeletes
+        XCTAssertTrue(deletes.isEmpty)
+
+        // The next pass hands it again, though nothing new came: this time it is decided.
+        _ = try await rig.feed.pollOnce()
+        let handed = await answers.all.map(\.id)
+        XCTAssertEqual(handed, [switched.id, switched.id])
+        XCTAssertTrue(try rig.store.isControlHandled(id: switched.id))
+        let after = try await rig.mailboxNames()
+        XCTAssertTrue(after.isEmpty)
+    }
+
     /// The phone's own `skip_to` reflects back through the shared zone: the hub reads and deletes it, never the phone.
     func testThePhonesOwnControlIsLeftForTheHub() async throws {
         let rig = try await OrderedRig.make()
@@ -254,5 +321,13 @@ private actor Counter {
 
     func bump() {
         value += 1
+    }
+}
+
+private actor ControlLog {
+    private(set) var all: [ControlPayload] = []
+
+    func add(_ control: ControlPayload) {
+        all.append(control)
     }
 }

@@ -106,6 +106,8 @@ final class AppRoot {
     /// The hubs whose session is a Relay link's pairing session (`preparePairing`): its `prepare` after
     /// `promote_pairing` rebuilds it on the Mac's data zone, its files kept.
     @ObservationIgnored private var pairingHubs: Set<String> = []
+    /// The route move running per hub (`moveSession`): a session rebuilt on its row's new route; a test awaits it.
+    @ObservationIgnored private(set) var routeMoves: [String: Task<Void, Never>] = [:]
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     init(
@@ -389,6 +391,22 @@ final class AppRoot {
             let linking = self.linking
             Task { await linking.reconcileKeyboxKeys(hubID: hubID) }
         }
+        guard !isDemo else { return }
+        // The hub's switch controls and transport marker (relay client Phase 3 Task 11), read on this session's route.
+        let follower = TransportFollower(hubID: hubID, outbox: session.outbox, host: self)
+        let on = session.route.map(HubSession.transportKind(of:)) ?? .cloudKit
+        session.transportSignals.onControl = { control in await follower.handle(control: control, on: on) }
+        session.transportSignals.onMarker = { marker in await follower.handle(marker: marker, on: on) }
+    }
+
+    /// Takes the link flow's and the follower's hooks off a session that is being closed.
+    private func unwire(_ session: HubSession) {
+        session.onLinkSignal = nil
+        session.onFetched = nil
+        session.onKeyboxChanged = nil
+        session.onKeysAvailable = nil
+        session.transportSignals.onControl = nil
+        session.transportSignals.onMarker = nil
     }
 
     private func handle(_ signal: LinkSignal, hubID: String) {
@@ -832,10 +850,7 @@ extension AppRoot: LinkHost {
 
     /// Stops and closes a session whose files stay (a pairing session handing its store on).
     private func closeSession(_ session: HubSession) async {
-        session.onLinkSignal = nil
-        session.onFetched = nil
-        session.onKeyboxChanged = nil
-        session.onKeysAvailable = nil
+        unwire(session)
         await session.shutDown()
         do {
             seqFloors[session.hubID] = max(seqFloors[session.hubID] ?? 0, try session.envelopeSeqCeiling())
@@ -1081,5 +1096,86 @@ extension AppRoot: LinkHost {
             env.activate(destination.hubID)
         }
         env.navigation.show(destination)
+    }
+}
+
+// MARK: - Following the hub's transport (relay client Phase 3 Task 11)
+
+extension AppRoot: TransportFollowerHost {
+    func followerLink(hubID: String) -> LinkRecord? {
+        do {
+            guard let row = try registry.row(hubID), row.state == .linked else { return nil }
+            return row.link
+        } catch {
+            Self.logger.error("hub row unreadable for the transport follower: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    func newestEpoch(hubID: String) -> UInt32? {
+        linking.newestEpoch(hubID: hubID)
+    }
+
+    func relayUse(for link: LinkRecord) async -> RelayUse {
+        await linking.relayUse(for: link)
+    }
+
+    func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? {
+        await env.session(hubID)?.openSwitchKeybox(sealed)
+    }
+
+    func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
+        await linking.mergeSwitchKeys(keybox, hubID: hubID)
+    }
+
+    func persistRoute(_ link: LinkRecord) -> Bool {
+        do {
+            guard try registry.updateLink(link) else { return false }
+        } catch {
+            Self.logger.error("route move not saved: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        linking.refreshLinks()
+        return true
+    }
+
+    func moveSession(hubID: String) {
+        let previous = routeMoves[hubID]
+        routeMoves[hubID] = Task {
+            await previous?.value
+            await self.performRouteMove(hubID)
+        }
+    }
+
+    /// Rebuilds `hubID`'s session on its row's route when the session runs on another: after the session's fetches
+    /// ended (the feed marked and deleted the control on the old transport), the old session stops its transport and
+    /// closes its files, then a new one opens the same replica (its tokens reset there, `ReplicaStore.adoptRoute`)
+    /// on the new route's own transport store, and takes its place on screen. One socket at a time: the old relay
+    /// transport detaches before the new one attaches (carry-over 4). A session that cannot be built leaves the hub
+    /// unopened, as at launch.
+    private func performRouteMove(_ hubID: String) async {
+        guard let old = env.session(hubID) else { return }
+        await old.waitForFetches()
+        let row: HubRow
+        do {
+            guard let current = try registry.row(hubID), current.state == .linked else { return }
+            row = current
+        } catch {
+            Self.logger.error("hub row unreadable at a route move: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        guard env.session(hubID) === old, old.route != row.link.route else { return }
+        unwire(old)
+        await old.shutDown()
+        old.closeDatabases()
+        do {
+            let session = try AppEnvironment.makeSession(for: row, factory: factory, identity: identity)
+            wire(session)
+            env.add(session)
+            env.nameHubs(linkedHubs())
+        } catch {
+            env.remove(hubID)
+            env.markUnopened(hubID, error: error)
+        }
     }
 }

@@ -226,6 +226,16 @@ final class HubRegistry {
         }
     }
 
+    /// Replaces an existing row's link in one write, nothing else of the row changing (a route move, relay client
+    /// Phase 3). Returns false when the hub has no row.
+    func updateLink(_ link: LinkRecord) throws -> Bool {
+        let json = try JSONEncoder().encode(link)
+        return try queue.write { db in
+            try db.execute(sql: "UPDATE hubs SET link_json = ? WHERE hub_id = ?", arguments: [json, link.hubID])
+            return db.changesCount == 1
+        }
+    }
+
     /// Deletes the row, closes the gap in the order and clears the active
     /// hub when it was this one.
     func remove(_ hubID: String) throws {

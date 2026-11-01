@@ -753,25 +753,59 @@ final class LinkingViewModel {
     /// (epoch numbers are compared, never key material), then has the host open the rows they unlock. Every epoch
     /// but the newest carries when it was superseded (the previous newest stamped now; one stored before the stamp
     /// existed too), which the Keychain's 7-day retention reads; the host hears whether the newest epoch went up.
-    private func mergeKeys(of keybox: Keybox, into link: LinkRecord) async {
+    /// Returns whether the Keychain holds the keybox's epochs afterwards (merged now, or already there).
+    @discardableResult
+    private func mergeKeys(of keybox: Keybox, into link: LinkRecord) async -> Bool {
         guard keybox.grant.hubID == link.hubID, keybox.grant.linked, keybox.grant.revoked != true,
-              let boxKeys = keybox.keys else { return }
+              let boxKeys = keybox.keys else { return false }
         let raised: Bool
         do {
-            guard let current = try keys.hubLink(link.hubID) else { return }
+            guard let current = try keys.hubLink(link.hubID) else { return false }
             let merged = try current.adding(boxKeys).stampingSuperseded(from: current, now: clock.now())
-            guard merged.epochs.map(\.epoch) != current.epochs.map(\.epoch) else { return }
+            guard merged.epochs.map(\.epoch) != current.epochs.map(\.epoch) else { return true }
             raised = merged.newestEpochRaised(over: current)
             try keys.saveHubLink(merged)
         } catch KeyStoreError.locked {
             Self.logger.notice("keybox keys wait for the unlock")
-            return
+            return false
         } catch {
             Self.logger.error("keybox keys not stored: \(String(describing: error), privacy: .public)")
-            return
+            return false
         }
         Self.logger.notice("epoch keys merged from the keybox")
         host?.keysMerged(hubID: link.hubID, newestEpochRaised: raised)
+        return true
+    }
+
+    // MARK: - The transport follower's questions (relay client Phase 3 Task 11)
+
+    /// Merges the keybox a `transport_switched` carried into `hubID`'s keys, as a data-zone keybox is merged; false
+    /// when the hub has no linked row or the keys could not be stored (the control is then read again).
+    func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
+        guard let row = row(hubID), row.state == .linked, !ending.contains(hubID) else { return false }
+        return await mergeKeys(of: keybox, into: row.link)
+    }
+
+    /// The newest epoch the Keychain holds for `hubID`; nil when it cannot be read (locked) or holds none.
+    func newestEpoch(hubID: String) -> UInt32? {
+        do {
+            return try keys.hubLink(hubID)?.epochs.map(\.epoch).max()
+        } catch {
+            return nil
+        }
+    }
+
+    /// Whether this phone may use the relay to reach `link`'s Mac, asked now: `.no` while the relay is off or the
+    /// link has no relay id for its Mac, or when the account answers not paying; `.unknown` when the relay did not
+    /// answer (unreachable, attestation backoff, an update needed), which decides nothing.
+    func relayUse(for link: LinkRecord) async -> RelayUse {
+        guard case .available = relay.availability, link.relayMacDeviceID != nil else { return .no }
+        let paying = await LinkRoutePolicy.paying { [relay] in try await relay.accountState() }
+        switch paying {
+        case .success(true): return .yes
+        case .success(false): return .no
+        case .failure: return .unknown
+        }
     }
 
     /// At launch: a link saved before encryption (no hub keys in the

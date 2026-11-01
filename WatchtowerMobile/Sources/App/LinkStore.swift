@@ -156,6 +156,13 @@ struct LinkRecord: Codable, Equatable, Sendable {
         relayMacDeviceID = mac
     }
 
+    /// Moves the link back to CloudKit (its scope's database), keeping the Mac's relay id so a later switch can
+    /// move it to the relay again; `left` is the transport whose mailbox is still to drain (rule 15).
+    mutating func setCloudKit(left: TransportKind?) {
+        transport = .cloudKit
+        leftTransport = left
+    }
+
     /// Where the phone's transport syncs this link: the relay Mac of a
     /// `.relay` link, else a CloudKit database.
     var route: HubRoute {

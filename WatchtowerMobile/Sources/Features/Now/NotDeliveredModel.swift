@@ -166,11 +166,20 @@ struct NotDeliveredModel {
         footer = "These actions never reached \(mac). Retry sends them again, after anything you did since."
         let format = RecordingsFormat(calendar: calendar, now: now)
         rows = items.map { item in
-            let reason = item.reason == .noAnswer ? "No answer from \(mac) for 24 hours" : nil
-            return NotDeliveredRow(
+            NotDeliveredRow(
                 id: item.id, summary: ActionSummary.text(for: item, snapshot: snapshot),
-                detail: [format.when(item.createdAt), reason].compactMap { $0 }.joined(separator: " · "),
+                detail: Self.detail(item, mac: mac, sentenceMac: macName.isEmpty ? "Your Mac" : macName, format: format),
                 isRetrying: retrying.contains(item.id), error: errors[item.id])
+        }
+    }
+
+    /// A row's sub line: its time, plus why for a withdrawn one; for one the hub's move to Relay left behind (R32),
+    /// only that.
+    private static func detail(_ item: OutboxItem, mac: String, sentenceMac: String, format: RecordingsFormat) -> String {
+        switch item.reason {
+        case .hubOnRelay: "\(sentenceMac) runs over Relay now"
+        case .noAnswer: "\(format.when(item.createdAt)) · No answer from \(mac) for 24 hours"
+        case .refused, nil: format.when(item.createdAt)
         }
     }
 
@@ -196,7 +205,8 @@ struct NotDeliveredModel {
 }
 
 /// One Not delivered row: the summary, "Today 09:58" (plus " · No answer from Work Mac for 24 hours" for a
-/// withdrawn one), and a failed retry's message.
+/// withdrawn one, or only "Work Mac runs over Relay now" for one the hub's move to Relay left behind), and a failed
+/// retry's message.
 struct NotDeliveredRow: Equatable, Identifiable {
     let id: String
     let summary: String
