@@ -142,6 +142,16 @@ func (p *Processor) isStale(g zoneGroup, rec transport.Stored, now time.Time) (b
 		return false, nil
 	}
 	sender, ok := phoneSender(rec.Envelope)
+	if g.shared {
+		// A device record is rewritten in place, and CloudKit deletes by
+		// fetch-then-delete: deleting one could take the phone's newer
+		// rewrite with it. Whoever sealed it, a record at a device name is
+		// kept (the Swift hub kept device records too).
+		keep, err := p.atDeviceName(g, rec.Name, sender, ok)
+		if err != nil || keep {
+			return false, err
+		}
+	}
 	if !ok {
 		return true, nil // the hub's own records, hellos and bytes that are no envelope
 	}
@@ -164,6 +174,28 @@ func (p *Processor) isStale(g zoneGroup, rec transport.Stored, now time.Time) (b
 		return true, nil
 	case kindAction:
 		return p.decided(b, o)
+	}
+	return false, nil
+}
+
+// atDeviceName reports whether name is the wire name of the device record
+// (device-<id>) of a phone of g or of the record's sender (when it has one).
+func (p *Processor) atDeviceName(g zoneGroup, name string, sender secure.ID, hasSender bool) (bool, error) {
+	ids := make([]secure.ID, 0, len(g.boxes)+1)
+	for _, b := range g.boxes {
+		ids = append(ids, b.id)
+	}
+	if hasSender {
+		ids = append(ids, sender)
+	}
+	for _, id := range ids {
+		wire, err := p.cfg.Sealer.WireName(secure.ZoneRelay, devicePrefix+id.String())
+		if err != nil {
+			return false, err
+		}
+		if wire == name {
+			return true, nil
+		}
 	}
 	return false, nil
 }

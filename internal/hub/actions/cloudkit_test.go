@@ -318,3 +318,59 @@ func TestSharedZoneHygieneJudgesEachRecordAsItsSenders(t *testing.T) {
 		t.Fatalf("deleted %d, left %d records: want A's undecided action only", rep.Deleted, len(names))
 	}
 }
+
+// Device records are rewritten in place and CloudKit deletes by
+// fetch-then-delete, so the sweep never deletes a record at a device name
+// in the shared zone, however old and whoever sealed it: a linked phone's
+// own, one another phone wrote at its name, and an unlinked phone's.
+func TestSharedZoneHygieneNeverDeletesDeviceRecords(t *testing.T) {
+	w := newWorld(t, kindShared)
+	a, b := w.phone, w.addPhone()
+	meta, err := w.keys.MetaKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch, err := w.keys.CurrentEpoch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger, err := hubtest.New(hubtest.Config{ // never linked: its records open for nobody here
+		Hub: w.keys.HubID(), HubKX: w.ident.Agreement.PublicKey(), MetaKey: meta, Epoch: epoch,
+		HubRelayID: hubRelayID, Transport: w.fake, Clock: w.clock, Mailbox: w.mailbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := func(id string) wire.DevicePayload {
+		return wire.DevicePayload{DeviceID: id, Name: "Test Phone", Scope: "private"}
+	}
+	var kept []string
+	for _, write := range []func() (string, error){
+		func() (string, error) { return b.WriteDeviceRecord(payload(b.ID().String()), "") },
+		func() (string, error) { // at A's name, sealed by B
+			return b.WriteDeviceRecord(payload(a.ID().String()), "device-"+a.ID().String())
+		},
+		func() (string, error) { return stranger.WriteDeviceRecord(payload(stranger.ID().String()), "") },
+	} {
+		name, err := write()
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept = append(kept, name)
+	}
+	if _, err := b.Act("test_noop"); err != nil {
+		t.Fatal(err)
+	}
+	w.pass() // B's action applied: its final echo is the hub's own record
+	w.advance(ActionMaxAge + 2*24*time.Hour)
+	rep, err := w.proc.Hygiene(w.ctx)
+	if err != nil || !rep.Ran || rep.Deleted != 1 {
+		t.Fatalf("hygiene %+v, %v: want only the echo deleted", rep, err)
+	}
+	names := w.zoneNames()
+	slices.Sort(names)
+	slices.Sort(kept)
+	if !slices.Equal(names, kept) {
+		t.Fatalf("left %d records, want the %d device records", len(names), len(kept))
+	}
+}
