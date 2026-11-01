@@ -1024,9 +1024,16 @@ final class ActionOutboxOrderedTests: XCTestCase {
         await phone.inner.refuseNext(.permanent(code: "zoneNotFound"), count: 1)
         _ = try await phone.outbox.flush()
 
-        async let first = phone.outbox.retry(id: one.id)
-        async let second = phone.outbox.retry(id: one.id)
-        let retried = try await [first, second].compactMap { $0 }
+        // The first Retry is held right after it claims the row, so the second one runs while it is in progress.
+        let gate = SaveGate()
+        await phone.outbox.setRetryClaimedHook { await gate.arrive() }
+        let outbox = phone.outbox
+        let first = Task { try await outbox.retry(id: one.id) }
+        await gate.waitUntilReached()
+        await phone.outbox.setRetryClaimedHook(nil)
+        let second = try await phone.outbox.retry(id: one.id)
+        gate.open()
+        let retried = try await [first.value, second].compactMap { $0 }
 
         XCTAssertEqual(retried.count, 1, "the second Retry is a no-op")
         XCTAssertNil(try pending(phone, one.id))

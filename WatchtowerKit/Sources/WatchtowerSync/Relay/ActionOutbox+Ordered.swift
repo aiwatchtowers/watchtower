@@ -227,6 +227,7 @@ extension ActionOutbox {
     public func retry(id: String) async throws -> String? {
         guard retrying.insert(id).inserted else { return nil }
         defer { retrying.remove(id) }
+        await retryClaimedHook?()
         guard let old = try store.pendingActions().first(where: { $0.id == id }), old.state == .failed else {
             throw ActionOutboxError.notRetryable
         }
