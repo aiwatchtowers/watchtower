@@ -22,6 +22,7 @@ import (
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/platform"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -525,7 +526,7 @@ func TestControlSocketIsPrivateAndChecksPeer(t *testing.T) {
 	var foreign atomic.Bool
 	o := r.options()
 	o.peerUID = func(c *net.UnixConn) (int, error) {
-		uid, err := socketPeerUID(c)
+		uid, err := platform.PeerUID(c)
 		if foreign.Load() {
 			return uid + 1, err
 		}
@@ -586,7 +587,7 @@ func TestControlSocketClosesWhenPeerCredentialsFail(t *testing.T) {
 		if failing.Load() {
 			return os.Getuid(), errors.New("peer credentials unreadable")
 		}
-		return socketPeerUID(c)
+		return platform.PeerUID(c)
 	}
 	r.start(o)
 	r.waitState(StateOff, ReasonDisabled)

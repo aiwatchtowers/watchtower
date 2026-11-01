@@ -1,0 +1,226 @@
+// The CloudKit bridge protocol, version 1 (go hub spec §6.2): the Go hub
+// talks to WatchtowerCloudBridge.app over <hub dir>/bridge.sock.
+//
+// Framing: a u32 big-endian length, then one message of at most 4 MiB. Go
+// writes Request, the bridge writes Response; an answer carries its
+// request's id, and a Response with id 0 and an Event is server-sent.
+//
+// Encoding: fields in field-number order, proto3 defaults omitted, and only
+// varint and length-delimited fields — no maps, packed scalars, floats or
+// fixed fields — so the Swift bridge hand-codes these messages
+// (CloudBridgeCore/BridgeFrames.swift); testdata/frames.json pins the bytes
+// for both sides.
+//
+// The socket carries sealed envelopes and metadata only: no hub key, no
+// opened frame, and no asset bytes (assets travel as paths under the hub
+// dir). CloudKit change tags never cross it either: the bridge maps each
+// record's change tag to a tag_seq and each zone's change feed to a cursor,
+// both opaque numbers it keeps in its own state (bridge.db). That state has a
+// generation: a random id the bridge mints when it creates bridge.db and
+// persists with it. Every tag_seq and cursor belongs to one generation; the
+// bridge refuses a cursor or a tag of another one (token_expired), and the
+// client never compares numbers across generations.
+//
+// Regenerate bridgepb/bridge.pb.go from this directory with buf and
+// protoc-gen-go v1.36.12 (paths=source_relative, out bridgepb).
+syntax = "proto3";
+
+package watchtower.bridge.v1;
+
+option go_package = "watchtower/internal/hub/transport/cloudkit/bridgepb";
+
+// Request is every frame Go writes.
+message Request {
+  uint64 id = 1;
+  oneof op {
+    Hello hello = 2;
+    Save save = 3;
+    Delete delete = 4;
+    Changes changes = 5;
+    Download download = 6;
+    AccountStatus account_status = 7;
+    EnsureShares ensure_shares = 8;
+    SetPublicLink set_public_link = 9;
+    Participants participants = 10;
+    RemoveParticipants remove_participants = 11;
+  }
+}
+
+// Hello opens a connection; the answer is HelloOk.
+message Hello {
+  uint32 version = 1;
+  string hub_id = 2;
+}
+
+enum ExpectMode {
+  EXPECT_NONE = 0;
+  EXPECT_ABSENT = 1;
+  EXPECT_SEQ = 2;
+}
+
+// Expect is a precondition; tag_seq (with the generation it was issued in)
+// is read only with EXPECT_SEQ.
+message Expect {
+  ExpectMode mode = 1;
+  uint64 tag_seq = 2;
+  string generation = 3;
+}
+
+// SaveItem is one record to save. asset_path is a sealed file under
+// <hub dir>/assets that the bridge uploads as the record's asset.
+message SaveItem {
+  string zone = 1;
+  string name = 2;
+  bytes envelope = 3;
+  string asset_path = 4;
+  Expect expect = 5;
+}
+
+// Save answers Outcomes, one per item in order.
+message Save {
+  repeated SaveItem items = 1;
+}
+
+message DeleteItem {
+  string name = 1;
+  Expect expect = 2;
+}
+
+// Delete answers Outcomes, one per item in order.
+message Delete {
+  string zone = 1;
+  repeated DeleteItem items = 2;
+}
+
+// Changes answers one Batch of zone's changes after the cursor since
+// (0 = from the start) of generation, or Failure "token_expired" (a cursor
+// the bridge no longer keeps, or one of another generation).
+message Changes {
+  string zone = 1;
+  uint64 since = 2;
+  string generation = 3;
+}
+
+// Download writes a record's asset to dst, a path under
+// <hub dir>/downloads; it answers Done.
+message Download {
+  string zone = 1;
+  string asset_id = 2;
+  string dst = 3;
+}
+
+// AccountStatus answers Account.
+message AccountStatus {}
+
+// EnsureShares answers SharesInfo.
+message EnsureShares {}
+
+// SetPublicLink answers Done.
+message SetPublicLink {
+  bool open = 1;
+}
+
+// Participants answers ParticipantList.
+message Participants {
+  string zone = 1;
+}
+
+// RemoveParticipants answers Done.
+message RemoveParticipants {
+  string zone = 1;
+  repeated string user_record_names = 2;
+}
+
+// Response is every frame the bridge writes.
+message Response {
+  uint64 id = 1;
+  oneof result {
+    HelloOk hello = 2;
+    Outcomes outcomes = 3;
+    Batch batch = 4;
+    Done done = 5;
+    Account account = 6;
+    SharesInfo shares = 7;
+    ParticipantList participants = 8;
+    Failure failure = 9;
+    Event event = 10;
+  }
+}
+
+// HelloOk carries the bridge's generation (see above).
+message HelloOk {
+  uint32 version = 1;
+  string generation = 2;
+}
+
+// Record is a stored record: its name, envelope, tag_seq (the bridge's
+// number for its change tag), the server's modification time and its
+// asset's id, if any.
+message Record {
+  string name = 1;
+  bytes envelope = 2;
+  uint64 tag_seq = 3;
+  int64 server_at_ms = 4;
+  string asset_id = 5;
+}
+
+// Outcome: saved with the new tag_seq; or not saved with refused_class set
+// (a per-item refusal), or with conflict = the current record (absent when
+// there is none).
+message Outcome {
+  bool saved = 1;
+  uint64 tag_seq = 2;
+  Record conflict = 3;
+  string refused_class = 4;
+}
+
+message Outcomes {
+  repeated Outcome items = 1;
+}
+
+// Batch is one page of changes in change order; new_seq is the next cursor
+// and generation the one its cursor and tag_seq values belong to.
+message Batch {
+  repeated Record changed = 1;
+  repeated string deleted = 2;
+  uint64 new_seq = 3;
+  bool more = 4;
+  string generation = 5;
+}
+
+message Done {}
+
+// Account.status: available | no_account | restricted |
+// temporarily_unavailable | no_entitlement.
+message Account {
+  string status = 1;
+}
+
+message SharesInfo {
+  string data_url = 1;
+  string relay_url = 2;
+}
+
+message Participant {
+  string user_record_name = 1;
+  bool accepted = 2;
+}
+
+message ParticipantList {
+  repeated Participant items = 1;
+}
+
+// Failure is a request that failed as a whole; class names the error
+// (unavailable, token_expired, rate_limited, record_too_large, quota,
+// forbidden, unsupported_zone, unsupported_version, bad_request).
+message Failure {
+  string class = 1;
+}
+
+// Event is server-sent (Response id 0): a zone that may have changed, a
+// silent push (pull_now), or a transport-level error class.
+message Event {
+  string zone = 1;
+  bool pull_now = 2;
+  string error_class = 3;
+}
