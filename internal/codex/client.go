@@ -2,7 +2,6 @@ package codex
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -279,8 +278,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 		// codex refuses a pipe for model_instructions_file (it stats the
 		// file), so the prompt is a 0600 file that lives only until codex's
-		// first output line — it has read the file by then — and is removed
-		// on every return as well.
+		// process exit: Codex can reload it after turn.started. It is removed
+		// on every return, after the child is reaped.
 		removePrompt := fsutil.RemoveOnce(promptFile)
 		defer removePrompt()
 
@@ -324,7 +323,6 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		var errLines []byte
 
 		for scanner.Scan() {
-			removePrompt()
 			line := scanner.Text()
 			if line == "" {
 				continue
@@ -424,7 +422,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	start := time.Now()
-	output, err := outputRemovingPrompt(cmd, removePrompt)
+	output, err := cmd.Output()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	if err != nil {
@@ -445,13 +443,4 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 
 	return result, usage, nil
-}
-
-// outputRemovingPrompt is cmd.Output with removePrompt run at the child's
-// first stdout write, when codex has read its model_instructions_file.
-func outputRemovingPrompt(cmd *exec.Cmd, removePrompt func()) ([]byte, error) {
-	var out bytes.Buffer
-	cmd.Stdout = fsutil.OnFirstWrite(&out, removePrompt)
-	err := cmd.Run()
-	return out.Bytes(), err
 }

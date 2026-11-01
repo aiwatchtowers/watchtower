@@ -90,3 +90,9 @@ Spec: `docs/superpowers/specs/2026-10-28-spec-review-severity-design.md`.
 - `<workspace>/logs/spec-review.log` is appended to and never rotated.
 - The reviewer's model usage is not in the usage meter yet (the read-folder `QuerySync` path does not tag its source).
 - Without a running daemon, a queued row whose child died before claiming stays queued until the owner runs `start`.
+
+### Reviewer model follows the asking session (2026-11-01)
+
+The reviewer uses the provider of the session that created the ask and the exact latest main-conversation model from that session's transcript. It does not normalize a concrete model to a family alias or upgrade it to a newer model. Missing model metadata uses that provider's configured/default strong model; a missing session uses the existing global default. Transcript read failures are reported, not mistaken for missing metadata. The recorded provider/model match the actual client; global configuration is unchanged.
+
+A successful forced retry after an empty first-round `reviewer_failed` loop becomes a plain review and clears that stale failure banner; existing findings, owner disputes and later rounds retain their loop state.

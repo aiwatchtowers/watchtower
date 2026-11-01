@@ -94,8 +94,8 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 }
 
 // run starts codex with args in dir and parses its JSONL reply. promptFile
-// (the 0600 model_instructions_file, "" for none) is removed at codex's first
-// output, or when run returns: codex refuses a pipe there (see Client.Query).
+// (the 0600 model_instructions_file, "" for none) lives until process exit
+// and is removed on every return: codex can reload it after turn.started.
 // prompt is the call's prompt text, for the ledger's estimate when codex
 // reports no usage; every run is recorded (recordCodexCall), failures too.
 func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args []string, stdin, dir, promptFile, prompt string) (string, *digest.Usage, error) {
@@ -126,7 +126,7 @@ func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args [
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	start := time.Now()
-	output, err := outputRemovingPrompt(cmd, removePrompt)
+	output, err := cmd.Output()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	if err != nil {

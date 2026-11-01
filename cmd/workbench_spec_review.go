@@ -17,7 +17,6 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
-	"watchtower/internal/providers"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/specreview"
 )
@@ -86,9 +85,8 @@ func init() {
 
 // specReviewAgentFactory builds the reviewer agent; tests swap it so no test
 // reaches claude or codex.
-var specReviewAgentFactory = func(cfg *config.Config) specreview.Agent {
-	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	return &specReviewCLIAgent{cfg: cfg, model: strong}
+var specReviewAgentFactory = func(cfg *config.Config, model string) specreview.Agent {
+	return &specReviewCLIAgent{cfg: cfg, model: model}
 }
 
 // specReviewCLIAgent is the configured provider in read-folder mode with no
@@ -162,15 +160,18 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 
 	id := specReviewFlagAsk
-	provider := cfg.AI.Provider
-	if provider == "" {
-		provider = "claude"
+	cfg, strong, selectionErr := specReviewSessionConfig(cmd.Context(), database, id, cfg)
+	var agent specreview.Agent
+	if selectionErr != nil {
+		agent = specReviewSelectionFailure{err: fmt.Errorf("choosing reviewer: %w", selectionErr)}
+	} else {
+		agent = specReviewAgentFactory(cfg, strong)
 	}
-	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+	provider := cfg.AI.Provider
 	store := prompts.New(database, nil)
 	deps := specreview.Deps{
 		DB:    database,
-		Agent: specReviewAgentFactory(cfg),
+		Agent: agent,
 		Prompt: func() string {
 			tmpl, _, err := prompts.Resolve(store, prompts.SpecReview, "")
 			if err != nil {
@@ -364,4 +365,11 @@ func runSpecReviewReveal(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "spec review of ask %d revealed\n", id)
 	return nil
+}
+
+// Route discovery failures through Run so it claims and fails the queued review normally.
+type specReviewSelectionFailure struct{ err error }
+
+func (a specReviewSelectionFailure) Review(context.Context, string, string, string) (string, bool, error) {
+	return "", false, a.err
 }

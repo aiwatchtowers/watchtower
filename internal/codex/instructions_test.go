@@ -179,10 +179,10 @@ func TestPromptArgs_RefusesAnUnquotablePath(t *testing.T) {
 
 // codex refuses a pipe for model_instructions_file (it stats the file:
 // "model instructions file is empty: /dev/fd/3", codex-cli 0.145.0), so the
-// prompt is a 0600 file — gone once codex has printed its first line, while
-// the child still runs, and never left behind. The fake reads the file
-// twice (stat, then read) before any output, as codex does.
-func TestPromptFile_GoneAfterFirstOutput(t *testing.T) {
+// prompt is a 0600 file available until process exit and never left behind.
+// The fake reads it both during setup and after turn.started, simulating
+// the config reload that Codex performs before using workspace tools.
+func TestPromptFile_AvailableUntilProcessExit(t *testing.T) {
 	useRealVersionProbe(t)
 	tmp := t.TempDir()
 	const marker = "SYS-MARKER-once"
@@ -192,13 +192,15 @@ func TestPromptFile_GoneAfterFirstOutput(t *testing.T) {
 file=""
 for a in "$@"; do case "$a" in model_instructions_file=*) file=${a#model_instructions_file=}; file=${file#\"}; file=${file%\"} ;; esac; done
 cat > /dev/null
+echo '{"type":"thread.started","thread_id":"t"}'
+sleep 0.1
 first=$(cat "$file"); second=$(cat "$file")
 reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
 case "$first$second" in *` + marker + `*` + marker + `*) ;; *) reply unread ;; esac
-echo '{"type":"thread.started","thread_id":"t"}'
+echo '{"type":"turn.started"}'
 sleep 0.5
-[ -e "$file" ] && reply present
-reply gone
+late=$(cat "$file")
+case "$late" in *` + marker + `*) reply available ;; *) reply unread-after-turn ;; esac
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -209,14 +211,27 @@ reply gone
 			out, _, err := NewClient("m", "", script).QuerySync(context.Background(), "sys "+marker, "hi", "")
 			return out, err
 		},
+		"stream": func() (string, error) {
+			events, errs, _ := NewClient("m", "", script).Query(context.Background(), "sys "+marker, "hi", "")
+			var result string
+			for event := range events {
+				result += event.Text
+			}
+			for err := range errs {
+				if err != nil {
+					return result, err
+				}
+			}
+			return result, nil
+		},
 		"generator": func() (string, error) {
 			out, _, _, err := NewCodexGenerator("m", "m", script).Generate(context.Background(), "sys "+marker, "hi", "")
 			return out, err
 		},
 	} {
 		out, err := run()
-		if err != nil || out != "gone" {
-			t.Errorf("%s: output = %q, %v; want gone", name, out, err)
+		if err != nil || out != "available" {
+			t.Errorf("%s: output = %q, %v; want available", name, out, err)
 		}
 		if entries, _ := os.ReadDir(tmp); len(entries) != 0 {
 			t.Errorf("%s: %d file(s) left in the temp dir", name, len(entries))
