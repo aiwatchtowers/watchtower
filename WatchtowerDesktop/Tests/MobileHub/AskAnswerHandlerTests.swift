@@ -13,14 +13,32 @@ private final class RecordingSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (([UInt8]) -> Void)?
+    /// The center's owner-input callback (`FakeHostDelivery.ownerInputRelay`).
+    private var centerOwnerInput: (([UInt8]) -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)? {
+        get { host.ownerInputRelay(to: centerOwnerInput) }
+        set { centerOwnerInput = newValue }
+    }
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
+    var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?
+    /// The stand-in session host: the only way a line reaches the process.
+    let host = FakeHostDelivery()
 
-    func start(_ launch: TerminalLaunch) {}
+    init() {
+        host.write = { [weak self] in self?.inputs.append($0) }
+        host.bracketedPaste = { [weak self] in self?.bracketedPasteMode ?? false }
+        host.event = { [weak self] in self?.onDeliveryEvent?($0) }
+    }
+
+    func start(_ launch: TerminalLaunch) { host.newRun() }
     func detach() {}
     func sendInput(_ bytes: [UInt8]) {
         inputs.append(bytes)
+    }
+
+    func deliver(_ line: SessionDeliverLine, check: @escaping @MainActor () async -> DeliverCheckReply) async -> DeliverOutcome {
+        await host.deliver(line, check: check)
     }
 }
 
