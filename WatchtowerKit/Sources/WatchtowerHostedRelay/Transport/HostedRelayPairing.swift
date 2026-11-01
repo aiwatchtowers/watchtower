@@ -9,8 +9,8 @@ public enum HostedRelayLimits {
 }
 
 /// The phone's account ops of linking over the relay (R3 of Phase 3; relay `proto/README.md`
-/// "Slots", Worker `do/account/pairing.ts` / `slots.ts`): `get_account_state`, `open_pairing`,
-/// `promote_pairing`, `close_pairing`, `remove_slot`. The hello and keybox themselves go through a
+/// "Slots", "Vouched hubs", Worker `do/account/pairing.ts` / `slots.ts`): `get_account_state`,
+/// `open_pairing`, `vouch_hub`, `promote_pairing`, `close_pairing`, `remove_slot`. The hello and keybox themselves go through a
 /// `HostedRelayTransport` in `.pairing(slot:)` mode. Every call is one HTTPS op on the session's
 /// client (its login and `UNAVAILABLE` retry); no socket is opened.
 ///
@@ -32,6 +32,24 @@ public struct HostedRelayPairing: Sendable {
         case unreachable
         /// `UNSUPPORTED_VERSION`, or App Attest asks for an app update.
         case updateRequired
+        /// App Attest failed transiently: no relay call before `until`.
+        case attestationBackoff(until: Date)
+    }
+
+    /// The answers of `vouch` a linking flow acts on (relay `proto/README.md` "Client rules (phone)").
+    public enum VouchRefusal: Error, Equatable, Sendable {
+        /// `ENTITLEMENT_INACTIVE`: the subscription screen (Phase 4); the link waits.
+        case notPaying
+        /// `ATTESTATION_REQUIRED`, `ATTESTATION_FAILED` after the retries, `UNSUPPORTED_VERSION`.
+        case updateRequired
+        /// `NOT_FOUND`: the hub has not registered on the relay (keep it open and retry).
+        case hubNotOnRelay
+        /// `SLOT_LIMIT`: the account holds 3 other Macs.
+        case slotsFull
+        /// `FORBIDDEN`: cannot happen for a phone session; logged.
+        case notConfirmed
+        /// No answer, `UNAVAILABLE` past its retries, a 5xx.
+        case unreachable
         /// App Attest failed transiently: no relay call before `until`.
         case attestationBackoff(until: Date)
     }
@@ -100,9 +118,45 @@ public struct HostedRelayPairing: Sendable {
         }
     }
 
-    /// `vouch_hub`: declared here, implemented in Task 18; until then it throws and has no caller.
+    /// `vouch_hub` (relay `proto/README.md` "Vouched hubs"): after the owner confirmed the code and
+    /// before `promote_pairing` / `add_slot`, which must follow within the vouch's 10 minutes (a
+    /// `HUB_NOT_VOUCHED` from them is the caller's: vouch again, then repeat once).
+    /// GetChallenge{VOUCH} → assertion over the vouch hash → `vouch_hub`; every attempt takes a new
+    /// nonce and a new assertion (`HostedRelayClient.vouchHub`). `ATTESTATION_FAILED` is retried
+    /// once, then once more after the lost-key path (a login with a fresh attestation), then it is
+    /// `.updateRequired`. The other answers throw `VouchRefusal` at once; an error none of them
+    /// covers is rethrown as the client threw it.
     public func vouch(hubDeviceID: String, authPub: Data) async throws {
-        throw VouchNotImplemented()
+        var request = Relay_V1_VouchHub()
+        request.hubDeviceID = hubDeviceID
+        request.authPub = authPub
+        var refusals = 0
+        while true {
+            do {
+                try await client.vouchHub(request)
+                return
+            } catch HostedRelayError.server(code: .attestationFailed, _) {
+                refusals += 1
+                Self.logger.error("relay vouchHub: attestation_failed, refusal \(refusals)")
+                if refusals == 2 { try await takeLostKeyPath() }
+                if refusals > 2 { throw VouchRefusal.updateRequired }
+            } catch {
+                Self.logger.error("relay vouchHub failed: \(Self.code(error), privacy: .public)")
+                throw vouchRefusal(for: error) ?? error
+            }
+        }
+    }
+
+    /// The vouch's lost-key step: forget the App Attest key and log in with a fresh attestation.
+    /// `.updateRequired` when the attestor already took that step since the last good login.
+    private func takeLostKeyPath() async throws {
+        guard await client.attestor.serverRefusedAssertion() else { throw VouchRefusal.updateRequired }
+        do {
+            try await client.login()
+        } catch {
+            Self.logger.error("relay vouchHub: lost-key login failed: \(Self.code(error), privacy: .public)")
+            throw vouchRefusal(for: error) ?? error
+        }
     }
 
     // MARK: - Refusals
@@ -122,6 +176,8 @@ public struct HostedRelayPairing: Sendable {
         switch error {
         case .server(let code, _):
             switch code {
+            // The client's one lost-key login already ran where it applies.
+            case .attestationRequired, .attestationFailed: return .updateRequired
             case .entitlementInactive: return .notPaying
             case .slotLimit: return .slotsFull(macs: await slottedMacs())
             case .slotReplacementLimit: return .replacementLimit
@@ -137,12 +193,42 @@ public struct HostedRelayPairing: Sendable {
         case .unsupportedVersion, .attestation(.updateRequired):
             return .updateRequired
         case .attestation(.retryLater(let after)):
-            let parts = after.components
-            let seconds = TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18
-            return .attestationBackoff(until: client.clock.now().addingTimeInterval(seconds))
+            return .attestationBackoff(until: backoffEnd(after))
         case .attestation(.notSupported):
             return nil
         }
+    }
+
+    /// `vouch`'s answers as `VouchRefusal` (`ATTESTATION_FAILED` reaches here only from the lost-key login).
+    private func vouchRefusal(for error: any Error) -> VouchRefusal? {
+        guard let error = error as? HostedRelayError else { return nil }
+        switch error {
+        case .server(let code, _):
+            switch code {
+            case .forbidden: return .notConfirmed
+            case .entitlementInactive: return .notPaying
+            case .attestationRequired, .attestationFailed, .unsupportedVersion: return .updateRequired
+            case .notFound: return .hubNotOnRelay
+            case .slotLimit: return .slotsFull
+            case .unavailable: return .unreachable
+            default: return nil
+            }
+        case .unreachable:
+            return .unreachable
+        case .undecodable(let status):
+            return (500..<600).contains(status) ? .unreachable : nil
+        case .unsupportedVersion, .attestation(.updateRequired):
+            return .updateRequired
+        case .attestation(.retryLater(let after)):
+            return .attestationBackoff(until: backoffEnd(after))
+        case .attestation(.notSupported):
+            return nil
+        }
+    }
+
+    private func backoffEnd(_ after: Duration) -> Date {
+        let parts = after.components
+        return client.clock.now().addingTimeInterval(TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18)
     }
 
     /// The Macs in slots for a `SLOT_LIMIT` answer; empty when the account state cannot be read.
@@ -157,6 +243,3 @@ public struct HostedRelayPairing: Sendable {
         return String(describing: error)
     }
 }
-
-/// `vouch_hub` before Task 18.
-struct VouchNotImplemented: Error {}

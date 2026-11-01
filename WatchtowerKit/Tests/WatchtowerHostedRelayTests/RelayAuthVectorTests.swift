@@ -95,6 +95,14 @@ final class RelayAuthVectorTests: XCTestCase {
         }
     }
 
+    /// The relay's vouch vector (board #1432): SHA256("relay/v1/vouch" ‖ nonce ‖ hub_device_id ‖ auth_pub ‖ origin).
+    func testVouchClientDataHashVector() throws {
+        let got = RelayAuthMessages.vouchClientDataHash(
+            nonce: Data([1, 2]), hubDeviceID: "h", authPub: Data([3]), origin: try RelayOrigin("https://r")
+        )
+        XCTAssertEqual(got, try hex("ecdda44ae74bd86e122f2edd43708cf2b8012cc194f78ed5728052e5c109956d"))
+    }
+
     func testGoSignaturesVerifyAndOursVerifyToo() throws {
         for vector in try vectors() {
             let pub = try Curve25519.Signing.PublicKey(rawRepresentation: hex(vector.authPub))

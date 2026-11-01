@@ -27,6 +27,12 @@ public enum RelayAuthMessages {
         sha256(Data("relay/v1/login".utf8), nonce, Data(deviceID.utf8), Data(origin.string.utf8))
     }
 
+    /// SHA256("relay/v1/vouch" ‖ nonce ‖ hubDeviceID ‖ authPub ‖ origin) — what a phone's `vouch_hub`
+    /// assertion covers (proto README "Attestation"; vector of relay board #1432)
+    public static func vouchClientDataHash(nonce: Data, hubDeviceID: String, authPub: Data, origin: RelayOrigin) -> Data {
+        sha256(Data("relay/v1/vouch".utf8), nonce, Data(hubDeviceID.utf8), authPub, Data(origin.string.utf8))
+    }
+
     private static func sha256(_ parts: Data...) -> Data {
         var hasher = SHA256()
         for part in parts { hasher.update(data: part) }

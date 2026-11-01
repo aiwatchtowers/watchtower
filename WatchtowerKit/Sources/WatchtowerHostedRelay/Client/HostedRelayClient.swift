@@ -24,7 +24,8 @@ public actor HostedRelayClient {
     let socketURL: URL
     private let signer: any RelaySigner
     private let kind: Relay_V1_DeviceKind
-    private let attestor: RelayAttestor
+    /// Also `vouchHub`'s (`HostedRelayClient+Ops.swift`).
+    let attestor: RelayAttestor
     /// Also the transport's blob uploads and downloads (`HostedRelayTransport+Attachments.swift`).
     let http: any RelayHTTP
     // The WebSocket side (`connect`, HostedRelayConnection.swift).
@@ -136,35 +137,33 @@ public actor HostedRelayClient {
         return try await task.value
     }
 
+    /// What one login request came back with: a response, or `ATTESTATION_FAILED` and whether
+    /// the login carried an assertion.
+    private enum LoginAttempt: Sendable {
+        case answered(Relay_V1_Response)
+        case attestationFailed(asserted: Bool)
+    }
+
     /// Challenge-response login with App Attest (proto README "Login" and
     /// "Failure paths on the client"). `ATTESTATION_FAILED` on an assertion
     /// login gets one login with a fresh attestation; a refusal after that, or
     /// `ATTESTATION_REQUIRED`, is `.updateRequired`. A failed login keeps the
-    /// session in hand.
+    /// session in hand. Each attempt runs in the attestor's turn: its assertion
+    /// never overlaps a `vouch_hub`'s.
     private func loginOnce() async throws -> String {
         guard attestor.isSupported else { throw HostedRelayError.attestation(.notSupported) }
         while true {
-            let nonce = try await challengeNonce(purpose: .login)
-            let hash = RelayAuthMessages.loginClientDataHash(nonce: nonce, deviceID: deviceID, origin: origin)
-
-            var login = Relay_V1_Login()
-            login.deviceID = deviceID
-            login.nonce = nonce
-            login.signature = try signer.sign(RelayAuthMessages.loginMessage(nonce: nonce, deviceID: deviceID, origin: origin))
-            login.attestation = try await attesting { try await self.attestor.loginAttestation(clientDataHash: hash) }
-            let asserted: Bool
-            if case .appAttestAssertion = login.attestation.kind { asserted = true } else { asserted = false }
-
-            let response: Relay_V1_Response
+            let attempt: LoginAttempt
             do {
-                response = try await perform(.login(login))
+                attempt = try await attestor.withAssertionTurn { try await self.loginAttempt() }
             } catch HostedRelayError.server(code: .attestationRequired, _) {
                 Self.logger.error("relay login: attestation_required")
                 throw HostedRelayError.attestation(.updateRequired)
-            } catch HostedRelayError.server(code: .attestationFailed, _) {
+            }
+            guard case .answered(let response) = attempt else {
                 var again = false
-                if asserted { again = await attestor.serverRefusedAssertion() }
-                Self.logger.error("relay login: attestation_failed, asserted \(asserted), attesting again \(again)")
+                if case .attestationFailed(asserted: true) = attempt { again = await attestor.serverRefusedAssertion() }
+                Self.logger.error("relay login: attestation_failed, attesting again \(again)")
                 guard again else { throw HostedRelayError.attestation(.updateRequired) }
                 continue
             }
@@ -179,7 +178,25 @@ public actor HostedRelayClient {
         }
     }
 
-    private func challengeNonce(purpose: Relay_V1_ChallengePurpose) async throws -> Data {
+    /// One login request: a `LOGIN` nonce, the attestor's assertion (or fresh attestation), `login`.
+    private func loginAttempt() async throws -> LoginAttempt {
+        let nonce = try await challengeNonce(purpose: .login)
+        let hash = RelayAuthMessages.loginClientDataHash(nonce: nonce, deviceID: deviceID, origin: origin)
+
+        var login = Relay_V1_Login()
+        login.deviceID = deviceID
+        login.nonce = nonce
+        login.signature = try signer.sign(RelayAuthMessages.loginMessage(nonce: nonce, deviceID: deviceID, origin: origin))
+        login.attestation = try await attesting { try await self.attestor.loginAttestation(clientDataHash: hash) }
+        do {
+            return .answered(try await perform(.login(login)))
+        } catch HostedRelayError.server(code: .attestationFailed, _) {
+            if case .appAttestAssertion = login.attestation.kind { return .attestationFailed(asserted: true) }
+            return .attestationFailed(asserted: false)
+        }
+    }
+
+    func challengeNonce(purpose: Relay_V1_ChallengePurpose) async throws -> Data {
         var challenge = Relay_V1_GetChallenge()
         challenge.deviceID = deviceID
         challenge.purpose = purpose
@@ -192,7 +209,7 @@ public actor HostedRelayClient {
     }
 
     /// Runs an attestor call, wrapping its `HostedRelayAttestError` as `.attestation`.
-    private func attesting(_ body: () async throws -> Relay_V1_Attestation) async throws -> Relay_V1_Attestation {
+    func attesting(_ body: () async throws -> Relay_V1_Attestation) async throws -> Relay_V1_Attestation {
         do {
             return try await body()
         } catch let error as HostedRelayAttestError {
@@ -247,7 +264,7 @@ public actor HostedRelayClient {
         }
     }
 
-    private func post(_ op: Relay_V1_Request.OneOf_Op, token: String?) async throws -> Relay_V1_Response {
+    func post(_ op: Relay_V1_Request.OneOf_Op, token: String?) async throws -> Relay_V1_Response {
         var request = Relay_V1_Request()
         request.op = op
         var headers = [

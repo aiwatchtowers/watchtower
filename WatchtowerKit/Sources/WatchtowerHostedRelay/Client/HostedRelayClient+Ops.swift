@@ -1,3 +1,4 @@
+import Foundation
 import WatchtowerRelayProto
 
 /// Typed calls for the phone's ops, over `perform`. An answer of the wrong kind
@@ -65,6 +66,51 @@ extension HostedRelayClient {
             throw Self.wrongAnswer
         }
         return result
+    }
+
+    /// `GetChallenge` for this device: a single-use nonce (`LOGIN`, `VOUCH`) or a register nonce.
+    public func challenge(purpose: Relay_V1_ChallengePurpose) async throws -> Data {
+        try await challengeNonce(purpose: purpose)
+    }
+
+    /// `vouch_hub` for the request's hub (`hubDeviceID`, `authPub`; nonce and attestation are
+    /// filled here). Each attempt is GetChallenge{VOUCH}, an assertion over the vouch
+    /// `clientDataHash` and the op, run in the attestor's turn on the session taken before it
+    /// (a login inside the turn would wait for it). `UNAVAILABLE` repeats the whole attempt, ≤ 30 s
+    /// in all; `UNAUTHENTICATED`, or no App Attest key to assert with, logs in again outside the
+    /// turn (a fresh attestation when the key is gone) and makes one more attempt. Every other
+    /// answer is thrown as it came: the vouch retry table is `HostedRelayPairing.vouch`'s.
+    public func vouchHub(_ request: Relay_V1_VouchHub) async throws {
+        guard attestor.isSupported else { throw HostedRelayError.attestation(.notSupported) }
+        var stale: String?
+        while true {
+            let token = try await sessionToken(stale: stale)
+            do {
+                let response = try await Self.retryingUnavailable(.vouchHub(request), clock: clock) {
+                    try await attestor.withAssertionTurn { try await self.vouchAttempt(request, token: token) }
+                }
+                guard case .ok = response.result else { throw Self.wrongAnswer }
+                return
+            } catch HostedRelayError.server(code: .unauthenticated, _) where stale == nil {
+                Self.logger.info("relay vouchHub: unauthenticated, logging in again")
+                stale = token
+            } catch is NoAssertionKey {
+                Self.logger.info("relay vouchHub: no App Attest key, logging in again, attesting \(stale == nil)")
+                guard stale == nil else { throw HostedRelayError.attestation(.updateRequired) }
+                stale = token
+            }
+        }
+    }
+
+    /// One `vouch_hub`: a new `VOUCH` nonce, a new assertion, the op on `token`.
+    private func vouchAttempt(_ request: Relay_V1_VouchHub, token: String) async throws -> Relay_V1_Response {
+        var vouch = request
+        vouch.nonce = try await challengeNonce(purpose: .vouch)
+        let hash = RelayAuthMessages.vouchClientDataHash(
+            nonce: vouch.nonce, hubDeviceID: vouch.hubDeviceID, authPub: vouch.authPub, origin: origin
+        )
+        vouch.attestation = try await attesting { try await self.attestor.vouchAssertion(clientDataHash: hash) }
+        return try await post(.vouchHub(vouch), token: token)
     }
 
     private func performOk(_ op: Relay_V1_Request.OneOf_Op) async throws {
