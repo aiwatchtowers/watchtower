@@ -419,13 +419,28 @@ func (w *wiring) close() {
 	}
 }
 
-// sweepTemps removes what a crash left in the recordings and asset dirs.
-func sweepTemps(o Options) {
+// sweepTemps removes what a crash left in the recordings and asset dirs,
+// and the recording jobs (with their audio) finished more than 31 days ago.
+func sweepTemps(o Options, st *state.Store) {
 	n, err := handlers.SweepRecordingTemps(o.RecordingsDir, filepath.Join(o.Dir, assetDirName))
 	if err != nil {
 		log.Printf("hub: sweeping temp files failed (%s)", errClass(err))
 	}
 	if n > 0 {
 		log.Printf("hub: %d temp files of an earlier run removed", n)
+	}
+	pruneRecordingJobs(o, st)
+}
+
+// pruneRecordingJobs drops the recording jobs finished more than 31 days ago
+// (a hub_moved job's kept audio with it): at start and on every
+// housekeeping tick.
+func pruneRecordingJobs(o Options, st *state.Store) {
+	n, err := st.PruneRecordingJobs(o.RecordingsDir, o.Clock().Add(-state.RecordingJobKeptFor))
+	if err != nil {
+		log.Printf("hub: pruning old recording jobs failed (%s)", errClass(err))
+	}
+	if n > 0 {
+		log.Printf("hub: %d recording jobs older than 31 days removed", n)
 	}
 }
