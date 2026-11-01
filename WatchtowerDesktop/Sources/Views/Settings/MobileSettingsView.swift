@@ -31,14 +31,13 @@ struct MobileSettingsView: View {
     @State private var windowVisible = true
 
     var body: some View {
-        Form {
-            toggleSection
-            if model.isOn {
-                hubSection
-                phonesSection
+        Group {
+            if case .movedToNewerApp(let message) = model.state {
+                MobileMovedView(title: MobileSettingsViewModel.movedSectionTitle, message: message)
+            } else {
+                settingsForm
             }
         }
-        .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
         .background(WindowVisibilityReader(isVisible: $windowVisible))
@@ -88,6 +87,17 @@ struct MobileSettingsView: View {
             Text("The phone can then allow or deny a Claude Code permission prompt, one call at a time. "
                 + "Revoke turns it off again.")
         }
+    }
+
+    private var settingsForm: some View {
+        Form {
+            toggleSection
+            if model.isOn {
+                hubSection
+                phonesSection
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private var toggleSection: some View {
@@ -330,5 +340,21 @@ private final class WindowVisibilityView: NSView {
             }
         }
         onChange?(window.occlusionState.contains(.visible))
+    }
+}
+
+/// Settings → Mobile once a newer Watchtower runs the phone hub (spec §12.1):
+/// one section, one row with the model's line, no toggle. Replaced by the Go
+/// hub's Settings → Mobile (go hub phase 3 Task 23).
+struct MobileMovedView: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        SettingsSection(title: title) {
+            SettingRow(title: message) { EmptyView() }
+        }
+        .padding(.vertical, Spacing.medium)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

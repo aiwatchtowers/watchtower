@@ -98,11 +98,24 @@ struct MobileHubStorage {
         return base.appendingPathComponent("Watchtower/MobileHub", isDirectory: true)
     }
 
+    /// The app's hub directory: `directory()`, or a fresh temporary path
+    /// under XCTest (the `ManagedPolicyReader.appRead` check), so no test
+    /// reads or writes this Mac's own `MobileHub/`.
+    static func defaultDirectory() -> URL {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil else { return directory() }
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("WatchtowerTests-MobileHub-\(UUID().uuidString)", isDirectory: true)
+    }
+
     /// The real storage (multi-hub spec §3.1): `hubstate.db`, whose `hub_id`
     /// names this hub's zones, and `transport.db` behind a hub-role
     /// CloudKitTransport on those zones; the shares are of the same zones.
-    static func live() throws -> Self {
-        let dir = directory()
+    /// A `MOVED` note from a newer Watchtower (`MobileHubMovedGuard`) throws
+    /// `Moved` before anything in `dir` is created or opened, and before any
+    /// Keychain item is read: this app no longer runs the hub.
+    static func live(directory dir: URL = directory()) throws -> Self {
+        guard !MobileHubMovedGuard.isMoved(mobileHubDir: dir) else { throw MobileHubMovedGuard.Moved() }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
         let hubID = try sidecar.ensureHubID()
