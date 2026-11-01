@@ -165,16 +165,13 @@ final class GoHubInteropTests: HostedRelayScenarioCase {
         handoff.write("unlinked", "")
         _ = try await handoff.wait("unlink.ok", Self.goWait)
 
-        // 11. The slot is free again: add_slot of the same Mac (a lapsed vouch is renewed once).
+        // 11. The slot is free again: add_slot of the same Mac. promote consumed the vouch (Worker
+        // `pairing.ts`), so the phone vouches first, as before any add_slot.
         handoff.step = "readd"
         var add = Relay_V1_AddMacSlot()
         add.macDeviceID = mac
-        do {
-            try await phone.addSlot(add)
-        } catch HostedRelayError.server(code: .hubNotVouched, _) {
-            try await pairing.vouch(hubDeviceID: mac, authPub: hubAuth)
-            try await phone.addSlot(add)
-        }
+        try await pairing.vouch(hubDeviceID: mac, authPub: hubAuth)
+        try await phone.addSlot(add)
         let afterAdd = try await pairing.accountState().macs
         XCTAssertTrue(afterAdd.contains(mac))
         XCTAssertLessThanOrEqual(afterAdd.count, HostedRelayLimits.maxMacSlots)

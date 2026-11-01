@@ -281,6 +281,12 @@ func TestInterop_KitPhone(t *testing.T) {
 		t.Fatalf("linked: %+v", l)
 	}
 	confirmedAt := logs.len()
+	// The positive control of retry_no_hello: the first slot's hello was
+	// read and logged before the confirmation, so the log line is the one
+	// the check below looks for.
+	if !strings.Contains(logs.since(0), "hellos read") {
+		k.fail("first_slot_hello", "no \"hellos read\" line for the first slot's hello (the log check is blind)")
+	}
 	k.write("confirmed", "")
 
 	// 5: everything up to the epoch ack is done on the phone.

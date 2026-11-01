@@ -213,18 +213,18 @@ KPID=$!
 set +m
 
 # Whichever half ends first: a failed one leaves its mark, so the other stops waiting.
+# kit_rc/go_rc say a leader is done; KPID/GOPID stay set, so cleanup still sweeps a
+# group whose leader exited but left children (a test runner's helpers).
 kit_rc="" go_rc=""
 while [ -z "$kit_rc" ] || [ -z "$go_rc" ]; do
 	if [ -z "$kit_rc" ] && ! kill -0 "$KPID" 2>/dev/null; then
 		wait "$KPID"
 		kit_rc=$?
-		KPID=""
 		[ "$kit_rc" -eq 0 ] || mark kit.fail "kit exited $kit_rc"
 	fi
 	if [ -z "$go_rc" ] && ! kill -0 "$GOPID" 2>/dev/null; then
 		wait "$GOPID"
 		go_rc=$?
-		GOPID=""
 		[ "$go_rc" -eq 0 ] || mark go.fail "go exited $go_rc"
 	fi
 	sleep 0.5
