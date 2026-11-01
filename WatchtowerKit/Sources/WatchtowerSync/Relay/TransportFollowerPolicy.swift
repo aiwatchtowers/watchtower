@@ -62,6 +62,8 @@ public enum FollowerInput: Sendable {
 public enum FollowerCommand: Equatable, Sendable {
     /// Merge the switch's keybox into the hub's keys.
     case mergeKeybox
+    /// The hub answered this phone's request for the transport it is already on: stop waiting for an answer.
+    case requestAnswered
     /// Talk to the hub over `to` from now on, in `epoch`; `by` and `at` say who switched and when (empty `by`: the
     /// phone moved because the hub went where it cannot follow).
     case moveRoute(to: TransportKind, epoch: UInt32, by: String, at: Date)
@@ -94,9 +96,13 @@ public enum TransportFollowerPolicy {
     ) -> (state: FollowerState, commands: [FollowerCommand]) {
         switch input {
         case let .switched(target, epoch, by, at, keyboxOpened, controlID, _):
+            if epoch == state.newestEpoch, target == state.route {
+                // Go `handleSwitch`, `target == current`: the hub's answer so the phone stops waiting.
+                return (state, [.requestAnswered, .markHandled(controlID: controlID)])
+            }
             guard epoch > state.newestEpoch else { return (state, [.markHandled(controlID: controlID)]) }
             if target == .relay, state.canUseRelay != .yes {
-                return withoutHub(state, controlID: controlID, now: now)
+                return state.canUseRelay == .no ? withoutHub(state, controlID: controlID, now: now) : (state, [])
             }
             guard keyboxOpened else { return (state, []) }
             let (next, moved) = follow(state, to: target, epoch: epoch, by: by, at: at)
@@ -104,11 +110,13 @@ public enum TransportFollowerPolicy {
         case let .marker(target, epoch, by, at, _):
             guard epoch > state.newestEpoch else { return (state, [.ignore]) }
             if target == .relay, state.canUseRelay != .yes {
-                return withoutHub(state, controlID: nil, now: now)
+                return state.canUseRelay == .no ? withoutHub(state, controlID: nil, now: now) : (state, [])
             }
             return follow(state, to: target, epoch: epoch, by: by, at: at)
         case let .hubOnRelay(controlID):
-            if state.canUseRelay == .yes { return (state, [.markHandled(controlID: controlID)]) }
+            // The hub may know of a lapse before the phone does (Go `hubWithoutUs` always obeys); only an unknown
+            // answer leaves the control for a later pass.
+            if state.canUseRelay == .unknown { return (state, []) }
             return withoutHub(state, controlID: controlID, now: now)
         case let .relayReachable(reachable, at):
             return outage(state, reachable: reachable, at: at, now: now)
@@ -137,11 +145,10 @@ public enum TransportFollowerPolicy {
         return (next, commands)
     }
 
-    /// The hub is on the relay and this phone cannot follow (R32). With an unknown answer nothing is decided.
+    /// The hub is on the relay without this phone (R32): back to CloudKit, unechoed actions listed as Not delivered.
     private static func withoutHub(
         _ state: FollowerState, controlID: String?, now: Date
     ) -> (state: FollowerState, commands: [FollowerCommand]) {
-        guard state.canUseRelay == .no else { return (state, []) }
         var next = state
         var commands: [FollowerCommand] = []
         if state.route == .relay {

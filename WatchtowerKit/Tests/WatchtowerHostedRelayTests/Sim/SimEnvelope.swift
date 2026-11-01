@@ -15,8 +15,6 @@ enum SimKind: String, Sendable, CaseIterable {
 enum Sim {
     /// The record in the hub's relay data zone that names its current transport and epoch.
     static let markerName = "transport"
-    /// A phone whose transport has been unreachable this long also polls its other mailbox.
-    static let pollOtherAfter: TimeInterval = 60
     /// The hub accepts a switch to the relay no sooner than this after the previous one.
     static let relayHoldoff: TimeInterval = 5 * 60
     /// The longest the hub keeps the receiving keys of a previous epoch (the mailbox TTL).

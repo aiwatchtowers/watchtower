@@ -13,6 +13,13 @@ import WatchtowerSync
 // `transport_switched`, `hub_on_relay`, transport marker and relay outage to the production
 // `TransportFollowerPolicy` and executes its commands on the sim's legs, so the switch twins pin
 // the app's decision logic.
+//
+// Deviations from `phone.go` that the policy brings:
+// - only a relay outage polls the other mailbox (rule 12); an unreachable CloudKit polls nothing;
+// - that poll runs every 30 s of the outage (`otherMailboxEvery`), not on every pass;
+// - it runs right after the current mailbox is read, before the outbox and controls are flushed.
+// An undecided control (no `markHandled`) stays in its mailbox, but the sim's cursor still moves
+// past it, so the sim never reads it again; Tasks 11–12 must not advance the app's cursor past one.
 
 /// An action the hub did not apply and never will unless the user retries it (Go `Undelivered`).
 struct SimUndelivered: Equatable, Sendable {
@@ -317,8 +324,8 @@ actor SimPhone {
         }
         await writePendingSwitch()
         let reached = await read(current)
-        if current == .relay {
-            await follow(.relayReachable(reached, at: cfg.clock.now())) // rule 12: may poll CloudKit
+        if current == .relay, reached != .failed { // another error tells nothing about an outage
+            await follow(.relayReachable(reached == .answered, at: cfg.clock.now())) // rule 12: may poll CloudKit
         }
         await readMarker()
         await flush()
@@ -348,22 +355,25 @@ actor SimPhone {
         }
     }
 
-    /// Processes the records written to the mailbox on `kind` since the last read. Reports
-    /// whether the transport answered (an error other than an outage is an answer).
+    private enum ReadOutcome {
+        case answered, unavailable, failed
+    }
+
+    /// Processes the records written to the mailbox on `kind` since the last read.
     @discardableResult
-    private func read(_ kind: SimKind) async -> Bool {
+    private func read(_ kind: SimKind) async -> ReadOutcome {
         let res: SimChanges
         do {
             res = try await transport(kind).changes(mailbox(kind), since: cursors[kind] ?? 0)
         } catch {
-            return !(error is SimUnavailable)
+            return error is SimUnavailable ? .unavailable : .failed
         }
         if !res.changed.isEmpty || !res.deleted.isEmpty { progress = true }
         for rec in res.changed {
             await handle(kind, rec)
         }
         cursors[kind] = res.newSeq
-        return true
+        return .answered
     }
 
     /// Processes one record of the mailbox on `kind`. The phone's own records are left alone.
@@ -462,6 +472,8 @@ actor SimPhone {
             switch command {
             case .mergeKeybox, .markHandled, .ignore:
                 break // no keys in the sim; the caller deletes a handled control
+            case .requestAnswered:
+                pending = nil
             case let .moveRoute(target, _, by, at):
                 pending = nil
                 if !by.isEmpty { lastSwitch = SimSwitchInfo(target: SimKind(target), by: by, at: at) }

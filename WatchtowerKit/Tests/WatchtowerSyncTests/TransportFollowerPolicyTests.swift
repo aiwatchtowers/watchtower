@@ -61,8 +61,20 @@ final class TransportFollowerPolicyTests: XCTestCase {
             switched(to: .cloudKit, epoch: 2, on: .cloudKit), state: state(), now: base)
         let (afterSecond, commands) = TransportFollowerPolicy.decide(
             switched(to: .cloudKit, epoch: 2, on: .relay), state: afterFirst, now: base)
-        XCTAssertEqual(commands, [.markHandled(controlID: "c-1")])
+        XCTAssertEqual(commands, [.requestAnswered, .markHandled(controlID: "c-1")], "nothing moves twice")
         XCTAssertEqual(afterSecond, afterFirst)
+    }
+
+    func testTheCurrentRouteInTheCurrentEpochAnswersTheRequest() {
+        // The hub's answer to a request for the transport it is already on (Go `handleSwitch`, `target == current`).
+        let start = state(route: .relay, epoch: 3)
+        let (next, commands) = TransportFollowerPolicy.decide(switched(to: .relay, epoch: 3), state: start, now: base)
+        XCTAssertEqual(commands, [.requestAnswered, .markHandled(controlID: "c-1")])
+        XCTAssertEqual(next, start)
+        // The same epoch naming another route is only a stale copy.
+        XCTAssertEqual(
+            TransportFollowerPolicy.decide(switched(to: .cloudKit, epoch: 3), state: start, now: base).commands,
+            [.markHandled(controlID: "c-1")])
     }
 
     func testSwitchToRelayOnAFreePhoneActsAsHubOnRelay() {
@@ -106,11 +118,20 @@ final class TransportFollowerPolicyTests: XCTestCase {
         XCTAssertEqual(listed, [.listUnechoedAsUndelivered, .markHandled(controlID: "c-9")])
         XCTAssertEqual(stayed, free)
 
-        // A paying phone is not "without the hub": it waits for transport_switched.
-        let paying = state(route: .cloudKit, epoch: 2, canUseRelay: .yes)
-        XCTAssertEqual(
-            TransportFollowerPolicy.decide(.hubOnRelay(controlID: "c-9"), state: paying, now: base).commands,
-            [.markHandled(controlID: "c-9")])
+    }
+
+    func testHubOnRelayIsObeyedEvenByAPayingPhone() {
+        // The hub knows the lapse before the phone does (Go `hubWithoutUs` always obeys): never deleted unacted.
+        let paying = state(route: .relay, epoch: 2, canUseRelay: .yes)
+        let (next, commands) = TransportFollowerPolicy.decide(.hubOnRelay(controlID: "c-9"), state: paying, now: base)
+        XCTAssertEqual(commands, [
+            .moveRoute(to: .cloudKit, epoch: 2, by: "", at: base),
+            .listUnechoedAsUndelivered,
+            .drainMailbox(on: .relay),
+            .markHandled(controlID: "c-9")
+        ])
+        XCTAssertEqual(next.route, .cloudKit)
+        XCTAssertEqual(next.canUseRelay, .yes, "the paying answer stays the entitlement's")
     }
 
     func testAMarkerNewerThanTheEpochIsFollowed() {
