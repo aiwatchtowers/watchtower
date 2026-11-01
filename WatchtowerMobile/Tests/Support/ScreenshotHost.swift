@@ -34,7 +34,7 @@ final class ScreenshotHost {
 
     /// Writes `<name>-light.png` and `<name>-dark.png`; with `endName`, also
     /// `<endName>-light.png` and `-dark.png` scrolled to the end.
-    func capture(_ name: String, _ view: some View, endName: String? = nil) async throws {
+    func capture(_ name: String, _ view: some View, endName: String? = nil, settle: Duration = .milliseconds(600)) async throws {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
             throw ShotError.noWindowScene
         }
@@ -44,8 +44,8 @@ final class ScreenshotHost {
             window.overrideUserInterfaceStyle = style
             window.rootViewController = UIHostingController(rootView: view.environment(env).environment(linking))
             window.makeKeyAndVisible()
-            // Replica observation and layout settle.
-            try await Task.sleep(for: .milliseconds(600))
+            // Replica observation and layout settle (a presented alert longer).
+            try await Task.sleep(for: settle)
             try render(window, as: "\(name)-\(suffix)")
             if let endName {
                 // Content that fits has no end to scroll to: the end shot is
@@ -66,8 +66,8 @@ final class ScreenshotHost {
 
     /// Writes `<name>-light.png`, `<name>-dark.png` and `<name>-narrow.png` (light, `narrowSize`, the largest
     /// accessibility text size): the relay client mockups' three frames per state.
-    func captureThree(_ name: String, _ view: some View) async throws {
-        try await capture(name, view)
+    func captureThree(_ name: String, _ view: some View, settle: Duration = .milliseconds(600)) async throws {
+        try await capture(name, view, settle: settle)
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
             throw ShotError.noWindowScene
         }
@@ -78,7 +78,7 @@ final class ScreenshotHost {
             rootView: view.environment(env).environment(linking).dynamicTypeSize(.accessibility5)
         )
         window.makeKeyAndVisible()
-        try await Task.sleep(for: .milliseconds(600))
+        try await Task.sleep(for: settle)
         try render(window, as: "\(name)-narrow")
         window.isHidden = true
         window.rootViewController = nil
@@ -125,6 +125,7 @@ final class ScreenshotHost {
     }
 
     private func render(_ window: UIWindow, as name: String) throws {
+        // iOS 26 draws a presented alert outside what `drawHierarchy` captures: a shot of one shows the screen beneath.
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
             _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         }

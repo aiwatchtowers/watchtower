@@ -152,13 +152,20 @@ final class ScreenshotTourTests: XCTestCase {
         return (linking, relay, host)
     }
 
-    /// R01–R19, each light, dark and narrow (iPhone SE, the largest Dynamic Type size).
+    /// R01–R21, each light, dark and narrow (iPhone SE, the largest Dynamic Type size).
     private func captureRelayLinking(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
         let now = Date()
         let onboarding = "Features/Onboarding/"
         var rows: [ScreenshotHost.IndexRow] = []
-        func shot(_ number: String, _ slug: String, _ source: String, _ reached: String, _ view: some View) async throws {
-            try await host.captureThree("\(number)-\(slug)", view)
+        func shot(
+            _ number: String,
+            _ slug: String,
+            _ source: String,
+            _ reached: String,
+            _ view: some View,
+            settle: Duration = .milliseconds(600)
+        ) async throws {
+            try await host.captureThree("\(number)-\(slug)", view, settle: settle)
             let name = URL(fileURLWithPath: source).deletingPathExtension().lastPathComponent
             rows.append(ScreenshotHost.IndexRow(number: number, view: name, source: source, reached: "\(reached), light/dark/narrow"))
         }
@@ -174,9 +181,7 @@ final class ScreenshotTourTests: XCTestCase {
             ("R05", "notice-mac-on-relay", .macOnRelay(macName: "Work Mac"))
         ] {
             host.env.navigation.tab = .now
-            try await shot(number, slug, "App/AppRootView.swift", "full app with the notice", RootTabView().safeAreaInset(edge: .top, spacing: 0) {
-                LinkNoticeBanner(notice: notice)
-            })
+            try await shot(number, slug, "App/AppRootView.swift", "full app with the notice", TabsWithNotice(notice: notice))
         }
 
         let slots = onboarding + "RelaySlotsView.swift"
@@ -189,23 +194,39 @@ final class ScreenshotTourTests: XCTestCase {
         )
         try await shot(
             "R07", "relay-slots-finishing-mac", slots, "sheet, Remove on the finishing link",
-            RelaySlotsView(asking: RelaySlotsModel.ask(for: finishingRow)) {}.environment(slotsLinking)
+            RelaySlotsView(asking: RelaySlotsModel.ask(for: finishingRow)) {}.environment(slotsLinking), settle: .seconds(2)
         )
         slotsRelay.park("removeSlot")
         slotsRelay.fail("removeSlot", with: HostedRelayPairing.Refusal.unreachable)
-        let removal = Task { await slotsLinking.removeFromSlots(DemoSeed.Relay.unknownMac) }
+        let removal = Task { await slotsLinking.removeFromSlots(DemoSeed.Relay.workMac) }
         try await poll({ slotsRelay.isParked("removeSlot") }, "the removal is running")
         try await shot("R08", "relay-slots-removing", slots, "sheet, a removal running", RelaySlotsView {}.environment(slotsLinking))
         slotsRelay.release("removeSlot")
         await removal.value
         try await shot("R09", "relay-slots-remove-error", slots, "sheet, the removal failed", RelaySlotsView {}.environment(slotsLinking))
 
-        let macs = "Features/Settings/MacsView.swift"
+        try await captureRelayMacs(now: now) { number, slug, reached, view, settle in
+            try await shot(number, slug, "Features/Settings/MacsView.swift", reached, view, settle: settle)
+        }
+        try await shot(
+            "R21", "link-mac-not-on-relay", onboarding + "LinkedView.swift", "leaf view",
+            LinkFailureView(failure: .macNotOnRelay(macName: "build-box"))
+        )
+        return rows
+    }
+
+    /// R10–R20: Settings → Macs with the demo's finishing link in each state.
+    private func captureRelayMacs(
+        now: Date, shot: (_ number: String, _ slug: String, _ reached: String, _ view: AnyView, _ settle: Duration) async throws -> Void
+    ) async throws {
         let (busy, busyRelay, _) = try relayLinking(.confirmed, now: now)
         busyRelay.park("vouch")
         let attempt = Task { await busy.tryAgain(DemoSeed.Relay.finishingHubID) }
         try await poll({ busyRelay.isParked("vouch") }, "the attempt is running")
-        try await shot("R10", "macs-finishing-row", macs, "bare stack, an attempt running", NavigationStack { MacsView() }.environment(busy))
+        try await shot(
+            "R10", "macs-finishing-row", "bare stack, an attempt running",
+            AnyView(NavigationStack { MacsView() }.environment(busy)), .milliseconds(600)
+        )
         busyRelay.release("vouch")
         await attempt.value
 
@@ -213,23 +234,23 @@ final class ScreenshotTourTests: XCTestCase {
         failedHost.prepareError = CocoaError(.fileReadCorruptFile)
         await failed.resumePromotedLinks()
         try await shot(
-            "R11", "macs-finishing-row-error", macs, "bare stack, the last attempt failed",
-            NavigationStack { MacsView() }.environment(failed)
+            "R11", "macs-finishing-row-error", "bare stack, the last attempt failed",
+            AnyView(NavigationStack { MacsView() }.environment(failed)), .milliseconds(600)
         )
 
         for (index, reason) in PromotedLink.Reason.allCases.enumerated() {
             let (linking, _, _) = try relayLinking(.needsOwner(reason), now: now)
             try await shot(
-                String(format: "R%02d", 12 + index), "macs-needs-owner-\(reason.rawValue)", macs, "bare stack",
-                NavigationStack { MacsView() }.environment(linking)
+                String(format: "R%02d", 12 + index), "macs-needs-owner-\(reason.rawValue)", "bare stack",
+                AnyView(NavigationStack { MacsView() }.environment(linking)), .milliseconds(600)
             )
         }
         let (cancel, _, _) = try relayLinking(.needsOwner(.slotExpired), now: now)
         let row = try XCTUnwrap(MacsModel.finishingRows(cancel.promotedLinks, running: [], failed: []).first)
-        try await shot("R19", "macs-finishing-cancel-confirm", macs, "bare stack, Cancel pressed", NavigationStack {
-            MacsView(cancelling: row)
-        }.environment(cancel))
-        return rows
+        try await shot(
+            "R20", "macs-finishing-cancel-confirm", "bare stack, Cancel pressed",
+            AnyView(NavigationStack { MacsView(cancelling: row) }.environment(cancel)), .seconds(2)
+        )
     }
 
     private static func isHydrated(_ env: AppEnvironment) -> Bool {

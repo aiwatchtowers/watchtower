@@ -11,9 +11,12 @@ struct RelaySlotsView: View {
     @State private var asking: RelaySlotsModel.Ask?
 
     /// `asking`: a Remove's confirmation already open (the screenshot tour's frame).
+    /// Opened once the screen is on (an alert set before it has a window is not presented).
+    private let initialAsk: RelaySlotsModel.Ask?
+
     init(asking: RelaySlotsModel.Ask? = nil, onClose: @escaping () -> Void) {
         self.onClose = onClose
-        _asking = State(initialValue: asking)
+        initialAsk = asking
     }
 
     var body: some View {
@@ -49,9 +52,13 @@ struct RelaySlotsView: View {
                 }
             }
         }
-        .confirmationDialog(
+        .task {
+            if let initialAsk { asking = initialAsk }
+        }
+        // An alert, not a dialog: both buttons show at every width (iOS hides a dialog's cancel button in a popover).
+        .alert(
             asking?.title ?? "", isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }),
-            titleVisibility: .visible, presenting: asking
+            presenting: asking
         ) { ask in
             Button(ask.confirm, role: .destructive) {
                 Task { await linking.removeFromSlots(ask.mac) }
@@ -88,12 +95,15 @@ struct RelaySlotsView: View {
 
     @ViewBuilder private func slotAction(_ row: RelaySlotsModel.Row) -> some View {
         if row.action == .removing {
-            HStack(spacing: Spacing.compact) {
+            // On the title's baseline, in the trailing slot (the row's text keeps its line).
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
                 Text(row.action.title)
                     .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
                 ProgressView()
+                    .controlSize(.small)
             }
+            .fixedSize()
         } else {
             Button(row.action.title) {
                 if let ask = RelaySlotsModel.ask(for: row) {

@@ -37,7 +37,9 @@ struct PendingFarewell: Equatable, Sendable {
     /// not reach the zones after); a relay link's goes to its Mac's mailbox.
     var route: HubRoute
     /// The iCloud account the link was made on: another account's phone
-    /// cannot reach the zones, so its farewell is dropped.
+    /// cannot reach the zones, so its farewell is dropped. Only iCloud routes
+    /// compare it (`retryFarewells`); a relay farewell stores "" and never
+    /// depends on the iCloud account (R19).
     var userRecordName: String
     /// The sealed wire record, as it waited in the send queue.
     var record: CloudRecord

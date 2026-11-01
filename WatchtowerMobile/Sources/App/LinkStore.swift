@@ -239,6 +239,8 @@ struct PromotedLink: Codable, Equatable, Sendable {
         case notConfirmed
         /// `ATTESTATION_REQUIRED`, or `ATTESTATION_FAILED` after the retries.
         case updateApp
+        /// `HubRegistry.limit` Macs got linked meanwhile: the promoted link cannot be saved (review round 1).
+        case tooManyMacs
 
         /// The Settings → Macs row's line (and the link screen's notice, before "See Settings → Macs.").
         func message(macName: String) -> String {
@@ -250,6 +252,7 @@ struct PromotedLink: Codable, Equatable, Sendable {
             case .hubNotOnRelay: "\(macName) isn't on Relay yet. Keep Watchtower open on it and try again, or cancel this link."
             case .notConfirmed: "Relay didn't confirm the link. Try again, or cancel it."
             case .updateApp: "Update Watchtower to finish this link, or cancel it."
+            case .tooManyMacs: "You can link up to \(HubRegistry.limit) Macs. Unlink one, then try again, or cancel this link."
             }
         }
 

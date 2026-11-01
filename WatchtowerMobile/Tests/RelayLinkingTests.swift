@@ -291,6 +291,122 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(host.slotRemovals.isEmpty, "a Mac not on this iPhone keeps no removal")
     }
 
+    /// Review round 1, finding 5: the linked Mac keeps its name while its removal runs and after it failed.
+    func testALinkedMacKeepsItsNameWhenItsSlotRemovalFails() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID, "m2", "m3"]
+        relay.fail("removeSlot", with: HostedRelayPairing.Refusal.unreachable)
+        let payload = relayCode()
+        macLinks(payload)
+        let model = makeModel()
+        await model.open(payload.url())
+
+        await model.removeFromSlots(otherMac.deviceID)
+
+        XCTAssertEqual(host.removedHubIDs, [otherHub], "the unlink ran")
+        let screen = RelaySlotsModel(state: model.relaySlots, links: model.links, promoted: model.promotedLinks)
+        let row = try XCTUnwrap(screen.rows.first)
+        XCTAssertEqual(row.name, "Work Mac")
+        XCTAssertEqual(row.action, .tryAgain)
+        XCTAssertEqual(host.slotRemovals, [otherMac.deviceID])
+
+        await model.removeFromSlots(otherMac.deviceID)
+
+        XCTAssertEqual(relay.count("removeSlot"), 2, "Try Again frees the slot only")
+        XCTAssertTrue(host.slotRemovals.isEmpty)
+        XCTAssertEqual(model.phase, .linked(macName: "build-box"))
+    }
+
+    /// Ask #914 (proposed default): `NOT_FOUND` at `open_pairing` is "<Mac> isn't on Relay yet", with Try Again on
+    /// the same code.
+    func testAMacNotOnRelayAtOpenOffersTryAgain() async throws {
+        relay.fail("open", with: HostedRelayError.server(code: .notFound, retryAfter: nil))
+        let payload = relayCode()
+        macLinks(payload)
+        let model = makeModel()
+
+        await model.open(payload.url())
+
+        let failure = LinkFailure.macNotOnRelay(macName: "build-box")
+        XCTAssertEqual(model.phase, .failed(failure))
+        XCTAssertEqual(failure.title, "build-box isn't on Relay yet")
+        XCTAssertEqual(failure.hint, "Open Watchtower on the Mac and try again")
+        XCTAssertEqual(failure.retryTitle, "Try Again")
+        XCTAssertFalse(failure.offersScan)
+        XCTAssertFalse(try keysHeld())
+
+        await model.retryFailedCode()
+
+        XCTAssertEqual(model.phase, .linked(macName: "build-box"))
+    }
+
+    /// Review round 1, finding 12: four Macs linked meanwhile — the promoted link waits for the owner, not for ever.
+    func testAFullRegistryAsksTheOwnerInsteadOfRetryingForEver() async throws {
+        try seedPromoted(relayCode(), state: .promoted)
+        for index in 0..<4 {
+            seedRelayRow("AAAA000\(index)-0000-4000-8000-000000000001", macName: "Mac \(index)", relayMac: RelayTestMac(seed: UInt8(20 + index)))
+        }
+        let model = makeModel()
+
+        await model.resumePromotedLinks()
+
+        XCTAssertEqual(state(), .needsOwner(.tooManyMacs))
+        XCTAssertTrue(try keysHeld())
+        XCTAssertEqual(
+            MacsModel.finishingRows(model.promotedLinks, running: [], failed: []).first?.line,
+            "You can link up to 4 Macs. Unlink one, then try again, or cancel this link."
+        )
+    }
+
+    // MARK: - A confirmed link left in pending (review round 1, finding 1)
+
+    /// (a) Killed between the promoted write and the pending clear, relaunched past the deadline: the pending
+    /// link goes, the slot stays open and the keys stay; the promoted link finishes.
+    func testAKillBetweenTheConfirmWritesNeverDeletesTheKeys() async throws {
+        let payload = relayCode()
+        let link = try seedPromoted(payload, state: .confirmed, slot: "slot-0")
+        store.pending = PendingLink(
+            link: link.link, deadline: clock.now().addingTimeInterval(60), baseline: nil, baselineCaptured: true,
+            issuedAt: clock.now(), relaySlot: "slot-0", relaySlotExpiresAt: clock.now().addingTimeInterval(600)
+        )
+        clock.advance(by: 3_600)
+        let relaunched = makeModel()
+
+        await relaunched.resumePendingLink()
+
+        XCTAssertNil(store.pending)
+        XCTAssertEqual(state(), .confirmed)
+        XCTAssertTrue(try keysHeld(), "never deleted without the owner's Cancel")
+        XCTAssertFalse(relay.ops.contains("close slot-0"))
+        XCTAssertTrue(host.removedHubIDs.isEmpty)
+
+        await relaunched.resumePromotedLinks()
+        XCTAssertNil(state(), "it finished")
+        XCTAssertEqual(relaunched.links.map(\.hubID), [hub])
+    }
+
+    /// (b) The `.confirmed` write failed and the app relaunches past the code's deadline: the keys arrived, so the
+    /// write is done again with no deadline, before any relay call, and the link finishes.
+    func testAFailedConfirmedWriteIsRetriedPastTheDeadline() async throws {
+        let refusing = try XCTUnwrap(RefusingDefaults(suiteName: "relay-refusing-\(UUID().uuidString)"))
+        refusing.refusing = "link.promoted"
+        defaults = refusing
+        await link(relayCode(), model: makeModel())
+        XCTAssertNotNil(store.pending)
+        XCTAssertEqual(relay.count("vouch"), 0)
+
+        refusing.refusing = nil
+        clock.advance(by: 3_600)
+        let relaunched = makeModel()
+        await relaunched.resumePendingLink()
+
+        XCTAssertEqual(relaunched.phase, .linked(macName: "build-box"))
+        XCTAssertTrue(try keysHeld())
+        XCTAssertFalse(relay.ops.contains("close slot-1"))
+        XCTAssertEqual(relay.ops.suffix(2), ["vouch \(mac.deviceID)", "promote slot-1"])
+        XCTAssertNil(store.pending)
+    }
+
     func testRemovingStateDisablesTheOtherRows() {
         let state = RelaySlotsState(macs: ["m1", "m2"], removing: "m1")
         let screen = RelaySlotsModel(state: state, links: [], promoted: [])
@@ -318,7 +434,7 @@ final class RelayLinkingTests: XCTestCase {
             (HostedRelayPairing.Refusal.unreachable, LinkFailure.relayUnreachable),
             (.attestationBackoff(until: start), .relayUnreachable),
             (.updateRequired, .updateApp),
-            (.replacementLimit, .relayReplacementLimit)
+            (.replacementLimit, .relayUnreachable)
         ] {
             relay.fail("open", with: error)
             let model = makeModel()
@@ -495,7 +611,7 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(relay.ops.filter { !$0.hasPrefix("accountState") }, [
             "open \(mac.deviceID)", "vouch \(mac.deviceID)", "promote slot-1"
         ])
-        XCTAssertEqual(host.pairings.map(\.slot), ["slot-1", "slot-1"], "the resume reads the same slot")
+        XCTAssertEqual(host.pairings.map(\.slot), ["slot-1"], "the keys arrived: no pairing transport again")
         let hellos = try await host.pairHellos()
         XCTAssertEqual(hellos.count, 1, "no second hello")
     }

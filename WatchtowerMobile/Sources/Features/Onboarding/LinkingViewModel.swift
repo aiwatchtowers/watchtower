@@ -100,6 +100,8 @@ final class LinkingViewModel {
     @ObservationIgnored private let clock: any LinkClock
     /// The relay's account ops (off: never asked).
     @ObservationIgnored private let relay: any RelayLinkOps
+    /// The code a failure's Try Again opens again (`LinkFailure.retryTitle`).
+    @ObservationIgnored private var retryCode: URL?
     /// The code the inline slots screen goes on with after a removal.
     @ObservationIgnored private var slotsCode: RelayCode?
     /// Hubs whose link is ending (an unlink, a removal, the account
@@ -126,7 +128,7 @@ final class LinkingViewModel {
         self.clock = clock
         self.relay = relay
         resumer = PromotedLinkResumer(store: store, relay: relay, clock: clock)
-        resumer.finish = { [weak self] link in await self?.completePromoted(link) ?? false }
+        resumer.finish = { [weak self] link in await self?.completePromoted(link) ?? .failed }
         resumer.changed = { [weak self] in self?.refreshLinks() }
     }
 
@@ -408,6 +410,15 @@ final class LinkingViewModel {
     /// no row yet (a first link, or a re-pair whose old link ended) leaves no
     /// session, directory or keys behind.
     private func fail(_ failure: LinkFailure, hubID: String) async {
+        // A confirmed Relay link is never failed: its slot and keys go only by the owner's Cancel.
+        guard store.promoted[hubID] == nil else {
+            Self.logger.notice("a pending link of a confirmed relay link dropped; the link resumes")
+            store.pending = nil
+            linkCode = nil
+            macSeesPhone = false
+            phase = .idle
+            return
+        }
         // A Relay link not confirmed yet: its pairing slot is closed first (best effort; it expires anyway).
         if let pending = store.pending, pending.link.hubID == hubID, let slot = pending.relaySlot {
             await relay.close(slot: slot)
@@ -489,6 +500,21 @@ final class LinkingViewModel {
             store.pending = nil
             phase = .failed(.refused)
             return
+        }
+        // A Relay link the owner already confirmed is never bounded by the code's deadline (point 9).
+        switch relayConfirmation(of: pending) {
+        case .promoted:
+            // A kill between the two writes of `LinkStore.confirm`: the promoted entry is the link.
+            store.pending = nil
+            return
+        case .keysArrived:
+            await confirmPendingRelay(pending)
+            return
+        case .locked:
+            Self.logger.notice("keys locked at launch: the pending link waits for the next launch")
+            return
+        case .notYet:
+            break
         }
         guard clock.now() < pending.deadline, pending.baselineCaptured else {
             await fail(.noAnswer, hubID: pending.link.hubID)
@@ -1118,6 +1144,9 @@ struct RelaySlotsState: Equatable {
     var macs: [String] = []
     var removing: String?
     var failed: String?
+    /// The removed Mac's row as it read when Remove was pressed: an unlink ends its registry row before
+    /// `remove_slot` answers, and the row keeps its name and kind while removing and after a failure.
+    var pinned: [String: RelaySlotsModel.Pinned] = [:]
     var finishing: String?
     /// The account state is being read (Manage Macs).
     var loading = false
@@ -1143,7 +1172,9 @@ extension LinkingViewModel {
             phase = .slotsFull(macName: payload.macName)
             return
         } catch {
-            phase = .failed(Self.openFailure(error, code: payload))
+            let failure = Self.openFailure(error, code: payload)
+            retryCode = failure.retryTitle == nil ? nil : payload.url()
+            phase = .failed(failure)
             return
         }
         let deviceKeys: DeviceIdentityKeys
@@ -1207,8 +1238,13 @@ extension LinkingViewModel {
         case .notPaying: .needsRelay(macName: code.macName)
         case .updateRequired: .updateApp
         case .pairingExpired: .expired
-        case .replacementLimit: .relayReplacementLimit
-        case .slotsFull, .unreachable, .attestationBackoff, nil: .relayUnreachable
+        case .replacementLimit, .slotsFull, .unreachable, .attestationBackoff: .relayUnreachable
+        case nil:
+            if case HostedRelayError.server(code: .notFound, _)? = error as? HostedRelayError {
+                .macNotOnRelay(macName: code.macName)
+            } else {
+                .relayUnreachable
+            }
         }
     }
 
@@ -1262,19 +1298,21 @@ extension LinkingViewModel {
 
     /// `prepare` on the Mac's data zone (the pairing transport goes), then `linked` with the `.relay` route: the row
     /// is saved and the promoted entry goes. False (logged) when either throws: the link resumes later.
-    private func completePromoted(_ link: PromotedLink) async -> Bool {
-        guard let host, let device = identity.linkedDevice(for: link.link) else { return false }
+    private func completePromoted(_ link: PromotedLink) async -> PromotedLinkResumer.Finish {
+        guard let host, let device = identity.linkedDevice(for: link.link) else { return .failed }
         do {
             _ = try await host.prepare(route: link.link.route, hubID: link.hubID, fresh: false)
             try await host.linked(link.link, device: device)
+        } catch HubRegistryError.full {
+            return .registryFull
         } catch {
             Self.logger.error("promoted link not finished: \(error.localizedDescription, privacy: .public)")
-            return false
+            return .failed
         }
         store.removePromoted(link.hubID)
         resumer.forget(link.hubID)
         refreshLinks()
-        return true
+        return .linked
     }
 
     /// At launch and on every foreground: one automatic attempt per confirmed link (`.needsOwner` waits).
@@ -1397,6 +1435,10 @@ extension LinkingViewModel {
     /// Settings → Macs the confirmed link (vouch, promote).
     func removeFromSlots(_ mac: String) async {
         guard relaySlots.removing == nil else { return }
+        if relaySlots.pinned[mac] == nil,
+           let row = RelaySlotsModel(state: relaySlots, links: links, promoted: promotedLinks).rows.first(where: { $0.id == mac }) {
+            relaySlots.pinned[mac] = RelaySlotsModel.Pinned(name: row.name, sub: row.sub, kind: row.kind)
+        }
         relaySlots.removing = mac
         relaySlots.failed = nil
         let freed: Bool
@@ -1413,6 +1455,7 @@ extension LinkingViewModel {
             return
         }
         relaySlots.macs.removeAll { $0 == mac }
+        relaySlots.pinned[mac] = nil
         if let hubID = relaySlots.finishing {
             closeSlots()
             await tryAgain(hubID)
@@ -1445,5 +1488,53 @@ extension LinkingViewModel {
         relaySlots = RelaySlotsState()
         slotsCode = nil
         if case .slotsFull = phase { phase = .idle }
+    }
+}
+
+// MARK: - A confirmed Relay link left in `pending` (relay client Phase 3 Task 10, review round 1)
+
+extension LinkingViewModel {
+    enum RelayConfirmation {
+        /// Its hub is already in `LinkStore.promoted`.
+        case promoted
+        /// The keybox's keys are stored: the owner confirmed, the `.confirmed` write did not land.
+        case keysArrived
+        /// The keys cannot be read now.
+        case locked
+        /// An iCloud link, or a Relay link still waiting for the owner.
+        case notYet
+    }
+
+    /// Where a pending link stands before its deadline is looked at.
+    private func relayConfirmation(of pending: PendingLink) -> RelayConfirmation {
+        if store.promoted[pending.link.hubID] != nil { return .promoted }
+        guard pending.relaySlot != nil else { return .notYet }
+        do {
+            return try keys.hubLink(pending.link.hubID)?.epochs.isEmpty == false ? .keysArrived : .notYet
+        } catch KeyStoreError.locked {
+            return .locked
+        } catch {
+            return .notYet
+        }
+    }
+
+    /// The `.confirmed` write again, at launch, whatever the time: the link's `linkedAt` is the code's issue time
+    /// (the Mac linked at or after it; the keybox is not read again).
+    private func confirmPendingRelay(_ pending: PendingLink) async {
+        guard let slot = pending.relaySlot else { return }
+        var record = pending.link
+        record.linkedAt = pending.issuedAt
+        phase = .checking
+        await confirmRelay(pending, record: record, slot: slot)
+    }
+}
+
+extension LinkingViewModel {
+    /// The failure screen's Try Again: the same code once more (its expiry checked again).
+    func retryFailedCode() async {
+        guard case .failed = phase, let url = retryCode else { return }
+        retryCode = nil
+        phase = .idle
+        await open(url)
     }
 }

@@ -23,8 +23,8 @@ enum LinkFailure: Equatable {
     case relayUnreachable
     /// The Mac runs over Relay and this iPhone cannot use Relay: an iCloud link would get no updates from it.
     case macOnRelay(macName: String)
-    /// The relay refused a new pairing slot: too many Mac changes in 30 days (`SLOT_REPLACEMENT_LIMIT`).
-    case relayReplacementLimit
+    /// `NOT_FOUND` at `open_pairing`: the Mac has not registered on the relay yet (ask #914, proposed default).
+    case macNotOnRelay(macName: String)
 
     /// What went wrong, as the failure screen's title (design pass O3).
     var title: String {
@@ -42,7 +42,7 @@ enum LinkFailure: Equatable {
         case let .needsRelay(macName): "\(macName) works over Relay only"
         case .relayUnreachable: "Couldn't reach Relay"
         case let .macOnRelay(macName): "\(macName) runs over Relay"
-        case .relayReplacementLimit: "Too many Mac changes on Relay"
+        case let .macNotOnRelay(macName): "\(macName) isn't on Relay yet"
         }
     }
 
@@ -57,7 +57,7 @@ enum LinkFailure: Equatable {
         case .needsRelay: "Relay isn't available on this iPhone"
         case .relayUnreachable: "Check your connection and scan again"
         case .macOnRelay: Self.macOnRelayHint
-        case .relayReplacementLimit: "Try again later"
+        case .macNotOnRelay: "Open Watchtower on the Mac and try again"
         case let .iCloud(reason), let .local(reason): reason.isEmpty ? nil : reason
         }
     }
@@ -80,11 +80,18 @@ enum LinkFailure: Equatable {
         [ToneUse(element: "link failure icon", tone: .secondary, role: .info)]
     }
 
+    /// The same code again (the Mac may come online meanwhile); nil when only a new scan helps.
+    var retryTitle: String? {
+        if case .macNotOnRelay = self { return "Try Again" }
+        return nil
+    }
+
     /// Scanning another code can help (it cannot while iCloud is signed
     /// out, the app is too old, or every Mac slot is taken).
     var offersScan: Bool {
         switch self {
-        case .signIn, .updateApp, .tooManyMacs: false
+        // A Mac not on Relay yet: the same code once more (Try Again), not a new scan.
+        case .signIn, .updateApp, .tooManyMacs, .macNotOnRelay: false
         default: true
         }
     }

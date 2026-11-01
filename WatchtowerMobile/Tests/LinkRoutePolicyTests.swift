@@ -113,8 +113,11 @@ final class LinkRoutePolicyTests: XCTestCase {
     }
 
     func testNoRelayFailureOffersLinkOverICloud() {
-        for failure in [LinkFailure.needsRelay(macName: "build-box"), .relayUnreachable, .macOnRelay(macName: "Work Mac"), .relayReplacementLimit] {
-            XCTAssertTrue(failure.offersScan, "\(failure)")
+        let failures: [LinkFailure] = [
+            .needsRelay(macName: "build-box"), .relayUnreachable, .macOnRelay(macName: "Work Mac"), .macNotOnRelay(macName: "build-box")
+        ]
+        for failure in failures {
+            XCTAssertTrue(failure.offersScan || failure.retryTitle != nil, "\(failure)")
             XCTAssertFalse("\(failure.title) \(failure.hint ?? "")".contains("Link over iCloud"), "\(failure)")
         }
     }

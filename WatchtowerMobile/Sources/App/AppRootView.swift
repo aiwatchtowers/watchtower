@@ -27,12 +27,7 @@ struct AppRootView: View {
             // close its replica now (#222).
             .onAppear { root.env.releaseRetained() }
         } else {
-            RootTabView()
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if let notice = root.linking.notice {
-                        LinkNoticeBanner(notice: notice)
-                    }
-                }
+            TabsWithNotice(notice: root.linking.notice)
                 .fullScreenCover(isPresented: Binding(
                     get: { root.linking.phase != .idle },
                     set: { presented in
@@ -43,6 +38,22 @@ struct AppRootView: View {
                         .environment(root.env)
                         .environment(root.linking)
                 }
+        }
+    }
+}
+
+/// The tabs with the link's notice above them. The notice takes its own band under the status bar and the tabs start
+/// below it, so their navigation bars never draw over it (iOS 26's floating toolbar glass would cover a safe-area
+/// inset; relay client Phase 3 Task 10, mockup 7.5).
+struct TabsWithNotice: View {
+    let notice: LinkNotice?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let notice {
+                LinkNoticeBanner(notice: notice)
+            }
+            RootTabView()
         }
     }
 }

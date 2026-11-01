@@ -14,8 +14,11 @@ struct MacsView: View {
     @State private var managing: MacsModel.FinishingRow?
 
     /// `cancelling`: a finishing link's Cancel confirmation already open (the screenshot tour's frame).
+    /// Opened once the screen is on (an alert set before it has a window is not presented).
+    private let initialCancel: MacsModel.FinishingRow?
+
     init(cancelling: MacsModel.FinishingRow? = nil) {
-        _cancelling = State(initialValue: cancelling)
+        initialCancel = cancelling
     }
 
     var body: some View {
@@ -44,15 +47,19 @@ struct MacsView: View {
         } message: { ask in
             Text(ask.message)
         }
-        .confirmationDialog(
+        // An alert: both Cancel Link and Keep Trying show at every width (mockup 7.4).
+        .alert(
             cancelling.map { MacsModel.cancelQuestion($0.name) } ?? "",
             isPresented: Binding(get: { cancelling != nil }, set: { if !$0 { cancelling = nil } }),
-            titleVisibility: .visible, presenting: cancelling
+            presenting: cancelling
         ) { row in
             Button(MacsModel.cancelLink, role: .destructive) {
                 Task { await linking.cancelPromoted(row.id) }
             }
             Button(MacsModel.keepTrying, role: .cancel) {}
+        }
+        .task {
+            if let initialCancel { cancelling = initialCancel }
         }
         .sheet(item: $managing) { row in
             RelaySlotsView { managing = nil; linking.closeSlots() }

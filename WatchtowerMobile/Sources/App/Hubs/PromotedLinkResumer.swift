@@ -45,8 +45,17 @@ final class PromotedLinkResumer {
     @ObservationIgnored private let clock: any LinkClock
     @ObservationIgnored private var failures: [String: Int] = [:]
     @ObservationIgnored private var notBefore: [String: Date] = [:]
-    /// Completes a `.promoted` link (`prepare`, then `linked`): true once its row is saved.
-    @ObservationIgnored var finish: @MainActor (PromotedLink) async -> Bool = { _ in false }
+    /// How `finish` ended.
+    enum Finish: Equatable {
+        case linked
+        /// `prepare` or `linked` threw: the next attempt goes on.
+        case failed
+        /// `HubRegistryError.full`: four Macs are linked (a race past the fifth-Mac check); the owner decides.
+        case registryFull
+    }
+
+    /// Completes a `.promoted` link (`prepare`, then `linked`).
+    @ObservationIgnored var finish: @MainActor (PromotedLink) async -> Finish = { _ in .failed }
     /// The store changed (a state written or the entry gone).
     @ObservationIgnored var changed: @MainActor () -> Void = {}
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "Linking")
@@ -203,7 +212,13 @@ final class PromotedLinkResumer {
     }
 
     private func complete(_ link: PromotedLink) async -> Outcome {
-        await finish(link) ? .linked : .waiting
+        switch await finish(link) {
+        case .linked: return .linked
+        case .failed: return .waiting
+        case .registryFull:
+            Self.logger.error("promoted link not saved: the registry is full")
+            return needsOwner(link, .tooManyMacs)
+        }
     }
 
     private func needsOwner(_ link: PromotedLink, _ reason: PromotedLink.Reason) -> Outcome {

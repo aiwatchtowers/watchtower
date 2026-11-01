@@ -41,6 +41,13 @@ struct RelaySlotsModel: Equatable {
         let isDisabled: Bool
     }
 
+    /// A row's name, sub line and kind kept while its removal runs or after it failed.
+    struct Pinned: Equatable {
+        let name: String
+        let sub: String?
+        let kind: Kind
+    }
+
     /// The confirmation before a Remove (none for a Mac not on this iPhone).
     struct Ask: Identifiable, Equatable {
         let mac: String
@@ -78,7 +85,11 @@ struct RelaySlotsModel: Equatable {
             let kind: Kind
             let name: String
             var sub: String?
-            if let row = links.first(where: { $0.link.relayMacDeviceID == mac }) {
+            if let pinned = state.pinned[mac] {
+                kind = pinned.kind
+                name = pinned.name
+                sub = pinned.sub
+            } else if let row = links.first(where: { $0.link.relayMacDeviceID == mac }) {
                 kind = .linkedHere(hubID: row.hubID)
                 name = row.link.macName
             } else if let link = promoted.first(where: { $0.macDeviceID == mac }) {
@@ -97,19 +108,30 @@ struct RelaySlotsModel: Equatable {
         }
     }
 
-    /// The confirmation `row`'s Remove asks first; nil asks nothing.
+    /// The screen's colours (spec §14: never orange): the Mac icons and the actions.
+    var toneUses: [ToneUse] {
+        rows.flatMap { row in
+            [
+                ToneUse(element: "slot \(row.id) icon", tone: .secondary, role: .mac),
+                ToneUse(element: "slot \(row.id) action", tone: .accent, role: .info)
+            ]
+        }
+    }
+
+    /// The confirmation `row`'s Remove asks first; nil asks nothing (and a Try Again, whose removal was confirmed).
     static func ask(for row: Row) -> Ask? {
+        guard row.action == .remove else { return nil }
         switch row.kind {
         case .linkedHere:
-            Ask(
+            return Ask(
                 mac: row.id, title: "Unlink \(row.name)?",
                 message: "This phone forgets the Mac's data. Changes still waiting for the Mac are not sent.",
                 confirm: "Unlink", keep: "Cancel"
             )
         case .finishing:
-            Ask(mac: row.id, title: MacsModel.cancelQuestion(row.name), message: nil, confirm: MacsModel.cancelLink, keep: MacsModel.keepTrying)
+            return Ask(mac: row.id, title: MacsModel.cancelQuestion(row.name), message: nil, confirm: MacsModel.cancelLink, keep: MacsModel.keepTrying)
         case .unknown:
-            nil
+            return nil
         }
     }
 }

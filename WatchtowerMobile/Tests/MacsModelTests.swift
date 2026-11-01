@@ -136,7 +136,8 @@ final class MacsModelTests: XCTestCase {
                 "build-box isn't on Relay yet. Keep Watchtower open on it and try again, or cancel this link.", [.tryAgain, .cancel]
             ),
             .notConfirmed: ("Relay didn't confirm the link. Try again, or cancel it.", [.tryAgain, .cancel]),
-            .updateApp: ("Update Watchtower to finish this link, or cancel it.", [.tryAgain, .cancel])
+            .updateApp: ("Update Watchtower to finish this link, or cancel it.", [.tryAgain, .cancel]),
+            .tooManyMacs: ("You can link up to 4 Macs. Unlink one, then try again, or cancel this link.", [.tryAgain, .cancel])
         ]
         XCTAssertEqual(Set(expected.keys), Set(PromotedLink.Reason.allCases))
         for (reason, (line, actions)) in expected {

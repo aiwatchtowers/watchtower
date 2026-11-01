@@ -56,6 +56,25 @@ final class RelaySlotsModelTests: XCTestCase {
         XCTAssertEqual([cancel.confirm, cancel.keep], ["Cancel Link", "Keep Trying"])
     }
 
+    /// Review round 1: a linked Mac being removed keeps its name and kind (its registry row goes before
+    /// `remove_slot` answers), and its Try Again asks nothing again.
+    func testAPinnedRowKeepsItsNameWhileRemovedAndAfterAFailure() throws {
+        let pinned = RelaySlotsModel.Pinned(name: "Work Mac", sub: nil, kind: .linkedHere(hubID: "hub-work"))
+        let removing = RelaySlotsModel(
+            state: RelaySlotsState(macs: [linkedMac], removing: linkedMac, pinned: [linkedMac: pinned]), links: [], promoted: []
+        )
+        XCTAssertEqual(removing.rows.first?.name, "Work Mac")
+        XCTAssertEqual(removing.rows.first?.action, .removing)
+        let failed = RelaySlotsModel(
+            state: RelaySlotsState(macs: [linkedMac], failed: linkedMac, pinned: [linkedMac: pinned]), links: [], promoted: []
+        )
+        let row = try XCTUnwrap(failed.rows.first)
+        XCTAssertEqual(row.name, "Work Mac")
+        XCTAssertEqual(row.kind, .linkedHere(hubID: "hub-work"))
+        XCTAssertEqual(row.action.title, "Try Again")
+        XCTAssertNil(RelaySlotsModel.ask(for: row), "the removal was confirmed already")
+    }
+
     func testRemovingAndRemoveError() {
         let removing = model(RelaySlotsState(macs: [linkedMac, unknownMac, finishingMac], removing: linkedMac))
         XCTAssertEqual(removing.rows.map(\.action.title), ["Removing…", "Remove", "Remove"])
