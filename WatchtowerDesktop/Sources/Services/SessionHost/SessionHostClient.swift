@@ -20,6 +20,9 @@ enum SessionHostError: Error, Equatable {
     case host(String)
     /// No connection to the host, or it ended before the reply.
     case disconnected
+    /// A delivery's connection ended, or the host did not answer in time,
+    /// after the Deliver went out: the line may have been typed.
+    case deliveryInterrupted
     /// The host sent a reply of another type than the request expects.
     case unexpectedReply(UInt8)
 }
@@ -27,8 +30,17 @@ enum SessionHostError: Error, Equatable {
 /// Hello and Error payloads (Go `HelloMsg`/`ErrorMsg`, a dual path).
 struct SessionHostHello: Codable, Equatable {
     /// v2: `Deliver`, `PromptHint` and `Stop` (Go `ProtocolVersion`). A v2
-    /// host answers any hello with 2; a v1 host answers 1 and has none.
+    /// host accepts a v1 or v2 hello and answers 2. A v1 host — the one an
+    /// app update leaves running, since sessions outlive it — refuses any
+    /// other version with an Error frame (`unsupportedVersionPrefix`) and
+    /// closes the connection: the client then says Hello v1 on a new one
+    /// and treats the host as v1-only (`SessionHostClient.hostVersion`).
     static let protocolVersion = 2
+    /// The oldest version, every host's.
+    static let v1 = 1
+    /// The start of a v1 host's refusal of another version (Go
+    /// `"unsupported protocol version %d (host speaks %d)"`).
+    static let unsupportedVersionPrefix = "unsupported protocol version"
 
     let version: Int
     var pid: Int?
@@ -159,6 +171,7 @@ final class SessionHostClient {
     /// speaks protocol 1, refuses the request or does not answer within
     /// `deliverTimeout`; nothing is known to be typed then.
     func deliver(_ request: DeliverRequest, check: @escaping @MainActor () async -> DeliverCheckReply) async throws -> DeliverOutcome {
+        guard speaksV2 else { throw SessionHostError.host("the session host speaks protocol \(hostVersion)") }
         var request = request
         if request.id.isEmpty {
             lastDeliveryID += 1
@@ -170,7 +183,7 @@ final class SessionHostClient {
         do {
             try await transport.open(
                 onFrame: { [weak call] frame in call?.received(frame) },
-                onClose: { [weak call] in call?.finish(.failure(SessionHostError.disconnected)) }
+                onClose: { [weak call] in call?.finish(.failure(SessionHostError.deliveryInterrupted)) }
             )
         } catch {
             throw SessionHostError.disconnected
@@ -178,7 +191,7 @@ final class SessionHostClient {
         let watchdog = Task { [weak call] in
             try? await Task.sleep(for: Self.deliverTimeout)
             guard !Task.isCancelled else { return }
-            call?.finish(.failure(SessionHostError.disconnected))
+            call?.finish(.failure(SessionHostError.deliveryInterrupted))
         }
         defer { watchdog.cancel() }
         return try await call.run()
@@ -188,6 +201,8 @@ final class SessionHostClient {
     /// host's grace); its Exit then carries `requested`. Returns once the
     /// host took the request.
     func stop(row: Int64, run: String, launch: UInt64) async throws {
+        // A v1 host skips an unknown frame: no reply would come.
+        guard speaksV2 else { throw SessionHostError.host("the session host speaks protocol \(hostVersion)") }
         _ = try await request(.json(.stop, SessionHostStopRequest(row: row, run: run, launch: launch)), expecting: .stopping)
     }
 
@@ -230,8 +245,37 @@ final class SessionHostClient {
         return connected
     }
 
-    /// Opens the control connection and says Hello.
+    /// The protocol version the connected host speaks: `protocolVersion`
+    /// until a v1 host refused that hello. Session connections say Hello
+    /// with it, and `deliver`, `stop` and prompt hints need 2. Settled on
+    /// every new control connection, so a v2 host that replaced a v1 one
+    /// (it exited idle after the old app's sessions ended) is used as v2.
+    private(set) var hostVersion = SessionHostHello.protocolVersion
+
+    /// Whether the connected host has v2's `Deliver`, `Stop` and
+    /// `PromptHint`; a v1-only host gets the app's own typing and hang-up.
+    var speaksV2: Bool { hostVersion >= SessionHostHello.protocolVersion }
+
+    /// Opens the control connection and says Hello v2, falling back to v1
+    /// once when the host refuses v2 as a v1 host does.
     private func connect() async -> Bool {
+        switch await connect(version: SessionHostHello.protocolVersion) {
+        case .connected:
+            hostVersion = SessionHostHello.protocolVersion
+            return true
+        case .versionRefused:
+            Self.logger.info("the session host speaks protocol 1: lines are typed by the app, stops are hang-ups")
+            guard await connect(version: SessionHostHello.v1) == .connected else { return false }
+            hostVersion = SessionHostHello.v1
+            return true
+        case .failed:
+            return false
+        }
+    }
+
+    private enum ConnectResult { case connected, versionRefused, failed }
+
+    private func connect(version: Int) async -> ConnectResult {
         let transport = makeTransport(socketPath)
         do {
             try await transport.open(
@@ -245,16 +289,20 @@ final class SessionHostClient {
                 }
             )
         } catch {
-            return false
+            return .failed
         }
         control = transport
         do {
-            _ = try await request(.json(.hello, SessionHostHello(version: SessionHostHello.protocolVersion)), expecting: .helloOK)
-            return true
+            _ = try await request(.json(.hello, SessionHostHello(version: version)), expecting: .helloOK)
+            return .connected
         } catch {
-            Self.logger.error("session host hello failed: \(String(describing: error), privacy: .public)")
             if control === transport { dropControl() }
-            return false
+            if case let .host(message) = error as? SessionHostError,
+               message.hasPrefix(SessionHostHello.unsupportedVersionPrefix), version > SessionHostHello.v1 {
+                return .versionRefused
+            }
+            Self.logger.error("session host hello failed: \(String(describing: error), privacy: .public)")
+            return .failed
         }
     }
 

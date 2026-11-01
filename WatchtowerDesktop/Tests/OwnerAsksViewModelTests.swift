@@ -13,12 +13,27 @@ private final class ProbedInputSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (([UInt8]) -> Void)?
+    /// The center's owner-input callback; the owner's keys reach the
+    /// stand-in host first, as they reach the real one.
+    private var centerOwnerInput: (([UInt8]) -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)? {
+        get {
+            centerOwnerInput.map { forward in
+                { [weak self] bytes in
+                    self?.host.ownerInput(bytes)
+                    forward(bytes)
+                }
+            }
+        }
+        set { centerOwnerInput = newValue }
+    }
     var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
     var onInput: (() -> Void)?
     let host = FakeHostDelivery()
+    /// False: a v1-only host, the app types the line itself.
+    var hostDelivers = true
 
     init() {
         host.write = { [weak self] in self?.sendInput($0) }
@@ -72,7 +87,11 @@ final class OwnerAsksViewModelTests: XCTestCase {
                 self?.processes.append(process)
                 return process
             },
-            signaller: ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
+            // A v1-only host's pause is the app's own (`typeLocally`).
+            signaller: ProcessGroupSignaller(
+                signal: { _, _ in }, isAlive: { _ in false },
+                sleep: { [weak self] _ in await self?.onPause?() }
+            )
         )
         center.shell = { "/bin/zsh" }
         center.copyToClipboard = { [weak self] in self?.copied.append($0) }
@@ -302,6 +321,93 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         await vm.asks.deliverHeldAnswers()
         XCTAssertEqual(typed.count, 2, "delivered once")
+    }
+
+    // MARK: - A v1-only session host: the app types the answer
+
+    // A host the update left running speaks v1: these guards pin the
+    // app's own typing (`TerminalCenter.typeLocally`) as before v2; a v2
+    // host's half is its Go twins (`internal/sessionhost`).
+
+    /// PROJ-12 (amended 2026-10-04): a Return would submit what the owner
+    /// half-typed in Claude Code's prompt with the answer, so over such text
+    /// the line is only pasted — at once or after a hold. Keys answering the
+    /// permission dialog leave no draft; the owner's own Return ends one.
+    func testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted() async throws {
+        let (p, s, askID) = try await seed()
+        let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
+        center.start(s, fresh: true)
+        processes[0].hostDelivers = false // a v1-only host: the app types
+        let vm = makeVM()
+        await vm.asks.load(projectID: p)
+        let asks = try XCTUnwrap(vm.asks.openAsks[p])
+        pick(vm, askID)
+        pick(vm, otherID)
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+
+        let first = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == askID }))
+
+        XCTAssertEqual(first, .typed)
+        XCTAssertEqual(typed.count, 1, "the paste, no Return")
+        XCTAssertEqual(center.answerHints[s.id], .typed)
+
+        processes[0].onOwnerInput?([0x0D])
+        var approval = true
+        vm.asks.needsApproval = { _ in approval }
+        center.inputAnswersDialog = { _ in approval }
+        let second = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == otherID }))
+        XCTAssertEqual(second, .held)
+        processes[0].onOwnerInput?(Array("1".utf8))
+        approval = false
+        processes[0].onOwnerInput?(Array("next step".utf8))
+        await vm.asks.deliverHeldAnswers()
+
+        XCTAssertEqual(typed.count, 2, "the held line pasted over the new draft, no Return")
+        XCTAssertFalse(typed.contains([0x0D]))
+        XCTAssertEqual(vm.asks.answerNotices[otherID]?.text, OwnerAsksViewModel.answerTypedNote)
+    }
+
+    /// The owner's own Return ends a draft, and a key into the permission
+    /// dialog starts none: the line is submitted.
+    func testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        processes[0].hostDelivers = false // a v1-only host: the app types
+        let vm = makeVM()
+        center.inputAnswersDialog = { _ in true }
+        processes[0].onOwnerInput?(Array("1".utf8))
+        center.inputAnswersDialog = { _ in false }
+        processes[0].onOwnerInput?(Array("done".utf8))
+        processes[0].onOwnerInput?([0x0D])
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(typed.last, [0x0D])
+    }
+
+    /// Board #388: the owner pressed Return while the line waited out its
+    /// pause — that sent it. No Return of ours follows into the empty
+    /// prompt, and no "press Return" bar is left behind.
+    func testTheOwnersReturnDuringThePauseSendsTheAnswer() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        processes[0].hostDelivers = false // a v1-only host: the app types
+        let vm = makeVM()
+        onPause = { [weak self] in self?.processes[0].onOwnerInput?([0x0D]) }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(typed.count, 1, "the paste only")
+        XCTAssertFalse(typed.contains([0x0D]))
+        XCTAssertNil(center.answerHints[s.id])
+        XCTAssertFalse(center.pasteHints.contains(s.id))
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
     }
 
     /// PROJ-12 (amended 2026-10-04 and 2026-10-07, board #396): only the

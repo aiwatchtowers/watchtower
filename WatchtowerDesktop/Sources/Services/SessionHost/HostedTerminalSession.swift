@@ -177,6 +177,11 @@ final class HostedTerminalSession: TerminalSessionProcess {
 
     // MARK: Protocol v2
 
+    /// The host types the app's lines (`deliver`) — a v2 host. A v1-only
+    /// host (one an app update left running) does not: the app types them
+    /// itself, as before v2 (`TerminalCenter.typeLocally`).
+    var hostDelivers: Bool { client.speaksV2 }
+
     /// The host types `line` into the current run (`SessionHostClient.deliver`,
     /// PROJ-12): nothing here writes the PTY. No bound run, or a run whose
     /// launch the host has not reported, is no session; so is a host that
@@ -191,7 +196,11 @@ final class HostedTerminalSession: TerminalSessionProcess {
         )
         do {
             return try await client.deliver(request, check: check)
+        } catch SessionHostError.deliveryInterrupted {
+            Self.logger.error("deliver row \(key.row): the connection ended before the host answered")
+            return .interrupted
         } catch {
+            // Refused or never reached: nothing was typed.
             Self.logger.error("deliver row \(key.row): \(String(describing: error), privacy: .public)")
             return .noSession
         }
@@ -202,7 +211,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// host reported, or the host could not take the request: the caller
     /// signals the process group itself.
     func requestStop() async -> Bool {
-        guard let key, bound, !exited, launch > 0 else { return false }
+        guard client.speaksV2, let key, bound, !exited, launch > 0 else { return false }
         do {
             try await client.stop(row: key.row, run: key.run, launch: launch)
             return true
@@ -212,13 +221,30 @@ final class HostedTerminalSession: TerminalSessionProcess {
         }
     }
 
+    /// How often `waitForExit` looks.
+    static let exitPollStep: Duration = .milliseconds(50)
+
+    /// Waits until the current run's Exit came (or the run was let go of),
+    /// at most `timeout`; true when it ended.
+    func waitForExit(timeout: Duration) async -> Bool {
+        var waited: Duration = .zero
+        while !exited, waited < timeout {
+            await sleep(Self.exitPollStep)
+            waited += Self.exitPollStep
+        }
+        return exited
+    }
+
     /// Tells the host whether a permission dialog is up in the run, so it
     /// counts no dialog key as a draft and withholds a Return over one.
-    func sendPromptHint(dialog: Bool) {
+    /// False when it was not sent (a v1 host, a run not bound yet).
+    @discardableResult
+    func sendPromptHint(dialog: Bool) -> Bool {
         // Only on a bound connection: before Launched an Error frame would
         // read as the launch failing.
-        guard let key, let transport, bound, !exited, launch > 0 else { return }
+        guard client.speaksV2, let key, let transport, bound, !exited, launch > 0 else { return false }
         transport.send(.json(.promptHint, SessionHostPromptHint(row: key.row, run: key.run, dialog: dialog)))
+        return true
     }
 
     private static func milliseconds(_ duration: Duration) -> Int {
@@ -261,7 +287,8 @@ final class HostedTerminalSession: TerminalSessionProcess {
                 return
             }
             guard self.transport === transport else { return }
-            transport.send(.json(.hello, SessionHostHello(version: SessionHostHello.protocolVersion)))
+            // The version the control connection settled: a v1 host refuses v2.
+            transport.send(.json(.hello, SessionHostHello(version: client.hostVersion)))
             transport.send(request())
             requested = true
         }

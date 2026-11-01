@@ -13,7 +13,20 @@ private final class RecordingSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (([UInt8]) -> Void)?
+    /// The center's owner-input callback; the owner's keys reach the
+    /// stand-in host first, as they reach the real one.
+    private var centerOwnerInput: (([UInt8]) -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)? {
+        get {
+            centerOwnerInput.map { forward in
+                { [weak self] bytes in
+                    self?.host.ownerInput(bytes)
+                    forward(bytes)
+                }
+            }
+        }
+        set { centerOwnerInput = newValue }
+    }
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
     var onDeliveryEvent: ((SessionHostDeliveryEvent) -> Void)?

@@ -269,6 +269,10 @@ package enum DeliverOutcome: Equatable, Sendable {
     case noSession
     /// Bracketed paste is off: nothing written.
     case noPasteMode
+    /// Not a host answer: the delivery's connection ended (dropped, or no
+    /// answer in time) after the host took the request, so the line may
+    /// have been typed, submitted or not.
+    case interrupted
 
     /// The host's outcome; an unknown one reads as no session (nothing is
     /// known to be typed).

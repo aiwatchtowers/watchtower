@@ -19,6 +19,9 @@ final class FakeSessionHostTransport: SessionHostTransport {
     var refusedForgets = 0
     /// The protocol version the host answers a Hello with.
     var helloVersion = SessionHostHello.protocolVersion
+    /// Answers as a v1 host does: a hello of any other version is refused
+    /// with an Error frame and a closed connection.
+    var v1Host = false
     private var onFrame: ((SessionHostFrame) -> Void)?
     private var onClose: (() -> Void)?
 
@@ -33,6 +36,18 @@ final class FakeSessionHostTransport: SessionHostTransport {
         sent.append(frame)
         guard autoReply else { return }
         switch frame.type {
+        case .hello where v1Host:
+            // A v1 host (tag v0.26.3 `server.go`): any version but 1 gets an
+            // Error frame and the connection closes.
+            let version = (try? frame.decoded(SessionHostHello.self))?.version ?? 0
+            if version == 1 {
+                push(.json(.helloOK, SessionHostHello(version: 1, pid: 99)))
+            } else {
+                push(.json(.error, SessionHostErrorMessage(message: "unsupported protocol version \(version) (host speaks 1)")))
+                hangUp()
+            }
+        case .stop where v1Host, .deliver where v1Host, .promptHint where v1Host:
+            break // a v1 host skips frame types it does not know
         case .hello: push(.json(.helloOK, SessionHostHello(version: helloVersion, pid: 99)))
         case .stop: push(.json(.stopping, ["already_exited": false]))
         case .list: push(.json(.listed, SessionHostListResponse(sessions: listed)))

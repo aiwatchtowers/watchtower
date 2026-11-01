@@ -16,12 +16,18 @@ final class SessionHostV2ClientTests: XCTestCase {
     private var transports: [FakeSessionHostTransport] = []
     /// The Hello version the next transports answer with.
     private var hostVersion = SessionHostHello.protocolVersion
+    /// The next transports answer as a v1 host does (an Error frame to
+    /// Hello v2, then a closed connection).
+    private var v1Host = false
+    private var lastClient: SessionHostClient?
     private var folder: URL!
     private var queue: DatabaseQueue!
 
     override func setUpWithError() throws {
         transports = []
         hostVersion = SessionHostHello.protocolVersion
+        v1Host = false
+        lastClient = nil
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt v2 \(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         queue = try TestDatabase.create()
@@ -35,12 +41,15 @@ final class SessionHostV2ClientTests: XCTestCase {
     private static let inertSignaller = ProcessGroupSignaller(signal: { _, _ in }, isAlive: { _ in false }, sleep: { _ in })
 
     private func makeClient() -> SessionHostClient {
-        SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { [weak self] _ in
+        let client = SessionHostClient(socketPath: "/tmp/wt-test.sock", cliPath: { nil }, makeTransport: { [weak self] _ in
             let transport = FakeSessionHostTransport()
             transport.helloVersion = self?.hostVersion ?? SessionHostHello.protocolVersion
+            transport.v1Host = self?.v1Host ?? false
             self?.transports.append(transport)
             return transport
         })
+        lastClient = client
+        return client
     }
 
     private func row(kind: TerminalSession.Kind = .claude) throws -> TerminalSession {
@@ -98,19 +107,141 @@ final class SessionHostV2ClientTests: XCTestCase {
     /// nothing and reads as no session.
     func testHelloV2() async throws {
         XCTAssertEqual(SessionHostHello.protocolVersion, 2)
-        let (center, s, _, transport) = try await hostedSession()
+        let (_, _, _, transport) = try await hostedSession()
         let control = try XCTUnwrap(transports.first)
         for connection in [control, transport] {
             let hello = try XCTUnwrap(connection.sent(.hello).first).decoded(SessionHostHello.self)
             XCTAssertEqual(hello.version, 2)
         }
+    }
 
-        hostVersion = 1
-        let delivery = await center.deliver("x", sessionID: s.id) { true }
-        XCTAssertEqual(delivery, .noSession)
-        let refused = try XCTUnwrap(transports.last)
+    // MARK: - A v1 host (one an app update left running)
+
+    /// A center on a v1-only host: its control connection refused Hello v2
+    /// with the v1 host's real reply (an Error frame, then a closed
+    /// connection) and said Hello v1 on a new one.
+    private func v1HostedSession() async throws -> (TerminalCenter, TerminalSession, HostedTerminalSession, FakeSessionHostTransport) {
+        v1Host = true
+        let (center, s, hosted, transport) = try await hostedSession()
+        // The pane's program turned bracketed paste on.
+        transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[?2004h".utf8)))
+        return (center, s, hosted, transport)
+    }
+
+    /// The v1 host refuses Hello v2 with an Error frame and closes; the
+    /// client says Hello v1 on a new connection and is v1-only, so the
+    /// launch, the list and the session's own connection speak v1 — no
+    /// spawn of another host (it could not claim the socket).
+    func testAV1HostIsSpokenToInV1() async throws {
+        let (_, _, hosted, transport) = try await v1HostedSession()
+        let refused = try XCTUnwrap(transports.first)
         XCTAssertEqual(try XCTUnwrap(refused.sent(.hello).first).decoded(SessionHostHello.self).version, 2)
-        XCTAssertTrue(refused.closed, "the delivery's connection closes with it")
+        let control = try XCTUnwrap(transports.dropFirst().first)
+        XCTAssertEqual(try XCTUnwrap(control.sent(.hello).first).decoded(SessionHostHello.self).version, 1)
+        XCTAssertEqual(try XCTUnwrap(transport.sent(.hello).first).decoded(SessionHostHello.self).version, 1)
+        XCTAssertEqual(transport.sent.map(\.type).prefix(2), [.hello, .launch])
+        XCTAssertFalse(hosted.hostDelivers)
+
+        let client = try XCTUnwrap(lastClient)
+        XCTAssertFalse(client.speaksV2)
+        let listed = try await client.list()
+        XCTAssertEqual(listed, [], "list works on the v1 connection")
+    }
+
+    /// With a v1 host the composer's and an answer's lines are typed by the
+    /// app into the run, as before v2: one bracketed paste as Input frames,
+    /// then the app's own Return — never a Deliver.
+    func testAV1HostKeepsTodaysTyping() async throws {
+        let (center, s, _, transport) = try await v1HostedSession()
+        let lines = SessionLineDelivery(terminalCenter: center)
+        lines.refreshStates = { true }
+        lines.hasHookState = { _ in true }
+
+        let delivery = await lines.deliverLine("Fix the flaky test", key: .workchat(UUID()), sessionID: s.id) { _ in }
+
+        XCTAssertEqual(delivery, .submitted)
+        let typed = transport.sent(.input).flatMap(\.payload)
+        let paste = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array("Fix the flaky test".utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
+        XCTAssertEqual(typed, paste + [0x0D], "the paste, then the app's Return")
+        XCTAssertTrue(transports.allSatisfy { $0.sent(.deliver).isEmpty }, "no Deliver to a v1 host")
+    }
+
+    /// With a v1 host the owner's close is the app's hang-up, as today: no
+    /// Stop frame (a v1 host would skip it and never answer).
+    func testAV1HostIsStoppedByTheHangUp() async throws {
+        var signals: [(pid_t, Int32)] = []
+        v1Host = true
+        let client = makeClient()
+        let running = await client.ensureRunning()
+        XCTAssertTrue(running)
+        let center = TerminalCenter(signaller: ProcessGroupSignaller(
+            signal: { signals.append(($0, $1)) }, isAlive: { _ in false }, sleep: { _ in }
+        ))
+        center.shell = { "/bin/zsh" }
+        center.transcriptExists = { _ in false }
+        center.sessionHost = client
+        let s = try row()
+        center.start(s, fresh: true)
+        let hosted = try XCTUnwrap(center.process(for: s.id) as? HostedTerminalSession)
+        await hosted.connecting?.value
+        let key = try XCTUnwrap(hosted.key)
+        try XCTUnwrap(transports.last).push(.json(.launched, SessionHostSessionInfo(
+            row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil
+        )))
+        center.inputAnswersDialog = { _ in true }
+        center.syncPromptHints()
+
+        await center.close(sessionID: s.id)
+
+        XCTAssertTrue(transports.allSatisfy { $0.sent(.stop).isEmpty && $0.sent(.promptHint).isEmpty })
+        XCTAssertEqual(signals.map(\.1), [SIGHUP])
+        XCTAssertEqual(signals.first?.0, 5150)
+    }
+
+    /// A v2 host that later replaced the v1 one is used as v2 again: the
+    /// next control connection settles the version afresh.
+    func testTheVersionIsSettledOnEachControlConnection() async throws {
+        v1Host = true
+        let client = makeClient()
+        let first = await client.ensureRunning()
+        XCTAssertTrue(first)
+        XCTAssertFalse(client.speaksV2)
+
+        v1Host = false
+        try XCTUnwrap(transports.last).hangUp()
+        _ = try await client.list()
+        XCTAssertTrue(client.speaksV2)
+    }
+
+    // MARK: - An interrupted delivery
+
+    /// The host took the Deliver, then its connection ended before the
+    /// Delivered: the line may be in the prompt, so the answer reads as
+    /// typed — never no session, which would also hand it to the brief.
+    func testADroppedDeliveryConnectionMayHaveTyped() async throws {
+        let (center, s, _, _) = try await hostedSession()
+        let lines = SessionLineDelivery(terminalCenter: center)
+        lines.refreshStates = { true }
+        lines.hasHookState = { _ in true }
+
+        let sending = Task { await lines.deliverLine("Ask #7 answered", key: .ask(7), sessionID: s.id) { _ in } }
+        let connection = try await deliverTransport()
+        connection.hangUp()
+        let delivery = await sending.value
+
+        XCTAssertEqual(delivery, .typed)
+        XCTAssertTrue(center.pasteHints.contains(s.id), "the bar asks the owner to look and press Return")
+    }
+
+    /// A host that refuses the request (an Error frame) typed nothing: no
+    /// session, the brief has it.
+    func testARefusedDeliveryTypedNothing() async throws {
+        let (center, s, _, _) = try await hostedSession()
+        let sending = Task { await center.deliver("x", sessionID: s.id) { true } }
+        let connection = try await deliverTransport()
+        connection.push(.json(.error, SessionHostErrorMessage(message: "deliver: empty text")))
+        let delivery = await sending.value
+        XCTAssertEqual(delivery, .noSession)
     }
 
     // MARK: - Deliver
@@ -292,16 +423,29 @@ final class SessionHostV2ClientTests: XCTestCase {
         let hosted = try XCTUnwrap(center.process(for: s.id) as? HostedTerminalSession)
         await hosted.connecting?.value
         let key = try XCTUnwrap(hosted.key)
-        try XCTUnwrap(transports.last).push(.json(.launched, SessionHostSessionInfo(
+        let session = try XCTUnwrap(transports.last)
+        session.push(.json(.launched, SessionHostSessionInfo(
             row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil, launch: 3
         )))
         let control = try XCTUnwrap(transports.first)
+        var exits: [(Int64, Bool)] = []
+        center.onSessionExit = { exits.append(($0, $2)) }
 
-        await center.close(sessionID: s.id)
-
+        var closed = false
+        let closing = Task {
+            await center.close(sessionID: s.id)
+            closed = true
+        }
+        await waitUntil { !control.sent(.stop).isEmpty }
         let stop = try XCTUnwrap(control.sent(.stop).first).decoded(SessionHostStopRequest.self)
         XCTAssertEqual(stop, SessionHostStopRequest(row: key.row, run: key.run, launch: 3))
+        await Task.yield()
+        XCTAssertFalse(closed, "the close waits for the run's exit")
+        session.push(.json(.exit, SessionHostExit(code: nil, requested: true)))
+        await closing.value
+
         XCTAssertTrue(signals.isEmpty, "the host signals, not the app")
+        XCTAssertEqual(exits.map(\.1), [true], "the owner's stop: closed by the app")
         XCTAssertNil(center.states[s.id])
     }
 

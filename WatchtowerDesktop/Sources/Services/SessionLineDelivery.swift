@@ -286,7 +286,10 @@ final class SessionLineDelivery {
         case .submitted:
             lastSubmit[sessionID] = now()
             return .submitted
-        case .pasted: return .typed
+        // A delivery cut off mid-way may have typed the line: the owner
+        // checks the prompt and presses Return — never "no session", which
+        // would also send the answer to the brief.
+        case .pasted, .mayBeTyped: return .typed
         case .copied: return .copied
         case .held: return .held
         case .noSession: return .noSession

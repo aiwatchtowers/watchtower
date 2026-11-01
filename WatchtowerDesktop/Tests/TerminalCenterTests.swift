@@ -10,7 +10,20 @@ final class FakeTerminalSession: TerminalSessionProcess {
     let view: NSView
     var pid: pid_t
     var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (([UInt8]) -> Void)?
+    /// The center's owner-input callback; the owner's keys reach the
+    /// stand-in host first, as they reach the real one.
+    private var centerOwnerInput: (([UInt8]) -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)? {
+        get {
+            centerOwnerInput.map { forward in
+                { [weak self] bytes in
+                    self?.host.ownerInput(bytes)
+                    forward(bytes)
+                }
+            }
+        }
+        set { centerOwnerInput = newValue }
+    }
     var onOwnerFocus: (() -> Void)?
     private(set) var launches: [TerminalLaunch] = []
     private(set) var detached = false
@@ -64,12 +77,33 @@ final class FakeTerminalSession: TerminalSessionProcess {
         return stopAnswer
     }
 
-    func sendPromptHint(dialog: Bool) { promptHints.append(dialog) }
+    /// The host's Exit after its Stop: with `exitsAfterStop` the run ends
+    /// during the wait (the host's Exit with `requested`); else the wait
+    /// times out.
+    var exitsAfterStop = false
+    private(set) var exitWaits: [Duration] = []
+    func waitForExit(timeout: Duration) async -> Bool {
+        exitWaits.append(timeout)
+        guard exitsAfterStop else { return false }
+        exitRequested = true
+        exit(nil)
+        return true
+    }
 
-    /// The owner's own submitting Return: the host's prompt is empty again.
+    /// False = the run cannot take a hint yet (not bound): not recorded.
+    var acceptsHints = true
+    func sendPromptHint(dialog: Bool) -> Bool {
+        guard acceptsHints else { return false }
+        promptHints.append(dialog)
+        return true
+    }
+
+    /// The run is in a v1-only host: the app types its lines itself.
+    var hostDelivers = true
+
+    /// The owner's own submitting Return (the host and the center see it).
     func ownerReturn() {
         onOwnerInput?([0x0D])
-        host.leftTyped = false
     }
 
     private var pathLinkFolderSource: (() -> String)?
@@ -96,6 +130,8 @@ final class TerminalCenterTests: XCTestCase {
     private var sessions: [FakeTerminalSession] = []
     private var signals: [(pid_t, Int32)] = []
     private var slept: Duration = .zero
+    /// What the first session had received when each pause began.
+    private var inputsAtSleep: [[[UInt8]]] = []
     /// Runs inside each pause (the owner typing meanwhile).
     private var onSleep: (() -> Void)?
     private var alive = true
@@ -111,6 +147,7 @@ final class TerminalCenterTests: XCTestCase {
         sessions = []
         signals = []
         slept = .zero
+        inputsAtSleep = []
         onSleep = nil
         alive = true
         exitOnHangup = true
@@ -148,12 +185,15 @@ final class TerminalCenterTests: XCTestCase {
         }
     }
 
-    private func makeCenter(pid: pid_t = 4242) -> TerminalCenter {
+    /// `v1Host`: the runs are in a v1-only session host, so the app types
+    /// the lines itself (`typeLocally`), pausing on the signaller's sleep.
+    private func makeCenter(pid: pid_t = 4242, v1Host: Bool = false) -> TerminalCenter {
         nextPid = pid
         let center = TerminalCenter(
             makeProcess: { [weak self] in
                 guard let self else { return FakeTerminalSession() }
                 let session = FakeTerminalSession(pid: self.nextPid)
+                session.hostDelivers = !v1Host
                 if self.nextPid > 0 { self.nextPid += 1 }
                 // The host's pause (its profile's when the line names none).
                 session.host.pause = { [weak self] settle in
@@ -175,6 +215,7 @@ final class TerminalCenterTests: XCTestCase {
                 sleep: { [weak self] step in
                     guard let self else { return }
                     slept += step
+                    inputsAtSleep.append(sessions.first?.inputs ?? [])
                     onSleep?()
                 }
             )
@@ -813,19 +854,18 @@ final class TerminalCenterTests: XCTestCase {
 
     // MARK: - Delivery through the session host (PROJ-12)
 
-    // The paste, the pause, the Return and the prompt state are the session
-    // host's since Go hub phase 3 (Task 7): the tests that pinned them here
-    // moved to their Go twins, one to one with their names
+    // With a v2 host (Go hub phase 3, Task 7) the paste, the pause, the
+    // Return and the prompt state are the host's, pinned by their Go twins
     // (`internal/sessionhost/deliver_test.go::TestProj12_*`,
-    // `internal/sessionhost/prompt_test.go`). What stays is the app's half:
-    // what it asks the host, how it answers the re-check, the clipboard and
-    // the pane's bars.
+    // `prompt_test.go`); a v1-only host keeps the app's own typing, guarded
+    // below in its own section. Here is the app's half with a v2 host: what
+    // it asks, how it answers the re-check, the clipboard and the bars.
 
     /// Without bracketed paste nothing is typed — keystrokes could answer a
     /// pending permission prompt — the line goes to the clipboard instead
     /// (the host's `no_paste_mode`; Go twin
     /// `TestProj12_WithoutBracketedPasteTheLineIsNotTyped`).
-    func testWithoutBracketedPasteTheLineIsCopiedNotTyped() async throws {
+    func testWithoutBracketedPasteTheHostsLineIsCopiedNotTyped() async throws {
         let center = makeCenter()
         var copied: [String] = []
         center.copyToClipboard = { copied.append($0) }
@@ -897,12 +937,33 @@ final class TerminalCenterTests: XCTestCase {
         center.start(s, fresh: true)
         sessions[0].stopAnswer = true
         sessions[0].hosted = true
+        sessions[0].exitsAfterStop = true
 
         await center.close(sessionID: s.id)
 
         XCTAssertEqual(sessions[0].stopRequests, 1)
+        XCTAssertEqual(sessions[0].exitWaits, [TerminalCenter.hostStopWait], "the close waits for the run's exit")
         XCTAssertTrue(signals.isEmpty, "the host signals, not the app")
         XCTAssertNil(center.states[s.id])
+    }
+
+    /// The close returns only once the hosted run is gone, so whatever runs
+    /// after it (a cleanup plan) never runs beside a live agent; the wait
+    /// outlasts the host's own grace (3 s) before its kill. A run the host
+    /// did not end in that time is killed by the app.
+    func testCloseOfAHostedRunWaitsForItsExitThenKills() async throws {
+        XCTAssertGreaterThan(TerminalCenter.hostStopWait, .seconds(3))
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].stopAnswer = true
+        sessions[0].hosted = true
+
+        await center.close(sessionID: s.id)
+
+        XCTAssertEqual(sessions[0].exitWaits, [TerminalCenter.hostStopWait])
+        XCTAssertEqual(signals.map(\.1), [SIGKILL], "no exit in time: the app kills the group")
+        XCTAssertEqual(signals.first?.0, 4242)
     }
 
     /// A host that cannot stop the run (unreachable, or a v1 host) leaves
@@ -917,8 +978,411 @@ final class TerminalCenterTests: XCTestCase {
         await center.close(sessionID: s.id)
 
         XCTAssertEqual(sessions[0].stopRequests, 1)
+        XCTAssertTrue(sessions[0].exitWaits.isEmpty)
         XCTAssertEqual(signals.map(\.1), [SIGHUP])
     }
+
+    /// The fake host as the real one: the owner's submitting Return empties
+    /// the prompt, so the next line is submitted again; before it, a line
+    /// left typed keeps the next from submitting.
+    func testTheOwnersReturnLetsTheNextLineSubmit() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let left = await center.deliver("a", sessionID: s.id) { false }
+        XCTAssertEqual(left, .pasted)
+        let beside = await center.deliver("b", sessionID: s.id) { true }
+        XCTAssertEqual(beside, .pasted)
+        XCTAssertTrue(center.sharedPrompts.contains(s.id), "the bar says both go on Return")
+
+        sessions[0].onOwnerInput?([0x0D])
+        let next = await center.deliver("c", sessionID: s.id) { true }
+
+        XCTAssertEqual(next, .submitted)
+        XCTAssertEqual(sessions[0].inputs.last, [0x0D])
+    }
+
+    /// The host took the line but the delivery's connection ended before
+    /// it answered: the line may be in the prompt, so it is never "no
+    /// session" (an answer would go to the brief too); the bar asks for
+    /// Return and the phone's pre-check sees text there.
+    func testAnInterruptedDeliveryMayBeTyped() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].host.forced = .interrupted
+
+        let delivery = await center.deliver("x", sessionID: s.id) { true }
+
+        XCTAssertEqual(delivery, .mayBeTyped)
+        XCTAssertTrue(center.pasteHints.contains(s.id))
+        XCTAssertTrue(center.promptHoldsText(s.id))
+        let lines = SessionLineDelivery(terminalCenter: center)
+        lines.refreshStates = { true }
+        lines.hasHookState = { _ in true }
+        let asLine = await lines.deliverLine("y", key: .ask(1), sessionID: s.id) { _ in }
+        XCTAssertEqual(asLine, .typed, "an answer that may be typed is a typed one, never noSession")
+    }
+
+    /// A hint the run could not take yet (not bound) is not recorded, so
+    /// the next read sends it.
+    func testAPromptHintNotSentIsSentOnTheNextRead() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        center.inputAnswersDialog = { _ in true }
+        sessions[0].acceptsHints = false
+        center.syncPromptHints()
+        XCTAssertTrue(sessions[0].promptHints.isEmpty)
+
+        sessions[0].acceptsHints = true
+        center.syncPromptHints()
+        XCTAssertEqual(sessions[0].promptHints, [true])
+    }
+    // MARK: - A v1-only session host: the app types the line (PROJ-12)
+
+    // A host the update left running speaks v1 and has no `Deliver`: the
+    // app types the line itself, as before v2 (`TerminalCenter.typeLocally`).
+    // These guards pin that path; the v2 host's are their Go twins
+    // (`internal/sessionhost/deliver_test.go::TestProj12_*`).
+
+    func testARunningSessionGetsOneBracketedPasteWithNoEnter() throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        let line = OwnerAskPrompt.line(id: 7, kind: .question, answer: OwnerAskAnswer())
+        XCTAssertEqual(center.sendPrompt(line, sessionID: s.id), .sent)
+        XCTAssertEqual(sessions[0].inputs, [
+            [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(line.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
+        ])
+        XCTAssertFalse(sessions[0].inputs[0].contains(0x0D), "the paste step never presses Return; submitPrompt decides")
+        XCTAssertFalse(center.clipboardHints.contains(s.id))
+    }
+
+    /// PROJ-12 (amended 2026-10-04, board #379): an answer's line is one
+    /// bracketed paste — a line break or control character is dropped — and
+    /// then one Return as a write of its own, after the pause.
+    func testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        let line = OwnerAskPrompt.line(id: 7, kind: .question, answer: OwnerAskAnswer())
+        let delivery = await center.deliver(line + "\r\n\u{1B}more", sessionID: s.id, keepingLineBreaks: false,
+                                            delay: TerminalCenter.answerSubmitDelay) { true }
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes(line + "more"), [0x0D]])
+        XCTAssertEqual(slept, TerminalCenter.answerSubmitDelay, "an answer's longer pause")
+        XCTAssertEqual(inputsAtSleep, [[bracketedPasteBytes(line + "more")]], "the Return comes strictly after the pause")
+    }
+
+    /// Board #379: the owner's text typed since their last Return is a
+    /// draft a Return would submit, so `submitPrompt` only pastes over it;
+    /// keys answering a permission dialog are not a draft; a restart clears it.
+    func testOverTheOwnersDraftSubmitPromptOnlyPastes() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].onOwnerInput?(Array("half".utf8))
+        let overDraft = await center.deliver("x", sessionID: s.id) { true }
+        XCTAssertEqual(overDraft, .pasted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")])
+        XCTAssertEqual(slept, .zero, "no pause: no Return to wait for")
+
+        sessions[0].onOwnerInput?(Array("more\r".utf8))
+        center.inputAnswersDialog = { _ in true }
+        sessions[0].onOwnerInput?(Array("2".utf8))
+        center.inputAnswersDialog = { _ in false }
+        let clean = await center.deliver("y", sessionID: s.id) { true }
+        XCTAssertEqual(clean, .submitted)
+
+        sessions[0].onOwnerInput?(Array("z".utf8))
+        sessions[0].exit(0)
+        center.start(s, fresh: false)
+        let restarted = await center.deliver("w", sessionID: s.id) { true }
+        XCTAssertEqual(restarted, .submitted, "a new run starts with an empty prompt")
+    }
+
+    /// Board #379 (PROJ-12): the owner typing during the pause leaves a
+    /// draft the Return would submit with the line — re-checked after it.
+    func testTheOwnerTypingDuringThePauseStopsTheReturn() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        onSleep = { [weak self] in self?.sessions[0].onOwnerInput?(Array("a".utf8)) }
+
+        let delivery = await center.deliver("x", sessionID: s.id) { true }
+
+        XCTAssertEqual(delivery, .pasted)
+        XCTAssertEqual(slept, TerminalCenter.submitDelay, "the draft came during the pause")
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")], "no Return over it")
+    }
+
+    /// Board #388: the owner's own Return during the pause sent the line
+    /// (with whatever they typed before it), so no second Return goes into
+    /// the empty prompt and no bar asks for one; text they type after it
+    /// is their own draft. A Return into a permission dialog sends nothing
+    /// of the line and keeps the app's Return.
+    func testTheOwnersReturnDuringThePauseSkipsOurs() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        for (input, name) in [([UInt8(0x0D)], "a bare Return"), (Array("and this\r".utf8), "text, then Return")] {
+            onSleep = { [weak self] in self?.sessions[0].onOwnerInput?(input) }
+            let before = sessions[0].inputs.count
+
+            let delivery = await center.deliver("x", sessionID: s.id) { true }
+
+            XCTAssertEqual(delivery, .submitted, name)
+            XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("x")], "\(name): no Return of ours")
+            XCTAssertFalse(center.pasteHints.contains(s.id), name)
+            XCTAssertFalse(center.promptDrafts.contains(s.id), name)
+        }
+
+        onSleep = { [weak self] in
+            self?.sessions[0].onOwnerInput?([0x0D])
+            self?.sessions[0].onOwnerInput?(Array("next".utf8))
+        }
+        let thenTyped = await center.deliver("y", sessionID: s.id) { true }
+        XCTAssertEqual(thenTyped, .submitted)
+        XCTAssertFalse(sessions[0].inputs.contains([0x0D]))
+        XCTAssertFalse(center.pasteHints.contains(s.id), "the line went; the draft is the owner's own")
+        XCTAssertTrue(center.promptDrafts.contains(s.id), "a later Return of ours would submit it")
+
+        sessions[0].onOwnerInput?([0x0D])
+        center.inputAnswersDialog = { _ in true }
+        onSleep = { [weak self] in
+            self?.sessions[0].onOwnerInput?([0x0D])
+            center.inputAnswersDialog = { _ in false }
+        }
+        let intoDialog = await center.deliver("z", sessionID: s.id) { true }
+        XCTAssertEqual(intoDialog, .submitted)
+        XCTAssertEqual(sessions[0].inputs.last, [0x0D], "a key into the dialog left the Return to us")
+
+        // `\` then Return is Claude Code's line break, not a submit.
+        onSleep = { [weak self] in self?.sessions[0].onOwnerInput?(Array("a\\\r".utf8)) }
+        let before = sessions[0].inputs.count
+        let lineBreak = await center.deliver("w", sessionID: s.id) { true }
+        XCTAssertEqual(lineBreak, .pasted)
+        XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("w")], "no Return of ours")
+        XCTAssertTrue(center.pasteHints.contains(s.id))
+    }
+
+    /// Board #388 review (B1): the owner's Return counts as sending the line
+    /// only when the state read after the pause is clean. `inputAnswersDialog`
+    /// may be a second stale, so a Return into a permission prompt shown
+    /// during the pause looks like one into the prompt; with that prompt
+    /// read after the pause — or the read failed — the line stays typed:
+    /// a draft, the bar, and no Return of ours.
+    func testTheOwnersReturnDuringThePauseOverADialogOrAFailedReadLeavesTheLineTyped() async throws {
+        for (name, dialog, fresh) in [("a permission prompt", true, true), ("a failed read", false, false)] {
+            let center = makeCenter(v1Host: true)
+            let s = try row()
+            center.start(s, fresh: true)
+            let session = try XCTUnwrap(sessions.last)
+            var approval = false
+            // Still false when the owner's Return comes (a stale state), a
+            // dialog by the read after the pause.
+            center.inputAnswersDialog = { _ in approval }
+            onSleep = {
+                session.onOwnerInput?([0x0D])
+                approval = dialog
+            }
+
+            let delivery = await center.deliver("x", sessionID: s.id, refresh: { fresh }, submitIf: { !approval })
+
+            XCTAssertEqual(delivery, .pasted, name)
+            XCTAssertEqual(session.inputs, [bracketedPasteBytes("x")], "\(name): no Return of ours")
+            XCTAssertTrue(center.promptDrafts.contains(s.id), "\(name): the next line must not submit it")
+            XCTAssertTrue(center.pasteHints.contains(s.id), "\(name): the bar asks for Return")
+        }
+    }
+
+    /// Board #388 review (F1): the owner's Return during the pause starts a
+    /// turn, so the caller's own condition may fail by the read after it —
+    /// a hand-off's session no longer idle at its prompt (its `working`
+    /// landed), a request cancelled. That never makes the line the owner
+    /// sent count as still typed: no bar, no draft, no Return of ours.
+    func testTheOwnersReturnDuringThePauseCountsWhateverTheCallersOtherCondition() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        var atPrompt = true
+        onSleep = { [weak self] in
+            self?.sessions[0].onOwnerInput?([0x0D])
+            atPrompt = false
+        }
+
+        let delivery = await center.deliver("x", sessionID: s.id) { atPrompt }
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")], "no Return of ours")
+        XCTAssertFalse(center.pasteHints.contains(s.id))
+        XCTAssertFalse(center.promptDrafts.contains(s.id))
+    }
+
+    /// PROJ-12: a line the app left without its Return is still in the
+    /// prompt, so the next line is only pasted after it — two lines never
+    /// go as one message. Keys into a permission dialog leave it there; the
+    /// owner's submitting Return or a restart empties the prompt.
+    func testALineLeftWithoutItsReturnKeepsTheNextFromSubmittingIt() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        let left = await center.deliver("a", sessionID: s.id) { false }
+        XCTAssertEqual(left, .pasted)
+
+        center.inputAnswersDialog = { _ in true }
+        sessions[0].onOwnerInput?([0x0D])
+        center.inputAnswersDialog = { _ in false }
+        let next = await center.deliver("b", sessionID: s.id) { true }
+        XCTAssertEqual(next, .pasted, "the dialog's Return did not submit the prompt")
+        XCTAssertFalse(sessions[0].inputs.contains([0x0D]))
+
+        sessions[0].onOwnerInput?([0x0D])
+        let afterReturn = await center.deliver("c", sessionID: s.id) { true }
+        XCTAssertEqual(afterReturn, .submitted)
+
+        _ = await center.deliver("d", sessionID: s.id) { false }
+        sessions[0].exit(0)
+        center.start(s, fresh: false)
+        let restarted = await center.deliver("e", sessionID: s.id) { true }
+        XCTAssertEqual(restarted, .submitted, "a new run starts with an empty prompt")
+    }
+
+    /// PROJ-12: Claude Code's line-break keys end with CR or LF but do not
+    /// submit — the owner's multi-line draft stays, so no Return follows.
+    func testClaudeCodeLineBreakKeysLeaveTheDraft() async throws {
+        let shapes: [(String, [[UInt8]])] = [
+            ("Option+Return (ESC CR)", [Array("fix".utf8), [0x1B, 0x0D]]),
+            ("backslash, then Return", [Array("fix\\".utf8), [0x0D]]),
+            ("backslash and Return in one chunk", [Array("fix\\\r".utf8)]),
+            ("Ctrl+J (LF)", [Array("fix".utf8), [0x0A]]),
+            ("Shift+Return, kitty protocol", [Array("fix".utf8), Array("\u{1B}[13;2u".utf8)]),
+            ("Shift+Return, modifyOtherKeys", [Array("fix".utf8), Array("\u{1B}[27;2;13~".utf8)]),
+            ("a pasted backslash, then Return", [Array("\u{1B}[200~fix\\\u{1B}[201~".utf8), [0x0D]]),
+            ("backslash, cursor keys, then Return", [Array("fix\\".utf8), Array("\u{1B}[D\u{1B}[C".utf8), [0x0D]]),
+            ("backslash, an SS3 cursor key and Return in one chunk", [Array("fix\\\u{1B}OD\r".utf8)])
+        ]
+        for (name, chunks) in shapes {
+            sessions = []
+            let center = makeCenter(v1Host: true)
+            let s = try row()
+            center.start(s, fresh: true)
+            for chunk in chunks { sessions[0].onOwnerInput?(chunk) }
+            let delivery = await center.deliver("x", sessionID: s.id) { true }
+            XCTAssertEqual(delivery, .pasted, name)
+            XCTAssertFalse(sessions[0].inputs.contains([0x0D]), name)
+        }
+
+        sessions = []
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].onOwnerInput?(Array("fix\r".utf8))
+        let submitted = await center.deliver("x", sessionID: s.id) { true }
+        XCTAssertEqual(submitted, .submitted, "a plain Return submits the draft")
+
+        sessions[0].onOwnerInput?(Array("a\\".utf8))
+        sessions[0].onOwnerInput?(Array("b".utf8))
+        sessions[0].onOwnerInput?([0x0D])
+        let afterText = await center.deliver("y", sessionID: s.id) { true }
+        XCTAssertEqual(afterText, .submitted, "a backslash followed by text no longer escapes the Return")
+    }
+
+    /// PROJ-12: after a failed state read the app does not know whether a
+    /// permission prompt is on screen — no Return.
+    func testAFailedRefreshAfterThePauseStopsTheReturn() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+
+        let delivery = await center.deliver("x", sessionID: s.id, refresh: { false }, submitIf: { true })
+
+        XCTAssertEqual(delivery, .pasted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")])
+    }
+
+    /// Without bracketed paste nothing is typed — keystrokes could answer a
+    /// pending permission prompt — the line goes to the clipboard instead.
+    func testWithoutBracketedPasteTheLineIsCopiedNotTyped() throws {
+        let center = makeCenter(v1Host: true)
+        var copied: [String] = []
+        center.copyToClipboard = { copied.append($0) }
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].bracketedPasteMode = false
+
+        XCTAssertEqual(center.sendPrompt("Address it", sessionID: s.id), .copied)
+        XCTAssertTrue(sessions[0].inputs.isEmpty, "no keystrokes reach the terminal")
+        XCTAssertEqual(copied, ["Address it"])
+        XCTAssertTrue(center.clipboardHints.contains(s.id))
+
+        center.dismissClipboardHint(sessionID: s.id)
+        XCTAssertFalse(center.clipboardHints.contains(s.id))
+    }
+
+    /// Board #387: a relaunch during the pause reuses the process object,
+    /// yet the Return never goes into the new run, and the new run's prompt
+    /// is empty — its first line is submitted.
+    func testARelaunchDuringThePauseGetsNoReturn() async throws {
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
+        onSleep = { [weak self, center] in
+            guard let self else { return }
+            sessions[0].exit(0)
+            center.start(s, fresh: false)
+        }
+
+        let delivery = await center.deliver("x", sessionID: s.id) { true }
+
+        XCTAssertEqual(sessions.count, 1, "the relaunch reused the process")
+        XCTAssertEqual(delivery, .noSession)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")], "no Return into the new run")
+        onSleep = nil
+        let next = await center.deliver("y", sessionID: s.id) { true }
+        XCTAssertEqual(next, .submitted)
+    }
+
+    /// Board #387: the line waiting out its pause is the old run's; a
+    /// relaunch during that pause starts with an empty prompt, so a line
+    /// into the new run — sent while the old pause still runs — is
+    /// submitted, and the old line gets no Return.
+    func testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted() async throws {
+        var second: TerminalCenter.HandoffDelivery?
+        var pauses = 0
+        var center: TerminalCenter!
+        var process: FakeTerminalSession!
+        let s = try row()
+        center = TerminalCenter(
+            makeProcess: {
+                process = FakeTerminalSession(pid: 0)
+                process.hostDelivers = false
+                return process
+            },
+            signaller: ProcessGroupSignaller(
+                signal: { _, _ in }, isAlive: { _ in false },
+                sleep: { _ in
+                    pauses += 1
+                    guard pauses == 1 else { return }
+                    process.exit(0)
+                    center.start(s, fresh: false)
+                    second = await center.deliver("y", sessionID: s.id) { true }
+                }
+            )
+        )
+        center.shell = { "/bin/zsh" }
+        center.transcriptExists = { _ in false }
+        center.start(s, fresh: true)
+
+        let first = await center.deliver("x", sessionID: s.id) { true }
+
+        XCTAssertEqual(second, .submitted, "the new run's prompt held nothing")
+        XCTAssertEqual(first, .noSession)
+        XCTAssertEqual(process.inputs, [bracketedPasteBytes("x"), bracketedPasteBytes("y"), [0x0D]],
+                       "one Return, the new run's")
+    }
+
     // MARK: - An ask's answer hint (boards #364, #379)
 
     func testTheAnswerHintGoesWithTheOwnersInputDismissTheNextDeliveryOrTheExit() async throws {
