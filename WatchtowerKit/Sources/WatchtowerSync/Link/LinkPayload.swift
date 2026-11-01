@@ -16,19 +16,28 @@ public enum LinkPayloadError: Error, Equatable, Sendable {
     case olderVersion
     /// A code for another CloudKit container.
     case wrongContainer
+    /// A v4 code's relay identity is unusable: only one of `relay_device_id`/`relay_auth_pub`, a key that is not
+    /// base64url of 32 non-zero bytes, or an id that is not `RelayIDs.deviceID` of the key (R6).
+    case badRelayIdentity
 }
 
 /// The QR link code a Mac shows and a phone scans (mobile POC spec §2.3):
 /// `watchtower://link?d=<base64url(JSON)>`, no padding, sorted keys.
 ///
 /// Wire: snake_case keys, Unix-second `iat`/`exp`, unescaped slashes; a nil
-/// share URL is an absent key. Frozen by LinkPayloadTests. This type only
+/// optional is an absent key. Frozen by LinkPayloadTests.
+///
+/// The Kit reads v3 and v4 and issues v3 (relay client Phase 3, R6). v4 is the
+/// Go hub's: `container` and `owner_user` become optional (a headless host has
+/// neither) and the code may carry the hub's transports and relay identity. This type only
 /// encodes and decodes: the expiry check (with the phone's clock-skew grace)
 /// and the single-use nonce check belong to the link flow and the hub.
 public struct LinkPayload: Codable, Equatable, Sendable {
     /// 3 since the E2E build (mobile E2E spec §2.3): the code carries the hub's public keys.
     /// 2 was the multi-hub build (spec §3.4): shares of the hub's own `DataZone-<hub_id>`/`RelayZone-<hub_id>`.
     public static let currentVersion = 3
+    /// The newest version this build reads: 4, the Go hub's code (relay client Phase 3).
+    public static let newestReadable = 4
     /// `exp = iat + lifetime`, in seconds.
     public static let lifetime: Int64 = 600
     /// Cap on `macName`, in grapheme clusters.
@@ -38,13 +47,14 @@ public struct LinkPayload: Codable, Equatable, Sendable {
     static let dataParameter = "d"
 
     public let v: Int
-    public let container: String
+    /// Required in v3; nil in a v4 code from a hub without CloudKit.
+    public let container: String?
     /// The hub's UUID (spec §4.1).
     public let hubID: String
     /// At most `maxMacNameLength` grapheme clusters, clipped on init and decode.
     public let macName: String
-    /// The Mac's `CKContainer.userRecordID().recordName`.
-    public let ownerUser: String
+    /// The Mac's `CKContainer.userRecordID().recordName`. Required in v3; nil in a v4 code from a hub without CloudKit.
+    public let ownerUser: String?
     /// 32 random bytes, base64url, 43 characters. Single use.
     public let nonce: String
     /// Issued at, Unix seconds.
@@ -59,6 +69,22 @@ public struct LinkPayload: Codable, Equatable, Sendable {
     public let hubSigningKey: String
     /// `hub_kx` public key, base64url of 32 bytes.
     public let hubAgreementKey: String
+    /// v4: the hub's current transport; nil when absent or a value this build does not know.
+    public let transport: TransportKind?
+    /// v4: every transport the hub offers, raw wire values.
+    public let transports: [String]?
+    /// v4: the hub's hosted-relay device id, `RelayIDs.deviceID` of `relayAuthPub`.
+    public let relayDeviceID: String?
+    /// v4: the hub's `relay_auth` public key, base64url of 32 bytes.
+    public let relayAuthPub: String?
+
+    /// The code can link over iCloud: v3, or v4 with a container and an owner.
+    public var offersCloudKit: Bool { v < 4 || (container != nil && ownerUser != nil) }
+    /// The code names a coherent relay identity for the hub.
+    public var offersRelay: Bool {
+        guard let relayDeviceID, let relayAuthPub else { return false }
+        return Self.relayIdentityIsCoherent(deviceID: relayDeviceID, authPub: relayAuthPub)
+    }
 
     enum CodingKeys: String, CodingKey {
         case v
@@ -73,21 +99,29 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         case relayShare = "relay_share"
         case hubSigningKey = "hub_sig"
         case hubAgreementKey = "hub_kx"
+        case transport
+        case transports
+        case relayDeviceID = "relay_device_id"
+        case relayAuthPub = "relay_auth_pub"
     }
 
     public init(
         v: Int = Self.currentVersion,
-        container: String = WatchtowerCloud.containerID,
+        container: String? = WatchtowerCloud.containerID,
         hubID: String,
         macName: String,
-        ownerUser: String,
+        ownerUser: String?,
         nonce: String,
         iat: Int64,
         exp: Int64,
         dataShare: String? = nil,
         relayShare: String? = nil,
         hubSigningKey: String,
-        hubAgreementKey: String
+        hubAgreementKey: String,
+        transport: TransportKind? = nil,
+        transports: [String]? = nil,
+        relayDeviceID: String? = nil,
+        relayAuthPub: String? = nil
     ) {
         self.v = v
         self.container = container
@@ -101,6 +135,10 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         self.relayShare = relayShare
         self.hubSigningKey = hubSigningKey
         self.hubAgreementKey = hubAgreementKey
+        self.transport = transport
+        self.transports = transports
+        self.relayDeviceID = relayDeviceID
+        self.relayAuthPub = relayAuthPub
     }
 
     /// Throws `DecodingError.dataCorrupted` for a hub key that is not base64url of exactly 32 bytes, or is all zero (a small-order point).
@@ -113,20 +151,35 @@ public struct LinkPayload: Codable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(
                 forKey: key, in: values, debugDescription: "hub key is not 32 non-zero bytes of base64url")
         }
+        let version = try values.decode(Int.self, forKey: .v)
+        // v3 requires the iCloud keys; v4 makes them optional (a headless host has neither).
+        func cloudKey(_ key: CodingKeys) throws -> String? {
+            version < 4 ? try values.decode(String.self, forKey: key) : try values.decodeIfPresent(String.self, forKey: key)
+        }
         self.init(
-            v: try values.decode(Int.self, forKey: .v),
-            container: try values.decode(String.self, forKey: .container),
+            v: version,
+            container: try cloudKey(.container),
             hubID: try values.decode(String.self, forKey: .hubID),
             macName: try values.decode(String.self, forKey: .macName),
-            ownerUser: try values.decode(String.self, forKey: .ownerUser),
+            ownerUser: try cloudKey(.ownerUser),
             nonce: try values.decode(String.self, forKey: .nonce),
             iat: try values.decode(Int64.self, forKey: .iat),
             exp: try values.decode(Int64.self, forKey: .exp),
             dataShare: try values.decodeIfPresent(String.self, forKey: .dataShare),
             relayShare: try values.decodeIfPresent(String.self, forKey: .relayShare),
             hubSigningKey: signingKey,
-            hubAgreementKey: agreementKey
+            hubAgreementKey: agreementKey,
+            transport: try values.decodeIfPresent(String.self, forKey: .transport).flatMap(TransportKind.init(rawValue:)),
+            transports: try values.decodeIfPresent([String].self, forKey: .transports),
+            relayDeviceID: try values.decodeIfPresent(String.self, forKey: .relayDeviceID),
+            relayAuthPub: try values.decodeIfPresent(String.self, forKey: .relayAuthPub)
         )
+    }
+
+    /// Whether `authPub` is base64url of 32 non-zero bytes and `deviceID` is `RelayIDs.deviceID` of it.
+    static func relayIdentityIsCoherent(deviceID: String, authPub: String) -> Bool {
+        guard let key = decodeBase64URL(authPub), key.count == 32, !key.allSatisfy({ $0 == 0 }) else { return false }
+        return RelayIDs.deviceID(publicKey: key) == deviceID
     }
 
     /// A fresh code issued `now`: new nonce, `exp = iat + lifetime`.
@@ -181,7 +234,7 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         return url
     }
 
-    /// Decodes a scanned URL. `v` is checked before any other key, so a
+    /// Decodes a scanned URL: v3 or v4. `v` is checked before any other key, so a
     /// newer code reads as `.newerVersion` and an older one as
     /// `.olderVersion` whatever its shape.
     public static func parse(_ url: URL) -> Result<Self, LinkPayloadError> {
@@ -197,7 +250,7 @@ public struct LinkPayload: Codable, Equatable, Sendable {
             return .failure(.badEncoding)
         }
         guard let version = probe.v else { return .failure(.missingField(CodingKeys.v.stringValue)) }
-        if version > currentVersion { return .failure(.newerVersion) }
+        if version > newestReadable { return .failure(.newerVersion) }
         if version < currentVersion { return .failure(.olderVersion) }
 
         let payload: Self
@@ -210,7 +263,13 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         } catch {
             return .failure(.badEncoding)
         }
-        guard payload.container == WatchtowerCloud.containerID else { return .failure(.wrongContainer) }
+        if let container = payload.container, container != WatchtowerCloud.containerID {
+            return .failure(.wrongContainer)
+        }
+        // Half a relay identity, or a pair that does not match: the phone would vouch for or address the wrong device.
+        if payload.relayDeviceID != nil || payload.relayAuthPub != nil, !payload.offersRelay {
+            return .failure(.badRelayIdentity)
+        }
         return .success(payload)
     }
 
